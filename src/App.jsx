@@ -1,0 +1,20854 @@
+// src/App.jsx
+// ============================================================================
+// SMASH PÁDEL CLUB — Módulo 1: Parrilla Operativa · Módulo 2: Smart POS
+// ----------------------------------------------------------------------------
+// Stack: React + Vite · Tailwind CSS v4 · lucide-react · Supabase
+//
+// Notas de integración:
+//
+// 1) Se asume el cliente ya inicializado en `src/supabaseClient.js`:
+//    import { createClient } from '@supabase/supabase-js';
+//    export const supabase = createClient(url, anonKey);
+//
+// 2) Esquema esperado — Módulo 1 (tal como lo describiste tras el reset):
+//    - canchas:   id, nombre, precio_por_hora, activa, estatus_manual,
+//                 imagen_url, club_id
+//    - jugadores: id, nombre, telefono, saldo_a_favor, club_id
+//    - reservas:  id, cancha_id, jugador_id, jugador_nombre, fecha,
+//                 hora_inicio, hora_fin, estado, estado_pago, metodo_pago,
+//                 monto_total, club_id, created_at
+//    `estatus_manual` es opcional: si esa columna no existe todavía en tu
+//    tabla `canchas`, el módulo lo detecta al guardar y usa `activa` como
+//    respaldo automáticamente (ver `actualizarEstatusCancha`).
+//
+// 2.1) Esquema esperado — Módulo 2, Smart POS (tablas NUEVAS, créalas antes
+//      de abrir la pestaña "Smart POS" — si no existen, el módulo lo avisa
+//      con un banner en vez de romperse):
+//    - productos:    id, nombre, categoria (EXACTAMENTE 'Pro-Shop' |
+//                    'Cafetería/Bar' | 'Rentas', tal cual — son los mismos
+//                    textos que ves en los botones de filtro y en el
+//                    dropdown de "+ Nuevo Producto"; opcionalmente también
+//                    'Canchas', reservada para un producto que represente la
+//                    pista pura con costo $0. Para Analytics BI —
+//                    "Rentabilidad por Categoría" e "Ingresos Cruzados"—
+//                    SOLO 'Cafetería/Bar' y 'Canchas' (literal) tienen bucket
+//                    propio; 'Pro-Shop', 'Rentas' [palas/accesorios] y
+//                    cualquier categoría no reconocida se agrupan SIEMPRE
+//                    bajo Pro-Shop, para que el costo de rentar una pala
+//                    nunca ensucie el margen de Canchas), precio, stock (nullable),
+//                    maneja_stock (boolean — false para platillos/artículos
+//                    "de cocina" que nunca deben verse "Agotado"), disponible
+//                    (boolean — apagado manual por faltante de insumos, sin
+//                    tocar el stock), imagen_url (URL o data:URI base64 si se
+//                    subió un archivo), activo (boolean — borrado lógico),
+//                    costo_unitario (numeric, nullable — usado por ERP &
+//                    Inventario para Margen % y Valor del Inventario),
+//                    stock_minimo (numeric, nullable — umbral de "Bajo Stock"
+//                    y de las Alertas de Reorden), tiempo_entrega_dias
+//                    (numeric, nullable, OPCIONAL — días que tarda el
+//                    proveedor en reabastecer; si la columna no existe o el
+//                    producto no la tiene cargada, se usa un valor por
+//                    defecto de 3 días para la Alerta de Reabastecimiento),
+//                    club_id
+//    - productos.variantes: (columna extra del producto padre, arriba) —
+//                    FIX DEFINITIVO: este proyecto de Supabase NO tiene una
+//                    tabla `producto_variantes` — el Catálogo Inteligente con
+//                    Variantes/Modificadores vive ÚNICAMENTE en la columna
+//                    JSONB `productos.variantes` (un arreglo de objetos), en
+//                    la MISMA fila del producto padre. Cada objeto trae
+//                    nombre, precio (nullable — null = hereda el precio del
+//                    producto padre), stock (nullable — null = sin control de
+//                    inventario propio, igual que `maneja_stock: false` en un
+//                    producto), costo_unitario y stock_minimo (ambos
+//                    nullable, heredan del padre si se dejan vacíos), activo.
+//                    "Cerveza 355 ml" → variante exacta (Victoria, Corona,
+//                    Modelo Especial), "Overgrip" → marca/modelo (Tourna,
+//                    Wilson, Babolat), "Chilaquiles" → opciones/salsa (Verdes,
+//                    Rojos, con Pollo, con Huevo). Un producto con
+//                    `variantes: []` (o sin la columna) se comporta
+//                    exactamente igual que antes (un click lo manda directo a
+//                    la comanda); un producto CON variantes abre
+//                    `ModalSeleccionarVariante` antes de agregarlo. El stock
+//                    se descuenta/registra en `kardex` por VARIANTE cuando
+//                    aplica (motivo y `producto_nombre` del kardex incluyen el
+//                    nombre de la variante, p. ej. "Overgrips — Bombarder
+//                    Tacky"; el `producto_id` del kardex sigue siendo el del
+//                    padre). Búsqueda flexible: cada entrada se identifica
+//                    comparando `.trim().toLowerCase()` contra `nombre`,
+//                    `variante`, `id`, `label` o `nombre_variante` — ver
+//                    `nombreDeVarianteJSONB`/`descontarStockVariante`. Se edita
+//                    desde "+ Nuevo Producto"/"Editar Producto" (el arreglo
+//                    completo se reescribe en el MISMO insert/update del
+//                    producto padre — sin pasos posteriores que puedan fallar
+//                    a medias) y desde ERP & Inventario (precio/costo/stock
+//                    mínimo/stock ajustables inline vía
+//                    `actualizarVarianteEnJSONB`, con su propio registro de
+//                    `kardex` tipo 'ajuste').
+//    - ventas:       id, total, metodo_pago (NOT NULL — 'efectivo'|'tarjeta'|
+//                    'transferencia'|'dividido' cuando se cobra, o
+//                    'Cuenta Abierta'/'Pendiente' mientras el consumo está
+//                    pendiente de cobro — NUNCA se manda `null` aquí, eso es
+//                    justo lo que rompía "Agregar a la Cuenta"), turno, operador (nombre del operador en
+//                    turno), reserva_id (nullable — se enlaza cuando el cobro
+//                    corresponde a una reserva existente o a una Renta
+//                    Exprés recién creada), cancha_id (nullable — "cuenta
+//                    abierta" o Renta Exprés), detalles (jsonb: { items:
+//                    [{tipo:'producto'|'cancha', producto_id|cancha_id,
+//                    variante_id (nullable — Catálogo con Variantes), nombre,
+//                    precio, cantidad, subtotal}], pagos_divididos: [...] |
+//                    null, jugador_id: uuid | null, jugador_nombre: string |
+//                    null }), estado_pago ('pagado'|'pendiente'), created_at.
+//                    `detalles.jugador_id`/`jugador_nombre` NO son columnas
+//                    reales de `ventas` (esa tabla sigue sin `jugador_id`
+//                    propio) — viven dentro del jsonb `detalles` y son lo que
+//                    lee `resolverJugadorIdVentaCancha` con PRIORIDAD MÁXIMA
+//                    (antes que el enlace por `reserva_id` o el respaldo por
+//                    cancha+fecha): se llenan desde el campo "Cliente
+//                    (opcional — CRM)" de `ComandaPanel` (con o sin cancha
+//                    vinculada) y desde el Split Bill por jugador del roster
+//                    — así una venta de Pro-Shop/Cafetería SIN cancha también
+//                    alimenta el LTV/CHS del cliente en el Directorio & CRM.
+//                    IMPORTANTE: el insert a `ventas` SOLO manda estas 8
+//                    columnas — enviar columnas que no existen (items suelto,
+//                    operador_nombre, pagos_divididos suelto, fecha, club_id)
+//                    es justo lo que causaba el error de registro.
+//    - cierres_caja: id, operador_id (nullable), operador_nombre, turno, fecha,
+//                    monto_reportado_efectivo, monto_teorico_efectivo,
+//                    diferencia, aprobado (boolean, nullable — Aprobación de
+//                    Cortes del rol Manager, ver sección 2.6), created_at, club_id
+//
+// 2.2) Esquema esperado — Módulo 3, ERP & Inventario (tabla NUEVA además de
+//      las de arriba; si no existe, la pestaña "Kardex" lo avisa con un
+//      banner sin romper el resto del módulo):
+//    - kardex:       id, producto_id, variante_id (nullable, OPCIONAL —
+//                    Variantes como Productos Completos: identifica el
+//                    movimiento cuando pertenece a una entrada del arreglo
+//                    JSONB `productos.variantes`; `producto_id` sigue
+//                    apuntando SIEMPRE al producto padre), producto_nombre
+//                    (text, nullable, OPCIONAL — nombre compuesto, p. ej.
+//                    "Overgrips — Bombarder Tacky", para que el kardex se lea
+//                    solo aunque el producto/variante se renombre o se borre
+//                    después). Si `variante_id`/`producto_nombre` no existen
+//                    todavía como columnas, `insertarMovimientoKardex`
+//                    reintenta sola sin ellas — el movimiento igual se
+//                    guarda, solo que sin ese detalle hasta que se migren),
+//                    tipo_movimiento ('entrada' |
+//                    'salida_venta' | 'ajuste' — 'entrada' se crea desde
+//                    "+ Registrar Entrada" en este módulo, 'salida_venta' se
+//                    crea SOLA desde Smart POS al cobrar, 'ajuste' queda
+//                    soportado para mostrarse pero esta versión no trae un
+//                    botón que lo genere), cantidad (siempre positiva — el
+//                    signo lo da `tipo_movimiento`), stock_anterior,
+//                    stock_nuevo, motivo (texto, nullable — para movimientos
+//                    de variante siempre incluye su nombre, así se identifica
+//                    aunque `variante_id` no exista todavía), operador (nombre
+//                    de quien lo hizo), created_at, club_id.
+//    El folio y el cambio del ticket se calculan solo para mostrarse en el
+//    recibo digital — no se guardan como columnas nuevas.
+//
+// 2.2.1) Configuración del Club (tabla NUEVA, opcional — si no existe, o si
+//        le faltan columnas, cada parámetro simplemente vive en
+//        `localStorage` hasta que la crees/migres):
+//    - configuracion_club: id, nombre (text, nullable — Personalización del
+//                    Club, editable desde el botón de ajustes del Sidebar),
+//                    logo_url (text, nullable — URL pública del bucket
+//                    `app-media` de Supabase Storage, NUNCA base64/blob
+//                    local — ver `uploadMedia`), updated_at, club_id, slug
+//                    (text, único — identifica al club en la URL del Portal
+//                    Público `/canchas/:clubSlug`).
+//                    Se trata como fila única por club (se hace `select`
+//                    + `update`/`insert` según exista, nunca `upsert` por
+//                    `club_id` porque `CLUB_ACTIVO_ID` puede ser `null` en
+//                    modo mono-club). Alimenta la Persistencia Centralizada
+//                    del nombre/logo del club: Mac, iPad y celular leen y
+//                    escriben la MISMA fila, con Realtime (`postgres_changes`
+//                    en `configuracion_club`) propagando cualquier edición al
+//                    resto de dispositivos sin recargar (ver `guardarConfigClub`
+//                    en App()). Si `nombre`/`logo_url` todavía no existen en
+//                    un proyecto viejo, el nombre/logo se queda en modo local
+//                    (`localStorage`, este navegador) sin bloquear nada.
+//                    NOTA: el parámetro "Costo Operativo Asignado por
+//                    Hora/Cancha" que antes vivía aquí (columna
+//                    `costo_operativo_hora`) se eliminó por completo del
+//                    producto — ni el ERP ni Analytics BI lo leen ni lo
+//                    escriben ya.
+//
+// 2.2.2) Contabilidad & Compras (tablas NUEVAS, opcionales — ver 2.3.1 más
+//        abajo para el detalle del módulo): `compras_gastos` y
+//        `proveedores`. Si no existen todavía en un proyecto viejo, el
+//        módulo lo indica con un banner y sigue funcionando en modo lectura
+//        limitada (arquitectura flexible, mismo patrón que el resto del
+//        archivo — ver `esErrorTablaInexistente`).
+//
+// 2.3) Módulo 4, Analytics BI — NO agrega tablas nuevas propias (además de
+//      `configuracion_club` de arriba): lee `reservas` + `canchas` (prop
+//      compartida, ya levantada en App()), y consulta `ventas` + `kardex`
+//      directo por rango de fechas cada vez que cambia el filtro temporal
+//      (Día/Mes/Año). "Unidades vendidas" (Top Productos, COGS) sale de
+//      `kardex.tipo_movimiento = 'salida_venta'` — la misma fuente ya
+//      endurecida contra RLS que usa el KPI "Ventas del Mes" de ERP &
+//      Inventario — mientras que los montos en pesos (Ingresos Totales,
+//      Ticket Promedio, Ingreso por Categoría/Producto) salen de
+//      `ventas.detalles.items`, filtrando solo `estado_pago = 'pagado'` para
+//      no reconocer como ingreso una cuenta todavía abierta. El costo
+//      (`costo_unitario`) siempre se cruza con el precio ACTUAL del producto
+//      en `productos` — si el costo cambió después de la venta, el histórico
+//      no lo refleja retroactivamente (limitación conocida: no existe una
+//      tabla de costos históricas).
+//
+//      Rigor contable de terminología (todo el tablero): "Margen Bruto"
+//      (Precio de Venta − Costo Directo) se usa SOLO para productos físicos
+//      de POS/ERP (Pro-Shop, Cafetería/Bar). "Margen de Contribución"
+//      (Precio de Renta − Costo Variable Directo $0) se usa SOLO para
+//      ítems de Cancha/Pista (rentas, retas) — como la renta de cancha no
+//      tiene costo variable directo, este margen equivale simplemente al
+//      ingreso de cancha. Este tablero YA NO calcula "Utilidad Operativa"
+//      ni "Utilidad Neta del Club": ambos indicadores dependían del extinto
+//      parámetro "Costo Operativo Asignado por Hora/Cancha" ($170 MXN/hora),
+//      eliminado por completo del ERP & Inventario, y no tienen reemplazo
+//      dentro de Analytics BI. La P&L / Estado de Resultados real del club
+//      (Ventas POS + Reservas Cobradas − Egresos de `compras_gastos`) vive
+//      exclusivamente en el módulo Contabilidad & Compras (ver 2.3.1) —
+//      Analytics BI se enfoca en Mapa de Calor, Rendimiento por Cancha e
+//      Ingresos Cruzados, sin duplicar esa P&L en su tablero.
+//
+//      Imputación de Ingresos de Torneos/Retas a Rendimiento por Cancha — por
+//      TARIFA OFICIAL, no por reparto del pozo: los bloqueos que ocupan
+//      cancha en `reservas` para Torneos/Retas SIEMPRE se crean con
+//      `monto_total: 0` (ver `crearBloqueoParrilla`, sección 2.4) — el
+//      dinero real vive en `reta_inscripciones` / `torneo_participantes`,
+//      nunca en la reserva. `ModuloAnalyticsBI` arma
+//      `imputacionEventosCancha` (recibe `retas`, `inscripciones`,
+//      `torneos`, `participantesTorneo`, `partidosTorneo` como props
+//      nuevas), que sustituye ese $0 por `Horas de Partido × Precio de
+//      Renta Oficial de la Cancha` (`precioPorHoraDeCancha`) — NUNCA una
+//      fracción proporcional del total recaudado en inscripciones: una
+//      cancha de $300/hr que aloja 5h de partidos de un torneo que recaudó
+//      $10,000 produjo $1,500 de ingreso de cancha, no $10,000. El
+//      excedente (`Total Inscripciones − Total Valor Renta de Canchas
+//      Consumidas`) se acumula en `margenEventosOrganizacion` y se expone
+//      como su propio concepto — "Ingreso por Organización de
+//      Torneos/Retas" / "Margen de Eventos" — en las métricas globales del
+//      dashboard y del CSV, nunca mezclado en el ingreso de ninguna cancha
+//      (SÍ entra al Margen Total del Periodo, porque es dinero real que el
+//      club cobró — pero no a `ingresosTotales`/Ticket Promedio/Ratio de
+//      Gasto Secundario, que son métricas por transacción de cancha/
+//      producto). Para Retas (1 reserva = 1 evento) y para cada sub-bloqueo
+//      de PARTIDO individual de un Torneo (`torneo_partidos`) — nunca el
+//      Bloqueo Maestro del evento, ver el párrafo siguiente. Como cada
+//      reserva ya vive en su propia fecha real, el ingreso queda reconocido
+//      en la fecha en que efectivamente se jugó el partido (criterio de
+//      devengo), nunca en la fecha en que se cobró la inscripción.
+//      `montoEfectivoReserva(r)` es el punto único que usan
+//      `analisis.ingresoCanchas`, `rendimientoPorCancha` e
+//      `ingresosCruzados` en vez de leer `r.monto_total` a pelo. La fila
+//      "Canchas" de "Rentabilidad por Categoría" mantiene su Costo Total
+//      fijo en $0 (no tiene costo variable directo asignado), así que su
+//      columna de margen sigue siendo el Margen de Contribución (equivalente
+//      al ingreso de cancha) sin ningún costo operativo prorrateado.
+//
+//      Bloqueo Maestro de Torneo vs. sub-bloqueos de partido (anti doble
+//      contabilidad): al crear un Torneo se genera un Bloqueo Maestro de
+//      cancha (`torneo.bloqueos`, ej. 7:00–15:00) para apartar el espacio
+//      general; al programar cada partido desde "Cuadros & Partidos" se
+//      genera ADEMÁS un sub-bloqueo específico por partido
+//      (`torneo_partidos[].reserva_bloqueo_id`, ej. 8:00–9:00) — ambos son
+//      filas reales de `reservas` con `estado: 'Torneo'`. Sin distinguirlos,
+//      Analytics BI sumaba las horas/ingresos de AMBOS, duplicando la
+//      ocupación (8h de Bloqueo Maestro + 3 partidos de 1h = 11h en vez de
+//      3h reales jugadas). `idsBloqueosMaestroTorneo(torneos)` calcula el
+//      conjunto de ids de reserva que son Bloqueo Maestro (por membresía en
+//      `torneo.bloqueos[].reserva_bloqueo_id` — el `estado` no alcanza para
+//      distinguirlos, ambos usan `'Torneo'`); `ModuloAnalyticsBI` los
+//      EXCLUYE por completo de `reservasActivasPagadas` (así que tampoco
+//      entran a Horas Reservadas, % Ocupación, Ingresos, Heatmap, RevPACP ni
+//      Pico/Valle — todo lo que se calcule a partir de ella), y solo cuentan
+//      los sub-bloqueos de partido (o los de Reta, que no tienen esta
+//      estructura de maestro+sub). En la Parrilla Operativa el Bloqueo
+//      Maestro se sigue mostrando (`ESTATUS_META.torneo_maestro`, un estilo
+//      discreto/rayado) para seguir bloqueando reservas externas de
+//      clientes, pero queda FUERA del reparto de carriles de
+//      `asignarCarrilesSolape` — así nunca compite visualmente ni parece un
+//      conflicto contra los partidos específicos programados dentro de esa
+//      misma franja (ver `FilaCronograma`).
+//
+// 2.4) Módulo 5, Torneos & Retas (tablas NUEVAS; si no existen, cada sección
+//      lo avisa con un banner en vez de romper el resto del módulo):
+//    - retas:               id, cancha_id, fecha, hora_inicio, hora_fin,
+//                           nivel (texto libre, p.ej. "4ª Fuerza" o "4.0"),
+//                           rama ('Varonil'|'Femenil'|'Mixto'),
+//                           precio_inscripcion (numeric — por LUGAR
+//                           individual, no por cancha), tolerancia_horas
+//                           (numeric, default 6 — ventana sin penalización
+//                           para cancelar), estado ('abierta'|'cancelada'|
+//                           'jugada'), reserva_bloqueo_id (uuid, nullable —
+//                           la fila de `reservas` que bloquea el horario en
+//                           la Parrilla; el bloqueo NACE con
+//                           `reservas.jugador_nombre` = Nombre Personalizado
+//                           de la reta — ya no el literal fijo "RETA
+//                           ABIERTA" — así Tarjetas y Cronograma lo muestran
+//                           desde la creación (ver `ModalNuevaReta.guardar`),
+//                           y renombrar la reta después también actualiza
+//                           esa misma columna — ver `renombrarReta` — para
+//                           que la Parrilla/Cronograma reflejen el nombre
+//                           nuevo sin recargar), archivado
+//                           (boolean, nullable, OPCIONAL — Archivado de
+//                           Retas, mismo criterio y tolerancia que
+//                           `torneos.archivado`: ver `archivarReta`, que a
+//                           propósito NO manda esta columna en el INSERT de
+//                           `ModalNuevaReta`), sets (jsonb, nullable,
+//                           OPCIONAL — array de {p1, p2}, Captura de
+//                           Marcadores en Retas), ganador (text, nullable,
+//                           OPCIONAL — 'pareja1'|'pareja2'), pareja1, pareja2
+//                           (text, nullable, OPCIONAL — nombres de quién jugó
+//                           con quién, elegido en `ModalMarcadorReta` entre
+//                           los 4 inscritos confirmados; ver `guardarMarcadorReta`,
+//                           tampoco en el INSERT), created_at, club_id.
+//    - reta_inscripciones:  id, reta_id, nombre, telefono, correo,
+//                           nivel_jugador (nullable), monto,
+//                           estado_pago ('pagado'|'pendiente'),
+//                           estado ('confirmado'|'cancelado'|'retenido' —
+//                           'retenido' = canceló dentro de la ventana de
+//                           tolerancia, sin reembolso), created_at, club_id.
+//    - torneos:             id, nombre, categorias (jsonb — array de
+//                           {rama, nivel}), precio (numeric),
+//                           unidad_precio ('pareja'|'jugador'),
+//                           formato ('Americano/Pozo'|'Round Robin + Eliminatoria'|
+//                           'Eliminación Directa con Consolación'),
+//                           regla_puntuacion ('3 Sets'|'Súper Tie-Break'|
+//                           'Punto de Oro'), fecha_inicio, fecha_fin,
+//                           bloqueos (jsonb — array de {cancha_id, cancha_nombre,
+//                           fecha, hora_inicio, hora_fin, reserva_bloqueo_id}:
+//                           los horarios/canchas que el torneo reservó en la
+//                           Parrilla, igual de estructurado que
+//                           `ventas.detalles.items`), estado ('planeación'|
+//                           'en curso'|'finalizado'|'cancelado'), archivado
+//                           (boolean, nullable, OPCIONAL — Archivado de
+//                           Torneos: si la columna no existe todavía, el
+//                           módulo la trata igual, solo que el archivado no
+//                           sobrevive un refresh hasta que la agregues; ver
+//                           `archivarTorneo` en `ModuloTorneosRetas`, que a
+//                           propósito NO manda esta columna en el INSERT de
+//                           `ModalNuevoTorneo` para no arriesgar la creación
+//                           completa del torneo por una columna ausente),
+//                           created_at, club_id.
+//    - torneo_participantes: id, torneo_id, nombre, telefono, correo, nivel,
+//                           categoria (texto libre), monto,
+//                           estado_pago ('pagado'|'pendiente'), created_at,
+//                           club_id.
+//    - torneo_partidos:     (Motor de Torneos, Fase 1 — Cuadros & Partidos)
+//                           id, torneo_id, categoria (texto libre, nullable —
+//                           null si el torneo no tiene categorías), ronda
+//                           (texto, p.ej. "Cuartos de Final"/"Semifinal"/
+//                           "Final" — ver `nombresRondas`), ronda_orden
+//                           (numeric, 0 = primera ronda), posicion (numeric,
+//                           0-based DENTRO de su ronda — ubica a qué partido
+//                           de la ronda siguiente avanza el ganador:
+//                           `Math.floor(posicion / 2)`), pareja1, pareja2
+//                           (texto libre, null = "Por definir"), cancha_id,
+//                           fecha, hora_inicio, hora_fin (nullable — sin
+//                           horario asignado todavía), reserva_bloqueo_id
+//                           (uuid, nullable — la fila de `reservas` que
+//                           bloquea ese horario específico en la Parrilla,
+//                           con etiqueta "<ronda>: <pareja1> vs <pareja2>"),
+//                           sets (jsonb — array de {p1, p2}), ganador
+//                           (nullable, 'pareja1'|'pareja2'), estado
+//                           ('pendiente'|'jugado'), club_id. "Generar Cuadro"
+//                           inserta TODAS las rondas de una sola vez (las
+//                           posteriores a la primera nacen con parejas null);
+//                           al guardar un marcador, el ganador se escribe
+//                           solo en el `pareja1`/`pareja2` que le corresponda
+//                           del partido siguiente (avance automático).
+//    - ranking_jugadores:   (Ranking del Club — módulo Jugadores/CRM) id,
+//                           nombre (jugador INDIVIDUAL, no la pareja — una
+//                           pareja reparte sus puntos completos entre sus dos
+//                           integrantes), nivel (uno de los 7 valores de
+//                           `NIVELES_FUERZA`, o "Sin categoría" — ver
+//                           `extraerNivelDeCategoria`; el ranking clasifica
+//                           por nivel puro, no por "Rama + Nivel"), puntos
+//                           (numeric, acumulado entre torneos), partidos_jugados,
+//                           partidos_ganados (numeric, acumulados — dan la
+//                           Efectividad % en la tabla), torneos_ids (jsonb —
+//                           array de `torneo_id`, uno por cada torneo distinto
+//                           en el que ya sumó al menos un partido; su longitud
+//                           es "Torneos Disputados"), club_id. Se llena
+//                           únicamente desde "Finalizar Torneo & Asignar
+//                           Puntos" (`calcularResultadosTorneoCategoria` +
+//                           `aplicarResultadosARanking`, dentro de
+//                           `ModuloTorneosRetas`) — nunca se edita a mano.
+//    Bloqueo inteligente: al guardar una Reta o un Torneo, el módulo inserta
+//    en la MISMA tabla `reservas` de la Parrilla Operativa (sin tocar su
+//    esquema ni su lógica) una fila sintética con `estado: 'Reta'` o
+//    `estado: 'Torneo'`, `jugador_nombre: 'RETA ABIERTA'` o
+//    `'TORNEO: <nombre>'`, `jugador_id: null` y `monto_total: 0` — el
+//    Cronograma de la Parrilla ya trata cualquier reserva con
+//    `estado !== 'Cancelada'` como horario ocupado (ver `FilaCronograma`),
+//    así que estas filas bloquean el slot para reservas regulares de forma
+//    automática, sin cambiar una sola línea de esa lógica. "Liberar Bloqueo"
+//    simplemente pone esa fila en `estado: 'Cancelada'`, igual que cancelar
+//    cualquier otra reserva.
+//    Archivado de Torneos (Limpieza Visual): la pestaña "Torneos" trae un
+//    filtro Activos/Archivados (`filtroTorneo` en `ModuloTorneosRetas`) — un
+//    torneo archivado (`archivado: true`) sigue existiendo tal cual en
+//    Supabase (pagos, inscritos y puntos de Ranking intactos), solo deja de
+//    listarse en Activos. "Eliminar Definitivamente" (`eliminarTorneoDefinitivo`)
+//    únicamente se ofrece cuando el torneo archivado tiene 0 participantes —
+//    libera de paso cualquier bloqueo de cancha asociado.
+//    Nombre Personalizado de Retas: `retas.nombre` ya no es solo un valor
+//    autogenerado en el INSERT (`Reta ${rama} · ${nivel}`) — el operador
+//    puede editarlo al crearla o después, desde la propia tarjeta (lápiz
+//    junto al nombre, `renombrarReta`), para casos como "Reta de Adrián" o
+//    "Reta de los Lunes".
+//    Selector de Jugadores Registrados (`SelectorJugadorRegistrado`): en
+//    "Inscribir Jugador" (Reta) y "Agregar Participante" (Torneo), el campo
+//    de nombre es un combobox que busca en vivo sobre el Directorio & CRM
+//    (`jugadoresPorId`, ya cargado en App()) — al elegir una sugerencia
+//    autocompleta el teléfono y evita crear un expediente duplicado por un
+//    typo de nombre; el operador puede seguir escribiendo un nombre nuevo
+//    tal cual si el jugador todavía no está registrado, `resolverJugadorId`
+//    sigue siendo quien decide crear/reutilizar el expediente al guardar.
+//
+// 2.5) Módulo 6, CRM de Jugadores (Directorio & CRM, dentro de "Jugadores") —
+//      NO agrega tablas nuevas: cruza en vivo `jugadores` (fuente de verdad)
+//      contra `reservas` (por `jugador_id`, exacto), `ventas` (Herencia
+//      Automática por Cancha, `resolverJugadorIdVentaCancha`: 1) enlace
+//      directo si la venta trae `reserva_id` y esa reserva tiene
+//      `jugador_id`; 2) si no — "Asignar a Cancha", que es de solo-reporte y
+//      nunca enlaza una reserva, o "Vincular a Cancha" cobrado después de
+//      que el partido terminara — se busca entre las reservas de esa MISMA
+//      cancha y fecha cuál era la ocupante al momento del cobro, o la última
+//      que ya había empezado ese día; `ventas` sigue sin un `jugador_id`
+//      propio, así que una venta de mostrador sin cancha vinculada en
+//      absoluto queda fuera del LTV individual, aunque sí cuenta en los
+//      totales del club de Analytics BI) y `reta_inscripciones`/
+//      `torneo_participantes` (texto libre, sin `jugador_id`: se cruzan por
+//      teléfono normalizado — últimos 10 dígitos — y, de respaldo, por
+//      nombre normalizado con el mismo criterio que ya usa `resolverJugadorId`).
+//      CRM Unificado por Teléfono: `resolverJugadorId(nombre, { telefono,
+//      directorio })` es el ÚNICO mecanismo de alta/deduplicación de
+//      `jugadores`, y el TELÉFONO —no el nombre— es su identificador único:
+//      si se captura un teléfono con 10+ dígitos válidos, la búsqueda/alta se
+//      resuelve EXCLUSIVAMENTE por teléfono (últimos 10 dígitos, sin importar
+//      formato/lada/guiones) — si matchea a un expediente existente, ese es
+//      el que se usa aunque el nombre capturado ahora difiera (apodos,
+//      mayúsculas); si no matchea a nadie, se crea uno nuevo con ese
+//      teléfono, SIN caer al respaldo por nombre (evita fusionar por
+//      accidente a dos personas distintas que comparten nombre). Solo cuando
+//      NO se captura teléfono se usa el respaldo legacy por nombre
+//      (`ilike`, comportamiento previo). `opts.directorio` (típicamente
+//      `Object.values(jugadoresPorId)`, ya cargado en App()) resuelve el
+//      cruce por teléfono en el cliente, sin ida y vuelta a Supabase.
+//      Se invoca desde TODAS las vías de entrada del club — Reserva en la
+//      Parrilla (`ModalNuevaReserva`, ahora con su propio campo Teléfono e
+//      igual buscador que Retas/Torneos), inscripción a una Reta
+//      (`ModalInscribirJugador`), alta de participante de Torneo
+//      (`ModalAgregarParticipanteTorneo`) y, en Smart POS, el campo "Cliente
+//      (opcional — CRM)" de `ComandaPanel` (comandas con o sin cancha
+//      vinculada) y cada cuota individual del Split Bill por jugador — así el
+//      Directorio capta a TODA la base activa desde el primer registro, sin
+//      importar por dónde entró cada quien, y con teléfono como llave real de
+//      identidad desde el primer registro. El
+//      Directorio también trae su propio editor inline ("Editar" en la ficha
+//      del jugador, para el caso de un expediente viejo sin teléfono) y un
+//      botón "Sincronizar" que vuelve a traer `jugadores`/`reservas`/`canchas`
+//      (App.cargarDatos) Y todas las `ventas` (`cargarVentasHistoricas`) —
+//      ambas alimentan por `useMemo` la Herencia Automática y el LTV/CHS, así
+//      que se re-evalúan solas en cuanto las dos promesas resuelven, sin
+//      esperar a que Realtime propague los cambios.
+//      Cada tarjeta de indicador del CHS, dentro de la ficha del jugador, es
+//      un acordeón (`indicadorExpandido` en `ModalPerfilJugadorCRM`, chevron
+//      que gira al expandir): al dar clic despliega su historial exacto vía
+//      `DetalleIndicadorCHS` — Consumo Bar/Tienda lista cada línea de compra
+//      de Smart POS con su "Producto Más Comprado"; Torneos/Retas lista cada
+//      evento con fecha/categoría/tipo; Recencia y Frecuencia comparten el
+//      historial de reservas de cancha (Parrilla) con "Horario Favorito" y
+//      "Cancha Preferida"; Gasto Directo lista los tickets de renta de cancha
+//      pagados; Confiabilidad lista reservas/inscripciones asistidas vs.
+//      canceladas. Todos estos arreglos (`comprasPOS`, `eventosTorneoRetas`,
+//      `historialCanchas`, `ticketsCanchas`, `historialConfiabilidad`, y los
+//      derivados `productoFavorito`/`canchaPreferida`/`horarioFavorito`) se
+//      calculan una sola vez dentro del mismo `useMemo` de `perfiles`, con
+//      las mismas fuentes que ya alimentan el LTV/CHS agregado — nunca hay
+//      una segunda consulta a Supabase al expandir una tarjeta.
+//      LTV Total = Gasto en Canchas (reservas propias, `monto_total`) + Gasto
+//      en Bar/Cafetería + Gasto en Pro-Shop (ambos de `ventas.detalles.items`
+//      tipo 'producto', mismo bucket de categoría que "Rentabilidad por
+//      Categoría" de Analytics BI) + Gasto en Torneos/Retas (`monto` de las
+//      inscripciones pagadas — cuenta 'confirmado' y 'retenido', que ya
+//      cobró el club aunque el jugador no se haya presentado). Segmento
+//      VIP/Frecuente/Estándar por umbrales de LTV (`UMBRAL_LTV_VIP`,
+//      `UMBRAL_LTV_FRECUENTE`, editables en el código).
+//      Customer Health Score (CHS, `calcularCHS`) sale de 6 indicadores
+//      semaforizados que suman 100 pts: Recencia 25, Frecuencia 20, Gasto
+//      Directo 20, Torneos/Retas 15, Consumo Bar/Tienda 10 y Confiabilidad
+//      10 — "último partido real" combina reservas propias no canceladas,
+//      Retas con inscripción 'confirmado' (no 'retenido') y partidos de
+//      Torneo con `estado: 'jugado'` (emparejados por nombre en `pareja1`/
+//      `pareja2`, igual criterio que el WhatsApp de Cuadros & Partidos).
+//      "En Riesgo de Abandono" = CHS < 60 pts O el indicador de Recencia en
+//      🟡/🔴, y dispara una plantilla de WhatsApp (`plantillaWhatsAppAntiChurn`)
+//      que menciona el indicador más débil del jugador (bebida favorita si
+//      el consumo de bar está bajo, descuento de cancha si la recencia bajó,
+//      etc.), reutilizando `construirEnlaceWhatsApp`/`normalizarTelefonoWhatsApp`
+//      de Cuadros & Partidos.
+//
+// 2.6) Módulo 7, Gestión de Empleados, Roles & Control Interno ("Control &
+//      Seguridad") — RBAC de 7 roles (Owner, Admin, Manager, Recepción,
+//      Caja, Bar, Coach — ver `ROLES`/`PERMISOS_POR_ROL`/`permisosDeRol`)
+//      que gatea tanto qué módulos aparecen en Sidebar/TopHeader
+//      (`NAV_MODULOS.filter((m) => permisos.modulos.has(m.id))`) como
+//      botones de acciones sensibles puntuales dentro de un módulo visible
+//      (cancelar/reprogramar reserva, descuento/edición de precio/
+//      devolución en POS, cerrar turno, aprobar corte, gestionar
+//      empleados/productos). La sesión activa (`operador`, con su `rol`)
+//      se elige al "fichar" en `ModalOperador` — ahora contra el
+//      Directorio de Empleados, no texto libre — y se persiste en
+//      `localStorage` (`LS_KEY_OPERADOR_ACTIVO`) para sobrevivir un
+//      refresh de la terminal. Dos tablas NUEVAS, con el mismo criterio de
+//      tolerancia total ("modo local") que Retas & Torneos:
+//    - empleados:     id, nombre, rol (uno de `ROLES`), telefono
+//                    (nullable), pin (nullable), activo (boolean), club_id,
+//                    created_at.
+//    - log_actividad: id, created_at, empleado_id (nullable), empleado_nombre,
+//                    empleado_rol, tipo (uno de `TIPOS_EVENTO_AUDITORIA`:
+//                    cancelación de reserva + motivo, descuento manual o en
+//                    POS, edición de precio en POS, devolución en POS,
+//                    modificación de horario/cancha, arqueo de caja, alta/
+//                    edición de empleado), detalle (jsonb, forma libre según
+//                    el tipo), club_id. Único punto de escritura:
+//                    `registrarEventoAuditoria`, repartido a todos los
+//                    módulos como `onRegistrarAuditoria`.
+//      `cierres_caja` (documentada en 2.1) se extiende con `operador_id` y
+//      una columna OPCIONAL `aprobado` (boolean, nullable — Aprobación de
+//      Cortes del rol Manager; si la columna no existe, `crearCierreCaja`
+//      reintenta sin ella, mismo patrón de compatibilidad que
+//      `estatus_manual`). El Arqueo de Caja (`ModalArqueo`) sigue siendo
+//      ciego para quien cuenta el efectivo (nunca ve `diferencia` ni
+//      `monto_teorico_efectivo` en pantalla), pero ahora también deja el
+//      rastro en el Log de Actividad y las diferencias (sobrantes/
+//      faltantes) quedan resaltadas para el Admin/Manager en Control &
+//      Seguridad → Cortes de Caja.
+//      Alcance deliberado: esto es control de acceso en la UI (visibilidad
+//      de módulos/botones), no autenticación real ni RLS por rol del lado
+//      de Supabase — consistente con que todo el resto del proyecto corre
+//      sin backend propio (ver nota en el bloque `PERMISOS_POR_ROL`).
+//
+// 3) Arquitectura Multitenant: `CLUB_ACTIVO_ID` se resuelve solo al arrancar
+//    (ver `resolverClubActivo` en App()) — por el slug de la URL si entraste
+//    por el Portal Público (`/canchas/:clubSlug`), o por tu único club si
+//    entraste al panel normal. Mientras solo tengas un club (tu caso hoy) y
+//    tus tablas de Supabase no tengan la columna `club_id` poblada, queda en
+//    `null` a propósito, y `withClubId`/`conClubId`/`canalClubFiltro` no
+//    agregan ningún filtro — cero riesgo de romper una consulta existente.
+//    El día que tengas más de un club real con `club_id` poblado, empiezan a
+//    filtrar solas, sin tocar código otra vez.
+//
+// 4) Estatus en vivo de cada cancha = cruce entre `estatus_manual` (o
+//    `activa`) y la reserva que esté "en curso" ahora mismo en `reservas`.
+//    Cancelar por mantenimiento SIEMPRE gana sobre cualquier reserva.
+//
+// 5) Reactividad: además de refrescar tras cada mutación local, el módulo se
+//    suscribe a Supabase Realtime (`postgres_changes` en `canchas`,
+//    `reservas`, `jugadores` y, dentro de Smart POS, `productos`). Si no
+//    tienes Realtime habilitado en esas tablas, la suscripción simplemente no
+//    emite nada — no rompe la pantalla.
+//
+// 6) Smart POS — decisiones de negocio implementadas tal cual las pediste:
+//    - "Vincular a Cancha" = cuenta abierta: el consumo se registra contra
+//      esa cancha con estado_pago='pendiente' y SIN pedir método de pago
+//      (se cobra después, junto con la reserva). Si no vinculas cancha, el
+//      botón "Cobrar" exige método de pago de inmediato.
+//    - Dividir Cuenta reparte el total entre 2/3/4 jugadores (el último
+//      absorbe el redondeo de centavos) y permite cobrar a cada uno con un
+//      método distinto; la venta se registra hasta que el saldo llega a $0.
+//    - El descuento de stock ocurre EN EL CLIENTE tras registrar la venta
+//      (no hay función de base de datos todavía), así que en alta
+//      concurrencia real conviene mover esto a una función RPC de Postgres
+//      más adelante; por ahora es "best effort" y nunca bloquea la venta.
+//    - El Arqueo de Caja es CIEGO a propósito: el modal nunca muestra el
+//      monto teórico del sistema. La diferencia se calcula y se guarda en
+//      `cierres_caja`, pero no se le revela al operador en pantalla.
+//    - Imagen de producto: "Subir archivo" la convierte a base64 (data:URI)
+//      y así se guarda en `imagen_url`. Es simple y no requiere Storage,
+//      pero infla el tamaño de la fila — para catálogos grandes conviene
+//      migrar a Supabase Storage y guardar solo la URL pública.
+//    - Renta Exprés (categoría "Rentas"): al cobrarse, además de insertar la
+//      venta, se inserta una fila en `reservas` (estado 'En Juego', fecha de
+//      hoy, hora_inicio = ahora) para que la cancha se vea ocupada de
+//      inmediato en la Parrilla — es "best effort", igual que el stock: si
+//      falla, la venta ya quedó cobrada y solo se avisa para bloquear la
+//      cancha a mano.
+//    - Efectivo SIEMPRE pide cuánto recibiste y calcula el cambio antes de
+//      dejarte confirmar. Tarjeta TPV / Transferencia SPEI piden una
+//      confirmación explícita ("sí, el cobro se completó") en vez de
+//      marcarse como pagadas al instante — así no se factura antes de que
+//      la terminal o el banco confirmen.
+//    - El Ticket/Recibo solo aparece cuando la cuenta queda en $0 (venta
+//      pagada de una vez, o Split Bill totalmente liquidado) — nunca para
+//      una "cuenta abierta" pendiente. "Imprimir / Guardar Ticket" llama a
+//      `window.print()` con una hoja de estilos que oculta todo excepto el
+//      ticket.
+//    - Productos sin inventario rígido: al desactivar "Maneja Inventario /
+//      Stock Rígido" en el alta/edición, el producto (p. ej. un platillo)
+//      ignora el número de stock y JAMÁS muestra "Agotado" — se agrega a la
+//      comanda siempre, salvo que el admin lo marque "No disponible".
+//    - Edición/Eliminación (modo administrador): el icono de engranaje en
+//      cada tarjeta del catálogo abre el mismo modal en modo edición —
+//      funciona incluso si el producto está "Agotado" o "No disponible" (el
+//      candado del catálogo solo bloquea el botón de AGREGAR, nunca el de
+//      editar). Ahí se puede cambiar nombre/precio/foto/stock, alternar
+//      Disponible/No disponible, y "Eliminar Producto" hace borrado lógico
+//      (`activo = false`) para no romper ventas históricas que ya referencian
+//      ese producto dentro de `detalles`.
+//    - "Reservar y Cobrar en POS" (modal Nueva Reserva de la Parrilla): el
+//      modal SOLO agenda (jugador, cancha, fecha/horario, monto) — ya no pide
+//      estado ni método de pago, siempre inserta con `estado_pago:
+//      'pendiente'` y `metodo_pago: null`. Al guardar, cambia la vista activa
+//      a Smart POS y mete un artículo tipo 'cancha' ya enlazado a esa reserva
+//      (`reserva_id`) en la comanda. El cajero cobra normal (Efectivo/
+//      Tarjeta/SPEI/Dividir); `registrarVenta` distingue estos artículos de
+//      la Renta Exprés clásica por traer `reserva_id`: en vez de crear una
+//      reserva nueva, hace UPDATE de `estado_pago` a 'pagado' (y
+//      `metodo_pago`) sobre la reserva ya existente — nunca duplica la fila.
+//      El campo Monto se autocompleta con (duración en horas) ×
+//      `precio_por_hora` de la cancha elegida, recalculando en vivo al abrir
+//      el modal, cambiar de cancha o mover hora de inicio/fin — pero en
+//      cuanto el recepcionista lo edita a mano, el auto-cálculo se apaga (hay
+//      un enlace "Usar este monto" para retomarlo si cambia de opinión). Si
+//      `precio_por_hora` viene null/undefined/0 — o la tabla `canchas` en
+//      Supabase se creó/editó a mano con otro nombre de columna para la
+//      tarifa (`precio_hora`, `precio`, `tarifa_hora`... ver
+//      `CAMPOS_PRECIO_HORA_CANCHA`) — `precioPorHoraDeCancha` prueba todas
+//      esas variantes y, si ninguna trae dato, resuelve un respaldo
+//      razonable (por nombre de cancha — Negra $700, Panorámica $650, Red
+//      Bull $300 — o $700 genérico) para que ningún cálculo de costo (esta
+//      misma reserva, o Renta Exprés en el POS) se quede en $0 por un dato
+//      de tarifa faltante o mal nombrado.
+//    - Estatus EN VIVO de la tarjeta de cancha (`estadoActualCancha`): solo
+//      dos colores posibles además de Mantenimiento — 🔴 En Juego exclusivamente
+//      si el minuto actual cae dentro de [hora_inicio, hora_fin) de una
+//      reserva de HOY, y 🟢 Disponible en cualquier otro caso, incluso si hay
+//      reservas agendadas más tarde. Esas reservas futuras ya no pintan la
+//      tarjeta de otro color; en vez de eso aparecen como un aviso secundario
+//      "Próxima reserva: HH:MM" debajo del badge verde (`proximaReservaHoy`).
+//      El color azul de "Reservada" sigue existiendo, pero solo para pintar
+//      los bloques futuros dentro del Cronograma (vista de horario completo).
+//    - ERP & Inventario (Módulo 3): `productos` se levantó de Smart POS a
+//      App() (como `canchas`/`reservas`) para que ambos módulos compartan el
+//      mismo catálogo en vivo sin depender de que Realtime esté habilitado —
+//      editar costo/stock mínimo aquí, o vender en el POS, se refleja en el
+//      otro al instante vía `upsertProducto`, no solo por suscripción.
+//      Valor del Inventario y Margen Promedio solo cuentan productos activos
+//      (`activo !== false`); Margen Promedio además excluye los que no tienen
+//      `costo_unitario` cargado (si contara un costo ausente como $0 inflaría
+//      el promedio a un 100% falso). Alertas de Reorden ignora productos con
+//      `maneja_stock: false` (platillos) y los que no tienen `stock_minimo`
+//      definido. El botón "+ Registrar Entrada" (global o por fila) suma
+//      stock y escribe en `kardex` con `tipo_movimiento: 'entrada'`; cada
+//      venta de Smart POS hace lo mismo automáticamente con
+//      `'salida_venta'` — ambos best effort: si el kardex falla, el stock ya
+//      quedó actualizado y solo se avisa para revisar el historial a mano.
+//    - "Padel POS Operativo" — Roster de Cancha & Split Bill Asimétrico: al
+//      elegir "Vincular a Cancha" en la comanda, si esa cancha tiene una
+//      reserva EN CURSO ahora mismo (`reservaEnCursoAhora`), el POS despliega
+//      un roster de 4 jugadores (Slot 1 = el ocupante real de la reserva,
+//      `jugador_nombre`/`jugador_id`; Slots 2-4 los captura el cajero a mano
+//      y cada uno se resuelve/crea en `jugadores` vía `resolverJugadorId` en
+//      cuanto tiene nombre, igual que el resto del club — nunca queda fuera
+//      del CRM). El costo de la cancha (`reserva.monto_total`) se reparte
+//      entre los participantes con `repartirCentavos` (equitativo por
+//      defecto), pero cada cuota es editable a mano (split ASIMÉTRICO, no
+//      tiene que sumar parejo). Cada artículo que se agrega al carrito se
+//      puede etiquetar con el jugador activo (selector "Agregando para:") o
+//      reasignar después desde la línea de la Comanda; los artículos sin
+//      etiqueta quedan en un bote "Sin asignar" visible aparte. El cobro es
+//      INDIVIDUAL por jugador (reutiliza `PasosDeCobro`): cada cobro genera
+//      su propia fila en `ventas` con `total = cuota de cancha + sus
+//      consumos asignados` y `detalles: { jugador_id, jugador_nombre,
+//      split_bill: true, items }` — el `jugador_id` explícito es la máxima
+//      prioridad de `resolverJugadorIdVentaCancha` (antes que el enlace por
+//      `reserva_id`), porque las 4 ventas de una misma cuenta comparten
+//      `reserva_id`/`cancha_id` pero pertenecen a 4 jugadores distintos.  Al
+//      cobrar, solo se quitan de la comanda los artículos de ESE jugador
+//      (cobro parcial, no limpia toda la cuenta) y el consumo de Bar/Pro-Shop
+//      ya cobrado se imputa de inmediato a su LTV/CHS en el Directorio CRM
+//      (mismo mecanismo que la Herencia Automática de Ventas POS por
+//      Cancha). Cuando la suma de cuotas de cancha ya cobradas cubre el
+//      total de la reserva, la reserva se marca `estado_pago: 'pagado'`
+//      sola. Cada jugador con teléfono capturado tiene su botón "Enviar
+//      Ticket / Link por WhatsApp" con su desglose exacto (cancha + consumos
+//      + total), vía `construirEnlaceWhatsApp`. El roster se persiste en
+//      `localStorage` por `reserva.id` (`LS_KEY_POS_SPLIT_ROSTER`) para
+//      sobrevivir un refresh de la terminal a media cuenta.
+// ============================================================================
+
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+} from 'react';
+import { supabase } from './supabaseClient';
+import {
+  LayoutGrid,
+  CalendarDays,
+  Search,
+  Calendar as CalendarIcon,
+  Filter,
+  Plus,
+  Minus,
+  Clock,
+  MapPin,
+  DollarSign,
+  TrendingUp,
+  Users,
+  RefreshCw,
+  AlertTriangle,
+  X,
+  Menu,
+  ChevronDown,
+  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  ImagePlus,
+  Settings2,
+  UserCog,
+  CheckCircle2,
+  Wallet,
+  CreditCard,
+  Banknote,
+  ArrowRightLeft,
+  ShoppingCart,
+  ShoppingBag,
+  Coffee,
+  Package,
+  Link2,
+  Divide,
+  Calculator,
+  EyeOff,
+  Receipt,
+  Ban,
+  Trash2,
+  Wrench,
+  Info,
+  Loader2,
+  Boxes,
+  PackagePlus,
+  History,
+  BarChart3,
+  Flame,
+  Star,
+  Trophy,
+  Percent,
+  CalendarRange,
+  Download,
+  UserPlus,
+  Lock,
+  Swords,
+  Mail,
+  Phone,
+  Award,
+  Layers,
+  ClipboardList,
+  HeartPulse,
+  Crown,
+  Gauge,
+  ShieldAlert,
+  TrendingDown,
+  Pencil,
+  Archive,
+  ArchiveRestore,
+  Trash,
+  CornerDownRight,
+  PanelLeftClose,
+  PanelLeftOpen,
+  User,
+  Sparkles,
+  Landmark,
+  Truck,
+} from 'lucide-react';
+
+/* ============================================================================
+ * CONSTANTES DE NEGOCIO
+ * ==========================================================================*/
+
+/* ============================================================================
+ * ARQUITECTURA MULTITENANT — Club activo (`club_id`)
+ * ==========================================================================*/
+// `CLUB_ACTIVO_ID` reemplaza al viejo `CLUB_ID` fijo en `null`: ahora se
+// resuelve UNA SOLA VEZ al arrancar la app (ver `resolverClubActivo` en
+// App()) — por el slug de la URL si se entró por el Portal Público
+// (`/canchas/:clubSlug`), o por el único club configurado si se entró al
+// panel de operación normal (escenario de hoy: un solo club).
+//
+// Se guarda en una variable de módulo (no en un estado de React) a
+// propósito, para que `withClubId`/`conClubId`/`canalClubFiltro` — usadas
+// desde helpers de nivel superior fuera de cualquier componente, y desde
+// decenas de sitios ya existentes en todo el archivo — sigan siendo
+// funciones normales invocables desde cualquier lado, sin tener que
+// convertir cada una en un hook ni pasar el club_id como parámetro extra en
+// cada llamada.
+//
+// Diseño "no-op mientras no haya multitenant real": si `CLUB_ACTIVO_ID`
+// termina en null (tu escenario de HOY: un solo club, y tus tablas en
+// Supabase todavía no tienen la columna `club_id` poblada), estas tres
+// funciones se comportan EXACTAMENTE igual que antes — ningún filtro nuevo,
+// cero riesgo de que una consulta existente deje de traer datos porque el
+// club_id no coincide. En cuanto exista más de un club real con `club_id`
+// poblado, empiezan a filtrar solas, sin tocar una sola consulta más.
+let CLUB_ACTIVO_ID = null;
+
+function establecerClubActivo(id) {
+  CLUB_ACTIVO_ID = id || null;
+}
+
+function withClubId(payload) {
+  return CLUB_ACTIVO_ID ? { ...payload, club_id: CLUB_ACTIVO_ID } : payload;
+}
+
+// Encadena `.eq('club_id', CLUB_ACTIVO_ID)` a cualquier query-builder de
+// Supabase (select/update/delete) — úsalo en TODAS las consultas que
+// devuelven listas de filas (canchas, productos, jugadores, retas, torneos,
+// ventas, etc.), para que un club nunca vea los datos de otro.
+function conClubId(query) {
+  return CLUB_ACTIVO_ID ? query.eq('club_id', CLUB_ACTIVO_ID) : query;
+}
+
+// Igual que `conClubId`, pero para la config `{event, schema, table}` de un
+// canal Realtime de Supabase (`.on('postgres_changes', config, cb)`) — le
+// agrega `filter: 'club_id=eq.<id>'` para que el canal solo dispare cuando
+// el cambio pertenece al club activo.
+function canalClubFiltro(table) {
+  const base = { event: '*', schema: 'public', table };
+  return CLUB_ACTIVO_ID ? { ...base, filter: `club_id=eq.${CLUB_ACTIVO_ID}` } : base;
+}
+
+/* ============================================================================
+ * MANEJO UNIVERSAL DE IMÁGENES — Supabase Storage (bucket "app-media")
+ * ==========================================================================*/
+// Único punto de entrada para subir CUALQUIER archivo de la app (logo del
+// club, foto de cancha, foto de producto, foto de empleado, avatar de
+// jugador, etc.). Cero Base64/Blob local: nunca se guarda un
+// `data:image/...` ni una ruta `blob:` en Supabase — siempre se sube el
+// archivo al bucket público `app-media` y lo que se persiste en la base de
+// datos es la URL pública resultante (https://...), que cualquier
+// dispositivo (Mac, iPad, celular, cualquier navegador) puede resolver por
+// su cuenta sin depender de que el archivo original siga en el dispositivo
+// donde se subió.
+//
+// `carpeta` agrupa los archivos dentro del bucket (p. ej. 'club', 'canchas',
+// 'productos', 'empleados', 'jugadores') solo para mantener el bucket
+// ordenado — no tiene ningún efecto sobre permisos.
+//
+// Si el bucket `app-media` todavía no existe o las políticas de Storage
+// bloquean la subida, se lanza el error tal cual (con un mensaje más claro)
+// para que el modal que llamó lo muestre — a diferencia de los fallbacks
+// "modo local" de escritura en tablas, aquí NO existe un modo local
+// razonable: guardar la imagen en base64 es exactamente lo que este helper
+// existe para evitar, así que el llamador debe informar el error y dejar
+// que el operador reintente en vez de degradar silenciosamente.
+const BUCKET_MEDIA = 'app-media';
+
+function extensionArchivo(file) {
+  const porNombre = (file?.name || '').split('.').pop();
+  if (porNombre && /^[a-z0-9]{1,8}$/i.test(porNombre)) return porNombre.toLowerCase();
+  const porTipo = (file?.type || '').split('/').pop();
+  return porTipo && /^[a-z0-9]{1,8}$/i.test(porTipo) ? porTipo.toLowerCase() : 'jpg';
+}
+
+async function uploadMedia(file, carpeta = 'general') {
+  if (!file) return null;
+  if (!file.type?.startsWith?.('image/')) {
+    throw new Error('Selecciona un archivo de imagen válido.');
+  }
+  const nombreUnico = `${carpeta}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${extensionArchivo(file)}`;
+  const { error } = await supabase.storage.from(BUCKET_MEDIA).upload(nombreUnico, file, {
+    cacheControl: '3600',
+    upsert: false,
+    contentType: file.type || undefined,
+  });
+  if (error) {
+    const msg = /bucket not found/i.test(error.message || '')
+      ? `El bucket de Storage "${BUCKET_MEDIA}" no existe todavía en este proyecto de Supabase — créalo (público) para poder subir imágenes.`
+      : error.message || 'No se pudo subir la imagen.';
+    throw new Error(msg);
+  }
+  const { data } = supabase.storage.from(BUCKET_MEDIA).getPublicUrl(nombreUnico);
+  if (!data?.publicUrl) throw new Error('La imagen se subió pero no se pudo obtener su URL pública.');
+  return data.publicUrl;
+}
+
+// Selector de archivo + subida a Storage reutilizable en cualquier modal que
+// necesite "Subir archivo": maneja el estado de `subiendo`/`error` y entrega
+// la URL pública final vía `onSubida(url)`. Mismo componente para logo del
+// club, foto de cancha, foto de producto, etc. — una sola implementación,
+// cero copias de `FileReader`/base64 dispersas por el archivo.
+function SelectorArchivoImagen({ onSubida, carpeta, disabled }) {
+  const [subiendo, setSubiendo] = useState(false);
+  const [error, setError] = useState('');
+
+  async function onSeleccionarArchivo(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite volver a elegir el mismo archivo después de un error
+    if (!file) return;
+    setError('');
+    setSubiendo(true);
+    try {
+      const url = await uploadMedia(file, carpeta);
+      onSubida?.(url);
+    } catch (err) {
+      setError(err?.message || 'No se pudo subir la imagen.');
+    } finally {
+      setSubiendo(false);
+    }
+  }
+
+  return (
+    <div>
+      <label
+        className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-700 bg-slate-800 px-3 py-2.5 text-xs font-bold text-slate-300 transition hover:border-lime-400/50 hover:text-slate-100 ${
+          disabled || subiendo ? 'pointer-events-none opacity-60' : ''
+        }`}
+      >
+        {subiendo ? <Loader2 size={14} className="animate-spin" /> : <ImagePlus size={14} />}
+        {subiendo ? 'Subiendo…' : 'Subir archivo'}
+        <input type="file" accept="image/*" onChange={onSeleccionarArchivo} disabled={disabled || subiendo} className="hidden" />
+      </label>
+      {error && <p className="mt-1.5 text-xs font-semibold text-rose-400">{error}</p>}
+    </div>
+  );
+}
+
+const HORA_INICIO_MIN = 6 * 60; // 06:00
+const HORA_FIN_MIN = 24 * 60; // 24:00 (medianoche) — límite exclusivo del cronograma
+const SLOT_MIN = 30; // resolución de la parrilla en minutos (permite bloques de 30 min o 1 hr)
+const TOTAL_SLOTS = (HORA_FIN_MIN - HORA_INICIO_MIN) / SLOT_MIN; // 36 columnas de 30 min = 18 horas
+const SLOT_PX = 56;
+
+const ESTADOS_PAGO = [
+  { value: 'pagado', label: 'Pagado', tone: 'emerald' },
+  { value: 'pendiente', label: 'Pendiente (Cobro en Recepción)', tone: 'amber' },
+];
+
+const METODOS_PAGO = [
+  { value: 'efectivo', label: 'Efectivo', icon: Banknote },
+  { value: 'tarjeta', label: 'Tarjeta', icon: CreditCard },
+  { value: 'transferencia', label: 'Transferencia', icon: ArrowRightLeft },
+  { value: 'pos', label: 'Enviar a POS', icon: ShoppingCart },
+];
+
+// Nota de color: "En Juego" es el único estatus que bloquea la cancha EN ESTE
+// MINUTO, así que va en rojo; "Reservada" (usado solo para pintar los bloques
+// futuros del Cronograma, ya no como badge en vivo — ver `estadoActualCancha`)
+// va en azul para no confundirse con el rojo de "está pasando ahora mismo".
+const ESTATUS_CANCHA_OPTIONS = [
+  { value: 'disponible', label: 'Disponible', dot: 'bg-emerald-400', text: 'text-emerald-400' },
+  { value: 'reservada', label: 'Reservada', dot: 'bg-sky-400', text: 'text-sky-400' },
+  { value: 'en_juego', label: 'En Juego', dot: 'bg-rose-400', text: 'text-rose-400' },
+  { value: 'mantenimiento', label: 'Mantenimiento / Bloqueada', dot: 'bg-amber-400', text: 'text-amber-400' },
+];
+
+// Solo las 3 que `estadoActualCancha` puede devolver de verdad — para el
+// filtro de la Toolbar, que sí opera sobre el estatus EN VIVO ("Reservada" ya
+// no aplica ahí: una cancha con reserva futura hoy cuenta como "Disponible").
+const ESTATUS_FILTRO_OPTIONS = ESTATUS_CANCHA_OPTIONS.filter((op) => op.value !== 'reservada');
+
+const ESTATUS_META = {
+  disponible: {
+    label: 'Disponible',
+    badge: 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30',
+    dot: 'bg-emerald-400',
+    card: 'ring-emerald-400/20',
+  },
+  reservada: {
+    label: 'Reservada',
+    badge: 'bg-sky-400/10 text-sky-400 ring-1 ring-sky-400/30',
+    dot: 'bg-sky-400',
+    card: 'ring-sky-400/20',
+  },
+  en_juego: {
+    label: 'En Juego',
+    badge: 'bg-rose-400/10 text-rose-400 ring-1 ring-rose-400/30',
+    dot: 'bg-rose-400',
+    card: 'ring-rose-400/20',
+  },
+  mantenimiento: {
+    label: 'Mantenimiento',
+    badge: 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30',
+    dot: 'bg-amber-400',
+    card: 'ring-amber-400/20',
+  },
+  // Estos dos NO son estatus de cancha (no aparecen en `ESTATUS_CANCHA_OPTIONS`
+  // ni los devuelve `estadoActualCancha`) — solo se usan para colorear en el
+  // Cronograma los bloques de `reservas` con `estado: 'Torneo'` / `'Reta'`
+  // que crea el módulo Torneos & Retas al bloquear un horario.
+  torneo: {
+    label: 'Torneo',
+    badge: 'bg-violet-400/10 text-violet-400 ring-1 ring-violet-400/30',
+    dot: 'bg-violet-400',
+    card: 'ring-violet-400/20',
+  },
+  reta: {
+    label: 'Reta Abierta',
+    badge: 'bg-fuchsia-400/10 text-fuchsia-400 ring-1 ring-fuchsia-400/30',
+    dot: 'bg-fuchsia-400',
+    card: 'ring-fuchsia-400/20',
+  },
+  // Bloqueo Maestro de Torneo (el apartado general 7:00–15:00 que se crea al
+  // dar de alta el torneo, ANTES de programar partidos individuales — ver
+  // `esBloqueoMaestroTorneo`): estilo deliberadamente más discreto (fondo
+  // rayado/translúcido, sin relleno sólido) para que se lea como "franja
+  // reservada" de fondo y nunca compita visualmente con los bloques de
+  // partidos específicos que se programan DENTRO de esa misma franja.
+  torneo_maestro: {
+    label: 'Torneo (apartado)',
+    badge:
+      'border border-dashed border-violet-400/30 bg-[repeating-linear-gradient(135deg,rgba(167,139,250,0.08),rgba(167,139,250,0.08)_6px,transparent_6px,transparent_12px)] text-violet-300/70',
+    dot: 'bg-violet-400/50',
+    card: 'ring-violet-400/10',
+  },
+};
+
+/* ============================================================================
+ * GESTIÓN DE EMPLEADOS, ROLES & CONTROL INTERNO — RBAC
+ * ----------------------------------------------------------------------------
+ * Matriz de permisos de 7 roles. Cada `empleado` (tabla `empleados`, ver
+ * sección de Auditoría más abajo) tiene un `rol` de esta lista; la sesión
+ * activa (`operador`, en App()) siempre trae `rol` — el que se seleccionó al
+ * "fichar" en `ModalOperador` — y de ahí se deriva `permisos` con
+ * `permisosDeRol(rol)`, memoizado una sola vez en App() y repartido hacia
+ * abajo a todos los módulos.
+ *
+ * `modulos`: qué pestañas del sidebar/topbar puede ver este rol — el
+ * criterio principal que pide "renderiza condicionalmente los módulos según
+ * el rol activo". El resto de los flags son permisos de ACCIÓN puntual
+ * (botones/])flujos específicos dentro de un módulo al que sí tiene acceso),
+ * usados por el Módulo de Auditoría (sección más abajo) para decidir qué
+ * puede hacer cada quien y qué se registra en el Log de Actividad.
+ *
+ * IMPORTANTE — alcance deliberado: esto gatea VISIBILIDAD de módulos y
+ * botones de acciones sensibles puntuales (cancelar, descuento, editar
+ * precio, aprobar corte, gestionar empleados...). No es un sistema de
+ * autenticación real (no hay contraseña/servidor validando la sesión) ni
+ * bloquea a nivel de fila en Supabase (eso requeriría RLS por rol del lado
+ * de la base de datos) — es control de acceso en la UI, consistente con que
+ * todo el resto de este proyecto corre sin backend propio.
+ * ==========================================================================*/
+
+const ROLES = [
+  { value: 'owner', label: 'Owner', descripcion: 'Acceso total e incondicional.', icon: Crown, color: 'text-amber-300', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30' },
+  { value: 'admin', label: 'Admin', descripcion: 'Gestión operativa, reportes, usuarios y configuración.', icon: ShieldAlert, color: 'text-violet-300', bg: 'bg-violet-400/10', ring: 'ring-violet-400/30' },
+  { value: 'manager', label: 'Manager', descripcion: 'Gestión de reservas, aprobación de cortes y supervisión de POS.', icon: UserCog, color: 'text-sky-300', bg: 'bg-sky-400/10', ring: 'ring-sky-400/30' },
+  { value: 'recepcion', label: 'Recepción', descripcion: 'Agendar reservas, check-in, cobro en POS y Split Bill.', icon: Users, color: 'text-lime-300', bg: 'bg-lime-400/10', ring: 'ring-lime-400/30' },
+  { value: 'caja', label: 'Caja', descripcion: 'Únicamente cobrar ventas de mostrador y POS.', icon: DollarSign, color: 'text-emerald-300', bg: 'bg-emerald-400/10', ring: 'ring-emerald-400/30' },
+  { value: 'bar', label: 'Bar', descripcion: 'Gestión de comandas y stock de alimentos/bebidas.', icon: Coffee, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
+  { value: 'coach', label: 'Coach', descripcion: 'Vista de agenda de clases y asistencia de alumnos.', icon: Award, color: 'text-fuchsia-300', bg: 'bg-fuchsia-400/10', ring: 'ring-fuchsia-400/30' },
+];
+
+const ROLES_POR_VALOR = Object.fromEntries(ROLES.map((r) => [r.value, r]));
+
+// Todos los módulos existen bajo estas mismas claves de `moduloActivo` — ver
+// `NAV_MODULOS`/`MODULOS_META` más abajo, donde se agregó 'seguridad'.
+const TODOS_LOS_MODULOS = ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'jugadores', 'seguridad'];
+
+// Matriz de permisos por rol. `modulos: 'todos'` es azúcar para
+// `TODOS_LOS_MODULOS` (Owner/Admin) en vez de listarlos a mano.
+const PERMISOS_POR_ROL = {
+  owner: {
+    modulos: 'todos',
+    puedeCancelarReservas: true,
+    puedeReprogramarReservas: true,
+    puedeAplicarDescuentoManual: true,
+    puedeEditarPrecioPOS: true,
+    puedeRegistrarDevolucionPOS: true,
+    puedeCerrarTurnoCaja: true,
+    puedeAprobarCorteCaja: true,
+    puedeGestionarEmpleados: true,
+    puedeVerAuditoria: true,
+    puedeGestionarProductos: true,
+    puedeCambiarEstatusCancha: true,
+  },
+  admin: {
+    modulos: 'todos',
+    puedeCancelarReservas: true,
+    puedeReprogramarReservas: true,
+    puedeAplicarDescuentoManual: true,
+    puedeEditarPrecioPOS: true,
+    puedeRegistrarDevolucionPOS: true,
+    puedeCerrarTurnoCaja: true,
+    puedeAprobarCorteCaja: true,
+    puedeGestionarEmpleados: true,
+    puedeVerAuditoria: true,
+    puedeGestionarProductos: true,
+    puedeCambiarEstatusCancha: true,
+  },
+  manager: {
+    modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'jugadores', 'seguridad'],
+    puedeCancelarReservas: true,
+    puedeReprogramarReservas: true,
+    puedeAplicarDescuentoManual: true,
+    puedeEditarPrecioPOS: true,
+    puedeRegistrarDevolucionPOS: true,
+    puedeCerrarTurnoCaja: true,
+    puedeAprobarCorteCaja: true, // "aprobación de cortes" es la pieza distintiva del rol Manager
+    puedeGestionarEmpleados: false, // ve el directorio, pero alta/edición/baja es solo Admin/Owner
+    puedeVerAuditoria: true,
+    puedeGestionarProductos: true,
+    puedeCambiarEstatusCancha: true,
+  },
+  recepcion: {
+    modulos: ['parrilla', 'pos', 'torneos', 'jugadores'],
+    puedeCancelarReservas: true,
+    puedeReprogramarReservas: true,
+    puedeAplicarDescuentoManual: false,
+    puedeEditarPrecioPOS: false,
+    puedeRegistrarDevolucionPOS: false,
+    puedeCerrarTurnoCaja: true,
+    puedeAprobarCorteCaja: false,
+    puedeGestionarEmpleados: false,
+    puedeVerAuditoria: false,
+    puedeGestionarProductos: false,
+    puedeCambiarEstatusCancha: false,
+  },
+  caja: {
+    modulos: ['pos'], // "Únicamente cobrar ventas de mostrador y POS"
+    puedeCancelarReservas: false,
+    puedeReprogramarReservas: false,
+    puedeAplicarDescuentoManual: false,
+    puedeEditarPrecioPOS: false,
+    puedeRegistrarDevolucionPOS: false,
+    puedeCerrarTurnoCaja: true,
+    puedeAprobarCorteCaja: false,
+    puedeGestionarEmpleados: false,
+    puedeVerAuditoria: false,
+    puedeGestionarProductos: false,
+    puedeCambiarEstatusCancha: false,
+  },
+  bar: {
+    modulos: ['pos', 'erp'], // comandas (POS) + stock de alimentos/bebidas (ERP)
+    puedeCancelarReservas: false,
+    puedeReprogramarReservas: false,
+    puedeAplicarDescuentoManual: false,
+    puedeEditarPrecioPOS: false,
+    puedeRegistrarDevolucionPOS: true, // devoluciones de barra (producto en mal estado, pedido equivocado...)
+    puedeCerrarTurnoCaja: false,
+    puedeAprobarCorteCaja: false,
+    puedeGestionarEmpleados: false,
+    puedeVerAuditoria: false,
+    puedeGestionarProductos: true,
+    puedeCambiarEstatusCancha: false,
+  },
+  coach: {
+    modulos: ['parrilla', 'jugadores'], // agenda de clases (Parrilla) + asistencia de alumnos (CRM de Jugadores)
+    puedeCancelarReservas: false,
+    puedeReprogramarReservas: false,
+    puedeAplicarDescuentoManual: false,
+    puedeEditarPrecioPOS: false,
+    puedeRegistrarDevolucionPOS: false,
+    puedeCerrarTurnoCaja: false,
+    puedeAprobarCorteCaja: false,
+    puedeGestionarEmpleados: false,
+    puedeVerAuditoria: false,
+    puedeGestionarProductos: false,
+    puedeCambiarEstatusCancha: false,
+  },
+};
+
+// Rol de respaldo si `operador.rol` viniera vacío/desconocido (sesión vieja
+// persistida antes de este módulo, dato corrupto, etc.) — el más
+// restrictivo que sigue dejando trabajar en mostrador, nunca "todos".
+const ROL_RESPALDO = 'recepcion';
+
+// Permisos EFECTIVOS de un rol, con `modulos` siempre expandido a un Set
+// (nunca el string 'todos') para que el resto del código solo tenga que
+// hacer `permisos.modulos.has(id)`.
+function permisosDeRol(rol) {
+  const base = PERMISOS_POR_ROL[rol] || PERMISOS_POR_ROL[ROL_RESPALDO];
+  const modulos = base.modulos === 'todos' ? new Set(TODOS_LOS_MODULOS) : new Set(base.modulos);
+  return { ...base, rol: PERMISOS_POR_ROL[rol] ? rol : ROL_RESPALDO, modulos };
+}
+
+const TURNOS = [
+  { value: 'automatico', label: 'Automático' },
+  { value: 'matutino', label: 'Matutino' },
+  { value: 'vespertino', label: 'Vespertino' },
+  { value: 'nocturno', label: 'Nocturno' },
+];
+
+const UNSPLASH_FALLBACKS = [
+  'https://images.unsplash.com/photo-1554068865-24cecd4e34b8?q=80&w=800&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1626224583764-f87db24ac4ea?q=80&w=800&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1599586120429-48281b6f0ece?q=80&w=800&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?q=80&w=800&auto=format&fit=crop',
+];
+
+function fallbackImagen(id) {
+  const hash = String(id || '0')
+    .split('')
+    .reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  return UNSPLASH_FALLBACKS[hash % UNSPLASH_FALLBACKS.length];
+}
+
+// Precios de referencia por nombre de cancha — se usan SOLO como respaldo
+// cuando NINGUNA variante de columna de tarifa (ver `CAMPOS_PRECIO_HORA_CANCHA`
+// abajo) trae un número > 0 desde Supabase (canchas creadas a mano sin ese
+// dato, columna vacía, etc.), para que ningún cálculo (Nueva Reserva, Renta
+// Exprés) se quede en $0 por un dato faltante.
+const PRECIO_POR_HORA_GENERICO = 700; // respaldo final si el nombre tampoco hace match
+const PRECIOS_POR_NOMBRE_CANCHA = [
+  { patron: /negra/i, precio: 700 }, // p.ej. "Cancha Negra Techada 2"
+  { patron: /panor[aá]mica/i, precio: 650 },
+  { patron: /red\s*bull/i, precio: 300 },
+];
+
+// Regresión detectada: si la tabla `canchas` en Supabase se creó/editó a
+// mano con OTRO nombre de columna para la tarifa por hora (p. ej.
+// `precio_hora` o `precio` en vez de `precio_por_hora`, el nombre que espera
+// el esquema documentado arriba), la cancha nunca tenía un `precio_por_hora`
+// que leer y el monto automático de "Nueva Reserva"/Renta Exprés se quedaba
+// en $0 aunque la cancha SÍ tuviera una tarifa cargada — se leía la columna
+// equivocada. Se prueban todas estas variantes, en orden, y se usa la
+// primera que sea un número > 0.
+const CAMPOS_PRECIO_HORA_CANCHA = ['precio_por_hora', 'precio_hora', 'precioPorHora', 'precioHora', 'precio', 'tarifa_hora', 'tarifa'];
+
+// Precio/hora EFECTIVO de una cancha: el real de la fila (probando todas las
+// variantes de nombre de columna que pudo haber usado la tabla `canchas`) si
+// es un número > 0; si ninguna trae dato, el mapeado por nombre; si tampoco
+// hace match, el genérico. El resultado siempre es un número usable directo
+// en `duracionHoras * precio` — NUNCA null/undefined/0 por un dato faltante.
+function precioPorHoraDeCancha(cancha) {
+  for (const campo of CAMPOS_PRECIO_HORA_CANCHA) {
+    const real = Number(cancha?.[campo]);
+    if (Number.isFinite(real) && real > 0) return real;
+  }
+  const match = PRECIOS_POR_NOMBRE_CANCHA.find((p) => p.patron.test(cancha?.nombre || ''));
+  return match ? match.precio : PRECIO_POR_HORA_GENERICO;
+}
+
+/* ============================================================================
+ * CONSTANTES — SMART POS (Módulo 2)
+ * ==========================================================================*/
+
+// Los `value` de aquí abajo (salvo 'todos', que es solo un filtro de UI) son
+// EXACTAMENTE lo que se guarda en la columna `productos.categoria` — así el
+// filtro, el dropdown de "Nuevo Producto" y lo que ves en la tabla de
+// Supabase siempre dicen lo mismo, sin slugs internos que se desincronicen.
+const CATEGORIAS_PRODUCTO = [
+  { value: 'todos', label: 'Todos', icon: LayoutGrid },
+  { value: 'Pro-Shop', label: 'Pro-Shop', icon: ShoppingBag },
+  { value: 'Cafetería/Bar', label: 'Cafetería/Bar', icon: Coffee },
+  { value: 'Rentas', label: 'Rentas', icon: Package },
+];
+
+const CATEGORIA_META = {
+  'Pro-Shop': { label: 'Pro-Shop', badge: 'bg-violet-400/10 text-violet-400 ring-1 ring-violet-400/30' },
+  'Cafetería/Bar': { label: 'Cafetería/Bar', badge: 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30' },
+  Rentas: { label: 'Rentas', badge: 'bg-sky-400/10 text-sky-400 ring-1 ring-sky-400/30' },
+};
+
+const METODOS_PAGO_POS = [
+  { value: 'efectivo', label: 'Efectivo', icon: Banknote },
+  { value: 'tarjeta', label: 'Tarjeta TPV', icon: CreditCard },
+  { value: 'transferencia', label: 'Transferencia SPEI', icon: ArrowRightLeft },
+];
+
+// Duraciones que ofrece la Renta Exprés de canchas dentro del POS.
+const DURACIONES_RENTA = [
+  { horas: 1, label: '1 hora' },
+  { horas: 1.5, label: '1.5 horas' },
+  { horas: 2, label: '2 horas' },
+];
+
+const PRODUCTO_FALLBACKS = {
+  'Pro-Shop': [
+    'https://images.unsplash.com/photo-1617083277341-f1cd0c2a1c3d?q=80&w=600&auto=format&fit=crop',
+    'https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?q=80&w=600&auto=format&fit=crop',
+  ],
+  'Cafetería/Bar': [
+    'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=600&auto=format&fit=crop',
+    'https://images.unsplash.com/photo-1509042239860-f550ce710b93?q=80&w=600&auto=format&fit=crop',
+  ],
+  Rentas: [
+    'https://images.unsplash.com/photo-1554068865-24cecd4e34b8?q=80&w=600&auto=format&fit=crop',
+    'https://images.unsplash.com/photo-1554068865-24cecd4e34b8?q=80&w=600&auto=format&fit=crop',
+  ],
+};
+
+function fallbackImagenProducto(producto) {
+  const lista = PRODUCTO_FALLBACKS[producto?.categoria] || PRODUCTO_FALLBACKS['Pro-Shop'];
+  const hash = String(producto?.id || '0')
+    .split('')
+    .reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  return lista[hash % lista.length];
+}
+
+/* ============================================================================
+ * HELPERS DE FECHA / HORA
+ * ==========================================================================*/
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+function hoyISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function minutosAhora() {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+function parseHoraAMinutos(horaStr) {
+  if (!horaStr) return null;
+  const partes = String(horaStr).split(':');
+  const h = parseInt(partes[0], 10);
+  const m = parseInt(partes[1] || '0', 10);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+// Duración en horas entre dos "HH:MM" — 0 si cualquiera falta o el rango es
+// inválido (fin <= inicio). Usada para repartir ingresos de Torneos/Retas
+// proporcionalmente a las horas de cancha realmente usadas (ver
+// `ingresoEfectivoPorReservaId` en Analytics BI).
+function duracionHorasBloque(horaInicio, horaFin) {
+  const ini = parseHoraAMinutos(horaInicio);
+  const fin = parseHoraAMinutos(horaFin);
+  if (ini === null || fin === null || fin <= ini) return 0;
+  return (fin - ini) / 60;
+}
+
+// Ids de reservas que son el "Bloqueo Maestro" de un Torneo: el apartado
+// general de cancha (ej. 7:00–15:00) que se crea al dar de alta el torneo
+// (`torneo.bloqueos`), ANTES de programar partidos individuales desde
+// "Cuadros & Partidos" — a diferencia de los sub-bloqueos de partido
+// (`torneo_partidos[].reserva_bloqueo_id`), que sí representan ocupación
+// física real de cancha en un horario concreto. Ambos tipos se guardan en
+// `reservas` con el mismo `estado: 'Torneo'` (ver `crearBloqueoParrilla`),
+// así que la única forma de distinguirlos es por membresía de id: un
+// Bloqueo Maestro es cualquier reserva cuyo id aparezca en
+// `torneo.bloqueos[].reserva_bloqueo_id` de ALGÚN torneo. Se usa en dos
+// lugares: Analytics BI los EXCLUYE de Horas Reservadas/Ocupación/Ingresos
+// (para no duplicar contra los sub-bloqueos de partido, que ya son la
+// ocupación real), y la Parrilla Operativa los pinta con un estilo más
+// discreto (`ESTATUS_META.torneo_maestro`) para que no compitan
+// visualmente por carril con los partidos programados dentro de esa misma
+// franja horaria.
+function idsBloqueosMaestroTorneo(torneos) {
+  const set = new Set();
+  (torneos || []).forEach((torneo) => {
+    (torneo.bloqueos || []).forEach((b) => {
+      if (b.reserva_bloqueo_id) set.add(b.reserva_bloqueo_id);
+    });
+  });
+  return set;
+}
+
+function minutosAHora(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${pad2(h)}:${pad2(m)}`;
+}
+
+function formatoHora12(horaStr) {
+  const min = parseHoraAMinutos(horaStr);
+  if (min === null) return '—';
+  let h = Math.floor(min / 60);
+  const m = min % 60;
+  const sufijo = h >= 12 ? 'pm' : 'am';
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${pad2(m)} ${sufijo}`;
+}
+
+function formatoFechaLarga(fechaISO) {
+  try {
+    const [y, m, d] = fechaISO.split('-').map(Number);
+    const fecha = new Date(y, m - 1, d);
+    const texto = fecha.toLocaleDateString('es-MX', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+    });
+    return texto.charAt(0).toUpperCase() + texto.slice(1);
+  } catch (_e) {
+    return fechaISO;
+  }
+}
+
+// "Agosto 2026" a partir de cualquier fecha "YYYY-MM-DD" dentro de ese mes —
+// usado por la tarjeta "Ventas del Mes" de ERP & Inventario para dejar claro
+// qué mes completo se está mostrando a partir del día elegido en el picker.
+function etiquetaMesDeFecha(fechaISO) {
+  try {
+    const [y, m] = fechaISO.split('-').map(Number);
+    const texto = new Date(y, m - 1, 1).toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
+    return texto.charAt(0).toUpperCase() + texto.slice(1);
+  } catch (_e) {
+    return fechaISO;
+  }
+}
+
+function formatoMoneda(valor) {
+  const n = Number(valor);
+  if (!Number.isFinite(n)) return '$0';
+  return n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 });
+}
+
+function sumarDia(fechaISO, dias) {
+  const [y, m, d] = fechaISO.split('-').map(Number);
+  const fecha = new Date(y, m - 1, d);
+  fecha.setDate(fecha.getDate() + dias);
+  return `${fecha.getFullYear()}-${pad2(fecha.getMonth() + 1)}-${pad2(fecha.getDate())}`;
+}
+
+function iniciales(nombre) {
+  if (!nombre) return 'A';
+  const partes = nombre.trim().split(/\s+/);
+  const letras = partes.slice(0, 2).map((p) => p[0]?.toUpperCase() || '');
+  return letras.join('') || 'A';
+}
+
+function turnoInfo(turnoManual) {
+  const ahoraMin = minutosAhora();
+  let calculado = 'matutino';
+  if (ahoraMin >= 13 * 60 && ahoraMin < 19 * 60) calculado = 'vespertino';
+  else if (ahoraMin >= 19 * 60 || ahoraMin < 6 * 60) calculado = 'nocturno';
+  const valor = turnoManual && turnoManual !== 'automatico' ? turnoManual : calculado;
+  const meta = TURNOS.find((t) => t.value === valor) || TURNOS[1];
+  return { valor, label: meta.label };
+}
+
+/* ============================================================================
+ * LÓGICA DE ESTATUS DE CANCHA
+ * ==========================================================================*/
+
+// El ÚNICO estatus que se guarda manualmente es "mantenimiento" (bloqueo del
+// administrador). Disponible / Reservada / En Juego NUNCA se persisten como
+// bandera: siempre se recalculan comparando la hora/fecha del sistema contra
+// `reservas`, tal como lo pide la regla de negocio.
+function estatusManualEfectivo(cancha) {
+  if (cancha.activa === false || cancha.estatus_manual === 'mantenimiento') return 'mantenimiento';
+  return null;
+}
+
+// Reserva "en curso" ahora mismo para una cancha, en la fecha indicada
+// (por defecto hoy). Ignora reservas canceladas/completadas.
+function reservaEnCursoAhora(reservas, canchaId, fechaISO = hoyISO(), minutoRef = minutosAhora()) {
+  return (
+    reservas.find((r) => {
+      if (r.cancha_id !== canchaId) return false;
+      if (r.fecha !== fechaISO) return false;
+      if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
+      const ini = parseHoraAMinutos(r.hora_inicio);
+      const fin = parseHoraAMinutos(r.hora_fin);
+      if (ini === null || fin === null) return false;
+      return minutoRef >= ini && minutoRef < fin;
+    }) || null
+  );
+}
+
+// ¿Tiene esta cancha alguna reserva vigente más tarde HOY (todavía no empieza)?
+// Ya NO decide el badge de estatus (ver `estadoActualCancha`) — solo se usa
+// para el indicador secundario "Próxima reserva: HH:MM" de la tarjeta.
+function tieneReservaFuturaHoy(reservas, canchaId) {
+  const hoy = hoyISO();
+  const ahora = minutosAhora();
+  return reservas.some((r) => {
+    if (r.cancha_id !== canchaId) return false;
+    if (r.fecha !== hoy) return false;
+    if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
+    const ini = parseHoraAMinutos(r.hora_inicio);
+    return ini !== null && ini > ahora;
+  });
+}
+
+// Reserva vigente MÁS CERCANA que arranca más tarde HOY (o null si no hay
+// ninguna) — para mostrar "Próxima reserva: 10:00 am" en la tarjeta cuando la
+// cancha está disponible ahorita mismo pero ya tiene un juego agendado después.
+function proximaReservaHoy(reservas, canchaId, minutoRef = minutosAhora()) {
+  const hoy = hoyISO();
+  const candidatas = reservas.filter((r) => {
+    if (r.cancha_id !== canchaId) return false;
+    if (r.fecha !== hoy) return false;
+    if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
+    const ini = parseHoraAMinutos(r.hora_inicio);
+    return ini !== null && ini > minutoRef;
+  });
+  if (candidatas.length === 0) return null;
+  return candidatas.reduce((mas_cercana, r) =>
+    parseHoraAMinutos(r.hora_inicio) < parseHoraAMinutos(mas_cercana.hora_inicio) ? r : mas_cercana
+  );
+}
+
+// Estatus visible de la cancha en TIEMPO REAL (siempre respecto a "ahora", el
+// reloj del sistema — no depende de la fecha que el usuario esté navegando en
+// el datepicker; ese filtro solo afecta a las métricas y a la parrilla/cronograma).
+//   🟡 mantenimiento → activa=false o estatus_manual='mantenimiento' (manual)
+//   🔴 en_juego       → hay una reserva cuyo rango [hora_inicio, hora_fin) cubre
+//                       EXACTAMENTE el minuto actual (y es de hoy)
+//   🟢 disponible     → NO hay una reserva activa en este minuto preciso —
+//                       aunque tenga reservas agendadas para horas más tarde
+//                       (ver `proximaReservaHoy` para ese aviso secundario)
+function estadoActualCancha(cancha, reservas) {
+  if (estatusManualEfectivo(cancha) === 'mantenimiento') return 'mantenimiento';
+  if (reservaEnCursoAhora(reservas, cancha.id)) return 'en_juego';
+  return 'disponible';
+}
+
+/* ============================================================================
+ * SISTEMA DE TOASTS (autocontenido, sin dependencias)
+ * ==========================================================================*/
+
+const ToastContext = React.createContext(() => {});
+
+function useToast() {
+  return React.useContext(ToastContext);
+}
+
+function ToastHost({ toasts }) {
+  return (
+    <div className="fixed bottom-5 right-5 z-[100] flex w-full max-w-sm flex-col gap-2">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`animate-[fadeIn_0.2s_ease] rounded-xl border px-4 py-3 shadow-2xl backdrop-blur-sm ${
+            t.tono === 'error'
+              ? 'border-rose-500/30 bg-rose-950/90 text-rose-100'
+              : t.tono === 'aviso'
+              ? 'border-amber-500/30 bg-amber-950/90 text-amber-100'
+              : 'border-lime-500/30 bg-slate-900/95 text-slate-100'
+          }`}
+        >
+          <p className="text-sm font-semibold">{t.titulo}</p>
+          {t.detalle && <p className="mt-0.5 text-xs text-slate-300">{t.detalle}</p>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================================
+ * PRIMITIVOS UI
+ * ==========================================================================*/
+
+function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', icon: Icon }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm">
+      <div
+        className={`relative w-full ${ancho} max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl`}
+      >
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-800 bg-slate-900/95 px-5 py-4 backdrop-blur">
+          <div className="flex items-start gap-3">
+            {Icon && (
+              <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
+                <Icon size={18} />
+              </div>
+            )}
+            <div>
+              <h2 className="text-base font-bold text-slate-100">{titulo}</h2>
+              {subtitulo && <p className="mt-0.5 text-xs text-slate-400">{subtitulo}</p>}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-800 hover:text-slate-200"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <div className="px-5 py-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function Campo({ label, children, hint }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</span>
+      {children}
+      {hint && <span className="mt-1 block text-[11px] text-slate-500">{hint}</span>}
+    </label>
+  );
+}
+
+const inputClase =
+  'w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none transition focus:border-lime-400 focus:ring-1 focus:ring-lime-400';
+
+function BotonPrimario({ children, className = '', ...props }) {
+  return (
+    <button
+      className={`inline-flex items-center justify-center gap-2 rounded-lg bg-lime-400 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+function BotonSecundario({ children, className = '', ...props }) {
+  return (
+    <button
+      className={`inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+function BadgePago({ estadoPago }) {
+  if (!estadoPago) return null;
+  const meta = ESTADOS_PAGO.find((e) => e.value === estadoPago);
+  if (!meta) return null;
+  if (estadoPago === 'pagado') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-400 ring-1 ring-emerald-400/30">
+        <CheckCircle2 size={11} /> Pagado
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-400 ring-1 ring-amber-400/30">
+      <AlertTriangle size={11} /> Pendiente
+    </span>
+  );
+}
+
+/* ============================================================================
+ * SIDEBAR / HEADER
+ * ==========================================================================*/
+
+// Lista canónica de módulos del sidebar/topbar — ÚNICA fuente para ambos
+// (antes cada uno tenía sus propios botones a mano, duplicados). RBAC filtra
+// esta misma lista por `permisos.modulos` en cada uno de los dos lugares que
+// la consumen, así que agregar/quitar un módulo del nav es un solo cambio.
+const NAV_MODULOS = [
+  { id: 'parrilla', label: 'Parrilla Operativa', labelCorto: 'Parrilla', icon: LayoutGrid },
+  { id: 'pos', label: 'Smart POS', labelCorto: 'Smart POS', icon: ShoppingCart },
+  { id: 'erp', label: 'Inventario', labelCorto: 'Inventario', icon: Boxes },
+  { id: 'contabilidad', label: 'Contabilidad & Compras', labelCorto: 'Contabilidad', icon: Landmark },
+  { id: 'analytics', label: 'Analytics BI', labelCorto: 'Analytics', icon: BarChart3 },
+  { id: 'torneos', label: 'Torneos & Retas', labelCorto: 'Torneos', icon: Trophy },
+  { id: 'jugadores', label: 'Jugadores', labelCorto: 'Jugadores', icon: Users },
+  { id: 'seguridad', label: 'Control & Seguridad', labelCorto: 'Seguridad', icon: ShieldAlert },
+];
+
+// Nombre y Logo del Club Editable — Persistencia Centralizada: la fuente de
+// verdad es Supabase (tabla `configuracion_club`, columnas `nombre`/
+// `logo_url`, ver `cargarConfigClubSupabase`/`guardarConfigClub` en App()),
+// para que Mac/iPad/celular lean siempre el mismo nombre/logo. Este
+// `localStorage` es SOLO la caché/respaldo de "modo local" — para que el
+// primer render ya tenga algo usable y para no perder el cambio si Supabase
+// no responde.
+// `leerConfigClubLocal` nunca truena (modo privado, cuota llena, JSON
+// corrupto) — siempre regresa algo usable, con el nombre/logo por defecto
+// del club como respaldo.
+const LS_KEY_CLUB_CONFIG = 'smashpadel_club_config_v1';
+const CONFIG_CLUB_DEFAULT = { nombre: 'Smash Pádel', logoUrl: '' };
+function leerConfigClubLocal() {
+  try {
+    const crudo = localStorage.getItem(LS_KEY_CLUB_CONFIG);
+    if (!crudo) return { ...CONFIG_CLUB_DEFAULT };
+    const parsed = JSON.parse(crudo);
+    return { nombre: (parsed.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre, logoUrl: parsed.logoUrl || '' };
+  } catch (_e) {
+    return { ...CONFIG_CLUB_DEFAULT };
+  }
+}
+function guardarConfigClubLocal(config) {
+  try {
+    localStorage.setItem(LS_KEY_CLUB_CONFIG, JSON.stringify(config));
+  } catch (_e) {
+    /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
+  }
+}
+
+function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
+  const [nombre, setNombre] = useState(configActual.nombre || '');
+  const [logoUrl, setLogoUrl] = useState(configActual.logoUrl || '');
+  const [error, setError] = useState('');
+
+  const logoPreview = logoUrl;
+
+  // Manejo Universal de Imágenes: `SelectorArchivoImagen` sube el archivo al
+  // bucket `app-media` de Supabase Storage (ver `uploadMedia`) y aquí solo se
+  // recibe la URL PÚBLICA resultante — nunca un base64/blob local. Esa URL es
+  // la que viaja a `configuracion_club.logo_url` en `guardar()`, así que el
+  // logo se ve igual en Mac, iPad o cualquier navegador.
+  function onLogoSubido(url) {
+    setError('');
+    setLogoUrl(url);
+  }
+
+  // Persistencia Centralizada: `onGuardar` (viene de App(), ver
+  // `guardarConfigClub`) ya deja el estado en pantalla y el respaldo local
+  // actualizados de inmediato y de forma optimista — aquí solo se espera lo
+  // suficiente para cerrar el modal, nunca se bloquea la UI mientras
+  // Supabase responde.
+  async function guardar() {
+    if (!nombre.trim()) {
+      setError('El nombre del club es obligatorio.');
+      return;
+    }
+    const nuevaConfig = { nombre: nombre.trim(), logoUrl: logoUrl.trim() || configActual.logoUrl || '' };
+    onClose();
+    await onGuardar?.(nuevaConfig);
+  }
+
+  return (
+    <ModalShell
+      titulo="Personalizar Club"
+      subtitulo="Nombre y logo del panel — se sincroniza en todos tus dispositivos"
+      onClose={onClose}
+      icon={Settings2}
+      ancho="max-w-md"
+    >
+      <div className="space-y-4">
+        <Campo label="Nombre del club">
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Smash Pádel Club" />
+        </Campo>
+
+        <div className="space-y-2">
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Logo</span>
+          <input value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} className={inputClase} placeholder="https://..." />
+          <SelectorArchivoImagen carpeta="club" onSubida={onLogoSubido} />
+        </div>
+
+        <div>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Vista previa</span>
+          <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-slate-800 bg-slate-800">
+            {logoPreview ? (
+              <img
+                src={logoPreview}
+                alt="Vista previa del logo"
+                className="h-full w-full object-cover"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            ) : (
+              <span className="text-[10px] text-slate-600">Sin logo</span>
+            )}
+          </div>
+        </div>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar}>
+            <CheckCircle2 size={15} /> Guardar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Sidebar Retráctil: se guarda en localStorage (persiste entre sesiones y
+// recargas, por dispositivo — un iPad en modo colapsado no le cambia la
+// preferencia a la Mac). Colapsar SOLO afecta el ancho fijo del sidebar en
+// escritorio/tablet (`lg:`, cuando ya vive "static" empujando el contenido);
+// en el drawer móvil (overlay que se abre con el botón de TopHeader) siempre
+// se ve completo, porque ahí colapsar no libera nada de área de trabajo.
+const LS_KEY_SIDEBAR_COLAPSADO = 'smashpadel_sidebar_colapsado_v1';
+function leerSidebarColapsadoLocal() {
+  try {
+    return window.localStorage.getItem(LS_KEY_SIDEBAR_COLAPSADO) === '1';
+  } catch (_e) {
+    return false;
+  }
+}
+function guardarSidebarColapsadoLocal(colapsado) {
+  try {
+    window.localStorage.setItem(LS_KEY_SIDEBAR_COLAPSADO, colapsado ? '1' : '0');
+  } catch (_e) {
+    /* localStorage no disponible — la preferencia solo dura esta sesión */
+  }
+}
+
+function Sidebar({
+  operador,
+  turno,
+  permisos,
+  abierto,
+  onCerrar,
+  moduloActivo,
+  onCambiarModulo,
+  configClub,
+  onGuardarConfigClub,
+  guardandoConfigClub,
+}) {
+  const itemBase = 'flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-bold transition';
+  const itemActivo = 'bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20';
+  const itemInactivo = 'text-slate-400 hover:bg-slate-800 hover:text-slate-200';
+
+  function ir(modulo) {
+    onCambiarModulo(modulo);
+    onCerrar();
+  }
+
+  const modulosVisibles = NAV_MODULOS.filter((m) => permisos.modulos.has(m.id));
+
+  // Nombre y Logo del Club Editable: la tarjeta de usuario (nombre, rol,
+  // turno) YA vive arriba a la derecha en `TopHeader`, junto al reloj — este
+  // encabezado del sidebar ya no la duplica, y en su lugar es 100% editable
+  // (nombre del club + logo) desde el botón de ajustes. Persistencia
+  // Centralizada: `configClub` viaja desde App() (Supabase, tabla
+  // `configuracion_club`), no de un `localStorage` propio de este
+  // componente — así Mac/iPad/celular siempre ven el mismo nombre/logo.
+  const configClubActual = configClub || CONFIG_CLUB_DEFAULT;
+  const [modalConfigClub, setModalConfigClub] = useState(false);
+  const [colapsado, setColapsado] = useState(() => leerSidebarColapsadoLocal());
+
+  function alternarColapso() {
+    setColapsado((prev) => {
+      const nuevo = !prev;
+      guardarSidebarColapsadoLocal(nuevo);
+      return nuevo;
+    });
+  }
+
+  return (
+    <>
+      {abierto && (
+        <div className="fixed inset-0 z-30 bg-slate-950/70 lg:hidden" onClick={onCerrar} />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-900 transition-all lg:static lg:z-auto lg:translate-x-0 ${
+          abierto ? 'translate-x-0' : '-translate-x-full'
+        } ${colapsado ? 'lg:w-[76px]' : 'lg:w-64'}`}
+      >
+        <div className={`flex items-center gap-2.5 border-b border-slate-800 px-5 py-5 ${colapsado ? 'lg:justify-center lg:px-0' : ''}`}>
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-lime-400 font-black text-slate-950">
+            {configClubActual.logoUrl ? (
+              <img
+                src={configClubActual.logoUrl}
+                alt={configClubActual.nombre}
+                className="h-full w-full object-cover"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            ) : (
+              iniciales(configClubActual.nombre) || 'SP'
+            )}
+          </div>
+          <div className={`min-w-0 flex-1 ${colapsado ? 'lg:hidden' : ''}`}>
+            <p className="truncate text-sm font-black leading-tight text-slate-100">{configClubActual.nombre}</p>
+            <p className="text-[11px] font-medium text-slate-500">Panel operativo</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setModalConfigClub(true)}
+            title="Editar nombre y logo del club"
+            className={`shrink-0 rounded-md p-1.5 text-slate-600 transition hover:bg-slate-800 hover:text-lime-400 ${colapsado ? 'lg:hidden' : ''}`}
+          >
+            <Settings2 size={14} />
+          </button>
+        </div>
+
+        {/* Botón de Colapso — "menú hamburguesa": alterna entre sidebar
+            completo (logo + nombre del club + labels de cada módulo) y
+            colapsado (solo íconos, maximizando el área de trabajo). Solo
+            tiene efecto visual en escritorio/tablet (`lg:`); en el drawer
+            móvil se oculta porque ahí ya se cierra solo con el overlay. */}
+        <button
+          type="button"
+          onClick={alternarColapso}
+          title={colapsado ? 'Expandir menú' : 'Colapsar menú'}
+          className={`hidden shrink-0 items-center gap-2.5 border-b border-slate-800 px-5 py-2.5 text-[11px] font-bold text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 lg:flex ${
+            colapsado ? 'lg:justify-center' : ''
+          }`}
+        >
+          <Menu size={16} className="shrink-0" />
+          {!colapsado && 'Colapsar menú'}
+        </button>
+
+        <nav className="flex-1 space-y-1 px-3 py-4">
+          {modulosVisibles.map((m) => {
+            const Icon = m.icon;
+            return (
+              <button
+                key={m.id}
+                onClick={() => ir(m.id)}
+                title={colapsado ? m.label : undefined}
+                className={`${itemBase} ${moduloActivo === m.id ? itemActivo : itemInactivo} ${colapsado ? 'lg:justify-center lg:px-2' : ''}`}
+              >
+                <Icon size={17} className="shrink-0" />
+                <span className={colapsado ? 'lg:hidden' : ''}>{m.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+
+      {modalConfigClub && (
+        <ModalConfigClub
+          configActual={configClubActual}
+          onClose={() => setModalConfigClub(false)}
+          onGuardar={onGuardarConfigClub}
+          guardando={guardandoConfigClub}
+        />
+      )}
+    </>
+  );
+}
+
+function Reloj() {
+  const [ahora, setAhora] = useState(new Date());
+  useEffect(() => {
+    const id = setInterval(() => setAhora(new Date()), 1000 * 30);
+    return () => clearInterval(id);
+  }, []);
+  const hora = ahora.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+  const fecha = ahora.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' });
+  return (
+    <div className="hidden shrink-0 flex-col items-end whitespace-nowrap sm:flex">
+      <span className="font-mono text-sm font-bold text-slate-200">{hora}</span>
+      <span className="text-[11px] capitalize text-slate-500">{fecha}</span>
+    </div>
+  );
+}
+
+const MODULOS_META = {
+  parrilla: { titulo: 'Parrilla Operativa', subtitulo: 'Canchas dinámicas en tiempo real' },
+  pos: { titulo: 'Smart POS', subtitulo: 'Punto de venta de alta velocidad' },
+  erp: { titulo: 'Inventario', subtitulo: 'Catálogo, costos, margen y kardex' },
+  analytics: { titulo: 'Analytics BI', subtitulo: 'Inteligencia de negocio y rentabilidad' },
+  torneos: { titulo: 'Torneos & Retas', subtitulo: 'Competencias, retas abiertas y bloqueo inteligente de canchas' },
+  jugadores: { titulo: 'Jugadores (CRM)', subtitulo: 'Ranking del club y clasificación por categoría' },
+  seguridad: { titulo: 'Control & Seguridad', subtitulo: 'Empleados, roles, arqueos y Log de Actividad' },
+};
+
+function TopHeader({ operador, turno, permisos, moduloActivo, onCambiarModulo, onAbrirSidebar, onAbrirOperador, onRefrescar, refrescando }) {
+  const meta = MODULOS_META[moduloActivo] || MODULOS_META.parrilla;
+  const rolMeta = ROLES_POR_VALOR[operador.rol];
+  const modulosVisibles = NAV_MODULOS.filter((m) => permisos.modulos.has(m.id));
+  return (
+    <header className="sticky top-0 z-20 flex min-w-0 items-center justify-between gap-2 border-b border-slate-800 bg-slate-950/95 px-4 py-3.5 backdrop-blur sm:gap-3 sm:px-6">
+      <div className="flex min-w-0 shrink items-center gap-3">
+        <button
+          onClick={onAbrirSidebar}
+          className="shrink-0 rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100 lg:hidden"
+        >
+          <Menu size={20} />
+        </button>
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-black text-slate-100 sm:text-xl">{meta.titulo}</h1>
+          <p className="hidden truncate text-xs text-slate-500 sm:block">{meta.subtitulo}</p>
+        </div>
+      </div>
+
+      {/* Ajuste de Responsividad (iPad/pantallas medianas): Reloj y "Cambiar
+          Operador" llevan `shrink-0` — nunca se comprimen ni se cortan — y el
+          conmutador de pestañas (el único elemento no crítico aquí, ya
+          redundante con el Sidebar/hamburguesa) es el que cede espacio
+          primero, con scroll horizontal propio en vez de empujar al resto
+          fuera de la pantalla. */}
+      <div className="flex min-w-0 shrink-0 items-center gap-2 sm:gap-3">
+        <div className="hidden min-w-0 items-center gap-1 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 p-1 md:flex">
+          {modulosVisibles.map((m) => {
+            const Icon = m.icon;
+            return (
+              <button
+                key={m.id}
+                onClick={() => onCambiarModulo(m.id)}
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                  moduloActivo === m.id ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-100'
+                }`}
+              >
+                <Icon size={14} /> {m.labelCorto}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          onClick={onRefrescar}
+          title="Actualizar"
+          className="shrink-0 rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+        >
+          <RefreshCw size={17} className={refrescando ? 'animate-spin' : ''} />
+        </button>
+        <Reloj />
+        <button
+          onClick={onAbrirOperador}
+          className="flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-1.5 pr-3 transition hover:border-lime-400/40 hover:bg-slate-800"
+        >
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime-400 text-xs font-black text-slate-950">
+            {iniciales(operador.nombre)}
+          </div>
+          <div className="hidden text-left sm:block">
+            <p className="text-xs font-bold leading-tight text-slate-100">{operador.nombre}</p>
+            <p className="text-[11px] text-slate-500">
+              {rolMeta?.label || 'Rol'} · {turno.label}
+            </p>
+          </div>
+          <ChevronDown size={14} className="hidden shrink-0 text-slate-500 sm:block" />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+/* ============================================================================
+ * MÉTRICAS
+ * ==========================================================================*/
+
+function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime' }) {
+  const tonos = {
+    lime: 'text-lime-400 bg-lime-400/10',
+    sky: 'text-sky-400 bg-sky-400/10',
+    amber: 'text-amber-400 bg-amber-400/10',
+    violet: 'text-violet-400 bg-violet-400/10',
+    emerald: 'text-emerald-400 bg-emerald-400/10',
+    rose: 'text-rose-400 bg-rose-400/10',
+  };
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{etiqueta}</span>
+        <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${tonos[tono]}`}>
+          <Icon size={16} />
+        </div>
+      </div>
+      <p className="mt-2 text-2xl font-black text-slate-100">{valor}</p>
+      {sub && <p className="mt-0.5 text-[11px] text-slate-500">{sub}</p>}
+    </div>
+  );
+}
+
+/* ============================================================================
+ * TARJETA DE CANCHA (Vista Tarjetas)
+ * ==========================================================================*/
+
+function MenuEstatus({ estadoActual, onSeleccionar, onCerrar }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    function onClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) onCerrar();
+    }
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [onCerrar]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute right-0 top-full z-40 mt-1.5 w-64 overflow-hidden rounded-xl border border-slate-700 bg-slate-800 shadow-2xl"
+    >
+      <p className="border-b border-slate-700 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+        Estatus de la cancha
+      </p>
+      {ESTATUS_CANCHA_OPTIONS.map((op) => {
+        const esMantenimiento = op.value === 'mantenimiento';
+        return (
+          <button
+            key={op.value}
+            onClick={() => onSeleccionar(op.value)}
+            className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm font-semibold transition hover:bg-slate-700 ${
+              estadoActual === op.value ? 'bg-slate-700/60' : ''
+            }`}
+          >
+            <span className={`h-2 w-2 rounded-full ${op.dot}`} />
+            <span className="text-slate-100">{op.label}</span>
+            {estadoActual === op.value && <CheckCircle2 size={14} className="ml-auto text-lime-400" />}
+          </button>
+        );
+      })}
+      <p className="border-t border-slate-700 px-3 py-2 text-[10px] leading-snug text-slate-500">
+        Disponible, Reservada y En Juego se calculan solos según las reservas de hoy.
+        Solo Mantenimiento se bloquea manualmente; elegir cualquier otra opción libera el bloqueo.
+      </p>
+    </div>
+  );
+}
+
+function CanchaCard({
+  cancha,
+  estadoActual,
+  reservaActual,
+  proximaReserva,
+  onNuevaReserva,
+  onVerHorarios,
+  onCambiarFoto,
+  onCambiarEstatus,
+  onReservaClick,
+}) {
+  const [menuAbierto, setMenuAbierto] = useState(false);
+  const meta = ESTATUS_META[estadoActual];
+  const bloqueada = estadoActual === 'mantenimiento';
+
+  return (
+    <div
+      className={`group relative rounded-2xl border border-slate-800 bg-slate-900 ring-1 transition hover:border-slate-700 ${meta.card}`}
+    >
+      {/* overflow-hidden vive solo aquí (recorta la foto), NUNCA en la tarjeta completa:
+          si estuviera en la tarjeta, recortaría el menú "Cambiar Estatus" que flota por encima. */}
+      <div className="relative h-36 w-full overflow-hidden rounded-t-2xl bg-slate-800">
+        <img
+          src={cancha.imagen_url || fallbackImagen(cancha.id)}
+          onError={(e) => {
+            e.currentTarget.onerror = null;
+            e.currentTarget.src = fallbackImagen(cancha.id);
+          }}
+          alt={cancha.nombre}
+          className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/10 to-transparent" />
+        <div className="absolute left-3 top-3 flex flex-col items-start gap-1.5">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide backdrop-blur ${meta.badge}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
+            {meta.label}
+          </span>
+          {/* Secundario: la cancha está libre AHORITA, pero ya tiene un juego agendado más tarde hoy. */}
+          {estadoActual === 'disponible' && proximaReserva && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-slate-950/70 px-2 py-0.5 text-[10px] font-semibold text-slate-300 backdrop-blur">
+              <Clock size={10} className="shrink-0" /> Próxima reserva: {formatoHora12(proximaReserva.hora_inicio)}
+            </span>
+          )}
+        </div>
+        {reservaActual && (
+          <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-2 px-3 pb-2.5">
+            <button
+              onClick={() => onReservaClick(reservaActual)}
+              className="flex min-w-0 items-center gap-1.5 rounded-lg bg-slate-950/60 px-2 py-1 text-left backdrop-blur transition hover:bg-slate-950/80"
+            >
+              <Clock size={12} className="shrink-0 text-slate-300" />
+              <span className="truncate text-xs font-bold text-slate-100">{reservaActual.jugador_nombre || 'Jugador'}</span>
+            </button>
+            <BadgePago estadoPago={reservaActual.estado_pago} />
+          </div>
+        )}
+        <span className="absolute right-3 top-3 rounded-lg bg-slate-950/70 px-2 py-1 text-xs font-black text-lime-400 backdrop-blur">
+          {formatoMoneda(precioPorHoraDeCancha(cancha))}/hr
+        </span>
+      </div>
+
+      <div className="p-3.5">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="truncate text-sm font-black text-slate-100">{cancha.nombre}</h3>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => onNuevaReserva(cancha)}
+            disabled={bloqueada}
+            className="col-span-2 inline-flex items-center justify-center gap-1.5 rounded-lg bg-lime-400 px-2.5 py-2 text-xs font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Plus size={14} /> Nueva Reserva
+          </button>
+          <button
+            onClick={() => onVerHorarios(cancha)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
+          >
+            <CalendarIcon size={13} /> Horarios
+          </button>
+          <button
+            onClick={() => onCambiarFoto(cancha)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
+          >
+            <ImagePlus size={13} /> Foto
+          </button>
+          <div className="relative col-span-2">
+            <button
+              onClick={() => setMenuAbierto((v) => !v)}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
+            >
+              <Settings2 size={13} /> Cambiar Estatus <ChevronDown size={12} />
+            </button>
+            {menuAbierto && (
+              <MenuEstatus
+                estadoActual={estadoActual}
+                onCerrar={() => setMenuAbierto(false)}
+                onSeleccionar={(valor) => {
+                  setMenuAbierto(false);
+                  onCambiarEstatus(cancha, valor);
+                }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * VISTA CRONOGRAMA
+ * ==========================================================================*/
+
+function EncabezadoHoras() {
+  const horas = [];
+  for (let m = HORA_INICIO_MIN; m < HORA_FIN_MIN; m += 60) horas.push(m);
+  return (
+    <div className="flex border-b border-slate-800">
+      {horas.map((m) => (
+        <div
+          key={m}
+          style={{ width: SLOT_PX * 2 }}
+          className="shrink-0 border-r border-slate-800/60 py-2 text-center font-mono text-[11px] font-bold text-slate-500"
+        >
+          {minutosAHora(m)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Reparte bloques que se solapan en el tiempo (p.ej. datos previos a la
+// validación anti-encimado, o un caso límite que se coló igual) en
+// "carriles" verticales dentro de la misma celda de hora/cancha, en vez de
+// dibujarlos apilados uno encima del otro — así ningún bloque queda oculto.
+// Algoritmo en 2 pasos, sobre `bloques` ya ordenados por `startIdx`:
+//   1) Agrupa en clusters los bloques cuyos rangos se tocan/solapan
+//      (barrido: mientras el siguiente bloque empiece antes de que termine
+//      el cluster actual, se une al mismo cluster).
+//   2) Dentro de cada cluster, asigna carriles con partición de intervalos
+//      (greedy): cada bloque va al primer carril cuyo último bloque ya
+//      haya terminado; si ninguno califica, abre un carril nuevo.
+// Los bloques que nunca se cruzan con nadie terminan solos en su cluster,
+// con `totalCarriles: 1` — o sea, se ven exactamente igual que antes.
+function asignarCarrilesSolape(bloques) {
+  const ordenados = [...bloques].sort((a, b) => a.startIdx - b.startIdx);
+  const clusters = [];
+  let actual = null;
+  ordenados.forEach((b) => {
+    if (actual && b.startIdx < actual.fin) {
+      actual.items.push(b);
+      actual.fin = Math.max(actual.fin, b.startIdx + b.span);
+    } else {
+      actual = { items: [b], fin: b.startIdx + b.span };
+      clusters.push(actual);
+    }
+  });
+
+  const resultado = [];
+  clusters.forEach((cluster) => {
+    const carrilesFin = [];
+    const conCarril = cluster.items.map((b) => {
+      let carril = carrilesFin.findIndex((fin) => fin <= b.startIdx);
+      if (carril === -1) {
+        carril = carrilesFin.length;
+        carrilesFin.push(0);
+      }
+      carrilesFin[carril] = b.startIdx + b.span;
+      return { ...b, carril };
+    });
+    const totalCarriles = carrilesFin.length;
+    conCarril.forEach((b) => resultado.push({ ...b, totalCarriles }));
+  });
+  return resultado;
+}
+
+function FilaCronograma({ cancha, estadoActual, reservasDelDia, onSlotClick, onReservaClick, bloqueosMaestroTorneoIds }) {
+  const bloqueada = estadoActual === 'mantenimiento';
+  const meta = ESTATUS_META[estadoActual];
+
+  const bloques = useMemo(() => {
+    return reservasDelDia
+      .filter((r) => r.cancha_id === cancha.id && r.estado !== 'Cancelada')
+      .map((r) => {
+        const iniMin = parseHoraAMinutos(r.hora_inicio);
+        const finMin = parseHoraAMinutos(r.hora_fin);
+        if (iniMin === null || finMin === null) return null;
+        const startIdx = Math.max(0, Math.round((iniMin - HORA_INICIO_MIN) / SLOT_MIN));
+        const endIdx = Math.min(TOTAL_SLOTS, Math.round((finMin - HORA_INICIO_MIN) / SLOT_MIN));
+        const span = Math.max(1, endIdx - startIdx);
+        return { reserva: r, startIdx, span };
+      })
+      .filter(Boolean);
+  }, [reservasDelDia, cancha.id]);
+
+  // Bloqueo Maestro de Torneo (el apartado general 7:00–15:00, antes de
+  // programar partidos — ver `idsBloqueosMaestroTorneo`): se pinta como
+  // franja de fondo, SIN entrar al reparto de carriles de
+  // `asignarCarrilesSolape` — así nunca "roba" espacio ni se ve como un
+  // conflicto contra los partidos/retas/reservas específicas programadas
+  // dentro de esa misma franja horaria. Esas sí siguen repartiéndose en
+  // carriles entre ellas, exactamente como antes.
+  const bloquesMaestro = useMemo(
+    () => bloques.filter((b) => bloqueosMaestroTorneoIds?.has(b.reserva.id)),
+    [bloques, bloqueosMaestroTorneoIds]
+  );
+  const bloquesResto = useMemo(
+    () => bloques.filter((b) => !bloqueosMaestroTorneoIds?.has(b.reserva.id)),
+    [bloques, bloqueosMaestroTorneoIds]
+  );
+
+  const bloquesConCarril = useMemo(() => asignarCarrilesSolape(bloquesResto), [bloquesResto]);
+
+  // `ocupados` sigue construyéndose sobre TODOS los bloques (incluido el
+  // Bloqueo Maestro) — sigue bloqueando el slot para reservas externas de
+  // clientes, tal cual se pidió, aunque ya no compita visualmente por carril.
+  const ocupados = useMemo(() => {
+    const set = new Set();
+    bloques.forEach(({ startIdx, span }) => {
+      for (let i = startIdx; i < startIdx + span; i++) set.add(i);
+    });
+    return set;
+  }, [bloques]);
+
+  const slots = [];
+  for (let i = 0; i < TOTAL_SLOTS; i++) slots.push(i);
+
+  return (
+    <div className="relative flex border-b border-slate-800/70" style={{ height: 60 }}>
+      {bloqueada ? (
+        <div className="flex items-center gap-2 bg-amber-400/5 px-3 text-xs font-bold text-amber-400" style={{ width: TOTAL_SLOTS * SLOT_PX }}>
+          <Wrench size={13} /> Cancha bloqueada por mantenimiento
+        </div>
+      ) : (
+        <>
+          {slots.map((i) => {
+            const enHora = HORA_INICIO_MIN + i * SLOT_MIN;
+            const esHoraEnPunto = enHora % 60 === 0;
+            return (
+              <button
+                key={i}
+                onClick={() => !ocupados.has(i) && onSlotClick(cancha, minutosAHora(enHora))}
+                disabled={ocupados.has(i)}
+                style={{ width: SLOT_PX }}
+                className={`h-full shrink-0 border-r transition ${
+                  esHoraEnPunto ? 'border-slate-700/60' : 'border-slate-800/40'
+                } ${ocupados.has(i) ? '' : 'hover:bg-lime-400/10'}`}
+              />
+            );
+          })}
+          {bloquesMaestro.map(({ reserva, startIdx, span }) => (
+            <button
+              key={reserva.id}
+              onClick={() => onReservaClick(reserva)}
+              title={`${reserva.jugador_nombre || 'Torneo'} · apartado general — programa los partidos desde Cuadros & Partidos`}
+              style={{ left: startIdx * SLOT_PX + 2, width: span * SLOT_PX - 4, top: 4, height: 60 - 8 }}
+              className={`absolute z-0 flex items-center overflow-hidden rounded-lg px-2 text-left transition hover:brightness-125 ${ESTATUS_META.torneo_maestro.badge}`}
+            >
+              <span className="truncate text-[10px] font-bold">{reserva.jugador_nombre || 'Torneo'}</span>
+            </button>
+          ))}
+          {bloquesConCarril.map(({ reserva, startIdx, span, carril, totalCarriles }) => {
+            // 'Torneo'/'Reta' son bloqueos creados por el módulo Torneos &
+            // Retas (ver cabecera del archivo) — se pintan distinto para que
+            // el operador nunca los confunda con una reserva normal.
+            const pmeta =
+              reserva.estado === 'En Juego'
+                ? ESTATUS_META.en_juego
+                : reserva.estado === 'Torneo'
+                ? ESTATUS_META.torneo
+                : reserva.estado === 'Reta'
+                ? ESTATUS_META.reta
+                : ESTATUS_META.reservada;
+            // Si este bloque se solapa con otro, se reparte la altura de la
+            // celda entre `totalCarriles` — así ambos quedan visibles uno
+            // junto al otro en vez de encimados. Sin solape (caso normal),
+            // `totalCarriles` es 1 y se ve exactamente como antes.
+            const altoCarril = (60 - 8) / totalCarriles;
+            return (
+              <button
+                key={reserva.id}
+                onClick={() => onReservaClick(reserva)}
+                style={{
+                  left: startIdx * SLOT_PX + 2,
+                  width: span * SLOT_PX - 4,
+                  top: 4 + carril * altoCarril,
+                  height: totalCarriles > 1 ? altoCarril - 2 : altoCarril,
+                }}
+                className={`absolute z-10 flex flex-col justify-center overflow-hidden rounded-lg px-2 text-left shadow-lg ring-1 transition hover:brightness-110 ${pmeta.badge}`}
+              >
+                <span className="truncate text-[11px] font-black">{reserva.jugador_nombre || 'Jugador'}</span>
+                <span className="flex items-center gap-1 truncate text-[10px] font-semibold opacity-80">
+                  {formatoHora12(reserva.hora_inicio)}–{formatoHora12(reserva.hora_fin)}
+                  {reserva.estado_pago === 'pendiente' && <AlertTriangle size={9} />}
+                </span>
+              </button>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
+function VistaCronograma({ canchas, reservas, fechaSeleccionada, onSlotClick, onReservaClick, bloqueosMaestroTorneoIds }) {
+  const reservasDelDia = useMemo(
+    () => reservas.filter((r) => r.fecha === fechaSeleccionada),
+    [reservas, fechaSeleccionada]
+  );
+
+  if (canchas.length === 0) return null;
+
+  return (
+    <div className="w-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
+      <div className="flex min-w-0 bg-slate-900">
+        <div className="w-40 shrink-0 border-r border-slate-800 bg-slate-900 sm:w-48">
+          <div className="border-b border-slate-800 py-2 text-center text-[11px] font-bold uppercase tracking-wide text-slate-500">
+            Cancha
+          </div>
+          {canchas.map((c) => {
+            const estado = estadoActualCancha(c, reservas);
+            const meta = ESTATUS_META[estado];
+            return (
+              <div
+                key={c.id}
+                style={{ height: 60 }}
+                className="flex items-center gap-2 border-b border-slate-800/70 px-3"
+              >
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`} />
+                <span className="truncate text-xs font-bold text-slate-200">{c.nombre}</span>
+              </div>
+            );
+          })}
+        </div>
+        {/* min-w-0 es clave: sin él, un flex item no se contrae bajo su contenido y
+            termina empujando el scroll horizontal a TODA la página (revelando el
+            fondo blanco por defecto del <body>) en vez de quedarse contenido aquí. */}
+        <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain bg-slate-900">
+          <div style={{ width: TOTAL_SLOTS * SLOT_PX }} className="bg-slate-900">
+            <EncabezadoHoras />
+            {canchas.map((c) => (
+              <FilaCronograma
+                key={c.id}
+                cancha={c}
+                estadoActual={estadoActualCancha(c, reservas)}
+                reservasDelDia={reservasDelDia}
+                onSlotClick={onSlotClick}
+                onReservaClick={onReservaClick}
+                bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * TOOLBAR (búsqueda, fecha, filtro de estatus, conmutador de vista)
+ * ==========================================================================*/
+
+function Toolbar({
+  vista,
+  onCambiarVista,
+  busqueda,
+  onBusqueda,
+  fechaSeleccionada,
+  onCambiarFecha,
+  filtroEstatus,
+  onFiltroEstatus,
+  onNuevaCancha,
+}) {
+  return (
+    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            value={busqueda}
+            onChange={(e) => onBusqueda(e.target.value)}
+            placeholder="Buscar cancha..."
+            className={`${inputClase} w-48 pl-9`}
+          />
+        </div>
+
+        <div className="relative">
+          <CalendarIcon size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            type="date"
+            value={fechaSeleccionada}
+            onChange={(e) => onCambiarFecha(e.target.value)}
+            className={`${inputClase} w-40 pl-9`}
+          />
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onCambiarFecha(sumarDia(fechaSeleccionada, -1))}
+            className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700"
+          >
+            <ChevronLeft size={14} />
+          </button>
+          <button
+            onClick={() => onCambiarFecha(hoyISO())}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-bold text-slate-300 hover:bg-slate-700"
+          >
+            Hoy
+          </button>
+          <button
+            onClick={() => onCambiarFecha(sumarDia(fechaSeleccionada, 1))}
+            className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700"
+          >
+            <ChevronRight size={14} />
+          </button>
+        </div>
+
+        <div className="relative">
+          <Filter size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <select
+            value={filtroEstatus}
+            onChange={(e) => onFiltroEstatus(e.target.value)}
+            className={`${inputClase} w-40 appearance-none pl-9`}
+          >
+            <option value="todos">Todos los estatus</option>
+            {ESTATUS_FILTRO_OPTIONS.map((op) => (
+              <option key={op.value} value={op.value}>
+                {op.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+          <button
+            onClick={() => onCambiarVista('tarjetas')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+              vista === 'tarjetas' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <LayoutGrid size={14} /> Tarjetas
+          </button>
+          <button
+            onClick={() => onCambiarVista('cronograma')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+              vista === 'cronograma' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <CalendarDays size={14} /> Cronograma
+          </button>
+        </div>
+        <BotonPrimario onClick={onNuevaCancha} className="whitespace-nowrap">
+          <Plus size={15} /> Nueva Cancha
+        </BotonPrimario>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * ESTADOS: skeleton / error / vacío
+ * ==========================================================================*/
+
+function SkeletonGrid() {
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="animate-pulse overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
+          <div className="h-36 bg-slate-800" />
+          <div className="space-y-2 p-3.5">
+            <div className="h-4 w-2/3 rounded bg-slate-800" />
+            <div className="h-8 rounded bg-slate-800" />
+            <div className="grid grid-cols-2 gap-2">
+              <div className="h-8 rounded bg-slate-800" />
+              <div className="h-8 rounded bg-slate-800" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ErrorBanner({ mensaje, onReintentar }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-950/40 px-4 py-3">
+      <div className="flex items-center gap-2.5 text-rose-200">
+        <AlertTriangle size={18} className="shrink-0" />
+        <p className="text-sm font-medium">{mensaje}</p>
+      </div>
+      <button
+        onClick={onReintentar}
+        className="shrink-0 rounded-lg border border-rose-500/40 px-3 py-1.5 text-xs font-bold text-rose-200 transition hover:bg-rose-500/10"
+      >
+        Reintentar
+      </button>
+    </div>
+  );
+}
+
+function EmptyState({ onNuevaCancha }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 py-16 text-center">
+      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-slate-900">
+        <LayoutGrid size={24} className="text-slate-600" />
+      </div>
+      <p className="text-sm font-bold text-slate-300">Todavía no tienes canchas registradas</p>
+      <p className="mt-1 max-w-xs text-xs text-slate-500">
+        Crea tu primera cancha para empezar a gestionar reservas y disponibilidad.
+      </p>
+      <BotonPrimario onClick={onNuevaCancha} className="mt-4">
+        <Plus size={15} /> Nueva Cancha
+      </BotonPrimario>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * MODAL: OPERADOR / TURNO
+ * ==========================================================================*/
+
+// RBAC: "fichar" es el punto ÚNICO donde la sesión activa (`operador`, con
+// su `rol`) se elige — de ahí sale `permisos` (ver `permisosDeRol` en
+// App()). Con Directorio de Empleados ya cargado, se elige de la lista (el
+// rol viaja con el empleado, no se puede inventar); sin empleados todavía
+// (primer arranque del club) cae directo al alta rápida para no dejar el
+// sistema sin nadie con quien operar.
+function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, onClose }) {
+  const toast = useToast();
+  const [turno, setTurno] = useState(operador.turno);
+  const [modoAlta, setModoAlta] = useState(empleados.length === 0);
+  const [nombreNuevo, setNombreNuevo] = useState('');
+  const [rolNuevo, setRolNuevo] = useState('recepcion');
+  const [creando, setCreando] = useState(false);
+
+  const empleadosActivos = useMemo(() => empleados.filter((e) => e.activo !== false), [empleados]);
+
+  function ficharEmpleado(emp) {
+    onGuardar({ id: emp.id, nombre: emp.nombre, rol: emp.rol, turno });
+    toast({ titulo: 'Operador cambiado', detalle: `${emp.nombre} · ${ROLES_POR_VALOR[emp.rol]?.label || emp.rol}` });
+    onClose();
+  }
+
+  async function altaYFichar() {
+    if (!nombreNuevo.trim()) return;
+    setCreando(true);
+    const nuevo = await onCrearEmpleado({ nombre: nombreNuevo.trim(), rol: rolNuevo });
+    setCreando(false);
+    onGuardar({ id: nuevo.id, nombre: nuevo.nombre, rol: nuevo.rol, turno });
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Cambiar Operador / Turno" subtitulo="Se refleja en el header, el sidebar y los permisos activos" onClose={onClose} icon={UserCog}>
+      <div className="space-y-4">
+        <Campo label="Turno">
+          <div className="grid grid-cols-2 gap-2">
+            {TURNOS.map((t) => (
+              <button
+                key={t.value}
+                onClick={() => setTurno(t.value)}
+                className={`rounded-lg border px-3 py-2 text-xs font-bold transition ${
+                  turno === t.value
+                    ? 'border-lime-400 bg-lime-400/10 text-lime-400'
+                    : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </Campo>
+
+        {!modoAlta ? (
+          <>
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fichar como</span>
+                <button
+                  onClick={() => setModoAlta(true)}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-lime-400 transition hover:underline"
+                >
+                  <UserPlus size={12} /> Nuevo empleado
+                </button>
+              </div>
+              {empleadosActivos.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-slate-700 px-3 py-4 text-center text-xs text-slate-500">
+                  Todavía no hay empleados activos en el directorio.
+                </p>
+              ) : (
+                <div className="max-h-64 space-y-1.5 overflow-y-auto pr-0.5">
+                  {empleadosActivos.map((emp) => {
+                    const rolMeta = ROLES_POR_VALOR[emp.rol];
+                    const RolIcon = rolMeta?.icon || Users;
+                    const activo = emp.id === operador.id;
+                    return (
+                      <button
+                        key={emp.id}
+                        onClick={() => ficharEmpleado(emp)}
+                        className={`flex w-full items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition ${
+                          activo
+                            ? 'border-lime-400/60 bg-lime-400/10'
+                            : 'border-slate-700 bg-slate-800 hover:border-lime-400/40 hover:bg-slate-700'
+                        }`}
+                      >
+                        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${rolMeta?.bg || 'bg-slate-700'}`}>
+                          <RolIcon size={16} className={rolMeta?.color || 'text-slate-300'} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-bold text-slate-100">{emp.nombre}</p>
+                          <p className="text-[11px] text-slate-500">{rolMeta?.label || emp.rol}</p>
+                        </div>
+                        {activo && <CheckCircle2 size={16} className="shrink-0 text-lime-400" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+            </div>
+          </>
+        ) : (
+          <div className="space-y-3 rounded-xl border border-lime-400/20 bg-lime-400/5 p-4">
+            <p className="text-sm font-bold text-slate-100">Alta rápida de empleado</p>
+            <Campo label="Nombre">
+              <input
+                value={nombreNuevo}
+                onChange={(e) => setNombreNuevo(e.target.value)}
+                className={inputClase}
+                placeholder="Ej. Adrián Vargas"
+                autoFocus
+              />
+            </Campo>
+            <Campo label="Rol">
+              <div className="grid grid-cols-2 gap-1.5">
+                {ROLES.map((r) => {
+                  const RolIcon = r.icon;
+                  return (
+                    <button
+                      key={r.value}
+                      onClick={() => setRolNuevo(r.value)}
+                      className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-[11px] font-bold transition ${
+                        rolNuevo === r.value
+                          ? `border-lime-400 ${r.bg} ${r.color}`
+                          : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      <RolIcon size={13} className="shrink-0" />
+                      {r.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </Campo>
+            <div className="flex justify-end gap-2 pt-1">
+              {empleados.length > 0 && (
+                <BotonSecundario onClick={() => setModoAlta(false)} disabled={creando}>
+                  Regresar
+                </BotonSecundario>
+              )}
+              <BotonPrimario onClick={altaYFichar} disabled={creando || !nombreNuevo.trim()}>
+                {creando ? <Loader2 size={15} className="animate-spin" /> : <UserPlus size={15} />}
+                Crear y Fichar
+              </BotonPrimario>
+            </div>
+          </div>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ============================================================================
+ * MODAL: NUEVA CANCHA
+ * ==========================================================================*/
+
+function ModalNuevaCancha({ onClose, onCreada }) {
+  const toast = useToast();
+  const [nombre, setNombre] = useState('');
+  const [precio, setPrecio] = useState('');
+  const [imagenUrl, setImagenUrl] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  async function guardar() {
+    if (!nombre.trim()) {
+      setError('El nombre de la cancha es obligatorio.');
+      return;
+    }
+    setGuardando(true);
+    setError('');
+    const { data, error: err } = await supabase
+      .from('canchas')
+      .insert(
+        withClubId({
+          nombre: nombre.trim(),
+          precio_por_hora: precio ? Number(precio) : 0,
+          imagen_url: imagenUrl.trim() || null,
+          activa: true,
+          estatus_manual: 'disponible',
+        })
+      )
+      .select()
+      .single();
+    setGuardando(false);
+    if (err) {
+      setError(err.message || 'No se pudo crear la cancha.');
+      toast({ titulo: 'Error al crear cancha', detalle: err.message, tono: 'error' });
+      return;
+    }
+    toast({ titulo: 'Cancha creada', detalle: `${data.nombre} ya está disponible.` });
+    onCreada(data);
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Nueva Cancha" subtitulo="Agrega una cancha a tu parrilla operativa" onClose={onClose} icon={Plus}>
+      <div className="space-y-4">
+        <Campo label="Nombre de la cancha">
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Cancha Central" />
+        </Campo>
+        <Campo label="Precio por hora (MXN)">
+          <input
+            type="number"
+            min="0"
+            value={precio}
+            onChange={(e) => setPrecio(e.target.value)}
+            className={inputClase}
+            placeholder="450"
+          />
+        </Campo>
+        <Campo label="URL de foto (opcional)" hint="Si la dejas vacía, se usa una imagen de referencia automática.">
+          <input
+            value={imagenUrl}
+            onChange={(e) => setImagenUrl(e.target.value)}
+            className={inputClase}
+            placeholder="https://..."
+          />
+        </Campo>
+        {/* Manejo Universal de Imágenes: sube al bucket `app-media` de
+            Supabase Storage y entrega la URL pública — nunca base64/blob
+            local, para que la foto se vea igual en cualquier dispositivo. */}
+        <SelectorArchivoImagen
+          carpeta="canchas"
+          onSubida={(nuevaUrl) => {
+            setError('');
+            setImagenUrl(nuevaUrl);
+          }}
+        />
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
+            Crear cancha
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ============================================================================
+ * MODAL: CAMBIAR FOTO
+ * ==========================================================================*/
+
+function ModalCambiarFoto({ cancha, onClose, onActualizada }) {
+  const toast = useToast();
+  const [url, setUrl] = useState(cancha.imagen_url || '');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  async function guardar() {
+    setGuardando(true);
+    setError('');
+    const { data, error: err } = await supabase
+      .from('canchas')
+      .update({ imagen_url: url.trim() || null })
+      .eq('id', cancha.id)
+      .select()
+      .single();
+    setGuardando(false);
+    if (err) {
+      setError(err.message || 'No se pudo actualizar la foto.');
+      toast({ titulo: 'Error al actualizar foto', detalle: err.message, tono: 'error' });
+      return;
+    }
+    toast({ titulo: 'Foto actualizada', detalle: cancha.nombre });
+    onActualizada(data);
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Cambiar Foto" subtitulo={cancha.nombre} onClose={onClose} icon={ImagePlus}>
+      <div className="space-y-4">
+        <div className="h-40 overflow-hidden rounded-xl border border-slate-800 bg-slate-800">
+          <img
+            src={url.trim() || fallbackImagen(cancha.id)}
+            onError={(e) => {
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = fallbackImagen(cancha.id);
+            }}
+            alt="Vista previa"
+            className="h-full w-full object-cover"
+          />
+        </div>
+        <Campo label="URL de la nueva foto">
+          <input value={url} onChange={(e) => setUrl(e.target.value)} className={inputClase} placeholder="https://..." />
+        </Campo>
+        {/* Manejo Universal de Imágenes: sube al bucket `app-media` de Supabase
+            Storage y entrega la URL pública — nunca base64/blob local, para
+            que la foto se vea igual en Mac, iPad o cualquier navegador. */}
+        <SelectorArchivoImagen
+          carpeta="canchas"
+          onSubida={(nuevaUrl) => {
+            setError('');
+            setUrl(nuevaUrl);
+          }}
+        />
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <ImagePlus size={15} />}
+            Guardar foto
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ============================================================================
+ * MODAL: NUEVA RESERVA (con cobro)
+ * ==========================================================================*/
+
+// Auto-Registro Universal de Jugadores: busca o crea el expediente en
+// `jugadores` — es el ÚNICO mecanismo de alta de esa tabla, y se invoca desde
+// las vías de entrada del club (Reserva en la Parrilla, inscripción a una
+// Reta, alta de participante de Torneo, asignación de cliente en Smart POS —
+// ver sus respectivos `guardar`) para que el Directorio & CRM capte a TODA la
+// base activa, sin importar por dónde entró cada quien.
+//
+// CRM Unificado por Teléfono: el TELÉFONO es el identificador único del
+// cliente, no el nombre — dos personas distintas pueden llamarse igual, y una
+// misma persona puede capturar su nombre distinto cada vez (apodos,
+// mayúsculas, "de la" vs "De La"). Por eso, si `opts.telefono` trae 10+
+// dígitos válidos (`claveTelefono`), la búsqueda/creación se resuelve
+// EXCLUSIVAMENTE por teléfono: se compara por los últimos 10 dígitos
+// (ignora formato/lada/guiones) y, si hay coincidencia, esa cuenta es la que
+// se usa sin importar si el nombre capturado ahora difiere; si el teléfono no
+// matchea a nadie se crea una cuenta nueva con ese teléfono — NUNCA cae al
+// respaldo por nombre en ese caso, para no fusionar por accidente a dos
+// personas distintas que comparten nombre. Solo cuando NO se captura teléfono
+// se usa el respaldo legacy por nombre (comportamiento previo a esta
+// actualización, para no romper flujos que todavía no piden teléfono).
+//
+// `opts.directorio` (opcional): arreglo de jugadores ya cargado en el
+// llamador (típicamente `Object.values(jugadoresPorId)`, cargado una sola vez
+// en App()) — permite resolver el cruce por teléfono en el cliente, sin ida y
+// vuelta a Supabase, y evita falsos negativos por formato que un `ilike` de
+// servidor no resolvería bien. Si no se pasa, o el directorio no lo tiene
+// (alta reciente desde otra sesión), se intenta un cruce server-side de
+// respaldo antes de crear un expediente nuevo.
+async function resolverJugadorId(nombre, opts = {}) {
+  const nombreLimpio = (nombre || '').trim();
+  const telefonoLimpio = (opts.telefono || '').trim() || null;
+  const claveTel = telefonoLimpio ? claveTelefono(telefonoLimpio) : null;
+  if (!nombreLimpio && !claveTel) return null;
+  try {
+    if (claveTel) {
+      const directorio = Array.isArray(opts.directorio) ? opts.directorio : [];
+      const matchLocal = directorio.find((j) => claveTelefono(j?.telefono) === claveTel);
+      if (matchLocal?.id) {
+        if (nombreLimpio && !(matchLocal.nombre || '').trim()) {
+          try {
+            await supabase.from('jugadores').update({ nombre: nombreLimpio }).eq('id', matchLocal.id);
+          } catch (_e) {
+            /* no bloquear el flujo de origen si no se pudo completar el nombre */
+          }
+        }
+        return matchLocal.id;
+      }
+
+      try {
+        const { data: candidatos, error: buscarTelError } = await conClubId(
+          supabase.from('jugadores').select('id, nombre, telefono')
+        )
+          .not('telefono', 'is', null)
+          .limit(500);
+        if (!buscarTelError && Array.isArray(candidatos)) {
+          const matchServidor = candidatos.find((j) => claveTelefono(j.telefono) === claveTel);
+          if (matchServidor?.id) return matchServidor.id;
+        }
+      } catch (_e) {
+        /* si el cruce de respaldo falla, se continúa al alta de un expediente nuevo */
+      }
+
+      const { data: nuevo, error: crearError } = await supabase
+        .from('jugadores')
+        .insert(withClubId({ nombre: nombreLimpio || 'Jugador sin nombre', telefono: telefonoLimpio, saldo_a_favor: 0 }))
+        .select('id')
+        .single();
+      if (!crearError && nuevo?.id) return nuevo.id;
+
+      // Identidad Única por Teléfono: si el proyecto ya tiene el índice único
+      // recomendado sobre teléfono normalizado (ver comentario de cabecera
+      // de este bloque / SQL de migración entregado aparte), una carrera
+      // entre dos dispositivos dando de alta al MISMO teléfono casi
+      // simultáneamente puede hacer que este insert choque contra esa
+      // restricción (código Postgres 23505). En vez de dejar al jugador sin
+      // vincular, se vuelve a buscar por teléfono — el registro que ganó la
+      // carrera ya existe y es el que se debe usar.
+      if (crearError?.code === '23505') {
+        try {
+          const { data: existenteTrasCarrera } = await conClubId(
+            supabase.from('jugadores').select('id, nombre, telefono')
+          )
+            .not('telefono', 'is', null)
+            .limit(500);
+          const match = (existenteTrasCarrera || []).find((j) => claveTelefono(j.telefono) === claveTel);
+          if (match?.id) return match.id;
+        } catch (_e) {
+          /* si tampoco se puede recuperar, se cae al null de abajo */
+        }
+      }
+      return null;
+    }
+
+    // Sin teléfono capturado: respaldo legacy por nombre.
+    if (!nombreLimpio) return null;
+    const { data: existente, error: buscarError } = await conClubId(supabase.from('jugadores').select('id, telefono'))
+      .ilike('nombre', nombreLimpio)
+      .limit(1)
+      .maybeSingle();
+    if (!buscarError && existente?.id) return existente.id;
+
+    const { data: nuevo, error: crearError } = await supabase
+      .from('jugadores')
+      .insert(withClubId({ nombre: nombreLimpio, telefono: null, saldo_a_favor: 0 }))
+      .select('id')
+      .single();
+    if (!crearError && nuevo?.id) return nuevo.id;
+  } catch (_e) {
+    /* no bloquear la reserva/inscripción si jugadores falla */
+  }
+  return null;
+}
+
+// Modal SOLO de agenda: nada de estado/método de pago aquí — la reserva
+// siempre nace `estado_pago: 'pendiente'` y se cobra del otro lado, en Smart
+// POS (ver `onCreada`, que además de guardar en Supabase entrega la reserva
+// y la cancha para que el llamador la mande directo a la comanda del POS).
+function ModalNuevaReserva({
+  canchas,
+  reservas,
+  canchaInicial,
+  horaInicial,
+  fechaInicial,
+  onClose,
+  onCreada,
+  onRegistrarAuditoria,
+  jugadoresPorId,
+}) {
+  const toast = useToast();
+  const canchasDisponibles = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+  // Directorio CRM ya cargado en App() — se usa para el autocompletado del
+  // campo Jugador y para resolver el cruce por teléfono en el cliente sin ida
+  // y vuelta a Supabase (ver `resolverJugadorId`).
+  const directorioJugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+
+  const [canchaId, setCanchaId] = useState(canchaInicial?.id || canchasDisponibles[0]?.id || '');
+  const [jugador, setJugador] = useState('');
+  const [telefono, setTelefono] = useState('');
+  const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
+  const [fecha, setFecha] = useState(fechaInicial || hoyISO());
+  const [horaInicio, setHoraInicio] = useState(horaInicial || '09:00');
+  const [horaFin, setHoraFin] = useState(() => {
+    const base = parseHoraAMinutos(horaInicial || '09:00') ?? 540;
+    // Tope en 23:59: un <input type="time"> no acepta "24:00" como valor válido.
+    return minutosAHora(Math.min(base + 60, HORA_FIN_MIN - 1));
+  });
+  const [monto, setMonto] = useState('');
+  const [montoTocado, setMontoTocado] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  const canchaSeleccionada = canchas.find((c) => c.id === canchaId);
+  // `precioPorHoraDeCancha` ya resuelve el respaldo (por nombre de cancha, o
+  // el genérico) cuando `precio_por_hora` viene null/undefined/0 desde
+  // Supabase — así el cálculo nunca se queda en $0 por un dato faltante.
+  const precioPorHora = canchaSeleccionada ? precioPorHoraDeCancha(canchaSeleccionada) : 0;
+
+  // Duración válida en horas (null si la hora de fin todavía no supera a la
+  // de inicio) — misma regla que `validar()`, aquí solo para el cálculo.
+  const duracionHoras = useMemo(() => {
+    const ini = parseHoraAMinutos(horaInicio);
+    const fin = parseHoraAMinutos(horaFin);
+    if (ini === null || fin === null || fin <= ini) return null;
+    return Number(((fin - ini) / 60).toFixed(2));
+  }, [horaInicio, horaFin]);
+
+  // Fórmula pedida: Monto = Horas Reservadas (Hora Fin − Hora Inicio) × Precio
+  // por Hora de la Cancha — aplicada sobre `precioPorHora` ya resuelto arriba
+  // (columna real de la cancha, probando todas sus variantes de nombre vía
+  // `precioPorHoraDeCancha`, o el respaldo por nombre/genérico si ninguna
+  // trae dato). Nunca $0 por un dato de tarifa faltante o mal nombrado.
+  const montoCalculado =
+    duracionHoras !== null ? Math.round(duracionHoras * Number(precioPorHora || 0) * 100) / 100 : null;
+
+  // Monto automático = duración × precio_por_hora de la cancha elegida. Se
+  // recalcula solo al abrir el modal, al cambiar de cancha, o al mover la
+  // hora de inicio/fin — SIEMPRE que el recepcionista no lo haya editado a
+  // mano (`montoTocado`), para que un ajuste manual (descuento, promoción)
+  // nunca se pise solo.
+  useEffect(() => {
+    if (montoTocado || montoCalculado === null) return;
+    setMonto(String(montoCalculado));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [montoCalculado, montoTocado]);
+
+  function validar() {
+    if (!canchaId) return 'Selecciona una cancha.';
+    if (!fecha) return 'Selecciona una fecha.';
+    if (!horaInicio || !horaFin) return 'Indica la hora de inicio y fin.';
+    const ini = parseHoraAMinutos(horaInicio);
+    const fin = parseHoraAMinutos(horaFin);
+    if (ini === null || fin === null || fin <= ini) return 'La hora de fin debe ser posterior a la hora de inicio.';
+    return '';
+  }
+
+  async function guardar() {
+    const problema = validar();
+    if (problema) {
+      setError(problema);
+      return;
+    }
+
+    // Anti-encimado: ni una reserva normal ni un bloqueo de Torneo/Reta
+    // pueden compartir cancha+fecha+horario con algo que ya esté ahí — se
+    // avisa con un toast además del texto en línea, ya que es un choque de
+    // agenda y no solo un campo mal llenado.
+    const solape = buscarSolapeEnCancha(reservas || [], canchaId, fecha, horaInicio, horaFin);
+    if (solape) {
+      const mensaje =
+        solape.estado === 'Torneo' || solape.estado === 'Reta'
+          ? 'La cancha está ocupada por un Torneo/Reta en ese horario.'
+          : 'Esa cancha ya tiene una reserva en ese horario.';
+      setError(mensaje);
+      toast({ titulo: mensaje, tono: 'aviso' });
+      return;
+    }
+
+    setGuardando(true);
+    setError('');
+
+    // Si ya viene de una selección del directorio (`SelectorJugadorRegistrado`)
+    // se usa ese id directo — evita una resolución redundante y respeta el
+    // expediente exacto elegido; si no, se resuelve por teléfono (identificador
+    // único del CRM) y, en su defecto, por nombre.
+    const jugadorId = jugadorSeleccionadoId || (await resolverJugadorId(jugador, { telefono, directorio: directorioJugadores }));
+    // Nunca mandar null aquí: `reservas.jugador_nombre` es NOT NULL en el esquema actual.
+    const nombreJugador = jugador.trim() || 'Jugador';
+
+    const payload = withClubId({
+      cancha_id: canchaId,
+      jugador_id: jugadorId,
+      jugador_nombre: nombreJugador,
+      fecha,
+      hora_inicio: horaInicio,
+      hora_fin: horaFin,
+      estado: 'Reservada',
+      estado_pago: 'pendiente',
+      metodo_pago: null,
+      monto_total: monto ? Number(monto) : 0,
+    });
+
+    const { data, error: err } = await supabase.from('reservas').insert(payload).select().single();
+    setGuardando(false);
+
+    if (err) {
+      setError(err.message || 'No se pudo crear la reserva.');
+      toast({ titulo: 'Error al crear reserva', detalle: err.message, tono: 'error' });
+      return;
+    }
+
+    const reservaCreada = { ...data, jugador_nombre: data.jugador_nombre || nombreJugador };
+    toast({
+      titulo: 'Reserva creada — cóbrala en Smart POS',
+      detalle: `${canchaSeleccionada?.nombre || 'Cancha'} · ${formatoHora12(horaInicio)}`,
+    });
+
+    // Control Interno — "Aplicación de descuentos manuales": si el monto
+    // final quedó distinto del automático (duración × precio/hora), se
+    // registra sin importar si subió o bajó — el detalle trae ambos montos
+    // para que el Log de Actividad muestre el contexto completo.
+    if (montoTocado && montoCalculado !== null && Number(monto) !== montoCalculado) {
+      onRegistrarAuditoria?.('descuento_manual', {
+        origen: `Reserva — ${canchaSeleccionada?.nombre || 'Cancha'}`,
+        montoAutomatico: montoCalculado,
+        montoFinal: Number(monto) || 0,
+        diferencia: Math.round(((Number(monto) || 0) - montoCalculado) * 100) / 100,
+      });
+    }
+
+    onCreada(reservaCreada, canchaSeleccionada);
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Nueva Reserva" subtitulo="Mostrador / Teléfono — solo agenda" onClose={onClose} icon={Plus} ancho="max-w-xl">
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Jugador">
+            <SelectorJugadorRegistrado
+              jugadores={directorioJugadores}
+              nombre={jugador}
+              onNombreChange={setJugador}
+              jugadorSeleccionadoId={jugadorSeleccionadoId}
+              onSeleccionarJugador={(j) => {
+                setJugadorSeleccionadoId(j?.id || null);
+                if (j?.telefono) setTelefono(j.telefono);
+              }}
+              placeholder="Nombre del jugador"
+            />
+          </Campo>
+          <Campo label="Cancha">
+            <select value={canchaId} onChange={(e) => setCanchaId(e.target.value)} className={inputClase}>
+              {canchasDisponibles.length === 0 && <option value="">Sin canchas activas</option>}
+              {canchasDisponibles.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        </div>
+
+        {/* Teléfono: identificador único del CRM (`resolverJugadorId`) — al
+            capturarlo aquí, la reserva se cruza/crea en `jugadores` por
+            teléfono en vez de por nombre, evitando duplicar u fusionar por
+            error a clientes que comparten nombre. */}
+        <Campo label="Teléfono (identificador del cliente en el CRM)">
+          <input
+            value={telefono}
+            onChange={(e) => {
+              setTelefono(e.target.value);
+              if (jugadorSeleccionadoId) setJugadorSeleccionadoId(null);
+            }}
+            className={inputClase}
+            placeholder="10 dígitos — ej. 55 1234 5678"
+            inputMode="tel"
+          />
+        </Campo>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <Campo label="Fecha">
+            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
+          </Campo>
+          <Campo label="Hora inicio">
+            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+          </Campo>
+          <Campo label="Hora fin">
+            <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
+          </Campo>
+        </div>
+
+        <Campo label="Monto (MXN)">
+          <input
+            type="number"
+            min="0"
+            value={monto}
+            onChange={(e) => {
+              setMontoTocado(true);
+              setMonto(e.target.value);
+            }}
+            className={inputClase}
+            placeholder="0"
+          />
+          {montoCalculado !== null && (
+            <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-slate-500">
+              <span>
+                Automático: {duracionHoras}h × {formatoMoneda(precioPorHora)}/hr = {formatoMoneda(montoCalculado)}
+              </span>
+              {montoTocado && Number(monto) !== montoCalculado && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMontoTocado(false);
+                    setMonto(String(montoCalculado));
+                  }}
+                  className="font-bold text-lime-400 transition hover:underline"
+                >
+                  Usar este monto
+                </button>
+              )}
+            </p>
+          )}
+        </Campo>
+
+        <p className="flex items-start gap-1.5 rounded-lg bg-sky-400/10 px-3 py-2 text-xs font-semibold text-sky-300 ring-1 ring-sky-400/20">
+          <Info size={13} className="mt-0.5 shrink-0" /> Esto solo agenda el espacio. El cobro (Efectivo, Tarjeta, SPEI o Dividir Cuenta) se
+          hace enseguida en Smart POS.
+        </p>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando || canchasDisponibles.length === 0}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <DollarSign size={15} />}
+            Reservar y Cobrar en POS
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ============================================================================
+ * MODAL: DETALLE / VER HORARIOS + CANCELACIÓN CON SALDO A FAVOR
+ * ==========================================================================*/
+
+function DetalleReserva({
+  reserva,
+  cancha,
+  reservas = [],
+  permisos,
+  onVolver,
+  onClose,
+  onCancelada,
+  onReprogramada,
+  onRegistrarAuditoria,
+}) {
+  const toast = useToast();
+  const [mostrarCancelacion, setMostrarCancelacion] = useState(false);
+  const [abonarSaldo, setAbonarSaldo] = useState(true);
+  const [montoAbono, setMontoAbono] = useState(String(reserva.monto_total ?? 0));
+  const [motivoCancelacion, setMotivoCancelacion] = useState('');
+  const [procesando, setProcesando] = useState(false);
+  const [error, setError] = useState('');
+
+  // Control Interno — "Modificación de horarios o canchas": reprograma el
+  // bloque horario de esta MISMA reserva/cancha (día y jugador se quedan
+  // igual). Gateado por `permisos.puedeReprogramarReservas`.
+  const [mostrarReprogramar, setMostrarReprogramar] = useState(false);
+  const [nuevaHoraInicio, setNuevaHoraInicio] = useState(reserva.hora_inicio || '');
+  const [nuevaHoraFin, setNuevaHoraFin] = useState(reserva.hora_fin || '');
+  const [procesandoReprogramar, setProcesandoReprogramar] = useState(false);
+  const [errorReprogramar, setErrorReprogramar] = useState('');
+
+  async function reprogramar() {
+    setErrorReprogramar('');
+    const ini = parseHoraAMinutos(nuevaHoraInicio);
+    const fin = parseHoraAMinutos(nuevaHoraFin);
+    if (ini === null || fin === null || fin <= ini) {
+      setErrorReprogramar('Revisa el horario: la hora de fin debe ser posterior a la de inicio.');
+      return;
+    }
+    const cruce = buscarSolapeEnCancha(
+      reservas.filter((r) => r.id !== reserva.id),
+      reserva.cancha_id,
+      reserva.fecha,
+      nuevaHoraInicio,
+      nuevaHoraFin
+    );
+    if (cruce) {
+      setErrorReprogramar('Ese horario se cruza con otra reserva ya existente en esta cancha.');
+      return;
+    }
+    setProcesandoReprogramar(true);
+    const { error: errReserva } = await supabase
+      .from('reservas')
+      .update({ hora_inicio: nuevaHoraInicio, hora_fin: nuevaHoraFin })
+      .eq('id', reserva.id);
+    setProcesandoReprogramar(false);
+    if (errReserva) {
+      setErrorReprogramar(errReserva.message || 'No se pudo reprogramar la reserva.');
+      toast({ titulo: 'Error al reprogramar', detalle: errReserva.message, tono: 'error' });
+      return;
+    }
+    toast({ titulo: 'Reserva reprogramada', detalle: `${formatoHora12(nuevaHoraInicio)} – ${formatoHora12(nuevaHoraFin)}` });
+    onRegistrarAuditoria?.('modificacion_horario', {
+      jugador: reserva.jugador_nombre,
+      canchaAntes: cancha?.nombre,
+      horaAntes: `${formatoHora12(reserva.hora_inicio)}–${formatoHora12(reserva.hora_fin)}`,
+      canchaDespues: cancha?.nombre,
+      horaDespues: `${formatoHora12(nuevaHoraInicio)}–${formatoHora12(nuevaHoraFin)}`,
+    });
+    onReprogramada?.({ ...reserva, hora_inicio: nuevaHoraInicio, hora_fin: nuevaHoraFin });
+    onClose();
+  }
+
+  // Bloqueo del módulo Torneos & Retas (ver cabecera del archivo): es una
+  // fila de `reservas` sin jugador ni cobro real, así que no tiene sentido
+  // mostrarle el detalle de pago/abono de una reserva normal — solo un
+  // resumen y el botón para liberar el horario.
+  const esBloqueoEvento = reserva.estado === 'Torneo' || reserva.estado === 'Reta';
+  if (esBloqueoEvento) {
+    return (
+      <div className="space-y-4">
+        <div className={`rounded-xl border p-4 ${reserva.estado === 'Torneo' ? 'border-violet-400/30 bg-violet-400/5' : 'border-fuchsia-400/30 bg-fuchsia-400/5'}`}>
+          <div className="flex items-center gap-2">
+            <Lock size={15} className={reserva.estado === 'Torneo' ? 'text-violet-400' : 'text-fuchsia-400'} />
+            <p className="text-sm font-black text-slate-100">{reserva.jugador_nombre}</p>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-y-2 text-xs text-slate-400">
+            <span className="flex items-center gap-1.5">
+              <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <CalendarIcon size={12} /> {formatoFechaLarga(reserva.fecha)}
+            </span>
+            <span className="col-span-2 flex items-center gap-1.5">
+              <Clock size={12} /> {formatoHora12(reserva.hora_inicio)} – {formatoHora12(reserva.hora_fin)}
+            </span>
+          </div>
+          <p className="mt-3 text-[11px] text-slate-500">
+            Gestiona los cupos/participantes desde el módulo Torneos &amp; Retas. Liberar este bloqueo solo abre de nuevo el horario en la
+            Parrilla para reservas regulares.
+          </p>
+        </div>
+        <div className="flex justify-between gap-2">
+          {onVolver ? (
+            <BotonSecundario onClick={onVolver}>
+              <ChevronLeft size={14} /> Volver
+            </BotonSecundario>
+          ) : (
+            <span />
+          )}
+          <button
+            onClick={async () => {
+              setProcesando(true);
+              const { error: errReserva } = await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', reserva.id);
+              setProcesando(false);
+              if (errReserva) {
+                toast({ titulo: 'No se pudo liberar', detalle: errReserva.message, tono: 'error' });
+                return;
+              }
+              toast({ titulo: 'Bloqueo liberado', detalle: 'El horario ya está disponible en la Parrilla.' });
+              onCancelada(reserva.id);
+              onClose();
+            }}
+            disabled={procesando}
+            className="inline-flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
+          >
+            {procesando ? <Loader2 size={15} className="animate-spin" /> : <Lock size={15} />}
+            Liberar Bloqueo
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  async function cancelar() {
+    setProcesando(true);
+    setError('');
+
+    const { error: errReserva } = await supabase
+      .from('reservas')
+      .update({ estado: 'Cancelada' })
+      .eq('id', reserva.id);
+
+    if (errReserva) {
+      setProcesando(false);
+      setError(errReserva.message || 'No se pudo cancelar la reserva.');
+      toast({ titulo: 'Error al cancelar', detalle: errReserva.message, tono: 'error' });
+      return;
+    }
+
+    let saldoAplicado = 0;
+    if (abonarSaldo && reserva.jugador_id && Number(montoAbono) > 0) {
+      try {
+        const { data: jugadorActual, error: errJugador } = await supabase
+          .from('jugadores')
+          .select('saldo_a_favor')
+          .eq('id', reserva.jugador_id)
+          .maybeSingle();
+        if (!errJugador) {
+          const saldoPrevio = Number(jugadorActual?.saldo_a_favor) || 0;
+          const nuevoSaldo = saldoPrevio + Number(montoAbono);
+          const { error: errUpdate } = await supabase
+            .from('jugadores')
+            .update({ saldo_a_favor: nuevoSaldo })
+            .eq('id', reserva.jugador_id);
+          if (!errUpdate) saldoAplicado = Number(montoAbono);
+        }
+      } catch (_e) {
+        /* si jugadores falla, la cancelación de la reserva ya quedó hecha */
+      }
+    }
+
+    setProcesando(false);
+    toast({
+      titulo: 'Reserva cancelada',
+      detalle: saldoAplicado > 0 ? `Se abonaron ${formatoMoneda(saldoAplicado)} de saldo a favor.` : 'El horario quedó liberado.',
+    });
+    // Control Interno — "Cancelaciones de reservas y motivos".
+    onRegistrarAuditoria?.('cancelacion_reserva', {
+      cancha: cancha?.nombre,
+      fecha: reserva.fecha,
+      hora: `${formatoHora12(reserva.hora_inicio)} – ${formatoHora12(reserva.hora_fin)}`,
+      jugador: reserva.jugador_nombre,
+      motivo: motivoCancelacion.trim() || 'Sin especificar',
+    });
+    onCancelada(reserva.id);
+    onClose();
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-black text-slate-100">{reserva.jugador_nombre || 'Jugador'}</p>
+          <BadgePago estadoPago={reserva.estado_pago} />
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-y-2 text-xs text-slate-400">
+          <span className="flex items-center gap-1.5">
+            <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <CalendarIcon size={12} /> {formatoFechaLarga(reserva.fecha)}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Clock size={12} /> {formatoHora12(reserva.hora_inicio)} – {formatoHora12(reserva.hora_fin)}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <DollarSign size={12} /> {formatoMoneda(reserva.monto_total)}
+          </span>
+          {reserva.metodo_pago && (
+            <span className="col-span-2 flex items-center gap-1.5 capitalize">
+              <CreditCard size={12} /> {METODOS_PAGO.find((m) => m.value === reserva.metodo_pago)?.label || reserva.metodo_pago}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {!mostrarCancelacion && !mostrarReprogramar ? (
+        <div className="flex justify-between gap-2">
+          {onVolver ? (
+            <BotonSecundario onClick={onVolver}>
+              <ChevronLeft size={14} /> Volver
+            </BotonSecundario>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2">
+            {permisos?.puedeReprogramarReservas && (
+              <button
+                onClick={() => setMostrarReprogramar(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-violet-500/40 bg-violet-500/10 px-4 py-2.5 text-sm font-bold text-violet-300 transition hover:bg-violet-500/20"
+              >
+                <CalendarRange size={15} /> Reprogramar
+              </button>
+            )}
+            {permisos?.puedeCancelarReservas !== false && (
+              <button
+                onClick={() => setMostrarCancelacion(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold text-rose-300 transition hover:bg-rose-500/20"
+              >
+                <Ban size={15} /> Cancelar Reserva
+              </button>
+            )}
+          </div>
+        </div>
+      ) : mostrarReprogramar ? (
+        <div className="space-y-3 rounded-xl border border-violet-500/30 bg-violet-950/20 p-4">
+          <p className="text-sm font-bold text-violet-200">Reprogramar horario</p>
+          <p className="text-xs text-violet-300/80">
+            {cancha?.nombre || 'Cancha'} · {formatoFechaLarga(reserva.fecha)}
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <Campo label="Nueva hora de inicio">
+              <input
+                type="time"
+                value={nuevaHoraInicio}
+                onChange={(e) => setNuevaHoraInicio(e.target.value)}
+                className={inputClase}
+              />
+            </Campo>
+            <Campo label="Nueva hora de fin">
+              <input type="time" value={nuevaHoraFin} onChange={(e) => setNuevaHoraFin(e.target.value)} className={inputClase} />
+            </Campo>
+          </div>
+          {errorReprogramar && <p className="text-xs font-semibold text-rose-400">{errorReprogramar}</p>}
+          <div className="flex justify-end gap-2 pt-1">
+            <BotonSecundario onClick={() => setMostrarReprogramar(false)} disabled={procesandoReprogramar}>
+              Regresar
+            </BotonSecundario>
+            <button
+              onClick={reprogramar}
+              disabled={procesandoReprogramar}
+              className="inline-flex items-center gap-2 rounded-lg bg-violet-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-violet-400 disabled:opacity-50"
+            >
+              {procesandoReprogramar ? <Loader2 size={15} className="animate-spin" /> : <CalendarRange size={15} />}
+              Confirmar Reprogramación
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3 rounded-xl border border-rose-500/30 bg-rose-950/20 p-4">
+          <p className="text-sm font-bold text-rose-200">¿Confirmas cancelar esta reserva?</p>
+          <p className="text-xs text-rose-300/80">El horario se liberará de inmediato en la parrilla y el cronograma.</p>
+
+          <label className="flex items-start gap-2.5 rounded-lg bg-slate-900/60 p-3">
+            <input
+              type="checkbox"
+              checked={abonarSaldo}
+              onChange={(e) => setAbonarSaldo(e.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-lime-400"
+              disabled={!reserva.jugador_id}
+            />
+            <span className="text-xs text-slate-300">
+              <span className="flex items-center gap-1.5 font-bold text-slate-100">
+                <Wallet size={13} /> Abonar como Saldo a Favor al Wallet del Jugador
+              </span>
+              {!reserva.jugador_id && (
+                <span className="mt-1 block text-amber-400">
+                  Esta reserva no tiene un jugador vinculado, así que no se puede abonar saldo.
+                </span>
+              )}
+            </span>
+          </label>
+
+          {abonarSaldo && reserva.jugador_id && (
+            <Campo label="Monto a abonar (MXN)">
+              <input
+                type="number"
+                min="0"
+                value={montoAbono}
+                onChange={(e) => setMontoAbono(e.target.value)}
+                className={inputClase}
+              />
+            </Campo>
+          )}
+
+          <Campo label="Motivo de cancelación" hint="Queda en el Log de Actividad para auditoría interna.">
+            <input
+              value={motivoCancelacion}
+              onChange={(e) => setMotivoCancelacion(e.target.value)}
+              className={inputClase}
+              placeholder="Ej. Cliente no se presentó, cambio de fecha a petición del jugador..."
+            />
+          </Campo>
+
+          {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <BotonSecundario onClick={() => setMostrarCancelacion(false)} disabled={procesando}>
+              Regresar
+            </BotonSecundario>
+            <button
+              onClick={cancelar}
+              disabled={procesando}
+              className="inline-flex items-center gap-2 rounded-lg bg-rose-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-400 disabled:opacity-50"
+            >
+              {procesando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+              Confirmar Cancelación
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModalDetalleCancha({
+  cancha,
+  reservas,
+  fechaSeleccionada,
+  reservaInicial,
+  permisos,
+  onClose,
+  onCancelada,
+  onReprogramada,
+  onRegistrarAuditoria,
+}) {
+  const [reservaActiva, setReservaActiva] = useState(reservaInicial || null);
+
+  const reservasDelDia = useMemo(
+    () =>
+      reservas
+        .filter((r) => r.cancha_id === cancha.id && r.fecha === fechaSeleccionada && r.estado !== 'Cancelada')
+        .sort((a, b) => (a.hora_inicio || '').localeCompare(b.hora_inicio || '')),
+    [reservas, cancha.id, fechaSeleccionada]
+  );
+
+  if (reservaActiva) {
+    return (
+      <ModalShell
+        titulo="Detalle de Reserva"
+        subtitulo={cancha.nombre}
+        onClose={onClose}
+        icon={Info}
+        ancho="max-w-md"
+      >
+        <DetalleReserva
+          reserva={reservaActiva}
+          cancha={cancha}
+          reservas={reservas}
+          permisos={permisos}
+          onVolver={reservaInicial ? null : () => setReservaActiva(null)}
+          onClose={onClose}
+          onCancelada={onCancelada}
+          onReprogramada={onReprogramada}
+          onRegistrarAuditoria={onRegistrarAuditoria}
+        />
+      </ModalShell>
+    );
+  }
+
+  return (
+    <ModalShell
+      titulo="Horarios del día"
+      subtitulo={`${cancha.nombre} · ${formatoFechaLarga(fechaSeleccionada)}`}
+      onClose={onClose}
+      icon={CalendarDays}
+      ancho="max-w-md"
+    >
+      {reservasDelDia.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 py-8 text-center">
+          <CheckCircle2 size={28} className="text-emerald-400" />
+          <p className="text-sm font-semibold text-slate-300">Sin reservas para este día</p>
+          <p className="text-xs text-slate-500">La cancha está libre en todo el horario.</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {reservasDelDia.map((r) => (
+            <button
+              key={r.id}
+              onClick={() => setReservaActiva(r)}
+              className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3 text-left transition hover:border-lime-400/40"
+            >
+              <div className="min-w-0">
+                <p className="truncate text-sm font-bold text-slate-100">{r.jugador_nombre || 'Jugador'}</p>
+                <p className="text-xs text-slate-500">
+                  {formatoHora12(r.hora_inicio)} – {formatoHora12(r.hora_fin)}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <BadgePago estadoPago={r.estado_pago} />
+                <ChevronRight size={16} className="text-slate-600" />
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
+/* ============================================================================
+ * APP PRINCIPAL
+ * ==========================================================================*/
+
+function ModuloParrillaOperativa({
+  canchas,
+  reservas,
+  loading,
+  tick,
+  permisos,
+  onRegistrarAuditoria,
+  upsertCancha,
+  upsertReserva,
+  marcarReservaCancelada,
+  actualizarEstatusCancha,
+  onReservaParaCobro,
+  bloqueosMaestroTorneoIds,
+  jugadoresPorId,
+}) {
+  const [vista, setVista] = useState('tarjetas');
+  const [busqueda, setBusqueda] = useState('');
+  const [filtroEstatus, setFiltroEstatus] = useState('todos');
+  const [fechaSeleccionada, setFechaSeleccionada] = useState(hoyISO());
+
+  const [modalNuevaCancha, setModalNuevaCancha] = useState(false);
+  const [modalCambiarFoto, setModalCambiarFoto] = useState(null); // cancha
+  const [modalNuevaReserva, setModalNuevaReserva] = useState(null); // { cancha, hora }
+  const [modalDetalle, setModalDetalle] = useState(null); // { cancha, reserva }
+
+  /* ---------------- Métricas ---------------- */
+
+  const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+
+  const metrics = useMemo(() => {
+    const totalCanchas = canchas.length;
+    const hoy = hoyISO();
+    const ahora = minutosAhora();
+    const esHoy = fechaSeleccionada === hoy;
+
+    // Ocupación Actual (%): canchas activas ocupadas exactamente en la fecha
+    // y hora seleccionadas (si la fecha elegida es hoy, "hora" = el reloj del
+    // sistema en vivo; si es otro día, se evalúa esa misma hora del día en la
+    // fecha elegida) sobre el total de canchas activas.
+    const ocupadasEnSeleccion = canchasActivas.filter((c) =>
+      Boolean(reservaEnCursoAhora(reservas, c.id, fechaSeleccionada, ahora))
+    ).length;
+    const ocupacion = canchasActivas.length > 0 ? Math.round((ocupadasEnSeleccion / canchasActivas.length) * 100) : 0;
+
+    // Ingresos del Día ($): suma exactamente sobre la fecha seleccionada en
+    // el datepicker de la cabecera (no siempre "hoy").
+    const reservasFechaSeleccionada = reservas.filter((r) => r.fecha === fechaSeleccionada && r.estado !== 'Cancelada');
+
+    const ingresosPagados = reservasFechaSeleccionada
+      .filter((r) => r.estado_pago === 'pagado')
+      .reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
+    const pendienteCobro = reservasFechaSeleccionada
+      .filter((r) => r.estado_pago === 'pendiente')
+      .reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
+
+    // Próximas Reservas: contador global "de ahora en adelante" (no depende
+    // del filtro de fecha), para que el operador siempre vea lo que se
+    // aproxima sin importar qué día esté navegando en la parrilla.
+    const proximasReservas = reservas.filter((r) => {
+      if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
+      if (r.fecha > hoy) return true;
+      if (r.fecha === hoy) {
+        const ini = parseHoraAMinutos(r.hora_inicio);
+        return ini !== null && ini >= ahora;
+      }
+      return false;
+    }).length;
+
+    return { totalCanchas, ocupacion, ingresosPagados, pendienteCobro, proximasReservas, esHoy };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canchas, canchasActivas, reservas, fechaSeleccionada, tick]);
+
+  /* ---------------- Filtros de la grilla ---------------- */
+
+  const canchasFiltradas = useMemo(() => {
+    return canchas.filter((c) => {
+      if (busqueda.trim() && !c.nombre?.toLowerCase().includes(busqueda.trim().toLowerCase())) return false;
+      if (filtroEstatus !== 'todos') {
+        const estado = estadoActualCancha(c, reservas);
+        if (estado !== filtroEstatus) return false;
+      }
+      return true;
+    });
+  }, [canchas, busqueda, filtroEstatus, reservas]);
+
+  /* ---------------- Render ---------------- */
+
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <MetricCard icon={LayoutGrid} etiqueta="Total Canchas" valor={metrics.totalCanchas} sub={`${canchasActivas.length} activas`} tono="lime" />
+        <MetricCard
+          icon={TrendingUp}
+          etiqueta="Ocupación Actual"
+          valor={`${metrics.ocupacion}%`}
+          sub={metrics.esHoy ? 'Ahora mismo, sobre canchas activas' : `${formatoFechaLarga(fechaSeleccionada)}, misma hora`}
+          tono="sky"
+        />
+        <MetricCard
+          icon={DollarSign}
+          etiqueta="Ingresos del Día"
+          valor={formatoMoneda(metrics.ingresosPagados)}
+          sub={
+            metrics.pendienteCobro > 0
+              ? `+ ${formatoMoneda(metrics.pendienteCobro)} pendientes`
+              : metrics.esHoy
+              ? 'Cobrado hoy'
+              : formatoFechaLarga(fechaSeleccionada)
+          }
+          tono="amber"
+        />
+        <MetricCard icon={Clock} etiqueta="Próximas Reservas" valor={metrics.proximasReservas} sub="Desde ahora, cualquier fecha" tono="violet" />
+      </div>
+
+      <Toolbar
+        vista={vista}
+        onCambiarVista={setVista}
+        busqueda={busqueda}
+        onBusqueda={setBusqueda}
+        fechaSeleccionada={fechaSeleccionada}
+        onCambiarFecha={setFechaSeleccionada}
+        filtroEstatus={filtroEstatus}
+        onFiltroEstatus={setFiltroEstatus}
+        onNuevaCancha={() => setModalNuevaCancha(true)}
+      />
+
+      {loading ? (
+        <SkeletonGrid />
+      ) : canchas.length === 0 ? (
+        <EmptyState onNuevaCancha={() => setModalNuevaCancha(true)} />
+      ) : vista === 'tarjetas' ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {canchasFiltradas.map((c) => (
+            <CanchaCard
+              key={c.id}
+              cancha={c}
+              estadoActual={estadoActualCancha(c, reservas)}
+              reservaActual={reservaEnCursoAhora(reservas, c.id)}
+              proximaReserva={proximaReservaHoy(reservas, c.id)}
+              onNuevaReserva={(cancha) => setModalNuevaReserva({ cancha, hora: null, fecha: fechaSeleccionada })}
+              onVerHorarios={(cancha) => setModalDetalle({ cancha, reserva: null })}
+              onCambiarFoto={(cancha) => setModalCambiarFoto(cancha)}
+              onCambiarEstatus={actualizarEstatusCancha}
+              onReservaClick={(reserva) =>
+                setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
+              }
+            />
+          ))}
+        </div>
+      ) : (
+        <VistaCronograma
+          canchas={canchasFiltradas}
+          reservas={reservas}
+          fechaSeleccionada={fechaSeleccionada}
+          onSlotClick={(cancha, hora) => setModalNuevaReserva({ cancha, hora, fecha: fechaSeleccionada })}
+          onReservaClick={(reserva) =>
+            setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
+          }
+          bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+        />
+      )}
+
+      {modalNuevaCancha && (
+        <ModalNuevaCancha onClose={() => setModalNuevaCancha(false)} onCreada={(cancha) => upsertCancha(cancha)} />
+      )}
+
+      {modalCambiarFoto && (
+        <ModalCambiarFoto
+          cancha={modalCambiarFoto}
+          onClose={() => setModalCambiarFoto(null)}
+          onActualizada={(cancha) => upsertCancha(cancha)}
+        />
+      )}
+
+      {modalNuevaReserva && (
+        <ModalNuevaReserva
+          canchas={canchas}
+          reservas={reservas}
+          canchaInicial={modalNuevaReserva.cancha}
+          horaInicial={modalNuevaReserva.hora}
+          fechaInicial={modalNuevaReserva.fecha}
+          onClose={() => setModalNuevaReserva(null)}
+          onRegistrarAuditoria={onRegistrarAuditoria}
+          jugadoresPorId={jugadoresPorId}
+          onCreada={(reserva, cancha) => {
+            upsertReserva(reserva);
+            onReservaParaCobro?.(reserva, cancha);
+          }}
+        />
+      )}
+
+      {modalDetalle && (
+        <ModalDetalleCancha
+          cancha={modalDetalle.cancha}
+          reservas={reservas}
+          fechaSeleccionada={fechaSeleccionada}
+          reservaInicial={modalDetalle.reserva}
+          permisos={permisos}
+          onClose={() => setModalDetalle(null)}
+          onCancelada={(id) => marcarReservaCancelada(id)}
+          onReprogramada={(reserva) => upsertReserva(reserva)}
+          onRegistrarAuditoria={onRegistrarAuditoria}
+        />
+      )}
+    </>
+  );
+}
+
+/* ============================================================================
+ * MÓDULO 2 — SMART POS (Punto de Venta de Alta Velocidad)
+ * ==========================================================================*/
+
+// `ventas.created_at` es la columna documentada, pero algunos entornos reales
+// terminan con la fecha guardada en `fecha` en su lugar (o con ninguna de las
+// dos accesible por RLS) — de ahí que CUALQUIER consulta de `ventas` por
+// rango de fechas pase por este helper en vez de armar el filtro a mano.
+// Nunca deja caer la pantalla por un desfase de esquema:
+//   1) intenta filtrar en el servidor por `created_at`;
+//   2) si esa columna no existe, reintenta filtrando por `fecha`;
+//   3) si tampoco existe (o el error persiste), trae un lote reciente sin
+//      filtro de servidor y filtra en el cliente con `v.created_at || v.fecha`.
+// `select('*')` a propósito en los 3 intentos: enumerar columnas a mano es
+// justo lo que rompía la consulta cuando una de ellas no existe.
+function esErrorColumnaInexistente(error) {
+  if (!error) return false;
+  return error.code === '42703' || /does not exist/i.test(error.message || '');
+}
+
+function obtenerTimestampVenta(venta) {
+  const crudo = venta?.created_at || venta?.fecha;
+  if (!crudo) return null;
+  const fecha = new Date(crudo);
+  return Number.isNaN(fecha.getTime()) ? null : fecha;
+}
+
+async function consultarVentasEnRango(inicio, fin) {
+  let res = await conClubId(supabase.from('ventas').select('*'))
+    .gte('created_at', inicio.toISOString())
+    .lt('created_at', fin.toISOString());
+  if (!res.error) return { data: res.data || [], error: null };
+
+  if (esErrorColumnaInexistente(res.error)) {
+    res = await conClubId(supabase.from('ventas').select('*')).gte('fecha', inicio.toISOString()).lt('fecha', fin.toISOString());
+    if (!res.error) return { data: res.data || [], error: null };
+  }
+
+  if (esErrorColumnaInexistente(res.error)) {
+    const respaldo = await conClubId(supabase.from('ventas').select('*')).order('id', { ascending: false }).limit(5000);
+    if (respaldo.error) return { data: [], error: respaldo.error };
+    const filtradas = (respaldo.data || []).filter((v) => {
+      const ts = obtenerTimestampVenta(v);
+      return ts && ts >= inicio && ts < fin;
+    });
+    return { data: filtradas, error: null };
+  }
+
+  return { data: [], error: res.error };
+}
+
+// Suma "en vivo" del efectivo teórico del día, calculado desde `ventas`.
+// Es intencionalmente la ÚNICA función que conoce este número — el modal de
+// Arqueo la llama pero nunca imprime su resultado en pantalla.
+// El desglose del cobro dividido se lee de `detalles.pagos_divididos` (jsonb).
+async function calcularMontoTeoricoEfectivo() {
+  const inicio = new Date();
+  inicio.setHours(0, 0, 0, 0);
+  const fin = new Date(inicio);
+  fin.setDate(fin.getDate() + 1);
+
+  const { data, error } = await consultarVentasEnRango(inicio, fin);
+  if (error || !Array.isArray(data)) return 0;
+  let suma = 0;
+  data.forEach((v) => {
+    if (v.metodo_pago === 'efectivo') {
+      suma += Number(v.total) || 0;
+    } else if (v.metodo_pago === 'dividido' && Array.isArray(v.detalles?.pagos_divididos)) {
+      v.detalles.pagos_divididos.forEach((p) => {
+        if (p?.metodo === 'efectivo') suma += Number(p.monto) || 0;
+      });
+    }
+  });
+  return suma;
+}
+
+// Reparte `totalPesos` entre `n` jugadores usando aritmética de centavos
+// (evita errores de redondeo de punto flotante); el resto de centavos se
+// distribuye entre los primeros jugadores para que la suma cierre exacta.
+function repartirCentavos(totalPesos, n) {
+  const totalCentavos = Math.round((Number(totalPesos) || 0) * 100);
+  const base = Math.floor(totalCentavos / n);
+  const resto = totalCentavos - base * n;
+  return Array.from({ length: n }, (_, i) => (base + (i < resto ? 1 : 0)) / 100);
+}
+
+function SkeletonProductos() {
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className="animate-pulse overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
+          <div className="h-24 bg-slate-800 sm:h-28" />
+          <div className="space-y-2 p-2.5">
+            <div className="h-3 w-full rounded bg-slate-800" />
+            <div className="h-3 w-1/2 rounded bg-slate-800" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EmptyStateProductos() {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 py-16 text-center">
+      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-slate-900">
+        <ShoppingBag size={24} className="text-slate-600" />
+      </div>
+      <p className="text-sm font-bold text-slate-300">Todavía no tienes productos cargados</p>
+      <p className="mt-1 max-w-sm text-xs text-slate-500">
+        Crea la tabla <code className="rounded bg-slate-800 px-1 py-0.5 text-[11px] text-slate-300">productos</code> en
+        Supabase (nombre, categoria, precio, stock, imagen_url) y aparecerán aquí automáticamente.
+      </p>
+    </div>
+  );
+}
+
+// `maneja_stock === false` identifica artículos "de cocina" (platillos,
+// nachos, baguettes...) que jamás dependen de un número de stock ni muestran
+// "Agotado" — quedan disponibles siempre, salvo que el admin los marque
+// manualmente como "No disponible" (p. ej. faltan insumos).
+function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
+  // Catálogo Inteligente con Variantes: "Cerveza 355 ml" → Victoria/Corona/
+  // Modelo, "Overgrip" → Tourna/Wilson/Babolat, "Chilaquiles" → Verdes/Rojos/
+  // con Pollo... — cuando el producto tiene variantes, el stock/precio del
+  // registro padre deja de ser lo relevante: se agrega en agregado (suma de
+  // stock de variantes con control) y se muestra un rango de precio si
+  // difieren entre sí.
+  const tieneVariantes = variantes.length > 0;
+  const manejaStock = producto.maneja_stock !== false;
+  const stock = Number(producto.stock);
+  const stockValido = !tieneVariantes && manejaStock && Number.isFinite(stock);
+  const variantesConControl = tieneVariantes ? variantes.filter((v) => v.stock != null) : [];
+  const stockAgregadoVariantes = variantesConControl.reduce((acc, v) => acc + (Number(v.stock) || 0), 0);
+  const sinStockVariantes = tieneVariantes && variantesConControl.length > 0 && stockAgregadoVariantes <= 0;
+  const sinStock = tieneVariantes ? sinStockVariantes : stockValido && stock <= 0;
+  const noDisponible = producto.disponible === false;
+  const bloqueado = sinStock || noDisponible;
+  const catMeta = CATEGORIA_META[producto.categoria];
+  const preciosVariantes = tieneVariantes ? variantes.map((v) => (v.precio != null ? Number(v.precio) : Number(producto.precio) || 0)) : [];
+  const precioMinVariantes = preciosVariantes.length ? Math.min(...preciosVariantes) : null;
+  const precioMaxVariantes = preciosVariantes.length ? Math.max(...preciosVariantes) : null;
+  const rangoPrecioVariantes = precioMinVariantes !== null && precioMinVariantes !== precioMaxVariantes;
+
+  return (
+    <div className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 transition hover:border-lime-400/40">
+      {onEditar && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onEditar(producto);
+          }}
+          title="Editar / disponibilidad / eliminar"
+          className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-slate-950/80 text-slate-300 backdrop-blur transition hover:bg-slate-800 hover:text-lime-400"
+        >
+          <Settings2 size={12} />
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onAgregar}
+        disabled={bloqueado}
+        className="flex flex-1 flex-col text-left disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <div className="relative h-24 w-full overflow-hidden rounded-t-2xl bg-slate-800 sm:h-28">
+          <img
+            src={producto.imagen_url || fallbackImagenProducto(producto)}
+            onError={(e) => {
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = fallbackImagenProducto(producto);
+            }}
+            alt={producto.nombre}
+            className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+          />
+          {catMeta && (
+            <span className={`absolute left-2 top-2 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide backdrop-blur ${catMeta.badge}`}>
+              {catMeta.label}
+            </span>
+          )}
+          {tieneVariantes && (
+            <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-slate-950/80 px-2 py-0.5 text-[9px] font-bold text-lime-300 backdrop-blur">
+              <Layers size={9} /> {variantes.length} opciones
+            </span>
+          )}
+          {sinStock ? (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/70 text-[11px] font-black uppercase tracking-wide text-rose-300">
+              Agotado
+            </div>
+          ) : noDisponible ? (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/70 text-[11px] font-black uppercase tracking-wide text-amber-300">
+              No disponible
+            </div>
+          ) : null}
+        </div>
+        <div className="flex flex-1 flex-col gap-1 p-2.5">
+          <p className="line-clamp-2 text-xs font-bold leading-snug text-slate-100">{producto.nombre}</p>
+          <div className="mt-auto flex items-center justify-between pt-1">
+            <span className="text-sm font-black text-lime-400">
+              {tieneVariantes
+                ? rangoPrecioVariantes
+                  ? `Desde ${formatoMoneda(precioMinVariantes)}`
+                  : formatoMoneda(precioMinVariantes)
+                : formatoMoneda(producto.precio)}
+            </span>
+            {stockValido && (
+              <span className={`text-[10px] font-semibold ${stock > 0 && stock <= 3 ? 'text-amber-400' : 'text-slate-500'}`}>
+                {stock} disp.
+              </span>
+            )}
+            {tieneVariantes && variantesConControl.length > 0 && (
+              <span
+                className={`text-[10px] font-semibold ${
+                  stockAgregadoVariantes > 0 && stockAgregadoVariantes <= 3 ? 'text-amber-400' : 'text-slate-500'
+                }`}
+              >
+                {stockAgregadoVariantes} disp.
+              </span>
+            )}
+          </div>
+        </div>
+      </button>
+    </div>
+  );
+}
+
+// Catálogo Inteligente con Variantes/Modificadores: se abre desde el grid del
+// POS cuando el producto tocado trae entradas en su arreglo JSONB
+// `productos.variantes` — el cajero elige la variante exacta (Cerveza → Victoria/Corona/Modelo, Overgrip
+// → Tourna/Wilson/Babolat, Chilaquiles → Verdes/Rojos/con Pollo/con Huevo)
+// antes de que se agregue a la comanda; cada variante trae su propio precio
+// (o hereda el del producto si no tiene uno propio) y su propio stock.
+function ModalSeleccionarVariante({ producto, variantes, onSeleccionar, onClose }) {
+  return (
+    <ModalShell
+      titulo={producto?.nombre || 'Elegir variante'}
+      subtitulo="Elige la variante exacta para agregarla a la comanda"
+      onClose={onClose}
+      icon={Layers}
+      ancho="max-w-md"
+    >
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {variantes.map((v) => {
+          const precio = v.precio != null ? Number(v.precio) : Number(producto?.precio) || 0;
+          const controlaStock = v.stock != null;
+          const sinStock = controlaStock && Number(v.stock) <= 0;
+          return (
+            <button
+              key={v.id}
+              type="button"
+              disabled={sinStock}
+              onClick={() => onSeleccionar(v)}
+              className="flex flex-col items-start gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-3 text-left transition hover:border-lime-400/50 hover:bg-slate-800/80 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <span className="text-xs font-bold text-slate-100">{v.nombre}</span>
+              <span className="flex w-full items-center justify-between">
+                <span className="text-sm font-black text-lime-400">{formatoMoneda(precio)}</span>
+                {controlaStock && (
+                  <span className={`text-[10px] font-semibold ${sinStock ? 'text-rose-400' : Number(v.stock) <= 3 ? 'text-amber-400' : 'text-slate-500'}`}>
+                    {sinStock ? 'Agotado' : `${v.stock} disp.`}
+                  </span>
+                )}
+              </span>
+            </button>
+          );
+        })}
+        {variantes.length === 0 && <p className="col-span-2 text-xs text-slate-500">Este producto no tiene variantes registradas.</p>}
+      </div>
+    </ModalShell>
+  );
+}
+
+function ComandaPanel({
+  comanda,
+  total,
+  canchas,
+  reservas,
+  canchaVinculadaId,
+  onCambiarCanchaVinculada,
+  canchaAsignadaId,
+  onCambiarCanchaAsignada,
+  onCambiarCantidad,
+  onQuitarProducto,
+  onLimpiar,
+  onDividirCuenta,
+  onAccionPrincipal,
+  registrandoVenta,
+  roster = [],
+  onAsignarJugador,
+  puedeEditarPrecio = false,
+  onEditarPrecio,
+  directorioJugadores = [],
+  clienteNombre = '',
+  onCambiarClienteNombre,
+  clienteTelefono = '',
+  onCambiarClienteTelefono,
+  clienteSeleccionadoId = null,
+  onSeleccionarCliente,
+}) {
+  const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+  const vacio = comanda.length === 0;
+  const totalArticulos = comanda.reduce((acc, i) => acc + i.cantidad, 0);
+  const hayRoster = roster.length > 0;
+  // Control Interno — edición de precio por línea (descuento manual /
+  // edición de precio en POS, ver `onEditarPrecio` en ModuloSmartPOS):
+  // `editandoPrecioId` es el id del renglón con el input abierto, uno a la
+  // vez, para no llenar la comanda de inputs sueltos.
+  const [editandoPrecioId, setEditandoPrecioId] = useState(null);
+  const [precioBorrador, setPrecioBorrador] = useState('');
+
+  return (
+    <div className="sticky top-20 flex flex-col rounded-2xl border border-slate-800 bg-slate-900">
+      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3.5">
+        <div className="flex items-center gap-2">
+          <Receipt size={16} className="text-lime-400" />
+          <h3 className="text-sm font-black text-slate-100">Comanda</h3>
+          {!vacio && (
+            <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-bold text-slate-300">{totalArticulos}</span>
+          )}
+        </div>
+        <button
+          onClick={onLimpiar}
+          disabled={vacio}
+          className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 transition hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Trash2 size={12} /> Limpiar
+        </button>
+      </div>
+
+      <div className="max-h-[360px] overflow-y-auto px-4 py-3">
+        {vacio ? (
+          <div className="flex flex-col items-center gap-2 py-10 text-center">
+            <ShoppingCart size={26} className="text-slate-700" />
+            <p className="text-xs font-semibold text-slate-500">Toca un producto para agregarlo</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {comanda.map((item) => (
+              <div key={item.id} className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center gap-1.5 truncate text-xs font-bold text-slate-100">
+                      {item.tipo === 'cancha' && <Clock size={11} className="shrink-0 text-sky-400" />}
+                      <span className="truncate">{item.nombre}</span>
+                    </p>
+                    {editandoPrecioId === item.id ? (
+                      <div className="mt-1 flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          autoFocus
+                          value={precioBorrador}
+                          onChange={(e) => setPrecioBorrador(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              onEditarPrecio?.(item.id, precioBorrador);
+                              setEditandoPrecioId(null);
+                            } else if (e.key === 'Escape') {
+                              setEditandoPrecioId(null);
+                            }
+                          }}
+                          className="w-20 rounded-md border border-lime-400/40 bg-slate-950 px-1.5 py-0.5 text-[11px] font-bold text-slate-100"
+                        />
+                        <button
+                          onClick={() => {
+                            onEditarPrecio?.(item.id, precioBorrador);
+                            setEditandoPrecioId(null);
+                          }}
+                          className="text-lime-400 hover:text-lime-300"
+                        >
+                          <CheckCircle2 size={14} />
+                        </button>
+                        <button onClick={() => setEditandoPrecioId(null)} className="text-slate-500 hover:text-slate-300">
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="flex items-center gap-1 text-[11px] text-slate-500">
+                        {formatoMoneda(item.precio)} c/u
+                        {puedeEditarPrecio && (
+                          <button
+                            onClick={() => {
+                              setPrecioBorrador(String(item.precio));
+                              setEditandoPrecioId(item.id);
+                            }}
+                            className="text-slate-600 transition hover:text-amber-400"
+                            title="Editar precio / aplicar descuento"
+                          >
+                            <Pencil size={11} />
+                          </button>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      onClick={() => onCambiarCantidad(item.id, -1)}
+                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-700 bg-slate-800 text-slate-300 transition hover:bg-slate-700"
+                    >
+                      <Minus size={12} />
+                    </button>
+                    <span className="w-5 text-center text-xs font-bold text-slate-100">{item.cantidad}</span>
+                    <button
+                      onClick={() => onCambiarCantidad(item.id, 1)}
+                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-700 bg-slate-800 text-slate-300 transition hover:bg-slate-700"
+                    >
+                      <Plus size={12} />
+                    </button>
+                  </div>
+                  <span className="w-16 shrink-0 text-right text-xs font-black text-lime-400">
+                    {formatoMoneda(item.precio * item.cantidad)}
+                  </span>
+                  <button onClick={() => onQuitarProducto(item.id)} className="shrink-0 text-slate-600 transition hover:text-rose-400">
+                    <X size={13} />
+                  </button>
+                </div>
+                {/* Split Bill Asimétrico: reasigna esta línea a un jugador del
+                    roster (o la deja "Sin asignar") — solo aparece cuando hay
+                    un roster activo para la cancha vinculada. Los artículos
+                    tipo 'cancha' no se asignan aquí: su cuota se reparte
+                    aparte en el desglose de Split Bill. */}
+                {hayRoster && item.tipo !== 'cancha' && (
+                  <select
+                    value={item.jugadorIndice ?? ''}
+                    onChange={(e) => onAsignarJugador?.(item.id, e.target.value === '' ? null : Number(e.target.value))}
+                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[10px] font-semibold text-slate-300"
+                  >
+                    <option value="">Sin asignar / compartido</option>
+                    {roster.map((j, i) => (
+                      <option key={i} value={i}>
+                        Para: {j.nombre || `Jugador ${i + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-3 border-t border-slate-800 px-4 py-3.5">
+        {/* CRM Unificado: asigna esta comanda a un cliente del directorio (o
+            da de alta uno nuevo en el momento) sin importar si trae cancha
+            vinculada — permite que ventas de Pro-Shop/Cafetería sin cancha
+            igual alimenten su historial/LTV. Cuando ya hay un roster (cuenta
+            de cancha con Split Bill) cada jugador se resuelve individualmente
+            al cobrar su cuota, así que este campo se oculta para no duplicar
+            la captura. */}
+        {!hayRoster && (
+          <div className="space-y-1.5 rounded-lg border border-slate-800 bg-slate-950/40 p-2.5">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              <Users size={12} /> Cliente (opcional — CRM)
+            </span>
+            <SelectorJugadorRegistrado
+              jugadores={directorioJugadores}
+              nombre={clienteNombre}
+              onNombreChange={onCambiarClienteNombre}
+              jugadorSeleccionadoId={clienteSeleccionadoId}
+              onSeleccionarJugador={(j) => {
+                onSeleccionarCliente?.(j?.id || null);
+                if (j?.telefono) onCambiarClienteTelefono?.(j.telefono);
+              }}
+              placeholder="Buscar cliente o escribir nombre nuevo..."
+            />
+            <input
+              value={clienteTelefono}
+              onChange={(e) => {
+                onCambiarClienteTelefono?.(e.target.value);
+                if (clienteSeleccionadoId) onSeleccionarCliente?.(null);
+              }}
+              className={`${inputClase} text-xs`}
+              placeholder="Teléfono (10 dígitos) — identificador del cliente"
+              inputMode="tel"
+            />
+          </div>
+        )}
+
+        <label className="block">
+          <span className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            <Link2 size={12} /> Vincular a Cancha (cuenta abierta)
+          </span>
+          <select value={canchaVinculadaId} onChange={(e) => onCambiarCanchaVinculada(e.target.value)} className={inputClase}>
+            <option value="">Cobrar directo (sin cancha)</option>
+            {canchasActivas.map((c) => {
+              const estado = estadoActualCancha(c, reservas);
+              const etiquetaEstado = estado === 'en_juego' ? ' · En Juego' : estado === 'reservada' ? ' · Reservada' : '';
+              return (
+                <option key={c.id} value={c.id}>
+                  {c.nombre}
+                  {etiquetaEstado}
+                </option>
+              );
+            })}
+          </select>
+        </label>
+
+        {!canchaVinculadaId && (
+          <label className="block">
+            <span className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              <MapPin size={12} /> Asignar a Cancha (opcional)
+            </span>
+            <select value={canchaAsignadaId} onChange={(e) => onCambiarCanchaAsignada(e.target.value)} className={inputClase}>
+              <option value="">Ninguna / Venta General</option>
+              {canchasActivas.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-[10px] text-slate-500">
+              Solo para reportes de Analytics BI (Ingresos Cruzados) — no cambia cómo se cobra el ticket.
+            </span>
+          </label>
+        )}
+
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Total</span>
+          <span className="text-2xl font-black text-slate-100">{formatoMoneda(total)}</span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <BotonSecundario onClick={onDividirCuenta} disabled={vacio || Boolean(canchaVinculadaId)}>
+            <Divide size={14} /> Dividir Cuenta
+          </BotonSecundario>
+          <BotonPrimario onClick={onAccionPrincipal} disabled={vacio || registrandoVenta}>
+            {registrandoVenta ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : canchaVinculadaId ? (
+              <Link2 size={14} />
+            ) : (
+              <DollarSign size={14} />
+            )}
+            {canchaVinculadaId ? 'Agregar a la Cuenta' : 'Cobrar'}
+          </BotonPrimario>
+        </div>
+
+        {canchaVinculadaId && (
+          <p className="flex items-center gap-1.5 rounded-lg bg-sky-400/10 px-2.5 py-2 text-[11px] font-semibold text-sky-300 ring-1 ring-sky-400/20">
+            <Info size={12} /> Se suma como pendiente a esa cancha; se cobra después, junto con la reserva.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Mini-flujo de confirmación de cobro reutilizado por el pago normal y por
+// cada fila del Split Bill: Efectivo siempre pide cuánto se recibió y
+// calcula el cambio; Tarjeta/SPEI piden una confirmación explícita antes de
+// darse por liquidados (nunca se cobran "solos" con un clic).
+function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto = false }) {
+  const [paso, setPaso] = useState('elegir'); // 'elegir' | 'efectivo' | 'confirmarTerminal'
+  const [metodo, setMetodo] = useState(null);
+  const [efectivoRecibido, setEfectivoRecibido] = useState('');
+
+  const cambio = Math.max(0, Math.round(((Number(efectivoRecibido) || 0) - monto) * 100) / 100);
+  const alcanza = Number(efectivoRecibido) >= monto && efectivoRecibido !== '';
+
+  function elegir(m) {
+    setMetodo(m);
+    setPaso(m === 'efectivo' ? 'efectivo' : 'confirmarTerminal');
+  }
+
+  const inputSize = compacto ? 'text-xs' : '';
+  const botonVolver = (
+    <button
+      onClick={() => setPaso('elegir')}
+      disabled={deshabilitado}
+      className="rounded-md px-2.5 py-1.5 text-[11px] font-bold text-slate-400 transition hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      Atrás
+    </button>
+  );
+
+  if (paso === 'efectivo') {
+    return (
+      <div className="space-y-2">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={efectivoRecibido}
+          onChange={(e) => setEfectivoRecibido(e.target.value)}
+          className={`${inputClase} ${inputSize}`}
+          placeholder="Efectivo recibido"
+          autoFocus
+        />
+        <div className="flex items-center justify-between text-xs">
+          <span className="font-semibold text-slate-400">Cambio a entregar</span>
+          <span className={`font-black ${alcanza ? 'text-emerald-400' : 'text-slate-600'}`}>{formatoMoneda(cambio)}</span>
+        </div>
+        <div className="flex justify-end gap-1.5">
+          {botonVolver}
+          <button
+            onClick={() => onConfirmar({ metodo: 'efectivo', cambio })}
+            disabled={!alcanza || deshabilitado}
+            className="inline-flex items-center gap-1.5 rounded-md bg-lime-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {deshabilitado && <Loader2 size={12} className="animate-spin" />}
+            Confirmar Cobro
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (paso === 'confirmarTerminal') {
+    const metaMetodo = METODOS_PAGO_POS.find((m) => m.value === metodo);
+    const Icon = metaMetodo?.icon || CreditCard;
+    return (
+      <div className="space-y-2">
+        <div className="flex items-start gap-2 rounded-lg border border-dashed border-slate-700 bg-slate-950 px-3 py-2.5">
+          <Icon size={16} className="mt-0.5 shrink-0 text-lime-400" />
+          <p className="text-[11px] text-slate-300">
+            Procesa {formatoMoneda(monto)} en {metodo === 'tarjeta' ? 'la terminal (TPV)' : 'la banca / app SPEI'}. No confirmes hasta ver el
+            comprobante.
+          </p>
+        </div>
+        <div className="flex justify-end gap-1.5">
+          {botonVolver}
+          <button
+            onClick={() => onConfirmar({ metodo })}
+            disabled={deshabilitado}
+            className="inline-flex items-center gap-1.5 rounded-md bg-lime-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {deshabilitado && <Loader2 size={12} className="animate-spin" />}
+            Sí, el cobro se completó
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`grid gap-1.5 ${compacto ? 'grid-cols-3' : ''}`}>
+      {METODOS_PAGO_POS.map((m) => {
+        const Icon = m.icon;
+        return compacto ? (
+          <button
+            key={m.value}
+            onClick={() => elegir(m.value)}
+            className="flex flex-col items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 py-2 text-[10px] font-bold text-slate-300 transition hover:border-lime-400/40 hover:text-lime-400"
+          >
+            <Icon size={14} />
+            {m.label}
+          </button>
+        ) : (
+          <button
+            key={m.value}
+            onClick={() => elegir(m.value)}
+            className="flex w-full items-center gap-3 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-left transition hover:border-lime-400/40 hover:bg-slate-700"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
+              <Icon size={17} />
+            </div>
+            <span className="text-sm font-bold text-slate-100">{m.label}</span>
+          </button>
+        );
+      })}
+      {onCancelar}
+    </div>
+  );
+}
+
+function ModalCobro({ total, onClose, onConfirmado, onDividir, registrandoVenta }) {
+  return (
+    <ModalShell titulo="Cobrar" subtitulo={formatoMoneda(total)} onClose={onClose} icon={DollarSign} ancho="max-w-sm">
+      <PasosDeCobro
+        monto={total}
+        deshabilitado={registrandoVenta}
+        onConfirmar={({ metodo, cambio }) => onConfirmado(metodo, cambio)}
+        onCancelar={
+          <button
+            key="dividir"
+            onClick={onDividir}
+            disabled={registrandoVenta}
+            className="flex w-full items-center gap-3 rounded-xl border border-dashed border-slate-700 bg-slate-800/50 px-4 py-3 text-left transition hover:border-lime-400/40 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-400/10 text-violet-400">
+              <Divide size={17} />
+            </div>
+            <span className="text-sm font-bold text-slate-100">Cobro Dividido</span>
+          </button>
+        }
+      />
+    </ModalShell>
+  );
+}
+
+function FilaPagoJugador({ indice, monto, pagado, onPagado }) {
+  if (pagado) {
+    return (
+      <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/5 px-3.5 py-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-bold text-slate-100">Jugador {indice + 1}</span>
+          <span className="text-sm font-black text-slate-100">{formatoMoneda(monto)}</span>
+        </div>
+        <span className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
+          <CheckCircle2 size={13} /> Pagado con {METODOS_PAGO_POS.find((m) => m.value === pagado.metodo)?.label}
+          {pagado.metodo === 'efectivo' && pagado.cambio > 0 && ` · Cambio: ${formatoMoneda(pagado.cambio)}`}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-bold text-slate-100">Jugador {indice + 1}</span>
+        <span className="text-sm font-black text-slate-100">{formatoMoneda(monto)}</span>
+      </div>
+      <PasosDeCobro compacto monto={monto} onConfirmar={(datos) => onPagado(indice, datos)} onCancelar={null} />
+    </div>
+  );
+}
+
+function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta }) {
+  const [numJugadores, setNumJugadores] = useState(2);
+  const partes = useMemo(() => repartirCentavos(total, numJugadores), [total, numJugadores]);
+  const [pagos, setPagos] = useState(() => Array.from({ length: 2 }, () => null)); // null | { metodo, cambio? }
+
+  useEffect(() => {
+    setPagos(Array.from({ length: numJugadores }, () => null));
+  }, [numJugadores]);
+
+  const totalPagado = pagos.reduce((acc, p, i) => (p ? acc + partes[i] : acc), 0);
+  const saldoPendiente = Math.max(0, Math.round((total - totalPagado) * 100) / 100);
+  const todosPagados = pagos.length > 0 && pagos.every(Boolean);
+
+  function marcarPagado(idx, datos) {
+    setPagos((prev) => prev.map((p, i) => (i === idx ? datos : p)));
+  }
+
+  return (
+    <ModalShell titulo="Dividir Cuenta" subtitulo={`Total: ${formatoMoneda(total)}`} onClose={onClose} icon={Divide} ancho="max-w-lg">
+      <div className="space-y-4">
+        <div>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">¿Entre cuántos jugadores?</span>
+          <div className="grid grid-cols-3 gap-2">
+            {[2, 3, 4].map((n) => (
+              <button
+                key={n}
+                onClick={() => setNumJugadores(n)}
+                className={`rounded-lg border px-3 py-2 text-sm font-bold transition ${
+                  numJugadores === n
+                    ? 'border-lime-400 bg-lime-400/10 text-lime-400'
+                    : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                {n} jugadores
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="max-h-[360px] space-y-2 overflow-y-auto pr-0.5">
+          {partes.map((monto, i) => (
+            <FilaPagoJugador key={i} indice={i} monto={monto} pagado={pagos[i]} onPagado={marcarPagado} />
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between rounded-xl bg-slate-950 px-4 py-3">
+          <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Saldo pendiente</span>
+          <span className={`text-lg font-black ${saldoPendiente > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {formatoMoneda(saldoPendiente)}
+          </span>
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+          <BotonPrimario
+            onClick={() =>
+              onFinalizar(pagos.map((p, i) => ({ jugador: i + 1, monto: partes[i], metodo: p?.metodo || null, cambio: p?.cambio || 0 })))
+            }
+            disabled={!todosPagados || registrandoVenta}
+          >
+            {registrandoVenta ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Finalizar Venta
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalArqueo({ operador, turno, onClose, onGuardarCierre }) {
+  const toast = useToast();
+  const [efectivoContado, setEfectivoContado] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+  const [guardado, setGuardado] = useState(false);
+
+  async function guardar() {
+    if (efectivoContado === '' || Number(efectivoContado) < 0) {
+      setError('Ingresa el efectivo contado en físico.');
+      return;
+    }
+    setGuardando(true);
+    setError('');
+
+    const montoTeorico = await calcularMontoTeoricoEfectivo();
+    const montoReportado = Number(efectivoContado);
+    const diferencia = Math.round((montoReportado - montoTeorico) * 100) / 100;
+
+    // `onGuardarCierre` (App() → `crearCierreCaja`) tiene tolerancia total:
+    // si Supabase falla, igual queda guardado en modo local — nunca bloquea
+    // el cierre de turno del cajero.
+    await onGuardarCierre({ montoReportado, montoTeorico, diferencia, turno: turno?.valor || null });
+
+    setGuardando(false);
+
+    // A propósito: NUNCA se muestra `diferencia` ni `montoTeorico` en pantalla —
+    // el arqueo es ciego para quien está contando el efectivo. Las
+    // diferencias (sobrantes/faltantes) quedan notificadas al Admin en el
+    // panel de Control & Seguridad → Cortes de Caja.
+    setGuardado(true);
+    toast({ titulo: 'Arqueo registrado', detalle: 'Tu turno quedó cerrado y guardado.' });
+  }
+
+  if (guardado) {
+    return (
+      <ModalShell titulo="Arqueo Registrado" onClose={onClose} icon={CheckCircle2} ancho="max-w-sm">
+        <div className="flex flex-col items-center gap-3 py-6 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-400/10 text-emerald-400">
+            <CheckCircle2 size={28} />
+          </div>
+          <p className="text-sm font-bold text-slate-100">Cierre de turno guardado</p>
+          <p className="max-w-xs text-xs text-slate-500">
+            El conteo quedó registrado. La diferencia contra el sistema se calculó y se guardó para revisión
+            administrativa — a propósito, no se muestra aquí.
+          </p>
+          <BotonPrimario onClick={onClose} className="mt-2">
+            Entendido
+          </BotonPrimario>
+        </div>
+      </ModalShell>
+    );
+  }
+
+  return (
+    <ModalShell
+      titulo="Cerrar Turno / Arqueo de Caja"
+      subtitulo="Conteo ciego — no verás los totales del sistema"
+      onClose={onClose}
+      icon={Calculator}
+      ancho="max-w-sm"
+    >
+      <div className="space-y-4">
+        <div className="flex items-start gap-2 rounded-lg bg-amber-400/10 px-3 py-2.5 text-xs font-semibold text-amber-300 ring-1 ring-amber-400/20">
+          <EyeOff size={14} className="mt-0.5 shrink-0" />
+          Cuenta el efectivo físico en caja e ingrésalo tal cual. El sistema no te mostrará el total teórico.
+        </div>
+        <Campo label="Efectivo contado (MXN)">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={efectivoContado}
+            onChange={(e) => setEfectivoContado(e.target.value)}
+            className={inputClase}
+            placeholder="0.00"
+            autoFocus
+          />
+        </Campo>
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <Calculator size={15} />}
+            Guardar Arqueo
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Control Interno — "Devoluciones... en POS" (ver `registrarDevolucion` en
+// ModuloSmartPOS): regresa unidades de un producto al stock desde el propio
+// mostrador, sin tener que salir a ERP & Inventario. Gateado por
+// `permisos.puedeRegistrarDevolucionPOS`.
+function ModalDevolucionPOS({ productos, onClose, onRegistrar }) {
+  const productosDisponibles = useMemo(() => productos.filter((p) => p.activo !== false), [productos]);
+  const [productoId, setProductoId] = useState(productosDisponibles[0]?.id || '');
+  const [cantidad, setCantidad] = useState('1');
+  const [motivo, setMotivo] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  const producto = productosDisponibles.find((p) => p.id === productoId) || null;
+
+  async function guardar() {
+    if (!producto) {
+      setError('Selecciona un producto.');
+      return;
+    }
+    const cant = Number(cantidad);
+    if (!Number.isFinite(cant) || cant <= 0) {
+      setError('Ingresa una cantidad válida.');
+      return;
+    }
+    setGuardando(true);
+    setError('');
+    const ok = await onRegistrar(producto, cant, motivo.trim());
+    setGuardando(false);
+    if (ok) onClose();
+  }
+
+  return (
+    <ModalShell titulo="Registrar Devolución" subtitulo="Regresa unidades al stock" onClose={onClose} icon={RefreshCw} ancho="max-w-sm">
+      <div className="space-y-4">
+        {productosDisponibles.length === 0 ? (
+          <p className="text-xs text-slate-500">No hay productos en el catálogo todavía.</p>
+        ) : (
+          <>
+            <Campo label="Producto">
+              <select value={productoId} onChange={(e) => setProductoId(e.target.value)} className={inputClase}>
+                {productosDisponibles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.nombre}
+                  </option>
+                ))}
+              </select>
+            </Campo>
+            <Campo label="Cantidad a regresar">
+              <input
+                type="number"
+                min="1"
+                value={cantidad}
+                onChange={(e) => setCantidad(e.target.value)}
+                className={inputClase}
+              />
+            </Campo>
+            <Campo label="Motivo">
+              <input
+                value={motivo}
+                onChange={(e) => setMotivo(e.target.value)}
+                className={inputClase}
+                placeholder="Ej. Pedido equivocado, producto en mal estado..."
+              />
+            </Campo>
+          </>
+        )}
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando || !producto}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+            Registrar Devolución
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ---------------- Nuevo Producto (con imagen: URL o archivo → base64) ---------------- */
+
+// Modal doble propósito: SIN `producto` = alta ("+ Nuevo Producto"); CON
+// `producto` = edición (nombre/precio/foto/stock, toggle de inventario,
+// toggle Disponible/No disponible y botón Eliminar). El admin siempre puede
+// entrar a editar/eliminar un producto aunque figure "Agotado" o "No
+// disponible" — el candado del catálogo solo bloquea el botón de AGREGAR.
+function ModalNuevoProducto({
+  producto,
+  variantesDelProducto = [],
+  onClose,
+  onGuardado,
+  onEliminado,
+  upsertVarianteProducto,
+  quitarVarianteProductoLocal,
+  upsertProducto,
+}) {
+  const toast = useToast();
+  const editando = Boolean(producto);
+  const [nombre, setNombre] = useState(producto?.nombre || '');
+  const [categoria, setCategoria] = useState(
+    producto?.categoria || CATEGORIAS_PRODUCTO.find((c) => c.value !== 'todos')?.value || 'Pro-Shop'
+  );
+  const [precio, setPrecio] = useState(producto?.precio != null ? String(producto.precio) : '');
+  const [manejaStock, setManejaStock] = useState(producto?.maneja_stock !== false);
+  const [stock, setStock] = useState(producto?.stock != null ? String(producto.stock) : '');
+  const [disponible, setDisponible] = useState(producto?.disponible !== false);
+  const [imagenUrl, setImagenUrl] = useState(producto?.imagen_url || '');
+  const [guardando, setGuardando] = useState(false);
+  const [eliminando, setEliminando] = useState(false);
+  const [confirmarEliminar, setConfirmarEliminar] = useState(false);
+  const [error, setError] = useState('');
+
+  // Catálogo Inteligente con Variantes/Modificadores — FIX DEFINITIVO: las
+  // variantes de un producto ya NO viven en una tabla aparte
+  // (`producto_variantes` no existe en este proyecto de Supabase) — viven
+  // ÚNICAMENTE en el arreglo JSONB `productos.variantes`, en la MISMA fila
+  // del producto padre. Cada entrada trae nombre/precio/stock/costo_unitario/
+  // stock_minimo (Variantes como Productos Completos: alimentan Margen
+  // Bruto %, Días de Cobertura y Estatus de Reabastecimiento por variante,
+  // igual que un producto normal — ver `FilaVarianteInventarioCompleta`).
+  // "Cerveza 355 ml" → Victoria/Corona/Modelo, "Overgrip" →
+  // Tourna/Wilson/Babolat, "Chilaquiles" → Verdes/Rojos/con Pollo/con Huevo.
+  // Ya no hay un paso de sincronización posterior ni un respaldo local
+  // (`LS_KEY_VARIANTES_LOCAL`): el arreglo completo se arma en memoria a
+  // partir de estas filas y se guarda en el MISMO insert/update del
+  // producto padre (ver `guardar()`), como cualquier otra columna.
+  const [variantes, setVariantes] = useState(() =>
+    (variantesDelProducto || []).map((v) => ({
+      id: v.id,
+      nombre: v.nombre || '',
+      precio: v.precio != null ? String(v.precio) : '',
+      stock: v.stock != null ? String(v.stock) : '',
+      costoUnitario: v.costo_unitario != null ? String(v.costo_unitario) : '',
+      stockMinimo: v.stock_minimo != null ? String(v.stock_minimo) : '',
+      _nueva: false,
+    }))
+  );
+
+  // Sincronización Automática Padre-Variantes: en cuanto el producto tiene
+  // al menos una fila de variante, el Stock Total del padre deja de ser un
+  // número que el operador captura a mano — se calcula solo como la suma del
+  // stock de todas las variantes en pantalla (filas vacías/a medio llenar no
+  // cuentan). Esto evita el desfase clásico de "el padre dice 40 pero sus
+  // variantes suman 55" que pasaba cuando ambos números se editaban por
+  // separado. Ver `guardar()` (usa este valor en vez de `stock` cuando hay
+  // variantes) y el input de Stock Total más abajo (se vuelve de solo lectura).
+  const tieneVariantes = variantes.some((v) => (v.nombre || '').trim());
+  const stockCalculadoDeVariantes = useMemo(
+    () => variantes.reduce((acc, v) => acc + (v.nombre.trim() ? Number(v.stock) || 0 : 0), 0),
+    [variantes]
+  );
+
+  function agregarFilaVariante() {
+    setVariantes((prev) => [
+      ...prev,
+      { id: idLocal('variante'), nombre: '', precio: '', stock: '', costoUnitario: '', stockMinimo: '', _nueva: true },
+    ]);
+  }
+  function actualizarFilaVariante(id, campo, valor) {
+    setVariantes((prev) => prev.map((v) => (v.id === id ? { ...v, [campo]: valor } : v)));
+  }
+  function eliminarFilaVariante(id) {
+    // JSONB puro: quitar la fila de la pantalla basta — al guardar, el
+    // arreglo `productos.variantes` se reescribe completo a partir de las
+    // filas visibles, así que una fila quitada simplemente deja de
+    // aparecer en el próximo `UPDATE`. No hace falta una baja lógica
+    // aparte ni tocar ningún respaldo local.
+    setVariantes((prev) => prev.filter((v) => v.id !== id));
+  }
+
+  const imagenPreview = imagenUrl;
+
+  // Manejo Universal de Imágenes: `SelectorArchivoImagen` sube el archivo al
+  // bucket `app-media` de Supabase Storage (ver `uploadMedia`) y entrega
+  // aquí la URL pública resultante — nunca un base64/blob local, para que la
+  // foto del producto se vea igual en Mac, iPad o cualquier navegador.
+  function onImagenSubida(url) {
+    setError('');
+    setImagenUrl(url);
+  }
+
+  async function guardar() {
+    if (!nombre.trim()) {
+      setError('El nombre del producto es obligatorio.');
+      return;
+    }
+    if (precio === '' || Number(precio) < 0) {
+      setError('Indica un precio válido.');
+      return;
+    }
+    setGuardando(true);
+    setError('');
+
+    const imagen = imagenUrl.trim();
+
+    // FIX DEFINITIVO de variantes: el arreglo JSONB completo se arma aquí,
+    // en memoria, a partir de las filas visibles en pantalla — filas vacías
+    // a medio llenar se ignoran, así que "borrar" una variante es tan
+    // simple como quitarla de la lista antes de guardar. Se escribe en la
+    // MISMA columna `productos.variantes` del MISMO insert/update de abajo:
+    // ya no hay una tabla aparte ni un paso posterior que pueda fallar a
+    // medias.
+    const variantesJSONB = variantes
+      .filter((v) => (v.nombre || '').trim())
+      .map((v) => ({
+        nombre: v.nombre.trim(),
+        precio: v.precio === '' ? null : Number(v.precio),
+        stock: v.stock === '' ? null : Number(v.stock),
+        costo_unitario: v.costoUnitario === '' ? null : Number(v.costoUnitario),
+        stock_minimo: v.stockMinimo === '' ? null : Number(v.stockMinimo),
+        activo: true,
+      }));
+
+    const campos = {
+      nombre: nombre.trim(),
+      categoria,
+      precio: Number(precio),
+      maneja_stock: manejaStock,
+      // Sincronización Automática Padre-Variantes: con variantes en pantalla,
+      // el Stock Total NUNCA sale de lo que el operador tecleó a mano en este
+      // campo — siempre es la suma recién calculada de `variantes` (ver
+      // `stockCalculadoDeVariantes`), que ya coincide exactamente con la suma
+      // de `variantesJSONB` porque ambas vienen de la misma lista en pantalla.
+      stock: !manejaStock ? null : tieneVariantes ? stockCalculadoDeVariantes : stock === '' ? 0 : Number(stock),
+      disponible,
+      variantes: variantesJSONB,
+    };
+    // La imagen solo se sobrescribe si el admin pegó una URL o subió un
+    // archivo nuevo; así editar otros campos no borra la foto existente.
+    if (imagen) campos.imagen_url = imagen;
+
+    const query = editando
+      ? supabase.from('productos').update(campos).eq('id', producto.id)
+      : supabase.from('productos').insert(withClubId({ ...campos, imagen_url: imagen || null, activo: true }));
+
+    const { data, error: err } = await query.select().single();
+
+    setGuardando(false);
+
+    if (err) {
+      setError(err.message || 'No se pudo guardar el producto.');
+      toast({ titulo: 'Error al guardar producto', detalle: err.message, tono: 'error' });
+      return;
+    }
+
+    toast({ titulo: editando ? 'Producto actualizado' : 'Producto creado', detalle: `${data.nombre} ya está en el catálogo.` });
+    onGuardado(data);
+    upsertProducto?.(data);
+    onClose();
+  }
+
+  async function eliminar() {
+    setEliminando(true);
+    setError('');
+    // Borrado lógico: activo=false, para no romper ventas históricas que ya
+    // referencian este producto en su `detalles` jsonb.
+    const { error: err } = await supabase.from('productos').update({ activo: false }).eq('id', producto.id);
+    setEliminando(false);
+
+    if (err) {
+      setError(err.message || 'No se pudo eliminar el producto.');
+      toast({ titulo: 'Error al eliminar producto', detalle: err.message, tono: 'error' });
+      return;
+    }
+
+    toast({ titulo: 'Producto eliminado', detalle: `${producto.nombre} salió del catálogo.` });
+    onEliminado(producto.id);
+    onClose();
+  }
+
+  return (
+    <ModalShell
+      titulo={editando ? 'Editar Producto' : '+ Nuevo Producto'}
+      subtitulo={editando ? 'Nombre, precio, foto, stock, disponibilidad' : 'Se agrega al catálogo del POS'}
+      onClose={onClose}
+      icon={editando ? Settings2 : Plus}
+      ancho="max-w-lg"
+    >
+      <div className="space-y-4">
+        <Campo label="Nombre del producto">
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Pelotas Head Padel x3" />
+        </Campo>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Categoría">
+            <select value={categoria} onChange={(e) => setCategoria(e.target.value)} className={inputClase}>
+              {CATEGORIAS_PRODUCTO.filter((c) => c.value !== 'todos').map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Precio (MXN)">
+            <input type="number" min="0" value={precio} onChange={(e) => setPrecio(e.target.value)} className={inputClase} placeholder="0" />
+          </Campo>
+        </div>
+
+        <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2.5">
+          <span className="text-xs font-semibold text-slate-200">
+            Maneja Inventario / Stock Rígido
+            <span className="mt-0.5 block text-[10px] font-normal text-slate-500">
+              Desactívalo para platillos (nachos, baguettes...): nunca mostrarán "Agotado".
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={manejaStock}
+            onChange={(e) => setManejaStock(e.target.checked)}
+            className="h-4 w-8 shrink-0 accent-lime-400"
+          />
+        </label>
+
+        {manejaStock && (
+          <Campo
+            label={tieneVariantes ? 'Stock Total (automático)' : editando ? 'Stock' : 'Stock inicial'}
+            hint={tieneVariantes ? 'Se calcula solo — es la suma del stock de todas las variantes de abajo.' : undefined}
+          >
+            {tieneVariantes ? (
+              <div className={`${inputClase} flex cursor-not-allowed items-center justify-between bg-slate-800/60 text-slate-400`}>
+                <span className="font-black text-slate-200">{stockCalculadoDeVariantes}</span>
+                <Lock size={13} className="text-slate-500" />
+              </div>
+            ) : (
+              <input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} className={inputClase} placeholder="0" />
+            )}
+          </Campo>
+        )}
+
+        <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-200">
+              Variantes / Modificadores
+              <span className="mt-0.5 block text-[10px] font-normal text-slate-500">
+                Ej. "Cerveza 355 ml" → Victoria, Corona, Modelo · "Overgrip" → Tourna, Wilson · "Chilaquiles" → Verdes, Rojos, con Pollo
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={agregarFilaVariante}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] font-bold text-lime-400 transition hover:border-lime-400/50"
+            >
+              <Plus size={12} /> Variante
+            </button>
+          </div>
+          {variantes.length === 0 ? (
+            <p className="text-[11px] text-slate-500">Sin variantes — este producto se agrega directo a la comanda con un click.</p>
+          ) : (
+            <div className="space-y-2">
+              {variantes.map((v) => (
+                <div key={v.id} className="space-y-1.5 rounded-md border border-slate-700/60 bg-slate-900/50 p-2">
+                  {/* Nombre en su propio renglón, ancho completo: dentro de una
+                      fila `flex` junto a precio/stock/eliminar, este campo se
+                      comprimía casi a 0px (se veía como una barra negra sin
+                      espacio para escribir). Aislado en su propio renglón,
+                      `inputClase` (que ya trae `w-full`) funciona sin pelearse
+                      por espacio con inputs de ancho fijo. */}
+                  <input
+                    value={v.nombre}
+                    onChange={(e) => actualizarFilaVariante(v.id, 'nombre', e.target.value)}
+                    className={inputClase}
+                    placeholder="Nombre de la variante (ej. Victoria, Corona, Verdes...)"
+                  />
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <input
+                      type="number"
+                      min="0"
+                      value={v.precio}
+                      onChange={(e) => actualizarFilaVariante(v.id, 'precio', e.target.value)}
+                      className={`${inputClase} w-24`}
+                      placeholder={`$${precio || '0'}`}
+                      title="Precio de venta (vacío = hereda el del producto)"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={v.costoUnitario}
+                      onChange={(e) => actualizarFilaVariante(v.id, 'costoUnitario', e.target.value)}
+                      className={`${inputClase} w-24`}
+                      placeholder="Costo unit."
+                      title="Costo Unitario (vacío = hereda el del producto) — alimenta Margen Bruto % y Analytics BI"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      value={v.stock}
+                      onChange={(e) => actualizarFilaVariante(v.id, 'stock', e.target.value)}
+                      className={`${inputClase} w-20`}
+                      placeholder="Stock"
+                      title="Stock actual (vacío = sin control de inventario)"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      value={v.stockMinimo}
+                      onChange={(e) => actualizarFilaVariante(v.id, 'stockMinimo', e.target.value)}
+                      className={`${inputClase} w-20`}
+                      placeholder="Stock mín."
+                      title="Stock Mínimo — activa el Estatus 'Bajo Stock' y la Alerta de Reabastecimiento"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => eliminarFilaVariante(v.id)}
+                      className="ml-auto shrink-0 rounded-md p-1.5 text-slate-500 transition hover:bg-rose-400/10 hover:text-rose-400"
+                      title="Quitar variante"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {editando && (
+          <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2.5">
+            <span className="text-xs font-semibold text-slate-200">
+              {disponible ? 'Disponible' : 'No disponible'}
+              <span className="mt-0.5 block text-[10px] font-normal text-slate-500">
+                Apágalo si faltan ingredientes o insumos, sin tocar el stock.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={disponible}
+              onChange={(e) => setDisponible(e.target.checked)}
+              className="h-4 w-8 shrink-0 accent-lime-400"
+            />
+          </label>
+        )}
+
+        <div className="space-y-2">
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+            {editando ? 'Cambiar imagen (opcional)' : 'Imagen del producto'}
+          </span>
+          <input value={imagenUrl} onChange={(e) => setImagenUrl(e.target.value)} className={inputClase} placeholder="https://..." />
+          <SelectorArchivoImagen carpeta="productos" onSubida={onImagenSubida} />
+        </div>
+
+        <div>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Vista previa</span>
+          <div className="h-32 overflow-hidden rounded-xl border border-slate-800 bg-slate-800">
+            {imagenPreview ? (
+              <img
+                src={imagenPreview}
+                alt="Vista previa"
+                className="h-full w-full object-cover"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-600">
+                Sin imagen todavía — se usará una de referencia por categoría
+              </div>
+            )}
+          </div>
+        </div>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex items-center justify-between gap-2 pt-2">
+          <div>
+            {editando &&
+              (confirmarEliminar ? (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] font-semibold text-rose-300">¿Seguro?</span>
+                  <button
+                    onClick={eliminar}
+                    disabled={eliminando}
+                    className="inline-flex items-center gap-1 rounded-md bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-rose-400 disabled:opacity-50"
+                  >
+                    {eliminando ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                    Sí, eliminar
+                  </button>
+                  <button
+                    onClick={() => setConfirmarEliminar(false)}
+                    disabled={eliminando}
+                    className="rounded-md px-2 py-1.5 text-[11px] font-semibold text-slate-400 hover:text-slate-200"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmarEliminar(true)}
+                  className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-400/10"
+                >
+                  <Trash2 size={13} /> Eliminar Producto
+                </button>
+              ))}
+          </div>
+          <div className="flex justify-end gap-2">
+            <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+            <BotonPrimario onClick={guardar} disabled={guardando}>
+              {guardando ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : editando ? (
+                <CheckCircle2 size={15} />
+              ) : (
+                <Plus size={15} />
+              )}
+              {editando ? 'Guardar Cambios' : 'Crear Producto'}
+            </BotonPrimario>
+          </div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ---------------- Renta Exprés de Canchas (dentro de la categoría "Rentas") ---------------- */
+
+function CanchaRentaCard({ cancha, onRentar }) {
+  return (
+    <button
+      onClick={onRentar}
+      className="group flex flex-col overflow-hidden rounded-2xl border border-emerald-400/30 bg-slate-900 text-left transition hover:border-emerald-400/60"
+    >
+      <div className="relative h-24 w-full overflow-hidden rounded-t-2xl bg-slate-800 sm:h-28">
+        <img
+          src={cancha.imagen_url || fallbackImagen(cancha.id)}
+          onError={(e) => {
+            e.currentTarget.onerror = null;
+            e.currentTarget.src = fallbackImagen(cancha.id);
+          }}
+          alt={cancha.nombre}
+          className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+        />
+        <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-emerald-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-400 ring-1 ring-emerald-400/30 backdrop-blur">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Disponible
+        </span>
+      </div>
+      <div className="flex flex-1 flex-col gap-1 p-2.5">
+        <p className="line-clamp-2 text-xs font-bold leading-snug text-slate-100">{cancha.nombre}</p>
+        <span className="mt-auto text-sm font-black text-lime-400">{formatoMoneda(precioPorHoraDeCancha(cancha))}/hr</span>
+      </div>
+    </button>
+  );
+}
+
+function ModalRentaCancha({ cancha, onClose, onAgregar }) {
+  const [duracion, setDuracion] = useState(1);
+  // Misma fórmula pedida: duracionEnHoras * Number(precio_por_hora || 0),
+  // aplicada sobre el precio ya resuelto (real o de respaldo por nombre).
+  const costo = Math.round(duracion * Number(precioPorHoraDeCancha(cancha) || 0) * 100) / 100;
+
+  return (
+    <ModalShell titulo="Renta Exprés" subtitulo={cancha.nombre} onClose={onClose} icon={Clock} ancho="max-w-sm">
+      <div className="space-y-4">
+        <div>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Duración</span>
+          <div className="grid grid-cols-3 gap-2">
+            {DURACIONES_RENTA.map((d) => (
+              <button
+                key={d.horas}
+                onClick={() => setDuracion(d.horas)}
+                className={`rounded-lg border px-2 py-2.5 text-xs font-bold transition ${
+                  duracion === d.horas
+                    ? 'border-lime-400 bg-lime-400/10 text-lime-400'
+                    : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between rounded-xl bg-slate-950 px-4 py-3">
+          <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Costo</span>
+          <span className="text-xl font-black text-slate-100">{formatoMoneda(costo)}</span>
+        </div>
+
+        <p className="flex items-start gap-1.5 text-[11px] text-slate-500">
+          <Info size={12} className="mt-0.5 shrink-0" /> Al cobrarse, la cancha quedará "En Juego" en la Parrilla de inmediato, a partir de
+          ahora.
+        </p>
+
+        <div className="flex justify-end gap-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario
+            onClick={() => {
+              onAgregar(duracion, costo);
+              onClose();
+            }}
+          >
+            <Plus size={15} /> Agregar a Comanda
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ---------------- Ticket / Recibo digital ---------------- */
+
+function ModalTicket({ venta, onClose }) {
+  if (!venta) return null;
+  return (
+    <ModalShell titulo="Ticket de Venta" subtitulo={`Folio ${venta.folio}`} onClose={onClose} icon={Receipt} ancho="max-w-sm">
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #ticket-imprimible, #ticket-imprimible * { visibility: visible; }
+          #ticket-imprimible { position: absolute; top: 0; left: 0; width: 100%; padding: 16px; }
+        }
+      `}</style>
+
+      <div id="ticket-imprimible" className="space-y-3 rounded-xl border border-dashed border-slate-700 bg-slate-950 p-4 font-mono text-xs text-slate-200">
+        <div className="text-center">
+          <p className="text-sm font-black tracking-wide text-slate-100">SMASH PÁDEL CLUB</p>
+          <p className="text-slate-500">
+            {formatoFechaLarga(venta.fecha)} · {venta.horaEmision}
+          </p>
+          <p className="text-slate-500">Folio: {venta.folio}</p>
+          <p className="text-slate-500">
+            Operador: {venta.operadorNombre} ({venta.turnoLabel})
+          </p>
+        </div>
+
+        <div className="space-y-0.5 border-t border-dashed border-slate-700 pt-3">
+          {venta.items.map((item, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 py-0.5">
+              <span className="flex-1 truncate">
+                {item.cantidad}× {item.nombre}
+              </span>
+              <span className="shrink-0 font-bold">{formatoMoneda(item.subtotal)}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-dashed border-slate-700 pt-2 text-sm font-black text-slate-100">
+          <span>TOTAL</span>
+          <span>{formatoMoneda(venta.total)}</span>
+        </div>
+
+        {venta.pagosDivididos && venta.pagosDivididos.length > 0 ? (
+          <div className="space-y-0.5 border-t border-dashed border-slate-700 pt-3">
+            <p className="mb-1 font-bold uppercase tracking-wide text-slate-400">Cobro dividido — folios por jugador</p>
+            {venta.pagosDivididos.map((p, i) => (
+              <div key={i} className="flex items-center justify-between py-0.5">
+                <span>
+                  Jugador {p.jugador} · {METODOS_PAGO_POS.find((m) => m.value === p.metodo)?.label || p.metodo}
+                </span>
+                <span className="font-bold">{formatoMoneda(p.monto)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center justify-between border-t border-dashed border-slate-700 pt-3">
+            <span className="text-slate-400">Método</span>
+            <span className="font-bold">{METODOS_PAGO_POS.find((m) => m.value === venta.metodoPago)?.label || venta.metodoPago || '—'}</span>
+          </div>
+        )}
+
+        {venta.cambio > 0 && (
+          <div className="flex items-center justify-between border-t border-dashed border-slate-700 pt-2 text-slate-300">
+            <span>Cambio entregado</span>
+            <span className="font-bold">{formatoMoneda(venta.cambio)}</span>
+          </div>
+        )}
+
+        <p className="border-t border-dashed border-slate-700 pt-3 text-center text-[10px] text-slate-600">¡Gracias por tu visita!</p>
+      </div>
+
+      <div className="mt-4 flex justify-end gap-2 print:hidden">
+        <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+        <BotonPrimario onClick={() => window.print()}>
+          <Receipt size={15} /> Imprimir / Guardar Ticket
+        </BotonPrimario>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ---------------- Cuentas Abiertas / Comandas Activas ---------------- */
+
+function TarjetaCuentaAbierta({ grupo, onLiquidar, liquidando }) {
+  const filasItems = Object.entries(grupo.items);
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-100">
+            <MapPin size={14} className="shrink-0 text-sky-400" />
+            {grupo.cancha?.nombre || 'Venta General (sin cancha)'}
+          </p>
+          <p className="mt-1 flex items-center gap-1.5 truncate text-xs font-semibold text-slate-400">
+            <Users size={12} className="shrink-0" />
+            {grupo.reserva?.jugador_nombre || grupo.clienteNombre || 'Cliente sin nombre vinculado'}
+          </p>
+        </div>
+        <span className="whitespace-nowrap rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-400 ring-1 ring-amber-400/30">
+          {grupo.ventas.length} {grupo.ventas.length === 1 ? 'ticket' : 'tickets'}
+        </span>
+      </div>
+
+      <div className="mt-3 space-y-1 rounded-xl bg-slate-950 px-3 py-2.5">
+        {filasItems.length === 0 ? (
+          <p className="text-[11px] text-slate-500">Sin desglose de productos.</p>
+        ) : (
+          filasItems.map(([nombre, info]) => (
+            <div key={nombre} className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="truncate text-slate-300">
+                {info.cantidad}× {nombre}
+              </span>
+              <span className="shrink-0 font-semibold text-slate-400">{formatoMoneda(info.subtotal)}</span>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="mt-3 flex items-center justify-between">
+        <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Total Pendiente</span>
+        <span className="text-xl font-black text-slate-100">{formatoMoneda(grupo.total)}</span>
+      </div>
+
+      <BotonPrimario onClick={() => onLiquidar(grupo)} disabled={liquidando} className="mt-3 w-full">
+        {liquidando ? <Loader2 size={15} className="animate-spin" /> : <DollarSign size={15} />}
+        Liquidar / Cobrar
+      </BotonPrimario>
+    </div>
+  );
+}
+
+function CuentasAbiertasPanel({
+  grupos,
+  cargando,
+  error,
+  onReintentar,
+  onLiquidar,
+  liquidandoClave,
+  vacioIcon: VacioIcon = Link2,
+  vacioTitulo = 'No hay cuentas abiertas pendientes de cobro.',
+  vacioDetalle = 'Se llenan solas desde "Vincular a Cancha → Agregar a la Cuenta" en Vender.',
+}) {
+  if (cargando) {
+    return (
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-56 animate-pulse rounded-2xl bg-slate-900" />
+        ))}
+      </div>
+    );
+  }
+
+  if (error) return <ErrorBanner mensaje={error} onReintentar={onReintentar} />;
+
+  if (grupos.length === 0) {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-16 text-center">
+        <VacioIcon size={26} className="text-slate-700" />
+        <p className="text-sm font-semibold text-slate-400">{vacioTitulo}</p>
+        <p className="text-xs text-slate-600">{vacioDetalle}</p>
+      </div>
+    );
+  }
+
+  const totalPendiente = grupos.reduce((acc, g) => acc + g.total, 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-2.5">
+        <span className="text-xs font-bold text-amber-300">
+          {grupos.length} {grupos.length === 1 ? 'cuenta abierta' : 'cuentas abiertas'}
+        </span>
+        <span className="text-sm font-black text-slate-100">{formatoMoneda(totalPendiente)} pendiente en total</span>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {grupos.map((grupo) => (
+          <TarjetaCuentaAbierta key={grupo.clave} grupo={grupo} onLiquidar={onLiquidar} liquidando={liquidandoClave === grupo.clave} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando }) {
+  return (
+    <ModalShell
+      titulo="Liquidar / Cobrar"
+      subtitulo={`${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(grupo.total)}`}
+      onClose={onClose}
+      icon={DollarSign}
+      ancho="max-w-sm"
+    >
+      <PasosDeCobro monto={grupo.total} deshabilitado={liquidando} onConfirmar={({ metodo, cambio }) => onLiquidar(metodo, cambio)} />
+    </ModalShell>
+  );
+}
+
+/* ---------------- Inscripción Torneo / Reta (cobro en barra) ----------------
+ * Sección hermana de "Cuentas Abiertas": mismo patrón (lista con búsqueda +
+ * botón "Cobrar" que abre un modal de método de pago), pero la fuente de
+ * datos son las inscripciones a Reta y los participantes de Torneo con
+ * `estado_pago: 'pendiente'` — vive en `ModuloSmartPOS` (ver más abajo) para
+ * poder generar un comprobante de `ventas` igual que cualquier otro cobro. */
+
+function InscripcionesEventoPanel({ filas, cargando, error, onReintentar, busqueda, onBuscar, onCobrar, cobrandoClave }) {
+  if (cargando) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-14 animate-pulse rounded-xl bg-slate-900" />
+        ))}
+      </div>
+    );
+  }
+
+  if (error) return <ErrorBanner mensaje={error} onReintentar={onReintentar} />;
+
+  return (
+    <div className="space-y-3">
+      <div className="relative max-w-sm">
+        <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+        <input
+          value={busqueda}
+          onChange={(e) => onBuscar(e.target.value)}
+          placeholder="Buscar participante por nombre..."
+          className={`${inputClase} pl-9`}
+        />
+      </div>
+
+      {filas.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-16 text-center">
+          <Trophy size={26} className="text-slate-700" />
+          <p className="text-sm font-semibold text-slate-400">Sin inscripciones pendientes de cobro.</p>
+          <p className="text-xs text-slate-600">
+            Se llenan solas desde Torneos &amp; Retas — retas y torneos con saldo pendiente aparecen aquí.
+          </p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+          <table className="w-full min-w-[620px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-2.5">Participante</th>
+                <th className="px-3 py-2.5">Evento</th>
+                <th className="px-3 py-2.5">Contacto</th>
+                <th className="px-3 py-2.5 text-right">Monto</th>
+                <th className="px-3 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f) => (
+                <tr key={f.clave} className="border-b border-slate-800/70 last:border-0">
+                  <td className="px-3 py-2.5 font-bold text-slate-100">{f.nombre}</td>
+                  <td className="px-3 py-2.5 text-slate-300">{f.origen}</td>
+                  <td className="px-3 py-2.5 text-slate-400">
+                    {f.telefono && <span className="mr-2">{f.telefono}</span>}
+                    {f.correo || (!f.telefono ? '—' : '')}
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-black text-amber-400">{formatoMoneda(f.monto)}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    <BotonPrimario
+                      onClick={() => onCobrar(f)}
+                      disabled={cobrandoClave === f.clave}
+                      className="ml-auto px-3 py-1.5 text-[11px]"
+                    >
+                      {cobrandoClave === f.clave ? <Loader2 size={13} className="animate-spin" /> : <DollarSign size={13} />}
+                      Cobrar
+                    </BotonPrimario>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando }) {
+  return (
+    <ModalShell
+      titulo="Cobrar Inscripción"
+      subtitulo={`${fila.nombre} · ${fila.origen} · ${formatoMoneda(fila.monto)}`}
+      onClose={onClose}
+      icon={Trophy}
+      ancho="max-w-sm"
+    >
+      <PasosDeCobro monto={fila.monto} deshabilitado={liquidando} onConfirmar={({ metodo, cambio }) => onCobrar(metodo, cambio)} />
+    </ModalShell>
+  );
+}
+
+// Tarjeta de un jugador dentro del Roster & Split Bill Asimétrico: nombre y
+// teléfono editables (Slot 1 = ocupante real de la reserva, ya viene con
+// nombre; se resuelve/crea en `jugadores` en cuanto pierde el foco, vía
+// `onConfirmar`), cuota de cancha personalizable, desglose de sus consumos
+// asignados del carrito, y — si ya no está pagado — el mismo `PasosDeCobro`
+// compacto que usa "Dividir Cuenta" para cobrar su cuota de forma
+// independiente. El botón de WhatsApp usa `IconoWhatsApp`/
+// `construirEnlaceWhatsApp`, igual que el resto del sistema.
+function FilaSplitBillJugador({
+  fila,
+  indice,
+  esUnico,
+  cobrando,
+  onActualizarNombre,
+  onActualizarTelefono,
+  onActualizarCuota,
+  onConfirmarJugador,
+  onQuitarJugador,
+  onCobrar,
+  onWhatsApp,
+}) {
+  const pagado = fila.pagado;
+  return (
+    <div
+      className={`rounded-xl border px-3.5 py-3 ${
+        pagado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-slate-700 bg-slate-800'
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={fila.nombre || ''}
+          onChange={(e) => onActualizarNombre(indice, e.target.value)}
+          onBlur={() => onConfirmarJugador(indice)}
+          disabled={Boolean(pagado)}
+          placeholder={`Jugador ${indice + 1}`}
+          className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs font-bold text-slate-100 disabled:opacity-70"
+        />
+        {fila.resolviendo && <Loader2 size={13} className="animate-spin text-slate-500" />}
+        {fila.jugadorId && !fila.resolviendo && (
+          <span title="Enlazado al Directorio CRM" className="text-emerald-400">
+            <CheckCircle2 size={13} />
+          </span>
+        )}
+        {!pagado && !esUnico && (
+          <button
+            onClick={() => onQuitarJugador(indice)}
+            title="Quitar de la cuenta"
+            className="shrink-0 text-slate-600 transition hover:text-rose-400"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      <input
+        value={fila.telefono || ''}
+        onChange={(e) => onActualizarTelefono(indice, e.target.value)}
+        onBlur={() => onConfirmarJugador(indice)}
+        disabled={Boolean(pagado)}
+        placeholder="Teléfono (WhatsApp)"
+        className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[11px] text-slate-300 disabled:opacity-70"
+      />
+
+      <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
+        <span className="text-slate-400">Cuota de cancha</span>
+        <div className="flex items-center gap-1 text-slate-100">
+          <span>$</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={fila.cuotaCancha}
+            onChange={(e) => onActualizarCuota(indice, e.target.value)}
+            disabled={Boolean(pagado)}
+            className="w-20 rounded-md border border-slate-700 bg-slate-950 px-1.5 py-1 text-right font-bold disabled:opacity-70"
+          />
+        </div>
+      </div>
+
+      {fila.items.length > 0 && (
+        <div className="mt-1.5 space-y-0.5 border-t border-slate-700/60 pt-1.5">
+          {fila.items.map((it) => (
+            <div key={it.id} className="flex items-center justify-between text-[11px] text-slate-400">
+              <span className="truncate">
+                {it.nombre} ×{it.cantidad}
+              </span>
+              <span className="shrink-0 text-slate-300">{formatoMoneda(it.precio * it.cantidad)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-2 flex items-center justify-between border-t border-slate-700/60 pt-2">
+        <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Total jugador</span>
+        <span className="text-base font-black text-slate-100">{formatoMoneda(fila.total)}</span>
+      </div>
+
+      {pagado ? (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
+            <CheckCircle2 size={13} /> Pagado con {METODOS_PAGO_POS.find((m) => m.value === pagado.metodo)?.label || pagado.metodo}
+          </span>
+          <button
+            onClick={() => onWhatsApp(indice)}
+            disabled={!fila.telefono}
+            title={fila.telefono ? 'Enviar comprobante por WhatsApp' : 'Captura su teléfono primero'}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            <IconoWhatsApp size={12} /> Ticket
+          </button>
+        </div>
+      ) : (
+        <div className="mt-2 space-y-1.5">
+          <PasosDeCobro compacto monto={fila.total} deshabilitado={cobrando} onConfirmar={(datos) => onCobrar(indice, datos)} onCancelar={null} />
+          <button
+            onClick={() => onWhatsApp(indice)}
+            disabled={!fila.telefono}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            <IconoWhatsApp size={12} /> Enviar Ticket / Link por WhatsApp
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Panel de "Padel POS Operativo": roster de hasta 4 jugadores de la cancha
+// vinculada + desglose de Split Bill Asimétrico. Solo se muestra cuando
+// "Vincular a Cancha" apunta a una cancha con una reserva EN CURSO ahora
+// mismo (ver `reservaVinculadaActual` en `ModuloSmartPOS`) — sin eso no hay
+// de quién repartir la cuenta y el flujo normal (Cobrar / Dividir Cuenta /
+// Agregar a la Cuenta) sigue disponible tal cual.
+function RosterSplitBillPanel({
+  cancha,
+  filas,
+  itemsSinAsignar,
+  totalSinAsignar,
+  costoCanchaTotal,
+  saldoCanchaPendiente,
+  cobrandoJugadorIndice,
+  onActualizarNombre,
+  onActualizarTelefono,
+  onActualizarCuota,
+  onConfirmarJugador,
+  onAgregarJugador,
+  onQuitarJugador,
+  onCobrar,
+  onWhatsApp,
+}) {
+  const cuentaLiquidada = saldoCanchaPendiente <= 0;
+  return (
+    <div className="rounded-2xl border border-lime-400/30 bg-lime-400/5 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Users size={16} className="text-lime-400" />
+          <h3 className="text-sm font-black text-slate-100">Roster & Split Bill · {cancha?.nombre || 'Cancha'}</h3>
+        </div>
+        {filas.length < 4 && (
+          <button
+            onClick={onAgregarJugador}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold text-lime-400 transition hover:bg-lime-400/10"
+          >
+            <UserPlus size={13} /> Agregar jugador
+          </button>
+        )}
+      </div>
+
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg bg-slate-950/60 px-3 py-2 text-[11px] font-semibold">
+        <span className="text-slate-400">
+          Costo de cancha: <span className="text-slate-100">{formatoMoneda(costoCanchaTotal)}</span>
+        </span>
+        <span className={cuentaLiquidada ? 'text-emerald-400' : 'text-amber-400'}>
+          {cuentaLiquidada ? '✓ Cancha liquidada' : `Saldo de cancha pendiente: ${formatoMoneda(saldoCanchaPendiente)}`}
+        </span>
+        {totalSinAsignar > 0 && (
+          <span className="flex items-center gap-1 text-rose-400">
+            <AlertTriangle size={12} /> {formatoMoneda(totalSinAsignar)} sin asignar a ningún jugador
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {filas.map((fila, i) => (
+          <FilaSplitBillJugador
+            key={i}
+            fila={fila}
+            indice={i}
+            esUnico={filas.length === 1}
+            cobrando={cobrandoJugadorIndice === i}
+            onActualizarNombre={onActualizarNombre}
+            onActualizarTelefono={onActualizarTelefono}
+            onActualizarCuota={onActualizarCuota}
+            onConfirmarJugador={onConfirmarJugador}
+            onQuitarJugador={onQuitarJugador}
+            onCobrar={onCobrar}
+            onWhatsApp={onWhatsApp}
+          />
+        ))}
+      </div>
+
+      {itemsSinAsignar.length > 0 && (
+        <div className="mt-3 rounded-lg border border-dashed border-slate-700 px-3 py-2">
+          <p className="mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-500">Sin asignar / compartido</p>
+          <div className="space-y-0.5">
+            {itemsSinAsignar.map((it) => (
+              <div key={it.id} className="flex items-center justify-between text-[11px] text-slate-400">
+                <span className="truncate">
+                  {it.nombre} ×{it.cantidad}
+                </span>
+                <span className="shrink-0 text-slate-300">{formatoMoneda(it.precio * it.cantidad)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// `productos` vive levantado en App() (igual que `canchas`/`reservas`) para
+// que el catálogo se comparta en vivo con `ModuloERPInventario` sin depender
+// de que Realtime esté habilitado en Supabase — ver props recibidas abajo.
+function ModuloSmartPOS({
+  canchas,
+  reservas,
+  operador,
+  turno,
+  permisos,
+  onRegistrarAuditoria,
+  onGuardarCierre,
+  upsertReserva,
+  conceptoPendiente,
+  onConceptoConsumido,
+  productos,
+  loadingProductos,
+  errorProductos,
+  cargarProductos,
+  upsertProducto,
+  retas,
+  setRetas,
+  torneos,
+  setTorneos,
+  inscripciones,
+  setInscripciones,
+  participantesTorneo,
+  setParticipantesTorneo,
+  loadingInscripciones,
+  loadingParticipantes,
+  jugadoresPorId,
+  variantesPorProducto,
+  upsertVarianteProducto,
+  quitarVarianteProductoLocal,
+}) {
+  const mostrarToast = useToast();
+
+  const [categoriaActiva, setCategoriaActiva] = useState('todos');
+  const [busquedaProducto, setBusquedaProducto] = useState('');
+
+  const [comanda, setComanda] = useState([]);
+  const [canchaVinculadaId, setCanchaVinculadaId] = useState('');
+  // Etiqueta OPCIONAL para tickets que se cobran de inmediato (bebidas,
+  // Pro-Shop...): a diferencia de "Vincular a Cancha" (cuenta abierta, cambia
+  // el flujo de cobro), esto solo marca a qué cancha atribuir el consumo para
+  // Analytics BI ("Ingresos Cruzados por Cancha y Bloque Horario") — no
+  // cambia cómo se cobra el ticket. Se ignora si hay una cancha vinculada
+  // (esa ya define el cancha_id de la venta).
+  const [canchaAsignadaId, setCanchaAsignadaId] = useState('');
+
+  // CRM Unificado por Teléfono — cliente asignado a esta comanda (con o sin
+  // cancha vinculada), ver `ComandaPanel` → "Cliente (opcional — CRM)". Se
+  // limpia al terminar de cobrar (junto con el resto de la comanda).
+  const [clienteNombre, setClienteNombre] = useState('');
+  const [clienteTelefono, setClienteTelefono] = useState('');
+  const [clienteSeleccionadoId, setClienteSeleccionadoId] = useState(null);
+  const directorioJugadoresCRM = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+
+  /* ---------------- "Padel POS Operativo": Roster de Cancha & Split Bill Asimétrico ---------------- */
+
+  // Reserva "dueña" de la cancha vinculada, si hay una EN CURSO ahora mismo
+  // — dispara el roster (bullet 1: Carga Automática de Contexto de Cancha).
+  // Sin cancha vinculada, o vinculada pero sin partido en curso, esto es
+  // `null` y todo el flujo se comporta exactamente igual que antes.
+  const reservaVinculadaActual = canchaVinculadaId ? reservaEnCursoAhora(reservas, canchaVinculadaId) : null;
+
+  // roster: hasta 4 { nombre, telefono, jugadorId, resolviendo, cuotaCancha
+  // (null = usa el reparto automático), pagado (null | {metodo,cambio,monto,fecha}) }.
+  const [roster, setRoster] = useState([]);
+  const [rosterReservaId, setRosterReservaId] = useState(null);
+  const [cobrandoJugadorIndice, setCobrandoJugadorIndice] = useState(null);
+  // Chip "Agregando para:" — a qué jugador del roster se etiquetan los
+  // próximos productos que toque el cajero en el grid (null = sin asignar).
+  const [jugadorActivoParaAgregar, setJugadorActivoParaAgregar] = useState(null);
+
+  // Hidrata el roster al vincular una cancha con partido en curso: primero
+  // intenta recuperar lo que ya se había capturado (localStorage, por si la
+  // terminal se recargó a media cuenta); si no hay nada, arranca con los 4
+  // jugadores de siempre — Slot 1 ya resuelto desde la reserva
+  // (`jugador_nombre`/`jugador_id`, con su teléfono si ya estaba en el
+  // Directorio CRM), Slots 2-4 en blanco para que el cajero los capture.
+  useEffect(() => {
+    if (!canchaVinculadaId || !reservaVinculadaActual) {
+      setRoster([]);
+      setRosterReservaId(null);
+      setJugadorActivoParaAgregar(null);
+      return;
+    }
+    if (rosterReservaId === reservaVinculadaActual.id) return; // ya hidratado para esta reserva
+    const guardado = leerRostersSplitBillLocal()[reservaVinculadaActual.id];
+    if (guardado?.jugadores?.length > 0) {
+      setRoster(guardado.jugadores);
+    } else {
+      const telefonoSlot1 = reservaVinculadaActual.jugador_id ? jugadoresPorId?.[reservaVinculadaActual.jugador_id]?.telefono : null;
+      setRoster([
+        {
+          nombre: reservaVinculadaActual.jugador_nombre || 'Jugador 1',
+          telefono: telefonoSlot1 || '',
+          jugadorId: reservaVinculadaActual.jugador_id || null,
+          resolviendo: false,
+          cuotaCancha: null,
+          pagado: null,
+        },
+        { nombre: '', telefono: '', jugadorId: null, resolviendo: false, cuotaCancha: null, pagado: null },
+        { nombre: '', telefono: '', jugadorId: null, resolviendo: false, cuotaCancha: null, pagado: null },
+        { nombre: '', telefono: '', jugadorId: null, resolviendo: false, cuotaCancha: null, pagado: null },
+      ]);
+    }
+    setRosterReservaId(reservaVinculadaActual.id);
+    setJugadorActivoParaAgregar(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canchaVinculadaId, reservaVinculadaActual?.id]);
+
+  // Persiste el roster (nombres, teléfonos, cuotas, quién ya pagó) en cuanto
+  // cambia — sobrevive a un refresh de la terminal a media cuenta.
+  useEffect(() => {
+    if (!rosterReservaId || roster.length === 0) return;
+    guardarRosterSplitBillLocal(rosterReservaId, roster);
+  }, [roster, rosterReservaId]);
+
+  const costoCanchaTotalRoster = Number(reservaVinculadaActual?.monto_total) || 0;
+
+  const cuotasCanchaAutomaticas = useMemo(
+    () => (roster.length > 0 ? repartirCentavos(costoCanchaTotalRoster, roster.length) : []),
+    [costoCanchaTotalRoster, roster.length]
+  );
+
+  // Reparte los artículos del carrito (excepto los de tipo 'cancha', que se
+  // reparten aparte con su propia cuota) entre los slots del roster —
+  // bullet 2: Split Bill Asimétrico.
+  const comandaPorJugador = useMemo(() => {
+    const porIndice = roster.map(() => []);
+    const sinAsignar = [];
+    comanda.forEach((item) => {
+      if (item.tipo === 'cancha') return;
+      const idx = item.jugadorIndice;
+      if (Number.isInteger(idx) && porIndice[idx]) porIndice[idx].push(item);
+      else sinAsignar.push(item);
+    });
+    return { porIndice, sinAsignar };
+  }, [comanda, roster.length]);
+
+  const filasSplitBill = useMemo(() => {
+    return roster.map((j, i) => {
+      const items = comandaPorJugador.porIndice[i] || [];
+      const consumos = items.reduce((acc, it) => acc + it.precio * it.cantidad, 0);
+      const cuotaCancha = j.cuotaCancha != null ? Number(j.cuotaCancha) || 0 : cuotasCanchaAutomaticas[i] || 0;
+      return { ...j, items, consumos, cuotaCancha, total: Math.round((cuotaCancha + consumos) * 100) / 100 };
+    });
+  }, [roster, comandaPorJugador, cuotasCanchaAutomaticas]);
+
+  const totalSinAsignarRoster = comandaPorJugador.sinAsignar.reduce((acc, it) => acc + it.precio * it.cantidad, 0);
+
+  const saldoCanchaPendienteRoster = Math.max(
+    0,
+    Math.round((costoCanchaTotalRoster - filasSplitBill.filter((f) => f.pagado).reduce((acc, f) => acc + f.cuotaCancha, 0)) * 100) / 100
+  );
+
+  // En cuanto la suma de cuotas de cancha YA COBRADAS cubre el total de la
+  // reserva, se marca sola como pagada (mismo criterio de negocio que
+  // "Cobrar"/"Dividir Cuenta": la reserva nunca se queda "En Juego" sin
+  // estado de pago una vez que el club ya cobró toda la cancha). Los
+  // consumos de POS pueden seguir pendientes/repartiéndose sin bloquear esto.
+  useEffect(() => {
+    if (!reservaVinculadaActual || roster.length === 0) return;
+    if (reservaVinculadaActual.estado_pago === 'pagado') return;
+    const todosLosQueDebenPagaronYaLoHicieron = filasSplitBill.every((f) => f.cuotaCancha <= 0 || f.pagado);
+    if (!todosLosQueDebenPagaronYaLoHicieron) return;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('reservas')
+          .update({ estado_pago: 'pagado', metodo_pago: 'dividido' })
+          .eq('id', reservaVinculadaActual.id)
+          .select()
+          .single();
+        if (!error && data && upsertReserva) upsertReserva(data);
+      } catch (_e) {
+        // Best effort: si falla, el saldo de cancha ya se ve en $0 en el
+        // panel y el cajero puede corregir el estatus a mano en la Parrilla.
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filasSplitBill, reservaVinculadaActual?.id, reservaVinculadaActual?.estado_pago, roster.length]);
+
+  function actualizarNombreRosterSlot(indice, nombre) {
+    setRoster((prev) => prev.map((j, i) => (i === indice ? { ...j, nombre, jugadorId: null } : j)));
+  }
+  function actualizarTelefonoRosterSlot(indice, telefono) {
+    setRoster((prev) => prev.map((j, i) => (i === indice ? { ...j, telefono } : j)));
+  }
+  function actualizarCuotaCanchaRosterSlot(indice, valor) {
+    setRoster((prev) => prev.map((j, i) => (i === indice ? { ...j, cuotaCancha: valor === '' ? null : Number(valor) } : j)));
+  }
+  function agregarJugadorRoster() {
+    setRoster((prev) => (prev.length >= 4 ? prev : [...prev, { nombre: '', telefono: '', jugadorId: null, resolviendo: false, cuotaCancha: null, pagado: null }]));
+  }
+  function quitarJugadorRoster(indice) {
+    setRoster((prev) => prev.filter((_, i) => i !== indice));
+    setComanda((prev) =>
+      prev.map((item) => {
+        if (item.jugadorIndice === indice) return { ...item, jugadorIndice: null };
+        if (typeof item.jugadorIndice === 'number' && item.jugadorIndice > indice) return { ...item, jugadorIndice: item.jugadorIndice - 1 };
+        return item;
+      })
+    );
+    setJugadorActivoParaAgregar((prev) => (prev === indice ? null : typeof prev === 'number' && prev > indice ? prev - 1 : prev));
+  }
+
+  // Garantiza el enlace al Directorio CRM (`jugadores`) del jugador de este
+  // slot — se dispara al perder el foco del nombre/teléfono (igual criterio
+  // que el resto del club: `resolverJugadorId` es el ÚNICO punto que crea o
+  // deduplica jugadores).
+  async function confirmarJugadorRosterSlot(indice) {
+    const slot = roster[indice];
+    if (!slot || !slot.nombre?.trim() || slot.jugadorId || slot.resolviendo) return;
+    setRoster((prev) => prev.map((j, i) => (i === indice ? { ...j, resolviendo: true } : j)));
+    const id = await resolverJugadorId(slot.nombre, { telefono: slot.telefono, directorio: directorioJugadoresCRM });
+    setRoster((prev) => prev.map((j, i) => (i === indice ? { ...j, jugadorId: id, resolviendo: false } : j)));
+  }
+
+  function asignarItemAJugador(itemId, jugadorIndice) {
+    setComanda((prev) => prev.map((item) => (item.id === itemId ? { ...item, jugadorIndice } : item)));
+  }
+
+  function mensajeWhatsAppRosterJugador(indice) {
+    const fila = filasSplitBill[indice];
+    if (!fila) return '';
+    const lineasItems = fila.items.map((it) => `• ${it.nombre} ×${it.cantidad} — ${formatoMoneda(it.precio * it.cantidad)}`);
+    const partes = [
+      `¡Hola ${fila.nombre || `Jugador ${indice + 1}`}! Aquí tu cuenta en ${canchaVinculada?.nombre || 'la cancha'}:`,
+      fila.cuotaCancha > 0 ? `• Cancha (tu parte) — ${formatoMoneda(fila.cuotaCancha)}` : null,
+      ...lineasItems,
+      `Total a pagar: ${formatoMoneda(fila.total)}`,
+      fila.pagado ? '✅ Ya quedó pagado, ¡gracias!' : 'Puedes pagar en caja, o si prefieres mándanos tu comprobante por este medio. ¡Gracias!',
+    ].filter(Boolean);
+    return partes.join('\n');
+  }
+
+  function enviarWhatsAppRosterJugador(indice) {
+    const fila = filasSplitBill[indice];
+    const telefono = roster[indice]?.telefono;
+    if (!telefono) {
+      mostrarToast({
+        titulo: 'Falta el teléfono',
+        detalle: `Captura el teléfono de ${fila?.nombre || 'este jugador'} para poder enviarle el link.`,
+        tono: 'aviso',
+      });
+      return;
+    }
+    const url = construirEnlaceWhatsApp({ telefono, mensaje: mensajeWhatsAppRosterJugador(indice) });
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  // Cobro individualizado (bullet 3): registra la cuota de ESTE jugador como
+  // su propia venta — cuota de cancha + solo sus consumos asignados — y
+  // quita del carrito ÚNICAMENTE esos artículos (cobro parcial; el resto de
+  // la comanda de los demás jugadores sigue abierto). El `jugador_id` va
+  // explícito en `detalles` para que `resolverJugadorIdVentaCancha` la
+  // impute de inmediato al LTV/CHS correcto (bullet 4: Trazabilidad
+  // Automática al CRM), sin ambigüedad entre los 4 jugadores que comparten
+  // la misma reserva/cancha.
+  async function cobrarJugadorRoster(indice, { metodo, cambio }) {
+    const fila = filasSplitBill[indice];
+    if (!fila) return;
+
+    let jugadorId = roster[indice]?.jugadorId || null;
+    if (!jugadorId && (roster[indice]?.nombre || '').trim()) {
+      jugadorId = await resolverJugadorId(roster[indice].nombre, { telefono: roster[indice].telefono, directorio: directorioJugadoresCRM });
+      setRoster((prev) => prev.map((j, i) => (i === indice ? { ...j, jugadorId } : j)));
+    }
+
+    const itemsAsignados = fila.items.map((it) => ({
+      tipo: it.tipo,
+      producto_id: it.tipo === 'producto' ? it.producto_id : null,
+      cancha_id: it.tipo === 'cancha' ? it.cancha_id : null,
+      nombre: it.nombre,
+      precio: it.precio,
+      cantidad: it.cantidad,
+      subtotal: Math.round(it.precio * it.cantidad * 100) / 100,
+    }));
+    const itemCuotaCancha =
+      fila.cuotaCancha > 0
+        ? [
+            {
+              tipo: 'cancha',
+              producto_id: null,
+              cancha_id: canchaVinculadaId || null,
+              nombre: `Cancha ${canchaVinculada?.nombre || ''} · parte de ${roster[indice]?.nombre || `Jugador ${indice + 1}`}`.trim(),
+              precio: fila.cuotaCancha,
+              cantidad: 1,
+              subtotal: Math.round(fila.cuotaCancha * 100) / 100,
+            },
+          ]
+        : [];
+    const items = [...itemCuotaCancha, ...itemsAsignados];
+    const total = Math.round(items.reduce((acc, it) => acc + it.subtotal, 0) * 100) / 100;
+
+    if (total <= 0) {
+      mostrarToast({
+        titulo: 'Nada que cobrar',
+        detalle: `${roster[indice]?.nombre || 'Este jugador'} no tiene consumos ni cuota de cancha asignados.`,
+        tono: 'aviso',
+      });
+      return;
+    }
+
+    setCobrandoJugadorIndice(indice);
+
+    const { data, error } = await supabase
+      .from('ventas')
+      .insert({
+        total,
+        metodo_pago: metodo,
+        turno: turno?.valor || null,
+        operador: operador?.nombre || null,
+        reserva_id: reservaVinculadaActual?.id || null,
+        cancha_id: canchaVinculadaId || null,
+        detalles: { items, pagos_divididos: null, split_bill: true, jugador_id: jugadorId, jugador_nombre: roster[indice]?.nombre || null },
+        estado_pago: 'pagado',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      setCobrandoJugadorIndice(null);
+      mostrarToast({ titulo: 'No se pudo cobrar la cuota de este jugador', detalle: error.message, tono: 'error' });
+      return;
+    }
+
+    // Descuento de stock + kardex — mismo criterio best effort que
+    // `registrarVenta`, acotado a los productos con inventario que quedaron
+    // asignados a este jugador. Igual que en `registrarVenta`: se filtra por
+    // `manejaStock`, no por `Number.isFinite(stock)` — ver el comentario en
+    // `registrarVenta` para el porqué (era la causa real de que el stock no
+    // bajara al vender variantes).
+    const itemsConStock = fila.items.filter(
+      (it) => it.tipo === 'producto' && (it.productoPadreId || it.producto_id) && it.manejaStock !== false
+    );
+    await Promise.all(
+      itemsConStock.map(async (item) => {
+        const productoId = item.productoPadreId || item.producto_id;
+        const varianteId = item.varianteId || item.variante_id;
+        const esVariante = item.esVariante === true || !!varianteId;
+        const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
+        let stockAnterior = item.stock;
+        let nuevoStock = null;
+        let errStock = null;
+
+        if (esVariante) {
+          // Descuento Real al Vender una variante — FIX DEFINITIVO, JSONB
+          // puro: ver `descontarStockVariante` (lee/escribe directo el
+          // arreglo `productos.variantes` de la fila del producto padre).
+          const resultado = await descontarStockVariante({
+            productoId,
+            varianteId,
+            varianteNombre: varianteNombreEtiqueta,
+            cantidad: item.cantidad,
+            upsertProducto,
+            upsertVarianteProducto,
+          });
+          if (!resultado.ok) errStock = resultado.error;
+          else {
+            stockAnterior = resultado.stockAnterior;
+            nuevoStock = resultado.nuevoStock;
+          }
+        } else {
+          // Producto simple: stock fresco de Supabase, nunca el valor
+          // potencialmente desactualizado del carrito.
+          const resultado = await descontarStockProductoSimple({
+            productoId,
+            cantidad: item.cantidad,
+            upsertProducto,
+          });
+          if (!resultado.ok) errStock = resultado.error;
+          else {
+            stockAnterior = resultado.stockAnterior;
+            nuevoStock = resultado.nuevoStock;
+          }
+        }
+
+        if (errStock) {
+          console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}" (Split Bill):`, errStock);
+          return;
+        }
+
+        if (nuevoStock == null) return; // sin control de stock propio: nada que registrar en kardex
+
+        const resultadoKardex = await insertarMovimientoKardex({
+          producto_id: productoId,
+          variante_id: varianteId || undefined,
+          producto_nombre: item.nombre,
+          tipo_movimiento: 'salida_venta',
+          cantidad: item.cantidad,
+          stock_anterior: stockAnterior,
+          stock_nuevo: nuevoStock,
+          motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`})${
+            esVariante ? ` · ${varianteNombreEtiqueta}` : ''
+          }`,
+          operador: operador?.nombre,
+        });
+        if (!resultadoKardex.ok) {
+          console.error(`[Smart POS] Error detallado Supabase: el stock de "${item.nombre}" (Split Bill) se descontó, pero el Kardex no se pudo registrar:`, resultadoKardex.error);
+        }
+      })
+    );
+
+    const idsAsignados = new Set(fila.items.map((it) => it.id));
+    setComanda((prev) => prev.filter((item) => !idsAsignados.has(item.id)));
+    setRoster((prev) =>
+      prev.map((j, i) => (i === indice ? { ...j, jugadorId, pagado: { metodo, cambio: cambio || 0, monto: total } } : j))
+    );
+
+    setCobrandoJugadorIndice(null);
+    mostrarToast({
+      titulo: 'Cuota cobrada',
+      detalle: `${roster[indice]?.nombre || 'Jugador'} · ${formatoMoneda(total)}${cambio > 0 ? ` · Cambio: ${formatoMoneda(cambio)}` : ''}`,
+    });
+    setVentaFinalizada({
+      folio: (data?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      fecha: hoyISO(),
+      horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+      operadorNombre: operador?.nombre || 'Operador',
+      turnoLabel: turno?.label || '',
+      items,
+      total,
+      metodoPago: metodo,
+      pagosDivididos: null,
+      cambio: cambio || 0,
+    });
+  }
+
+  // Recibe el concepto que "Reservar y Cobrar en POS" deja en App() (una
+  // reserva recién creada, ya con su cancha, horario y monto) y lo mete a la
+  // comanda una sola vez; luego avisa a App() para que limpie el puente.
+  useEffect(() => {
+    if (!conceptoPendiente) return;
+    setComanda((prev) => (prev.some((i) => i.id === conceptoPendiente.id) ? prev : [...prev, conceptoPendiente]));
+    onConceptoConsumido?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conceptoPendiente]);
+
+  const [modalCobro, setModalCobro] = useState(false);
+  const [modalDividir, setModalDividir] = useState(false);
+  const [modalArqueo, setModalArqueo] = useState(false);
+  const [modalDevolucion, setModalDevolucion] = useState(false);
+  const [modalNuevoProducto, setModalNuevoProducto] = useState(false);
+  const [productoEditar, setProductoEditar] = useState(null);
+  const [canchaParaRentar, setCanchaParaRentar] = useState(null);
+  const [ventaFinalizada, setVentaFinalizada] = useState(null);
+  const [registrandoVenta, setRegistrandoVenta] = useState(false);
+  // `productos`/`loadingProductos`/`errorProductos`/`cargarProductos` llegan
+  // como props desde App() — ahí viven la carga inicial y la suscripción
+  // Realtime, compartidas con ModuloERPInventario.
+
+  /* ---------------- Cuentas Abiertas / Comandas Activas ---------------- */
+
+  // 'vender' = grid de productos + comanda de siempre; 'cuentas' = panel de
+  // consumos a cuenta abierta (estado_pago: 'pendiente') pendientes de cobro.
+  const [vistaPOS, setVistaPOS] = useState('vender');
+  const [cuentasAbiertas, setCuentasAbiertas] = useState([]);
+  const [loadingCuentas, setLoadingCuentas] = useState(true);
+  const [errorCuentas, setErrorCuentas] = useState('');
+  const [grupoALiquidar, setGrupoALiquidar] = useState(null);
+  const [liquidandoClave, setLiquidandoClave] = useState(null);
+
+  // `select('*')` + orden en el cliente (vía `obtenerTimestampVenta`, ya
+  // tolerante a `created_at`/`fecha`) — igual criterio que el resto del app
+  // para no romper si `ventas` no tiene alguna de esas columnas todavía.
+  const cargarCuentasAbiertas = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingCuentas(true);
+    setErrorCuentas('');
+    const { data, error } = await conClubId(supabase.from('ventas').select('*')).eq('estado_pago', 'pendiente');
+    if (error) {
+      setErrorCuentas(error.message || 'No se pudieron cargar las cuentas abiertas.');
+      setCuentasAbiertas([]);
+    } else {
+      const ordenado = [...(data || [])].sort(
+        (a, b) => (obtenerTimestampVenta(a)?.getTime() || 0) - (obtenerTimestampVenta(b)?.getTime() || 0)
+      );
+      setCuentasAbiertas(ordenado);
+    }
+    setLoadingCuentas(false);
+  }, []);
+
+  useEffect(() => {
+    cargarCuentasAbiertas();
+  }, [cargarCuentasAbiertas]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('pos-cuentas-abiertas')
+      .on('postgres_changes', canalClubFiltro('ventas'), () => cargarCuentasAbiertas({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarCuentasAbiertas]);
+
+  // ORIGEN ÚNICO de "¿esta reserva es un cobro pendiente de recepción del
+  // Portal?" — usado tanto para ARMAR "Cuentas Pendientes / Inscripciones"
+  // (abajo) como para EXCLUIR esos mismos tickets de "Cuentas Abiertas /
+  // Comandas Activas" (`gruposCuentasAbiertas`, justo después de este
+  // bloque): antes cada panel decidía esto por su cuenta y un ticket ligado
+  // a una reserva del Portal con "Pagar en Recepción" terminaba apareciendo
+  // EN LOS DOS (duplicado) — ahora hay un solo criterio, en un solo lugar.
+  // Se lee `reservas` (prop, ya cargada sin ningún filtro de `club_id`/fecha
+  // desde `cargarDatos()` en App()) DIRECTAMENTE — no depende de que exista
+  // una fila en `ventas` ligada por `reserva_id` (esa fila puede faltar si
+  // el INSERT en `confirmarReservaConAddons` falló silenciosamente, ver
+  // comentario ahí) — con match insensible a mayúsculas/acentos sobre
+  // `estado_pago` y `metodo_pago` para no depender de la capitalización
+  // exacta que haya guardado cada flujo ("pendiente", "Pendiente",
+  // "Recepción", "RECEPCION", etc.).
+  const reservasPendientesRecepcion = useMemo(() => {
+    return (reservas || []).filter((r) => {
+      // Excluye canceladas/completadas y los bloqueos sintéticos de
+      // Torneo/Reta (mismo criterio que el resto del app, ver `r.estado ===
+      // 'Torneo'/'Reta'` en la Parrilla) — esos nunca son reservas de
+      // jugador con cobro pendiente.
+      if (['Cancelada', 'Completada', 'Torneo', 'Reta'].includes(r.estado)) return false;
+      const estadoPago = claveNombre(r.estado_pago);
+      const metodoPago = claveNombre(r.metodo_pago);
+      return estadoPago === 'pendiente' || metodoPago.includes('recep');
+    });
+  }, [reservas]);
+
+  // Agrupa los consumos pendientes por Cancha + Cliente (la reserva vinculada
+  // en el momento de "Agregar a la Cuenta", si la hubo): cada grupo puede
+  // traer varios renglones de `ventas` (una fila nueva por cada "Agregar a
+  // la Cuenta"), así que aquí se suman los totales y se junta el desglose de
+  // productos de todas ellas en un solo resumen por cuenta.
+  //
+  // REGLA DE EXCLUSIÓN: ninguna venta que pertenezca al flujo de reservas
+  // debe aparecer en "Cuentas Abiertas / Comandas Activas" — esas cuentas
+  // son EXCLUSIVAMENTE del flujo de reservas (Portal o "Reservar y Cobrar
+  // en POS" con saldo pendiente) y se cobran desde "Cuentas Pendientes /
+  // Inscripciones". Se excluye cualquier venta que tenga `reserva_id`
+  // asignado, `es_reserva === true`, o `origen === 'portal'` — cualquiera
+  // de los tres basta (los dos últimos son best-effort: columnas opcionales
+  // que puede que tu Supabase todavía no tenga en filas viejas, así que
+  // `reserva_id` es la señal que nunca falla). Antes solo se excluían las
+  // ligadas a una reserva específicamente "pendiente de recepción"
+  // (`idsReservasPendientesRecepcion`); ahora es más estricto: CUALQUIER
+  // venta con reserva ligada sale de aquí, sin importar el estado de esa
+  // reserva. Los consumos reales de "Vincular a Cancha → Agregar a la
+  // Cuenta" del mostrador que NO traigan reserva ligada no se tocan.
+  const gruposCuentasAbiertas = useMemo(() => {
+    const cuentasSinReservasDePortal = cuentasAbiertas.filter(
+      (v) => !v.reserva_id && v.es_reserva !== true && v.origen !== 'portal'
+    );
+    const mapa = new Map();
+    cuentasSinReservasDePortal.forEach((v) => {
+      const clave = v.cancha_id ? `${v.cancha_id}::${v.reserva_id || 'sin-reserva'}` : `sin-cancha::${v.id}`;
+      if (!mapa.has(clave)) {
+        const cancha = v.cancha_id ? canchas.find((c) => c.id === v.cancha_id) || null : null;
+        const reserva = v.reserva_id ? reservas.find((r) => r.id === v.reserva_id) || null : null;
+        mapa.set(clave, {
+          clave,
+          cancha,
+          reserva,
+          ventas: [],
+          total: 0,
+          items: {}, // nombre → { cantidad, subtotal }
+          clienteNombre: '',
+        });
+      }
+      const grupo = mapa.get(clave);
+      grupo.ventas.push(v);
+      grupo.total += Number(v.total) || 0;
+      // CRM Unificado: si la cuenta no viene de una reserva vinculada (Venta
+      // General sin cancha, o "Vincular a Cancha" sin una reserva en curso),
+      // `grupo.reserva` queda null y antes se mostraba siempre "Cliente sin
+      // nombre vinculado" — aunque el cajero SÍ haya asignado un Cliente
+      // desde el campo "Cliente (opcional — CRM)" en `ComandaPanel`, ese
+      // nombre vive en `detalles.jugador_nombre` de la venta, no en la
+      // reserva. Se usa como respaldo (ver `TarjetaCuentaAbierta`).
+      if (v?.detalles?.jugador_nombre) grupo.clienteNombre = v.detalles.jugador_nombre;
+      const items = v?.detalles?.items;
+      if (Array.isArray(items)) {
+        items.forEach((item) => {
+          const nombre = item.nombre || 'Artículo';
+          if (!grupo.items[nombre]) grupo.items[nombre] = { cantidad: 0, subtotal: 0 };
+          grupo.items[nombre].cantidad += Number(item.cantidad) || 0;
+          grupo.items[nombre].subtotal += Number(item.subtotal) || 0;
+        });
+      }
+    });
+    return Array.from(mapa.values()).sort((a, b) => (a.cancha?.nombre || 'zzz').localeCompare(b.cancha?.nombre || 'zzz'));
+  }, [cuentasAbiertas, canchas, reservas]);
+
+  // CREACIÓN DE TICKET EN RECEPCIÓN — "Cuentas Pendientes / Inscripciones":
+  // arma la misma forma de "grupo" que ya consumen `TarjetaCuentaAbierta` /
+  // `CuentasAbiertasPanel` / `ModalLiquidarCuenta`. Cuando SÍ existe un
+  // ticket en `ventas` ligado por `reserva_id` (el caso normal), se usa para
+  // el desglose completo con add-ons — igual que en "Cuentas Abiertas".
+  // Cuando NO existe (el caso que reportó el club), se arma un resumen de
+  // respaldo con un solo renglón "Renta <cancha>" por el `monto_total` de la
+  // reserva; `liquidarCuenta` de abajo crea el ticket en `ventas` en ese
+  // momento, para que el cobro siempre quede registrado.
+  const gruposReservasPendientes = useMemo(() => {
+    return reservasPendientesRecepcion
+      .map((r) => {
+        const cancha = r.cancha_id ? canchas.find((c) => c.id === r.cancha_id) || null : null;
+        const ventasLigadas = cuentasAbiertas.filter((v) => v.reserva_id === r.id);
+        const items = {};
+        let total = 0;
+        if (ventasLigadas.length > 0) {
+          ventasLigadas.forEach((v) => {
+            total += Number(v.total) || 0;
+            const arr = v?.detalles?.items;
+            if (Array.isArray(arr)) {
+              arr.forEach((item) => {
+                const nombre = item.nombre || 'Artículo';
+                if (!items[nombre]) items[nombre] = { cantidad: 0, subtotal: 0 };
+                items[nombre].cantidad += Number(item.cantidad) || 0;
+                items[nombre].subtotal += Number(item.subtotal) || 0;
+              });
+            }
+          });
+        } else {
+          // Respaldo cuando NO hay ticket en `ventas` ligado (ver
+          // `confirmarReservaConAddons`, sección de la inserción en
+          // `ventas`, sobre el INSERT que puede fallar silenciosamente): el
+          // total pendiente correcto es
+          // `monto_cancha + monto_addons - saldo_wallet_aplicado` — NUNCA
+          // solo `monto_total` a secas (que es nada más el costo de la
+          // cancha, sin add-ons ni el ajuste de Wallet ya aplicado — el bug
+          // que hacía que, con "Wallet + Recepción", se mostrara/cobrara de
+          // más o de menos). `saldo_pendiente` (si la columna existe) ya
+          // trae ese cálculo hecho desde el propio insert; si no,
+          // se recalcula aquí con las otras 2 columnas opcionales, con
+          // fallback final a `monto_total` a secas para reservas viejas que
+          // se hayan creado antes de este fix y no tengan ninguna.
+          const montoCancha = Number(r.monto_total) || 0;
+          const montoAddons = Number(r.monto_addons) || 0;
+          const walletAplicado = Number(r.saldo_wallet_aplicado) || 0;
+          const tieneDesglose = r.monto_addons != null || r.saldo_wallet_aplicado != null || r.saldo_pendiente != null;
+          total = tieneDesglose
+            ? Math.max(0, r.saldo_pendiente != null ? Number(r.saldo_pendiente) || 0 : montoCancha + montoAddons - walletAplicado)
+            : montoCancha;
+          items[`Renta ${cancha?.nombre || 'cancha'}`] = { cantidad: 1, subtotal: montoCancha };
+          // DESGLOSE INDIVIDUAL DE ADD-ONS: en vez del renglón genérico
+          // "Add-ons (Portal)", una línea por cada artículo real
+          // ("1x Overgrip Bombarder Tacky - $80", "1x Pelotas Head - $130"…)
+          // usando `addons_detalle` (guardado en la propia reserva desde
+          // `confirmarReservaConAddons`, ver comentario ahí). Si la reserva
+          // es de antes de ese fix y no trae `addons_detalle`, cae de vuelta
+          // al renglón agregado — sigue siendo mejor que perder el monto.
+          const addonsDetalle = Array.isArray(r.addons_detalle) ? r.addons_detalle : [];
+          if (addonsDetalle.length > 0) {
+            addonsDetalle.forEach((a, i) => {
+              const nombre = a?.nombre || `Add-on ${i + 1}`;
+              const cantidad = Number(a?.cantidad) || 0;
+              const subtotal = Number(a?.subtotal) || Math.round((Number(a?.precio) || 0) * cantidad * 100) / 100;
+              if (!items[nombre]) items[nombre] = { cantidad: 0, subtotal: 0 };
+              items[nombre].cantidad += cantidad;
+              items[nombre].subtotal += subtotal;
+            });
+          } else if (montoAddons > 0) {
+            items['Add-ons (Portal)'] = { cantidad: 1, subtotal: montoAddons };
+          }
+          if (walletAplicado > 0) items['Wallet aplicado (ya pagado)'] = { cantidad: 1, subtotal: -walletAplicado };
+        }
+        return {
+          clave: `reserva-pendiente::${r.id}`,
+          cancha,
+          reserva: r,
+          ventas: ventasLigadas,
+          total,
+          items,
+          // Copia cruda de `reservas.addons_detalle` (cuando NO hay ticket
+          // en `ventas` ligado) — `liquidarCuenta` la usa para armar el
+          // ticket con el desglose real Y para descontar stock/Kardex de
+          // cada add-on en el momento del cobro (ver más abajo).
+          addonsDetalle: ventasLigadas.length > 0 ? [] : Array.isArray(r.addons_detalle) ? r.addons_detalle : [],
+          clienteNombre: r.jugador_nombre || '',
+        };
+      })
+      .sort((a, b) => (a.cancha?.nombre || 'zzz').localeCompare(b.cancha?.nombre || 'zzz'));
+  }, [reservasPendientesRecepcion, cuentasAbiertas, canchas]);
+
+  // Liquida TODOS los renglones pendientes de un grupo de una sola vez,
+  // marcándolos `estado_pago: 'pagado'` con el método de pago elegido —
+  // nunca se manda `metodo_pago: null` (mismo criterio que `registrarVenta`).
+  // Usada tanto por "Cuentas Abiertas" (siempre trae `grupo.ventas` con al
+  // menos 1 fila) como por "Reservas pendientes de pago en Recepción"
+  // (puede traer `grupo.ventas: []` cuando el ticket nunca se creó — ver
+  // `gruposReservasPendientes` arriba): en ese caso, en vez de actualizar
+  // filas que no existen, INSERTA el ticket en `ventas` ya `pagado`, para
+  // que el cobro quede registrado en la tabla de ingresos/ventas.
+  async function liquidarCuenta(grupo, metodoPago, cambio) {
+    setLiquidandoClave(grupo.clave);
+    let error = null;
+    if (grupo.ventas.length > 0) {
+      const idsVentas = grupo.ventas.map((v) => v.id);
+      ({ error } = await supabase
+        .from('ventas')
+        .update({ estado_pago: 'pagado', metodo_pago: metodoPago })
+        .in('id', idsVentas));
+    } else if (grupo.reserva) {
+      // Ticket nuevo (nunca existió uno ligado a esta reserva): se arma con
+      // el desglose REAL — la línea de la cancha + un renglón por cada
+      // add-on individual de `grupo.addonsDetalle` (nombre, variante,
+      // precio, cantidad, producto_id) — en vez de a partir de `grupo.items`
+      // (ese mapa es solo para la TARJETA/UI y trae también el renglón
+      // informativo negativo "Wallet aplicado (ya pagado)", que NO es un
+      // artículo real y no debe insertarse como línea de venta).
+      const montoCanchaLinea = Number(grupo.reserva.monto_total) || 0;
+      const itemsAddons = (grupo.addonsDetalle || []).map((a) => ({
+        tipo: 'producto',
+        producto_id: a.producto_id || null,
+        productoPadreId: a.producto_id || null,
+        variante_id: a.variante_id || null,
+        varianteId: a.variante_id || null,
+        esVariante: !!a.es_variante,
+        varianteNombre: a.variante_nombre || null,
+        cancha_id: null,
+        nombre: a.nombre,
+        precio: a.precio,
+        cantidad: a.cantidad,
+        subtotal: a.subtotal,
+      }));
+      const filasItems = [
+        {
+          tipo: 'cancha',
+          producto_id: null,
+          cancha_id: grupo.reserva.cancha_id || null,
+          nombre: `Renta ${grupo.cancha?.nombre || 'cancha'}`,
+          precio: montoCanchaLinea,
+          cantidad: 1,
+          subtotal: montoCanchaLinea,
+        },
+        ...itemsAddons,
+      ];
+      const payloadVentaLiquidacion = withClubId({
+        total: grupo.total,
+        metodo_pago: metodoPago,
+        turno: null,
+        operador: 'Recepción (Cuentas Pendientes)',
+        reserva_id: grupo.reserva.id,
+        es_reserva: true,
+        origen: 'portal',
+        cancha_id: grupo.reserva.cancha_id || null,
+        detalles: {
+          items: filasItems,
+          pagos_divididos: null,
+          jugador_id: grupo.reserva.jugador_id || null,
+          jugador_nombre: grupo.reserva.jugador_nombre || grupo.clienteNombre || '',
+          monto_cancha: montoCanchaLinea,
+          monto_addons: Number(grupo.reserva.monto_addons) || 0,
+          wallet_aplicado: Number(grupo.reserva.saldo_wallet_aplicado) || 0,
+        },
+        estado_pago: 'pagado',
+      });
+      ({ error } = await supabase.from('ventas').insert(payloadVentaLiquidacion));
+      if (error && esErrorColumnaInexistente(error)) {
+        delete payloadVentaLiquidacion.es_reserva;
+        delete payloadVentaLiquidacion.origen;
+        ({ error } = await supabase.from('ventas').insert(payloadVentaLiquidacion));
+      }
+      // DESCUENTO DE INVENTARIO al cobrar: esto SOLO corre en esta rama (el
+      // ticket se está creando apenas ahora). Si ya existía un ticket
+      // ligado (la otra rama, arriba), su stock/Kardex ya se descontaron
+      // cuando ese ticket se creó en `confirmarReservaConAddons` —
+      // repetirlo aquí duplicaría la salida de inventario.
+      if (!error && itemsAddons.length > 0) {
+        await descontarStockKardexAddonsReserva(itemsAddons, {
+          motivoBase: `Cobro en Recepción · Reserva ${grupo.cancha?.nombre || 'cancha'} ${grupo.reserva.fecha || ''} ${grupo.reserva.hora_inicio || ''}`.trim(),
+          operador: operador?.nombre,
+          upsertProducto,
+          upsertVarianteProducto,
+        });
+      }
+    }
+    setLiquidandoClave(null);
+    if (error) {
+      mostrarToast({ titulo: 'No se pudo liquidar la cuenta', detalle: error.message, tono: 'error' });
+      return false;
+    }
+    // Si la cuenta viene de una reserva real (Portal · "Pagar en
+    // Recepción"), su propia fila en `reservas` también nace con
+    // `estado_pago: 'pendiente'` (ver `confirmarReservaConAddons`) — se
+    // sincroniza aquí a 'pagado' para que la Parrilla deje de mostrarla como
+    // pendiente de cobro. Best effort: si falla, la venta YA quedó cobrada
+    // arriba, así que nunca se revierte ni se bloquea por esto.
+    if (grupo.reserva?.id) {
+      try {
+        const { error: errReserva } = await supabase
+          .from('reservas')
+          .update({ estado_pago: 'pagado', metodo_pago: metodoPago })
+          .eq('id', grupo.reserva.id);
+        if (errReserva) throw errReserva;
+        upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: metodoPago });
+      } catch (errReserva) {
+        console.warn('[Smart POS] La venta se cobró, pero no se pudo sincronizar estado_pago de la reserva vinculada:', errReserva);
+      }
+    }
+    const idsVentasLiquidadas = grupo.ventas.map((v) => v.id);
+    setCuentasAbiertas((prev) => prev.filter((v) => !idsVentasLiquidadas.includes(v.id)));
+    mostrarToast({
+      titulo: 'Cuenta liquidada',
+      detalle: `${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(grupo.total)}${cambio > 0 ? ` · Cambio: ${formatoMoneda(cambio)}` : ''}`,
+    });
+    setGrupoALiquidar(null);
+    cargarCuentasAbiertas({ silencioso: true });
+    return true;
+  }
+
+  /* ---------------- Inscripción Torneo / Reta ---------------- */
+
+  // `retas`/`torneos`/`inscripciones`/`participantesTorneo` llegan como
+  // props LEVANTADAS desde App() (mismo patrón que `productos`): éste ya no
+  // hace su propio fetch ni su propio canal Realtime — deriva directo de los
+  // mismos arrays que usa Torneos & Retas, así que un registro creado en
+  // modo local (`_local: true`, sin fila en Supabase) o un cambio de estatus
+  // hecho aquí en el POS se refleja de inmediato en Mesa de Control y
+  // viceversa, sin ida y vuelta a la base de datos.
+  const [busquedaInscripcion, setBusquedaInscripcion] = useState('');
+  const [inscripcionACobrar, setInscripcionACobrar] = useState(null);
+  const [cobrandoInscripcionId, setCobrandoInscripcionId] = useState(null);
+
+  const inscripcionesEventoPendientes = useMemo(() => {
+    const retasPorId = new Map((retas || []).map((r) => [r.id, r]));
+    const torneosPorId = new Map((torneos || []).map((t) => [t.id, t]));
+
+    const esPendiente = (estadoPago) => estadoPago === 'pendiente' || estadoPago === 'cobro_recepcion';
+
+    const filasRetas = (inscripciones || [])
+      .filter((i) => i.estado !== 'cancelado' && esPendiente(i.estado_pago))
+      .map((i) => {
+        const reta = retasPorId.get(i.reta_id);
+        return {
+          clave: `reta:${i.id}`,
+          tabla: 'reta_inscripciones',
+          id: i.id,
+          esLocal: !!i._local,
+          nombre: i.nombre,
+          telefono: i.telefono,
+          correo: i.correo || i.email,
+          monto: Number(i.monto) || 0,
+          origen: reta ? `Reta · ${formatoFechaLarga(reta.fecha)} · ${formatoHora12(reta.hora_inicio)}` : 'Reta Abierta',
+          canchaId: reta?.cancha_id || null,
+        };
+      });
+
+    const filasTorneos = (participantesTorneo || [])
+      .filter((p) => esPendiente(p.estado_pago))
+      .map((p) => {
+        const torneo = torneosPorId.get(p.torneo_id);
+        return {
+          clave: `torneo:${p.id}`,
+          tabla: 'torneo_participantes',
+          id: p.id,
+          esLocal: !!p._local,
+          nombre: p.nombre,
+          telefono: p.telefono,
+          correo: p.correo || p.email,
+          monto: Number(p.monto) || 0,
+          origen: torneo ? `Torneo: ${torneo.nombre}` : 'Torneo',
+          canchaId: null,
+        };
+      });
+
+    return [...filasRetas, ...filasTorneos];
+  }, [retas, torneos, inscripciones, participantesTorneo]);
+
+  const loadingInscripcionesEvento = Boolean(loadingInscripciones) || Boolean(loadingParticipantes);
+
+  const inscripcionesEventoFiltradas = useMemo(() => {
+    const q = busquedaInscripcion.trim().toLowerCase();
+    if (!q) return inscripcionesEventoPendientes;
+    return inscripcionesEventoPendientes.filter((f) => f.nombre?.toLowerCase().includes(q));
+  }, [inscripcionesEventoPendientes, busquedaInscripcion]);
+
+  // Cobra una inscripción pendiente (Reta o Torneo): blindaje total, igual
+  // filosofía que el resto del módulo Torneos & Retas — intenta marcar
+  // `estado_pago: 'pagado'` en Supabase y registrar el comprobante en
+  // `ventas`, pero si CUALQUIERA de las dos llamadas falla (RLS, columna
+  // faltante, tabla inexistente, red caída, o la inscripción es un registro
+  // `_local` que nunca llegó a existir en Supabase) el cobro NUNCA se
+  // bloquea: el estado local levantado (`setInscripciones`/
+  // `setParticipantesTorneo`) se actualiza de inmediato para que la UI de
+  // Torneos & Retas y Mesa de Control reflejen el pago al instante.
+  async function cobrarInscripcionEvento(fila, metodoPago, cambio) {
+    setCobrandoInscripcionId(fila.clave);
+
+    if (!fila.esLocal) {
+      try {
+        const { error: errEstado } = await supabase.from(fila.tabla).update({ estado_pago: 'pagado' }).eq('id', fila.id);
+        if (errEstado) throw errEstado;
+      } catch (err) {
+        console.warn(`[Smart POS] No se pudo sincronizar el cobro de "${fila.tabla}" con Supabase, se aplica solo local:`, err);
+      }
+    }
+
+    if (fila.tabla === 'reta_inscripciones') {
+      setInscripciones((prev) =>
+        prev.map((i) => {
+          if (i.id !== fila.id) return i;
+          const actualizado = { ...i, estado_pago: 'pagado' };
+          // Si es un registro `_local` (nunca llegó a existir en Supabase),
+          // el localStorage guarda su propia copia — hay que actualizarla
+          // también o un F5 la traería de vuelta con el estatus viejo
+          // ('pendiente'), revirtiendo el cobro visualmente.
+          if (actualizado._local) guardarRegistroLocal(LS_KEY_RETA_INSCRIPCIONES_LOCAL, actualizado);
+          return actualizado;
+        })
+      );
+    } else {
+      setParticipantesTorneo((prev) =>
+        prev.map((p) => {
+          if (p.id !== fila.id) return p;
+          const actualizado = { ...p, estado_pago: 'pagado' };
+          if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTICIPANTES_LOCAL, actualizado);
+          return actualizado;
+        })
+      );
+    }
+
+    const itemsComprobante = [
+      {
+        tipo: 'inscripcion_evento',
+        producto_id: null,
+        cancha_id: fila.canchaId,
+        nombre: `Inscripción — ${fila.origen} (${fila.nombre})`,
+        precio: fila.monto,
+        cantidad: 1,
+        subtotal: fila.monto,
+      },
+    ];
+
+    let ventaData = null;
+    let errVenta = null;
+    try {
+      const resultado = await supabase
+        .from('ventas')
+        .insert({
+          total: fila.monto,
+          metodo_pago: metodoPago,
+          turno: turno?.valor || null,
+          operador: operador?.nombre || null,
+          reserva_id: null,
+          cancha_id: fila.canchaId,
+          detalles: { items: itemsComprobante, pagos_divididos: null },
+          estado_pago: 'pagado',
+        })
+        .select()
+        .single();
+      if (resultado.error) throw resultado.error;
+      ventaData = resultado.data;
+    } catch (err) {
+      errVenta = err;
+      console.warn('[Smart POS] No se pudo generar el comprobante de venta de la inscripción:', err);
+    }
+
+    setCobrandoInscripcionId(null);
+    setInscripcionACobrar(null);
+
+    // Sincronización Silenciosa: el estatus ya cambió a pagado en la Mesa de
+    // Control sin importar si el comprobante de venta se generó — el error
+    // ya quedó registrado en consola arriba, sin interrumpir al operador.
+    mostrarToast({
+      titulo: 'Inscripción cobrada',
+      detalle: `${fila.nombre} · ${formatoMoneda(fila.monto)}${cambio > 0 ? ` · Cambio: ${formatoMoneda(cambio)}` : ''}`,
+    });
+    if (ventaData) {
+      setVentaFinalizada({
+        folio: (ventaData?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        fecha: hoyISO(),
+        horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+        operadorNombre: operador?.nombre || 'Operador',
+        turnoLabel: turno?.label || '',
+        items: itemsComprobante,
+        total: fila.monto,
+        metodoPago,
+        pagosDivididos: null,
+        cambio: cambio || 0,
+      });
+    }
+  }
+
+  const productosFiltrados = useMemo(() => {
+    return productos.filter((p) => {
+      if (p.activo === false) return false;
+      if (categoriaActiva !== 'todos' && p.categoria !== categoriaActiva) return false;
+      if (busquedaProducto.trim() && !p.nombre?.toLowerCase().includes(busquedaProducto.trim().toLowerCase())) return false;
+      return true;
+    });
+  }, [productos, categoriaActiva, busquedaProducto]);
+
+  // Canchas disponibles AHORA MISMO, para la Renta Exprés dentro del filtro "Rentas".
+  const canchasDisponiblesAhora = useMemo(
+    () => canchas.filter((c) => c.activa !== false && estadoActualCancha(c, reservas) === 'disponible'),
+    [canchas, reservas]
+  );
+
+  const total = useMemo(() => comanda.reduce((acc, item) => acc + item.precio * item.cantidad, 0), [comanda]);
+
+  const canchaVinculada = canchas.find((c) => c.id === canchaVinculadaId) || null;
+
+  // `variante` viene de `ModalSeleccionarVariante` cuando el producto trae
+  // entradas en su arreglo JSONB `productos.variantes` — su stock/precio
+  // manda sobre el del producto padre (ver `manejarClickProducto`, el único
+  // punto de entrada real desde el grid del POS).
+  function agregarProducto(producto, variante = null) {
+    if (producto.disponible === false) {
+      mostrarToast({ titulo: 'No disponible', detalle: `${producto.nombre} está marcado como no disponible por ahora.`, tono: 'aviso' });
+      return;
+    }
+    const nombreArticulo = variante ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
+    const precioArticulo = variante && variante.precio != null ? Number(variante.precio) : Number(producto.precio) || 0;
+    // `maneja_stock === false` (o, con variante, sin stock propio) = artículo
+    // de cocina/platillo o variante sin control de inventario: nunca se
+    // limita por número de stock, siempre se puede agregar. Arquitectura
+    // Flexible: la columna de existencias de una variante puede llamarse
+    // `stock` o `cantidad` según el proyecto (ver mismo criterio en
+    // `descontarStockVariante`) — se usa la que de verdad venga poblada en
+    // la fila, en vez de asumir siempre `stock` (asumir mal aquí era la
+    // causa real de que el carrito nunca intentara descontar nada: el
+    // artículo entraba a la comanda con `stock: null` y `registrarVenta` lo
+    // excluía del todo, en silencio).
+    const stockCrudoVariante = variante ? variante.stock ?? variante.cantidad : producto.stock;
+    const manejaStock = variante ? stockCrudoVariante != null : producto.maneja_stock !== false;
+    const stockDisponible = Number(stockCrudoVariante);
+    const hayLimiteStock = manejaStock && Number.isFinite(stockDisponible);
+    // Split Bill Asimétrico: si hay un roster activo, el producto nace
+    // etiquetado con el chip "Agregando para:" (jugador activo, o "Sin
+    // asignar"/compartido) — por eso la llave de fusión incluye el jugador:
+    // dos jugadores pidiendo la misma cerveza deben quedar en líneas
+    // separadas de la comanda, no fusionarse en una sola cantidad. La
+    // variante también entra a la llave: la misma cerveza en Victoria vs.
+    // Corona son renglones distintos.
+    const jugadorIndice = roster.length > 0 ? jugadorActivoParaAgregar : null;
+    const id = `producto-${producto.id}${variante ? `-var-${variante.id}` : ''}-${jugadorIndice ?? 'compartido'}`;
+    setComanda((prev) => {
+      const existente = prev.find((i) => i.id === id);
+      const cantidadActual = existente?.cantidad || 0;
+      if (hayLimiteStock && cantidadActual + 1 > stockDisponible) {
+        mostrarToast({
+          titulo: 'Sin stock suficiente',
+          detalle: `${nombreArticulo} solo tiene ${stockDisponible} disponible(s).`,
+          tono: 'aviso',
+        });
+        return prev;
+      }
+      if (existente) {
+        return prev.map((i) => (i.id === id ? { ...i, cantidad: i.cantidad + 1 } : i));
+      }
+      return [
+        ...prev,
+        {
+          id,
+          tipo: 'producto',
+          producto_id: producto.id,
+          variante_id: variante?.id || null,
+          // Fix definitivo de inventario/kárdex en variantes: se guardan
+          // TAMBIÉN con estos nombres explícitos (`esVariante`,
+          // `productoPadreId`, `varianteId`, `varianteNombre`) — el criterio
+          // exacto que se pidió — como alias de los campos de arriba, para
+          // que cualquier código que lea el carrito (presente o futuro)
+          // tenga una señal inequívoca de "esto es una variante y este es
+          // su producto padre", sin depender de adivinar a partir de
+          // `variante_id` truthy/falsy.
+          esVariante: !!variante,
+          productoPadreId: producto.id,
+          varianteId: variante?.id || null,
+          varianteNombre: variante?.nombre || null,
+          nombre: nombreArticulo,
+          precio: precioArticulo,
+          cantidad: 1,
+          stock: hayLimiteStock ? stockDisponible : null,
+          // NUEVO: bandera explícita de "este artículo sí controla
+          // inventario", independiente del valor numérico de `stock` (que
+          // puede venir `null` solo porque no se pudo leer todavía, sin que
+          // eso signifique "no controla stock"). `registrarVenta` y
+          // `cobrarJugadorRoster` usan ESTA bandera — no `stock` — para
+          // decidir si intentan el descuento en Supabase.
+          manejaStock,
+          jugadorIndice,
+        },
+      ];
+    });
+  }
+
+  // Único punto de entrada real desde el grid del POS: si el producto tiene
+  // variantes registradas, abre el selector (`ModalSeleccionarVariante`)
+  // antes de tocar la comanda; si no tiene ninguna, se agrega directo — el
+  // 100% de los productos sin variantes se comportan exactamente igual que
+  // antes de esta actualización.
+  const [productoParaVariante, setProductoParaVariante] = useState(null);
+  function manejarClickProducto(producto) {
+    const variantesDelProducto = variantesPorProducto?.[producto.id] || [];
+    if (variantesDelProducto.length > 0) {
+      setProductoParaVariante(producto);
+    } else {
+      agregarProducto(producto);
+    }
+  }
+
+  // Renta Exprés: agrega el costo de una cancha (por duración) a la comanda
+  // como un artículo más — se cobra junto con lo demás en el mismo ticket.
+  function agregarCanchaComanda(cancha, duracionHoras, costo) {
+    const id = `cancha-${cancha.id}-${comanda.length}-${Math.round(duracionHoras * 60)}`;
+    setComanda((prev) => [
+      ...prev,
+      {
+        id,
+        tipo: 'cancha',
+        cancha_id: cancha.id,
+        nombre: `Renta ${cancha.nombre} (${duracionHoras}h)`,
+        precio: costo,
+        cantidad: 1,
+        duracionHoras,
+      },
+    ]);
+    mostrarToast({ titulo: 'Renta agregada a la comanda', detalle: `${cancha.nombre} · ${duracionHoras}h · ${formatoMoneda(costo)}` });
+  }
+
+  function cambiarCantidad(itemId, delta) {
+    setComanda((prev) =>
+      prev
+        .map((i) => {
+          if (i.id !== itemId) return i;
+          const nuevaCantidad = i.cantidad + delta;
+          if (delta > 0 && Number.isFinite(i.stock) && nuevaCantidad > i.stock) {
+            mostrarToast({ titulo: 'Sin stock suficiente', detalle: `Solo hay ${i.stock} de ${i.nombre}.`, tono: 'aviso' });
+            return i;
+          }
+          return { ...i, cantidad: nuevaCantidad };
+        })
+        .filter((i) => i.cantidad > 0)
+    );
+  }
+
+  function quitarProducto(itemId) {
+    setComanda((prev) => prev.filter((i) => i.id !== itemId));
+  }
+
+  function limpiarComanda() {
+    setComanda([]);
+    setCanchaVinculadaId('');
+    setCanchaAsignadaId('');
+    setJugadorActivoParaAgregar(null);
+    if (rosterReservaId) borrarRosterSplitBillLocal(rosterReservaId);
+    setRoster([]);
+    setRosterReservaId(null);
+    setClienteNombre('');
+    setClienteTelefono('');
+    setClienteSeleccionadoId(null);
+  }
+
+  // Registra la venta en Supabase (SOLO con las columnas reales de `ventas`:
+  // total, metodo_pago, turno, operador, reserva_id, cancha_id, detalles,
+  // estado_pago — nada de `items`/`operador_nombre`/`pagos_divididos`/`fecha`
+  // sueltos, que es justo lo que rompía el registro), descuenta stock (best
+  // effort), crea/bloquea la reserva de Renta Exprés y limpia la comanda.
+  // Solo arma el Ticket cuando la cuenta queda liquidada (estadoPago === 'pagado').
+  async function registrarVenta({ metodoPago, estadoPago = 'pagado', pagosDivididos = null, cambio = 0 }) {
+    if (comanda.length === 0) return { ok: false };
+    setRegistrandoVenta(true);
+
+    const items = comanda.map((i) => ({
+      tipo: i.tipo,
+      producto_id: i.tipo === 'producto' ? i.producto_id : null,
+      cancha_id: i.tipo === 'cancha' ? i.cancha_id : null,
+      nombre: i.nombre,
+      precio: i.precio,
+      cantidad: i.cantidad,
+      subtotal: Math.round(i.precio * i.cantidad * 100) / 100,
+    }));
+
+    // Artículos de cancha en la comanda son de dos tipos:
+    //  - "reserva_id" presente → viene de "Reservar y Cobrar en POS": la
+    //    reserva YA EXISTE (creada en la Parrilla, estado_pago='pendiente') y
+    //    aquí solo se marca pagada, nunca se duplica.
+    //  - sin "reserva_id" → Renta Exprés clásica desde el POS: se crea la
+    //    reserva "En Juego" desde ahora, igual que antes.
+    // Ambos casos son best effort: si la reserva falla, la venta se cobra
+    // igual y solo se avisa para corregirla a mano en la Parrilla.
+    const itemsCancha = comanda.filter((item) => item.tipo === 'cancha');
+    const itemsCanchaExistentes = itemsCancha.filter((item) => item.reserva_id);
+    const itemsCanchaNuevas = itemsCancha.filter((item) => !item.reserva_id);
+
+    let reservaIdActualizada = null;
+    if (itemsCanchaExistentes.length > 0 && estadoPago === 'pagado') {
+      const resultados = await Promise.all(
+        itemsCanchaExistentes.map(async (item) => {
+          const { data: reservaData, error: errReserva } = await supabase
+            .from('reservas')
+            .update({ estado_pago: 'pagado', metodo_pago: metodoPago || 'dividido' })
+            .eq('id', item.reserva_id)
+            .select()
+            .single();
+          if (errReserva) {
+            // Sincronización Silenciosa: la venta ya se cobró — el Realtime
+            // de `reservas` (canal `parrilla-operativa`) reconciliará el
+            // estado de pago en cuanto la fila esté disponible de nuevo.
+            console.warn('[Smart POS] Venta cobrada, pero la reserva no se marcó pagada sola.', errReserva);
+            return null;
+          }
+          if (reservaData && upsertReserva) upsertReserva(reservaData);
+          return reservaData;
+        })
+      );
+      reservaIdActualizada = resultados.filter(Boolean)[0]?.id || null;
+    }
+
+    let reservaIdCreada = null;
+    if (itemsCanchaNuevas.length > 0) {
+      const resultadosReserva = await Promise.all(
+        itemsCanchaNuevas.map(async (item) => {
+          const horaInicioStr = minutosAHora(minutosAhora());
+          const finMin = Math.min(minutosAhora() + Math.round(item.duracionHoras * 60), HORA_FIN_MIN - 1);
+          const reservaPayload = withClubId({
+            cancha_id: item.cancha_id,
+            jugador_id: null,
+            jugador_nombre: 'Renta Exprés (POS)',
+            fecha: hoyISO(),
+            hora_inicio: horaInicioStr,
+            hora_fin: minutosAHora(finMin),
+            estado: 'En Juego',
+            estado_pago: 'pagado',
+            metodo_pago: metodoPago || 'dividido',
+            monto_total: item.precio,
+          });
+          const { data: reservaData, error: errReserva } = await supabase.from('reservas').insert(reservaPayload).select().single();
+          if (errReserva) {
+            // Sincronización Silenciosa: la venta se cobra igual — solo se
+            // registra en consola para diagnóstico.
+            console.warn('[Smart POS] No se pudo bloquear la cancha sola.', errReserva);
+            return null;
+          }
+          if (reservaData && upsertReserva) upsertReserva(reservaData);
+          return reservaData;
+        })
+      );
+      reservaIdCreada = resultadosReserva.filter(Boolean)[0]?.id || null;
+    }
+
+    // Enlaza la venta a una reserva existente si "Vincular a Cancha" apunta a
+    // una cancha con una reserva en curso ahora mismo (cuenta abierta clásica).
+    const reservaVinculada = canchaVinculadaId ? reservaEnCursoAhora(reservas, canchaVinculadaId) : null;
+    const reservaIdParaVenta = reservaIdActualizada || reservaIdCreada || reservaVinculada?.id || null;
+    // Prioridad del cancha_id de la venta: (1) "Vincular a Cancha" (cuenta
+    // abierta), (2) la cancha de una Renta Exprés/reserva en la comanda, (3)
+    // la etiqueta opcional "Asignar a Cancha" (solo para reportes), (4)
+    // ninguna → Venta General.
+    const canchaIdParaVenta = canchaVinculadaId || itemsCancha[0]?.cancha_id || canchaAsignadaId || null;
+
+    // `metodo_pago` es NOT NULL en `ventas`: "Agregar a la Cuenta" (cuenta
+    // abierta/pendiente) llama a `registrarVenta` con `metodoPago: null`
+    // porque todavía no se sabe cómo se va a cobrar, así que NUNCA se manda
+    // ese null tal cual — se sustituye por una etiqueta explícita según el
+    // estado de pago.
+    const metodoPagoParaVenta = metodoPago || (estadoPago === 'pendiente' ? 'Cuenta Abierta' : 'Pendiente');
+
+    // CRM Unificado por Teléfono — si se capturó/seleccionó un Cliente para
+    // esta comanda (ver "Cliente (opcional — CRM)" en `ComandaPanel`), se
+    // resuelve/crea su expediente en `jugadores` (best effort, nunca bloquea
+    // el cobro) y se etiqueta en `detalles.jugador_id`, el mismo campo que ya
+    // lee `resolverJugadorIdVentaCancha` con prioridad máxima — así una venta
+    // de Pro-Shop/Cafetería SIN cancha también alimenta el historial/LTV del
+    // cliente en el Directorio & CRM.
+    let clienteJugadorId = clienteSeleccionadoId || null;
+    if (!clienteJugadorId && (clienteNombre.trim() || clienteTelefono.trim())) {
+      try {
+        clienteJugadorId = await resolverJugadorId(clienteNombre, { telefono: clienteTelefono, directorio: directorioJugadoresCRM });
+      } catch (_e) {
+        clienteJugadorId = null;
+      }
+    }
+
+    const payload = {
+      total,
+      metodo_pago: metodoPagoParaVenta,
+      turno: turno?.valor || null,
+      operador: operador?.nombre || null,
+      reserva_id: reservaIdParaVenta,
+      cancha_id: canchaIdParaVenta,
+      detalles: {
+        items,
+        pagos_divididos: pagosDivididos,
+        jugador_id: clienteJugadorId,
+        jugador_nombre: clienteNombre.trim() || null,
+      },
+      estado_pago: estadoPago,
+    };
+
+    const { data, error } = await supabase.from('ventas').insert(payload).select().single();
+
+    if (error) {
+      setRegistrandoVenta(false);
+      mostrarToast({ titulo: 'Error al registrar la venta', detalle: error.message, tono: 'error' });
+      return { ok: false };
+    }
+
+    // Descuento de stock: best effort, en el cliente, solo para artículos tipo
+    // "producto" que sí manejan inventario (ver nota de la cabecera del
+    // archivo). Nunca bloquea ni revierte la venta si alguno falla. Cada
+    // descuento exitoso también: (1) refleja el nuevo stock de inmediato vía
+    // `upsertProducto` (sin esperar Realtime, y ya sincronizado con
+    // ModuloERPInventario porque ambos leen el mismo estado levantado en
+    // App()), y (2) registra su salida en `kardex` con
+    // `tipo_movimiento: 'salida_venta'` — el kardex también es best effort:
+    // si falla, el stock ya quedó descontado y la venta ya está cobrada.
+    // IMPORTANTE: el filtro de abajo usa `item.manejaStock` (bandera
+    // explícita puesta en `agregarProducto`), NUNCA `Number.isFinite(item.stock)`.
+    // Ese era el bug de raíz: si el valor numérico de stock no se pudo leer
+    // del carrito por cualquier motivo (p. ej. la variante trae su columna
+    // de existencias como `cantidad` en vez de `stock`), `item.stock` quedaba
+    // `null` y el artículo se excluía POR COMPLETO del descuento — sin
+    // ningún error, sin ningún aviso. Ahora se intenta el descuento en
+    // Supabase para todo artículo que sí controla inventario, y cualquier
+    // fallo real queda visible con `console.error`.
+    const itemsConStock = comanda.filter((item) => item.tipo === 'producto' && (item.productoPadreId || item.producto_id) && item.manejaStock !== false);
+    const resultadosStock = await Promise.all(
+      itemsConStock.map(async (item) => {
+        // Fix definitivo de variantes: se lee `productoPadreId`/`varianteId`
+        // (los nombres explícitos que ahora guarda `agregarProducto`)
+        // primero, con `producto_id`/`variante_id` como respaldo — así
+        // funciona igual sin importar cuál de los dos nombres traiga el
+        // artículo del carrito.
+        const productoId = item.productoPadreId || item.producto_id;
+        const varianteId = item.varianteId || item.variante_id;
+        const esVariante = item.esVariante === true || !!varianteId;
+        const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
+        let stockAnterior = item.stock;
+        let nuevoStock = null;
+        let errStock = null;
+
+        if (esVariante) {
+          // Descuento Real al Vender una variante — FIX DEFINITIVO, JSONB
+          // puro: `descontarStockVariante` lee/escribe directo el arreglo
+          // `productos.variantes` de la fila del producto padre. Ver su
+          // comentario de cabecera para el detalle completo.
+          const resultado = await descontarStockVariante({
+            productoId,
+            varianteId,
+            varianteNombre: varianteNombreEtiqueta,
+            cantidad: item.cantidad,
+            upsertProducto,
+            upsertVarianteProducto,
+          });
+          if (!resultado.ok) {
+            errStock = resultado.error;
+          } else {
+            stockAnterior = resultado.stockAnterior;
+            nuevoStock = resultado.nuevoStock;
+          }
+        } else {
+          // Producto simple (sin variante): SIEMPRE se lee el stock fresco
+          // de Supabase antes de restar — nunca se confía en el valor que
+          // traiga el carrito, que puede estar desactualizado si otro
+          // dispositivo vendió el mismo producto hace un segundo (misma
+          // filosofía de "BD como única fuente de verdad" del resto de la app).
+          const resultado = await descontarStockProductoSimple({
+            productoId,
+            cantidad: item.cantidad,
+            upsertProducto,
+          });
+          if (!resultado.ok) {
+            errStock = resultado.error;
+          } else {
+            stockAnterior = resultado.stockAnterior;
+            nuevoStock = resultado.nuevoStock;
+          }
+        }
+
+        if (errStock) {
+          // A diferencia de otras fricciones "silenciosas" de esta app, un
+          // descuento de stock que falla SÍ se registra con su error real —
+          // es inventario/dinero, no solo un desfase cosmético.
+          console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}":`, errStock);
+          return { ok: false, nombre: item.nombre, error: errStock };
+        }
+
+        // `nuevoStock == null` = el producto/variante existe pero no tiene
+        // control de stock propio en Supabase (columna `stock` en null) —
+        // la venta se cobró igual, simplemente no hay inventario que
+        // descontar ni kardex de salida que registrar para este artículo.
+        if (nuevoStock == null) return { ok: true, nombre: item.nombre };
+
+        const resultadoKardex = await insertarMovimientoKardex({
+          producto_id: productoId,
+          variante_id: varianteId || undefined,
+          producto_nombre: item.nombre,
+          tipo_movimiento: 'salida_venta',
+          cantidad: item.cantidad,
+          stock_anterior: stockAnterior,
+          stock_nuevo: nuevoStock,
+          motivo: esVariante ? `Venta en Smart POS · ${varianteNombreEtiqueta}` : 'Venta en Smart POS',
+          operador: operador?.nombre,
+        });
+        if (!resultadoKardex.ok) {
+          console.error(`[Smart POS] Error detallado Supabase: el stock de "${item.nombre}" se descontó, pero el Kardex no se pudo registrar:`, resultadoKardex.error);
+        }
+
+        return { ok: true, nombre: item.nombre };
+      })
+    );
+    const fallosStock = resultadosStock.filter((r) => !r.ok);
+    if (fallosStock.length > 0) {
+      console.error('[Smart POS] Venta registrada, pero el stock no se descontó solo para:', fallosStock.map((f) => f.nombre).join(', '));
+    }
+
+    setRegistrandoVenta(false);
+
+    const detalleToast = canchaVinculadaId ? `Se sumó a ${canchaVinculada?.nombre || 'la cancha'}.` : formatoMoneda(total);
+    const ticket =
+      estadoPago === 'pagado'
+        ? {
+            folio: (data?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+            fecha: hoyISO(),
+            horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+            operadorNombre: operador?.nombre || 'Operador',
+            turnoLabel: turno?.label || '',
+            items,
+            total,
+            metodoPago,
+            pagosDivididos,
+            cambio,
+          }
+        : null;
+
+    limpiarComanda();
+    mostrarToast({ titulo: canchaVinculadaId ? 'Consumo agregado a la cuenta' : 'Venta registrada', detalle: detalleToast });
+    if (ticket) setVentaFinalizada(ticket);
+    return { ok: true, venta: data };
+  }
+
+  // Botón principal de la comanda: con cancha vinculada es "cuenta abierta"
+  // (sin pedir método, se cobra después); sin cancha, abre el selector de cobro.
+  function onAccionPrincipal() {
+    if (comanda.length === 0) return;
+    if (canchaVinculadaId) {
+      registrarVenta({ metodoPago: null, estadoPago: 'pendiente' });
+    } else {
+      setModalCobro(true);
+    }
+  }
+
+  // Control Interno — "Aplicación de descuentos manuales" / "Ediciones de
+  // precios en POS": UN solo punto de edición (precio por línea de la
+  // comanda, ver `ComandaPanel`/`onEditarPrecio`) que decide cuál de los dos
+  // eventos auditar según si el precio bajó (descuento) o cambió hacia
+  // arriba/lateral (edición de precio). Gateado en el render por
+  // `permisos.puedeEditarPrecioPOS`/`puedeAplicarDescuentoManual`.
+  function editarPrecioItem(itemId, nuevoPrecioTexto) {
+    const nuevoPrecio = Math.round((Number(nuevoPrecioTexto) || 0) * 100) / 100;
+    if (!Number.isFinite(nuevoPrecio) || nuevoPrecio < 0) return;
+    const item = comanda.find((i) => i.id === itemId);
+    if (!item || nuevoPrecio === item.precio) return;
+    const precioOriginal = item.precio;
+    setComanda((prev) => prev.map((i) => (i.id === itemId ? { ...i, precio: nuevoPrecio } : i)));
+    if (nuevoPrecio < precioOriginal) {
+      onRegistrarAuditoria?.('descuento_pos', {
+        motivo: `${item.nombre} — ajuste manual de precio`,
+        montoDescuento: Math.round((precioOriginal - nuevoPrecio) * item.cantidad * 100) / 100,
+        totalAntes: total,
+      });
+    } else {
+      onRegistrarAuditoria?.('edicion_precio_pos', { producto: item.nombre, precioOriginal, precioNuevo: nuevoPrecio });
+    }
+  }
+
+  // Control Interno — "Devoluciones... en POS": regresa unidades al stock
+  // (mismo patrón best-effort de `registrarEntrada` en ERP & Inventario:
+  // stock primero, kardex después, nunca bloquea por el kardex) y deja el
+  // rastro en el Log de Actividad.
+  async function registrarDevolucion(producto, cantidad, motivo) {
+    const stockAnterior = Number(producto.stock) || 0;
+    const stockNuevo = stockAnterior + cantidad;
+    const { error: errStock } = await supabase.from('productos').update({ stock: stockNuevo }).eq('id', producto.id);
+    if (errStock) {
+      mostrarToast({ titulo: 'No se pudo registrar la devolución', detalle: errStock.message, tono: 'error' });
+      return false;
+    }
+    upsertProducto?.({ id: producto.id, stock: stockNuevo });
+    const resultadoKardex = await insertarMovimientoKardex({
+      producto_id: producto.id,
+      tipo_movimiento: 'devolucion',
+      cantidad,
+      stock_anterior: stockAnterior,
+      stock_nuevo: stockNuevo,
+      motivo: motivo || 'Devolución en POS',
+      operador: operador?.nombre,
+    });
+    if (!resultadoKardex.ok) {
+      // Sincronización Silenciosa: el stock ya se actualizó — solo se
+      // registra en consola para diagnóstico.
+      console.warn('[Smart POS] Stock actualizado, pero no se registró en el Kardex (devolución).', resultadoKardex.error);
+    }
+    mostrarToast({ titulo: 'Devolución registrada', detalle: `${producto.nombre}: ${stockAnterior} → ${stockNuevo}` });
+    onRegistrarAuditoria?.('devolucion_pos', { producto: producto.nombre, cantidad, motivo });
+    return true;
+  }
+
+  return (
+    <>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+          <button
+            onClick={() => setVistaPOS('vender')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+              vistaPOS === 'vender' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <ShoppingCart size={14} /> Vender
+          </button>
+          <button
+            onClick={() => setVistaPOS('cuentas')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+              vistaPOS === 'cuentas' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <Link2 size={14} /> Cuentas Abiertas / Comandas Activas
+            {gruposCuentasAbiertas.length > 0 && (
+              <span
+                className={`ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-black ${
+                  vistaPOS === 'cuentas' ? 'bg-slate-950 text-lime-400' : 'bg-rose-500 text-rose-50'
+                }`}
+              >
+                {gruposCuentasAbiertas.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setVistaPOS('inscripciones')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+              vistaPOS === 'inscripciones' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <Trophy size={14} /> Cuentas Pendientes / Inscripciones
+            {inscripcionesEventoPendientes.length + gruposReservasPendientes.length > 0 && (
+              <span
+                className={`ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-black ${
+                  vistaPOS === 'inscripciones' ? 'bg-slate-950 text-lime-400' : 'bg-rose-500 text-rose-50'
+                }`}
+              >
+                {inscripcionesEventoPendientes.length + gruposReservasPendientes.length}
+              </span>
+            )}
+          </button>
+        </div>
+        {vistaPOS === 'vender' && (
+          <div className="flex items-center gap-2">
+            {permisos?.puedeGestionarProductos !== false && (
+              <BotonPrimario onClick={() => setModalNuevoProducto(true)} className="whitespace-nowrap">
+                <Plus size={15} /> Nuevo Producto
+              </BotonPrimario>
+            )}
+            {permisos?.puedeRegistrarDevolucionPOS && (
+              <BotonSecundario onClick={() => setModalDevolucion(true)} className="whitespace-nowrap">
+                <RefreshCw size={15} /> Devolución
+              </BotonSecundario>
+            )}
+            {permisos?.puedeCerrarTurnoCaja !== false && (
+              <BotonSecundario onClick={() => setModalArqueo(true)} className="whitespace-nowrap">
+                <Calculator size={15} /> Cerrar Turno / Arqueo
+              </BotonSecundario>
+            )}
+          </div>
+        )}
+      </div>
+
+      {vistaPOS === 'cuentas' ? (
+        <CuentasAbiertasPanel
+          grupos={gruposCuentasAbiertas}
+          cargando={loadingCuentas}
+          error={errorCuentas}
+          onReintentar={() => cargarCuentasAbiertas()}
+          onLiquidar={(grupo) => setGrupoALiquidar(grupo)}
+          liquidandoClave={liquidandoClave}
+        />
+      ) : vistaPOS === 'inscripciones' ? (
+        <div className="space-y-5">
+          {/* Reservas del Portal con "Pagar en Recepción" pendientes de
+              cobro — mismo grupo/tarjeta/modal que ya usa "Cuentas Abiertas
+              / Comandas Activas", filtrado a solo las que sí vienen de una
+              reserva real. */}
+          <div>
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+              <CalendarIcon size={13} /> Reservas pendientes de pago en Recepción
+            </p>
+            <CuentasAbiertasPanel
+              grupos={gruposReservasPendientes}
+              cargando={loadingCuentas}
+              error={errorCuentas}
+              onReintentar={() => cargarCuentasAbiertas()}
+              onLiquidar={(grupo) => setGrupoALiquidar(grupo)}
+              liquidandoClave={liquidandoClave}
+              vacioIcon={CalendarIcon}
+              vacioTitulo="No hay reservas pendientes de pago en Recepción."
+              vacioDetalle='Se llenan solas cuando un jugador reserva desde el Portal y elige "Pagar en Recepción".'
+            />
+          </div>
+          <div>
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+              <Trophy size={13} /> Inscripciones a Reta / Torneo pendientes
+            </p>
+            <InscripcionesEventoPanel
+              filas={inscripcionesEventoFiltradas}
+              cargando={loadingInscripcionesEvento}
+              error=""
+              onReintentar={() => {}}
+              busqueda={busquedaInscripcion}
+              onBuscar={setBusquedaInscripcion}
+              onCobrar={setInscripcionACobrar}
+              cobrandoClave={cobrandoInscripcionId}
+            />
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-1 flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  value={busquedaProducto}
+                  onChange={(e) => setBusquedaProducto(e.target.value)}
+                  placeholder="Buscar producto..."
+                  className={`${inputClase} w-52 pl-9`}
+                />
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {CATEGORIAS_PRODUCTO.map((cat) => {
+                  const Icon = cat.icon;
+                  return (
+                    <button
+                      key={cat.value}
+                      onClick={() => setCategoriaActiva(cat.value)}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition ${
+                        categoriaActiva === cat.value
+                          ? 'border-lime-400 bg-lime-400/10 text-lime-400'
+                          : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      <Icon size={13} /> {cat.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {roster.length > 0 && (
+            <>
+              {/* "Agregando para": etiqueta con el jugador activo cada
+                  producto que se toque en el grid de abajo (bullet 2 de
+                  "Padel POS Operativo" — Split Bill Asimétrico). No afecta
+                  a las canchas (esas se reparten aparte, con su propia
+                  cuota) ni bloquea reasignar una línea ya en la comanda. */}
+              <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Agregando para:</span>
+                <button
+                  onClick={() => setJugadorActivoParaAgregar(null)}
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+                    jugadorActivoParaAgregar === null ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  Sin asignar
+                </button>
+                {roster.map((j, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setJugadorActivoParaAgregar(i)}
+                    className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+                      jugadorActivoParaAgregar === i ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    {j.nombre || `Jugador ${i + 1}`}
+                  </button>
+                ))}
+              </div>
+
+              <RosterSplitBillPanel
+                cancha={canchaVinculada}
+                filas={filasSplitBill}
+                itemsSinAsignar={comandaPorJugador.sinAsignar}
+                totalSinAsignar={totalSinAsignarRoster}
+                costoCanchaTotal={costoCanchaTotalRoster}
+                saldoCanchaPendiente={saldoCanchaPendienteRoster}
+                cobrandoJugadorIndice={cobrandoJugadorIndice}
+                onActualizarNombre={actualizarNombreRosterSlot}
+                onActualizarTelefono={actualizarTelefonoRosterSlot}
+                onActualizarCuota={actualizarCuotaCanchaRosterSlot}
+                onConfirmarJugador={confirmarJugadorRosterSlot}
+                onAgregarJugador={agregarJugadorRoster}
+                onQuitarJugador={quitarJugadorRoster}
+                onCobrar={cobrarJugadorRoster}
+                onWhatsApp={enviarWhatsAppRosterJugador}
+              />
+            </>
+          )}
+
+          {errorProductos && <ErrorBanner mensaje={errorProductos} onReintentar={() => cargarProductos()} />}
+
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_380px] lg:items-start">
+            <div className="space-y-5">
+              {categoriaActiva === 'Rentas' && canchasDisponiblesAhora.length > 0 && (
+            <div>
+              <h3 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-emerald-400">
+                <Clock size={13} /> Canchas Disponibles Ahora — Renta Exprés
+              </h3>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+                {canchasDisponiblesAhora.map((c) => (
+                  <CanchaRentaCard key={c.id} cancha={c} onRentar={() => setCanchaParaRentar(c)} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {loadingProductos ? (
+            <SkeletonProductos />
+          ) : productos.length === 0 ? (
+            <EmptyStateProductos />
+          ) : productosFiltrados.length === 0 ? (
+            categoriaActiva !== 'Rentas' || canchasDisponiblesAhora.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 py-12 text-center text-sm text-slate-500">
+                Ningún producto coincide con el filtro.
+              </div>
+            ) : null
+          ) : (
+            <div>
+              {categoriaActiva === 'Rentas' && (
+                <h3 className="mb-2 text-xs font-black uppercase tracking-wide text-slate-400">Otros artículos de Renta</h3>
+              )}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+                {productosFiltrados.map((p) => (
+                  <ProductoCard
+                    key={p.id}
+                    producto={p}
+                    variantes={variantesPorProducto?.[p.id] || []}
+                    onAgregar={() => manejarClickProducto(p)}
+                    onEditar={() => setProductoEditar(p)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <ComandaPanel
+          comanda={comanda}
+          total={total}
+          canchas={canchas}
+          reservas={reservas}
+          canchaVinculadaId={canchaVinculadaId}
+          onCambiarCanchaVinculada={setCanchaVinculadaId}
+          canchaAsignadaId={canchaAsignadaId}
+          onCambiarCanchaAsignada={setCanchaAsignadaId}
+          onCambiarCantidad={cambiarCantidad}
+          onQuitarProducto={quitarProducto}
+          onLimpiar={limpiarComanda}
+          onDividirCuenta={() => setModalDividir(true)}
+          onAccionPrincipal={onAccionPrincipal}
+          registrandoVenta={registrandoVenta}
+          roster={roster}
+          onAsignarJugador={asignarItemAJugador}
+          puedeEditarPrecio={Boolean(permisos?.puedeEditarPrecioPOS || permisos?.puedeAplicarDescuentoManual)}
+          onEditarPrecio={editarPrecioItem}
+          directorioJugadores={directorioJugadoresCRM}
+          clienteNombre={clienteNombre}
+          onCambiarClienteNombre={setClienteNombre}
+          clienteTelefono={clienteTelefono}
+          onCambiarClienteTelefono={setClienteTelefono}
+          clienteSeleccionadoId={clienteSeleccionadoId}
+          onSeleccionarCliente={setClienteSeleccionadoId}
+        />
+          </div>
+        </>
+      )}
+
+      {modalCobro && (
+        <ModalCobro
+          total={total}
+          registrandoVenta={registrandoVenta}
+          onClose={() => setModalCobro(false)}
+          onConfirmado={async (metodo, cambio) => {
+            const resultado = await registrarVenta({ metodoPago: metodo, estadoPago: 'pagado', cambio: cambio || 0 });
+            if (resultado.ok) setModalCobro(false);
+          }}
+          onDividir={() => {
+            setModalCobro(false);
+            setModalDividir(true);
+          }}
+        />
+      )}
+
+      {modalDividir && (
+        <ModalDividirCuenta
+          total={total}
+          registrandoVenta={registrandoVenta}
+          onClose={() => setModalDividir(false)}
+          onFinalizar={async (pagosDivididos) => {
+            const cambioTotal = pagosDivididos.reduce((acc, p) => acc + (p.cambio || 0), 0);
+            const resultado = await registrarVenta({
+              metodoPago: 'dividido',
+              estadoPago: 'pagado',
+              pagosDivididos,
+              cambio: cambioTotal,
+            });
+            if (resultado.ok) setModalDividir(false);
+          }}
+        />
+      )}
+
+      {modalArqueo && (
+        <ModalArqueo operador={operador} turno={turno} onClose={() => setModalArqueo(false)} onGuardarCierre={onGuardarCierre} />
+      )}
+
+      {modalDevolucion && (
+        <ModalDevolucionPOS productos={productos} onClose={() => setModalDevolucion(false)} onRegistrar={registrarDevolucion} />
+      )}
+
+      {(modalNuevoProducto || productoEditar) && (
+        <ModalNuevoProducto
+          producto={productoEditar}
+          variantesDelProducto={productoEditar ? variantesPorProducto?.[productoEditar.id] || [] : []}
+          onClose={() => {
+            setModalNuevoProducto(false);
+            setProductoEditar(null);
+          }}
+          onGuardado={(producto) => upsertProducto(producto)}
+          onEliminado={(id) => upsertProducto({ id, activo: false })}
+          upsertVarianteProducto={upsertVarianteProducto}
+          quitarVarianteProductoLocal={quitarVarianteProductoLocal}
+          upsertProducto={upsertProducto}
+        />
+      )}
+
+      {productoParaVariante && (
+        <ModalSeleccionarVariante
+          producto={productoParaVariante}
+          variantes={variantesPorProducto?.[productoParaVariante.id] || []}
+          onClose={() => setProductoParaVariante(null)}
+          onSeleccionar={(variante) => {
+            agregarProducto(productoParaVariante, variante);
+            setProductoParaVariante(null);
+          }}
+        />
+      )}
+
+      {canchaParaRentar && (
+        <ModalRentaCancha
+          cancha={canchaParaRentar}
+          onClose={() => setCanchaParaRentar(null)}
+          onAgregar={(duracion, costo) => agregarCanchaComanda(canchaParaRentar, duracion, costo)}
+        />
+      )}
+
+      {ventaFinalizada && <ModalTicket venta={ventaFinalizada} onClose={() => setVentaFinalizada(null)} />}
+
+      {grupoALiquidar && (
+        <ModalLiquidarCuenta
+          grupo={grupoALiquidar}
+          liquidando={liquidandoClave === grupoALiquidar.clave}
+          onClose={() => setGrupoALiquidar(null)}
+          onLiquidar={(metodo, cambio) => liquidarCuenta(grupoALiquidar, metodo, cambio)}
+        />
+      )}
+
+      {inscripcionACobrar && (
+        <ModalCobrarInscripcion
+          fila={inscripcionACobrar}
+          liquidando={cobrandoInscripcionId === inscripcionACobrar.clave}
+          onClose={() => setInscripcionACobrar(null)}
+          onCobrar={(metodo, cambio) => cobrarInscripcionEvento(inscripcionACobrar, metodo, cambio)}
+        />
+      )}
+    </>
+  );
+}
+
+/* ============================================================================
+ * MÓDULO 3 — ERP & INVENTARIO
+ * ==========================================================================*/
+
+// 'entrada' se crea desde "+ Registrar Entrada" (este módulo); 'salida_venta'
+// se crea SOLA desde Smart POS al cobrar (ver `registrarVenta`); 'ajuste'
+// queda soportado solo para mostrarse (sin botón que lo genere todavía).
+const KARDEX_TIPO_META = {
+  entrada: { label: 'Entrada', badge: 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30', icon: PackagePlus, signo: '+' },
+  salida_venta: { label: 'Venta POS', badge: 'bg-rose-400/10 text-rose-400 ring-1 ring-rose-400/30', icon: ShoppingCart, signo: '−' },
+  ajuste: { label: 'Ajuste', badge: 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30', icon: Wrench, signo: '±' },
+};
+
+// Unidades vendidas en [inicio, fin): SIEMPRE desde `kardex` (salida_venta) —
+// misma fuente endurecida contra RLS que usa Analytics BI. Incluye cuentas
+// aún no cobradas porque el stock físico ya salió del inventario.
+async function unidadesVendidasKardex(inicio, fin) {
+  const { data, error } = await conClubId(supabase.from('kardex').select('cantidad'))
+    .eq('tipo_movimiento', 'salida_venta')
+    .gte('created_at', inicio.toISOString())
+    .lt('created_at', fin.toISOString());
+  if (error) return 0;
+  return (data || []).reduce((acc, mov) => acc + Math.abs(Number(mov.cantidad) || 0), 0);
+}
+
+// Monto vendido de PRODUCTOS (Pro-Shop/Cafetería-Bar/Rentas de equipo) en
+// [inicio, fin): SIEMPRE desde `ventas` YA COBRADAS — el día de cobro, no el
+// de juego (eso solo aplica a canchas, ver Analytics BI). Usa
+// `consultarVentasEnRango` para tolerar que `ventas` no tenga `created_at`.
+async function montoVentasProductos(inicio, fin) {
+  const { data, error } = await consultarVentasEnRango(inicio, fin);
+  if (error) return 0;
+  return data
+    .filter((v) => v.estado_pago === 'pagado')
+    .reduce((acc, v) => {
+      const items = v?.detalles?.items;
+      if (!Array.isArray(items)) return acc;
+      const sumaProductos = items.filter((i) => i?.tipo === 'producto').reduce((s, i) => s + (Number(i.subtotal) || 0), 0);
+      return acc + sumaProductos;
+    }, 0);
+}
+
+// Unidades vendidas en [inicio, fin) AGRUPADAS POR PRODUCTO Y POR VARIANTE —
+// misma fuente (`kardex.salida_venta`) que `unidadesVendidasKardex`, pero
+// desglosada para poder calcular el ritmo de venta diario tanto de cada
+// producto (ver `calcularCoberturaStock`) como de cada variante (Variantes
+// como Productos Completos — Días de Cobertura/Estatus de Reabastecimiento
+// individuales). `select('*')` a propósito (no se enumeran columnas a mano):
+// así, si `variante_id` todavía no existe en un proyecto viejo, la consulta
+// no truena — simplemente viene `undefined` y esos movimientos solo cuentan
+// para `porProducto`, igual que antes de esta actualización.
+async function unidadesVendidasPorProductoRango(inicio, fin) {
+  const { data, error } = await conClubId(supabase.from('kardex').select('*'))
+    .eq('tipo_movimiento', 'salida_venta')
+    .gte('created_at', inicio.toISOString())
+    .lt('created_at', fin.toISOString());
+  if (error) return { porProducto: {}, porVariante: {} };
+  const porProducto = {};
+  const porVariante = {};
+  (data || []).forEach((mov) => {
+    const cantidad = Math.abs(Number(mov.cantidad) || 0);
+    if (mov.producto_id) porProducto[mov.producto_id] = (porProducto[mov.producto_id] || 0) + cantidad;
+    if (mov.variante_id) porVariante[mov.variante_id] = (porVariante[mov.variante_id] || 0) + cantidad;
+  });
+  return { porProducto, porVariante };
+}
+
+// Si el producto no tiene `tiempo_entrega_dias` cargado (o la columna no
+// existe en Supabase todavía — ver nota de esquema arriba), se asume este
+// valor por defecto para la Alerta de Reabastecimiento.
+const TIEMPO_ENTREGA_DEFAULT_DIAS = 3;
+
+const TEXTO_COBERTURA_CRITICA = '⚠️ Cobertura Crítica';
+const TEXTO_REORDENAR_YA = '❌ Reordenar Ya';
+
+// Logística de cadena de suministro: Días de Cobertura = Stock Actual ÷
+// ritmo de venta diario (unidades vendidas en los últimos 7 días ÷ 7).
+// * estatus 'sin_control' → el producto no maneja stock rígido.
+// * estatus 'sin_dato'    → maneja stock pero no tiene stock cargado.
+// * estatus 'sin_ventas'  → no se vendió nada en los últimos 7 días, así que
+//   no hay ritmo con qué dividir (cobertura indefinida, sin alertas).
+// * estatus 'reordenar'   → Días de Cobertura <= Tiempo de Entrega del
+//   proveedor: badge ❌ Reordenar Ya.
+// * estatus 'critica'     → Días de Cobertura < 5 (pero por encima del
+//   tiempo de entrega): badge ⚠️ Cobertura Crítica.
+// * estatus 'normal'      → cobertura sana.
+function calcularCoberturaStock(producto, unidadesUltimos7Dias) {
+  if (producto?.maneja_stock === false) return { dias: null, ritmoDiario: 0, tiempoEntrega: null, estatus: 'sin_control' };
+  const stock = Number(producto?.stock);
+  if (!Number.isFinite(stock)) return { dias: null, ritmoDiario: 0, tiempoEntrega: null, estatus: 'sin_dato' };
+  const tiempoEntregaCrudo = Number(producto?.tiempo_entrega_dias);
+  const tiempoEntrega = Number.isFinite(tiempoEntregaCrudo) ? tiempoEntregaCrudo : TIEMPO_ENTREGA_DEFAULT_DIAS;
+  const ritmoDiario = (Number(unidadesUltimos7Dias) || 0) / 7;
+  if (ritmoDiario <= 0) return { dias: null, ritmoDiario: 0, tiempoEntrega, estatus: 'sin_ventas' };
+  const dias = stock / ritmoDiario;
+  let estatus = 'normal';
+  if (dias <= tiempoEntrega) estatus = 'reordenar';
+  else if (dias < 5) estatus = 'critica';
+  return { dias, ritmoDiario, tiempoEntrega, estatus };
+}
+
+// Texto plano de "Días de Cobertura" — reutilizado tanto por la tabla del
+// Catálogo (ERP) como por el CSV exportable, para que ambos digan exactamente
+// lo mismo.
+function etiquetaDiasCobertura(cobertura) {
+  if (cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato') return '—';
+  if (cobertura.estatus === 'sin_ventas') return 'Sin ventas recientes';
+  return `${cobertura.dias.toFixed(1)} días${cobertura.dias < 5 ? ` (${TEXTO_COBERTURA_CRITICA})` : ''}`;
+}
+
+// Texto plano de la Alerta de Reabastecimiento — mismo criterio en tabla y CSV.
+function etiquetaReabastecimiento(cobertura) {
+  if (cobertura.estatus === 'reordenar') return TEXTO_REORDENAR_YA;
+  if (cobertura.estatus === 'critica' || cobertura.estatus === 'normal') return '✓ Cobertura OK';
+  return '—';
+}
+
+// Detecta si un error de Supabase/PostgREST viene de una política RLS (Row
+// Level Security) bloqueando el INSERT en `kardex` — típicamente código
+// Postgres 42501 (insufficient_privilege) o un mensaje que menciona la
+// política. Nos sirve para dar un aviso accionable en vez de un mensaje
+// genérico cuando el kardex no se pudo escribir por permisos.
+function esErrorRLS(error) {
+  if (!error) return false;
+  const mensaje = (error.message || '').toLowerCase();
+  return (
+    error.code === '42501' ||
+    mensaje.includes('row-level security') ||
+    mensaje.includes('permission denied') ||
+    mensaje.includes('violates row-level')
+  );
+}
+
+// Inserta un movimiento en `kardex` con exactamente los campos que la tabla
+// espera (ver esquema documentado en la cabecera del archivo): producto_id,
+// tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, operador
+// (+ club_id solo si CLUB_ACTIVO_ID está configurado, vía `withClubId`). A propósito
+// NO se encadena `.select()` tras el insert: en Supabase, si la política RLS
+// de SELECT es más estricta que la de INSERT, pedir de vuelta la fila
+// insertada puede fallar aunque el insert en sí haya funcionado — así
+// evitamos ese falso bloqueo. Nunca lanza (Supabase no arroja excepciones):
+// siempre regresa { ok, error } para que quien llama decida cómo avisar.
+//
+// Variantes como Productos Completos: `variante_id` es OPCIONAL y NUEVO —
+// si se manda y la columna todavía no existe en `kardex`, se reintenta
+// automáticamente sin ese campo (Arquitectura Flexible: nunca truena por un
+// desfase de esquema); `producto_id` sigue siendo siempre el del producto
+// PADRE (kardex no tiene FK propio a variantes), así que el registro de la
+// variante nunca se pierde aunque el reintento la deje sin `variante_id`
+// — sigue identificable por `motivo`, que siempre incluye su nombre.
+async function insertarMovimientoKardex({
+  producto_id,
+  variante_id,
+  producto_nombre,
+  tipo_movimiento,
+  cantidad,
+  stock_anterior,
+  stock_nuevo,
+  motivo,
+  operador,
+}) {
+  const payload = withClubId({
+    producto_id,
+    tipo_movimiento,
+    cantidad,
+    stock_anterior,
+    stock_nuevo,
+    motivo: motivo || null,
+    operador: operador || null,
+  });
+  if (variante_id) payload.variante_id = variante_id;
+  // `producto_nombre` compuesto (p. ej. "Overgrips — Bombarder Tacky") —
+  // FIX DEFINITIVO de variantes: deja el kardex legible incluso si la
+  // variante o el producto se renombran/eliminan después. Es una columna
+  // opcional (Arquitectura Flexible): si el proyecto todavía no la tiene,
+  // se reintenta el insert sin ella, igual que ya se hace con `variante_id`.
+  if (producto_nombre) payload.producto_nombre = producto_nombre;
+  let { error } = await supabase.from('kardex').insert(payload);
+  if (error && (variante_id || producto_nombre) && esErrorColumnaInexistente(error)) {
+    delete payload.variante_id;
+    delete payload.producto_nombre;
+    ({ error } = await supabase.from('kardex').insert(payload));
+  }
+  if (error) {
+    console.error('[kardex] insert bloqueado:', error);
+    return { ok: false, error, esRLS: esErrorRLS(error) };
+  }
+  return { ok: true, error: null, esRLS: false };
+}
+
+// ============================================================================
+// Variantes — Arquitectura JSONB única (FIX DEFINITIVO)
+// ============================================================================
+// Este proyecto de Supabase NO tiene una tabla `producto_variantes` — las
+// variantes de un producto (p. ej. "Cerveza 335 ML" → Corona/Victoria/Dos
+// XX, "Overgrips" → Bombarder Tacky/Dry) viven ÚNICAMENTE en la columna
+// JSONB `productos.variantes` (un arreglo de objetos). Los helpers de aquí
+// abajo son el ÚNICO lugar de todo el archivo que lee o escribe variantes —
+// todo lo demás (POS, Comandas, Inventario, Portal, Tienda, Add-ons) pasa
+// por ellos, así que ya no queda ninguna consulta a `producto_variantes` en
+// ningún módulo.
+//
+// Búsqueda flexible: cada entrada del arreglo puede nombrar a la variante
+// con cualquiera de estas propiedades — `nombre`, `variante`, `id`, `label`
+// o `nombre_variante` — y guardar su existencia como `stock`, `cantidad` o
+// `existencias`. Los helpers prueban todas, en ese orden, y comparan nombres
+// con `.trim().toLowerCase()` para que "Corona ", "corona" o "CORONA"
+// encuentren la misma fila.
+
+// Nombre visible de una entrada de `productos.variantes`, sea cual sea la
+// propiedad que lo traiga.
+function nombreDeVarianteJSONB(v) {
+  const crudo = v?.nombre ?? v?.variante ?? v?.label ?? v?.nombre_variante ?? v?.id;
+  return crudo == null ? '' : String(crudo).trim();
+}
+
+// Clave de existencias que de verdad trae una entrada — `null` si ninguna
+// de las tres está presente (variante sin control de stock propio).
+function claveStockVarianteJSONB(v) {
+  if (v == null) return null;
+  if (Object.prototype.hasOwnProperty.call(v, 'stock')) return 'stock';
+  if (Object.prototype.hasOwnProperty.call(v, 'cantidad')) return 'cantidad';
+  if (Object.prototype.hasOwnProperty.call(v, 'existencias')) return 'existencias';
+  return null;
+}
+
+function stockDeVarianteJSONB(v) {
+  const clave = claveStockVarianteJSONB(v);
+  return clave ? Number(v[clave]) || 0 : null;
+}
+
+// id estable para usar como key de React / selección en pantalla — respeta
+// `v.id` si la entrada ya trae uno, y si no, lo deriva del nombre (mismo
+// resultado cada vez que se lee el mismo nombre, sin tener que escribir un
+// campo nuevo en el JSONB de nadie).
+function idEstableVarianteJSONB(v, indice) {
+  if (v?.id != null && v.id !== '') return String(v.id);
+  const nombre = nombreDeVarianteJSONB(v);
+  return nombre ? `var-${nombre.toLowerCase().replace(/\s+/g, '-')}` : `var-${indice}`;
+}
+
+// Normaliza UNA entrada cruda de `productos.variantes` a la forma que ya
+// esperan `ModalSeleccionarVariante`, `FilaVarianteInventarioCompleta`, el
+// carrito del POS y el Portal — MISMOS nombres de campo que ya usaba la
+// antigua fila de la tabla `producto_variantes` (`costo_unitario`,
+// `stock_minimo`, snake_case) para no tener que tocar ningún consumidor:
+// `{ id, nombre, precio, stock, costo_unitario, stock_minimo, activo }`.
+function normalizarVarianteJSONB(v, indice) {
+  return {
+    id: idEstableVarianteJSONB(v, indice),
+    nombre: nombreDeVarianteJSONB(v) || `Variante ${indice + 1}`,
+    precio: v?.precio != null ? Number(v.precio) : null,
+    stock: stockDeVarianteJSONB(v),
+    costo_unitario: v?.costo_unitario != null ? Number(v.costo_unitario) : null,
+    stock_minimo: v?.stock_minimo != null ? Number(v.stock_minimo) : null,
+    activo: v?.activo !== false,
+  };
+}
+
+// Lista de variantes de UN producto, ya normalizada — lo que usan todos los
+// componentes que hoy reciben `variantesPorProducto[producto.id]`.
+function variantesDeProductoJSONB(producto) {
+  if (!Array.isArray(producto?.variantes)) return [];
+  return producto.variantes.map(normalizarVarianteJSONB).filter((v) => v.activo !== false);
+}
+
+// Descuento Real al Vender un producto SIN variantes: a diferencia de la
+// versión anterior (que restaba sobre el valor de stock que traía el
+// carrito, potencialmente desactualizado), esta SIEMPRE lee el stock
+// vigente en Supabase justo antes de escribir — la misma "BD como única
+// fuente de verdad" que ya rige el resto de la app — y regresa el error tal
+// cual si el `UPDATE` es bloqueado (por ejemplo, por RLS). Si el producto no
+// tiene control de stock propio (`stock` es `null` en la fila), no es un
+// error: regresa `nuevoStock: null` para que el llamador sepa que no hay
+// nada que descontar ni que registrar en el kardex para este artículo.
+async function descontarStockProductoSimple({ productoId, cantidad, upsertProducto }) {
+  try {
+    const { data: fila, error: errLeer } = await supabase.from('productos').select('id, stock').eq('id', productoId).maybeSingle();
+    if (errLeer) {
+      console.error('[Inventario] Error detallado Supabase (leer stock del producto):', errLeer);
+      return { ok: false, error: errLeer };
+    }
+    if (!fila) {
+      const error = new Error(`No se encontró el producto ${productoId} en Supabase al intentar descontar su stock.`);
+      console.error('[Inventario] Error detallado Supabase:', error);
+      return { ok: false, error };
+    }
+    if (fila.stock == null) {
+      // Producto sin control de inventario (p. ej. platillo de cocina) —
+      // no es una falla, simplemente no hay stock que tocar.
+      return { ok: true, via: 'sin-control', stockAnterior: null, nuevoStock: null, error: null };
+    }
+    const stockAnterior = Number(fila.stock) || 0;
+    const nuevoStock = Math.max(0, stockAnterior - cantidad);
+    const { error: errUpdate } = await supabase.from('productos').update({ stock: nuevoStock }).eq('id', productoId);
+    if (errUpdate) {
+      console.error('[Inventario] Error detallado Supabase (actualizar stock del producto):', errUpdate);
+      return { ok: false, error: errUpdate };
+    }
+    upsertProducto?.({ id: productoId, stock: nuevoStock });
+    return { ok: true, via: 'producto', stockAnterior, nuevoStock, error: null };
+  } catch (e) {
+    console.error('[Inventario] Error detallado Supabase (descontar stock del producto):', e);
+    return { ok: false, error: e };
+  }
+}
+
+// Descuento Real al Vender una variante — FIX DEFINITIVO, JSONB puro: este
+// proyecto de Supabase NO tiene tabla `producto_variantes` (confirmado por
+// el club), así que ya no se intenta ninguna tabla aparte. Todo el
+// descuento vive en la columna JSONB `productos.variantes`, siguiendo el
+// criterio exacto pedido:
+//   1. Se lee `productos.variantes` de la fila del producto padre y se
+//      parsea como arreglo de objetos (`Array.isArray`, si no lo es se
+//      trata como "sin variantes" y se regresa error).
+//   2. Se busca la entrada que coincide con la variante del carrito
+//      comparando de forma FLEXIBLE (`.trim().toLowerCase()`) tanto por id
+//      (`v.id`, o el id estable derivado del nombre — ver
+//      `idEstableVarianteJSONB`) como por nombre (`v.nombre`, `v.variante`,
+//      `v.id`, `v.label` o `v.nombre_variante` — ver `nombreDeVarianteJSONB`,
+//      que ya prueba las cinco).
+//   3. Se descuenta la cantidad de la clave de existencias que de verdad
+//      traiga esa entrada (`stock`, `cantidad` o `existencias` — ver
+//      `claveStockVarianteJSONB`); si la variante no trae ninguna, no es un
+//      error: simplemente no controla stock propio.
+//   4. Se recalcula `productos.stock` sumando TODAS las variantes ya
+//      actualizadas, y se hace un solo `UPDATE` a `productos` con el
+//      arreglo completo + el nuevo total — Sincronización Automática
+//      Padre-Variantes.
+//   5. El `INSERT` en `kardex` (con `producto_nombre` compuesto, p. ej.
+//      "Overgrips — Bombarder Tacky") lo hace el llamador vía
+//      `insertarMovimientoKardex`, que ya soporta esa columna — así cada
+//      llamador conserva su propio `motivo` (Smart POS, Split Bill, Portal,
+//      etc.) sin duplicar el registro.
+async function descontarStockVariante({ productoId, varianteId, varianteNombre, cantidad, upsertProducto }) {
+  try {
+    const { data: productoPadre, error: errPadre } = await supabase
+      .from('productos')
+      .select('id, variantes, stock')
+      .eq('id', productoId)
+      .maybeSingle();
+    if (errPadre) console.error('[Inventario] Error detallado Supabase (leer productos.variantes):', errPadre);
+    if (errPadre || !productoPadre || !Array.isArray(productoPadre.variantes)) {
+      const error =
+        errPadre || new Error(`El producto ${productoId} no tiene un arreglo productos.variantes válido.`);
+      console.error('[Inventario] Error detallado Supabase (descuento de variante):', error);
+      return { ok: false, via: 'ninguno', error };
+    }
+
+    const listaVariantes = productoPadre.variantes;
+    const idBuscado = varianteId != null ? String(varianteId).trim().toLowerCase() : '';
+    const nombreBuscado = varianteNombre != null ? String(varianteNombre).trim().toLowerCase() : '';
+    let indiceCoincide = -1;
+    for (let i = 0; i < listaVariantes.length; i++) {
+      const v = listaVariantes[i];
+      const idCalculado = idEstableVarianteJSONB(v, i).trim().toLowerCase();
+      const idCrudo = v?.id != null ? String(v.id).trim().toLowerCase() : '';
+      const nombreV = nombreDeVarianteJSONB(v).trim().toLowerCase();
+      const coincidePorId = idBuscado && (idBuscado === idCalculado || idBuscado === idCrudo);
+      const coincidePorNombre = nombreBuscado && nombreBuscado === nombreV;
+      if (coincidePorId || coincidePorNombre) {
+        indiceCoincide = i;
+        break;
+      }
+    }
+
+    if (indiceCoincide === -1) {
+      const error = new Error(
+        `La variante "${varianteNombre || varianteId}" no se encontró en productos.variantes del producto ${productoId}.`
+      );
+      console.error('[Inventario] Error detallado Supabase:', error);
+      return { ok: false, via: 'ninguno', error };
+    }
+
+    const varianteEncontrada = listaVariantes[indiceCoincide];
+    const claveStock = claveStockVarianteJSONB(varianteEncontrada);
+    if (!claveStock) {
+      // Variante sin control de stock propio (ninguna de stock/cantidad/
+      // existencias presente en esa entrada) — no es una falla, simplemente
+      // no hay nada que descontar ni que registrar en el kardex.
+      return { ok: true, via: 'jsonb', stockAnterior: null, nuevoStock: null, error: null };
+    }
+
+    const stockAnteriorVariante = Number(varianteEncontrada[claveStock]) || 0;
+    const nuevoStockVariante = Math.max(0, stockAnteriorVariante - cantidad);
+    const variantesActualizadas = listaVariantes.map((v, i) => (i === indiceCoincide ? { ...v, [claveStock]: nuevoStockVariante } : v));
+
+    // Sincronización Automática Padre-Variantes: el stock total del padre se
+    // recalcula sumando el arreglo YA actualizado, en el mismo update.
+    const stockTotalPadre = variantesActualizadas.reduce((acc, v) => acc + (stockDeVarianteJSONB(v) || 0), 0);
+    const { error: errUpdatePadre } = await supabase
+      .from('productos')
+      .update({ variantes: variantesActualizadas, stock: stockTotalPadre })
+      .eq('id', productoId);
+    if (errUpdatePadre) {
+      console.error('[Inventario] Error detallado Supabase (actualizar productos.variantes + stock):', errUpdatePadre);
+      return { ok: false, via: 'jsonb', error: errUpdatePadre };
+    }
+
+    upsertProducto?.({ id: productoId, stock: stockTotalPadre, variantes: variantesActualizadas });
+    return { ok: true, via: 'jsonb', stockAnterior: stockAnteriorVariante, nuevoStock: nuevoStockVariante, error: null };
+  } catch (e) {
+    console.error('[Inventario] Error detallado Supabase (excepción al descontar productos.variantes):', e);
+    return { ok: false, via: 'ninguno', error: e };
+  }
+}
+
+// Descuenta stock + registra Kardex ('salida_venta') para una lista de
+// add-ons de UNA reserva — mismo criterio exacto que ya usa `registrarVenta`
+// en Smart POS (variante → `descontarStockVariante`, producto simple →
+// `descontarStockProductoSimple`, kardex best-effort). Se usa desde
+// `liquidarCuenta` en "Cuentas Pendientes / Inscripciones" ÚNICAMENTE cuando
+// se está creando el ticket en `ventas` por primera vez al momento del cobro
+// (la reserva nunca tuvo un ticket ligado — ver el comentario de
+// `gruposReservasPendientes`): si YA existe un ticket en `ventas`, el stock
+// de sus add-ons se descontó cuando ese ticket se creó (en
+// `confirmarReservaConAddons`), así que llamar esto de nuevo ahí
+// DUPLICARÍA el descuento — por eso NO se invoca en ese otro camino.
+async function descontarStockKardexAddonsReserva(itemsAddons, { motivoBase, operador, upsertProducto, upsertVarianteProducto }) {
+  const resultados = await Promise.all(
+    (itemsAddons || [])
+      .filter((it) => it && (it.producto_id || it.productoPadreId))
+      .map(async (item) => {
+        const productoId = item.productoPadreId || item.producto_id;
+        const varianteId = item.varianteId || item.variante_id;
+        const esVariante = item.esVariante === true || !!varianteId;
+        const varianteNombreEtiqueta = item.varianteNombre || item.variante_nombre || item.nombre;
+        let stockAnterior = null;
+        let nuevoStock = null;
+        let errStock = null;
+        if (esVariante) {
+          const resultado = await descontarStockVariante({
+            productoId,
+            varianteId,
+            varianteNombre: varianteNombreEtiqueta,
+            cantidad: item.cantidad,
+            upsertProducto: upsertProducto || (() => {}),
+            upsertVarianteProducto: upsertVarianteProducto || (() => {}),
+          });
+          if (!resultado.ok) errStock = resultado.error;
+          else {
+            stockAnterior = resultado.stockAnterior;
+            nuevoStock = resultado.nuevoStock;
+          }
+        } else {
+          const resultado = await descontarStockProductoSimple({
+            productoId,
+            cantidad: item.cantidad,
+            upsertProducto: upsertProducto || (() => {}),
+          });
+          if (!resultado.ok) errStock = resultado.error;
+          else {
+            stockAnterior = resultado.stockAnterior;
+            nuevoStock = resultado.nuevoStock;
+          }
+        }
+        if (errStock) {
+          console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}" (add-on de reserva):`, errStock);
+          return { ok: false, nombre: item.nombre, error: errStock };
+        }
+        if (nuevoStock == null) return { ok: true, nombre: item.nombre };
+        const resultadoKardex = await insertarMovimientoKardex({
+          producto_id: productoId,
+          variante_id: varianteId || undefined,
+          producto_nombre: item.nombre,
+          tipo_movimiento: 'salida_venta',
+          cantidad: item.cantidad,
+          stock_anterior: stockAnterior,
+          stock_nuevo: nuevoStock,
+          motivo: `${motivoBase}${esVariante ? ` · ${varianteNombreEtiqueta}` : ''}`,
+          operador: operador || 'Recepción',
+        });
+        if (!resultadoKardex.ok) {
+          console.error(
+            `[Smart POS] Error detallado Supabase: stock descontado pero el Kardex no se pudo registrar para "${item.nombre}" (add-on de reserva):`,
+            resultadoKardex.error
+          );
+        }
+        return { ok: true, nombre: item.nombre };
+      })
+  );
+  return resultados;
+}
+
+// Edición manual de UNA variante dentro de `productos.variantes` — mismo
+// criterio de búsqueda flexible que `descontarStockVariante`, pero sin
+// descontar: sobrescribe los campos que traiga `cambios` (precio,
+// costo_unitario, stock_minimo) sobre la entrada encontrada y recalcula
+// `productos.stock` en el mismo `UPDATE`. La usan tanto la edición inline de
+// precio/costo/stock mínimo por variante (`guardarCamposVariante`) como
+// "+ Registrar Entrada" sobre una variante (`registrarEntrada`), en ambos
+// casos dentro de `ModuloERPInventario`.
+//
+// `nuevoStock`, si viene, es tratado aparte de `cambios`: en vez de asumir
+// que la clave de existencias siempre se llama `stock`, se detecta la que
+// de verdad trae esa entrada (`stock`, `cantidad` o `existencias` — igual
+// que `descontarStockVariante`) y se escribe AHÍ — así una variante que ya
+// traía su stock en `cantidad` no termina con dos claves distintas
+// desincronizadas.
+async function actualizarVarianteEnJSONB({ productoId, varianteId, varianteNombre, cambios, nuevoStock, upsertProducto }) {
+  try {
+    const { data: productoPadre, error: errPadre } = await supabase
+      .from('productos')
+      .select('id, variantes, stock')
+      .eq('id', productoId)
+      .maybeSingle();
+    if (errPadre) console.error('[Inventario] Error detallado Supabase (leer productos.variantes):', errPadre);
+    if (errPadre || !productoPadre || !Array.isArray(productoPadre.variantes)) {
+      const error = errPadre || new Error(`El producto ${productoId} no tiene un arreglo productos.variantes válido.`);
+      console.error('[Inventario] Error detallado Supabase (actualizar variante):', error);
+      return { ok: false, error };
+    }
+
+    const listaVariantes = productoPadre.variantes;
+    const idBuscado = varianteId != null ? String(varianteId).trim().toLowerCase() : '';
+    const nombreBuscado = varianteNombre != null ? String(varianteNombre).trim().toLowerCase() : '';
+    let indiceCoincide = -1;
+    for (let i = 0; i < listaVariantes.length; i++) {
+      const v = listaVariantes[i];
+      const idCalculado = idEstableVarianteJSONB(v, i).trim().toLowerCase();
+      const idCrudo = v?.id != null ? String(v.id).trim().toLowerCase() : '';
+      const nombreV = nombreDeVarianteJSONB(v).trim().toLowerCase();
+      const coincidePorId = idBuscado && (idBuscado === idCalculado || idBuscado === idCrudo);
+      const coincidePorNombre = nombreBuscado && nombreBuscado === nombreV;
+      if (coincidePorId || coincidePorNombre) {
+        indiceCoincide = i;
+        break;
+      }
+    }
+    if (indiceCoincide === -1) {
+      const error = new Error(
+        `La variante "${varianteNombre || varianteId}" no se encontró en productos.variantes del producto ${productoId}.`
+      );
+      console.error('[Inventario] Error detallado Supabase:', error);
+      return { ok: false, error };
+    }
+
+    const varianteEncontrada = listaVariantes[indiceCoincide];
+    const cambiosFinales = { ...cambios };
+    if (nuevoStock != null) {
+      const claveStock = claveStockVarianteJSONB(varianteEncontrada) || 'stock';
+      cambiosFinales[claveStock] = nuevoStock;
+    }
+    const variantesActualizadas = listaVariantes.map((v, i) => (i === indiceCoincide ? { ...v, ...cambiosFinales } : v));
+    const stockTotalPadre = variantesActualizadas.reduce((acc, v) => acc + (stockDeVarianteJSONB(v) || 0), 0);
+    const { data: productoActualizado, error: errUpdate } = await supabase
+      .from('productos')
+      .update({ variantes: variantesActualizadas, stock: stockTotalPadre })
+      .eq('id', productoId)
+      .select()
+      .single();
+    if (errUpdate) {
+      console.error('[Inventario] Error detallado Supabase (actualizar productos.variantes):', errUpdate);
+      return { ok: false, error: errUpdate };
+    }
+
+    upsertProducto?.(productoActualizado);
+    return { ok: true, error: null, producto: productoActualizado, variante: variantesActualizadas[indiceCoincide] };
+  } catch (e) {
+    console.error('[Inventario] Error detallado Supabase (excepción al actualizar productos.variantes):', e);
+    return { ok: false, error: e };
+  }
+}
+
+// Margen BRUTO % = (Precio de Venta − Costo Directo del Producto) / Precio ×
+// 100. Aplica SOLO a productos físicos de POS/ERP (Pro-Shop, Cafetería/Bar,
+// botes de bolas, refrescos, accesorios) — NUNCA a ítems de Cancha/Pista
+// (su costo variable directo siempre es $0). Devuelve null (en vez de un
+// 100% falso) cuando falta el costo o el precio no es utilizable, para que
+// el KPI de Margen Bruto Promedio pueda excluir estos productos
+// correctamente.
+function margenPorcentaje(producto) {
+  const precio = Number(producto?.precio);
+  const costo = Number(producto?.costo_unitario);
+  if (!Number.isFinite(precio) || precio <= 0 || !Number.isFinite(costo)) return null;
+  return ((precio - costo) / precio) * 100;
+}
+
+// 'sin_control' = platillo/artículo sin stock rígido (maneja_stock: false);
+// 'sin_dato' = maneja stock pero no tiene stock_minimo cargado, así que no se
+// puede evaluar; 'bajo' | 'normal' = comparación directa contra el mínimo.
+function estatusStockProducto(producto) {
+  if (producto?.maneja_stock === false) return 'sin_control';
+  const stock = Number(producto?.stock);
+  const minimo = Number(producto?.stock_minimo);
+  if (!Number.isFinite(stock) || !Number.isFinite(minimo)) return 'sin_dato';
+  return stock <= minimo ? 'bajo' : 'normal';
+}
+
+function EstatusStockBadge({ estatus }) {
+  if (estatus === 'sin_control') {
+    return <span className="whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-400">Sin stock rígido</span>;
+  }
+  if (estatus === 'sin_dato') {
+    return <span className="whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-500">Falta stock mín.</span>;
+  }
+  if (estatus === 'bajo') {
+    return (
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-rose-400/10 px-2 py-0.5 text-[10px] font-bold text-rose-400 ring-1 ring-rose-400/30">
+        <AlertTriangle size={10} /> Bajo Stock
+      </span>
+    );
+  }
+  return (
+    <span className="whitespace-nowrap rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold text-emerald-400 ring-1 ring-emerald-400/30">
+      Normal
+    </span>
+  );
+}
+
+// Variantes como Productos Completos: cada variante se renderiza como su
+// propia fila de tabla con EXACTAMENTE las mismas columnas que un producto
+// normal (Precio, Costo Unitario, Margen Bruto %, Stock Actual, Stock
+// Mínimo, Días de Cobertura, Reabastecimiento, Estatus) — nunca más el
+// mini-editor de solo precio/stock de antes. Precio/Costo/Stock Mínimo que
+// se dejan vacíos HEREDAN el valor del producto padre (mismo criterio que ya
+// usaba el Smart POS para el precio), así que `margenPorcentaje`/
+// `calcularCoberturaStock`/`estatusStockProducto` — las mismas funciones que
+// usa un producto — reciben un objeto ya "normalizado" con esos heredados
+// resueltos. Cada edición inline (onBlur) guarda con el mismo criterio de
+// tolerancia de columnas que el producto padre (ver `guardarCamposVariante`).
+function FilaVarianteInventarioCompleta({ variante, productoPadre, unidadesUltimos7Dias, onGuardarCamposVariante, onRegistrarEntrada }) {
+  const [precio, setPrecio] = useState(variante.precio != null ? String(variante.precio) : '');
+  const [costo, setCosto] = useState(variante.costo_unitario != null ? String(variante.costo_unitario) : '');
+  const [stock, setStock] = useState(variante.stock != null ? String(variante.stock) : '');
+  const [stockMinimo, setStockMinimo] = useState(variante.stock_minimo != null ? String(variante.stock_minimo) : '');
+  const [guardando, setGuardando] = useState(false);
+
+  useEffect(() => {
+    setPrecio(variante.precio != null ? String(variante.precio) : '');
+  }, [variante.precio]);
+  useEffect(() => {
+    setCosto(variante.costo_unitario != null ? String(variante.costo_unitario) : '');
+  }, [variante.costo_unitario]);
+  useEffect(() => {
+    setStock(variante.stock != null ? String(variante.stock) : '');
+  }, [variante.stock]);
+  useEffect(() => {
+    setStockMinimo(variante.stock_minimo != null ? String(variante.stock_minimo) : '');
+  }, [variante.stock_minimo]);
+
+  async function guardarSiCambio(campo, valorStr, valorOriginal) {
+    const num = valorStr === '' ? null : Number(valorStr);
+    if (!Number.isFinite(num) && num !== null) return;
+    if (num === (valorOriginal ?? null)) return;
+    setGuardando(true);
+    await onGuardarCamposVariante(variante, { [campo]: num }, productoPadre);
+    setGuardando(false);
+  }
+
+  // Objeto "normalizado" — variante con sus vacíos heredados del padre — para
+  // reutilizar exactamente las mismas funciones de negocio que un producto.
+  const varianteNormalizada = {
+    precio: variante.precio != null ? variante.precio : productoPadre.precio,
+    costo_unitario: variante.costo_unitario != null ? variante.costo_unitario : productoPadre.costo_unitario,
+    stock: variante.stock,
+    stock_minimo: variante.stock_minimo != null ? variante.stock_minimo : productoPadre.stock_minimo,
+    maneja_stock: variante.stock != null, // sin stock propio = sin control de inventario, igual que maneja_stock:false
+    tiempo_entrega_dias: productoPadre.tiempo_entrega_dias,
+  };
+  const margen = margenPorcentaje(varianteNormalizada);
+  const estatus = estatusStockProducto(varianteNormalizada);
+  const cobertura = calcularCoberturaStock(varianteNormalizada, unidadesUltimos7Dias);
+  const sinControlStock = variante.stock == null;
+
+  return (
+    <tr className="border-b border-slate-800/50 bg-slate-950/30 last:border-0 hover:bg-slate-800/20">
+      <td className="px-3 py-2">
+        <div className="flex items-center gap-2 pl-8">
+          <CornerDownRight size={12} className="shrink-0 text-slate-600" />
+          <span className="max-w-[150px] truncate text-[11px] font-semibold text-slate-300">{variante.nombre}</span>
+        </div>
+      </td>
+      <td className="whitespace-nowrap px-3 py-2 text-[10px] text-slate-600">Variante</td>
+      <td className="px-3 py-2 text-right">
+        <input
+          type="number"
+          min="0"
+          value={precio}
+          onChange={(e) => setPrecio(e.target.value)}
+          onBlur={() => guardarSiCambio('precio', precio, variante.precio ?? null)}
+          className="w-20 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+          placeholder={`$${productoPadre.precio || 0}`}
+          title="Vacío = hereda el precio del producto"
+        />
+      </td>
+      <td className="px-3 py-2 text-right">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={costo}
+          onChange={(e) => setCosto(e.target.value)}
+          onBlur={() => guardarSiCambio('costo_unitario', costo, variante.costo_unitario ?? null)}
+          className="w-20 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+          placeholder="—"
+          title="Vacío = hereda el costo del producto"
+        />
+      </td>
+      <td className="whitespace-nowrap px-3 py-2 text-right text-[11px] font-bold">
+        {margen !== null ? (
+          <span className={margen < 20 ? 'text-rose-400' : margen < 40 ? 'text-amber-400' : 'text-emerald-400'}>{margen.toFixed(1)}%</span>
+        ) : (
+          <span className="text-slate-600">—</span>
+        )}
+      </td>
+      <td className="px-3 py-2 text-right">
+        <input
+          type="number"
+          min="0"
+          value={stock}
+          onChange={(e) => setStock(e.target.value)}
+          onBlur={() => guardarSiCambio('stock', stock, variante.stock ?? null)}
+          className="w-16 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+          placeholder="—"
+          title="Vacío = sin control de inventario propio"
+        />
+      </td>
+      <td className="px-3 py-2 text-right">
+        {sinControlStock ? (
+          <span className="text-[11px] text-slate-600">—</span>
+        ) : (
+          <input
+            type="number"
+            min="0"
+            value={stockMinimo}
+            onChange={(e) => setStockMinimo(e.target.value)}
+            onBlur={() => guardarSiCambio('stock_minimo', stockMinimo, variante.stock_minimo ?? null)}
+            className="w-16 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+            placeholder="—"
+          />
+        )}
+      </td>
+      <td className="px-3 py-2 text-right">
+        {cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato' ? (
+          <span className="text-[11px] text-slate-600">—</span>
+        ) : cobertura.estatus === 'sin_ventas' ? (
+          <span className="whitespace-nowrap text-[10px] text-slate-500">Sin ventas (7d)</span>
+        ) : (
+          <span
+            className={`text-[11px] font-bold ${
+              cobertura.estatus === 'reordenar' ? 'text-rose-400' : cobertura.estatus === 'critica' ? 'text-amber-400' : 'text-slate-200'
+            }`}
+          >
+            {cobertura.dias.toFixed(1)} d
+          </span>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2">
+        {cobertura.estatus === 'reordenar' ? (
+          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-rose-500/15 px-2 py-0.5 text-[9px] font-bold text-rose-300 ring-1 ring-rose-500/40">
+            {TEXTO_REORDENAR_YA}
+          </span>
+        ) : cobertura.estatus === 'critica' || cobertura.estatus === 'normal' ? (
+          <span className="whitespace-nowrap rounded-full bg-emerald-400/10 px-2 py-0.5 text-[9px] font-bold text-emerald-400 ring-1 ring-emerald-400/30">
+            ✓ Cobertura OK
+          </span>
+        ) : (
+          <span className="text-slate-600">—</span>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2">
+        <EstatusStockBadge estatus={estatus} />
+      </td>
+      <td className="whitespace-nowrap px-3 py-2 text-right">
+        <div className="flex items-center justify-end gap-1.5">
+          {guardando && <Loader2 size={12} className="animate-spin text-slate-500" />}
+          {!sinControlStock && (
+            <button
+              onClick={() =>
+                onRegistrarEntrada({
+                  id: variante.id,
+                  nombre: variante.nombre,
+                  stock: variante.stock,
+                  _esVariante: true,
+                  _productoPadreId: productoPadre.id,
+                  _productoPadreNombre: productoPadre.nombre,
+                })
+              }
+              title="Registrar entrada de inventario para esta variante"
+              className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold text-slate-200 transition hover:border-lime-400/40 hover:text-lime-400"
+            >
+              <PackagePlus size={11} /> Entrada
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function FilaProductoInventario({
+  producto,
+  unidadesUltimos7Dias,
+  onGuardarCampos,
+  onRegistrarEntrada,
+  variantes = [],
+  onGuardarCamposVariante,
+  ventasPorVarianteSemana,
+  onRegistrarEntradaVariante,
+}) {
+  const [costo, setCosto] = useState(producto.costo_unitario != null ? String(producto.costo_unitario) : '');
+  const [stockMinimo, setStockMinimo] = useState(producto.stock_minimo != null ? String(producto.stock_minimo) : '');
+  const [guardando, setGuardando] = useState(false);
+  const [variantesAbiertas, setVariantesAbiertas] = useState(false);
+  const tieneVariantes = variantes.length > 0;
+
+  // Si el valor cambia desde afuera (otra pestaña, Realtime), refleja el dato
+  // fresco — el campo no tiene un "modo edición" separado, así que esto es
+  // seguro: si el operador lo estaba escribiendo, su próximo blur igual
+  // dispara el guardado con lo que haya en pantalla.
+  useEffect(() => {
+    setCosto(producto.costo_unitario != null ? String(producto.costo_unitario) : '');
+  }, [producto.costo_unitario]);
+  useEffect(() => {
+    setStockMinimo(producto.stock_minimo != null ? String(producto.stock_minimo) : '');
+  }, [producto.stock_minimo]);
+
+  const margen = margenPorcentaje(producto);
+  const estatus = estatusStockProducto(producto);
+  const catMeta = CATEGORIA_META[producto.categoria];
+  const cobertura = calcularCoberturaStock(producto, unidadesUltimos7Dias);
+
+  async function guardarSiCambio(campo, valorStr, valorOriginal) {
+    const num = valorStr === '' ? null : Number(valorStr);
+    if (!Number.isFinite(num) && num !== null) return; // input inválido a medio escribir: no guarda
+    if (num === (valorOriginal ?? null)) return;
+    setGuardando(true);
+    await onGuardarCampos(producto, { [campo]: num });
+    setGuardando(false);
+  }
+
+  return (
+    <>
+    <tr className="border-b border-slate-800/70 last:border-0 hover:bg-slate-800/30">
+      <td className="px-3 py-2.5">
+        <div className="flex items-center gap-2.5">
+          <img
+            src={producto.imagen_url || fallbackImagenProducto(producto)}
+            onError={(e) => {
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = fallbackImagenProducto(producto);
+            }}
+            alt={producto.nombre}
+            className="h-9 w-9 shrink-0 rounded-lg object-cover"
+          />
+          <span className="max-w-[170px] truncate font-bold text-slate-100">{producto.nombre}</span>
+          {tieneVariantes && (
+            <button
+              type="button"
+              onClick={() => setVariantesAbiertas((v) => !v)}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-lime-400/10 px-2 py-0.5 text-[9px] font-bold text-lime-400 ring-1 ring-lime-400/30 transition hover:bg-lime-400/20"
+              title="Ver/editar variantes"
+            >
+              <Layers size={9} /> {variantes.length} {variantesAbiertas ? <ChevronUp size={9} /> : <ChevronDown size={9} />}
+            </button>
+          )}
+        </div>
+      </td>
+      <td className="whitespace-nowrap px-3 py-2.5">
+        {catMeta && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${catMeta.badge}`}>{catMeta.label}</span>}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-200">{formatoMoneda(producto.precio)}</td>
+      <td className="px-3 py-2.5 text-right">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={costo}
+          onChange={(e) => setCosto(e.target.value)}
+          onBlur={() => guardarSiCambio('costo_unitario', costo, producto.costo_unitario ?? null)}
+          className="w-20 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-right text-xs text-slate-100 focus:border-lime-400 focus:outline-none"
+          placeholder="—"
+        />
+      </td>
+      <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold">
+        {margen !== null ? (
+          <span className={margen < 20 ? 'text-rose-400' : margen < 40 ? 'text-amber-400' : 'text-emerald-400'}>{margen.toFixed(1)}%</span>
+        ) : (
+          <span className="text-slate-600">—</span>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2.5 text-right text-slate-200">
+        {producto.maneja_stock === false ? <span className="text-slate-600">—</span> : Number(producto.stock) || 0}
+      </td>
+      <td className="px-3 py-2.5 text-right">
+        {producto.maneja_stock === false ? (
+          <span className="text-slate-600">—</span>
+        ) : (
+          <input
+            type="number"
+            min="0"
+            value={stockMinimo}
+            onChange={(e) => setStockMinimo(e.target.value)}
+            onBlur={() => guardarSiCambio('stock_minimo', stockMinimo, producto.stock_minimo ?? null)}
+            className="w-16 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-right text-xs text-slate-100 focus:border-lime-400 focus:outline-none"
+            placeholder="—"
+          />
+        )}
+      </td>
+      <td className="px-3 py-2.5 text-right">
+        {cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato' ? (
+          <span className="text-slate-600">—</span>
+        ) : cobertura.estatus === 'sin_ventas' ? (
+          <span className="whitespace-nowrap text-[10px] text-slate-500">Sin ventas (7d)</span>
+        ) : (
+          <div className="flex flex-col items-end gap-0.5">
+            <span
+              className={`font-bold ${
+                cobertura.estatus === 'reordenar' ? 'text-rose-400' : cobertura.estatus === 'critica' ? 'text-amber-400' : 'text-slate-200'
+              }`}
+            >
+              {cobertura.dias.toFixed(1)} d
+            </span>
+            {cobertura.dias < 5 && <span className="whitespace-nowrap text-[9px] font-bold text-amber-400">{TEXTO_COBERTURA_CRITICA}</span>}
+          </div>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2.5">
+        {cobertura.estatus === 'reordenar' ? (
+          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300 ring-1 ring-rose-500/40">
+            {TEXTO_REORDENAR_YA}
+          </span>
+        ) : cobertura.estatus === 'critica' || cobertura.estatus === 'normal' ? (
+          <span className="whitespace-nowrap rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold text-emerald-400 ring-1 ring-emerald-400/30">
+            ✓ Cobertura OK
+          </span>
+        ) : (
+          <span className="text-slate-600">—</span>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2.5">
+        <EstatusStockBadge estatus={estatus} />
+      </td>
+      <td className="whitespace-nowrap px-3 py-2.5 text-right">
+        <div className="flex items-center justify-end gap-1.5">
+          {guardando && <Loader2 size={13} className="animate-spin text-slate-500" />}
+          {producto.maneja_stock !== false && (
+            <button
+              onClick={() => onRegistrarEntrada(producto)}
+              title="Registrar entrada de inventario"
+              className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] font-bold text-slate-200 transition hover:border-lime-400/40 hover:text-lime-400"
+            >
+              <PackagePlus size={12} /> Entrada
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
+    {variantesAbiertas &&
+      tieneVariantes &&
+      variantes.map((v) => (
+        <FilaVarianteInventarioCompleta
+          key={v.id}
+          variante={v}
+          productoPadre={producto}
+          unidadesUltimos7Dias={ventasPorVarianteSemana?.[v.id] || 0}
+          onGuardarCamposVariante={onGuardarCamposVariante}
+          onRegistrarEntrada={onRegistrarEntradaVariante}
+        />
+      ))}
+    </>
+  );
+}
+
+function TablaCatalogoInventario({
+  productos,
+  ventasPorProductoSemana,
+  ventasPorVarianteSemana,
+  onGuardarCampos,
+  onRegistrarEntrada,
+  onRegistrarEntradaVariante,
+  variantesPorProducto,
+  onGuardarCamposVariante,
+}) {
+  return (
+    <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900">
+      <table className="w-full min-w-[1180px] text-left text-xs">
+        <thead>
+          <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            <th className="px-3 py-3">Producto</th>
+            <th className="px-3 py-3">Categoría</th>
+            <th className="px-3 py-3 text-right">Precio Venta</th>
+            <th className="px-3 py-3 text-right">Costo Unitario</th>
+            <th className="px-3 py-3 text-right">Margen Bruto %</th>
+            <th className="px-3 py-3 text-right">Stock Actual</th>
+            <th className="px-3 py-3 text-right">Stock Mínimo</th>
+            <th className="px-3 py-3 text-right">Días de Cobertura</th>
+            <th className="px-3 py-3">Reabastecimiento</th>
+            <th className="px-3 py-3">Estatus</th>
+            <th className="px-3 py-3"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {productos.map((p) => (
+            <FilaProductoInventario
+              key={p.id}
+              producto={p}
+              variantes={variantesPorProducto?.[p.id] || []}
+              onGuardarCamposVariante={onGuardarCamposVariante}
+              unidadesUltimos7Dias={ventasPorProductoSemana?.[p.id] || 0}
+              ventasPorVarianteSemana={ventasPorVarianteSemana}
+              onGuardarCampos={onGuardarCampos}
+              onRegistrarEntrada={onRegistrarEntrada}
+              onRegistrarEntradaVariante={onRegistrarEntradaVariante}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TablaKardex({ kardex, productos, loading, error, onReintentar }) {
+  const nombrePorProductoId = useMemo(() => {
+    const mapa = {};
+    productos.forEach((p) => {
+      mapa[p.id] = p.nombre;
+    });
+    return mapa;
+  }, [productos]);
+
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="h-11 animate-pulse rounded-xl bg-slate-900" />
+        ))}
+      </div>
+    );
+  }
+
+  if (error) return <ErrorBanner mensaje={error} onReintentar={onReintentar} />;
+
+  if (kardex.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-slate-800 py-16 text-center text-sm text-slate-500">
+        Todavía no hay movimientos en el Kardex.
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900">
+      <table className="w-full min-w-[780px] text-left text-xs">
+        <thead>
+          <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            <th className="px-3 py-3">Fecha/Hora</th>
+            <th className="px-3 py-3">Producto</th>
+            <th className="px-3 py-3">Tipo</th>
+            <th className="px-3 py-3 text-right">Cantidad</th>
+            <th className="px-3 py-3 text-right">Stock Anterior</th>
+            <th className="px-3 py-3 text-right">Stock Nuevo</th>
+            <th className="px-3 py-3">Motivo / Operador</th>
+          </tr>
+        </thead>
+        <tbody>
+          {kardex.map((mov) => {
+            const meta = KARDEX_TIPO_META[mov.tipo_movimiento] || KARDEX_TIPO_META.ajuste;
+            const Icon = meta.icon;
+            return (
+              <tr key={mov.id} className="border-b border-slate-800/70 last:border-0 hover:bg-slate-800/30">
+                <td className="whitespace-nowrap px-3 py-2.5 text-slate-400">
+                  {mov.created_at ? new Date(mov.created_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                </td>
+                <td className="px-3 py-2.5 font-semibold text-slate-100">{nombrePorProductoId[mov.producto_id] || 'Producto eliminado'}</td>
+                <td className="whitespace-nowrap px-3 py-2.5">
+                  <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${meta.badge}`}>
+                    <Icon size={10} /> {meta.label}
+                  </span>
+                </td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-200">
+                  {meta.signo}
+                  {Number(mov.cantidad) || 0}
+                </td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-right text-slate-500">{mov.stock_anterior ?? '—'}</td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-200">{mov.stock_nuevo ?? '—'}</td>
+                <td className="px-3 py-2.5 text-slate-400">
+                  {mov.motivo || '—'}
+                  {mov.operador ? ` · ${mov.operador}` : ''}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ModalRegistrarEntrada({ productos, productoInicial, onClose, onRegistrar }) {
+  const [productoId, setProductoId] = useState(productoInicial?.id || productos[0]?.id || '');
+  const [cantidad, setCantidad] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  const producto = productos.find((p) => p.id === productoId) || null;
+
+  async function guardar() {
+    if (!productoId || !producto) {
+      setError('Selecciona un producto.');
+      return;
+    }
+    if (cantidad === '' || Number(cantidad) <= 0) {
+      setError('Indica una cantidad mayor a 0.');
+      return;
+    }
+    setGuardando(true);
+    setError('');
+    const ok = await onRegistrar(producto, Math.round(Number(cantidad)), motivo.trim());
+    setGuardando(false);
+    if (ok) onClose();
+  }
+
+  return (
+    <ModalShell titulo="Registrar Entrada" subtitulo="Reabastecimiento de inventario" onClose={onClose} icon={PackagePlus} ancho="max-w-md">
+      <div className="space-y-4">
+        <Campo label="Producto">
+          <select
+            value={productoId}
+            onChange={(e) => setProductoId(e.target.value)}
+            className={inputClase}
+            disabled={Boolean(productoInicial)}
+          >
+            {productos.length === 0 && <option value="">Sin productos con stock rígido</option>}
+            {productos.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p._esVariante ? `${p._productoPadreNombre} — ${p.nombre}` : p.nombre} (stock: {Number(p.stock) || 0})
+              </option>
+            ))}
+          </select>
+        </Campo>
+        <Campo label="Cantidad a sumar">
+          <input
+            type="number"
+            min="1"
+            value={cantidad}
+            onChange={(e) => setCantidad(e.target.value)}
+            className={inputClase}
+            placeholder="0"
+            autoFocus
+          />
+        </Campo>
+        <Campo label="Motivo (opcional)" hint="Ej. Compra a proveedor, devolución, recuento físico...">
+          <input value={motivo} onChange={(e) => setMotivo(e.target.value)} className={inputClase} placeholder="Motivo del reabastecimiento" />
+        </Campo>
+        {producto && cantidad !== '' && Number(cantidad) > 0 && (
+          <p className="rounded-lg bg-slate-950 px-3 py-2 text-xs text-slate-400">
+            Stock: <span className="font-bold text-slate-200">{Number(producto.stock) || 0}</span> →{' '}
+            <span className="font-bold text-emerald-400">{(Number(producto.stock) || 0) + Math.round(Number(cantidad))}</span>
+          </p>
+        )}
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando || productos.length === 0}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <PackagePlus size={15} />}
+            Registrar Entrada
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Selector de fecha compacto para las tarjetas KPI de ERP & Inventario:
+// envuelve el `<input type="date">` en un contenedor clickeable que abre el
+// calendario nativo con un solo clic (`showPicker()`), en cualquier punto
+// del control — no solo el ícono — para que el operador nunca tenga que
+// editar los números a mano ni dar varios clics para atinarle al picker.
+function SelectorFechaCompacto({ value, onChange }) {
+  const inputRef = useRef(null);
+  function abrirCalendario() {
+    try {
+      inputRef.current?.showPicker?.();
+    } catch (err) {
+      // Navegador sin soporte para showPicker(): el input sigue siendo
+      // editable a mano como respaldo, así que no hace falta avisar nada.
+    }
+  }
+  return (
+    <div
+      onClick={abrirCalendario}
+      className="flex cursor-pointer items-center gap-1 rounded-md border border-slate-700 bg-slate-950 px-1.5 py-0.5 transition hover:border-lime-400/60"
+    >
+      <CalendarDays size={11} className="shrink-0 text-slate-500" />
+      <input
+        ref={inputRef}
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-[86px] cursor-pointer bg-transparent text-[10px] text-slate-300 outline-none"
+      />
+    </div>
+  );
+}
+
+function ModuloERPInventario({
+  productos,
+  loadingProductos,
+  errorProductos,
+  cargarProductos,
+  upsertProducto,
+  operador,
+  variantesPorProducto,
+  upsertVarianteProducto,
+  quitarVarianteProductoLocal,
+}) {
+  const mostrarToast = useToast();
+  const [vista, setVista] = useState('catalogo'); // 'catalogo' | 'kardex'
+  const [busqueda, setBusqueda] = useState('');
+  const [categoriaFiltro, setCategoriaFiltro] = useState('todos');
+  const [modalEntrada, setModalEntrada] = useState(null); // producto preseleccionado, o {} para elegir libre
+
+  const [kardex, setKardex] = useState([]);
+  const [loadingKardex, setLoadingKardex] = useState(true);
+  const [errorKardex, setErrorKardex] = useState('');
+
+  // Ventas del Día / Ventas del Mes: unidades (desde `kardex`, salida_venta)
+  // + monto (desde `ventas` YA COBRADAS) — mismo tipo de calendario
+  // `<input type="date">` para las dos tarjetas (por defecto hoy); "Mes"
+  // toma el día elegido y filtra TODO el mes calendario al que pertenece.
+  const [fechaVentasDia, setFechaVentasDia] = useState(hoyISO());
+  const [fechaVentasMes, setFechaVentasMes] = useState(hoyISO());
+  const [ventasDia, setVentasDia] = useState({ unidades: 0, monto: 0 });
+  const [ventasMes, setVentasMes] = useState({ unidades: 0, monto: 0 });
+
+  // Ritmo de venta de los últimos 7 días, por producto — alimenta la columna
+  // "Días de Cobertura de Stock" y la Alerta de Reabastecimiento del
+  // catálogo. Se recalcula junto con el resto de KPIs de ventas.
+  const [ventasPorProductoSemana, setVentasPorProductoSemana] = useState({});
+  const [ventasPorVarianteSemana, setVentasPorVarianteSemana] = useState({});
+
+  const cargarKardex = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingKardex(true);
+    setErrorKardex('');
+    const { data, error } = await conClubId(supabase.from('kardex').select('*')).order('created_at', { ascending: false }).limit(300);
+    if (error) {
+      setErrorKardex(error.message || 'No se pudo cargar el Kardex.');
+      setKardex([]);
+    } else {
+      setKardex(data || []);
+    }
+    setLoadingKardex(false);
+  }, []);
+
+  useEffect(() => {
+    cargarKardex();
+  }, [cargarKardex]);
+
+  const cargarVentasDia = useCallback(async () => {
+    const [y, m, d] = (fechaVentasDia || hoyISO()).split('-').map(Number);
+    const inicio = new Date(y, m - 1, d, 0, 0, 0, 0);
+    const fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
+    const [unidades, monto] = await Promise.all([unidadesVendidasKardex(inicio, fin), montoVentasProductos(inicio, fin)]);
+    setVentasDia({ unidades, monto });
+  }, [fechaVentasDia]);
+
+  useEffect(() => {
+    cargarVentasDia();
+  }, [cargarVentasDia]);
+
+  // Ventas del Mes: consulta aparte de la lista del Kardex de arriba (que
+  // trae un tope de 300 filas) para que el KPI no se quede corto en un mes
+  // con más movimientos que ese tope. `fechaVentasMes` es un día cualquiera
+  // (mismo picker que "Ventas del Día") — aquí se toma solo su año/mes y se
+  // filtra el mes calendario completo al que pertenece.
+  const cargarVentasMes = useCallback(async () => {
+    const [y, m] = (fechaVentasMes || hoyISO()).split('-').map(Number);
+    const inicio = new Date(y, m - 1, 1, 0, 0, 0, 0);
+    const fin = new Date(y, m, 1, 0, 0, 0, 0);
+    const [unidades, monto] = await Promise.all([unidadesVendidasKardex(inicio, fin), montoVentasProductos(inicio, fin)]);
+    setVentasMes({ unidades, monto });
+  }, [fechaVentasMes]);
+
+  useEffect(() => {
+    cargarVentasMes();
+  }, [cargarVentasMes]);
+
+  const cargarVentasPorProductoSemana = useCallback(async () => {
+    const fin = new Date();
+    const inicio = new Date(fin.getTime() - 7 * 86400000);
+    const { porProducto, porVariante } = await unidadesVendidasPorProductoRango(inicio, fin);
+    setVentasPorProductoSemana(porProducto);
+    setVentasPorVarianteSemana(porVariante);
+  }, []);
+
+  useEffect(() => {
+    cargarVentasPorProductoSemana();
+  }, [cargarVentasPorProductoSemana]);
+
+  // Recalcula todos los KPIs apenas la pestaña/ventana del navegador vuelve a
+  // tener foco (por si se dejó abierta en segundo plano mientras se cobraba
+  // desde otra pestaña o dispositivo).
+  useEffect(() => {
+    function alGanarFoco() {
+      cargarVentasDia();
+      cargarVentasMes();
+      cargarVentasPorProductoSemana();
+    }
+    function alCambiarVisibilidad() {
+      if (document.visibilityState === 'visible') alGanarFoco();
+    }
+    window.addEventListener('focus', alGanarFoco);
+    document.addEventListener('visibilitychange', alCambiarVisibilidad);
+    return () => {
+      window.removeEventListener('focus', alGanarFoco);
+      document.removeEventListener('visibilitychange', alCambiarVisibilidad);
+    };
+  }, [cargarVentasDia, cargarVentasMes, cargarVentasPorProductoSemana]);
+
+  // Realtime: escucha `kardex` (unidades + ritmo de venta) Y `ventas` (monto)
+  // — una nueva Entrada (aquí) o una venta liquidada en Smart POS recalcula
+  // todos los KPIs y, si fue en el Kardex, también refresca el historial de
+  // abajo y la cobertura de stock del catálogo.
+  useEffect(() => {
+    const canalKardex = supabase
+      .channel('erp-kardex')
+      .on('postgres_changes', canalClubFiltro('kardex'), () => {
+        cargarKardex({ silencioso: true });
+        cargarVentasDia();
+        cargarVentasMes();
+        cargarVentasPorProductoSemana();
+      })
+      .subscribe();
+    const canalVentas = supabase
+      .channel('erp-ventas')
+      .on('postgres_changes', canalClubFiltro('ventas'), () => {
+        cargarVentasDia();
+        cargarVentasMes();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canalKardex);
+      supabase.removeChannel(canalVentas);
+    };
+  }, [cargarKardex, cargarVentasDia, cargarVentasMes, cargarVentasPorProductoSemana]);
+
+  /* ---------------- KPIs ---------------- */
+
+  // Variantes como Productos Completos: los KPIs de la cabecera (Valor Total
+  // del Inventario, Margen Bruto Promedio, Alertas de Reorden) ya no cuentan
+  // SOLO productos padre — cada variante con stock/costo propio suma como si
+  // fuera su propia fila de catálogo, normalizando sus vacíos con el padre
+  // (mismo criterio que `FilaVarianteInventarioCompleta`).
+  const kpis = useMemo(() => {
+    const activos = productos.filter((p) => p.activo !== false);
+
+    const variantesActivas = [];
+    activos.forEach((p) => {
+      (variantesPorProducto?.[p.id] || []).forEach((v) => {
+        if (v.activo === false) return;
+        variantesActivas.push({
+          precio: v.precio != null ? v.precio : p.precio,
+          costo_unitario: v.costo_unitario != null ? v.costo_unitario : p.costo_unitario,
+          stock: v.stock,
+          stock_minimo: v.stock_minimo != null ? v.stock_minimo : p.stock_minimo,
+          maneja_stock: v.stock != null,
+        });
+      });
+    });
+
+    const itemsInventario = [...activos, ...variantesActivas];
+
+    const valorInventario = itemsInventario.reduce((acc, p) => {
+      if (p.maneja_stock === false) return acc;
+      const stock = Number(p.stock);
+      if (!Number.isFinite(stock)) return acc;
+      const costo = Number(p.costo_unitario);
+      return acc + stock * (Number.isFinite(costo) ? costo : 0);
+    }, 0);
+
+    const margenes = itemsInventario.map((p) => margenPorcentaje(p)).filter((m) => m !== null);
+    const margenPromedio = margenes.length > 0 ? margenes.reduce((acc, m) => acc + m, 0) / margenes.length : null;
+
+    const alertasReorden = itemsInventario.filter((p) => {
+      if (p.maneja_stock === false) return false;
+      const stock = Number(p.stock);
+      const minimo = Number(p.stock_minimo);
+      return Number.isFinite(stock) && Number.isFinite(minimo) && stock <= minimo;
+    }).length;
+
+    return { valorInventario, margenPromedio, alertasReorden };
+  }, [productos, variantesPorProducto]);
+
+  /* ---------------- Catálogo filtrado ---------------- */
+
+  const productosFiltrados = useMemo(() => {
+    return productos
+      .filter((p) => p.activo !== false)
+      .filter((p) => (categoriaFiltro === 'todos' ? true : p.categoria === categoriaFiltro))
+      .filter((p) => (busqueda.trim() ? p.nombre?.toLowerCase().includes(busqueda.trim().toLowerCase()) : true));
+  }, [productos, categoriaFiltro, busqueda]);
+
+  const productosConStockRigido = useMemo(() => productos.filter((p) => p.activo !== false && p.maneja_stock !== false), [productos]);
+
+  // Variantes como Productos Completos: cada variante con control de stock
+  // propio (stock != null) puede recibir su propia "Entrada de Inventario",
+  // igual que cualquier producto del catálogo — se ofrecen juntas en el
+  // mismo selector de "+ Registrar Entrada" (ver `ModalRegistrarEntrada`),
+  // agrupadas bajo su producto padre.
+  const variantesConStockRigido = useMemo(() => {
+    const filas = [];
+    productos
+      .filter((p) => p.activo !== false)
+      .forEach((p) => {
+        (variantesPorProducto?.[p.id] || []).forEach((v) => {
+          if (v.stock == null) return; // sin control de inventario propio: no aplica "Entrada"
+          filas.push({
+            id: v.id,
+            nombre: v.nombre,
+            stock: v.stock,
+            _esVariante: true,
+            _productoPadreId: p.id,
+            _productoPadreNombre: p.nombre,
+          });
+        });
+      });
+    return filas;
+  }, [productos, variantesPorProducto]);
+
+  /* ---------------- Mutaciones ---------------- */
+
+  // Editar Costo / Stock Mínimo directo desde la tabla.
+  async function guardarCampos(producto, campos) {
+    const { data, error } = await supabase.from('productos').update(campos).eq('id', producto.id).select().single();
+    if (error) {
+      mostrarToast({ titulo: 'No se pudo guardar', detalle: error.message, tono: 'error' });
+      return false;
+    }
+    upsertProducto(data);
+    mostrarToast({ titulo: 'Actualizado', detalle: `${producto.nombre}` });
+    return true;
+  }
+
+  // Control de Inventario y Precios por Variante: precio y stock de cada
+  // variante son ajustables directo desde el catálogo de Inventario, igual
+  // criterio inline (edición al perder el foco) que costo/stock mínimo del
+  // producto padre — cada cambio de stock también deja su rastro en kardex,
+  // enlazado al producto padre (ver nota de variantes en `registrarVenta`).
+  async function guardarCamposVariante(variante, campos, productoPadre) {
+    // FIX DEFINITIVO de variantes: ya no hay tabla `producto_variantes` —
+    // se actualiza directo la entrada dentro de `productos.variantes` del
+    // producto padre. `stock` se separa del resto de `campos` porque
+    // `actualizarVarianteEnJSONB` necesita tratarlo aparte (para escribir en
+    // la clave de existencias que de verdad use esa entrada, no siempre
+    // literal `stock`).
+    const { stock: nuevoStockCampo, ...otrosCampos } = campos;
+    const resultado = await actualizarVarianteEnJSONB({
+      productoId: productoPadre?.id,
+      varianteId: variante.id,
+      varianteNombre: variante.nombre,
+      cambios: otrosCampos,
+      nuevoStock: Object.prototype.hasOwnProperty.call(campos, 'stock') ? nuevoStockCampo : undefined,
+      upsertProducto,
+    });
+    if (!resultado.ok) {
+      mostrarToast({ titulo: 'No se pudo guardar la variante', detalle: resultado.error?.message || 'Error desconocido', tono: 'error' });
+      return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(campos, 'stock')) {
+      await insertarMovimientoKardex({
+        producto_id: productoPadre?.id,
+        producto_nombre: `${productoPadre?.nombre || ''} — ${variante.nombre}`.replace(/^ — /, ''),
+        tipo_movimiento: 'ajuste',
+        cantidad: Math.abs((Number(campos.stock) || 0) - (Number(variante.stock) || 0)),
+        stock_anterior: Number(variante.stock) || 0,
+        stock_nuevo: Number(campos.stock) || 0,
+        motivo: `Ajuste manual de inventario · ${variante.nombre}`,
+        operador: operador?.nombre,
+      });
+    }
+    mostrarToast({ titulo: 'Variante actualizada', detalle: variante.nombre });
+    return true;
+  }
+
+  // Entrada de Inventario: suma stock en `productos` (directo, para un
+  // producto sin variantes) o dentro de `productos.variantes` (cuando
+  // `item._esVariante` — Variantes como Productos Completos, el operador
+  // puede reabastecer una variante específica igual que a cualquier
+  // producto) y escribe en `kardex` con tipo_movimiento='entrada'. El stock
+  // ya queda sumado aunque el kardex falle (best effort, igual que el
+  // descuento por venta en Smart POS).
+  async function registrarEntrada(item, cantidad, motivo) {
+    const stockAnterior = Number(item.stock) || 0;
+    const stockNuevo = stockAnterior + cantidad;
+
+    if (item._esVariante) {
+      const resultado = await actualizarVarianteEnJSONB({
+        productoId: item._productoPadreId,
+        varianteId: item.id,
+        varianteNombre: item.nombre,
+        cambios: {},
+        nuevoStock: stockNuevo,
+        upsertProducto,
+      });
+      if (!resultado.ok) {
+        mostrarToast({ titulo: 'No se pudo registrar la entrada', detalle: resultado.error?.message || 'Error desconocido', tono: 'error' });
+        return false;
+      }
+    } else {
+      const { error: errStock } = await supabase.from('productos').update({ stock: stockNuevo }).eq('id', item.id);
+      if (errStock) {
+        mostrarToast({ titulo: 'No se pudo registrar la entrada', detalle: errStock.message, tono: 'error' });
+        return false;
+      }
+      upsertProducto({ id: item.id, stock: stockNuevo });
+    }
+
+    const nombreCompleto = item._esVariante ? `${item._productoPadreNombre} — ${item.nombre}` : item.nombre;
+    const resultadoKardex = await insertarMovimientoKardex({
+      producto_id: item._esVariante ? item._productoPadreId : item.id,
+      producto_nombre: nombreCompleto,
+      tipo_movimiento: 'entrada',
+      cantidad,
+      stock_anterior: stockAnterior,
+      stock_nuevo: stockNuevo,
+      motivo: item._esVariante ? `${motivo ? `${motivo} · ` : ''}${item.nombre}` : motivo,
+      operador: operador?.nombre,
+    });
+    if (!resultadoKardex.ok) {
+      console.warn('[ERP] Stock actualizado, pero no se pudo registrar en el Kardex.', resultadoKardex.error);
+    } else {
+      cargarKardex({ silencioso: true });
+    }
+
+    mostrarToast({ titulo: 'Entrada registrada', detalle: `${nombreCompleto}: ${stockAnterior} → ${stockNuevo}` });
+    return true;
+  }
+
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <MetricCard
+          icon={Wallet}
+          etiqueta="Valor Total del Inventario"
+          valor={formatoMoneda(kpis.valorInventario)}
+          sub="stock × costo unitario"
+          tono="emerald"
+        />
+        <MetricCard
+          icon={TrendingUp}
+          etiqueta="Margen Bruto Promedio"
+          valor={kpis.margenPromedio !== null ? `${kpis.margenPromedio.toFixed(1)}%` : '—'}
+          sub={kpis.margenPromedio !== null ? 'Sobre productos con costo cargado' : 'Carga el costo unitario'}
+          tono="sky"
+        />
+        <MetricCard
+          icon={AlertTriangle}
+          etiqueta="Alertas de Reorden"
+          valor={kpis.alertasReorden}
+          sub={kpis.alertasReorden > 0 ? 'Productos en o bajo su mínimo' : 'Todo por encima del mínimo'}
+          tono={kpis.alertasReorden > 0 ? 'rose' : 'lime'}
+        />
+        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ventas del Día</span>
+            <SelectorFechaCompacto value={fechaVentasDia} onChange={setFechaVentasDia} />
+          </div>
+          <p className="mt-2 text-2xl font-black text-slate-100">{formatoMoneda(ventasDia.monto)}</p>
+          <p className="mt-0.5 text-[11px] text-slate-500">{ventasDia.unidades} unidades vendidas</p>
+        </div>
+        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ventas del Mes</span>
+            <SelectorFechaCompacto value={fechaVentasMes} onChange={setFechaVentasMes} />
+          </div>
+          <p className="mt-2 text-2xl font-black text-slate-100">{formatoMoneda(ventasMes.monto)}</p>
+          <p className="mt-0.5 text-[11px] text-slate-500">{ventasMes.unidades} unidades vendidas · {etiquetaMesDeFecha(fechaVentasMes)}</p>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+            <button
+              onClick={() => setVista('catalogo')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                vista === 'catalogo' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              }`}
+            >
+              <Package size={14} /> Catálogo
+            </button>
+            <button
+              onClick={() => setVista('kardex')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                vista === 'kardex' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              }`}
+            >
+              <History size={14} /> Kardex
+            </button>
+          </div>
+          {vista === 'catalogo' && (
+            <>
+              <div className="relative">
+                <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  value={busqueda}
+                  onChange={(e) => setBusqueda(e.target.value)}
+                  placeholder="Buscar producto..."
+                  className={`${inputClase} w-48 pl-9`}
+                />
+              </div>
+              <select value={categoriaFiltro} onChange={(e) => setCategoriaFiltro(e.target.value)} className={`${inputClase} w-40`}>
+                {CATEGORIAS_PRODUCTO.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+        </div>
+        {vista === 'catalogo' && (
+          <BotonPrimario onClick={() => setModalEntrada({})} className="whitespace-nowrap">
+            <PackagePlus size={15} /> Registrar Entrada
+          </BotonPrimario>
+        )}
+      </div>
+
+      {errorProductos && <ErrorBanner mensaje={errorProductos} onReintentar={() => cargarProductos()} />}
+
+      {vista === 'catalogo' ? (
+        loadingProductos ? (
+          <SkeletonProductos />
+        ) : productos.length === 0 ? (
+          <EmptyStateProductos />
+        ) : productosFiltrados.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-800 py-16 text-center text-sm text-slate-500">
+            Ningún producto coincide con el filtro.
+          </div>
+        ) : (
+          <TablaCatalogoInventario
+            productos={productosFiltrados}
+            ventasPorProductoSemana={ventasPorProductoSemana}
+            ventasPorVarianteSemana={ventasPorVarianteSemana}
+            onGuardarCampos={guardarCampos}
+            onRegistrarEntrada={(producto) => setModalEntrada(producto)}
+            onRegistrarEntradaVariante={(variante) => setModalEntrada(variante)}
+            variantesPorProducto={variantesPorProducto}
+            onGuardarCamposVariante={guardarCamposVariante}
+          />
+        )
+      ) : (
+        <TablaKardex kardex={kardex} productos={productos} loading={loadingKardex} error={errorKardex} onReintentar={() => cargarKardex()} />
+      )}
+
+      {modalEntrada && (
+        <ModalRegistrarEntrada
+          productos={modalEntrada.id ? [modalEntrada] : [...productosConStockRigido, ...variantesConStockRigido]}
+          productoInicial={modalEntrada.id ? modalEntrada : null}
+          onClose={() => setModalEntrada(null)}
+          onRegistrar={registrarEntrada}
+        />
+      )}
+    </>
+  );
+}
+
+/* ============================================================================
+ * MÓDULO 4 — ANALYTICS BI (Dashboard de Inteligencia de Negocio)
+ * ==========================================================================*/
+
+// Nombres de mes para el selector "Mes" del filtro temporal global.
+const MESES_OPCIONES = [
+  { value: 1, label: 'Enero' },
+  { value: 2, label: 'Febrero' },
+  { value: 3, label: 'Marzo' },
+  { value: 4, label: 'Abril' },
+  { value: 5, label: 'Mayo' },
+  { value: 6, label: 'Junio' },
+  { value: 7, label: 'Julio' },
+  { value: 8, label: 'Agosto' },
+  { value: 9, label: 'Septiembre' },
+  { value: 10, label: 'Octubre' },
+  { value: 11, label: 'Noviembre' },
+  { value: 12, label: 'Diciembre' },
+];
+
+// Orden de filas del heatmap: semana laboral primero (Lun) y domingo al
+// final. Cada entrada es el valor que regresa `Date.prototype.getDay()`.
+const ORDEN_SEMANA_BI = [1, 2, 3, 4, 5, 6, 0];
+const ETIQUETA_DIA_SEMANA = { 0: 'Dom', 1: 'Lun', 2: 'Mar', 3: 'Mié', 4: 'Jue', 5: 'Vie', 6: 'Sáb' };
+
+// Cuadrícula del "día operativo" del heatmap: 07:00 a 23:00, en bloques de 1 hora.
+const HEATMAP_HORAS = Array.from({ length: 16 }, (_, i) => 7 + i);
+
+// Categorías comparadas en "Rentabilidad por Categoría" y "Categoría
+// Estrella" — SIEMPRE estas 3, en este orden fijo (el color identifica la
+// categoría, nunca su ranking, igual que en el resto del tablero). Los
+// productos con categoría 'Rentas' (equipo — no la cancha en sí) se agrupan
+// dentro de "Canchas" para no fragmentar la comparativa en más de 3 barras.
+const CATEGORIAS_BI = [
+  { key: 'Canchas', barra: 'bg-sky-400', texto: 'text-sky-400' },
+  { key: 'Pro-Shop', barra: 'bg-violet-400', texto: 'text-violet-400' },
+  { key: 'Cafetería/Bar', barra: 'bg-amber-400', texto: 'text-amber-400' },
+];
+
+// Bloques horarios de "Ingresos Cruzados por Cancha y Bloque" — los 3
+// bloques oficiales del día, sin huecos entre ellos (antes había un hueco
+// 12:00–18:00 sin franja propia): Mañana (07:00–12:00), Tarde (12:00–17:00)
+// y Noche (17:00–23:00). Una reserva se atribuye al bloque en el que arranca
+// (`hora_inicio`); una venta de mostrador se atribuye al bloque de su propia
+// hora de cobro.
+const BLOQUES_CRUCE = [
+  { key: 'manana', label: 'Mañana', rango: '07:00–12:00', inicio: 7 * 60, fin: 12 * 60 },
+  { key: 'tarde', label: 'Tarde', rango: '12:00–17:00', inicio: 12 * 60, fin: 17 * 60 },
+  { key: 'noche', label: 'Noche', rango: '17:00–23:00', inicio: 17 * 60, fin: 23 * 60 },
+];
+
+// Bloques de Ocupación Pico vs. Valle: Valle 07:00–17:00, Pico 17:00–23:00.
+const BLOQUE_OCUPACION_VALLE = { inicio: 7 * 60, fin: 17 * 60 };
+const BLOQUE_OCUPACION_PICO = { inicio: 17 * 60, fin: 23 * 60 };
+
+function calcularRangoFiltroBI(modo, { fechaDia, mesSel, anioSel }) {
+  let inicio, fin, etiqueta;
+  if (modo === 'dia') {
+    const base = fechaDia || hoyISO();
+    const [y, m, d] = base.split('-').map(Number);
+    inicio = new Date(y, m - 1, d, 0, 0, 0, 0);
+    fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
+    etiqueta = formatoFechaLarga(base);
+  } else if (modo === 'anio') {
+    inicio = new Date(anioSel, 0, 1, 0, 0, 0, 0);
+    fin = new Date(anioSel + 1, 0, 1, 0, 0, 0, 0);
+    etiqueta = `Año ${anioSel}`;
+  } else {
+    // 'mes' (también el respaldo por defecto)
+    inicio = new Date(anioSel, mesSel - 1, 1, 0, 0, 0, 0);
+    fin = new Date(anioSel, mesSel, 1, 0, 0, 0, 0);
+    const nombreMes = MESES_OPCIONES.find((m) => m.value === mesSel)?.label || '';
+    etiqueta = `${nombreMes} ${anioSel}`;
+  }
+  const inicioFechaISO = `${inicio.getFullYear()}-${pad2(inicio.getMonth() + 1)}-${pad2(inicio.getDate())}`;
+  const finFechaISO = `${fin.getFullYear()}-${pad2(fin.getMonth() + 1)}-${pad2(fin.getDate())}`;
+  const dias = Math.max(1, Math.round((fin - inicio) / 86400000));
+  return { inicio, fin, inicioFechaISO, finFechaISO, etiqueta, dias };
+}
+
+// Cuenta cuántas veces cae cada día-de-la-semana (getDay()) dentro de
+// [inicio, fin) — denominador del heatmap en modo Mes/Año, para que la
+// intensidad sea un promedio real por franja horaria y no se distorsione con
+// meses de distinta duración o rangos que no arrancan en lunes.
+function contarDiasPorDiaSemana(inicio, fin) {
+  const conteos = [0, 0, 0, 0, 0, 0, 0];
+  const cursor = new Date(inicio);
+  let guardia = 0;
+  while (cursor < fin && guardia < 400) {
+    conteos[cursor.getDay()] += 1;
+    cursor.setDate(cursor.getDate() + 1);
+    guardia += 1;
+  }
+  return conteos;
+}
+
+function minutosSolapadosBI(iniA, finA, iniB, finB) {
+  return Math.max(0, Math.min(finA, finB) - Math.max(iniA, iniB));
+}
+
+function colorCeldaOcupacion(pct) {
+  if (pct <= 0) return 'bg-slate-800/60 text-slate-600';
+  if (pct < 34) return 'bg-emerald-400/70 text-emerald-950';
+  if (pct < 67) return 'bg-amber-400/80 text-amber-950';
+  return 'bg-rose-500/85 text-rose-50';
+}
+
+/* ---------------- Barra de Filtro Temporal Global ---------------- */
+
+function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, onMes, onAnio, etiqueta, onExportar }) {
+  const anioActual = new Date().getFullYear();
+  const aniosDisponibles = Array.from({ length: 6 }, (_, i) => anioActual - i);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-3.5 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+          <button
+            onClick={() => onModo('dia')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+              modo === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <CalendarDays size={14} /> Día
+          </button>
+          <button
+            onClick={() => onModo('mes')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+              modo === 'mes' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <CalendarIcon size={14} /> Mes
+          </button>
+          <button
+            onClick={() => onModo('anio')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+              modo === 'anio' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <CalendarRange size={14} /> Año
+          </button>
+        </div>
+
+        {modo === 'dia' && (
+          <input type="date" value={fechaDia} onChange={(e) => onFechaDia(e.target.value)} className={`${inputClase} w-auto`} />
+        )}
+        {modo === 'mes' && (
+          <>
+            <select value={mes} onChange={(e) => onMes(Number(e.target.value))} className={`${inputClase} w-auto`}>
+              {MESES_OPCIONES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <select value={anio} onChange={(e) => onAnio(Number(e.target.value))} className={`${inputClase} w-auto`}>
+              {aniosDisponibles.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+        {modo === 'anio' && (
+          <select value={anio} onChange={(e) => onAnio(Number(e.target.value))} className={`${inputClase} w-auto`}>
+            {aniosDisponibles.map((a) => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+        <p className="text-xs font-semibold text-slate-400">
+          Mostrando: <span className="text-slate-100">{etiqueta}</span>
+        </p>
+        <BotonSecundario onClick={onExportar} className="whitespace-nowrap">
+          <Download size={15} /> Exportar Reporte
+        </BotonSecundario>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Mapa de Calor de Ocupación por Horarios ---------------- */
+
+function HeatmapOcupacion({ modo, filas, celdas }) {
+  const etiquetasFila = modo === 'dia' ? ['Hoy'] : ORDEN_SEMANA_BI.map((d) => ETIQUETA_DIA_SEMANA[d]);
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <Flame size={16} className="text-amber-400" /> Mapa de Calor — Ocupación por Horario
+        </h3>
+        <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-400">
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/70" /> Baja
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-400/80" /> Media
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-rose-500/85" /> Alta
+          </span>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[820px]">
+          <div className="grid" style={{ gridTemplateColumns: `56px repeat(${HEATMAP_HORAS.length}, minmax(0, 1fr))` }}>
+            <div />
+            {HEATMAP_HORAS.map((h) => (
+              <div key={h} className="pb-1.5 text-center text-[10px] font-bold text-slate-500">
+                {pad2(h)}h
+              </div>
+            ))}
+            {filas.map((_, filaIdx) => (
+              <React.Fragment key={filaIdx}>
+                <div className="flex items-center pr-2 text-[11px] font-bold text-slate-400">{etiquetasFila[filaIdx]}</div>
+                {celdas[filaIdx].map((pct, colIdx) => (
+                  <div key={colIdx} className="p-0.5">
+                    <div
+                      title={`${pad2(HEATMAP_HORAS[colIdx])}:00 – ${pad2(HEATMAP_HORAS[colIdx] + 1)}:00 · ${pct}% de ocupación`}
+                      className={`flex h-8 items-center justify-center rounded-md text-[10px] font-bold transition ${colorCeldaOcupacion(pct)}`}
+                    >
+                      {pct > 0 ? `${pct}%` : ''}
+                    </div>
+                  </div>
+                ))}
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Rentabilidad por Categoría ---------------- */
+
+function RentabilidadPorCategoria({ filas, cargando }) {
+  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-slate-900" />;
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <h3 className="mb-4 flex items-center gap-1.5 text-sm font-black text-slate-100">
+        <Percent size={16} className="text-lime-400" /> Rentabilidad por Categoría
+      </h3>
+
+      <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <table className="w-full min-w-[480px] text-left text-xs">
+          <thead>
+            <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <th className="px-3 py-2.5">Categoría</th>
+              <th className="px-3 py-2.5 text-right">Ingreso Bruto</th>
+              <th className="px-3 py-2.5 text-right">Costo Total</th>
+              <th className="px-3 py-2.5 text-right">Margen Bruto / Contribución</th>
+              <th className="px-3 py-2.5 text-right">Margen %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map((f) => {
+              const meta = CATEGORIAS_BI.find((c) => c.key === f.categoria);
+              // Rigor de terminología: "Canchas" no tiene costo variable
+              // directo asignado (Costo Total $0), así que su fila es Margen
+              // de Contribución. Pro-Shop y Cafetería/Bar son producto físico
+              // (costo directo real) → Margen Bruto. Ninguna fila usa
+              // "Utilidad Operativa" ni "Utilidad Neta" — ese cálculo real
+              // (con egresos operativos) vive en Contabilidad & Compras.
+              const tipoMargen = f.categoria === 'Canchas' ? 'Margen de Contribución' : 'Margen Bruto';
+              return (
+                <tr key={f.categoria} className="border-b border-slate-800/70 last:border-0">
+                  <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-200'}`}>
+                    {f.categoria}
+                    <span className="ml-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">({tipoMargen})</span>
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingreso)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-400">{formatoMoneda(f.costo)}</td>
+                  <td className={`px-3 py-2.5 text-right font-bold ${f.utilidad >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {formatoMoneda(f.utilidad)}
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-slate-300">{f.margen !== null ? `${f.margen.toFixed(1)}%` : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Top 5 Productos Más Vendidos ---------------- */
+
+function TopProductosTabla({ filas, cargando }) {
+  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-slate-900" />;
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+        <Trophy size={16} className="text-amber-400" /> Top 5 Productos Más Vendidos
+      </h3>
+      {filas.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
+          Sin ventas de productos en este rango.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-800">
+          <table className="w-full min-w-[520px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-2.5">Producto</th>
+                <th className="px-3 py-2.5">Categoría</th>
+                <th className="px-3 py-2.5 text-right">Unidades</th>
+                <th className="px-3 py-2.5 text-right">Ingreso Total</th>
+                <th className="px-3 py-2.5 text-right">Margen Bruto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f) => {
+                const catMeta = CATEGORIA_META[f.categoria];
+                return (
+                  <tr key={f.varianteId || f.productoId} className="border-b border-slate-800/70 last:border-0">
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-2.5">
+                        <img
+                          src={f.producto ? f.producto.imagen_url || fallbackImagenProducto(f.producto) : fallbackImagenProducto({})}
+                          alt=""
+                          className="h-8 w-8 shrink-0 rounded-lg object-cover"
+                        />
+                        <span className="font-bold text-slate-100">{f.nombre}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      {catMeta ? (
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${catMeta.badge}`}>
+                          {catMeta.label}
+                        </span>
+                      ) : (
+                        <span className="text-slate-500">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-bold text-slate-200">{f.unidades}</td>
+                    <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingreso)}</td>
+                    <td className={`px-3 py-2.5 text-right font-bold ${f.ganancia >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {formatoMoneda(f.ganancia)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Ingresos Cruzados por Bloque Horario ---------------- */
+
+function IngresosCruzadosTabla({ filas, cargando }) {
+  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-slate-900" />;
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+        <Clock size={16} className="text-lime-400" /> Ingresos Cruzados por Cancha y Bloque Horario
+      </h3>
+      {filas.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
+          No hay canchas activas para mostrar.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-800">
+          <table className="w-full min-w-[760px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-2.5">Cancha</th>
+                <th className="px-3 py-2.5">Bloque</th>
+                <th className="px-3 py-2.5 text-right">Ingreso Cancha</th>
+                <th className="px-3 py-2.5 text-right">Ingreso Cafetería</th>
+                <th className="px-3 py-2.5 text-right">Ingreso Pro-Shop</th>
+                <th className="px-3 py-2.5">Producto Más Vendido</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f) => (
+                <tr key={`${f.cancha.id}-${f.bloque.key}`} className="border-b border-slate-800/70 last:border-0">
+                  <td className="px-3 py-2.5 font-bold text-slate-100">{f.cancha.nombre}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-slate-300">
+                    {f.bloque.label} <span className="text-slate-500">({f.bloque.rango})</span>
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingresoCancha)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingresoCafeteria)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingresoProShop)}</td>
+                  <td className="px-3 py-2.5 text-slate-300">
+                    {f.productoTop ? (
+                      `${f.productoTop.nombre} (${f.productoTop.unidades} u.)`
+                    ) : (
+                      <span className="text-slate-600">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Rendimiento por Cancha ---------------- */
+
+function RendimientoPorCanchaTabla({ filas }) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+        <MapPin size={16} className="text-sky-400" /> Rendimiento por Cancha
+      </h3>
+      {filas.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
+          No hay canchas activas para mostrar.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-800">
+          <table className="w-full min-w-[820px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-2.5">Cancha</th>
+                <th className="px-3 py-2.5 text-right">Horas Reservadas</th>
+                <th className="px-3 py-2.5 text-right">Ocupación</th>
+                <th className="px-3 py-2.5 text-right">Ingresos</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f) => (
+                <tr key={f.cancha.id} className="border-b border-slate-800/70 last:border-0">
+                  <td className="px-3 py-2.5 font-bold text-slate-100">{f.cancha.nombre}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-200">{f.horas.toFixed(1)} h</td>
+                  <td className="px-3 py-2.5 text-right">
+                    <span
+                      className={`font-bold ${
+                        f.ocupacion >= 67 ? 'text-rose-400' : f.ocupacion >= 34 ? 'text-amber-400' : 'text-emerald-400'
+                      }`}
+                    >
+                      {f.ocupacion.toFixed(0)}%
+                    </span>
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-bold text-slate-200">{formatoMoneda(f.ingresos)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Exportar Reporte (CSV) ---------------- */
+
+// Escapa un valor para una celda CSV: si trae coma, comilla o salto de
+// línea, lo envuelve en comillas dobles (duplicando las que ya traiga).
+function escaparCSV(valor) {
+  const texto = valor === null || valor === undefined ? '' : String(valor);
+  if (/[",\n]/.test(texto)) return `"${texto.replace(/"/g, '""')}"`;
+  return texto;
+}
+
+// Encabezado del período tal como lo pediste: "Reporte Diario: 25/08/2026",
+// "Reporte Mensual: Agosto 2026" o "Reporte Anual: 2026" — lee el selector
+// Día/Mes/Año activo en ese momento, así que el CSV siempre documenta
+// exactamente el rango que el operador tenía elegido al exportar.
+function etiquetaReporteExport(modo, rango) {
+  if (modo === 'dia') {
+    const [y, m, d] = rango.inicioFechaISO.split('-');
+    return `Reporte Diario: ${d}/${m}/${y}`;
+  }
+  if (modo === 'anio') return `Reporte Anual: ${rango.etiqueta.replace('Año ', '')}`;
+  return `Reporte Mensual: ${rango.etiqueta}`;
+}
+
+// Arma el CSV completo del reporte — lee dinámicamente el rango activo
+// (Día/Mes/Año) y junta en un solo archivo: encabezado del período,
+// métricas ejecutivas de BI, rentabilidad por categoría, rendimiento por
+// cancha, top de productos, el mapa de calor de ocupación y una auditoría de
+// ERP & Inventario (catálogo actual + entradas/salidas del Kardex del
+// periodo). Todo dentro de un único CSV multi-sección — Excel/Sheets lo
+// abren nativamente sin necesidad de una librería .xlsx adicional.
+function generarCSVReporte({
+  modo,
+  rango,
+  analisis,
+  rendimientoPorCancha,
+  heatmap,
+  productos,
+  ingresosCruzados,
+  picoValle,
+  revPACP,
+  ventasPorProductoSemana,
+  variantesPorProducto,
+  ventasPorVarianteSemana,
+}) {
+  const filas = [];
+  filas.push(['Smash Pádel Club — Reporte Analytics BI']);
+  filas.push([etiquetaReporteExport(modo, rango)]);
+  filas.push(['Generado', new Date().toLocaleString('es-MX')]);
+  filas.push([]);
+
+  filas.push(['Métricas Ejecutivas y de Eficiencia de BI']);
+  filas.push(['Métrica', 'Valor']);
+  filas.push(['Ingresos Totales (Canchas a tarifa oficial + Pro-Shop + Cafetería)', analisis.ingresosTotales.toFixed(2)]);
+  filas.push(['Costo Total de lo Vendido (COGS)', analisis.cogsTotal.toFixed(2)]);
+  filas.push(['Ingreso por Organización de Torneos/Retas (Margen de Eventos)', analisis.margenEventosOrganizacion.toFixed(2)]);
+  filas.push(['Margen Total del Periodo (Ingresos + Margen de Eventos − COGS)', analisis.margenTotalPeriodo.toFixed(2)]);
+  filas.push(['Ticket Promedio por Venta', analisis.ticketPromedio !== null ? analisis.ticketPromedio.toFixed(2) : '']);
+  filas.push(['Transacciones Totales', analisis.totalTransacciones]);
+  filas.push(['  · Reservas de Cancha (por fecha de juego)', analisis.transaccionesCanchas]);
+  filas.push(['  · Tickets de Mostrador (por fecha de cobro)', analisis.transaccionesConProducto]);
+  filas.push(['Categoría Estrella', analisis.categoriaEstrella?.ingreso > 0 ? analisis.categoriaEstrella.categoria : '']);
+  filas.push(['Hora Pico de Ocupación (Heatmap)', heatmap.horaPicoLabel]);
+  filas.push(['RevPACP — Ingreso por Hora de Cancha Disponible', revPACP !== null ? revPACP.toFixed(2) : '']);
+  filas.push(['Ratio de Gasto Secundario (% Cross-Selling)', `${analisis.ratioCrossSelling.toFixed(1)}%`]);
+  filas.push(['Ocupación Horas Valle (07:00–17:00)', `${picoValle.valle.toFixed(1)}%`]);
+  filas.push(['Ocupación Horas Pico (17:00–23:00)', `${picoValle.pico.toFixed(1)}%`]);
+  filas.push([]);
+
+  filas.push(['Ingresos Cruzados por Cancha y Bloque Horario']);
+  filas.push(['Cancha', 'Bloque', 'Ingreso Cancha', 'Ingreso Cafetería', 'Ingreso Pro-Shop', 'Producto Más Vendido']);
+  ingresosCruzados.forEach((f) => {
+    filas.push([
+      f.cancha.nombre,
+      `${f.bloque.label} (${f.bloque.rango})`,
+      f.ingresoCancha.toFixed(2),
+      f.ingresoCafeteria.toFixed(2),
+      f.ingresoProShop.toFixed(2),
+      f.productoTop ? `${f.productoTop.nombre} (${f.productoTop.unidades} u.)` : 'Sin ventas de producto',
+    ]);
+  });
+  filas.push([]);
+
+  filas.push(['Rentabilidad por Categoría']);
+  filas.push(['Categoría', 'Ingreso Bruto', 'Costo Total', 'Margen Bruto', 'Margen %']);
+  analisis.rentabilidadPorCategoria.forEach((f) => {
+    filas.push([f.categoria, f.ingreso.toFixed(2), f.costo.toFixed(2), f.utilidad.toFixed(2), f.margen !== null ? f.margen.toFixed(1) : '']);
+  });
+  filas.push([]);
+
+  filas.push(['Rendimiento por Cancha']);
+  filas.push(['Cancha', 'Horas Reservadas', 'Ocupación %', 'Ingresos']);
+  let totalHorasCanchas = 0;
+  let totalIngresosCanchas = 0;
+  rendimientoPorCancha.forEach((f) => {
+    totalHorasCanchas += f.horas;
+    totalIngresosCanchas += f.ingresos;
+    filas.push([f.cancha.nombre, f.horas.toFixed(1), f.ocupacion.toFixed(0), f.ingresos.toFixed(2)]);
+  });
+  filas.push(['TOTAL (Canchas)', totalHorasCanchas.toFixed(1), '', totalIngresosCanchas.toFixed(2)]);
+  filas.push([]);
+
+  filas.push(['Top Productos Más Vendidos']);
+  filas.push(['Producto', 'Categoría', 'Unidades Vendidas', 'Ingreso Total', 'Margen Bruto']);
+  analisis.topProductos.forEach((f) => {
+    filas.push([f.nombre, f.categoria || '', f.unidades, f.ingreso.toFixed(2), f.ganancia.toFixed(2)]);
+  });
+  filas.push([]);
+
+  filas.push([`Mapa de Calor — % de Ocupación por Franja Horaria (${pad2(HEATMAP_HORAS[0])}:00–${pad2(HEATMAP_HORAS[HEATMAP_HORAS.length - 1] + 1)}:00)`]);
+  const etiquetasFilaHeatmap = modo === 'dia' ? ['Hoy'] : ORDEN_SEMANA_BI.map((d) => ETIQUETA_DIA_SEMANA[d]);
+  filas.push(['Día', ...HEATMAP_HORAS.map((h) => `${pad2(h)}:00`)]);
+  heatmap.celdas.forEach((fila, idx) => {
+    filas.push([etiquetasFilaHeatmap[idx], ...fila.map((pct) => `${pct}%`)]);
+  });
+  filas.push([]);
+
+  filas.push(['Auditoría ERP & Inventario Logístico — Catálogo (estado actual)']);
+  filas.push([
+    'Producto',
+    'Categoría',
+    'Stock Actual',
+    'Stock Mínimo',
+    'Costo Unitario',
+    'Valor en Almacén',
+    'Días de Cobertura de Stock',
+    'Estatus de Reabastecimiento',
+  ]);
+  let valorAlmacenTotal = 0;
+  productos
+    .filter((p) => p.activo !== false)
+    .forEach((p) => {
+      const manejaStock = p.maneja_stock !== false;
+      const stock = Number(p.stock);
+      const costo = Number(p.costo_unitario);
+      const valor = manejaStock && Number.isFinite(stock) && Number.isFinite(costo) ? stock * costo : 0;
+      valorAlmacenTotal += valor;
+      const cobertura = calcularCoberturaStock(p, ventasPorProductoSemana?.[p.id] || 0);
+      filas.push([
+        p.nombre,
+        p.categoria || '',
+        manejaStock ? (Number.isFinite(stock) ? stock : '') : 'Sin control de stock',
+        manejaStock ? p.stock_minimo ?? '' : '',
+        Number.isFinite(costo) ? costo.toFixed(2) : '',
+        valor ? valor.toFixed(2) : '',
+        etiquetaDiasCobertura(cobertura),
+        etiquetaReabastecimiento(cobertura),
+      ]);
+      // Variantes como Productos Completos: cada variante activa de este
+      // producto sale como su propia línea de auditoría, con sus valores
+      // heredados del padre cuando no tiene los propios cargados.
+      (variantesPorProducto?.[p.id] || [])
+        .filter((v) => v.activo !== false)
+        .forEach((v) => {
+          const vNormalizada = {
+            maneja_stock: v.stock != null,
+            stock: v.stock,
+            stock_minimo: v.stock_minimo != null ? v.stock_minimo : p.stock_minimo,
+            tiempo_entrega_dias: p.tiempo_entrega_dias,
+          };
+          const vCosto = Number(v.costo_unitario != null ? v.costo_unitario : p.costo_unitario);
+          const vStock = Number(v.stock);
+          const vValor = vNormalizada.maneja_stock && Number.isFinite(vStock) && Number.isFinite(vCosto) ? vStock * vCosto : 0;
+          valorAlmacenTotal += vValor;
+          const vCobertura = calcularCoberturaStock(vNormalizada, ventasPorVarianteSemana?.[v.id] || 0);
+          filas.push([
+            `↳ ${p.nombre} — ${v.nombre}`,
+            p.categoria || '',
+            vNormalizada.maneja_stock ? (Number.isFinite(vStock) ? vStock : '') : 'Sin control de stock',
+            vNormalizada.maneja_stock ? vNormalizada.stock_minimo ?? '' : '',
+            Number.isFinite(vCosto) ? vCosto.toFixed(2) : '',
+            vValor ? vValor.toFixed(2) : '',
+            etiquetaDiasCobertura(vCobertura),
+            etiquetaReabastecimiento(vCobertura),
+          ]);
+        });
+    });
+  filas.push(['Valor Total del Almacén (MXN)', '', '', '', '', valorAlmacenTotal.toFixed(2), '', '']);
+  filas.push([]);
+
+  filas.push(['Auditoría ERP & Inventario Logístico — Movimientos de Kardex en el Periodo']);
+  filas.push(['Tipo de Movimiento', 'Unidades']);
+  filas.push(['Entradas (Reabastecimiento)', analisis.auditoriaKardex.entradas]);
+  filas.push(['Salidas por Venta', analisis.auditoriaKardex.salidas]);
+  filas.push(['Ajustes', analisis.auditoriaKardex.ajustes]);
+
+  // BOM al inicio para que Excel detecte UTF-8 y no rompa acentos/ñ.
+  return '﻿' + filas.map((fila) => fila.map(escaparCSV).join(',')).join('\n');
+}
+
+function descargarArchivoTexto(nombreArchivo, contenido, tipoMime) {
+  const blob = new Blob([contenido], { type: tipoMime });
+  const url = URL.createObjectURL(blob);
+  const enlace = document.createElement('a');
+  enlace.href = url;
+  enlace.download = nombreArchivo;
+  document.body.appendChild(enlace);
+  enlace.click();
+  document.body.removeChild(enlace);
+  URL.revokeObjectURL(url);
+}
+
+/* ============================================================================
+ * MÓDULO: CONTABILIDAD & COMPRAS
+ * ==========================================================================
+ * Tablas NUEVAS y opcionales — `compras_gastos` y `proveedores` (ver
+ * migracion_v6_contabilidad_compras.sql). Arquitectura Flexible, mismo
+ * patrón que el resto del archivo: si una tabla todavía no existe en este
+ * proyecto de Supabase (`esErrorTablaInexistente`), la sub-pestaña
+ * correspondiente lo indica con un banner y no bloquea el resto del módulo.
+ *
+ * La P&L / Estado de Resultados de este módulo es la ÚNICA fuente de
+ * "Utilidad Real" del club — Analytics BI (ver 2.3 arriba) ya NO calcula
+ * ningún indicador de utilidad/rentabilidad global, precisamente para que
+ * ese número exista en un solo lugar:
+ *   Utilidad Real = (Ventas POS + Reservas Cobradas) − Egresos Totales
+ * "Ventas POS" excluye cualquier venta ligada al flujo de reservas (mismo
+ * criterio que `gruposCuentasAbiertas` en Smart POS: sin `reserva_id`,
+ * `es_reserva !== true`, `origen !== 'portal'`) para no contar dos veces el
+ * mismo dinero. "Reservas Cobradas" se lee directo de `reservas.monto_total
+ * + reservas.monto_addons` (nunca de `ventas.total` en un ticket ligado a
+ * una reserva, cuyo valor puede ser solo el remanente después de aplicar
+ * Wallet) — ver el comentario dentro de `pnl` más abajo para el detalle
+ * completo. Los bloqueos sintéticos de Torneo/Reta se excluyen de
+ * "Reservas Cobradas" (su dinero real vive en `reta_inscripciones`/
+ * `torneo_participantes`, fuera del alcance de esta P&L).
+ * ==========================================================================*/
+
+const CATEGORIAS_GASTO = [
+  { value: 'Insumos', label: 'Insumos' },
+  { value: 'Servicios', label: 'Servicios (luz, agua, internet...)' },
+  { value: 'Nómina', label: 'Nómina' },
+  { value: 'Mantenimiento', label: 'Mantenimiento' },
+  { value: 'Renta', label: 'Renta del Local' },
+  { value: 'Marketing', label: 'Marketing' },
+  { value: 'Otro', label: 'Otro' },
+];
+
+function BannerTablaFaltante({ tabla }) {
+  return (
+    <div className="flex items-start gap-2.5 rounded-2xl border border-amber-500/30 bg-amber-950/40 p-4 text-amber-200">
+      <Info size={16} className="mt-0.5 shrink-0" />
+      <p className="text-xs leading-relaxed">
+        La tabla <span className="font-bold">{tabla}</span> todavía no existe en tu proyecto de Supabase — corre{' '}
+        <span className="font-mono">migracion_v6_contabilidad_compras.sql</span> para activar esta sección. Mientras tanto no
+        se puede leer ni guardar información aquí.
+      </p>
+    </div>
+  );
+}
+
+function ModuloContabilidadCompras({ reservas, operador }) {
+  const mostrarToast = useToast();
+  const [vista, setVista] = useState('egresos'); // 'egresos' | 'proveedores' | 'pnl'
+
+  /* ---- Proveedores: catálogo, compartido con el selector del form de Egresos ---- */
+  const [proveedores, setProveedores] = useState([]);
+  const [loadingProveedores, setLoadingProveedores] = useState(true);
+  const [errorProveedores, setErrorProveedores] = useState('');
+  const [tablaProveedoresExiste, setTablaProveedoresExiste] = useState(true);
+
+  const cargarProveedores = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingProveedores(true);
+    setErrorProveedores('');
+    const { data, error } = await conClubId(supabase.from('proveedores').select('*')).order('nombre', { ascending: true });
+    if (error) {
+      if (esErrorTablaInexistente(error)) {
+        setTablaProveedoresExiste(false);
+        setProveedores([]);
+      } else {
+        setErrorProveedores(error.message || 'No se pudieron cargar los proveedores.');
+      }
+    } else {
+      setTablaProveedoresExiste(true);
+      setProveedores(data || []);
+    }
+    setLoadingProveedores(false);
+  }, []);
+
+  useEffect(() => {
+    cargarProveedores();
+  }, [cargarProveedores]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('contabilidad-proveedores')
+      .on('postgres_changes', canalClubFiltro('proveedores'), () => cargarProveedores({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarProveedores]);
+
+  async function crearProveedor(payload) {
+    const { data, error } = await supabase.from('proveedores').insert(withClubId(payload)).select().single();
+    if (error) throw error;
+    setProveedores((prev) => [...prev, data].sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '')));
+    return data;
+  }
+
+  /* ---- Egresos & Compras ---- */
+  const [egresos, setEgresos] = useState([]);
+  const [loadingEgresos, setLoadingEgresos] = useState(true);
+  const [errorEgresos, setErrorEgresos] = useState('');
+  const [tablaEgresosExiste, setTablaEgresosExiste] = useState(true);
+
+  const cargarEgresos = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingEgresos(true);
+    setErrorEgresos('');
+    const { data, error } = await conClubId(supabase.from('compras_gastos').select('*'))
+      .order('fecha', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(500);
+    if (error) {
+      if (esErrorTablaInexistente(error)) {
+        setTablaEgresosExiste(false);
+        setEgresos([]);
+      } else {
+        setErrorEgresos(error.message || 'No se pudieron cargar los egresos y compras.');
+      }
+    } else {
+      setTablaEgresosExiste(true);
+      setEgresos(data || []);
+    }
+    setLoadingEgresos(false);
+  }, []);
+
+  useEffect(() => {
+    cargarEgresos();
+  }, [cargarEgresos]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('contabilidad-egresos')
+      .on('postgres_changes', canalClubFiltro('compras_gastos'), () => cargarEgresos({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarEgresos]);
+
+  async function crearEgreso(payload) {
+    const { data, error } = await supabase.from('compras_gastos').insert(withClubId(payload)).select().single();
+    if (error) throw error;
+    setEgresos((prev) => [data, ...prev]);
+    return data;
+  }
+
+  /* ---- P&L / Estado de Resultados: filtro temporal propio (Día/Mes/Año), mismo mecanismo que Analytics BI ---- */
+  const [modoFiltroPnl, setModoFiltroPnl] = useState('mes');
+  const [fechaDiaPnl, setFechaDiaPnl] = useState(hoyISO());
+  const [mesSelPnl, setMesSelPnl] = useState(() => new Date().getMonth() + 1);
+  const [anioSelPnl, setAnioSelPnl] = useState(() => new Date().getFullYear());
+  const rangoPnl = useMemo(
+    () => calcularRangoFiltroBI(modoFiltroPnl, { fechaDia: fechaDiaPnl, mesSel: mesSelPnl, anioSel: anioSelPnl }),
+    [modoFiltroPnl, fechaDiaPnl, mesSelPnl, anioSelPnl]
+  );
+
+  const [ventasRangoPnl, setVentasRangoPnl] = useState([]);
+  const [loadingVentasPnl, setLoadingVentasPnl] = useState(true);
+  const [errorVentasPnl, setErrorVentasPnl] = useState('');
+
+  const cargarVentasRangoPnl = useCallback(async () => {
+    setLoadingVentasPnl(true);
+    setErrorVentasPnl('');
+    // `consultarVentasEnRango` ya es tolerante a que `ventas` no tenga
+    // columna `created_at` en este entorno (ver su comentario arriba).
+    const { data, error } = await consultarVentasEnRango(rangoPnl.inicio, rangoPnl.fin);
+    if (error) {
+      setErrorVentasPnl(error.message || 'No se pudieron cargar las ventas del periodo.');
+      setVentasRangoPnl([]);
+    } else {
+      setVentasRangoPnl(data || []);
+    }
+    setLoadingVentasPnl(false);
+  }, [rangoPnl]);
+
+  useEffect(() => {
+    cargarVentasRangoPnl();
+  }, [cargarVentasRangoPnl]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('contabilidad-pnl-ventas')
+      .on('postgres_changes', canalClubFiltro('ventas'), () => cargarVentasRangoPnl())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarVentasRangoPnl]);
+
+  const pnl = useMemo(() => {
+    // "Ventas POS": mismo criterio de exclusión que "Cuentas Abiertas" (ver
+    // `gruposCuentasAbiertas` en Smart POS) — cualquier venta ligada al
+    // flujo de reservas se excluye de aquí para no contarla dos veces; esa
+    // misma reserva se suma abajo como "Reservas Cobradas", con su propia
+    // fuente de verdad.
+    const ventasPOS = ventasRangoPnl
+      .filter((v) => v.estado_pago === 'pagado' && !v.reserva_id && v.es_reserva !== true && v.origen !== 'portal')
+      .reduce((acc, v) => acc + (Number(v.total) || 0), 0);
+
+    // "Reservas Cobradas": se lee directo de `reservas` (prop, ya cargada
+    // sin filtros desde App()) — NUNCA de `ventas.total` en un ticket ligado
+    // a la reserva, porque ese monto puede ser solo el remanente después de
+    // aplicar saldo de Wallet, no el valor económico completo de la
+    // reserva. `monto_total` (renta de cancha) + `monto_addons` (consumo
+    // adicional agregado desde el Portal) sí es el valor completo — el club
+    // ya cobró ese dinero sin importar si fue en efectivo, tarjeta o
+    // Wallet. Se excluyen los bloqueos sintéticos de Torneo/Reta: su dinero
+    // real vive en `reta_inscripciones`/`torneo_participantes`, fuera del
+    // alcance de esta P&L.
+    const reservasEnRango = (reservas || []).filter(
+      (r) =>
+        r.fecha >= rangoPnl.inicioFechaISO &&
+        r.fecha < rangoPnl.finFechaISO &&
+        r.estado !== 'Torneo' &&
+        r.estado !== 'Reta' &&
+        r.estado_pago === 'pagado'
+    );
+    const reservasCobradas = reservasEnRango.reduce(
+      (acc, r) => acc + (Number(r.monto_total) || 0) + (Number(r.monto_addons) || 0),
+      0
+    );
+
+    const ingresosTotales = ventasPOS + reservasCobradas;
+
+    const egresosEnRango = egresos.filter((g) => g.fecha >= rangoPnl.inicioFechaISO && g.fecha < rangoPnl.finFechaISO);
+    const egresosTotales = egresosEnRango.reduce((acc, g) => acc + (Number(g.monto) || 0), 0);
+
+    const egresosPorCategoria = {};
+    egresosEnRango.forEach((g) => {
+      const cat = g.categoria || 'Otro';
+      egresosPorCategoria[cat] = (egresosPorCategoria[cat] || 0) + (Number(g.monto) || 0);
+    });
+
+    const utilidadReal = ingresosTotales - egresosTotales;
+
+    return { ventasPOS, reservasCobradas, ingresosTotales, egresosTotales, egresosPorCategoria, utilidadReal };
+  }, [ventasRangoPnl, reservas, egresos, rangoPnl]);
+
+  /* ---- Formulario de Egresos & Compras ---- */
+  const [formEgreso, setFormEgreso] = useState({
+    fecha: hoyISO(),
+    concepto: '',
+    categoria: CATEGORIAS_GASTO[0].value,
+    monto: '',
+    proveedorId: '',
+    metodoPago: 'efectivo',
+  });
+  const [guardandoEgreso, setGuardandoEgreso] = useState(false);
+  const [errorFormEgreso, setErrorFormEgreso] = useState('');
+
+  async function registrarEgreso() {
+    setErrorFormEgreso('');
+    if (!formEgreso.concepto.trim()) {
+      setErrorFormEgreso('El concepto es obligatorio.');
+      return;
+    }
+    const monto = Number(formEgreso.monto);
+    if (!monto || monto <= 0) {
+      setErrorFormEgreso('Captura un monto válido, mayor a $0.');
+      return;
+    }
+    setGuardandoEgreso(true);
+    try {
+      const proveedor = formEgreso.proveedorId ? proveedores.find((p) => String(p.id) === String(formEgreso.proveedorId)) : null;
+      await crearEgreso({
+        fecha: formEgreso.fecha || hoyISO(),
+        concepto: formEgreso.concepto.trim(),
+        categoria: formEgreso.categoria,
+        monto,
+        proveedor_id: proveedor?.id || null,
+        proveedor_nombre: proveedor?.nombre || null,
+        metodo_pago: formEgreso.metodoPago || null,
+        operador: operador?.nombre || null,
+      });
+      mostrarToast({ titulo: 'Egreso registrado', detalle: `${formEgreso.concepto.trim()} — ${formatoMoneda(monto)}` });
+      setFormEgreso({
+        fecha: hoyISO(),
+        concepto: '',
+        categoria: CATEGORIAS_GASTO[0].value,
+        monto: '',
+        proveedorId: '',
+        metodoPago: 'efectivo',
+      });
+    } catch (err) {
+      if (esErrorTablaInexistente(err)) {
+        setErrorFormEgreso('La tabla "compras_gastos" todavía no existe en Supabase — corre la migración para activar este módulo.');
+      } else {
+        setErrorFormEgreso(err.message || 'No se pudo registrar el egreso.');
+      }
+    }
+    setGuardandoEgreso(false);
+  }
+
+  /* ---- Formulario de Proveedores ---- */
+  const [formProveedor, setFormProveedor] = useState({ nombre: '', categoria: '', contacto: '', telefono: '', email: '', notas: '' });
+  const [guardandoProveedor, setGuardandoProveedor] = useState(false);
+  const [errorFormProveedor, setErrorFormProveedor] = useState('');
+
+  async function registrarProveedor() {
+    setErrorFormProveedor('');
+    if (!formProveedor.nombre.trim()) {
+      setErrorFormProveedor('El nombre del proveedor es obligatorio.');
+      return;
+    }
+    setGuardandoProveedor(true);
+    try {
+      await crearProveedor({
+        nombre: formProveedor.nombre.trim(),
+        categoria: formProveedor.categoria.trim() || null,
+        contacto_nombre: formProveedor.contacto.trim() || null,
+        telefono: formProveedor.telefono.trim() || null,
+        email: formProveedor.email.trim() || null,
+        notas: formProveedor.notas.trim() || null,
+      });
+      mostrarToast({ titulo: 'Proveedor agregado', detalle: formProveedor.nombre.trim() });
+      setFormProveedor({ nombre: '', categoria: '', contacto: '', telefono: '', email: '', notas: '' });
+    } catch (err) {
+      if (esErrorTablaInexistente(err)) {
+        setErrorFormProveedor('La tabla "proveedores" todavía no existe en Supabase — corre la migración para activar este módulo.');
+      } else {
+        setErrorFormProveedor(err.message || 'No se pudo guardar el proveedor.');
+      }
+    }
+    setGuardandoProveedor(false);
+  }
+
+  const anioActualPnl = new Date().getFullYear();
+  const aniosDisponiblesPnl = Array.from({ length: 6 }, (_, i) => anioActualPnl - i);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1 lg:w-fit">
+        <button
+          onClick={() => setVista('egresos')}
+          className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
+            vista === 'egresos' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+          }`}
+        >
+          <Receipt size={14} /> Egresos & Compras
+        </button>
+        <button
+          onClick={() => setVista('proveedores')}
+          className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
+            vista === 'proveedores' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+          }`}
+        >
+          <Truck size={14} /> Proveedores
+        </button>
+        <button
+          onClick={() => setVista('pnl')}
+          className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
+            vista === 'pnl' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+          }`}
+        >
+          <Landmark size={14} /> P&L / Estado de Resultados
+        </button>
+      </div>
+
+      {vista === 'egresos' && (
+        <div className="space-y-5">
+          {!tablaEgresosExiste && <BannerTablaFaltante tabla="compras_gastos" />}
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <PackagePlus size={16} className="text-lime-400" /> Registrar Compra / Gasto
+            </h3>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
+              <Campo label="Fecha">
+                <input
+                  type="date"
+                  value={formEgreso.fecha}
+                  onChange={(e) => setFormEgreso((f) => ({ ...f, fecha: e.target.value }))}
+                  className={inputClase}
+                />
+              </Campo>
+              <div className="sm:col-span-2 lg:col-span-2">
+                <Campo label="Concepto">
+                  <input
+                    type="text"
+                    placeholder="Ej. Pelotas Head, recibo de luz..."
+                    value={formEgreso.concepto}
+                    onChange={(e) => setFormEgreso((f) => ({ ...f, concepto: e.target.value }))}
+                    className={inputClase}
+                  />
+                </Campo>
+              </div>
+              <Campo label="Categoría">
+                <select
+                  value={formEgreso.categoria}
+                  onChange={(e) => setFormEgreso((f) => ({ ...f, categoria: e.target.value }))}
+                  className={inputClase}
+                >
+                  {CATEGORIAS_GASTO.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </Campo>
+              <Campo label="Monto">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={formEgreso.monto}
+                  onChange={(e) => setFormEgreso((f) => ({ ...f, monto: e.target.value }))}
+                  className={inputClase}
+                />
+              </Campo>
+              <Campo label="Proveedor (opcional)">
+                <select
+                  value={formEgreso.proveedorId}
+                  onChange={(e) => setFormEgreso((f) => ({ ...f, proveedorId: e.target.value }))}
+                  className={inputClase}
+                >
+                  <option value="">— Sin proveedor —</option>
+                  {proveedores.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nombre}
+                    </option>
+                  ))}
+                </select>
+              </Campo>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Método de pago:</span>
+                <select
+                  value={formEgreso.metodoPago}
+                  onChange={(e) => setFormEgreso((f) => ({ ...f, metodoPago: e.target.value }))}
+                  className={`${inputClase} w-auto`}
+                >
+                  {METODOS_PAGO.filter((m) => m.value !== 'pos').map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-3">
+                {errorFormEgreso && <p className="text-xs font-semibold text-rose-400">{errorFormEgreso}</p>}
+                <BotonPrimario onClick={registrarEgreso} disabled={guardandoEgreso || !tablaEgresosExiste}>
+                  {guardandoEgreso ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
+                  Registrar
+                </BotonPrimario>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <History size={16} className="text-lime-400" /> Historial de Compras & Gastos
+            </h3>
+            {loadingEgresos ? (
+              <div className="h-40 animate-pulse rounded-xl bg-slate-800/60" />
+            ) : errorEgresos ? (
+              <ErrorBanner mensaje={errorEgresos} onReintentar={() => cargarEgresos()} />
+            ) : egresos.length === 0 ? (
+              <p className="py-6 text-center text-xs text-slate-500">
+                {tablaEgresosExiste ? 'Todavía no hay compras o gastos registrados.' : 'Activa la tabla para ver el historial aquí.'}
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-slate-800">
+                <table className="w-full min-w-[640px] text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      <th className="px-3 py-2.5">Fecha</th>
+                      <th className="px-3 py-2.5">Concepto</th>
+                      <th className="px-3 py-2.5">Categoría</th>
+                      <th className="px-3 py-2.5">Proveedor</th>
+                      <th className="px-3 py-2.5">Operador</th>
+                      <th className="px-3 py-2.5 text-right">Monto</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {egresos.map((g) => (
+                      <tr key={g.id} className="border-b border-slate-800/70 last:border-0">
+                        <td className="px-3 py-2.5 text-slate-400">{formatoFechaLarga(g.fecha)}</td>
+                        <td className="px-3 py-2.5 font-semibold text-slate-200">{g.concepto}</td>
+                        <td className="px-3 py-2.5 text-slate-400">{g.categoria || '—'}</td>
+                        <td className="px-3 py-2.5 text-slate-400">{g.proveedor_nombre || '—'}</td>
+                        <td className="px-3 py-2.5 text-slate-500">{g.operador || '—'}</td>
+                        <td className="px-3 py-2.5 text-right font-bold text-rose-400">{formatoMoneda(Number(g.monto) || 0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {vista === 'proveedores' && (
+        <div className="space-y-5">
+          {!tablaProveedoresExiste && <BannerTablaFaltante tabla="proveedores" />}
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <UserPlus size={16} className="text-lime-400" /> Alta de Proveedor
+            </h3>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <Campo label="Nombre">
+                <input
+                  type="text"
+                  placeholder="Ej. Distribuidora Padel MX"
+                  value={formProveedor.nombre}
+                  onChange={(e) => setFormProveedor((f) => ({ ...f, nombre: e.target.value }))}
+                  className={inputClase}
+                />
+              </Campo>
+              <Campo label="Categoría">
+                <input
+                  type="text"
+                  placeholder="Ej. Insumos, Mantenimiento..."
+                  value={formProveedor.categoria}
+                  onChange={(e) => setFormProveedor((f) => ({ ...f, categoria: e.target.value }))}
+                  className={inputClase}
+                />
+              </Campo>
+              <Campo label="Nombre de Contacto">
+                <input
+                  type="text"
+                  value={formProveedor.contacto}
+                  onChange={(e) => setFormProveedor((f) => ({ ...f, contacto: e.target.value }))}
+                  className={inputClase}
+                />
+              </Campo>
+              <Campo label="Teléfono">
+                <input
+                  type="text"
+                  value={formProveedor.telefono}
+                  onChange={(e) => setFormProveedor((f) => ({ ...f, telefono: e.target.value }))}
+                  className={inputClase}
+                />
+              </Campo>
+              <Campo label="Email">
+                <input
+                  type="email"
+                  value={formProveedor.email}
+                  onChange={(e) => setFormProveedor((f) => ({ ...f, email: e.target.value }))}
+                  className={inputClase}
+                />
+              </Campo>
+              <Campo label="Notas">
+                <input
+                  type="text"
+                  value={formProveedor.notas}
+                  onChange={(e) => setFormProveedor((f) => ({ ...f, notas: e.target.value }))}
+                  className={inputClase}
+                />
+              </Campo>
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-3">
+              {errorFormProveedor && <p className="text-xs font-semibold text-rose-400">{errorFormProveedor}</p>}
+              <BotonPrimario onClick={registrarProveedor} disabled={guardandoProveedor || !tablaProveedoresExiste}>
+                {guardandoProveedor ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
+                Agregar Proveedor
+              </BotonPrimario>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <Truck size={16} className="text-lime-400" /> Catálogo de Proveedores
+            </h3>
+            {loadingProveedores ? (
+              <div className="h-40 animate-pulse rounded-xl bg-slate-800/60" />
+            ) : errorProveedores ? (
+              <ErrorBanner mensaje={errorProveedores} onReintentar={() => cargarProveedores()} />
+            ) : proveedores.length === 0 ? (
+              <p className="py-6 text-center text-xs text-slate-500">
+                {tablaProveedoresExiste ? 'Todavía no hay proveedores registrados.' : 'Activa la tabla para ver el catálogo aquí.'}
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-slate-800">
+                <table className="w-full min-w-[640px] text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      <th className="px-3 py-2.5">Nombre</th>
+                      <th className="px-3 py-2.5">Categoría</th>
+                      <th className="px-3 py-2.5">Contacto</th>
+                      <th className="px-3 py-2.5">Teléfono</th>
+                      <th className="px-3 py-2.5">Email</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proveedores.map((p) => (
+                      <tr key={p.id} className="border-b border-slate-800/70 last:border-0">
+                        <td className="px-3 py-2.5 font-semibold text-slate-200">{p.nombre}</td>
+                        <td className="px-3 py-2.5 text-slate-400">{p.categoria || '—'}</td>
+                        <td className="px-3 py-2.5 text-slate-400">{p.contacto_nombre || '—'}</td>
+                        <td className="px-3 py-2.5 text-slate-400">{p.telefono || '—'}</td>
+                        <td className="px-3 py-2.5 text-slate-400">{p.email || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {vista === 'pnl' && (
+        <div className="space-y-5">
+          {(!tablaEgresosExiste || !tablaProveedoresExiste) && (
+            <div className="flex items-start gap-2.5 rounded-2xl border border-amber-500/30 bg-amber-950/40 p-4 text-amber-200">
+              <Info size={16} className="mt-0.5 shrink-0" />
+              <p className="text-xs leading-relaxed">
+                Falta activar <span className="font-mono">compras_gastos</span> — mientras tanto, "Egresos Totales" y
+                "Utilidad Real" se calculan con $0 de egresos.
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-3.5 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+                <button
+                  onClick={() => setModoFiltroPnl('dia')}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                    modoFiltroPnl === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                  }`}
+                >
+                  <CalendarDays size={14} /> Día
+                </button>
+                <button
+                  onClick={() => setModoFiltroPnl('mes')}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                    modoFiltroPnl === 'mes' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                  }`}
+                >
+                  <CalendarIcon size={14} /> Mes
+                </button>
+                <button
+                  onClick={() => setModoFiltroPnl('anio')}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                    modoFiltroPnl === 'anio' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                  }`}
+                >
+                  <CalendarRange size={14} /> Año
+                </button>
+              </div>
+              {modoFiltroPnl === 'dia' && (
+                <input
+                  type="date"
+                  value={fechaDiaPnl}
+                  onChange={(e) => setFechaDiaPnl(e.target.value)}
+                  className={`${inputClase} w-auto`}
+                />
+              )}
+              {modoFiltroPnl === 'mes' && (
+                <>
+                  <select value={mesSelPnl} onChange={(e) => setMesSelPnl(Number(e.target.value))} className={`${inputClase} w-auto`}>
+                    {MESES_OPCIONES.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select value={anioSelPnl} onChange={(e) => setAnioSelPnl(Number(e.target.value))} className={`${inputClase} w-auto`}>
+                    {aniosDisponiblesPnl.map((a) => (
+                      <option key={a} value={a}>
+                        {a}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
+              {modoFiltroPnl === 'anio' && (
+                <select value={anioSelPnl} onChange={(e) => setAnioSelPnl(Number(e.target.value))} className={`${inputClase} w-auto`}>
+                  {aniosDisponiblesPnl.map((a) => (
+                    <option key={a} value={a}>
+                      {a}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <p className="text-xs font-semibold text-slate-400">
+              Mostrando: <span className="text-slate-100">{rangoPnl.etiqueta}</span>
+            </p>
+          </div>
+
+          {(loadingVentasPnl || loadingEgresos) && <div className="h-24 animate-pulse rounded-2xl bg-slate-900" />}
+          {errorVentasPnl && <ErrorBanner mensaje={errorVentasPnl} onReintentar={() => cargarVentasRangoPnl()} />}
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            <MetricCard icon={ShoppingCart} etiqueta="Ventas POS" valor={formatoMoneda(pnl.ventasPOS)} sub="Mostrador, sin ligar a reserva" tono="sky" />
+            <MetricCard
+              icon={CalendarDays}
+              etiqueta="Reservas Cobradas"
+              valor={formatoMoneda(pnl.reservasCobradas)}
+              sub="Renta de cancha + add-ons del Portal"
+              tono="sky"
+            />
+            <MetricCard icon={TrendingUp} etiqueta="Ingresos Totales" valor={formatoMoneda(pnl.ingresosTotales)} sub="Ventas POS + Reservas Cobradas" tono="emerald" />
+            <MetricCard
+              icon={TrendingDown}
+              etiqueta="Egresos Totales"
+              valor={formatoMoneda(pnl.egresosTotales)}
+              sub="Compras + Gastos Operativos"
+              tono="rose"
+            />
+            <MetricCard
+              icon={Landmark}
+              etiqueta="Utilidad Real"
+              valor={formatoMoneda(pnl.utilidadReal)}
+              sub="Ingresos Totales − Egresos Totales"
+              tono={pnl.utilidadReal >= 0 ? 'emerald' : 'rose'}
+            />
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <Receipt size={16} className="text-lime-400" /> Egresos por Categoría
+            </h3>
+            {Object.keys(pnl.egresosPorCategoria).length === 0 ? (
+              <p className="py-6 text-center text-xs text-slate-500">Sin egresos registrados en este periodo.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-slate-800">
+                <table className="w-full min-w-[380px] text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      <th className="px-3 py-2.5">Categoría</th>
+                      <th className="px-3 py-2.5 text-right">Monto</th>
+                      <th className="px-3 py-2.5 text-right">% del Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(pnl.egresosPorCategoria)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([categoria, monto]) => (
+                        <tr key={categoria} className="border-b border-slate-800/70 last:border-0">
+                          <td className="px-3 py-2.5 font-semibold text-slate-200">{categoria}</td>
+                          <td className="px-3 py-2.5 text-right text-rose-400">{formatoMoneda(monto)}</td>
+                          <td className="px-3 py-2.5 text-right text-slate-400">
+                            {pnl.egresosTotales > 0 ? `${((monto / pnl.egresosTotales) * 100).toFixed(1)}%` : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Módulo principal ---------------- */
+
+function ModuloAnalyticsBI({
+  canchas,
+  reservas,
+  productos,
+  variantesPorProducto,
+  retas,
+  inscripciones,
+  torneos,
+  participantesTorneo,
+  partidosTorneo,
+}) {
+  const mostrarToast = useToast();
+
+  /* ---- Filtro temporal global ---- */
+  const [modoFiltro, setModoFiltro] = useState('mes'); // 'dia' | 'mes' | 'anio'
+  const [fechaDia, setFechaDia] = useState(hoyISO());
+  const [mesSel, setMesSel] = useState(() => new Date().getMonth() + 1);
+  const [anioSel, setAnioSel] = useState(() => new Date().getFullYear());
+
+  const rango = useMemo(
+    () => calcularRangoFiltroBI(modoFiltro, { fechaDia, mesSel, anioSel }),
+    [modoFiltro, fechaDia, mesSel, anioSel]
+  );
+
+  /* ---- Ventas del rango: ingresos, ticket promedio, categorías, top productos ---- */
+  const [ventasRango, setVentasRango] = useState([]);
+  const [loadingVentas, setLoadingVentas] = useState(true);
+  const [errorVentas, setErrorVentas] = useState('');
+
+  const cargarVentasRango = useCallback(async () => {
+    setLoadingVentas(true);
+    setErrorVentas('');
+    // `consultarVentasEnRango` es tolerante a que `ventas` no tenga columna
+    // `created_at` en este entorno (cae a `fecha`, y de último recurso a un
+    // filtro en el cliente) — ver su comentario para el detalle completo.
+    const { data, error } = await consultarVentasEnRango(rango.inicio, rango.fin);
+    if (error) {
+      setErrorVentas(error.message || 'No se pudieron cargar las ventas del periodo.');
+      setVentasRango([]);
+    } else {
+      setVentasRango(data || []);
+    }
+    setLoadingVentas(false);
+  }, [rango]);
+
+  useEffect(() => {
+    cargarVentasRango();
+  }, [cargarVentasRango]);
+
+  // Tiempo real: una venta nueva/actualizada en Smart POS recalcula todo el
+  // tablero de inmediato, sin esperar a que el operador refresque la página.
+  useEffect(() => {
+    const canal = supabase
+      .channel('analytics-ventas')
+      .on('postgres_changes', canalClubFiltro('ventas'), () => cargarVentasRango())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarVentasRango]);
+
+  /* ---- Kardex del rango: unidades vendidas → COGS, + auditoría entradas/salidas ---- */
+  const [kardexRango, setKardexRango] = useState([]);
+  const [loadingKardexRango, setLoadingKardexRango] = useState(true);
+  const [errorKardexRango, setErrorKardexRango] = useState('');
+
+  const cargarKardexRango = useCallback(async () => {
+    setLoadingKardexRango(true);
+    setErrorKardexRango('');
+    // Sin filtrar por `tipo_movimiento`: se necesitan tanto las salidas por
+    // venta (unidades vendidas → COGS) como las entradas/ajustes, para la
+    // sección de Auditoría ERP & Inventario del reporte exportable.
+    const { data, error } = await conClubId(supabase.from('kardex').select('producto_id, cantidad, tipo_movimiento, created_at'))
+      .gte('created_at', rango.inicio.toISOString())
+      .lt('created_at', rango.fin.toISOString());
+    if (error) {
+      setErrorKardexRango(error.message || 'No se pudo cargar el Kardex del periodo.');
+      setKardexRango([]);
+    } else {
+      setKardexRango(data || []);
+    }
+    setLoadingKardexRango(false);
+  }, [rango]);
+
+  useEffect(() => {
+    cargarKardexRango();
+  }, [cargarKardexRango]);
+
+  // Ritmo de venta de los últimos 7 días por producto — para la Auditoría
+  // ERP & Inventario Logístico del reporte exportable (Días de Cobertura de
+  // Stock y Estatus de Reabastecimiento). Es SIEMPRE relativo a "hoy", sin
+  // importar el filtro Día/Mes/Año activo: es una foto del inventario en
+  // vivo, igual que en el panel de ERP & Inventario.
+  const [ventasPorProductoSemana, setVentasPorProductoSemana] = useState({});
+  const [ventasPorVarianteSemana, setVentasPorVarianteSemana] = useState({});
+
+  const cargarVentasPorProductoSemana = useCallback(async () => {
+    const fin = new Date();
+    const inicio = new Date(fin.getTime() - 7 * 86400000);
+    const { porProducto, porVariante } = await unidadesVendidasPorProductoRango(inicio, fin);
+    setVentasPorProductoSemana(porProducto);
+    setVentasPorVarianteSemana(porVariante);
+  }, []);
+
+  useEffect(() => {
+    cargarVentasPorProductoSemana();
+  }, [cargarVentasPorProductoSemana]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('analytics-kardex')
+      .on('postgres_changes', canalClubFiltro('kardex'), () => {
+        cargarKardexRango();
+        cargarVentasPorProductoSemana();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarKardexRango, cargarVentasPorProductoSemana]);
+
+  // Bloqueos Maestro de Torneo (el apartado general de cancha que se crea al
+  // dar de alta el torneo, ANTES de programar partidos — ver
+  // `idsBloqueosMaestroTorneo`) se EXCLUYEN por completo de aquí abajo. Sin
+  // esto, una cancha con un apartado de 7:00–15:00 y 3 partidos de 1h ya
+  // programados DENTRO de esa franja contaría 8h + 3h = 11h de "ocupación",
+  // duplicando las horas reales jugadas. Solo cuentan reservas normales,
+  // Retas (1 reserva = 1 evento real) y sub-bloqueos de `torneo_partidos`
+  // (la ocupación física real de cada partido).
+  const idsMaestroTorneo = useMemo(() => idsBloqueosMaestroTorneo(torneos), [torneos]);
+
+  /* ---- Reservas del rango: ya están en memoria vía props, sin query nueva ---- */
+  const reservasActivasPagadas = useMemo(() => {
+    return reservas.filter(
+      (r) =>
+        r.fecha >= rango.inicioFechaISO &&
+        r.fecha < rango.finFechaISO &&
+        r.estado !== 'Cancelada' &&
+        r.estado_pago === 'pagado' &&
+        !idsMaestroTorneo.has(r.id)
+    );
+  }, [reservas, rango, idsMaestroTorneo]);
+
+  const canchasPorId = useMemo(() => {
+    const mapa = {};
+    canchas.forEach((c) => {
+      mapa[c.id] = c;
+    });
+    return mapa;
+  }, [canchas]);
+
+  // Imputación de Ingresos de Torneos/Retas a Rendimiento por Cancha — por
+  // TARIFA OFICIAL (Devengo de Pista), no por reparto del pozo de
+  // inscripciones: los bloqueos que ocupan cancha en `reservas` para
+  // Torneos/Retas SIEMPRE se crean con `monto_total: 0` (ver
+  // `crearBloqueoParrilla`) — el dinero real vive en `reta_inscripciones` /
+  // `torneo_participantes`, nunca en la reserva. Pero ese dinero NO es
+  // "ingreso de la cancha": una cancha con tarifa $300/hr que aloja 5h de
+  // partidos de un torneo que recaudó $10,000 en inscripciones NO produjo
+  // $2,000/hr — produjo exactamente lo que su tarifa dice, $300/hr = $1,500.
+  // Por eso el Ingreso/Margen de Contribución de cada reserva de Torneo/Reta
+  // es SIEMPRE `Horas de Partido × Precio de Renta Oficial de la Cancha`
+  // (`precioPorHoraDeCancha`) — nunca una fracción proporcional del pozo.
+  //
+  // El excedente entre lo recaudado en inscripciones y el valor de renta de
+  // las canchas realmente consumidas (`Total Inscripciones − Total Valor
+  // Renta Canchas`) es dinero real que el club sí cobró, pero que no le
+  // corresponde a ninguna cancha específica — es el margen de organizar el
+  // evento (arbitraje, premios, logística, marca del torneo, etc.). Se
+  // acumula aparte en `margenEventosOrganizacion` y se expone como su propio
+  // concepto — "Ingreso por Organización de Torneos/Retas" / "Margen de
+  // Eventos" — en las métricas globales del dashboard, nunca mezclado en el
+  // ingreso de ninguna cancha (ver `resumenGlobalEventos` más abajo).
+  //
+  // Retas: 1 reta = 1 sola reserva de bloqueo, en su propia cancha/horario —
+  // ya vive en la fecha exacta en que se juega (criterio de devengo
+  // automático). Torneos: el Bloqueo Maestro del evento (`torneo.bloqueos`)
+  // queda FUERA de este cálculo a propósito — ya no representa ocupación
+  // real (ver `idsMaestroTorneo`/`reservasActivasPagadas` arriba); solo los
+  // sub-bloqueos de partido (`torneo_partidos`, la ocupación física real)
+  // reciben su tarifa oficial, y el resto del pozo del torneo cae completo
+  // en `margenEventosOrganizacion`.
+  const imputacionEventosCancha = useMemo(() => {
+    const ingresoPorReservaId = {};
+    let margenEventosOrganizacion = 0;
+
+    (retas || []).forEach((reta) => {
+      if (!reta.reserva_bloqueo_id) return;
+      const totalReta = (inscripciones || [])
+        .filter((i) => i.reta_id === reta.id && i.estado_pago === 'pagado' && i.estado !== 'cancelado')
+        .reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
+      if (totalReta <= 0) return;
+      const horas = duracionHorasBloque(reta.hora_inicio, reta.hora_fin);
+      const ingresoCancha = horas * precioPorHoraDeCancha(canchasPorId[reta.cancha_id]);
+      ingresoPorReservaId[reta.reserva_bloqueo_id] = (ingresoPorReservaId[reta.reserva_bloqueo_id] || 0) + ingresoCancha;
+      margenEventosOrganizacion += totalReta - ingresoCancha;
+    });
+
+    (torneos || []).forEach((torneo) => {
+      const totalTorneo = (participantesTorneo || [])
+        .filter((p) => p.torneo_id === torneo.id && p.estado_pago === 'pagado')
+        .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+      if (totalTorneo <= 0) return;
+
+      // SOLO partidos individuales asignados — nunca el Bloqueo Maestro.
+      let valorRentaTorneo = 0;
+      (partidosTorneo || []).forEach((p) => {
+        if (p.torneo_id !== torneo.id || !p.reserva_bloqueo_id) return;
+        const horas = duracionHorasBloque(p.hora_inicio, p.hora_fin);
+        if (horas <= 0) return;
+        const ingresoCancha = horas * precioPorHoraDeCancha(canchasPorId[p.cancha_id]);
+        ingresoPorReservaId[p.reserva_bloqueo_id] = (ingresoPorReservaId[p.reserva_bloqueo_id] || 0) + ingresoCancha;
+        valorRentaTorneo += ingresoCancha;
+      });
+
+      margenEventosOrganizacion += totalTorneo - valorRentaTorneo;
+    });
+
+    return { ingresoPorReservaId, margenEventosOrganizacion };
+  }, [retas, inscripciones, torneos, participantesTorneo, partidosTorneo, canchasPorId]);
+
+  const ingresoEfectivoPorReservaId = imputacionEventosCancha.ingresoPorReservaId;
+
+  // Monto real de una reserva para efectos de Analytics BI: para una reserva
+  // regular (o ya cobrada de verdad), es su propio `monto_total`; para un
+  // bloqueo de Torneo/Reta con `monto_total: 0`, es su valor de renta a
+  // tarifa oficial vía `ingresoEfectivoPorReservaId` (o $0 si el evento
+  // nunca cobró nada).
+  function montoEfectivoReserva(reserva) {
+    const efectivo = ingresoEfectivoPorReservaId[reserva.id];
+    if (efectivo !== undefined) return efectivo;
+    return Number(reserva.monto_total) || 0;
+  }
+
+  const productosPorId = useMemo(() => {
+    const mapa = {};
+    productos.forEach((p) => {
+      mapa[p.id] = p;
+    });
+    return mapa;
+  }, [productos]);
+
+  // Variantes como Productos Completos — Analytics BI: mapa plano por id de
+  // variante (cada valor ya trae `_productoPadre` para poder mostrar
+  // "Producto — Variante" y heredar precio/costo cuando la variante no
+  // tiene uno propio).
+  const variantesPorId = useMemo(() => {
+    const mapa = {};
+    productos.forEach((p) => {
+      (variantesPorProducto?.[p.id] || []).forEach((v) => {
+        mapa[v.id] = { ...v, _productoPadre: p };
+      });
+    });
+    return mapa;
+  }, [productos, variantesPorProducto]);
+
+  /* ---- Heatmap de ocupación por horario ---- */
+  const heatmap = useMemo(() => {
+    const canchasActivas = canchas.filter((c) => c.activa !== false);
+    const numCanchas = canchasActivas.length || 1;
+    const numFilas = modoFiltro === 'dia' ? 1 : ORDEN_SEMANA_BI.length;
+    const ocupado = Array.from({ length: numFilas }, () => HEATMAP_HORAS.map(() => 0));
+
+    reservasActivasPagadas.forEach((r) => {
+      const hi = parseHoraAMinutos(r.hora_inicio);
+      const hf = parseHoraAMinutos(r.hora_fin);
+      if (hi === null || hf === null || hf <= hi) return;
+      let filaIdx = 0;
+      if (modoFiltro !== 'dia') {
+        const [y, m, d] = r.fecha.split('-').map(Number);
+        const dow = new Date(y, m - 1, d).getDay();
+        filaIdx = ORDEN_SEMANA_BI.indexOf(dow);
+        if (filaIdx === -1) return;
+      }
+      HEATMAP_HORAS.forEach((h, colIdx) => {
+        const solapado = minutosSolapadosBI(hi, hf, h * 60, (h + 1) * 60);
+        if (solapado > 0) ocupado[filaIdx][colIdx] += solapado;
+      });
+    });
+
+    let denomPorFila;
+    if (modoFiltro === 'dia') {
+      denomPorFila = [numCanchas * 60];
+    } else {
+      const conteos = contarDiasPorDiaSemana(rango.inicio, rango.fin);
+      denomPorFila = ORDEN_SEMANA_BI.map((dow) => Math.max(1, conteos[dow]) * numCanchas * 60);
+    }
+
+    const celdas = ocupado.map((fila, fIdx) => fila.map((min) => Math.min(100, Math.round((min / denomPorFila[fIdx]) * 100))));
+
+    const totalesPorHora = HEATMAP_HORAS.map((_, colIdx) => ocupado.reduce((acc, fila) => acc + fila[colIdx], 0));
+    const hayDatos = totalesPorHora.some((v) => v > 0);
+    const idxPico = totalesPorHora.reduce((mejorIdx, val, idx, arr) => (val > arr[mejorIdx] ? idx : mejorIdx), 0);
+    const horaPicoLabel = hayDatos ? `${pad2(HEATMAP_HORAS[idxPico])}:00 – ${pad2(HEATMAP_HORAS[idxPico] + 1)}:00` : '—';
+
+    return { filas: Array.from({ length: numFilas }), celdas, horaPicoLabel };
+  }, [reservasActivasPagadas, canchas, modoFiltro, rango]);
+
+  /* ---- Rendimiento por cancha: horas, ocupación e ingresos del periodo ---- */
+  const rendimientoPorCancha = useMemo(() => {
+    const horasDisponiblesPorCancha = (rango.dias * (HORA_FIN_MIN - HORA_INICIO_MIN)) / 60;
+    return canchas
+      .filter((c) => c.activa !== false)
+      .map((c) => {
+        const reservasCancha = reservasActivasPagadas.filter((r) => r.cancha_id === c.id);
+        const horas = reservasCancha.reduce((acc, r) => {
+          const hi = parseHoraAMinutos(r.hora_inicio);
+          const hf = parseHoraAMinutos(r.hora_fin);
+          if (hi === null || hf === null || hf <= hi) return acc;
+          return acc + (hf - hi) / 60;
+        }, 0);
+        // `montoEfectivoReserva`: para bloqueos de Torneo/Reta (monto_total
+        // fijo en $0) usa su valor de renta a tarifa oficial (Horas × Precio
+        // de Renta de la Cancha) vía `ingresoEfectivoPorReservaId`, en vez
+        // del $0 de la fila — nunca una fracción proporcional del pozo.
+        const ingresos = reservasCancha.reduce((acc, r) => acc + montoEfectivoReserva(r), 0);
+        const ocupacion = horasDisponiblesPorCancha > 0 ? Math.min(100, (horas / horasDisponiblesPorCancha) * 100) : 0;
+        return { cancha: c, horas, ingresos, ocupacion };
+      })
+      .sort((a, b) => b.ingresos - a.ingresos);
+  }, [canchas, reservasActivasPagadas, rango, ingresoEfectivoPorReservaId]);
+
+  /* ---- Ingresos, COGS, categorías y ranking de productos ---- */
+  const analisis = useMemo(() => {
+    const ventasPagadas = ventasRango.filter((v) => v.estado_pago === 'pagado');
+
+    // Criterio de Servicio/Juego: el ingreso de Canchas SIEMPRE se asigna por
+    // `reservas.fecha` (el día que se juega), nunca por el día en que se
+    // cobró — una reserva de mañana cobrada hoy pertenece al reporte de
+    // mañana. `reservasActivasPagadas` ya está filtrada así (fecha de juego
+    // dentro del rango + confirmada + pagada), así que basta con sumarla —
+    // usando `montoEfectivoReserva` para que los bloqueos de Torneos/Retas
+    // sumen su ingreso real de inscripciones, no el `monto_total: 0` fijo.
+    const ingresoCanchas = reservasActivasPagadas.reduce((acc, r) => acc + montoEfectivoReserva(r), 0);
+    const transaccionesCanchas = reservasActivasPagadas.length;
+
+    // Movimientos de salida por venta dentro del rango: alimentan tanto las
+    // "unidades vendidas" (Top Productos, COGS) como la auditoría del Kardex.
+    // Variantes como Productos Completos: se agrupan con una CLAVE COMPUESTA
+    // — `v:<variante_id>` cuando el movimiento trae variante (columna nueva y
+    // opcional, ver `insertarMovimientoKardex`), o `p:<producto_id>` si no —
+    // así "Top Productos Más Vendidos" y el COGS distinguen "Cerveza —
+    // Victoria" de "Cerveza — Corona" en vez de sumarlos indiferenciados bajo
+    // el producto padre. Un proyecto sin la columna `variante_id` migrada
+    // sigue viendo exactamente el mismo comportamiento de antes (todo cae en
+    // `p:<producto_id>`).
+    const claveVentaItem = (productoId, varianteId) => (varianteId ? `v:${varianteId}` : `p:${productoId}`);
+    const salidasVenta = kardexRango.filter((mov) => mov.tipo_movimiento === 'salida_venta');
+    const unidadesPorProducto = {};
+    salidasVenta.forEach((mov) => {
+      if (!mov.producto_id) return;
+      const clave = claveVentaItem(mov.producto_id, mov.variante_id);
+      unidadesPorProducto[clave] = (unidadesPorProducto[clave] || 0) + Math.abs(Number(mov.cantidad) || 0);
+    });
+
+    // Ingreso de Pro-Shop / Cafetería-Bar: criterio de COBRO — siempre por la
+    // fecha en que se liquidó el ticket en el Smart POS (`ventas`), tal cual
+    // se pidió para el consumo de mostrador. Los artículos tipo 'cancha' de
+    // estos mismos tickets se IGNORAN aquí a propósito: su ingreso ya se
+    // contó arriba desde `reservas`, para no duplicarlo bajo dos criterios de
+    // fecha distintos dentro del mismo ticket.
+    const ingresoPorProducto = {};
+    const ingresoPorCategoria = { Canchas: ingresoCanchas, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
+    let transaccionesConProducto = 0;
+    ventasPagadas.forEach((v) => {
+      const items = v?.detalles?.items;
+      if (!Array.isArray(items)) return;
+      let tieneProducto = false;
+      items.forEach((item) => {
+        if (item.tipo !== 'producto') return; // cancha ya contada desde `reservas`
+        tieneProducto = true;
+        const subtotal = Number(item.subtotal) || 0;
+        const claveItem = claveVentaItem(item.producto_id, item.variante_id);
+        ingresoPorProducto[claveItem] = (ingresoPorProducto[claveItem] || 0) + subtotal;
+        const cat = productosPorId[item.producto_id]?.categoria;
+        if (cat === 'Cafetería/Bar') {
+          ingresoPorCategoria['Cafetería/Bar'] += subtotal;
+        } else if (cat === 'Canchas') {
+          // Caso explícito: un producto de catálogo tarifado como "pista
+          // pura" (categoría literal Canchas, costo $0) sí suma aquí.
+          ingresoPorCategoria.Canchas += subtotal;
+        } else {
+          // 'Pro-Shop', 'Rentas' (palas/accesorios) o cualquier categoría no
+          // reconocida: se agrupa con Pro-Shop — NUNCA con Canchas, para que
+          // el costo de rentar una pala no ensucie el margen de Canchas
+          // (que debe reflejar solo la renta de la pista).
+          ingresoPorCategoria['Pro-Shop'] += subtotal;
+        }
+      });
+      if (tieneProducto) transaccionesConProducto += 1;
+    });
+
+    const totalTransacciones = transaccionesCanchas + transaccionesConProducto;
+
+    // COGS: cruza unidades (kardex) × costo_unitario ACTUAL del producto (o
+    // de la variante específica — hereda el del padre si no tiene uno
+    // propio, igual criterio que `FilaVarianteInventarioCompleta`).
+    let cogsTotal = 0;
+    const cogsPorCategoria = { Canchas: 0, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
+    const filasProducto = Object.keys(unidadesPorProducto).map((clave) => {
+      const esVariante = clave.startsWith('v:');
+      const idPuro = clave.slice(2);
+      const variante = esVariante ? variantesPorId[idPuro] : null;
+      const prod = esVariante ? variante?._productoPadre || null : productosPorId[idPuro] || null;
+      const unidades = unidadesPorProducto[clave];
+      const costoUnitarioCrudo = esVariante
+        ? variante?.costo_unitario != null
+          ? variante.costo_unitario
+          : prod?.costo_unitario
+        : prod?.costo_unitario;
+      const costoUnitario = Number(costoUnitarioCrudo);
+      const costo = Number.isFinite(costoUnitario) ? unidades * costoUnitario : 0;
+      cogsTotal += costo;
+      // Mismo criterio que el ingreso: Cafetería/Bar y Canchas (literal) se
+      // quedan en su propia categoría; todo lo demás (Pro-Shop, 'Rentas' de
+      // palas/equipo, o cualquier categoría no reconocida) cae en Pro-Shop,
+      // para que Canchas conserve Costo Total: $0 salvo que exista un
+      // producto de pista con costo operativo asignado explícitamente.
+      const catBucket = prod?.categoria === 'Cafetería/Bar' ? 'Cafetería/Bar' : prod?.categoria === 'Canchas' ? 'Canchas' : 'Pro-Shop';
+      cogsPorCategoria[catBucket] += costo;
+      const ingreso = ingresoPorProducto[clave] || 0;
+      return {
+        productoId: esVariante ? prod?.id || null : idPuro,
+        varianteId: esVariante ? idPuro : null,
+        producto: prod,
+        nombre: esVariante ? `${prod?.nombre || 'Producto eliminado'} — ${variante?.nombre || 'Variante'}` : prod?.nombre || 'Producto eliminado',
+        categoria: prod?.categoria || null,
+        unidades,
+        ingreso,
+        ganancia: ingreso - costo,
+      };
+    });
+
+    // `cogsPorCategoria.Canchas` se queda en $0 salvo que exista un producto
+    // de catálogo literal "Canchas" con `costo_unitario` cargado (caso
+    // raro) — el Costo Operativo Asignado por Hora/Cancha que antes se
+    // sumaba aquí se eliminó por completo del tablero; la contabilidad real
+    // de egresos ahora vive en el módulo Contabilidad & Compras.
+    const ingresosTotales = ingresoPorCategoria.Canchas + ingresoPorCategoria['Pro-Shop'] + ingresoPorCategoria['Cafetería/Bar'];
+    const ticketPromedio = totalTransacciones > 0 ? ingresosTotales / totalTransacciones : null;
+
+    // Ingreso por Organización de Torneos/Retas ("Margen de Eventos"): el
+    // excedente entre lo recaudado en inscripciones y el valor de renta de
+    // canchas a tarifa oficial (ver `imputacionEventosCancha`) — dinero real
+    // ya cobrado por el club, pero que NO le pertenece a ninguna cancha.
+    // Deliberadamente NO se suma a `ingresosTotales`/`ticketPromedio`/
+    // `ratioCrossSelling` (esas métricas son por transacción de
+    // cancha/producto, y un torneo es UN evento con muchas transacciones de
+    // cancha ya contadas) — pero SÍ entra al margen/utilidad global del club
+    // más abajo, para no perder ese ingreso real del balance.
+    const margenEventosOrganizacion = imputacionEventosCancha.margenEventosOrganizacion;
+
+    // Ingresos − COGS + Margen de Eventos: suma de Margen Bruto + Margen de
+    // Contribución (a tarifa oficial) + Margen de Eventos del periodo —
+    // TODAVÍA sin egresos operativos, comisiones ni impuestos, así que NO es
+    // "Utilidad Real" (esa P&L completa vive en el módulo Contabilidad &
+    // Compras → P&L / Estado de Resultados).
+    const margenTotalPeriodo = ingresosTotales + margenEventosOrganizacion - cogsTotal;
+
+    // Ratio de Gasto Secundario (% Cross-Selling): qué porción de los
+    // ingresos totales NO viene de rentar la pista, sino de lo que se
+    // consume alrededor (Pro-Shop + Cafetería/Bar).
+    const ingresoSecundario = ingresoPorCategoria['Pro-Shop'] + ingresoPorCategoria['Cafetería/Bar'];
+    const ratioCrossSelling = ingresosTotales > 0 ? (ingresoSecundario / ingresosTotales) * 100 : 0;
+
+    const rentabilidadPorCategoria = CATEGORIAS_BI.map((c) => {
+      const ingreso = ingresoPorCategoria[c.key] || 0;
+      const costo = cogsPorCategoria[c.key] || 0;
+      const utilidad = ingreso - costo;
+      const margen = ingreso > 0 ? (utilidad / ingreso) * 100 : null;
+      return { categoria: c.key, ingreso, costo, utilidad, margen };
+    });
+
+    const categoriaEstrella = rentabilidadPorCategoria.reduce(
+      (mejor, actual) => (actual.ingreso > (mejor?.ingreso ?? -1) ? actual : mejor),
+      null
+    );
+
+    const topProductos = [...filasProducto].sort((a, b) => b.unidades - a.unidades).slice(0, 5);
+
+    // Auditoría del Kardex del periodo (entradas / salidas por venta /
+    // ajustes) — para la sección de Auditoría ERP & Inventario del reporte.
+    const auditoriaKardex = kardexRango.reduce(
+      (acc, mov) => {
+        const cant = Math.abs(Number(mov.cantidad) || 0);
+        if (mov.tipo_movimiento === 'entrada') acc.entradas += cant;
+        else if (mov.tipo_movimiento === 'salida_venta') acc.salidas += cant;
+        else acc.ajustes += cant;
+        return acc;
+      },
+      { entradas: 0, salidas: 0, ajustes: 0 }
+    );
+
+    return {
+      ingresosTotales,
+      ingresoCanchas,
+      ingresoSecundario,
+      ratioCrossSelling,
+      totalTransacciones,
+      transaccionesCanchas,
+      transaccionesConProducto,
+      ticketPromedio,
+      cogsTotal,
+      margenEventosOrganizacion,
+      margenTotalPeriodo,
+      rentabilidadPorCategoria,
+      categoriaEstrella,
+      topProductos,
+      auditoriaKardex,
+    };
+  }, [
+    ventasRango,
+    kardexRango,
+    productosPorId,
+    variantesPorId,
+    reservasActivasPagadas,
+    ingresoEfectivoPorReservaId,
+    imputacionEventosCancha,
+  ]);
+
+  /* ---- Nº de canchas activas (denominador de RevPACP y Pico/Valle) ---- */
+  const numCanchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false).length, [canchas]);
+
+  /* ---- RevPACP: Ingreso Canchas ÷ horas-cancha disponibles en el rango ---- */
+  const revPACP = useMemo(() => {
+    const horasDisponiblesTotales = rango.dias * ((HORA_FIN_MIN - HORA_INICIO_MIN) / 60) * numCanchasActivas;
+    if (horasDisponiblesTotales <= 0) return null;
+    return analisis.ingresoCanchas / horasDisponiblesTotales;
+  }, [analisis, rango, numCanchasActivas]);
+
+  /* ---- Ocupación Pico (17:00–23:00) vs. Valle (07:00–17:00) ---- */
+  const picoValle = useMemo(() => {
+    const calcularBloque = (bloque) => {
+      const disponibleTotal = rango.dias * numCanchasActivas * (bloque.fin - bloque.inicio);
+      if (disponibleTotal <= 0) return 0;
+      const ocupadoTotal = reservasActivasPagadas.reduce((acc, r) => {
+        const hi = parseHoraAMinutos(r.hora_inicio);
+        const hf = parseHoraAMinutos(r.hora_fin);
+        if (hi === null || hf === null || hf <= hi) return acc;
+        return acc + minutosSolapadosBI(hi, hf, bloque.inicio, bloque.fin);
+      }, 0);
+      return Math.min(100, (ocupadoTotal / disponibleTotal) * 100);
+    };
+    return { valle: calcularBloque(BLOQUE_OCUPACION_VALLE), pico: calcularBloque(BLOQUE_OCUPACION_PICO) };
+  }, [reservasActivasPagadas, rango, numCanchasActivas]);
+
+  /* ---- Ingresos Cruzados por Cancha y Bloque Horario ---- */
+  const ingresosCruzados = useMemo(() => {
+    const canchasActivas = canchas.filter((c) => c.activa !== false);
+    const ventasPagadas = ventasRango.filter((v) => v.estado_pago === 'pagado');
+    const filas = [];
+    canchasActivas.forEach((c) => {
+      BLOQUES_CRUCE.forEach((bloque) => {
+        // Ingreso Cancha: reservas de ESTA cancha cuya hora de inicio cae en
+        // este bloque — criterio de fecha de juego, igual que el resto del
+        // tablero (`reservasActivasPagadas`).
+        const ingresoCancha = reservasActivasPagadas.reduce((acc, r) => {
+          if (r.cancha_id !== c.id) return acc;
+          const hi = parseHoraAMinutos(r.hora_inicio);
+          if (hi === null || hi < bloque.inicio || hi >= bloque.fin) return acc;
+          return acc + montoEfectivoReserva(r);
+        }, 0);
+
+        // Ingreso Cafetería/Pro-Shop: tickets de `ventas` vinculados a ESTA
+        // cancha (cuenta abierta / Renta Exprés), cuyo momento de cobro cae
+        // en este bloque — criterio de fecha/hora de cobro, como el resto de
+        // ingresos de mostrador.
+        let ingresoCafeteria = 0;
+        let ingresoProShop = 0;
+        const unidadesProductoBloque = {};
+        ventasPagadas.forEach((v) => {
+          if (v.cancha_id !== c.id) return;
+          const ts = obtenerTimestampVenta(v);
+          if (!ts) return;
+          const minutosDia = ts.getHours() * 60 + ts.getMinutes();
+          if (minutosDia < bloque.inicio || minutosDia >= bloque.fin) return;
+          const items = v?.detalles?.items;
+          if (!Array.isArray(items)) return;
+          items.forEach((item) => {
+            if (item.tipo !== 'producto') return;
+            const subtotal = Number(item.subtotal) || 0;
+            const prod = productosPorId[item.producto_id];
+            // Mismo criterio que "Rentabilidad por Categoría": solo
+            // Cafetería/Bar tiene columna propia; Pro-Shop y 'Rentas'
+            // (palas/accesorios) caen en Ingreso Pro-Shop.
+            if (prod?.categoria === 'Cafetería/Bar') ingresoCafeteria += subtotal;
+            else ingresoProShop += subtotal;
+            const nombreProd = prod?.nombre || item.nombre || 'Producto';
+            unidadesProductoBloque[nombreProd] = (unidadesProductoBloque[nombreProd] || 0) + (Number(item.cantidad) || 0);
+          });
+        });
+
+        let productoTop = null;
+        Object.entries(unidadesProductoBloque).forEach(([nombre, unidades]) => {
+          if (!productoTop || unidades > productoTop.unidades) productoTop = { nombre, unidades };
+        });
+
+        filas.push({ cancha: c, bloque, ingresoCancha, ingresoCafeteria, ingresoProShop, productoTop });
+      });
+    });
+    return filas;
+  }, [canchas, ventasRango, reservasActivasPagadas, productosPorId, ingresoEfectivoPorReservaId]);
+
+  const cargandoFinanciero = loadingVentas || loadingKardexRango;
+  const errorPeriodo = errorVentas || errorKardexRango;
+
+  // Exportación de Datos: arma un CSV súper completo (se abre nativamente en
+  // Excel/Sheets) con TODO lo que muestra el tablero del rango activo —
+  // encabezado del período, métricas ejecutivas, rentabilidad por categoría,
+  // rendimiento por cancha, top productos, el mapa de calor y una auditoría
+  // de ERP & Inventario — y lo descarga en el navegador. Lee dinámicamente
+  // el selector Día/Mes/Año: siempre exporta el rango que esté activo.
+  function exportarReporte() {
+    if (cargandoFinanciero) {
+      mostrarToast({ titulo: 'Espera a que termine de cargar', detalle: 'El reporte todavía se está calculando.', tono: 'aviso' });
+      return;
+    }
+    const csv = generarCSVReporte({
+      modo: modoFiltro,
+      rango,
+      analisis,
+      rendimientoPorCancha,
+      heatmap,
+      productos,
+      ingresosCruzados,
+      picoValle,
+      revPACP,
+      ventasPorProductoSemana,
+      variantesPorProducto,
+      ventasPorVarianteSemana,
+    });
+    const nombreArchivo = `analytics-bi_${rango.inicioFechaISO}_a_${rango.finFechaISO}.csv`;
+    descargarArchivoTexto(nombreArchivo, csv, 'text/csv;charset=utf-8;');
+    mostrarToast({ titulo: 'Reporte exportado', detalle: nombreArchivo });
+  }
+
+  return (
+    <>
+      <BarraFiltroTemporal
+        modo={modoFiltro}
+        onModo={setModoFiltro}
+        fechaDia={fechaDia}
+        onFechaDia={setFechaDia}
+        mes={mesSel}
+        anio={anioSel}
+        onMes={setMesSel}
+        onAnio={setAnioSel}
+        etiqueta={rango.etiqueta}
+        onExportar={exportarReporte}
+      />
+
+      {errorPeriodo && (
+        <ErrorBanner
+          mensaje={errorPeriodo}
+          onReintentar={() => {
+            cargarVentasRango();
+            cargarKardexRango();
+          }}
+        />
+      )}
+
+      {/* Métricas financieras duplicadas con el nuevo módulo Contabilidad &
+          Compras (Utilidad Operativa, Rentabilidad por Cancha/Hora, Utilidad
+          Neta del Club — todas dependían del Costo Operativo Asignado por
+          Hora/Cancha, eliminado por completo) se quitaron de este tablero
+          para no saturarlo; la P&L real ahora vive en Contabilidad &
+          Compras → P&L / Estado de Resultados. "Ingreso por Organización de
+          Torneos/Retas" es una métrica de BI propia (no depende del Costo
+          Operativo ni se calcula en Contabilidad), así que se conserva aquí
+          arriba, junto con las demás. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <MetricCard
+          icon={Receipt}
+          etiqueta="Ticket Promedio por Venta"
+          valor={analisis.ticketPromedio !== null ? formatoMoneda(analisis.ticketPromedio) : '—'}
+          sub={`${analisis.transaccionesCanchas} reservas + ${analisis.transaccionesConProducto} tickets de mostrador`}
+          tono="sky"
+        />
+        <MetricCard
+          icon={TrendingUp}
+          etiqueta="Margen Total del Periodo"
+          valor={formatoMoneda(analisis.margenTotalPeriodo)}
+          sub={`Ingresos ${formatoMoneda(analisis.ingresosTotales)} − Costo ${formatoMoneda(analisis.cogsTotal)}`}
+          tono={analisis.margenTotalPeriodo >= 0 ? 'emerald' : 'rose'}
+        />
+        <MetricCard
+          icon={Star}
+          etiqueta="Categoría Estrella"
+          valor={analisis.categoriaEstrella?.ingreso > 0 ? analisis.categoriaEstrella.categoria : '—'}
+          sub={analisis.categoriaEstrella?.ingreso > 0 ? formatoMoneda(analisis.categoriaEstrella.ingreso) : 'Sin ventas en el rango'}
+          tono="violet"
+        />
+        <MetricCard
+          icon={Flame}
+          etiqueta="Hora Pico de Ocupación"
+          valor={heatmap.horaPicoLabel}
+          sub="Mayor concentración de reservas"
+          tono="amber"
+        />
+        <MetricCard
+          icon={ShoppingBag}
+          etiqueta="Ratio de Gasto Secundario"
+          valor={`${analisis.ratioCrossSelling.toFixed(1)}%`}
+          sub="Pro-Shop + Cafetería sobre ingresos totales"
+          tono="lime"
+        />
+        <MetricCard
+          icon={Trophy}
+          etiqueta="Ingreso por Organización de Torneos/Retas"
+          valor={formatoMoneda(analisis.margenEventosOrganizacion)}
+          sub="Margen de Eventos: inscripciones − valor de renta de canchas a tarifa oficial"
+          tono={analisis.margenEventosOrganizacion >= 0 ? 'emerald' : 'rose'}
+        />
+      </div>
+
+      <HeatmapOcupacion modo={modoFiltro} filas={heatmap.filas} celdas={heatmap.celdas} />
+
+      <RentabilidadPorCategoria filas={analisis.rentabilidadPorCategoria} cargando={cargandoFinanciero} />
+
+      <IngresosCruzadosTabla filas={ingresosCruzados} cargando={cargandoFinanciero} />
+
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+        <TopProductosTabla filas={analisis.topProductos} cargando={cargandoFinanciero} />
+        <RendimientoPorCanchaTabla filas={rendimientoPorCancha} />
+      </div>
+    </>
+  );
+}
+
+/* ============================================================================
+ * MÓDULO 5 — TORNEOS & RETAS
+ * ==========================================================================*/
+
+const RAMAS_JUEGO = ['Varonil', 'Femenil', 'Mixto'];
+
+// Categorías oficiales de nivel de juego — la escala NTRP (1.0 a 5.5) queda
+// eliminada por completo; esta es la única lista que se usa en todo el módulo.
+const NIVELES_FUERZA = ['1ª Fuerza', '2ª Fuerza', '3ª Fuerza', '4ª Fuerza', '5ª Fuerza', '6ª Fuerza', 'Open'];
+
+const CUPOS_RETA = 4;
+const TOLERANCIA_HORAS_DEFAULT = 6;
+
+const FORMATOS_TORNEO = ['Americano/Pozo', 'Round Robin + Eliminatoria', 'Eliminación Directa con Consolación'];
+const REGLAS_PUNTUACION_TORNEO = ['3 Sets', 'Súper Tie-Break', 'Punto de Oro'];
+const UNIDADES_PRECIO_TORNEO = [
+  { value: 'pareja', label: 'Por Pareja' },
+  { value: 'jugador', label: 'Por Jugador' },
+];
+
+/* ---------------- Motor de Torneos: Cuadros & Partidos (Fase 1) ---------------- */
+
+// Fichas rápidas para elegir el número de parejas — además de estas, el
+// modal "Generar Cuadro" permite un valor "Personalizado" con cualquier
+// número (12, 24, 40, 48...). No hace falta que sea potencia de 2: el
+// bracket real siempre se redondea hacia arriba a la siguiente potencia de 2
+// (ver `siguientePotenciaDeDos`) y los lugares sobrantes se resuelven como
+// "BYE" (pase directo, sin rival) en la primera ronda.
+const TAMANOS_CUADRO = [2, 4, 8, 16, 32];
+
+// Marcador especial (no un nombre real) que representa "sin rival, pase
+// directo a la siguiente ronda" — se usa cuando el número de parejas no es
+// potencia de 2. Nunca se le busca teléfono, no manda WhatsApp, y no cuenta
+// como partido jugado para el Ranking.
+const BYE = 'BYE';
+
+// Menor potencia de 2 mayor o igual a n (mínimo 2) — el tamaño REAL del
+// bracket cuando el operador pide, por ejemplo, 12 parejas (bracket de 16,
+// con 4 pases directos en la primera ronda).
+function siguientePotenciaDeDos(n) {
+  let p = 2;
+  while (p < n) p *= 2;
+  return p;
+}
+
+// Nombra las rondas de atrás hacia adelante (la última siempre es "Final")
+// para que el mismo cuadro de 4 parejas diga "Semifinal → Final" y uno de 16
+// diga "Octavos → Cuartos → Semifinal → Final", sin tener que mantener una
+// tabla fija por tamaño.
+function nombresRondas(numRondas) {
+  const nombres = [];
+  for (let i = 0; i < numRondas; i++) {
+    const desdeElFinal = numRondas - 1 - i;
+    if (desdeElFinal === 0) nombres.push('Final');
+    else if (desdeElFinal === 1) nombres.push('Semifinal');
+    else if (desdeElFinal === 2) nombres.push('Cuartos de Final');
+    else if (desdeElFinal === 3) nombres.push('Octavos de Final');
+    else if (desdeElFinal === 4) nombres.push('Dieciseisavos de Final');
+    else nombres.push(`Ronda ${i + 1}`);
+  }
+  return nombres;
+}
+
+// Reparte las parejas reales (lista plana, en el orden capturado) en los
+// partidos de la Ronda 0, incluyendo los "BYE" (pases directos) que hagan
+// falta cuando `parejasReales.length` no es potencia de 2. Extraído de
+// `generarPartidosCuadro` para que `ModalGenerarCuadro` pueda mostrar la
+// misma repartición como vista previa antes de guardar — nunca duplicar
+// esta lógica en dos lugares distintos.
+//
+// Reparte los BYES uno por partido como máximo: `numByes` siempre es menor
+// que `numMatchesRonda0` (tamanoCuadro es la MENOR potencia de 2 ≥
+// numParejas, así que tamanoCuadro/2 < numParejas, y numByes = tamanoCuadro -
+// numParejas < tamanoCuadro/2 = numMatchesRonda0) — los primeros `numByes`
+// partidos reciben un bye y el resto son partidos reales normales.
+function armarPartidosRonda0(parejasReales) {
+  const numParejas = parejasReales.length;
+  const tamanoCuadro = siguientePotenciaDeDos(numParejas);
+  const numMatchesRonda0 = tamanoCuadro / 2;
+  const numByes = tamanoCuadro - numParejas;
+
+  const partidosRonda0 = [];
+  let realIdx = 0;
+  for (let i = 0; i < numMatchesRonda0; i++) {
+    if (i < numByes) {
+      partidosRonda0.push({ pareja1: parejasReales[realIdx], pareja2: BYE, esBye: true });
+      realIdx += 1;
+    } else {
+      partidosRonda0.push({ pareja1: parejasReales[realIdx], pareja2: parejasReales[realIdx + 1], esBye: false });
+      realIdx += 2;
+    }
+  }
+  return { tamanoCuadro, numByes, partidosRonda0 };
+}
+
+// Construye la estructura COMPLETA del cuadro de eliminación directa de una
+// sola vez (todas las rondas, no solo la primera) a partir de la lista PLANA
+// de parejas reales que capturó el operador (`parejasReales`, en el orden en
+// que las escribió — no vienen pre-agrupadas en partidos).
+//
+// Si `parejasReales.length` no es potencia de 2 (ej. 12), el bracket se
+// redondea a la siguiente potencia de 2 (16, vía `armarPartidosRonda0`) y las
+// posiciones sobrantes (4) se reparten como "BYE" — esos partidos quedan
+// resueltos de inmediato (`estado: 'jugado'`, gana automáticamente la pareja
+// real) con su ganador ya propagado a la Ronda 1 — el operador nunca tiene
+// que "jugar" un bye a mano.
+//
+// Las rondas después de la primera (salvo el destino de un bye) quedan con
+// `pareja1`/`pareja2` en null ("Por definir") hasta que se van cargando
+// marcadores reales. Cada partido lleva su propio `posicion` dentro de la
+// ronda para poder ubicar, más adelante, a qué partido de la ronda siguiente
+// avanza el ganador (`Math.floor(posicion / 2)`).
+function generarPartidosCuadro({ torneoId, categoria, parejasReales }) {
+  const { tamanoCuadro, partidosRonda0 } = armarPartidosRonda0(parejasReales);
+  const numRondas = Math.log2(tamanoCuadro);
+  const nombres = nombresRondas(numRondas);
+
+  const partidos = [];
+  for (let r = 0; r < numRondas; r++) {
+    const numPartidos = tamanoCuadro / Math.pow(2, r + 1);
+    for (let pos = 0; pos < numPartidos; pos++) {
+      const esRonda0 = r === 0;
+      const slot = esRonda0 ? partidosRonda0[pos] : null;
+      partidos.push(
+        withClubId({
+          torneo_id: torneoId,
+          categoria: categoria || null,
+          ronda: nombres[r],
+          ronda_orden: r,
+          posicion: pos,
+          pareja1: esRonda0 ? slot.pareja1 : null,
+          pareja2: esRonda0 ? slot.pareja2 : null,
+          cancha_id: null,
+          fecha: null,
+          hora_inicio: null,
+          hora_fin: null,
+          reserva_bloqueo_id: null,
+          sets: [],
+          ganador: esRonda0 && slot.esBye ? 'pareja1' : null,
+          estado: esRonda0 && slot.esBye ? 'jugado' : 'pendiente',
+        })
+      );
+    }
+  }
+
+  // Avance automático de los byes: su ganador (la única pareja real) pasa de
+  // inmediato al lugar que le toca en la Ronda 1 — misma regla de posición
+  // que usa `cargarMarcadorPartidoHandler` para un marcador real.
+  partidosRonda0.forEach((slot, pos) => {
+    if (!slot.esBye) return;
+    const siguientePosicion = Math.floor(pos / 2);
+    const siguienteSlot = pos % 2 === 0 ? 'pareja1' : 'pareja2';
+    const siguientePartido = partidos.find((p) => p.ronda_orden === 1 && p.posicion === siguientePosicion);
+    if (siguientePartido) siguientePartido[siguienteSlot] = slot.pareja1;
+  });
+
+  return partidos;
+}
+
+// Determina el ganador de un partido a partir de los sets capturados: cuenta
+// cuántos sets se llevó cada pareja (un set con marcador empatado no cuenta
+// para nadie — típicamente significa que ese set no se llegó a jugar) y
+// devuelve 'pareja1' / 'pareja2' solo si una de las dos tiene mayoría clara;
+// si van empatados en sets ganados (o no hay sets válidos todavía) devuelve
+// null para que la UI no deje guardar un marcador ambiguo.
+function calcularGanadorSets(sets) {
+  let setsP1 = 0;
+  let setsP2 = 0;
+  (sets || []).forEach((s) => {
+    const a = Number(s.p1);
+    const b = Number(s.p2);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return;
+    if (a > b) setsP1 += 1;
+    else setsP2 += 1;
+  });
+  if (setsP1 === setsP2) return null;
+  return setsP1 > setsP2 ? 'pareja1' : 'pareja2';
+}
+
+/* ---------------- Notificación por WhatsApp (Cuadros & Partidos) ---------------- */
+
+// Una pareja se captura como texto libre ("Juan Pérez / Carlos López") —
+// esto la separa en nombres individuales para buscar su teléfono en
+// `participantes` y, más adelante, para repartir puntos de Ranking a cada
+// jugador (no a la pareja como bloque).
+function separarPareja(parejaTexto) {
+  if (!parejaTexto) return [];
+  return parejaTexto
+    .split(/\s*\/\s*|\s+y\s+|\s*,\s*/i)
+    .map((n) => n.trim())
+    .filter(Boolean);
+}
+
+// Busca, entre los participantes inscritos al torneo, el teléfono de
+// cualquiera de los dos integrantes de la pareja (comparación flexible:
+// coincidencia exacta o que un nombre contenga al otro, para tolerar que el
+// operador haya escrito la pareja con apellidos y el participante sin ellos,
+// o viceversa). Si no encuentra nada, `wa.me` igual abre — solo sin número
+// precargado, y el operador elige el contacto a mano.
+function buscarTelefonoPareja(parejaTexto, participantes) {
+  const nombres = separarPareja(parejaTexto).map((n) => n.toLowerCase());
+  if (nombres.length === 0) return null;
+  const match = (participantes || []).find((p) => {
+    const nombreP = (p.nombre || '').toLowerCase().trim();
+    if (!nombreP) return false;
+    return nombres.some((n) => nombreP === n || nombreP.includes(n) || n.includes(nombreP));
+  });
+  return match?.telefono || null;
+}
+
+// Normaliza un teléfono capturado a mano (espacios, guiones, paréntesis, con
+// o sin lada) al formato que espera `wa.me`: México sin código de país (10
+// dígitos) necesita el prefijo "52" + "1" que WhatsApp usa para celulares.
+function normalizarTelefonoWhatsApp(telefono) {
+  const digitos = (telefono || '').replace(/\D/g, '');
+  if (!digitos) return '';
+  if (digitos.length === 10) return `521${digitos}`;
+  if (digitos.length === 12 && digitos.startsWith('52')) return `521${digitos.slice(2)}`;
+  return digitos; // ya trae lada/código de país completo (u otro país) — se manda tal cual
+}
+
+function construirMensajeWhatsAppPartido({ torneoNombre, partido, cancha }) {
+  return (
+    `¡Hola! Tu partido de ${partido.ronda} en ${torneoNombre} (${partido.pareja1} vs ${partido.pareja2}) está programado ` +
+    `para el ${formatoFechaLarga(partido.fecha)} a las ${formatoHora12(partido.hora_inicio)} hrs en ${cancha?.nombre || 'la cancha asignada'}. ` +
+    `¡Nos vemos en la cancha!`
+  );
+}
+
+function construirEnlaceWhatsApp({ telefono, mensaje }) {
+  const numero = telefono ? normalizarTelefonoWhatsApp(telefono) : '';
+  return `https://wa.me/${numero}?text=${encodeURIComponent(mensaje)}`;
+}
+
+// Glifo de WhatsApp dibujado a mano (lucide-react no trae íconos de marca) —
+// mismo tamaño/props que cualquier ícono de lucide para que encaje sin
+// tratamiento especial en los botones existentes.
+function IconoWhatsApp({ size = 14, className = '' }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} className={className} fill="currentColor" aria-hidden="true">
+      <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.39 1.26 4.81L2 22l5.42-1.42a9.87 9.87 0 0 0 4.62 1.17h.01c5.46 0 9.9-4.45 9.9-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2zm5.8 14.14c-.24.68-1.4 1.3-1.93 1.36-.5.06-1.03.31-3.42-.72-2.89-1.24-4.72-4.24-4.86-4.44-.14-.2-1.15-1.62-1.15-3.09 0-1.47.75-2.19 1.02-2.49.27-.3.58-.37.78-.37.2 0 .39 0 .56.01.18.01.42-.07.66.5.24.6.83 2.06.9 2.21.07.15.11.32.02.51-.09.19-.14.31-.28.48-.14.17-.29.37-.42.5-.14.14-.28.29-.12.57.16.28.72 1.19 1.55 1.93 1.06.95 1.96 1.24 2.24 1.38.28.14.44.12.6-.07.16-.19.7-.81.88-1.09.18-.28.36-.23.61-.14.25.09 1.58.75 1.85.88.27.14.45.2.52.32.07.11.07.65-.17 1.33z" />
+    </svg>
+  );
+}
+
+/* ============================================================================
+ * CRM DE JUGADORES — cruce por jugador_id/teléfono, LTV y Customer Health
+ * Score (CHS). Ver `DirectorioJugadoresCRM` para el módulo completo.
+ *
+ * Fuente de verdad de cada jugador: la tabla `jugadores` (se auto-crea desde
+ * `resolverJugadorId` cada vez que se agenda una reserva a nombre de alguien
+ * nuevo — por eso es el directorio real del club, no una tabla aparte). El
+ * problema: NINGÚN flujo hoy captura `telefono` en ese alta automática (nace
+ * `{ nombre, saldo_a_favor: 0 }`), así que cruzar por teléfono contra
+ * `reta_inscripciones`/`torneo_participantes` (que sí lo piden al inscribirse
+ * y NUNCA guardan `jugador_id`, son texto libre) solo funciona para los
+ * jugadores a los que el club ya les cargó el teléfono a mano desde esta
+ * misma pantalla (ver "Editar teléfono" en `TarjetaJugadorCRM`). Mientras
+ * tanto, `claveNombre` sirve de respaldo: es la MISMA normalización que ya
+ * usa `resolverJugadorId` (comparación insensible a mayúsculas) para decidir
+ * si dos capturas de texto libre son "el mismo" jugador, así que un torneo o
+ * reta inscritos con el nombre tal cual aparece en `jugadores` igual se
+ * cruzan aunque el teléfono esté vacío.
+ * ==========================================================================*/
+
+// Últimos 10 dígitos de un teléfono — a diferencia de `normalizarTelefonoWhatsApp`
+// (que arma el link de wa.me con lada), aquí solo importa comparar dos
+// capturas distintas del mismo número. Menos de 10 dígitos = dato basura, no
+// se usa como llave de cruce.
+function claveTelefono(telefono) {
+  const digitos = (telefono || '').replace(/\D/g, '');
+  if (digitos.length < 10) return null;
+  return digitos.slice(-10);
+}
+
+// Nombre normalizado (sin acentos, minúsculas, espacios dobles colapsados) —
+// la misma llave de facto que usa `resolverJugadorId` vía `ilike` para
+// deduplicar jugadores por nombre.
+function claveNombre(nombre) {
+  return (nombre || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+// ¿Aparece este jugador (por nombre) en la pareja de un partido de Cuadros &
+// Partidos? Reutiliza `separarPareja` (mismo criterio que `buscarTelefonoPareja`)
+// y tolera que el partido tenga apellidos y el jugador no, o viceversa.
+function partidoIncluyeJugador(partido, nombreClave) {
+  if (!nombreClave) return false;
+  const nombres = [...separarPareja(partido.pareja1 || ''), ...separarPareja(partido.pareja2 || '')];
+  return nombres.some((n) => {
+    const c = claveNombre(n);
+    return c && (c === nombreClave || c.includes(nombreClave) || nombreClave.includes(c));
+  });
+}
+
+// Fecha (YYYY-MM-DD, hora LOCAL — mismo criterio que `hoyISO`) y minutos del
+// día de un timestamp, para comparar el momento de un cobro de Smart POS
+// contra el `hora_inicio`/`hora_fin` de una reserva.
+function fechaYMinutosDeTimestamp(ts) {
+  return {
+    fecha: `${ts.getFullYear()}-${pad2(ts.getMonth() + 1)}-${pad2(ts.getDate())}`,
+    minutos: ts.getHours() * 60 + ts.getMinutes(),
+  };
+}
+
+// Herencia Automática de Jugador en Ventas POS por Cancha: resuelve el
+// `jugador_id` al que debe imputarse una venta de Smart POS vinculada a una
+// cancha, para que el consumo de Cafetería/Bar o Pro-Shop sume de inmediato
+// al LTV/CHS del jugador correcto (ver `ventasPorJugadorId` en
+// `DirectorioJugadoresCRM`, que es quien la usa).
+//   0) Tag explícito de Split Bill Asimétrico ("Padel POS Operativo"): si la
+//      venta ya trae `detalles.jugador_id` (cobro individual de UN jugador
+//      del roster de la cancha), se usa tal cual y con MÁXIMA prioridad —
+//      las 4 ventas del split de una misma cuenta comparten `reserva_id`/
+//      `cancha_id`, así que el enlace directo del punto 1) (que asume un
+//      único jugador por reserva) resolvería las 4 al mismo jugador si se
+//      revisara primero.
+//   1) Enlace directo: si la venta ya trae `reserva_id` y esa reserva tiene
+//      `jugador_id` (caso normal — "Reservar y Cobrar en POS", o "Vincular a
+//      Cancha" cuando SÍ había una reserva en curso al momento del cobro),
+//      se usa tal cual, sin heurística.
+//   2) Sin enlace útil (la venta solo trae `cancha_id` — p. ej. "Asignar a
+//      Cancha", que es de solo-reporte y nunca intenta enlazar una reserva,
+//      o "Vincular a Cancha" cuando el cajero cobró DESPUÉS de que el
+//      partido terminara y `reservaEnCursoAhora` ya no encontró nada):
+//      se busca entre las reservas de esa MISMA cancha y fecha cuál era la
+//      ocupante — la que estaba en curso al momento exacto del cobro y, si
+//      el cobro fue después de que el partido terminara, la última que ya
+//      había empezado ese día ("ocupante principal").
+function resolverJugadorIdVentaCancha(venta, { reservasPorId, reservasPorCanchaFecha }) {
+  if (venta?.detalles?.jugador_id) return venta.detalles.jugador_id;
+
+  const directa = venta.reserva_id ? reservasPorId[venta.reserva_id] : null;
+  if (directa?.jugador_id) return directa.jugador_id;
+
+  if (!venta.cancha_id) return null;
+  const ts = obtenerTimestampVenta(venta);
+  if (!ts) return null;
+  const { fecha, minutos } = fechaYMinutosDeTimestamp(ts);
+  const candidatas = reservasPorCanchaFecha[venta.cancha_id]?.[fecha];
+  if (!candidatas || candidatas.length === 0) return null;
+
+  const enCurso = candidatas.find((r) => {
+    const hi = parseHoraAMinutos(r.hora_inicio);
+    const hf = parseHoraAMinutos(r.hora_fin);
+    return hi !== null && hf !== null && minutos >= hi && minutos < hf;
+  });
+  if (enCurso) return enCurso.jugador_id || null;
+
+  const yaEmpezaron = candidatas.filter((r) => {
+    const hi = parseHoraAMinutos(r.hora_inicio);
+    return hi !== null && hi <= minutos;
+  });
+  if (yaEmpezaron.length > 0) return yaEmpezaron[yaEmpezaron.length - 1].jugador_id || null;
+
+  // De último recurso (cobro adelantado, antes de que arrancara el
+  // partido): la primera reserva del día en esa cancha.
+  return candidatas[0].jugador_id || null;
+}
+
+// Segmentación por LTV real acumulado — umbrales de negocio, ajustables aquí
+// si el club redefine sus rangos de valor.
+const UMBRAL_LTV_VIP = 15000;
+const UMBRAL_LTV_FRECUENTE = 5000;
+
+function segmentoPorLTV(ltvTotal) {
+  if (ltvTotal >= UMBRAL_LTV_VIP) return 'VIP';
+  if (ltvTotal >= UMBRAL_LTV_FRECUENTE) return 'Frecuente';
+  return 'Estándar';
+}
+
+const SEGMENTO_META = {
+  VIP: { color: 'text-amber-300', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30', icon: Crown },
+  Frecuente: { color: 'text-sky-300', bg: 'bg-sky-400/10', ring: 'ring-sky-400/30', icon: Star },
+  Estándar: { color: 'text-slate-300', bg: 'bg-slate-400/10', ring: 'ring-slate-500/30', icon: Users },
+};
+
+// Semáforo compartido por los 6 indicadores del Customer Health Score.
+const NIVEL_CHS_META = {
+  alto: { emoji: '🟢', color: 'text-emerald-400', bg: 'bg-emerald-400/10', ring: 'ring-emerald-400/30', label: 'Alto' },
+  medio: { emoji: '🟡', color: 'text-amber-400', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30', label: 'Medio' },
+  bajo: { emoji: '🔴', color: 'text-rose-400', bg: 'bg-rose-400/10', ring: 'ring-rose-400/30', label: 'Bajo' },
+};
+
+const MS_POR_DIA = 1000 * 60 * 60 * 24;
+
+// Motor del Customer Health Score (0-100 pts, 6 indicadores semaforizados).
+// Recibe el "perfil crudo" de un jugador (ya cruzado con Parrilla/POS/Torneos
+// & Retas por `construirPerfilJugadorCRM`, ver `DirectorioJugadoresCRM`) y
+// devuelve el puntaje total + el detalle de cada indicador, para pintar el
+// medidor y decidir la insignia "En Riesgo de Abandono".
+function calcularCHS(perfil) {
+  const hoy = new Date(`${perfil.hoyISO}T12:00:00`);
+  const indicadores = [];
+
+  // 1) Recencia (25 pts): días desde el último partido real (Parrilla + Retas
+  // asistidas + partidos de Torneo jugados) vs. el intervalo promedio entre
+  // sus propias visitas — un jugador que juega cada 20 días y no viene hace
+  // 15 sigue "al corriente"; uno que juega cada 5 días y no viene hace 15 ya
+  // se alejó del todo, aunque sean los mismos 15 días para los dos.
+  {
+    let puntos = 0;
+    let nivel = 'bajo';
+    let detalle = 'Sin partidos registrados todavía.';
+    if (perfil.fechaUltimoPartido) {
+      const dias = Math.max(0, Math.round((hoy - perfil.fechaUltimoPartido) / MS_POR_DIA));
+      const intervalo = perfil.intervaloPromedioDias || 30;
+      const ratio = dias / Math.max(intervalo, 7);
+      if (ratio <= 1.2) {
+        puntos = 25;
+        nivel = 'alto';
+      } else if (ratio <= 2.5) {
+        puntos = 14;
+        nivel = 'medio';
+      } else {
+        puntos = 4;
+        nivel = 'bajo';
+      }
+      detalle = `Hace ${dias} día${dias === 1 ? '' : 's'} · su ritmo habitual es cada ${Math.round(intervalo)} días`;
+    }
+    indicadores.push({ key: 'recencia', label: 'Recencia', puntos, max: 25, nivel, detalle });
+  }
+
+  // 2) Frecuencia (20 pts): promedio de partidos/mes en los últimos 3 meses.
+  {
+    const partidosMes = perfil.eventosUltimos90Dias / 3;
+    let puntos = 0;
+    let nivel = 'bajo';
+    if (partidosMes >= 4) {
+      puntos = 20;
+      nivel = 'alto';
+    } else if (partidosMes >= 2) {
+      puntos = 12;
+      nivel = 'medio';
+    } else if (partidosMes > 0) {
+      puntos = 5;
+      nivel = 'bajo';
+    }
+    indicadores.push({
+      key: 'frecuencia',
+      label: 'Frecuencia',
+      puntos,
+      max: 20,
+      nivel,
+      detalle: `${partidosMes.toFixed(1)} partidos/mes (últimos 90 días)`,
+    });
+  }
+
+  // 3) Gasto Directo (20 pts): ticket promedio por visita, cruzando Canchas +
+  // Smart POS de sus propias reservas.
+  {
+    const ticket = perfil.visitasPropias > 0 ? (perfil.gastoCanchas + perfil.gastoBar + perfil.gastoProShop) / perfil.visitasPropias : 0;
+    let puntos = 0;
+    let nivel = 'bajo';
+    if (perfil.visitasPropias === 0) {
+      puntos = 0;
+      nivel = 'bajo';
+    } else if (ticket >= 600) {
+      puntos = 20;
+      nivel = 'alto';
+    } else if (ticket >= 300) {
+      puntos = 12;
+      nivel = 'medio';
+    } else {
+      puntos = 5;
+      nivel = 'bajo';
+    }
+    indicadores.push({
+      key: 'gasto_directo',
+      label: 'Gasto Directo',
+      puntos,
+      max: 20,
+      nivel,
+      detalle: perfil.visitasPropias > 0 ? `Ticket promedio: ${formatoMoneda(ticket)}/visita` : 'Sin visitas registradas',
+    });
+  }
+
+  // 4) Torneos/Retas (15 pts): participación pagada en los últimos 6 meses.
+  {
+    const eventos = perfil.eventosTorneoRetaUltimos6Meses;
+    let puntos = 0;
+    let nivel = 'bajo';
+    if (eventos >= 2) {
+      puntos = 15;
+      nivel = 'alto';
+    } else if (eventos === 1) {
+      puntos = 8;
+      nivel = 'medio';
+    }
+    indicadores.push({
+      key: 'torneos_retas',
+      label: 'Torneos/Retas',
+      puntos,
+      max: 15,
+      nivel,
+      detalle: `${eventos} inscripción${eventos === 1 ? '' : 'es'} pagada${eventos === 1 ? '' : 's'} en 6 meses`,
+    });
+  }
+
+  // 5) Consumo Bar/Tienda (10 pts): gasto en Smart POS de los últimos 90 días.
+  {
+    const gasto = perfil.gastoBarReciente + perfil.gastoProShopReciente;
+    let puntos = 0;
+    let nivel = 'bajo';
+    if (gasto >= 300) {
+      puntos = 10;
+      nivel = 'alto';
+    } else if (gasto >= 100) {
+      puntos = 6;
+      nivel = 'medio';
+    } else if (gasto > 0) {
+      puntos = 2;
+      nivel = 'bajo';
+    }
+    indicadores.push({
+      key: 'consumo_bar',
+      label: 'Consumo Bar/Tienda',
+      puntos,
+      max: 10,
+      nivel,
+      detalle: `${formatoMoneda(gasto)} en Smart POS (últimos 90 días)`,
+    });
+  }
+
+  // 6) Confiabilidad (10 pts): % de asistencia exitosa (Parrilla + Retas).
+  {
+    let puntos = 8;
+    let nivel = 'medio';
+    let detalle = 'Sin historial suficiente para medir asistencia.';
+    if (perfil.totalEventosConfiabilidad > 0) {
+      const tasa = 1 - perfil.totalCancelaciones / perfil.totalEventosConfiabilidad;
+      if (tasa >= 0.9) {
+        puntos = 10;
+        nivel = 'alto';
+      } else if (tasa >= 0.75) {
+        puntos = 6;
+        nivel = 'medio';
+      } else {
+        puntos = 2;
+        nivel = 'bajo';
+      }
+      detalle = `${Math.round(tasa * 100)}% de asistencia (${perfil.totalCancelaciones} cancelación${perfil.totalCancelaciones === 1 ? '' : 'es'} de ${perfil.totalEventosConfiabilidad})`;
+    }
+    indicadores.push({ key: 'confiabilidad', label: 'Confiabilidad', puntos, max: 10, nivel, detalle });
+  }
+
+  const puntaje = indicadores.reduce((acc, i) => acc + i.puntos, 0);
+  const recenciaIndicador = indicadores.find((i) => i.key === 'recencia');
+  const enRiesgo = puntaje < 60 || recenciaIndicador.nivel !== 'alto';
+
+  return { puntaje, indicadores, enRiesgo };
+}
+
+// Plantillas dinámicas de WhatsApp para el Motor Anti-Churn: elige el
+// indicador MÁS débil (relativo a su propio máximo, no en puntos absolutos —
+// así "Confiabilidad" de 10 pts compite en igualdad de condiciones con
+// "Recencia" de 25) y arma un mensaje que lo menciona directamente, tal como
+// pediste (bebida favorita si el consumo de bar está bajo, descuento de
+// cancha si la recencia bajó).
+function plantillaWhatsAppAntiChurn(perfil) {
+  const nombreCorto = (perfil.nombre || 'Jugador').split(' ')[0];
+  const porRelativo = [...perfil.chs.indicadores].sort((a, b) => a.puntos / a.max - b.puntos / b.max);
+  const debil = porRelativo[0];
+
+  const mensajesPorIndicador = {
+    recencia: `¡Hola ${nombreCorto}! Te extrañamos en Smash Pádel Club 🎾 Hace tiempo no te vemos en cancha — tenemos un descuento especial en tu próxima reserva si regresas esta semana. ¿Te apartamos un horario?`,
+    frecuencia: `¡Hola ${nombreCorto}! Vimos que ya casi no has podido venir a jugar. Si quieres retomar el ritmo, tenemos horarios disponibles entre semana con mejor precio — avísanos y te apartamos cancha.`,
+    gasto_directo: `¡Hola ${nombreCorto}! Como jugador de Smash Pádel Club tenemos una promo especial para tu próxima visita (cancha + algo de la barra). ¿Te gustaría reservar esta semana?`,
+    torneos_retas: `¡Hola ${nombreCorto}! Viene un Torneo/Reta nuevo en el club y nos encantaría contar contigo — ¿te apunto un lugar antes de que se llenen los cupos?`,
+    consumo_bar: `¡Hola ${nombreCorto}! La próxima vez que juegues, tu bebida favorita va por cuenta de la casa 🥤 Solo menciónalo en la barra. ¡Nos vemos en cancha!`,
+    confiabilidad: `¡Hola ${nombreCorto}! Notamos algunas reservas canceladas últimamente — si tienes algún problema de horario avísanos, con gusto te ayudamos a encontrar uno que sí te funcione.`,
+  };
+
+  return mensajesPorIndicador[debil.key] || mensajesPorIndicador.recencia;
+}
+
+/* ---------------- Ranking del Club (Motor de Torneos, Fase 1) ---------------- */
+
+// Puntos por etapa alcanzada al finalizar un torneo — los 3 valores pedidos
+// tal cual, más 2 niveles adicionales para que el reparto funcione también
+// en cuadros de 16/32 parejas sin dejar a nadie sin puntos por llegar hasta
+// octavos o perder en la primera ronda.
+const PUNTOS_POR_ETAPA = {
+  Campeón: 500,
+  Subcampeón: 300,
+  Semifinalista: 150,
+  Cuartofinalista: 75,
+  Octavofinalista: 40,
+  Participante: 10,
+};
+
+// El Ranking del Club clasifica por NIVEL puro (1ª–6ª Fuerza / Open), no por
+// "Rama + Nivel" como se guarda en `partido.categoria` — esta función
+// extrae el nivel oficial de ese texto libre (p.ej. "Varonil 4ª Fuerza" →
+// "4ª Fuerza"). Si el torneo no tenía categorías (categoria === null) o el
+// texto no matchea ninguno de los 7 niveles oficiales, cae en "Sin categoría".
+function extraerNivelDeCategoria(categoriaTexto) {
+  if (!categoriaTexto) return 'Sin categoría';
+  const match = NIVELES_FUERZA.find((n) => categoriaTexto.includes(n));
+  return match || 'Sin categoría';
+}
+
+// Calcula, para el cuadro YA JUGADO de una sola categoría, cuántos puntos,
+// partidos jugados y partidos ganados le corresponden a cada JUGADOR
+// individual (una pareja se reparte sus puntos completos entre sus dos
+// integrantes, no los divide). Devuelve un Map nombre → {puntos,
+// partidos_jugados, partidos_ganados}, o null si no hay ningún partido
+// jugado todavía (nada que repartir).
+function calcularResultadosTorneoCategoria(partidosCategoria) {
+  // Un "BYE" (pase directo, sin rival — ver `generarPartidosCuadro`) queda
+  // `estado: 'jugado'` desde que se generó el cuadro, pero nadie jugó de
+  // verdad: no debe inflar Partidos Jugados/Ganados ni aparecer como
+  // "jugador" en el Ranking.
+  const jugados = (partidosCategoria || []).filter(
+    (p) => p.estado === 'jugado' && p.ganador && p.pareja1 !== BYE && p.pareja2 !== BYE
+  );
+  if (jugados.length === 0) return null;
+
+  const maxRondaOrden = Math.max(...partidosCategoria.map((p) => p.ronda_orden));
+  const finalPartido = jugados.find((p) => p.ronda_orden === maxRondaOrden);
+
+  const acumulado = new Map();
+  function sumar(nombre, campo, valor) {
+    const limpio = (nombre || '').trim();
+    if (!limpio) return;
+    if (!acumulado.has(limpio)) acumulado.set(limpio, { puntos: 0, partidos_jugados: 0, partidos_ganados: 0 });
+    acumulado.get(limpio)[campo] += valor;
+  }
+  function sumarPuntosPareja(parejaTexto, puntos) {
+    separarPareja(parejaTexto).forEach((nombre) => sumar(nombre, 'puntos', puntos));
+  }
+
+  // 1) Partidos jugados / ganados — TODOS los partidos con marcador, sin
+  // importar en qué ronda cayeron.
+  jugados.forEach((p) => {
+    const ganadorNombre = p.ganador === 'pareja1' ? p.pareja1 : p.pareja2;
+    separarPareja(p.pareja1).forEach((n) => sumar(n, 'partidos_jugados', 1));
+    separarPareja(p.pareja2).forEach((n) => sumar(n, 'partidos_jugados', 1));
+    separarPareja(ganadorNombre).forEach((n) => sumar(n, 'partidos_ganados', 1));
+  });
+
+  // 2) Puntos por la etapa más lejana alcanzada: el ganador de la Final es
+  // Campeón, su rival Subcampeón; el resto de las rondas reparte puntos al
+  // PERDEDOR de cada partido (el ganador de esa ronda ya sigue avanzando, y
+  // sus puntos se cuentan cuando pierda o gane el torneo).
+  if (finalPartido) {
+    const campeonNombre = finalPartido.ganador === 'pareja1' ? finalPartido.pareja1 : finalPartido.pareja2;
+    const subcampeonNombre = finalPartido.ganador === 'pareja1' ? finalPartido.pareja2 : finalPartido.pareja1;
+    sumarPuntosPareja(campeonNombre, PUNTOS_POR_ETAPA.Campeón);
+    sumarPuntosPareja(subcampeonNombre, PUNTOS_POR_ETAPA.Subcampeón);
+  }
+
+  jugados.forEach((p) => {
+    if (p.ronda_orden === maxRondaOrden) return; // ya se contó arriba (Final)
+    const distancia = maxRondaOrden - p.ronda_orden; // 1 = semis, 2 = cuartos, 3 = octavos...
+    const etiqueta = distancia === 1 ? 'Semifinalista' : distancia === 2 ? 'Cuartofinalista' : distancia === 3 ? 'Octavofinalista' : 'Participante';
+    const perdedorNombre = p.ganador === 'pareja1' ? p.pareja2 : p.pareja1;
+    sumarPuntosPareja(perdedorNombre, PUNTOS_POR_ETAPA[etiqueta] ?? PUNTOS_POR_ETAPA.Participante);
+  });
+
+  return acumulado;
+}
+
+// Fallback en memoria local si las tablas del módulo (`retas`,
+// `reta_inscripciones`, `torneos`, `torneo_participantes`) todavía no
+// existen en este proyecto de Supabase: en vez de tumbar la sección con un
+// banner de error bloqueante, se trata como si estuviera vacía (arrays
+// vacíos, sin mensaje de error). Un error de otro tipo (red, RLS, columna
+// distinta, etc.) SÍ se sigue mostrando — esto solo absorbe la ausencia de
+// la tabla, nunca oculta un problema real de configuración.
+function esErrorTablaInexistente(error) {
+  if (!error) return false;
+  if (['42P01', 'PGRST205', 'PGRST202'].includes(error.code)) return true;
+  const msg = error.message || '';
+  return /relation .* does not exist/i.test(msg) || /could not find the table/i.test(msg) || /schema cache/i.test(msg);
+}
+
+// Id sintético para un registro que se queda solo en memoria local (modo
+// fallback): nunca se confunde con un UUID real de Supabase, así que
+// cualquier intento posterior de `.update()`/`.delete()` contra ese id
+// simplemente no encuentra fila y no truena — el registro vive nada más en
+// el estado de React hasta que el operador corrija el esquema y lo recree.
+function idLocal(prefijo) {
+  return `local-${prefijo}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Persistencia de los registros en modo local (los que cayeron al fallback
+// por RLS/esquema/red — ver `idLocal` arriba): además de vivir en el estado
+// de React levantado en `App()`, se guardan en `localStorage` bajo una
+// llave por tabla. Esto es lo que evita que desaparezcan al cambiar de
+// pestaña (el estado ya no se resetea porque vive en `App()`, que nunca se
+// desmonta) Y que sobrevivan a una recarga completa de la página, hasta que
+// el operador corrija la causa de fondo en Supabase y el registro se vuelva
+// a crear ahí de verdad. Nunca truena si `localStorage` no está disponible
+// (modo privado, storage deshabilitado, etc.) — se degrada en silencio.
+const LS_KEY_RETAS_LOCAL = 'smashpadel_retas_local_v1';
+const LS_KEY_TORNEOS_LOCAL = 'smashpadel_torneos_local_v1';
+const LS_KEY_RETA_INSCRIPCIONES_LOCAL = 'smashpadel_reta_inscripciones_local_v1';
+const LS_KEY_TORNEO_PARTICIPANTES_LOCAL = 'smashpadel_torneo_participantes_local_v1';
+const LS_KEY_TORNEO_PARTIDOS_LOCAL = 'smashpadel_torneo_partidos_local_v1';
+const LS_KEY_RANKING_LOCAL = 'smashpadel_ranking_jugadores_local_v1';
+// (Ya no hay `LS_KEY_VARIANTES_LOCAL`: FIX DEFINITIVO de variantes — al
+// vivir en la columna JSONB `productos.variantes`, una variante se guarda
+// en el MISMO insert/update del producto padre, así que no hay un paso
+// aparte que pueda fallar a medias y necesitar un respaldo local.)
+
+// Roster & Split Bill Asimétrico de Smart POS ("Padel POS Operativo"): guarda
+// por `reserva.id` la lista de jugadores en cancha (nombre/teléfono/
+// jugador_id ya resuelto), sus cuotas de cancha personalizadas y quién ya
+// liquidó su parte — así sobrevive a un refresh de la terminal a media
+// cuenta. A diferencia de `guardarRegistroLocal` (listas de registros con
+// `id`, pensadas para fusionarse con Supabase) esto es un mapa simple
+// `{ [reservaId]: { jugadores: [...] } }` que vive SOLO en el cliente: el
+// roster nunca tuvo ni necesita su propia tabla en Supabase, cada jugador ya
+// queda enlazado de verdad en `jugadores` vía `resolverJugadorId`.
+const LS_KEY_POS_SPLIT_ROSTER = 'smashpadel_pos_split_roster_v1';
+
+function leerRostersSplitBillLocal() {
+  try {
+    const crudo = window.localStorage.getItem(LS_KEY_POS_SPLIT_ROSTER);
+    const datos = crudo ? JSON.parse(crudo) : {};
+    return datos && typeof datos === 'object' && !Array.isArray(datos) ? datos : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function guardarRosterSplitBillLocal(reservaId, roster) {
+  if (!reservaId) return;
+  try {
+    const actuales = leerRostersSplitBillLocal();
+    window.localStorage.setItem(LS_KEY_POS_SPLIT_ROSTER, JSON.stringify({ ...actuales, [reservaId]: { jugadores: roster } }));
+  } catch (err) {
+    // Sin soporte de localStorage: el roster igual vive en memoria mientras dure la sesión.
+  }
+}
+
+function borrarRosterSplitBillLocal(reservaId) {
+  if (!reservaId) return;
+  try {
+    const actuales = leerRostersSplitBillLocal();
+    delete actuales[reservaId];
+    window.localStorage.setItem(LS_KEY_POS_SPLIT_ROSTER, JSON.stringify(actuales));
+  } catch (err) {
+    // Igual que arriba: sin localStorage no hay nada que limpiar ahí.
+  }
+}
+
+function leerRegistrosLocales(key) {
+  try {
+    const crudo = window.localStorage.getItem(key);
+    if (!crudo) return [];
+    const datos = JSON.parse(crudo);
+    return Array.isArray(datos) ? datos : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+// Agrega (o reemplaza, por `id`) un registro en localStorage.
+function guardarRegistroLocal(key, registro) {
+  try {
+    const actuales = leerRegistrosLocales(key);
+    const sinDuplicado = actuales.filter((r) => r.id !== registro.id);
+    window.localStorage.setItem(key, JSON.stringify([...sinDuplicado, registro]));
+  } catch (err) {
+    // Sin soporte de localStorage: el registro igual queda en memoria (el
+    // estado de React ya lo tiene), solo no sobrevive a un F5 completo.
+  }
+}
+
+// Quita un registro de localStorage por `id` — usado cuando el operador
+// descarta a mano una tarjeta en "Modo local" desde la UI.
+function quitarRegistroLocal(key, id) {
+  try {
+    const actuales = leerRegistrosLocales(key);
+    window.localStorage.setItem(key, JSON.stringify(actuales.filter((r) => r.id !== id)));
+  } catch (err) {
+    // Igual que arriba: sin localStorage no hay nada que limpiar ahí.
+  }
+}
+
+// Fusiona lo recién traído de Supabase con los registros en modo local que
+// quedaron pendientes de sincronizar (de esta sesión o de una anterior) —
+// sin duplicados por `id`. El dato de servidor manda si algún día
+// coincidieran ids (no debería pasar: los ids locales llevan el prefijo
+// `local-`, nunca un UUID real).
+function fusionarConRegistrosLocales(datosServidor, key) {
+  const locales = leerRegistrosLocales(key);
+  if (locales.length === 0) return datosServidor;
+  const idsServidor = new Set(datosServidor.map((d) => d.id));
+  const localesUnicos = locales.filter((r) => !idsServidor.has(r.id));
+  return [...datosServidor, ...localesUnicos];
+}
+
+/* ============================================================================
+ * MÓDULO DE AUDITORÍA & CONTROL INTERNO — Seguridad de Caja
+ * ----------------------------------------------------------------------------
+ * Dos tablas NUEVAS, con el mismo criterio de tolerancia total que Retas &
+ * Torneos (ver `esErrorTablaInexistente`/`fusionarConRegistrosLocales`
+ * arriba): si no existen todavía en Supabase, el módulo sigue funcionando
+ * completo en modo local (`_local: true`, persistido en `localStorage`)
+ * hasta que se creen.
+ *   - empleados:     id, nombre, rol (uno de `ROLES` arriba), telefono
+ *                    (nullable), pin (nullable — código corto opcional para
+ *                    "ficharse" más rápido, no es autenticación real),
+ *                    activo (boolean), club_id, created_at.
+ *   - log_actividad: id, created_at, empleado_id (nullable — puede ser un
+ *                    operador en modo local o sin cuenta ligada),
+ *                    empleado_nombre, empleado_rol, tipo (uno de
+ *                    `TIPOS_EVENTO_AUDITORIA`), detalle (jsonb — forma libre
+ *                    según el tipo, ver cada punto de registro), club_id.
+ * `cierres_caja` (ya documentada arriba, Módulo 2) se extiende con una
+ * columna OPCIONAL `aprobado` (boolean, nullable): el corte se guarda igual
+ * si la columna no existe (reintento sin ese campo, mismo patrón que
+ * `estatus_manual` en `actualizarEstatusCancha`), y la Aprobación de Cortes
+ * del rol Manager simplemente no persiste su check hasta que se agregue.
+ * ==========================================================================*/
+
+const LS_KEY_EMPLEADOS_LOCAL = 'smashpadel_empleados_local_v1';
+const LS_KEY_LOG_ACTIVIDAD_LOCAL = 'smashpadel_log_actividad_local_v1';
+const LS_KEY_CIERRES_CAJA_LOCAL = 'smashpadel_cierres_caja_local_v1';
+// Sesión activa (operador fichado): a diferencia de las listas de arriba,
+// esto es UN solo objeto — sobrevive a un refresh de la terminal para que el
+// rol/permisos no se reseteen solos a medio turno.
+const LS_KEY_OPERADOR_ACTIVO = 'smashpadel_operador_activo_v1';
+
+function leerOperadorActivoLocal() {
+  try {
+    const crudo = window.localStorage.getItem(LS_KEY_OPERADOR_ACTIVO);
+    return crudo ? JSON.parse(crudo) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function guardarOperadorActivoLocal(operador) {
+  try {
+    window.localStorage.setItem(LS_KEY_OPERADOR_ACTIVO, JSON.stringify(operador));
+  } catch (err) {
+    // Sin localStorage: la sesión igual funciona, solo no sobrevive a un refresh.
+  }
+}
+
+// Catálogo de tipos de evento del Log de Actividad — los 4 que pide el
+// control interno (cancelaciones, descuentos, devoluciones/ediciones de
+// precio en POS, modificación de horarios/canchas) más un par de eventos que
+// ya vivían en el sistema (arqueo de caja) y ahora también quedan
+// auditados. `detalleTexto` arma la línea legible de cada evento a partir de
+// su `detalle` jsonb, para no repetir esa lógica en cada vista del Log.
+const TIPOS_EVENTO_AUDITORIA = {
+  cancelacion_reserva: {
+    label: 'Cancelación de reserva',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    detalleTexto: (d) => `${d?.cancha || 'Cancha'} · ${d?.fecha ? formatoFechaLarga(d.fecha) : ''} ${d?.hora || ''} — ${d?.jugador || 'Jugador'}. Motivo: ${d?.motivo || 'sin especificar'}.`,
+  },
+  descuento_manual: {
+    label: 'Descuento / precio manual',
+    icon: Percent,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    detalleTexto: (d) =>
+      `${d?.origen || 'Reserva'} — automático ${formatoMoneda(d?.montoAutomatico)} → final ${formatoMoneda(d?.montoFinal)} (${formatoMoneda(d?.diferencia)}).`,
+  },
+  descuento_pos: {
+    label: 'Descuento aplicado en POS',
+    icon: Percent,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    detalleTexto: (d) => `${d?.motivo || 'Descuento'} — ${formatoMoneda(d?.montoDescuento)} sobre un total de ${formatoMoneda(d?.totalAntes)}.`,
+  },
+  edicion_precio_pos: {
+    label: 'Edición de precio en POS',
+    icon: Pencil,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    detalleTexto: (d) => `${d?.producto || 'Artículo'} — precio de lista ${formatoMoneda(d?.precioOriginal)} → ${formatoMoneda(d?.precioNuevo)}.`,
+  },
+  devolucion_pos: {
+    label: 'Devolución en POS',
+    icon: RefreshCw,
+    color: 'text-orange-400',
+    bg: 'bg-orange-400/10',
+    detalleTexto: (d) => `${d?.producto || 'Artículo'} × ${d?.cantidad || 0} — ${d?.motivo || 'sin motivo especificado'}.`,
+  },
+  modificacion_horario: {
+    label: 'Modificación de horario/cancha de una reserva',
+    icon: CalendarRange,
+    color: 'text-violet-400',
+    bg: 'bg-violet-400/10',
+    detalleTexto: (d) => `${d?.jugador || 'Jugador'} — ${d?.canchaAntes || ''} ${d?.horaAntes || ''} → ${d?.canchaDespues || ''} ${d?.horaDespues || ''}.`,
+  },
+  modificacion_cancha: {
+    label: 'Modificación de estatus de cancha',
+    icon: Wrench,
+    color: 'text-violet-400',
+    bg: 'bg-violet-400/10',
+    detalleTexto: (d) => `${d?.cancha || 'Cancha'} — ${d?.antes || '—'} → ${d?.despues || '—'}.`,
+  },
+  arqueo_caja: {
+    label: 'Arqueo de caja',
+    icon: Calculator,
+    color: 'text-lime-400',
+    bg: 'bg-lime-400/10',
+    detalleTexto: (d) =>
+      `Turno ${d?.turno || ''} — contado ${formatoMoneda(d?.montoReportado)} vs. teórico ${formatoMoneda(d?.montoTeorico)} (${
+        Number(d?.diferencia) > 0 ? 'sobrante' : Number(d?.diferencia) < 0 ? 'faltante' : 'sin diferencia'
+      } ${formatoMoneda(Math.abs(Number(d?.diferencia) || 0))}).`,
+  },
+  empleado_creado: {
+    label: 'Alta de empleado',
+    icon: UserPlus,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    detalleTexto: (d) => `${d?.nombre || 'Empleado'} — rol ${ROLES_POR_VALOR[d?.rol]?.label || d?.rol || ''}.`,
+  },
+  empleado_editado: {
+    label: 'Edición de empleado',
+    icon: Pencil,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    detalleTexto: (d) => `${d?.nombre || 'Empleado'} — ${d?.cambios || 'datos actualizados'}.`,
+  },
+};
+
+function etiquetaTipoEvento(tipo) {
+  return TIPOS_EVENTO_AUDITORIA[tipo]?.label || tipo || 'Evento';
+}
+
+// Selector de Nivel reutilizado por Retas y Torneos — mismo control en los
+// dos formularios para no fragmentar el dato entre sub-módulos.
+function SelectorNivel({ value, onChange, className }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={className || inputClase}>
+      <option value="">Selecciona un nivel</option>
+      {NIVELES_FUERZA.map((n) => (
+        <option key={n} value={n}>
+          {n}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+// Selector de fecha con apertura a 1 clic — mismo patrón que
+// `SelectorFechaCompacto` (ERP), a tamaño completo para los formularios de
+// Retas y Torneos: el contenedor entero (no solo el ícono) dispara
+// `showPicker()`, así el operador nunca tiene que editar los números a mano
+// ni dar varios clics para atinarle al calendario nativo.
+function SelectorFechaClick({ value, onChange, className = '', compact = false }) {
+  const inputRef = useRef(null);
+  function abrirCalendario() {
+    try {
+      inputRef.current?.showPicker?.();
+    } catch (err) {
+      // Navegador sin soporte para showPicker(): el input sigue siendo
+      // editable a mano como respaldo, así que no hace falta avisar nada.
+    }
+  }
+  return (
+    <div
+      onClick={abrirCalendario}
+      className={`flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 transition hover:border-lime-400/60 ${className}`}
+    >
+      <CalendarDays size={compact ? 12 : 14} className="shrink-0 text-slate-500" />
+      <input
+        ref={inputRef}
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full cursor-pointer bg-transparent text-slate-100 outline-none ${compact ? 'text-xs' : 'text-sm'}`}
+      />
+    </div>
+  );
+}
+
+// Selector de Jugadores Registrados: combobox de "escribe para buscar" sobre
+// el Directorio & CRM (`jugadores`) — reemplaza el `<input>` de nombre libre
+// en los formularios de inscripción (Retas, Torneos) para evitar duplicados
+// (typos como "Juan Perez" vs "Juan Pérez" creando dos expedientes) y traer
+// teléfono automáticamente. NO obliga a elegir de la lista: el operador
+// puede seguir escribiendo un nombre nuevo tal cual (jugador todavía no
+// registrado) — `resolverJugadorId` en el `guardar()` de cada modal sigue
+// siendo quien decide si crea o reutiliza el expediente, esto solo hace más
+// rápido y menos propenso a error el caso común de un jugador que YA existe.
+function SelectorJugadorRegistrado({ jugadores = [], nombre, onNombreChange, onSeleccionarJugador, jugadorSeleccionadoId, placeholder }) {
+  const [abierto, setAbierto] = useState(false);
+
+  const sugerencias = useMemo(() => {
+    const q = (nombre || '').trim().toLowerCase();
+    if (!q) return [];
+    return jugadores.filter((j) => (j.nombre || '').toLowerCase().includes(q)).slice(0, 6);
+  }, [jugadores, nombre]);
+
+  return (
+    <div className="relative">
+      <div className="relative">
+        <input
+          value={nombre}
+          onChange={(e) => {
+            onNombreChange(e.target.value);
+            if (jugadorSeleccionadoId) onSeleccionarJugador?.(null);
+          }}
+          onFocus={() => setAbierto(true)}
+          onBlur={() => setTimeout(() => setAbierto(false), 150)}
+          className={`${inputClase} ${jugadorSeleccionadoId ? 'pr-28' : ''}`}
+          placeholder={placeholder || 'Nombre completo o busca en el directorio...'}
+          autoComplete="off"
+        />
+        {jugadorSeleccionadoId && (
+          <span className="absolute right-2.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-lime-400/10 px-2 py-0.5 text-[9px] font-bold text-lime-400 ring-1 ring-lime-400/30">
+            <CheckCircle2 size={9} /> Del directorio
+          </span>
+        )}
+      </div>
+      {abierto && sugerencias.length > 0 && (
+        <div className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-xl">
+          {sugerencias.map((j) => (
+            <button
+              key={j.id}
+              type="button"
+              onMouseDown={() => {
+                onNombreChange(j.nombre || '');
+                onSeleccionarJugador?.(j);
+                setAbierto(false);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-200 transition hover:bg-slate-700"
+            >
+              <Users size={12} className="shrink-0 text-lime-400" />
+              <span className="min-w-0 flex-1 truncate">{j.nombre}</span>
+              {j.telefono && <span className="shrink-0 text-[10px] text-slate-500">{j.telefono}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Busca la PRIMERA reserva/bloqueo YA existente (cualquier estado salvo
+// Cancelada) que se solape con el rango [horaInicio,horaFin) de `fecha` en
+// `canchaId` — o `null` si no hay solape. Se usa tanto para bloquear un
+// horario de Torneo/Reta como, en `ModalNuevaReserva`, para impedir que una
+// reserva normal se cruce con una reserva, un Torneo o una Reta existente.
+function buscarSolapeEnCancha(reservas, canchaId, fecha, horaInicio, horaFin) {
+  const ini = parseHoraAMinutos(horaInicio);
+  const fin = parseHoraAMinutos(horaFin);
+  if (ini === null || fin === null || fin <= ini) return null;
+  return (
+    reservas.find((r) => {
+      if (r.cancha_id !== canchaId || r.fecha !== fecha || r.estado === 'Cancelada') return false;
+      const rIni = parseHoraAMinutos(r.hora_inicio);
+      const rFin = parseHoraAMinutos(r.hora_fin);
+      if (rIni === null || rFin === null) return false;
+      return minutosSolapadosBI(ini, fin, rIni, rFin) > 0;
+    }) || null
+  );
+}
+
+// Atajo booleano sobre `buscarSolapeEnCancha` — usado donde no hace falta
+// saber CUÁL reserva se cruza, solo si hay solape o no.
+function haySolapeEnCancha(reservas, canchaId, fecha, horaInicio, horaFin) {
+  return !!buscarSolapeEnCancha(reservas, canchaId, fecha, horaInicio, horaFin);
+}
+
+// Crea el bloqueo en `reservas` (ver nota de cabecera de esquema): una
+// reserva sintética sin jugador ni cobro real, solo para ocupar el slot en
+// la Parrilla. Nunca manda `metodo_pago` indefinido — manda `null`, que
+// `reservas.metodo_pago` sí acepta (a diferencia de `ventas.metodo_pago`).
+async function crearBloqueoParrilla({ canchaId, fecha, horaInicio, horaFin, estado, etiqueta }) {
+  const payload = withClubId({
+    cancha_id: canchaId,
+    jugador_id: null,
+    jugador_nombre: etiqueta,
+    fecha,
+    hora_inicio: horaInicio,
+    hora_fin: horaFin,
+    estado,
+    estado_pago: 'pagado',
+    metodo_pago: null,
+    monto_total: 0,
+  });
+  return supabase.from('reservas').insert(payload).select().single();
+}
+
+/* ---------------- Retas Abiertas ---------------- */
+
+function TarjetaReta({
+  reta,
+  cancha,
+  inscritos,
+  onInscribir,
+  onCancelarInscripcion,
+  cancelandoId,
+  onDescartarLocal,
+  onRenombrar,
+  onArchivar,
+  actualizandoArchivo,
+  onEliminarDefinitivo,
+  eliminando,
+  onCargarMarcador,
+}) {
+  const confirmados = inscritos.filter((i) => i.estado === 'confirmado');
+  const lugaresDisponibles = Math.max(0, CUPOS_RETA - confirmados.length);
+  const completa = lugaresDisponibles === 0;
+  const archivado = reta.archivado === true;
+  const tieneMarcador = Boolean(reta.ganador && (reta.sets || []).length > 0);
+  const ganadorTexto = reta.ganador === 'pareja1' ? reta.pareja1 : reta.ganador === 'pareja2' ? reta.pareja2 : '';
+  // Eliminación Definitiva: solo se ofrece si la reta no tiene inscritos que
+  // proteger — de lo contrario, Archivar es la única forma de "quitarla de
+  // en medio" sin perder registros (mismo criterio que Torneos).
+  const puedeEliminarse = inscritos.length === 0;
+  const [confirmarEliminar, setConfirmarEliminar] = useState(false);
+
+  // Nombre Personalizado de Retas: editable en cualquier momento desde la
+  // propia tarjeta, no solo al crearla.
+  const [editandoNombre, setEditandoNombre] = useState(false);
+  const [nombreBorrador, setNombreBorrador] = useState(reta.nombre || '');
+
+  function confirmarRenombrar() {
+    const limpio = nombreBorrador.trim();
+    if (limpio && limpio !== reta.nombre) onRenombrar?.(reta, limpio);
+    setEditandoNombre(false);
+  }
+
+  return (
+    <div className={`rounded-2xl border p-4 ${archivado ? 'border-slate-800/60 bg-slate-900/50 opacity-80' : 'border-slate-800 bg-slate-900'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          {editandoNombre ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                autoFocus
+                value={nombreBorrador}
+                onChange={(e) => setNombreBorrador(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') confirmarRenombrar();
+                  else if (e.key === 'Escape') {
+                    setNombreBorrador(reta.nombre || '');
+                    setEditandoNombre(false);
+                  }
+                }}
+                className="w-full rounded-md border border-fuchsia-400/40 bg-slate-950 px-2 py-1 text-sm font-black text-slate-100"
+              />
+              <button onClick={confirmarRenombrar} className="shrink-0 text-lime-400 hover:text-lime-300">
+                <CheckCircle2 size={16} />
+              </button>
+              <button
+                onClick={() => {
+                  setNombreBorrador(reta.nombre || '');
+                  setEditandoNombre(false);
+                }}
+                className="shrink-0 text-slate-500 hover:text-slate-300"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          ) : (
+            <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-100">
+              <Swords size={14} className="shrink-0 text-fuchsia-400" />
+              <span className="truncate">{reta.nombre || `Reta ${reta.rama}`}</span>
+              <button
+                onClick={() => {
+                  setNombreBorrador(reta.nombre || '');
+                  setEditandoNombre(true);
+                }}
+                className="shrink-0 text-slate-600 transition hover:text-fuchsia-400"
+                title="Renombrar Reta"
+              >
+                <Pencil size={11} />
+              </button>
+            </p>
+          )}
+          <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-400">
+            <MapPin size={11} className="shrink-0 text-slate-500" /> {cancha?.nombre || 'Cancha'} · {formatoFechaLarga(reta.fecha)} ·{' '}
+            {formatoHora12(reta.hora_inicio)}–{formatoHora12(reta.hora_fin)}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span
+            className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold ${
+              completa ? 'bg-rose-400/10 text-rose-400 ring-1 ring-rose-400/30' : 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+            }`}
+          >
+            {completa ? 'Completa' : `Quedan ${lugaresDisponibles}/${CUPOS_RETA}`}
+          </span>
+          {archivado && (
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-400">
+              <Archive size={9} /> Archivada
+            </span>
+          )}
+          {reta._local && (
+            <button
+              type="button"
+              onClick={() => onDescartarLocal?.(reta)}
+              title="Todavía no se guardó en Supabase (RLS/esquema/red) — se conserva en este navegador. Clic para descartarla si ya la recreaste bien."
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-400/10 px-2 py-0.5 text-[9px] font-bold text-amber-400 ring-1 ring-amber-400/30 transition hover:bg-amber-400/20"
+            >
+              Modo local <X size={9} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">
+          <Award size={10} /> {reta.nivel || 'Nivel libre'}
+        </span>
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">{reta.rama}</span>
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">
+          {formatoMoneda(reta.precio_inscripcion)}/lugar
+        </span>
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        {Array.from({ length: CUPOS_RETA }).map((_, idx) => {
+          const jugador = confirmados[idx];
+          if (!jugador) {
+            return (
+              <div
+                key={idx}
+                className="flex items-center gap-2 rounded-lg border border-dashed border-slate-700 px-2.5 py-1.5 text-xs text-slate-600"
+              >
+                <Users size={12} /> Lugar disponible
+              </div>
+            );
+          }
+          return (
+            <div key={jugador.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-950 px-2.5 py-1.5 text-xs">
+              <span className="flex min-w-0 items-center gap-1.5 truncate font-semibold text-slate-200">
+                <CheckCircle2 size={12} className="shrink-0 text-emerald-400" />
+                <span className="truncate">{jugador.nombre}</span>
+              </span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {jugador.estado_pago === 'pendiente' && <AlertTriangle size={11} className="text-amber-400" />}
+                <button
+                  onClick={() => onCancelarInscripcion(reta, jugador)}
+                  disabled={cancelandoId === jugador.id}
+                  title="Cancelar inscripción"
+                  className="text-slate-600 transition hover:text-rose-400 disabled:opacity-40"
+                >
+                  {cancelandoId === jugador.id ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {tieneMarcador && (
+        <div className="mt-3 rounded-lg border border-lime-400/30 bg-lime-400/5 px-3 py-2">
+          <p className="flex items-center gap-1.5 text-[11px] font-bold text-lime-400">
+            <Trophy size={12} /> Ganó: {ganadorTexto || 'Equipo'}
+          </p>
+          <p className="mt-0.5 text-[11px] text-slate-400">
+            {(reta.sets || []).map((s, i) => `${s.p1}-${s.p2}`).join('  ·  ')}
+          </p>
+        </div>
+      )}
+
+      {completa ? (
+        <BotonPrimario onClick={() => onCargarMarcador?.(reta)} className="mt-3 w-full">
+          <ClipboardList size={15} /> {tieneMarcador ? 'Editar Marcador' : 'Cargar Marcador'}
+        </BotonPrimario>
+      ) : (
+        <BotonPrimario onClick={() => onInscribir(reta)} className="mt-3 w-full">
+          <UserPlus size={15} /> Unirse / Inscribir Jugador
+        </BotonPrimario>
+      )}
+
+      {!confirmarEliminar ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onArchivar?.(reta, !archivado)}
+            disabled={actualizandoArchivo}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {actualizandoArchivo ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : archivado ? (
+              <ArchiveRestore size={12} />
+            ) : (
+              <Archive size={12} />
+            )}
+            {archivado ? 'Restaurar' : 'Archivar'}
+          </button>
+          {archivado && puedeEliminarse && (
+            <button
+              type="button"
+              onClick={() => setConfirmarEliminar(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
+            >
+              <Trash size={12} /> Eliminar Definitivamente
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
+          <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
+            ¿Eliminar "{reta.nombre}" para siempre? No tiene inscritos, así que esto no se puede deshacer.
+          </p>
+          <div className="flex shrink-0 gap-1.5">
+            <button
+              type="button"
+              onClick={() => setConfirmarEliminar(false)}
+              disabled={eliminando}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => onEliminarDefinitivo?.(reta)}
+              disabled={eliminando}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
+            >
+              {eliminando ? <Loader2 size={12} className="animate-spin" /> : <Trash size={12} />}
+              Confirmar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
+  const toast = useToast();
+  const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+  const [canchaId, setCanchaId] = useState(canchasActivas[0]?.id || '');
+  const [fecha, setFecha] = useState(hoyISO());
+  const [horaInicio, setHoraInicio] = useState('19:00');
+  const [horaFin, setHoraFin] = useState('20:30');
+  const [nivel, setNivel] = useState('');
+  const [rama, setRama] = useState(RAMAS_JUEGO[0]);
+  const [precio, setPrecio] = useState('150');
+  const [tolerancia, setTolerancia] = useState(String(TOLERANCIA_HORAS_DEFAULT));
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  // Nombre Personalizado de Retas: sigue autogenerándose a partir de
+  // rama/nivel (ej. "Reta Varonil · 4ª Fuerza") SOLO mientras el operador no
+  // lo edite a mano — igual criterio que el monto automático de "Nueva
+  // Reserva" (`nombreTocado`, ver `ModalNuevaReserva`), para que un nombre
+  // personalizado ("Reta de Adrián", "Reta de los Lunes") nunca se pise solo
+  // al cambiar rama/nivel después.
+  const nombreAutomatico = `Reta ${rama}${nivel ? ` · ${nivel}` : ''}`;
+  const [nombre, setNombre] = useState(nombreAutomatico);
+  const [nombreTocado, setNombreTocado] = useState(false);
+  useEffect(() => {
+    if (nombreTocado) return;
+    setNombre(nombreAutomatico);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nombreAutomatico, nombreTocado]);
+
+  async function guardar() {
+    if (!canchaId) return setError('Selecciona una cancha.');
+    if (!fecha || !horaInicio || !horaFin) return setError('Completa fecha y horario.');
+    const ini = parseHoraAMinutos(horaInicio);
+    const fin = parseHoraAMinutos(horaFin);
+    if (ini === null || fin === null || fin <= ini) return setError('La hora de fin debe ser posterior a la de inicio.');
+    if (haySolapeEnCancha(reservas, canchaId, fecha, horaInicio, horaFin)) {
+      return setError('Esa cancha ya tiene una reserva u otro bloqueo en ese horario.');
+    }
+    setGuardando(true);
+    setError('');
+
+    // Mapeo defensivo de columnas: distintos proyectos de Supabase pueden
+    // tener este módulo migrado con nombres de columna distintos (`nivel`
+    // vs `categoria`, `precio_inscripcion` vs `precio_individual`) — se
+    // mandan ambos alias a la vez para maximizar compatibilidad. Si de
+    // todos modos falta alguna columna, el catch de abajo cae a modo local
+    // en vez de bloquear al operador.
+    const payloadReta = withClubId({
+      nombre: nombre.trim() || nombreAutomatico,
+      cancha_id: canchaId,
+      fecha,
+      hora_inicio: horaInicio,
+      hora_fin: horaFin,
+      categoria: nivel || null,
+      nivel: nivel || null,
+      rama,
+      precio_inscripcion: Number(precio) || 0,
+      precio_individual: Number(precio) || 0,
+      tolerancia_horas: Number(tolerancia) || TOLERANCIA_HORAS_DEFAULT,
+      estado: 'abierta',
+    });
+
+    let retaCreada = null;
+    let modoLocal = false;
+
+    try {
+      const { data, error: errReta } = await supabase.from('retas').insert(payloadReta).select().single();
+      if (errReta) throw errReta;
+      retaCreada = data;
+    } catch (errReta) {
+      // Tolerancia total a fallos: CUALQUIER error al insertar — política
+      // RLS ("new row violates row-level security policy"), columna o
+      // tabla ausente, error de red, o cualquier otra causa — se absorbe
+      // aquí. Nunca se bloquea al operador con una alerta roja; el
+      // registro se guarda en memoria local hasta que se corrija la causa
+      // de fondo en Supabase (política RLS, esquema, o conectividad).
+      console.warn('[Torneos & Retas] No se pudo guardar la Reta en Supabase — se usa modo local.', errReta);
+      modoLocal = true;
+      retaCreada = { ...payloadReta, id: idLocal('reta'), _local: true };
+    }
+
+    // Nombre Personalizado desde la creación: la Parrilla y el Cronograma
+    // leen `reservas.jugador_nombre` directo (ver `TarjetaReta`/vista
+    // Cronograma), así que el bloqueo debe nacer YA con el mismo nombre que
+    // se guardó en `retas.nombre` — antes se mandaba el literal fijo
+    // 'RETA ABIERTA' y solo se corregía si el operador la renombraba después
+    // (ver `renombrarReta`), dejando el nombre genérico en toda reta recién
+    // creada.
+    const { data: bloqueo, error: errBloqueo } = await crearBloqueoParrilla({
+      canchaId,
+      fecha,
+      horaInicio,
+      horaFin,
+      estado: 'Reta',
+      etiqueta: retaCreada.nombre || nombre.trim() || nombreAutomatico,
+    });
+
+    if (!errBloqueo && bloqueo) {
+      if (!modoLocal) {
+        await supabase.from('retas').update({ reserva_bloqueo_id: bloqueo.id }).eq('id', retaCreada.id);
+      }
+      retaCreada.reserva_bloqueo_id = bloqueo.id;
+    } else {
+      // Sincronización Silenciosa: la reta ya quedó creada — solo se
+      // registra en consola para diagnóstico.
+      console.warn('[Torneos & Retas] Reta creada, pero no se bloqueó el horario en la Parrilla.', errBloqueo);
+    }
+
+    setGuardando(false);
+    toast({ titulo: 'Reta Abierta creada', detalle: `${formatoFechaLarga(fecha)} · ${formatoHora12(horaInicio)}` });
+    onCreada(retaCreada, bloqueo || null);
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Abrir Reta" subtitulo="Partido por lugares individuales" onClose={onClose} icon={Swords} ancho="max-w-xl">
+      <div className="space-y-4">
+        <Campo label="Nombre de la Reta" hint="Se autogenera con la rama/nivel, pero puedes personalizarlo (ej. 'Reta de Adrián', 'Reta de los Lunes').">
+          <input
+            value={nombre}
+            onChange={(e) => {
+              setNombreTocado(true);
+              setNombre(e.target.value);
+            }}
+            className={inputClase}
+            placeholder={nombreAutomatico}
+          />
+        </Campo>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Cancha">
+            <select value={canchaId} onChange={(e) => setCanchaId(e.target.value)} className={inputClase}>
+              {canchasActivas.length === 0 && <option value="">Sin canchas activas</option>}
+              {canchasActivas.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Fecha">
+            <SelectorFechaClick value={fecha} onChange={setFecha} />
+          </Campo>
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Hora inicio">
+            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+          </Campo>
+          <Campo label="Hora fin">
+            <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
+          </Campo>
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Nivel">
+            <SelectorNivel value={nivel} onChange={setNivel} />
+          </Campo>
+          <Campo label="Rama">
+            <select value={rama} onChange={(e) => setRama(e.target.value)} className={inputClase}>
+              {RAMAS_JUEGO.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Precio de inscripción (por lugar, MXN)">
+            <input type="number" min="0" value={precio} onChange={(e) => setPrecio(e.target.value)} className={inputClase} />
+          </Campo>
+          <Campo label="Tolerancia de cancelación (horas)" hint="Cancelar dentro de esta ventana retiene la cuota, sin reembolso.">
+            <input type="number" min="0" value={tolerancia} onChange={(e) => setTolerancia(e.target.value)} className={inputClase} />
+          </Campo>
+        </div>
+
+        <p className="flex items-start gap-1.5 rounded-lg bg-fuchsia-400/10 px-3 py-2 text-xs font-semibold text-fuchsia-300 ring-1 ring-fuchsia-400/20">
+          <Lock size={13} className="mt-0.5 shrink-0" /> Al guardar, el horario se bloquea automáticamente en la Parrilla Operativa como "RETA
+          ABIERTA" — nadie más podrá reservar esa cancha en ese bloque.
+        </p>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando || canchasActivas.length === 0}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <Swords size={15} />}
+            Abrir Reta
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClose, onInscrito }) {
+  const toast = useToast();
+  const [nombre, setNombre] = useState('');
+  const [telefono, setTelefono] = useState('');
+  const [correo, setCorreo] = useState('');
+  const [nivelJugador, setNivelJugador] = useState('');
+  const [estadoPago, setEstadoPago] = useState('pendiente');
+  const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  async function guardar() {
+    if (!nombre.trim()) return setError('Indica el nombre del jugador.');
+    // CRM & Guardado de Teléfono: obligatorio desde este formulario, igual
+    // que en Smart POS — es el identificador único del cliente
+    // (`resolverJugadorId`), así que sin teléfono un jugador con nombre
+    // repetido puede fusionarse por accidente con otro cliente.
+    const claveTelInscripcion = claveTelefono(telefono);
+    if (!claveTelInscripcion) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio & CRM.');
+    setGuardando(true);
+    setError('');
+
+    // Mapeo de compatibilidad total: se manda `correo` junto con su alias
+    // `email`, y el nivel tanto en `nivel_jugador` (columna esperada) como
+    // en los alias genéricos `nivel`/`categoria` — por si el proyecto de
+    // Supabase tiene esta tabla migrada con otros nombres de columna.
+    const payloadInscripcion = withClubId({
+      reta_id: reta.id,
+      nombre: nombre.trim(),
+      telefono: telefono.trim() || null,
+      correo: correo.trim() || null,
+      email: correo.trim() || null,
+      nivel_jugador: nivelJugador || null,
+      nivel: nivelJugador || null,
+      categoria: nivelJugador || null,
+      monto: Number(reta.precio_inscripcion) || 0,
+      estado_pago: estadoPago,
+      estado: 'confirmado',
+    });
+
+    let inscripcionCreada = null;
+
+    try {
+      const { data, error: err } = await supabase.from('reta_inscripciones').insert(payloadInscripcion).select().single();
+      if (err) throw err;
+      inscripcionCreada = data;
+    } catch (err) {
+      // Tolerancia total a fallos: columna faltante, desfase de esquema,
+      // política RLS o error de red — nunca se bloquea al operador con una
+      // alerta roja. La inscripción se guarda en memoria local hasta que
+      // se corrija la causa de fondo en Supabase.
+      console.warn('[Torneos & Retas] No se pudo guardar la inscripción en Supabase — se usa modo local.', err);
+      inscripcionCreada = { ...payloadInscripcion, id: idLocal('inscripcion'), _local: true };
+    }
+
+    // Auto-Registro Universal (Directorio & CRM): igual que "Nueva Reserva",
+    // busca/crea el expediente de este jugador en `jugadores` por teléfono
+    // (identificador único) — se espera (`await`) para garantizar que el
+    // teléfono, obligatorio en este formulario, sí quede guardado en
+    // `jugadores.telefono` antes de cerrar el modal (best effort de todos
+    // modos: si `jugadores` falla, la inscripción ya se guardó y no se
+    // bloquea al operador, ver `resolverJugadorId`).
+    await resolverJugadorId(nombre, { telefono, directorio: jugadores });
+
+    setGuardando(false);
+    toast({ titulo: 'Jugador inscrito', detalle: `${nombre.trim()} · ${formatoMoneda(reta.precio_inscripcion)}` });
+    onInscrito(inscripcionCreada);
+    onClose();
+  }
+
+  return (
+    <ModalShell
+      titulo="Inscribir Jugador"
+      subtitulo={`Quedan ${lugaresDisponibles}/${CUPOS_RETA} lugares · ${formatoMoneda(reta.precio_inscripcion)}/lugar`}
+      onClose={onClose}
+      icon={UserPlus}
+      ancho="max-w-md"
+    >
+      <div className="space-y-4">
+        <Campo label="Nombre del jugador" hint="Busca en el directorio del club o escribe uno nuevo.">
+          <SelectorJugadorRegistrado
+            jugadores={jugadores}
+            nombre={nombre}
+            onNombreChange={setNombre}
+            jugadorSeleccionadoId={jugadorSeleccionadoId}
+            onSeleccionarJugador={(j) => {
+              setJugadorSeleccionadoId(j?.id || null);
+              if (j) setTelefono(j.telefono || '');
+            }}
+            placeholder="Nombre completo"
+          />
+        </Campo>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Teléfono *" hint="Obligatorio — identificador único del cliente en el Directorio & CRM.">
+            <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="10 dígitos" required />
+          </Campo>
+          <Campo label="Correo">
+            <input value={correo} onChange={(e) => setCorreo(e.target.value)} className={inputClase} placeholder="correo@ejemplo.com" />
+          </Campo>
+        </div>
+        <Campo label="Nivel del jugador (opcional)">
+          <SelectorNivel value={nivelJugador} onChange={setNivelJugador} />
+        </Campo>
+        <Campo label="Estado de pago">
+          <select value={estadoPago} onChange={(e) => setEstadoPago(e.target.value)} className={inputClase}>
+            {ESTADOS_PAGO.map((e) => (
+              <option key={e.value} value={e.value}>
+                {e.label}
+              </option>
+            ))}
+          </select>
+        </Campo>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <UserPlus size={15} />}
+            Inscribir
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ---------------- Torneos ---------------- */
+
+function TarjetaTorneo({
+  torneo,
+  participantes,
+  onGestionar,
+  onDescartarLocal,
+  onArchivar,
+  actualizandoArchivo,
+  onEliminarDefinitivo,
+  eliminando,
+}) {
+  const recaudado = participantes.filter((p) => p.estado_pago === 'pagado').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const pendiente = participantes.filter((p) => p.estado_pago === 'pendiente').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const archivado = torneo.archivado === true;
+  // Eliminación Definitiva: solo se ofrece si el torneo no tiene
+  // participantes/ingresos que proteger — de lo contrario, Archivar es la
+  // única forma de "quitarlo de en medio" sin perder registros.
+  const puedeEliminarse = participantes.length === 0;
+  const [confirmarEliminar, setConfirmarEliminar] = useState(false);
+
+  return (
+    <div className={`rounded-2xl border p-4 ${archivado ? 'border-slate-800/60 bg-slate-900/50 opacity-80' : 'border-slate-800 bg-slate-900'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-100">
+            <Trophy size={14} className="shrink-0 text-violet-400" /> {torneo.nombre}
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            {formatoFechaLarga(torneo.fecha_inicio)}
+            {torneo.fecha_fin && torneo.fecha_fin !== torneo.fecha_inicio ? ` – ${formatoFechaLarga(torneo.fecha_fin)}` : ''}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span className="whitespace-nowrap rounded-full bg-violet-400/10 px-2 py-0.5 text-[10px] font-bold capitalize text-violet-400 ring-1 ring-violet-400/30">
+            {torneo.estado || 'planeación'}
+          </span>
+          {archivado && (
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-400">
+              <Archive size={9} /> Archivado
+            </span>
+          )}
+          {torneo._local && (
+            <button
+              type="button"
+              onClick={() => onDescartarLocal?.(torneo)}
+              title="Todavía no se guardó en Supabase (RLS/esquema/red) — se conserva en este navegador. Clic para descartarlo si ya lo recreaste bien."
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-400/10 px-2 py-0.5 text-[9px] font-bold text-amber-400 ring-1 ring-amber-400/30 transition hover:bg-amber-400/20"
+            >
+              Modo local <X size={9} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-2.5 flex flex-wrap gap-1.5 text-[11px]">
+        {(torneo.categorias || []).map((c, i) => (
+          <span key={i} className="rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">
+            {c.rama} {c.nivel}
+          </span>
+        ))}
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
+        <span className="flex items-center gap-1.5">
+          <Layers size={11} /> {torneo.formato}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Award size={11} /> {torneo.regla_puntuacion}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <DollarSign size={11} /> {formatoMoneda(torneo.precio)}/{torneo.unidad_precio === 'jugador' ? 'jugador' : 'pareja'}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Users size={11} /> {participantes.length} inscritos
+        </span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="rounded-lg bg-slate-950 px-2.5 py-2">
+          <p className="text-[10px] font-bold uppercase text-slate-500">Cobrado</p>
+          <p className="text-sm font-black text-emerald-400">{formatoMoneda(recaudado)}</p>
+        </div>
+        <div className="rounded-lg bg-slate-950 px-2.5 py-2">
+          <p className="text-[10px] font-bold uppercase text-slate-500">Pendiente</p>
+          <p className="text-sm font-black text-amber-400">{formatoMoneda(pendiente)}</p>
+        </div>
+      </div>
+
+      <BotonPrimario onClick={() => onGestionar(torneo)} className="mt-3 w-full">
+        <ClipboardList size={15} /> Gestionar Torneo
+      </BotonPrimario>
+
+      {!confirmarEliminar ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onArchivar?.(torneo, !archivado)}
+            disabled={actualizandoArchivo}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {actualizandoArchivo ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : archivado ? (
+              <ArchiveRestore size={12} />
+            ) : (
+              <Archive size={12} />
+            )}
+            {archivado ? 'Restaurar' : 'Archivar'}
+          </button>
+          {archivado && puedeEliminarse && (
+            <button
+              type="button"
+              onClick={() => setConfirmarEliminar(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
+            >
+              <Trash size={12} /> Eliminar Definitivamente
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
+          <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
+            ¿Eliminar "{torneo.nombre}" para siempre? No tiene participantes ni ingresos, así que esto no se puede deshacer.
+          </p>
+          <div className="flex shrink-0 gap-1.5">
+            <button
+              type="button"
+              onClick={() => setConfirmarEliminar(false)}
+              disabled={eliminando}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => onEliminarDefinitivo?.(torneo)}
+              disabled={eliminando}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
+            >
+              {eliminando ? <Loader2 size={12} className="animate-spin" /> : <Trash size={12} />}
+              Confirmar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
+  const toast = useToast();
+  const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+
+  const [nombre, setNombre] = useState('');
+  const [fechaInicio, setFechaInicio] = useState(hoyISO());
+  const [fechaFin, setFechaFin] = useState(hoyISO());
+  const [precio, setPrecio] = useState('500');
+  const [unidadPrecio, setUnidadPrecio] = useState('pareja');
+  const [formato, setFormato] = useState(FORMATOS_TORNEO[0]);
+  const [reglaPuntuacion, setReglaPuntuacion] = useState(REGLAS_PUNTUACION_TORNEO[0]);
+
+  const [categoriaRama, setCategoriaRama] = useState(RAMAS_JUEGO[0]);
+  const [categoriaNivel, setCategoriaNivel] = useState('');
+  const [categorias, setCategorias] = useState([]);
+
+  const [bloqueos, setBloqueos] = useState([{ canchaId: canchasActivas[0]?.id || '', fecha: hoyISO(), horaInicio: '08:00', horaFin: '12:00' }]);
+
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  function agregarCategoria() {
+    if (!categoriaNivel) return;
+    setCategorias((prev) => [...prev, { rama: categoriaRama, nivel: categoriaNivel }]);
+    setCategoriaNivel('');
+  }
+  function quitarCategoria(idx) {
+    setCategorias((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function actualizarBloqueo(idx, campo, valor) {
+    setBloqueos((prev) => prev.map((b, i) => (i === idx ? { ...b, [campo]: valor } : b)));
+  }
+  function agregarBloqueo() {
+    setBloqueos((prev) => [...prev, { canchaId: canchasActivas[0]?.id || '', fecha: fechaInicio, horaInicio: '08:00', horaFin: '12:00' }]);
+  }
+  function quitarBloqueo(idx) {
+    setBloqueos((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  async function guardar() {
+    if (!nombre.trim()) return setError('Indica el nombre del torneo.');
+    if (!fechaInicio) return setError('Indica la fecha de inicio.');
+
+    for (const b of bloqueos) {
+      if (!b.canchaId || !b.fecha || !b.horaInicio || !b.horaFin) continue;
+      const ini = parseHoraAMinutos(b.horaInicio);
+      const fin = parseHoraAMinutos(b.horaFin);
+      if (ini === null || fin === null || fin <= ini) {
+        return setError('Revisa los horarios de los bloqueos: la hora de fin debe ser posterior a la de inicio.');
+      }
+      if (haySolapeEnCancha(reservas, b.canchaId, b.fecha, b.horaInicio, b.horaFin)) {
+        const cancha = canchas.find((c) => c.id === b.canchaId);
+        return setError(`${cancha?.nombre || 'Una cancha'} ya tiene una reserva u otro bloqueo el ${b.fecha} en ese horario.`);
+      }
+    }
+
+    setGuardando(true);
+    setError('');
+
+    // Mapeo defensivo de columnas — mismo criterio que `ModalNuevaReta`:
+    // se manda `formato` (nombre corto) y también su alias largo
+    // `formato_juego`, por si el proyecto de Supabase tiene el módulo
+    // migrado con otro nombre de columna. Si de todos modos falta alguna
+    // columna, el catch de abajo cae a modo local en vez de bloquear al
+    // operador con una pantalla roja.
+    const payloadTorneo = withClubId({
+      nombre: nombre.trim(),
+      categorias,
+      precio: Number(precio) || 0,
+      unidad_precio: unidadPrecio,
+      formato,
+      formato_juego: formato,
+      regla_puntuacion: reglaPuntuacion,
+      reglas: reglaPuntuacion,
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin || fechaInicio,
+      bloqueos: [],
+      estado: 'planeación',
+      // NOTA: `archivado` NO se manda en el insert a propósito — si la
+      // columna todavía no existe en tu Supabase, meterla aquí tumbaría la
+      // creación ENTERA del torneo a modo local. En vez de eso, un torneo
+      // recién creado simplemente no trae la columna (`undefined`), y en
+      // todo el módulo eso se trata como "activo" (ver `archivarTorneo` en
+      // `ModuloTorneosRetas`, que sí la actualiza — con su propio
+      // best-effort — solo cuando el operador archiva un torneo).
+    });
+
+    let torneoCreado = null;
+    let modoLocal = false;
+
+    try {
+      const { data, error: errTorneo } = await supabase.from('torneos').insert(payloadTorneo).select().single();
+      if (errTorneo) throw errTorneo;
+      torneoCreado = data;
+    } catch (errTorneo) {
+      // Tolerancia total a fallos: CUALQUIER error al insertar — política
+      // RLS ("new row violates row-level security policy"), columna o
+      // tabla ausente, error de red, o cualquier otra causa — se absorbe
+      // aquí. Nunca se bloquea al operador con una alerta roja; el
+      // registro se guarda en memoria local hasta que se corrija la causa
+      // de fondo en Supabase (política RLS, esquema, o conectividad).
+      console.warn('[Torneos & Retas] No se pudo guardar el Torneo en Supabase — se usa modo local.', errTorneo);
+      modoLocal = true;
+      torneoCreado = { ...payloadTorneo, id: idLocal('torneo'), _local: true };
+    }
+
+    const bloqueosValidos = bloqueos.filter((b) => b.canchaId && b.fecha && b.horaInicio && b.horaFin);
+    const bloqueosCreados = [];
+    let fallosBloqueo = 0;
+    for (const b of bloqueosValidos) {
+      const { data: reservaBloqueo, error: errBloqueo } = await crearBloqueoParrilla({
+        canchaId: b.canchaId,
+        fecha: b.fecha,
+        horaInicio: b.horaInicio,
+        horaFin: b.horaFin,
+        estado: 'Torneo',
+        etiqueta: `TORNEO: ${nombre.trim()}`,
+      });
+      if (errBloqueo || !reservaBloqueo) {
+        fallosBloqueo += 1;
+        continue;
+      }
+      bloqueosCreados.push({
+        cancha_id: b.canchaId,
+        cancha_nombre: canchas.find((c) => c.id === b.canchaId)?.nombre || '',
+        fecha: b.fecha,
+        hora_inicio: b.horaInicio,
+        hora_fin: b.horaFin,
+        reserva_bloqueo_id: reservaBloqueo.id,
+      });
+    }
+
+    if (bloqueosCreados.length > 0) {
+      if (!modoLocal) {
+        await supabase.from('torneos').update({ bloqueos: bloqueosCreados }).eq('id', torneoCreado.id);
+      }
+      torneoCreado.bloqueos = bloqueosCreados;
+    }
+    if (fallosBloqueo > 0) {
+      // Sincronización Silenciosa: el torneo ya quedó creado — solo se
+      // registra en consola para diagnóstico.
+      console.warn(`[Torneos & Retas] ${fallosBloqueo} bloqueo(s) no se pudieron aplicar en la Parrilla.`);
+    }
+
+    setGuardando(false);
+    toast({ titulo: 'Torneo creado', detalle: `${nombre.trim()} · ${bloqueosCreados.length} horario(s) bloqueado(s)` });
+    onCreado(torneoCreado);
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Nuevo Torneo" subtitulo="Configuración y bloqueo de canchas" onClose={onClose} icon={Trophy} ancho="max-w-2xl">
+      <div className="space-y-5">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Nombre del torneo">
+            <input
+              value={nombre}
+              onChange={(e) => setNombre(e.target.value)}
+              className={inputClase}
+              placeholder="Ej. Copa Primavera 2026"
+              autoFocus
+            />
+          </Campo>
+          <div className="grid grid-cols-2 gap-3">
+            <Campo label="Fecha inicio">
+              <SelectorFechaClick value={fechaInicio} onChange={setFechaInicio} />
+            </Campo>
+            <Campo label="Fecha fin">
+              <SelectorFechaClick value={fechaFin} onChange={setFechaFin} />
+            </Campo>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <Campo label="Precio">
+            <input type="number" min="0" value={precio} onChange={(e) => setPrecio(e.target.value)} className={inputClase} />
+          </Campo>
+          <Campo label="Unidad de precio">
+            <select value={unidadPrecio} onChange={(e) => setUnidadPrecio(e.target.value)} className={inputClase}>
+              {UNIDADES_PRECIO_TORNEO.map((u) => (
+                <option key={u.value} value={u.value}>
+                  {u.label}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Formato de juego">
+            <select value={formato} onChange={(e) => setFormato(e.target.value)} className={inputClase}>
+              {FORMATOS_TORNEO.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        </div>
+
+        <Campo label="Regla de puntuación">
+          <select value={reglaPuntuacion} onChange={(e) => setReglaPuntuacion(e.target.value)} className={`${inputClase} sm:w-64`}>
+            {REGLAS_PUNTUACION_TORNEO.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </Campo>
+
+        <div>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Categorías (Rama por Nivel)</span>
+          <div className="flex flex-wrap items-end gap-2">
+            <select value={categoriaRama} onChange={(e) => setCategoriaRama(e.target.value)} className={`${inputClase} w-auto`}>
+              {RAMAS_JUEGO.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+            <SelectorNivel value={categoriaNivel} onChange={setCategoriaNivel} className={`${inputClase} w-auto`} />
+            <BotonSecundario onClick={agregarCategoria}>
+              <Plus size={14} /> Agregar
+            </BotonSecundario>
+          </div>
+          {categorias.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {categorias.map((c, i) => (
+                <span
+                  key={i}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11px] font-bold text-violet-300 ring-1 ring-violet-400/30"
+                >
+                  {c.rama} {c.nivel}
+                  <button onClick={() => quitarCategoria(i)} className="text-violet-400/70 hover:text-violet-200">
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <Lock size={12} /> Bloqueo de Canchas en la Parrilla
+            </span>
+            <button onClick={agregarBloqueo} className="text-[11px] font-bold text-lime-400 hover:underline">
+              + Agregar horario
+            </button>
+          </div>
+          <div className="space-y-2">
+            {bloqueos.map((b, idx) => (
+              <div
+                key={idx}
+                className="grid grid-cols-1 gap-2 rounded-xl border border-slate-800 bg-slate-950 p-2.5 sm:grid-cols-[1.4fr_1fr_0.8fr_0.8fr_auto]"
+              >
+                <select value={b.canchaId} onChange={(e) => actualizarBloqueo(idx, 'canchaId', e.target.value)} className={`${inputClase} text-xs`}>
+                  <option value="">Sin cancha</option>
+                  {canchasActivas.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nombre}
+                    </option>
+                  ))}
+                </select>
+                <SelectorFechaClick value={b.fecha} onChange={(v) => actualizarBloqueo(idx, 'fecha', v)} compact />
+                <input
+                  type="time"
+                  value={b.horaInicio}
+                  onChange={(e) => actualizarBloqueo(idx, 'horaInicio', e.target.value)}
+                  className={`${inputClase} text-xs`}
+                />
+                <input
+                  type="time"
+                  value={b.horaFin}
+                  onChange={(e) => actualizarBloqueo(idx, 'horaFin', e.target.value)}
+                  className={`${inputClase} text-xs`}
+                />
+                <button onClick={() => quitarBloqueo(idx)} className="flex items-center justify-center text-slate-500 hover:text-rose-400">
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+            {bloqueos.length === 0 && <p className="text-[11px] text-slate-500">Sin horarios bloqueados — puedes agregarlos después.</p>}
+          </div>
+        </div>
+
+        <p className="flex items-start gap-1.5 rounded-lg bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-300 ring-1 ring-violet-400/20">
+          <Info size={13} className="mt-0.5 shrink-0" /> Cada horario de arriba bloquea esa cancha en la Parrilla Operativa como "TORNEO:{' '}
+          {nombre.trim() || '(nombre)'}" — nadie más podrá reservarla en ese bloque.
+        </p>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <Trophy size={15} />}
+            Crear Torneo
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalGestionTorneo({
+  torneo,
+  participantes,
+  canchas,
+  partidos,
+  loadingPartidos,
+  onClose,
+  onAgregarParticipante,
+  onLiberarBloqueo,
+  liberandoBloqueoId,
+  onGenerarCuadro,
+  onAsignarHorarioPartido,
+  onCargarMarcadorPartido,
+  onFinalizarTorneo,
+  finalizandoTorneo,
+}) {
+  const recaudado = participantes.filter((p) => p.estado_pago === 'pagado').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const pendiente = participantes.filter((p) => p.estado_pago === 'pendiente').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const bloqueosActivos = torneo.bloqueos || [];
+  const finalizado = torneo.estado === 'finalizado';
+
+  const [vista, setVista] = useState('resumen'); // 'resumen' | 'cuadro'
+
+  return (
+    <ModalShell titulo={torneo.nombre} subtitulo="Mesa de control del torneo" onClose={onClose} icon={Trophy} ancho="max-w-4xl">
+      <div className="space-y-5">
+        <div className="flex gap-1 rounded-xl bg-slate-950 p-1">
+          <button
+            type="button"
+            onClick={() => setVista('resumen')}
+            className={`flex-1 rounded-lg px-3.5 py-2 text-xs font-bold transition ${
+              vista === 'resumen' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            Resumen
+          </button>
+          <button
+            type="button"
+            onClick={() => setVista('cuadro')}
+            className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition ${
+              vista === 'cuadro' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <Layers size={13} /> Cuadros &amp; Partidos
+          </button>
+        </div>
+
+        {vista === 'resumen' ? (
+          <>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+                <p className="text-[10px] font-bold uppercase text-slate-500">Cobrado</p>
+                <p className="text-lg font-black text-emerald-400">{formatoMoneda(recaudado)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+                <p className="text-[10px] font-bold uppercase text-slate-500">Pendiente</p>
+                <p className="text-lg font-black text-amber-400">{formatoMoneda(pendiente)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+                <p className="text-[10px] font-bold uppercase text-slate-500">Participantes</p>
+                <p className="text-lg font-black text-slate-100">{participantes.length}</p>
+              </div>
+            </div>
+
+            <div
+              className={`flex flex-col items-start justify-between gap-3 rounded-xl border p-3.5 sm:flex-row sm:items-center ${
+                finalizado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-amber-400/30 bg-amber-400/5'
+              }`}
+            >
+              <div className="flex items-start gap-2.5">
+                <Award size={18} className={`mt-0.5 shrink-0 ${finalizado ? 'text-emerald-400' : 'text-amber-400'}`} />
+                <div>
+                  <p className={`text-sm font-black ${finalizado ? 'text-emerald-300' : 'text-amber-300'}`}>
+                    {finalizado ? 'Torneo finalizado' : 'Finalizar Torneo & Asignar Puntos'}
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    {finalizado
+                      ? 'Los puntos ya se sumaron al Ranking del Club.'
+                      : 'Reparte puntos (Campeón, Subcampeón, Semifinalista…) a cada jugador según cómo terminó en el cuadro — requiere que la Final de cada categoría ya tenga marcador.'}
+                  </p>
+                </div>
+              </div>
+              {!finalizado && (
+                <BotonPrimario onClick={onFinalizarTorneo} disabled={finalizandoTorneo} className="w-full shrink-0 sm:w-auto">
+                  {finalizandoTorneo ? <Loader2 size={15} className="animate-spin" /> : <Award size={15} />}
+                  Finalizar Torneo
+                </BotonPrimario>
+              )}
+            </div>
+
+            <div>
+              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+                <Lock size={14} className="text-violet-400" /> Canchas Bloqueadas
+              </h3>
+              {bloqueosActivos.length === 0 ? (
+                <p className="text-xs text-slate-500">Sin horarios bloqueados.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {bloqueosActivos.map((b, idx) => (
+                    <div key={idx} className="flex items-center justify-between gap-2 rounded-lg bg-slate-950 px-3 py-2 text-xs">
+                      <span className="flex flex-wrap items-center gap-1.5 text-slate-300">
+                        <MapPin size={11} className="text-violet-400" /> {b.cancha_nombre} · {formatoFechaLarga(b.fecha)} ·{' '}
+                        {formatoHora12(b.hora_inicio)}–{formatoHora12(b.hora_fin)}
+                      </span>
+                      <button
+                        onClick={() => onLiberarBloqueo(torneo, b)}
+                        disabled={liberandoBloqueoId === b.reserva_bloqueo_id}
+                        className="inline-flex shrink-0 items-center gap-1 text-[11px] font-bold text-rose-400 hover:underline disabled:opacity-40"
+                      >
+                        {liberandoBloqueoId === b.reserva_bloqueo_id ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />}
+                        Liberar
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+                  <Users size={14} className="text-lime-400" /> Participantes
+                </h3>
+                <BotonSecundario onClick={onAgregarParticipante}>
+                  <UserPlus size={14} /> Agregar Participante
+                </BotonSecundario>
+              </div>
+              {participantes.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-800 py-8 text-center text-xs text-slate-500">
+                  Sin participantes inscritos todavía.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                  <table className="w-full min-w-[560px] text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                        <th className="px-3 py-2">Nombre</th>
+                        <th className="px-3 py-2">Categoría</th>
+                        <th className="px-3 py-2">Nivel</th>
+                        <th className="px-3 py-2">Contacto</th>
+                        <th className="px-3 py-2 text-right">Monto</th>
+                        <th className="px-3 py-2">Pago</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {participantes.map((p) => (
+                        <tr key={p.id} className="border-b border-slate-800/70 last:border-0">
+                          <td className="px-3 py-2 font-bold text-slate-100">{p.nombre}</td>
+                          <td className="px-3 py-2 text-slate-300">{p.categoria || '—'}</td>
+                          <td className="px-3 py-2 text-slate-300">{p.nivel || '—'}</td>
+                          <td className="px-3 py-2 text-slate-400">
+                            {p.telefono && <span className="mr-2">{p.telefono}</span>}
+                            {p.correo}
+                          </td>
+                          <td className="px-3 py-2 text-right font-bold text-slate-200">{formatoMoneda(p.monto)}</td>
+                          <td className="px-3 py-2">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                p.estado_pago === 'pagado'
+                                  ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+                                  : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
+                              }`}
+                            >
+                              {p.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <SeccionCuadroPartidos
+            torneo={torneo}
+            partidos={partidos}
+            canchas={canchas}
+            participantes={participantes}
+            loadingPartidos={loadingPartidos}
+            onGenerarCuadro={onGenerarCuadro}
+            onAsignarHorario={onAsignarHorarioPartido}
+            onCargarMarcador={onCargarMarcadorPartido}
+          />
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgregado }) {
+  const toast = useToast();
+  const [nombre, setNombre] = useState('');
+  const [telefono, setTelefono] = useState('');
+  const [correo, setCorreo] = useState('');
+  const [nivel, setNivel] = useState('');
+  const [categoria, setCategoria] = useState(torneo.categorias?.[0] ? `${torneo.categorias[0].rama} ${torneo.categorias[0].nivel}` : '');
+  const [monto, setMonto] = useState(String(torneo.precio ?? 0));
+  const [estadoPago, setEstadoPago] = useState('pendiente');
+  const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  async function guardar() {
+    if (!nombre.trim()) return setError('Indica el nombre del participante.');
+    // CRM & Guardado de Teléfono: obligatorio, igual que en Smart POS — es el
+    // identificador único del cliente (`resolverJugadorId`).
+    const claveTelParticipante = claveTelefono(telefono);
+    if (!claveTelParticipante) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio & CRM.');
+    setGuardando(true);
+    setError('');
+
+    // Mapeo de compatibilidad total: se manda `correo` junto con su alias
+    // `email` — por si el proyecto de Supabase tiene esta tabla migrada
+    // con otro nombre de columna (justo el error reportado). `nivel` y
+    // `categoria` ya son dos campos distintos e intencionales en este
+    // formulario (nivel de juego del jugador vs. categoría del torneo en
+    // la que participa), así que se mandan tal cual, sin fusionarlos.
+    const payloadParticipante = withClubId({
+      torneo_id: torneo.id,
+      nombre: nombre.trim(),
+      telefono: telefono.trim() || null,
+      correo: correo.trim() || null,
+      email: correo.trim() || null,
+      nivel: nivel || null,
+      categoria: categoria || null,
+      monto: Number(monto) || 0,
+      estado_pago: estadoPago,
+    });
+
+    let participanteCreado = null;
+
+    try {
+      const { data, error: err } = await supabase.from('torneo_participantes').insert(payloadParticipante).select().single();
+      if (err) throw err;
+      participanteCreado = data;
+    } catch (err) {
+      // Tolerancia total a fallos: columna faltante, desfase de esquema,
+      // política RLS o error de red — nunca se bloquea al operador con una
+      // alerta roja. El participante se guarda en memoria local hasta que
+      // se corrija la causa de fondo en Supabase.
+      console.warn('[Torneos & Retas] No se pudo guardar el participante en Supabase — se usa modo local.', err);
+      participanteCreado = { ...payloadParticipante, id: idLocal('participante'), _local: true };
+    }
+
+    // Auto-Registro Universal (Directorio & CRM): igual que "Nueva Reserva" y
+    // la inscripción a Retas, busca/crea el expediente de este jugador en
+    // `jugadores` por teléfono (identificador único) — se espera (`await`)
+    // para garantizar que el teléfono, obligatorio en este formulario, sí
+    // quede guardado en `jugadores.telefono` antes de cerrar el modal.
+    await resolverJugadorId(nombre, { telefono, directorio: jugadores });
+
+    setGuardando(false);
+    toast({ titulo: 'Participante agregado', detalle: nombre.trim() });
+    onAgregado(participanteCreado);
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Agregar Participante" subtitulo={torneo.nombre} onClose={onClose} icon={UserPlus} ancho="max-w-md">
+      <div className="space-y-4">
+        <Campo label="Nombre" hint="Busca en el directorio del club o escribe uno nuevo.">
+          <SelectorJugadorRegistrado
+            jugadores={jugadores}
+            nombre={nombre}
+            onNombreChange={setNombre}
+            jugadorSeleccionadoId={jugadorSeleccionadoId}
+            onSeleccionarJugador={(j) => {
+              setJugadorSeleccionadoId(j?.id || null);
+              if (j) setTelefono(j.telefono || '');
+            }}
+            placeholder="Nombre completo"
+          />
+        </Campo>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Teléfono *" hint="Obligatorio — identificador único del cliente en el Directorio & CRM.">
+            <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="10 dígitos" required />
+          </Campo>
+          <Campo label="Correo">
+            <input value={correo} onChange={(e) => setCorreo(e.target.value)} className={inputClase} placeholder="correo@ejemplo.com" />
+          </Campo>
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Nivel">
+            <SelectorNivel value={nivel} onChange={setNivel} />
+          </Campo>
+          <Campo label="Categoría">
+            <select value={categoria} onChange={(e) => setCategoria(e.target.value)} className={inputClase}>
+              <option value="">Sin categoría</option>
+              {(torneo.categorias || []).map((c, i) => (
+                <option key={i} value={`${c.rama} ${c.nivel}`}>
+                  {c.rama} {c.nivel}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Monto (MXN)">
+            <input type="number" min="0" value={monto} onChange={(e) => setMonto(e.target.value)} className={inputClase} />
+          </Campo>
+          <Campo label="Estado de pago">
+            <select value={estadoPago} onChange={(e) => setEstadoPago(e.target.value)} className={inputClase}>
+              {ESTADOS_PAGO.map((e) => (
+                <option key={e.value} value={e.value}>
+                  {e.label}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        </div>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <UserPlus size={15} />}
+            Agregar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ---------------- Motor de Torneos: Cuadros & Partidos (Fase 1) ---------------- */
+
+// Una llave del cuadro: pareja 1 vs pareja 2, con su horario (si ya se
+// asignó) y su marcador (si ya se jugó). El mismo componente sirve para las
+// rondas "Por definir" (parejas null, sin acciones disponibles) como para un
+// partido ya cerrado (fondo verde + set a set).
+function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsignarHorario, onCargarMarcador }) {
+  const parejasListas = !!partido.pareja1 && !!partido.pareja2;
+  const jugado = partido.estado === 'jugado';
+  const esBye = partido.pareja1 === BYE || partido.pareja2 === BYE;
+  const tieneHorario = !!partido.cancha_id && !!partido.fecha && !!partido.hora_inicio;
+  const cancha = tieneHorario ? canchas.find((c) => c.id === partido.cancha_id) : null;
+  // El aviso de WhatsApp solo tiene sentido para un partido ya programado
+  // (necesita fecha/hora/cancha para el mensaje) y todavía no jugado — un
+  // BYE ya nace "jugado" (pase directo automático), así que nunca lo pide.
+  const puedeNotificar = tieneHorario && !jugado;
+
+  function etiquetaPareja(texto) {
+    return texto === BYE ? 'BYE (pase directo)' : texto || 'Por definir';
+  }
+
+  function notificarWhatsApp(parejaTexto) {
+    const telefono = buscarTelefonoPareja(parejaTexto, participantes);
+    const mensaje = construirMensajeWhatsAppPartido({ torneoNombre, partido, cancha });
+    const url = construirEnlaceWhatsApp({ telefono, mensaje });
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  return (
+    <div
+      className={`w-60 shrink-0 rounded-xl border p-3 ${
+        jugado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-slate-800 bg-slate-950'
+      }`}
+    >
+      <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">{partido.ronda}</p>
+
+      <div className="space-y-1">
+        <div
+          className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs ${
+            jugado && partido.ganador === 'pareja1'
+              ? 'bg-emerald-400/10 font-black text-emerald-300 ring-1 ring-emerald-400/30'
+              : 'bg-slate-900 font-semibold text-slate-200'
+          }`}
+        >
+          <span className={`truncate ${partido.pareja1 === BYE ? 'italic text-slate-500' : ''}`}>{etiquetaPareja(partido.pareja1)}</span>
+          {jugado && partido.ganador === 'pareja1' && <CheckCircle2 size={12} className="shrink-0" />}
+          {puedeNotificar && (
+            <button
+              type="button"
+              onClick={() => notificarWhatsApp(partido.pareja1)}
+              title="Notificar por WhatsApp"
+              className="shrink-0 rounded-md p-1 text-emerald-400 transition hover:bg-emerald-400/10"
+            >
+              <IconoWhatsApp size={12} />
+            </button>
+          )}
+        </div>
+        <p className="text-center text-[9px] font-bold text-slate-600">VS</p>
+        <div
+          className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs ${
+            jugado && partido.ganador === 'pareja2'
+              ? 'bg-emerald-400/10 font-black text-emerald-300 ring-1 ring-emerald-400/30'
+              : 'bg-slate-900 font-semibold text-slate-200'
+          }`}
+        >
+          <span className={`truncate ${partido.pareja2 === BYE ? 'italic text-slate-500' : ''}`}>{etiquetaPareja(partido.pareja2)}</span>
+          {jugado && partido.ganador === 'pareja2' && <CheckCircle2 size={12} className="shrink-0" />}
+          {puedeNotificar && (
+            <button
+              type="button"
+              onClick={() => notificarWhatsApp(partido.pareja2)}
+              title="Notificar por WhatsApp"
+              className="shrink-0 rounded-md p-1 text-emerald-400 transition hover:bg-emerald-400/10"
+            >
+              <IconoWhatsApp size={12} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {jugado ? (
+        esBye ? (
+          <p className="mt-2 text-center text-[10px] italic text-slate-500">Pase directo (bye)</p>
+        ) : (
+          <p className="mt-2 text-center text-[11px] font-bold text-slate-300">
+            {(partido.sets || []).map((s) => `${s.p1}-${s.p2}`).join(' · ')}
+          </p>
+        )
+      ) : (
+        <>
+          {tieneHorario ? (
+            <button
+              type="button"
+              onClick={() => onAsignarHorario(partido)}
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-2 py-1.5 text-[10px] font-bold text-slate-300 ring-1 ring-slate-800 transition hover:text-lime-400"
+            >
+              <Clock size={11} className="shrink-0" />
+              <span className="truncate">
+                {cancha?.nombre || 'Cancha'} · {formatoFechaLarga(partido.fecha)} · {formatoHora12(partido.hora_inicio)}
+              </span>
+            </button>
+          ) : parejasListas ? (
+            <BotonSecundario onClick={() => onAsignarHorario(partido)} className="mt-2 w-full px-2 py-1.5 text-[11px]">
+              <Clock size={12} /> Asignar Horario
+            </BotonSecundario>
+          ) : (
+            <p className="mt-2 text-center text-[10px] italic text-slate-600">Esperando definición</p>
+          )}
+
+          {parejasListas && (
+            <BotonPrimario onClick={() => onCargarMarcador(partido)} className="mt-1.5 w-full px-2 py-1.5 text-[11px]">
+              <ClipboardList size={12} /> Cargar Marcador
+            </BotonPrimario>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Sección "Cuadros & Partidos" dentro del detalle de un torneo (ver
+// `ModalGestionTorneo`): si el torneo tiene varias categorías, un selector
+// filtra cuál cuadro se muestra (cada categoría tiene su propio cuadro,
+// identificado por `partido.categoria`); las rondas se pintan como columnas
+// horizontales (scroll lateral en pantallas angostas), ordenadas por
+// `ronda_orden` y, dentro de cada una, por `posicion`.
+function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadingPartidos, onGenerarCuadro, onAsignarHorario, onCargarMarcador }) {
+  const categorias = torneo.categorias || [];
+  const [categoriaFiltro, setCategoriaFiltro] = useState(categorias[0] ? `${categorias[0].rama} ${categorias[0].nivel}` : '');
+
+  const partidosCategoria = useMemo(() => {
+    if (categorias.length === 0) return partidos;
+    return partidos.filter((p) => p.categoria === categoriaFiltro);
+  }, [partidos, categorias.length, categoriaFiltro]);
+
+  const columnas = useMemo(() => {
+    const mapa = new Map();
+    partidosCategoria.forEach((p) => {
+      if (!mapa.has(p.ronda_orden)) mapa.set(p.ronda_orden, { ronda: p.ronda, ronda_orden: p.ronda_orden, partidos: [] });
+      mapa.get(p.ronda_orden).partidos.push(p);
+    });
+    return Array.from(mapa.values())
+      .sort((a, b) => a.ronda_orden - b.ronda_orden)
+      .map((col) => ({ ...col, partidos: [...col.partidos].sort((a, b) => a.posicion - b.posicion) }));
+  }, [partidosCategoria]);
+
+  if (loadingPartidos) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <div key={i} className="h-24 animate-pulse rounded-xl bg-slate-900" />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {categorias.length > 1 && (
+        <div className="flex flex-wrap gap-1.5">
+          {categorias.map((c, i) => {
+            const valor = `${c.rama} ${c.nivel}`;
+            return (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setCategoriaFiltro(valor)}
+                className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+                  categoriaFiltro === valor ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                {valor}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {columnas.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center">
+          <Layers size={26} className="text-slate-700" />
+          <p className="text-sm font-semibold text-slate-400">
+            Todavía no hay un cuadro generado{categorias.length > 1 && categoriaFiltro ? ` para ${categoriaFiltro}` : ''}.
+          </p>
+          <BotonPrimario onClick={() => onGenerarCuadro(categoriaFiltro)} className="mt-1">
+            <Trophy size={14} /> Generar Cuadro
+          </BotonPrimario>
+        </div>
+      ) : (
+        <div className="overflow-x-auto pb-2">
+          <div className="flex items-start gap-4">
+            {columnas.map((col) => (
+              <div key={col.ronda_orden} className="flex flex-col gap-3">
+                <p className="text-center text-xs font-black uppercase tracking-wide text-violet-400">{col.ronda}</p>
+                {col.partidos.map((p) => (
+                  <TarjetaPartido
+                    key={p.id}
+                    partido={p}
+                    canchas={canchas}
+                    participantes={participantes}
+                    torneoNombre={torneo.nombre}
+                    onAsignarHorario={onAsignarHorario}
+                    onCargarMarcador={onCargarMarcador}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function nuevaParejaVacia() {
+  return { modo: 'selects', jugador1: '', jugador2: '', texto: '' };
+}
+
+// Resuelve el texto final de una pareja según su modo de captura: en modo
+// 'selects', junta Jugador 1 + Jugador 2 ("Adrian / Carlos"); en modo
+// 'manual', usa tal cual el texto libre que escribió el operador (para
+// jugadores que no están en la lista de participantes).
+function textoDeParejaCompleta(valor) {
+  if (!valor) return '';
+  if (valor.modo === 'manual') return (valor.texto || '').trim();
+  return [valor.jugador1, valor.jugador2].filter(Boolean).join(' / ');
+}
+
+// Captura UNA pareja completa (2 jugadores) para un slot del cuadro: por
+// default deja elegir Jugador 1 y Jugador 2 de la lista de participantes
+// inscritos (se arma sola la etiqueta "Nombre 1 / Nombre 2"); "Escribir a
+// mano" cambia a un solo campo de texto libre, para parejas que no están
+// registradas como participantes. Cada select excluye lo ya elegido en el
+// otro para no poder armar una "pareja" con la misma persona dos veces.
+// Buscador desplegable inteligente para UN slot de la pareja (Jugador 1 o 2):
+// escribe y filtra en vivo sobre `opciones` (participantes YA confirmados de
+// esa categoría del torneo — el cuadro solo puede armarse con quien ya está
+// inscrito/pagado, así que la fuente sigue acotada a ese torneo a propósito,
+// no al directorio completo del club) — mismo criterio de interacción que
+// `SelectorJugadorRegistrado` en Retas/Inscripción de Torneo, para que
+// "cargar la info al seleccionarlo" se sienta igual en todo el club.
+function BuscadorSlotPareja({ valor, opciones, onChange, placeholder }) {
+  const [abierto, setAbierto] = useState(false);
+  const sugerencias = useMemo(() => {
+    const q = (valor || '').trim().toLowerCase();
+    const base = q ? opciones.filter((n) => n.toLowerCase().includes(q)) : opciones;
+    return base.slice(0, 8);
+  }, [opciones, valor]);
+
+  return (
+    <div className="relative">
+      <input
+        value={valor}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setAbierto(true)}
+        onBlur={() => setTimeout(() => setAbierto(false), 150)}
+        className={`${inputClase} text-xs`}
+        placeholder={placeholder}
+        autoComplete="off"
+      />
+      {abierto && sugerencias.length > 0 && (
+        <div className="absolute z-20 mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-xl">
+          {sugerencias.map((n, i) => (
+            <button
+              key={i}
+              type="button"
+              onMouseDown={() => {
+                onChange(n);
+                setAbierto(false);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-200 transition hover:bg-slate-700"
+            >
+              <Users size={11} className="shrink-0 text-lime-400" />
+              <span className="min-w-0 flex-1 truncate">{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
+  const modo = valor.modo || 'selects';
+  const textoResultante = textoDeParejaCompleta(valor);
+
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{etiqueta}</span>
+        <button
+          type="button"
+          onClick={() => onChange({ ...valor, modo: modo === 'manual' ? 'selects' : 'manual' })}
+          className="shrink-0 text-[10px] font-bold text-lime-400 hover:underline"
+        >
+          {modo === 'manual' ? 'Elegir de la lista' : 'Escribir a mano'}
+        </button>
+      </div>
+
+      {modo === 'manual' ? (
+        <input
+          value={valor.texto}
+          onChange={(e) => onChange({ ...valor, texto: e.target.value })}
+          className={`${inputClase} text-xs`}
+          placeholder="Ej. Pedro / Luis"
+        />
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          <BuscadorSlotPareja
+            valor={valor.jugador1}
+            opciones={opciones.filter((n) => n !== valor.jugador2)}
+            onChange={(n) => onChange({ ...valor, jugador1: n })}
+            placeholder="Buscar Jugador 1..."
+          />
+          <BuscadorSlotPareja
+            valor={valor.jugador2}
+            opciones={opciones.filter((n) => n !== valor.jugador1)}
+            onChange={(n) => onChange({ ...valor, jugador2: n })}
+            placeholder="Buscar Jugador 2..."
+          />
+        </div>
+      )}
+
+      {textoResultante && <p className="mt-1.5 truncate text-[11px] italic text-slate-400">{textoResultante}</p>}
+    </div>
+  );
+}
+
+function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, onClose, onGenerar, generando }) {
+  const categoria = categoriaInicial || '';
+
+  const sugerencias = useMemo(
+    () => participantes.filter((p) => !categoria || p.categoria === categoria).map((p) => p.nombre).filter(Boolean),
+    [participantes, categoria]
+  );
+
+  const numConfirmados = useMemo(
+    () => participantes.filter((p) => !categoria || p.categoria === categoria).length,
+    [participantes, categoria]
+  );
+  const numParejasSugerido = TAMANOS_CUADRO.find((t) => t >= Math.max(2, numConfirmados)) || Math.max(2, numConfirmados);
+
+  // 'fichas' = una de las 5 fichas rápidas (2/4/8/16/32); 'personalizado' =
+  // cualquier número de parejas escrito a mano (12, 24, 40, 48...) — no hace
+  // falta que sea potencia de 2, ver `armarPartidosRonda0`/`BYE`.
+  const [modoTamano, setModoTamano] = useState('fichas');
+  const [numParejas, setNumParejas] = useState(numParejasSugerido);
+  const [parejas, setParejas] = useState(() => Array.from({ length: numParejasSugerido }, nuevaParejaVacia));
+  const [error, setError] = useState('');
+
+  const numParejasValido = Math.max(2, Math.min(128, Number(numParejas) || 0));
+  const { tamanoCuadro, numByes } = useMemo(
+    () => armarPartidosRonda0(Array.from({ length: numParejasValido }, () => '')),
+    [numParejasValido]
+  );
+  const numRondas = Math.log2(tamanoCuadro);
+
+  function redimensionarParejas(n) {
+    setParejas((prev) => Array.from({ length: n }, (_, i) => prev[i] || nuevaParejaVacia()));
+  }
+
+  function elegirFicha(t) {
+    setModoTamano('fichas');
+    setNumParejas(t);
+    redimensionarParejas(t);
+  }
+
+  // Tope de 128 parejas: suficiente para cualquier torneo real de club, y
+  // evita que un número escrito de más (o un typo) genere un cuadro
+  // gigantesco por accidente.
+  function cambiarNumeroPersonalizado(valorCrudo) {
+    const n = Math.max(2, Math.min(128, Number(valorCrudo) || 0));
+    setNumParejas(n);
+    redimensionarParejas(n);
+  }
+
+  function actualizarPareja(idx, valor) {
+    setParejas((prev) => prev.map((p, i) => (i === idx ? valor : p)));
+  }
+
+  function guardar() {
+    const parejasTexto = parejas.map((p) => textoDeParejaCompleta(p));
+    const incompletas = parejasTexto.some((texto) => !texto);
+    if (incompletas) {
+      setError('Completa las 2 personas (o el texto libre) de cada pareja antes de generar el cuadro.');
+      return;
+    }
+    setError('');
+    onGenerar({ categoria, parejasReales: parejasTexto });
+  }
+
+  return (
+    <ModalShell titulo="Generar Cuadro" subtitulo={categoria || torneo.nombre} onClose={onClose} icon={Trophy} ancho="max-w-2xl">
+      <div className="space-y-4">
+        <Campo label="Número de parejas">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {TAMANOS_CUADRO.map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => elegirFicha(t)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                  modoTamano === 'fichas' && numParejas === t ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => setModoTamano('personalizado')}
+              className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                modoTamano === 'personalizado' ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+              }`}
+            >
+              Personalizado
+            </button>
+            {modoTamano === 'personalizado' && (
+              <input
+                type="number"
+                min="2"
+                max="128"
+                value={numParejas}
+                onChange={(e) => cambiarNumeroPersonalizado(e.target.value)}
+                className={`${inputClase} w-24 text-xs`}
+                placeholder="Ej. 12"
+                autoFocus
+              />
+            )}
+          </div>
+        </Campo>
+
+        <p className="flex items-start gap-1.5 rounded-lg bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-300 ring-1 ring-violet-400/20">
+          <Info size={13} className="mt-0.5 shrink-0" />
+          {numParejasValido} pareja{numParejasValido === 1 ? '' : 's'} → cuadro de {tamanoCuadro} ({numRondas} ronda
+          {numRondas === 1 ? '' : 's'}: {nombresRondas(numRondas).join(' → ')})
+          {numByes > 0
+            ? ` — como ${numParejasValido} no es potencia de 2, ${numByes} pase${numByes === 1 ? '' : 's'} directo(s) automático(s) en la primera ronda.`
+            : '.'}
+        </p>
+
+        <div>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Parejas — {nombresRondas(numRondas)[0]}
+          </span>
+          <div className="max-h-96 space-y-2.5 overflow-y-auto pr-1">
+            {parejas.map((p, idx) => (
+              <SelectorParejaCompleta
+                key={idx}
+                etiqueta={`Pareja ${idx + 1}`}
+                valor={p}
+                opciones={sugerencias}
+                onChange={(v) => actualizarPareja(idx, v)}
+              />
+            ))}
+          </div>
+        </div>
+
+        <p className="flex items-start gap-1.5 rounded-lg bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-300 ring-1 ring-violet-400/20">
+          <Info size={13} className="mt-0.5 shrink-0" /> Se genera el cuadro completo — las rondas después de la primera empiezan "Por
+          definir" y se llenan solas conforme cargues los marcadores.
+        </p>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={generando}>
+            {generando ? <Loader2 size={15} className="animate-spin" /> : <Trophy size={15} />}
+            Generar Cuadro
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalAsignarHorarioPartido({ partido, canchas, reservas, onClose, onAsignar, asignando }) {
+  const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+  const [canchaId, setCanchaId] = useState(partido.cancha_id || canchasActivas[0]?.id || '');
+  const [fecha, setFecha] = useState(partido.fecha || hoyISO());
+  const [horaInicio, setHoraInicio] = useState(partido.hora_inicio || '08:00');
+  const [horaFin, setHoraFin] = useState(partido.hora_fin || '09:00');
+  const [error, setError] = useState('');
+
+  function guardar() {
+    if (!canchaId) return setError('Selecciona una cancha.');
+    const ini = parseHoraAMinutos(horaInicio);
+    const fin = parseHoraAMinutos(horaFin);
+    if (ini === null || fin === null || fin <= ini) {
+      setError('La hora de fin debe ser posterior a la de inicio.');
+      return;
+    }
+    // Si este partido ya tenía un bloqueo propio en la Parrilla (se está
+    // reasignando de horario), no debe contar como "ocupado" contra sí mismo.
+    const reservasSinEstePartido = reservas.filter((r) => r.id !== partido.reserva_bloqueo_id);
+    const solape = buscarSolapeEnCancha(reservasSinEstePartido, canchaId, fecha, horaInicio, horaFin);
+    if (solape) {
+      const cancha = canchas.find((c) => c.id === canchaId);
+      setError(`${cancha?.nombre || 'Esa cancha'} ya está ocupada el ${fecha} en ese horario.`);
+      return;
+    }
+    setError('');
+    onAsignar({ partido, canchaId, fecha, horaInicio, horaFin });
+  }
+
+  return (
+    <ModalShell
+      titulo="Asignar Cancha y Horario"
+      subtitulo={`${partido.ronda} · ${partido.pareja1} vs ${partido.pareja2}`}
+      onClose={onClose}
+      icon={Clock}
+      ancho="max-w-md"
+    >
+      <div className="space-y-4">
+        <Campo label="Cancha">
+          <select value={canchaId} onChange={(e) => setCanchaId(e.target.value)} className={inputClase}>
+            <option value="">Selecciona una cancha</option>
+            {canchasActivas.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.nombre}
+              </option>
+            ))}
+          </select>
+        </Campo>
+        <Campo label="Fecha">
+          <SelectorFechaClick value={fecha} onChange={setFecha} />
+        </Campo>
+        <div className="grid grid-cols-2 gap-4">
+          <Campo label="Hora inicio">
+            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+          </Campo>
+          <Campo label="Hora fin">
+            <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
+          </Campo>
+        </div>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={asignando}>
+            {asignando ? <Loader2 size={15} className="animate-spin" /> : <Clock size={15} />}
+            Asignar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalMarcadorPartido({ partido, onClose, onGuardar, guardando }) {
+  const setsPrevios = partido.sets || [];
+  const [set1, setSet1] = useState({ p1: setsPrevios[0]?.p1 ?? '', p2: setsPrevios[0]?.p2 ?? '' });
+  const [set2, setSet2] = useState({ p1: setsPrevios[1]?.p1 ?? '', p2: setsPrevios[1]?.p2 ?? '' });
+  const [set3, setSet3] = useState({ p1: setsPrevios[2]?.p1 ?? '', p2: setsPrevios[2]?.p2 ?? '' });
+  const [error, setError] = useState('');
+
+  function actualizar(setSetter, campo, valor) {
+    setSetter((prev) => ({ ...prev, [campo]: valor }));
+  }
+
+  function guardar() {
+    const sets = [set1, set2, set3]
+      .filter((s) => s.p1 !== '' && s.p2 !== '')
+      .map((s) => ({ p1: Number(s.p1), p2: Number(s.p2) }));
+
+    if (sets.length === 0) {
+      setError('Captura al menos el marcador del Set 1.');
+      return;
+    }
+    const ganador = calcularGanadorSets(sets);
+    if (!ganador) {
+      setError('El marcador no define un ganador claro — revisa los sets (no puede haber empate en sets ganados).');
+      return;
+    }
+    setError('');
+    onGuardar({ partido, sets, ganador });
+  }
+
+  const filas = [
+    { label: 'Set 1', valor: set1, setValor: setSet1 },
+    { label: 'Set 2', valor: set2, setValor: setSet2 },
+    { label: 'Set 3 / Súper Tie-Break', valor: set3, setValor: setSet3 },
+  ];
+
+  return (
+    <ModalShell
+      titulo="Cargar Marcador"
+      subtitulo={`${partido.ronda} · ${partido.pareja1} vs ${partido.pareja2}`}
+      onClose={onClose}
+      icon={ClipboardList}
+      ancho="max-w-md"
+    >
+      <div className="space-y-4">
+        {filas.map((s) => (
+          <div key={s.label} className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
+            <Campo label={`${s.label} — ${partido.pareja1}`}>
+              <input
+                type="number"
+                min="0"
+                value={s.valor.p1}
+                onChange={(e) => actualizar(s.setValor, 'p1', e.target.value)}
+                className={inputClase}
+              />
+            </Campo>
+            <span className="pb-2.5 text-xs font-bold text-slate-600">–</span>
+            <Campo label={`${s.label} — ${partido.pareja2}`}>
+              <input
+                type="number"
+                min="0"
+                value={s.valor.p2}
+                onChange={(e) => actualizar(s.setValor, 'p2', e.target.value)}
+                className={inputClase}
+              />
+            </Campo>
+          </div>
+        ))}
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Guardar Marcador
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Captura de Marcadores en Retas: una Reta Abierta junta 4 lugares
+// INDIVIDUALES (no parejas fijas de inscripción), así que al completarse hay
+// que decidir "quién jugó con quién" antes de cargar el resultado — con 4
+// jugadores solo existen 3 formas distintas de dividirlos en dos parejas de
+// 2, así que el modal las ofrece como un selector rápido (con un botón para
+// rotar entre ellas) en vez de pedir arrastrar/soltar. El resto —Set 1/Set
+// 2/Set 3 y `calcularGanadorSets`— es EXACTAMENTE el mismo flujo que
+// `ModalMarcadorPartido` en Torneos.
+function generarParejasPosiblesReta(jugadores) {
+  if (!jugadores || jugadores.length !== 4) return [[jugadores || [], []]];
+  const [a, b, c, d] = jugadores;
+  return [
+    [[a, b], [c, d]],
+    [[a, c], [b, d]],
+    [[a, d], [b, c]],
+  ];
+}
+
+function ModalMarcadorReta({ reta, confirmados, onClose, onGuardar, guardando }) {
+  const parejasPosibles = useMemo(() => generarParejasPosiblesReta(confirmados), [confirmados]);
+  const [indiceParejas, setIndiceParejas] = useState(0);
+  const [equipoA, equipoB] = parejasPosibles[indiceParejas] || [[], []];
+  const pareja1Texto = equipoA.map((j) => j.nombre).filter(Boolean).join(' / ');
+  const pareja2Texto = equipoB.map((j) => j.nombre).filter(Boolean).join(' / ');
+
+  const setsPrevios = reta.sets || [];
+  const [set1, setSet1] = useState({ p1: setsPrevios[0]?.p1 ?? '', p2: setsPrevios[0]?.p2 ?? '' });
+  const [set2, setSet2] = useState({ p1: setsPrevios[1]?.p1 ?? '', p2: setsPrevios[1]?.p2 ?? '' });
+  const [set3, setSet3] = useState({ p1: setsPrevios[2]?.p1 ?? '', p2: setsPrevios[2]?.p2 ?? '' });
+  const [error, setError] = useState('');
+
+  function actualizar(setSetter, campo, valor) {
+    setSetter((prev) => ({ ...prev, [campo]: valor }));
+  }
+
+  function guardar() {
+    const sets = [set1, set2, set3]
+      .filter((s) => s.p1 !== '' && s.p2 !== '')
+      .map((s) => ({ p1: Number(s.p1), p2: Number(s.p2) }));
+
+    if (sets.length === 0) {
+      setError('Captura al menos el marcador del Set 1.');
+      return;
+    }
+    const ganador = calcularGanadorSets(sets);
+    if (!ganador) {
+      setError('El marcador no define un ganador claro — revisa los sets (no puede haber empate en sets ganados).');
+      return;
+    }
+    setError('');
+    onGuardar({ reta, sets, ganador, pareja1: pareja1Texto, pareja2: pareja2Texto });
+  }
+
+  const filas = [
+    { label: 'Set 1', valor: set1, setValor: setSet1 },
+    { label: 'Set 2', valor: set2, setValor: setSet2 },
+    { label: 'Set 3 / Súper Tie-Break', valor: set3, setValor: setSet3 },
+  ];
+
+  return (
+    <ModalShell titulo="Cargar Marcador de la Reta" subtitulo={reta.nombre} onClose={onClose} icon={ClipboardList} ancho="max-w-md">
+      <div className="space-y-4">
+        <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-2.5">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">¿Quién jugó con quién?</span>
+            {parejasPosibles.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setIndiceParejas((i) => (i + 1) % parejasPosibles.length)}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-bold text-lime-400 transition hover:border-lime-400/50"
+              >
+                <RefreshCw size={10} /> Cambiar parejas
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded-md bg-slate-950 px-2.5 py-2 text-center font-bold text-slate-100">{pareja1Texto || 'Equipo 1'}</div>
+            <div className="rounded-md bg-slate-950 px-2.5 py-2 text-center font-bold text-slate-100">{pareja2Texto || 'Equipo 2'}</div>
+          </div>
+        </div>
+
+        {filas.map((s) => (
+          <div key={s.label} className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
+            <Campo label={`${s.label} — Equipo 1`}>
+              <input
+                type="number"
+                min="0"
+                value={s.valor.p1}
+                onChange={(e) => actualizar(s.setValor, 'p1', e.target.value)}
+                className={inputClase}
+              />
+            </Campo>
+            <span className="pb-2.5 text-xs font-bold text-slate-600">–</span>
+            <Campo label={`${s.label} — Equipo 2`}>
+              <input
+                type="number"
+                min="0"
+                value={s.valor.p2}
+                onChange={(e) => actualizar(s.setValor, 'p2', e.target.value)}
+                className={inputClase}
+              />
+            </Campo>
+          </div>
+        ))}
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Guardar Marcador
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ---------------- Mesa de Control (CRM) ---------------- */
+
+function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
+  // Filtro superior: 'todos' | 'reta:<id>' | 'torneo:<id>'. Los 3 indicadores
+  // y el directorio de abajo se recalculan sobre el evento elegido — nunca
+  // se filtra en el servidor, todo viene ya cargado por el módulo principal.
+  const [eventoFiltro, setEventoFiltro] = useState('todos');
+  const [tipoFiltro, idFiltro] = eventoFiltro === 'todos' ? [null, null] : eventoFiltro.split(':');
+
+  const opcionesEvento = useMemo(() => {
+    const retasOpts = retas.map((r) => ({
+      value: `reta:${r.id}`,
+      label: `Reta · ${formatoFechaLarga(r.fecha)} · ${formatoHora12(r.hora_inicio)}${r.rama ? ` · ${r.rama}` : ''}`,
+    }));
+    const torneosOpts = torneos.map((t) => ({ value: `torneo:${t.id}`, label: `Torneo · ${t.nombre}` }));
+    return [...retasOpts, ...torneosOpts];
+  }, [retas, torneos]);
+
+  const inscripcionesFiltradas = useMemo(() => {
+    if (tipoFiltro === 'torneo') return [];
+    return inscripciones.filter((i) => i.estado !== 'cancelado' && (tipoFiltro !== 'reta' || i.reta_id === idFiltro));
+  }, [inscripciones, tipoFiltro, idFiltro]);
+
+  const participantesFiltrados = useMemo(() => {
+    if (tipoFiltro === 'reta') return [];
+    return participantesTorneo.filter((p) => tipoFiltro !== 'torneo' || p.torneo_id === idFiltro);
+  }, [participantesTorneo, tipoFiltro, idFiltro]);
+
+  const resumen = useMemo(() => {
+    const cobradoRetas = inscripcionesFiltradas.filter((i) => i.estado_pago === 'pagado').reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
+    const pendienteRetas = inscripcionesFiltradas.filter((i) => i.estado_pago === 'pendiente').reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
+    const cobradoTorneos = participantesFiltrados.filter((p) => p.estado_pago === 'pagado').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+    const pendienteTorneos = participantesFiltrados.filter((p) => p.estado_pago === 'pendiente').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+    return {
+      cobrado: cobradoRetas + cobradoTorneos,
+      pendiente: pendienteRetas + pendienteTorneos,
+      totalParticipantes: inscripcionesFiltradas.length + participantesFiltrados.length,
+    };
+  }, [inscripcionesFiltradas, participantesFiltrados]);
+
+  const directorio = useMemo(() => {
+    const filasRetas = inscripcionesFiltradas.map((i) => {
+      const reta = retas.find((r) => r.id === i.reta_id);
+      return {
+        id: `reta-${i.id}`,
+        nombre: i.nombre,
+        telefono: i.telefono,
+        correo: i.correo,
+        nivel: i.nivel_jugador || reta?.nivel || '—',
+        origen: 'Reta Abierta',
+        estadoPago: i.estado_pago,
+      };
+    });
+    const filasTorneos = participantesFiltrados.map((p) => {
+      const torneo = torneos.find((t) => t.id === p.torneo_id);
+      return {
+        id: `torneo-${p.id}`,
+        nombre: p.nombre,
+        telefono: p.telefono,
+        correo: p.correo,
+        nivel: p.nivel || '—',
+        origen: torneo ? `Torneo: ${torneo.nombre}` : 'Torneo',
+        estadoPago: p.estado_pago,
+      };
+    });
+    return [...filasRetas, ...filasTorneos];
+  }, [inscripcionesFiltradas, retas, participantesFiltrados, torneos]);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <ClipboardList size={16} className="text-lime-400" /> Desglose Financiero por Evento
+        </h3>
+        <div className="flex items-center gap-1.5">
+          <Filter size={13} className="shrink-0 text-slate-500" />
+          <select value={eventoFiltro} onChange={(e) => setEventoFiltro(e.target.value)} className={`${inputClase} sm:w-72`}>
+            <option value="todos">Todos los eventos</option>
+            {opcionesEvento.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <MetricCard icon={Wallet} etiqueta="Monto Cobrado" valor={formatoMoneda(resumen.cobrado)} sub="Retas + Torneos" tono="emerald" />
+        <MetricCard icon={AlertTriangle} etiqueta="Pendiente por Cobrar" valor={formatoMoneda(resumen.pendiente)} sub="Retas + Torneos" tono="amber" />
+        <MetricCard icon={Users} etiqueta="Total de Participantes" valor={resumen.totalParticipantes} sub="Inscritos activos" tono="violet" />
+      </div>
+
+      <div>
+        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <ClipboardList size={16} className="text-lime-400" /> Directorio de Participantes
+        </h3>
+        {directorio.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-800 py-12 text-center text-sm text-slate-500">
+            {eventoFiltro === 'todos' ? 'Todavía no hay participantes registrados.' : 'Sin participantes registrados para este evento.'}
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+            <table className="w-full min-w-[640px] text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                  <th className="px-3 py-2.5">Nombre</th>
+                  <th className="px-3 py-2.5">Contacto</th>
+                  <th className="px-3 py-2.5">Nivel</th>
+                  <th className="px-3 py-2.5">Origen</th>
+                  <th className="px-3 py-2.5">Pago</th>
+                </tr>
+              </thead>
+              <tbody>
+                {directorio.map((f) => (
+                  <tr key={f.id} className="border-b border-slate-800/70 last:border-0">
+                    <td className="px-3 py-2.5 font-bold text-slate-100">{f.nombre}</td>
+                    <td className="px-3 py-2.5 text-slate-400">
+                      <span className="flex flex-col gap-0.5">
+                        {f.telefono && (
+                          <span className="flex items-center gap-1">
+                            <Phone size={10} /> {f.telefono}
+                          </span>
+                        )}
+                        {f.correo && (
+                          <span className="flex items-center gap-1">
+                            <Mail size={10} /> {f.correo}
+                          </span>
+                        )}
+                        {!f.telefono && !f.correo && '—'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-300">{f.nivel}</td>
+                    <td className="px-3 py-2.5 text-slate-300">{f.origen}</td>
+                    <td className="px-3 py-2.5">
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          f.estadoPago === 'pagado'
+                            ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+                            : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
+                        }`}
+                      >
+                        {f.estadoPago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Módulo principal ---------------- */
+
+// Datos de Retas/Torneos, sus loaders y los canales Realtime viven
+// levantados en `App()` (igual que canchas/reservas/productos) — así el
+// estado nunca se resetea al cambiar de pestaña, y Smart POS puede leer
+// exactamente los mismos arreglos para su panel "Inscripción Torneo/Reta"
+// (ver `ModuloSmartPOS`). `ModuloTorneosRetas` los recibe todos por props.
+function ModuloTorneosRetas({
+  canchas,
+  reservas,
+  upsertReserva,
+  marcarReservaCancelada,
+  retas,
+  setRetas,
+  loadingRetas,
+  errorRetas,
+  cargarRetas,
+  inscripciones,
+  setInscripciones,
+  loadingInscripciones,
+  errorInscripciones,
+  cargarInscripciones,
+  torneos,
+  setTorneos,
+  loadingTorneos,
+  errorTorneos,
+  cargarTorneos,
+  participantesTorneo,
+  setParticipantesTorneo,
+  loadingParticipantes,
+  errorParticipantes,
+  cargarParticipantesTorneo,
+  partidosTorneo,
+  setPartidosTorneo,
+  loadingPartidosTorneo,
+  errorPartidosTorneo,
+  cargarPartidosTorneo,
+  rankingJugadores,
+  setRankingJugadores,
+  jugadoresPorId,
+}) {
+  const mostrarToast = useToast();
+  const [subvista, setSubvista] = useState('retas'); // 'retas' | 'torneos' | 'control'
+  // Selector de Jugadores Registrados: directorio completo del CRM,
+  // derivado del mapa que ya carga App() — se pasa a los formularios de
+  // inscripción (Retas/Torneos) para buscar y evitar duplicados.
+  const jugadoresDirectorio = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+  // Archivado de Torneos: filtro "Activos" (default) / "Archivados" dentro
+  // de la propia pestaña Torneos — un torneo sin la columna `archivado`
+  // (undefined) siempre cuenta como Activo.
+  const [filtroTorneo, setFiltroTorneo] = useState('activos'); // 'activos' | 'archivados'
+  // Archivado de Retas: mismo criterio exacto que Torneos — filtro
+  // Activas/Archivadas dentro de la propia pestaña Retas, una reta sin la
+  // columna `archivado` (undefined) siempre cuenta como Activa.
+  const [filtroReta, setFiltroReta] = useState('activas'); // 'activas' | 'archivadas'
+
+  /* ---- Retas ---- */
+  const [modalNuevaReta, setModalNuevaReta] = useState(false);
+  const [retaParaInscribir, setRetaParaInscribir] = useState(null);
+  const [cancelandoInscripcionId, setCancelandoInscripcionId] = useState(null);
+
+  const inscripcionesPorReta = useMemo(() => {
+    const mapa = {};
+    inscripciones.forEach((i) => {
+      if (!mapa[i.reta_id]) mapa[i.reta_id] = [];
+      mapa[i.reta_id].push(i);
+    });
+    return mapa;
+  }, [inscripciones]);
+
+  const retasArchivadas = useMemo(() => retas.filter((r) => r.archivado === true), [retas]);
+  const retasVisibles = useMemo(
+    () => retas.filter((r) => (filtroReta === 'archivadas' ? r.archivado === true : r.archivado !== true)),
+    [retas, filtroReta]
+  );
+
+  // Política de Cancelación y Retención: cancelar dentro de la ventana de
+  // tolerancia (por defecto 6h antes del juego) NO reembolsa — la
+  // inscripción pasa a 'retenido' en vez de 'cancelado', pero el lugar se
+  // libera igual para que el club pueda revenderlo.
+  async function cancelarInscripcionReta(reta, inscripcion) {
+    setCancelandoInscripcionId(inscripcion.id);
+    const [y, m, d] = reta.fecha.split('-').map(Number);
+    const horaMin = parseHoraAMinutos(reta.hora_inicio) ?? 0;
+    const inicioReta = new Date(y, m - 1, d, Math.floor(horaMin / 60), horaMin % 60);
+    const horasParaJuego = (inicioReta.getTime() - Date.now()) / 3600000;
+    const tolerancia = Number(reta.tolerancia_horas) || TOLERANCIA_HORAS_DEFAULT;
+    const nuevoEstado = horasParaJuego < tolerancia ? 'retenido' : 'cancelado';
+
+    const { error } = await supabase.from('reta_inscripciones').update({ estado: nuevoEstado }).eq('id', inscripcion.id);
+    setCancelandoInscripcionId(null);
+    if (error) {
+      mostrarToast({ titulo: 'No se pudo cancelar la inscripción', detalle: error.message, tono: 'error' });
+      return;
+    }
+    setInscripciones((prev) => prev.map((i) => (i.id === inscripcion.id ? { ...i, estado: nuevoEstado } : i)));
+    mostrarToast({
+      titulo: nuevoEstado === 'retenido' ? 'Cancelación con retención' : 'Inscripción cancelada',
+      detalle:
+        nuevoEstado === 'retenido'
+          ? `Fuera de la ventana de ${tolerancia}h — la cuota de ${inscripcion.nombre} NO se reembolsa. El lugar vuelve a estar disponible.`
+          : `Se liberó el lugar de ${inscripcion.nombre}.`,
+      tono: nuevoEstado === 'retenido' ? 'aviso' : 'ok',
+    });
+  }
+
+  /* ---- Torneos ---- */
+  const [modalNuevoTorneo, setModalNuevoTorneo] = useState(false);
+  const [torneoGestion, setTorneoGestion] = useState(null);
+  const [modalAgregarParticipante, setModalAgregarParticipante] = useState(false);
+  const [liberandoBloqueoId, setLiberandoBloqueoId] = useState(null);
+
+  const participantesPorTorneo = useMemo(() => {
+    const mapa = {};
+    participantesTorneo.forEach((p) => {
+      if (!mapa[p.torneo_id]) mapa[p.torneo_id] = [];
+      mapa[p.torneo_id].push(p);
+    });
+    return mapa;
+  }, [participantesTorneo]);
+
+  const torneosArchivados = useMemo(() => torneos.filter((t) => t.archivado === true), [torneos]);
+  const torneosVisibles = useMemo(
+    () => torneos.filter((t) => (filtroTorneo === 'archivados' ? t.archivado === true : t.archivado !== true)),
+    [torneos, filtroTorneo]
+  );
+
+  // El modal de gestión abre sobre un torneo elegido — lo mantenemos
+  // sincronizado con el estado vivo (p.ej. tras liberar un bloqueo) sin que
+  // el operador tenga que cerrarlo y volver a abrirlo.
+  const torneoGestionVivo = useMemo(() => {
+    if (!torneoGestion) return null;
+    return torneos.find((t) => t.id === torneoGestion.id) || torneoGestion;
+  }, [torneoGestion, torneos]);
+
+  async function liberarBloqueoTorneo(torneo, bloqueo) {
+    setLiberandoBloqueoId(bloqueo.reserva_bloqueo_id);
+    if (bloqueo.reserva_bloqueo_id) {
+      const { error } = await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', bloqueo.reserva_bloqueo_id);
+      if (error) {
+        setLiberandoBloqueoId(null);
+        mostrarToast({ titulo: 'No se pudo liberar el bloqueo', detalle: error.message, tono: 'error' });
+        return;
+      }
+      marcarReservaCancelada?.(bloqueo.reserva_bloqueo_id);
+    }
+    const nuevosBloqueos = (torneo.bloqueos || []).filter((b) => b.reserva_bloqueo_id !== bloqueo.reserva_bloqueo_id);
+    const { error: errTorneo } = await supabase.from('torneos').update({ bloqueos: nuevosBloqueos }).eq('id', torneo.id);
+    setLiberandoBloqueoId(null);
+    // Sincronización Silenciosa: el bloqueo ya se liberó en la Parrilla
+    // (arriba). Si la actualización del registro del torneo en Supabase
+    // falla, se aplica igualmente en el estado local y solo se registra en
+    // consola — el operador no necesita ver fricción de sincronización.
+    if (errTorneo) {
+      console.warn('[Torneos & Retas] No se pudo sincronizar el torneo tras liberar el bloqueo:', errTorneo.message);
+    }
+    setTorneos((prev) => (prev.map((t) => (t.id === torneo.id ? { ...t, bloqueos: nuevosBloqueos } : t))));
+    mostrarToast({ titulo: 'Horario liberado', detalle: `${bloqueo.cancha_nombre} vuelve a estar disponible en la Parrilla.` });
+  }
+
+  // Archivado de Torneos (Limpieza Visual): oculta el torneo de la vista
+  // activa sin tocar NINGÚN otro registro — pagos en el ERP, inscritos y
+  // puntos ya sumados al Ranking siguen intactos, `archivado` es la única
+  // columna que cambia. Tolerancia total y aislada: si la columna todavía
+  // no existe en `torneos`, el `update` falla solo, se avisa una vez, y el
+  // archivado queda aplicado igual en el estado local (+ `localStorage` si
+  // el torneo ya vivía ahí) hasta que agregues la columna — a propósito NO
+  // se mete `archivado` en el INSERT de `ModalNuevoTorneo` para no arriesgar
+  // la creación completa del torneo por una columna opcional ausente.
+  const [actualizandoArchivoId, setActualizandoArchivoId] = useState(null);
+  async function archivarTorneo(torneo, archivar) {
+    setActualizandoArchivoId(torneo.id);
+    setTorneos((prev) => prev.map((t) => (t.id === torneo.id ? { ...t, archivado: archivar } : t)));
+    if (torneo._local) {
+      guardarRegistroLocal(LS_KEY_TORNEOS_LOCAL, { ...torneo, archivado: archivar });
+    } else {
+      try {
+        const { error } = await supabase.from('torneos').update({ archivado: archivar }).eq('id', torneo.id);
+        if (error) throw error;
+      } catch (err) {
+        // Sincronización Silenciosa: la tarjeta ya se actualizó de forma
+        // optimista arriba — el operador ve el archivado aplicado al
+        // instante sin importar si Supabase lo aceptó o no. Solo se registra
+        // en consola para diagnóstico; nunca un aviso naranja flotante.
+        console.warn('[Torneos & Retas] No se pudo guardar "archivado" en Supabase — se aplica solo en esta sesión.', err);
+      }
+    }
+    setActualizandoArchivoId(null);
+    mostrarToast({
+      titulo: archivar ? 'Torneo archivado' : 'Torneo restaurado',
+      detalle: archivar ? `${torneo.nombre} ya no aparece en Activos.` : `${torneo.nombre} vuelve a Activos.`,
+    });
+  }
+
+  // Eliminación Definitiva: SOLO se ofrece (ver `TarjetaTorneo`) cuando el
+  // torneo no tiene participantes/ingresos — libera de paso cualquier
+  // bloqueo de cancha que hubiera quedado, para no dejar horarios fantasma
+  // en la Parrilla.
+  const [eliminandoTorneoId, setEliminandoTorneoId] = useState(null);
+  async function eliminarTorneoDefinitivo(torneo) {
+    const tieneParticipantes = (participantesPorTorneo[torneo.id] || []).length > 0;
+    if (tieneParticipantes) {
+      mostrarToast({
+        titulo: 'No se puede eliminar',
+        detalle: 'Este torneo ya tiene participantes/ingresos registrados — usa "Archivar" en vez de eliminar.',
+        tono: 'aviso',
+      });
+      return;
+    }
+    setEliminandoTorneoId(torneo.id);
+    for (const b of torneo.bloqueos || []) {
+      if (!b.reserva_bloqueo_id) continue;
+      try {
+        await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', b.reserva_bloqueo_id);
+        marcarReservaCancelada?.(b.reserva_bloqueo_id);
+      } catch (_e) {
+        /* best effort — no bloquea la eliminación del torneo por un bloqueo suelto */
+      }
+    }
+    if (torneo._local) {
+      quitarRegistroLocal(LS_KEY_TORNEOS_LOCAL, torneo.id);
+    } else {
+      try {
+        const { error } = await supabase.from('torneos').delete().eq('id', torneo.id);
+        if (error) throw error;
+      } catch (err) {
+        setEliminandoTorneoId(null);
+        mostrarToast({ titulo: 'No se pudo eliminar el torneo', detalle: err.message, tono: 'error' });
+        return;
+      }
+    }
+    setTorneos((prev) => prev.filter((t) => t.id !== torneo.id));
+    setEliminandoTorneoId(null);
+    mostrarToast({ titulo: 'Torneo eliminado', detalle: `${torneo.nombre} se eliminó definitivamente.` });
+  }
+
+  // Nombre Personalizado de Retas: renombrar desde la propia tarjeta, en
+  // cualquier momento (no solo al crearla) — optimista en el estado local
+  // (+ `localStorage` si la reta vive ahí) y best effort contra Supabase.
+  async function renombrarReta(reta, nuevoNombre) {
+    setRetas((prev) => prev.map((r) => (r.id === reta.id ? { ...r, nombre: nuevoNombre } : r)));
+    // Sincronización en Parrilla/Cronograma: las tarjetas de cancha NUNCA leen
+    // `retas.nombre` — muestran `reservas.jugador_nombre` del bloqueo que
+    // `crearBloqueoParrilla` creó al abrir la reta (nace fijo en "RETA
+    // ABIERTA"). Sin este segundo `update`, renombrar la reta aquí no se
+    // reflejaba jamás en la Parrilla, ni con recarga. `upsertReserva` (mismo
+    // setter que usa Realtime) actualiza el estado en memoria de inmediato,
+    // así que la tarjeta de la cancha cambia de nombre sin esperar recarga.
+    if (reta.reserva_bloqueo_id) {
+      try {
+        const { data, error: errBloqueo } = await supabase
+          .from('reservas')
+          .update({ jugador_nombre: nuevoNombre })
+          .eq('id', reta.reserva_bloqueo_id)
+          .select()
+          .single();
+        if (!errBloqueo && data) upsertReserva?.(data);
+      } catch (_e) {
+        /* best effort — el nombre de la reta ya quedó actualizado, solo el bloqueo de Parrilla no se pudo sincronizar */
+      }
+    }
+    if (reta._local) {
+      guardarRegistroLocal(LS_KEY_RETAS_LOCAL, { ...reta, nombre: nuevoNombre });
+      return;
+    }
+    try {
+      const { error } = await supabase.from('retas').update({ nombre: nuevoNombre }).eq('id', reta.id);
+      if (error) throw error;
+      mostrarToast({ titulo: 'Reta renombrada', detalle: nuevoNombre });
+    } catch (err) {
+      console.warn('[Torneos & Retas] No se pudo renombrar la Reta en Supabase.', err);
+      mostrarToast({ titulo: 'No se pudo guardar el nuevo nombre', detalle: err.message, tono: 'error' });
+    }
+  }
+
+  // Archivado de Retas: EXACTAMENTE el mismo criterio que Archivado de
+  // Torneos — oculta la reta de la vista activa sin tocar ningún otro
+  // registro (inscripciones, pagos), `archivado` es la única columna que
+  // cambia, y a propósito NO se mete en el INSERT de `ModalNuevaReta` para no
+  // arriesgar la creación completa de la reta por una columna opcional
+  // ausente. Tolerancia total y aislada, igual que en Torneos.
+  const [actualizandoArchivoRetaId, setActualizandoArchivoRetaId] = useState(null);
+  async function archivarReta(reta, archivar) {
+    setActualizandoArchivoRetaId(reta.id);
+    setRetas((prev) => prev.map((r) => (r.id === reta.id ? { ...r, archivado: archivar } : r)));
+    if (reta._local) {
+      guardarRegistroLocal(LS_KEY_RETAS_LOCAL, { ...reta, archivado: archivar });
+    } else {
+      try {
+        const { error } = await supabase.from('retas').update({ archivado: archivar }).eq('id', reta.id);
+        if (error) throw error;
+      } catch (err) {
+        // Sincronización Silenciosa: la tarjeta ya se actualizó de forma
+        // optimista arriba, sin importar si Supabase lo aceptó — solo se
+        // registra en consola, nunca un aviso naranja flotante.
+        console.warn('[Torneos & Retas] No se pudo guardar "archivado" en Supabase — se aplica solo en esta sesión.', err);
+      }
+    }
+    setActualizandoArchivoRetaId(null);
+    mostrarToast({
+      titulo: archivar ? 'Reta archivada' : 'Reta restaurada',
+      detalle: archivar ? `${reta.nombre} ya no aparece en Activas.` : `${reta.nombre} vuelve a Activas.`,
+    });
+  }
+
+  // Eliminación Definitiva de Retas: SOLO se ofrece (ver `TarjetaReta`) cuando
+  // la reta no tiene inscritos — libera de paso el bloqueo de cancha
+  // (`reserva_bloqueo_id`) que hubiera quedado, para no dejar un horario
+  // fantasma en la Parrilla.
+  const [eliminandoRetaId, setEliminandoRetaId] = useState(null);
+  async function eliminarRetaDefinitivo(reta) {
+    const tieneInscritos = (inscripcionesPorReta[reta.id] || []).length > 0;
+    if (tieneInscritos) {
+      mostrarToast({
+        titulo: 'No se puede eliminar',
+        detalle: 'Esta Reta ya tiene jugadores inscritos — usa "Archivar" en vez de eliminar.',
+        tono: 'aviso',
+      });
+      return;
+    }
+    setEliminandoRetaId(reta.id);
+    if (reta.reserva_bloqueo_id) {
+      try {
+        await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', reta.reserva_bloqueo_id);
+        marcarReservaCancelada?.(reta.reserva_bloqueo_id);
+      } catch (_e) {
+        /* best effort — no bloquea la eliminación de la reta por un bloqueo suelto */
+      }
+    }
+    if (reta._local) {
+      quitarRegistroLocal(LS_KEY_RETAS_LOCAL, reta.id);
+    } else {
+      try {
+        const { error } = await supabase.from('retas').delete().eq('id', reta.id);
+        if (error) throw error;
+      } catch (err) {
+        setEliminandoRetaId(null);
+        mostrarToast({ titulo: 'No se pudo eliminar la Reta', detalle: err.message, tono: 'error' });
+        return;
+      }
+    }
+    setRetas((prev) => prev.filter((r) => r.id !== reta.id));
+    setEliminandoRetaId(null);
+    mostrarToast({ titulo: 'Reta eliminada', detalle: `${reta.nombre} se eliminó definitivamente.` });
+  }
+
+  // Captura de Marcadores en Retas: al completarse los 4 lugares, en vez de
+  // quedarse estática en "Reta Completa", se abre este flujo (mismos campos
+  // Set 1/2/3 y `calcularGanadorSets` que Torneos). `sets`/`ganador`/
+  // `pareja1`/`pareja2` son columnas NUEVAS y OPCIONALES en `retas` — igual
+  // criterio de tolerancia total que `archivado`: si todavía no existen en el
+  // proyecto de Supabase, el resultado queda aplicado solo en esta sesión (se
+  // avisa una vez) en vez de bloquear al operador.
+  const [retaMarcador, setRetaMarcador] = useState(null);
+  const [guardandoMarcadorReta, setGuardandoMarcadorReta] = useState(false);
+  async function guardarMarcadorReta({ reta, sets, ganador, pareja1, pareja2 }) {
+    setGuardandoMarcadorReta(true);
+    const cambios = { sets, ganador, pareja1, pareja2, estado: 'jugada' };
+    setRetas((prev) => prev.map((r) => (r.id === reta.id ? { ...r, ...cambios } : r)));
+    if (reta._local) {
+      guardarRegistroLocal(LS_KEY_RETAS_LOCAL, { ...reta, ...cambios });
+    } else {
+      try {
+        const { error } = await supabase.from('retas').update(cambios).eq('id', reta.id);
+        if (error) throw error;
+      } catch (err) {
+        // Sincronización Silenciosa: el marcador ya se aplicó de forma
+        // optimista arriba — solo se registra en consola para diagnóstico.
+        console.warn('[Torneos & Retas] No se pudo guardar el marcador de la Reta en Supabase — se aplica solo en esta sesión.', err);
+      }
+    }
+    setGuardandoMarcadorReta(false);
+    setRetaMarcador(null);
+    mostrarToast({
+      titulo: 'Marcador guardado',
+      detalle: `${ganador === 'pareja1' ? pareja1 : pareja2} ganó · ${reta.nombre}`,
+    });
+  }
+
+  // Descarta a mano una tarjeta que se quedó en "Modo local" (nunca llegó a
+  // guardarse de verdad en Supabase) — la quita del estado y de
+  // `localStorage`. Sirve para cuando el operador ya corrigió la causa de
+  // fondo (RLS/esquema) y volvió a crear el registro correctamente: evita
+  // que el fantasma local se quede para siempre junto al registro real.
+  function descartarRetaLocal(reta) {
+    setRetas((prev) => prev.filter((r) => r.id !== reta.id));
+    quitarRegistroLocal(LS_KEY_RETAS_LOCAL, reta.id);
+  }
+  function descartarTorneoLocal(torneo) {
+    setTorneos((prev) => prev.filter((t) => t.id !== torneo.id));
+    quitarRegistroLocal(LS_KEY_TORNEOS_LOCAL, torneo.id);
+  }
+
+  /* ---- Motor de Torneos: Cuadros & Partidos (Fase 1) ---- */
+  const [modalGenerarCuadro, setModalGenerarCuadro] = useState(false);
+  const [categoriaCuadroGenerar, setCategoriaCuadroGenerar] = useState('');
+  const [guardandoCuadro, setGuardandoCuadro] = useState(false);
+  const [partidoAsignarHorario, setPartidoAsignarHorario] = useState(null);
+  const [asignandoHorarioPartido, setAsignandoHorarioPartido] = useState(false);
+  const [partidoMarcador, setPartidoMarcador] = useState(null);
+  const [guardandoMarcador, setGuardandoMarcador] = useState(false);
+  const [finalizandoTorneo, setFinalizandoTorneo] = useState(false);
+
+  const partidosPorTorneo = useMemo(() => {
+    const mapa = {};
+    partidosTorneo.forEach((p) => {
+      if (!mapa[p.torneo_id]) mapa[p.torneo_id] = [];
+      mapa[p.torneo_id].push(p);
+    });
+    return mapa;
+  }, [partidosTorneo]);
+
+  // Genera el cuadro COMPLETO (todas las rondas) para el torneo en gestión —
+  // tolerancia total: si el insert masivo a `torneo_partidos` falla (RLS,
+  // tabla todavía no creada, red caída), el cuadro entero se arma en memoria
+  // local con ids sintéticos y se persiste en `localStorage`, sin bloquear
+  // nunca al operador con una pantalla roja.
+  async function generarCuadroTorneo({ categoria, parejasReales }) {
+    if (!torneoGestionVivo) return;
+    setGuardandoCuadro(true);
+    const payloadPartidos = generarPartidosCuadro({ torneoId: torneoGestionVivo.id, categoria, parejasReales });
+
+    let partidosCreados = null;
+    try {
+      const { data, error } = await supabase.from('torneo_partidos').insert(payloadPartidos).select();
+      if (error) throw error;
+      partidosCreados = data;
+    } catch (err) {
+      console.warn('[Torneos & Retas] No se pudo guardar el cuadro en Supabase — se usa modo local.', err);
+      partidosCreados = payloadPartidos.map((p) => ({ ...p, id: idLocal('partido'), _local: true }));
+      partidosCreados.forEach((p) => guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, p));
+    }
+
+    setPartidosTorneo((prev) => [...prev, ...partidosCreados]);
+    setGuardandoCuadro(false);
+    setModalGenerarCuadro(false);
+    const tamanoCuadro = siguientePotenciaDeDos(parejasReales.length);
+    mostrarToast({
+      titulo: 'Cuadro generado',
+      detalle: `${categoria || torneoGestionVivo.nombre} · ${parejasReales.length} pareja(s) · ${Math.log2(tamanoCuadro)} ronda(s)`,
+    });
+  }
+
+  // Asigna cancha/horario a un partido: sincroniza (best effort) el bloqueo
+  // en `reservas` — reutilizando el mismo bloqueo si el partido se está
+  // reasignando — y el renglón de `torneo_partidos`. El bloqueo lleva como
+  // etiqueta la ronda y las parejas ("Semifinal: Juan/Carlos vs Pedro/Luis")
+  // para que la Parrilla muestre el partido específico, no un genérico
+  // "TORNEO: <nombre>".
+  async function asignarHorarioPartidoHandler({ partido, canchaId, fecha, horaInicio, horaFin }) {
+    setAsignandoHorarioPartido(true);
+    const cancha = canchas.find((c) => c.id === canchaId);
+    const etiqueta = `${partido.ronda}: ${partido.pareja1} vs ${partido.pareja2}`;
+
+    let bloqueoReserva = null;
+    try {
+      if (partido.reserva_bloqueo_id && !String(partido.reserva_bloqueo_id).startsWith('local-')) {
+        const { data, error } = await supabase
+          .from('reservas')
+          .update({ cancha_id: canchaId, fecha, hora_inicio: horaInicio, hora_fin: horaFin, jugador_nombre: etiqueta })
+          .eq('id', partido.reserva_bloqueo_id)
+          .select()
+          .single();
+        if (error) throw error;
+        bloqueoReserva = data;
+      } else {
+        const { data, error } = await crearBloqueoParrilla({ canchaId, fecha, horaInicio, horaFin, estado: 'Torneo', etiqueta });
+        if (error) throw error;
+        bloqueoReserva = data;
+      }
+    } catch (err) {
+      console.warn('[Torneos & Retas] No se pudo sincronizar el horario del partido con la Parrilla — se aplica solo local.', err);
+      bloqueoReserva = {
+        id: partido.reserva_bloqueo_id || idLocal('bloqueo'),
+        cancha_id: canchaId,
+        jugador_id: null,
+        jugador_nombre: etiqueta,
+        fecha,
+        hora_inicio: horaInicio,
+        hora_fin: horaFin,
+        estado: 'Torneo',
+        estado_pago: 'pagado',
+        metodo_pago: null,
+        monto_total: 0,
+        _local: true,
+      };
+    }
+    upsertReserva?.(bloqueoReserva);
+
+    const cambiosPartido = {
+      cancha_id: canchaId,
+      fecha,
+      hora_inicio: horaInicio,
+      hora_fin: horaFin,
+      reserva_bloqueo_id: bloqueoReserva.id,
+    };
+
+    if (!partido._local) {
+      try {
+        const { error } = await supabase.from('torneo_partidos').update(cambiosPartido).eq('id', partido.id);
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Torneos & Retas] No se pudo sincronizar el horario del partido en Supabase — se aplica solo local.', err);
+      }
+    }
+
+    setPartidosTorneo((prev) =>
+      prev.map((p) => {
+        if (p.id !== partido.id) return p;
+        const actualizado = { ...p, ...cambiosPartido };
+        if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, actualizado);
+        return actualizado;
+      })
+    );
+
+    setAsignandoHorarioPartido(false);
+    setPartidoAsignarHorario(null);
+    mostrarToast({
+      titulo: 'Horario asignado',
+      detalle: `${cancha?.nombre || 'Cancha'} · ${formatoFechaLarga(fecha)} · ${formatoHora12(horaInicio)}`,
+    });
+  }
+
+  // Guarda el marcador de un partido, determina automáticamente al ganador
+  // (`calcularGanadorSets`) y lo avanza a la ronda siguiente: la posición del
+  // partido dentro de su ronda ubica exactamente a qué partido de la
+  // siguiente ronda avanza (posición par → cae en `pareja1`, impar →
+  // `pareja2`) — la misma lógica de bracket estándar de eliminación directa.
+  async function cargarMarcadorPartidoHandler({ partido, sets, ganador }) {
+    setGuardandoMarcador(true);
+    const cambios = { sets, ganador, estado: 'jugado' };
+
+    if (!partido._local) {
+      try {
+        const { error } = await supabase.from('torneo_partidos').update(cambios).eq('id', partido.id);
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Torneos & Retas] No se pudo sincronizar el marcador en Supabase — se aplica solo local.', err);
+      }
+    }
+
+    setPartidosTorneo((prev) =>
+      prev.map((p) => {
+        if (p.id !== partido.id) return p;
+        const actualizado = { ...p, ...cambios };
+        if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, actualizado);
+        return actualizado;
+      })
+    );
+
+    const nombreGanador = ganador === 'pareja1' ? partido.pareja1 : partido.pareja2;
+    const siguientePosicion = Math.floor(partido.posicion / 2);
+    const siguienteSlot = partido.posicion % 2 === 0 ? 'pareja1' : 'pareja2';
+    const siguientePartido = partidosTorneo.find(
+      (p) =>
+        p.torneo_id === partido.torneo_id &&
+        p.categoria === partido.categoria &&
+        p.ronda_orden === partido.ronda_orden + 1 &&
+        p.posicion === siguientePosicion
+    );
+
+    if (siguientePartido) {
+      const cambiosSiguiente = { [siguienteSlot]: nombreGanador };
+      if (!siguientePartido._local) {
+        try {
+          const { error } = await supabase.from('torneo_partidos').update(cambiosSiguiente).eq('id', siguientePartido.id);
+          if (error) throw error;
+        } catch (err) {
+          console.warn('[Torneos & Retas] No se pudo avanzar al ganador en Supabase — se aplica solo local.', err);
+        }
+      }
+      setPartidosTorneo((prev) =>
+        prev.map((p) => {
+          if (p.id !== siguientePartido.id) return p;
+          const actualizado = { ...p, ...cambiosSiguiente };
+          if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, actualizado);
+          return actualizado;
+        })
+      );
+    }
+
+    setGuardandoMarcador(false);
+    setPartidoMarcador(null);
+    mostrarToast({
+      titulo: 'Marcador guardado',
+      detalle: siguientePartido
+        ? `${nombreGanador} avanza a ${siguientePartido.ronda}.`
+        : `${nombreGanador} gana ${partido.ronda === 'Final' ? 'el torneo 🏆' : `y termina su participación en ${partido.ronda}`}.`,
+    });
+  }
+
+  // Aplica los puntos/partidos calculados de un torneo a `rankingJugadores`
+  // (compartido con el módulo Jugadores): busca si el jugador ya tiene fila
+  // en ESE nivel (Campeón/Subcampeón/... se suma a lo que ya traía, no lo
+  // reemplaza) y hace UPDATE, o crea la fila si es la primera vez que puntúa
+  // en ese nivel. Tolerancia total, fila por fila: si Supabase falla, esa
+  // fila se queda en memoria local (y en `localStorage`) sin bloquear el
+  // resto del reparto.
+  async function aplicarResultadosARanking(resultados, torneoId) {
+    const filasFinales = [];
+    for (const r of resultados) {
+      const existente = rankingJugadores.find((row) => row.nombre === r.nombre && row.nivel === r.nivel);
+      const torneosPrevios = existente?.torneos_ids || [];
+      const torneosIds = torneosPrevios.includes(torneoId) ? torneosPrevios : [...torneosPrevios, torneoId];
+
+      if (existente) {
+        const cambios = {
+          puntos: (Number(existente.puntos) || 0) + r.puntos,
+          partidos_jugados: (Number(existente.partidos_jugados) || 0) + r.partidos_jugados,
+          partidos_ganados: (Number(existente.partidos_ganados) || 0) + r.partidos_ganados,
+          torneos_ids: torneosIds,
+        };
+        if (!existente._local) {
+          try {
+            const { error } = await supabase.from('ranking_jugadores').update(cambios).eq('id', existente.id);
+            if (error) throw error;
+          } catch (err) {
+            console.warn('[Ranking del Club] No se pudo actualizar el ranking en Supabase — se aplica solo local.', err);
+          }
+        }
+        const actualizado = { ...existente, ...cambios };
+        if (actualizado._local) guardarRegistroLocal(LS_KEY_RANKING_LOCAL, actualizado);
+        filasFinales.push(actualizado);
+      } else {
+        const payloadNuevo = withClubId({
+          nombre: r.nombre,
+          nivel: r.nivel,
+          puntos: r.puntos,
+          partidos_jugados: r.partidos_jugados,
+          partidos_ganados: r.partidos_ganados,
+          torneos_ids: torneosIds,
+        });
+        let filaCreada = null;
+        try {
+          const { data, error } = await supabase.from('ranking_jugadores').insert(payloadNuevo).select().single();
+          if (error) throw error;
+          filaCreada = data;
+        } catch (err) {
+          console.warn('[Ranking del Club] No se pudo crear el registro de ranking en Supabase — se usa modo local.', err);
+          filaCreada = { ...payloadNuevo, id: idLocal('ranking'), _local: true };
+          guardarRegistroLocal(LS_KEY_RANKING_LOCAL, filaCreada);
+        }
+        filasFinales.push(filaCreada);
+      }
+    }
+
+    setRankingJugadores((prev) => {
+      const mapa = new Map(prev.map((row) => [row.id, row]));
+      filasFinales.forEach((row) => mapa.set(row.id, row));
+      return Array.from(mapa.values());
+    });
+  }
+
+  // "Finalizar Torneo & Asignar Puntos": exige que la Final de CADA
+  // categoría del torneo (o del cuadro único, si no tiene categorías) ya
+  // tenga marcador — de lo contrario avisa cuáles faltan en vez de repartir
+  // puntos a medias. Luego reparte puntos por categoría (`calcularResultados
+  // TorneoCategoria`), los junta por jugador+nivel a través de todas las
+  // categorías del torneo, los aplica al Ranking y marca el torneo como
+  // 'finalizado' (con la misma tolerancia total del resto del módulo).
+  async function finalizarTorneo() {
+    if (!torneoGestionVivo || torneoGestionVivo.estado === 'finalizado') return;
+
+    const categoriasTorneo =
+      (torneoGestionVivo.categorias || []).length > 0
+        ? torneoGestionVivo.categorias.map((c) => `${c.rama} ${c.nivel}`)
+        : [null];
+    const partidosTorneoActual = partidosPorTorneo[torneoGestionVivo.id] || [];
+
+    const pendientes = [];
+    const resultadosPorCategoria = [];
+    categoriasTorneo.forEach((cat) => {
+      const partidosCat = partidosTorneoActual.filter((p) => p.categoria === cat);
+      if (partidosCat.length === 0) {
+        pendientes.push(cat || 'General');
+        return;
+      }
+      const maxRonda = Math.max(...partidosCat.map((p) => p.ronda_orden));
+      const finalPartido = partidosCat.find((p) => p.ronda_orden === maxRonda);
+      if (!finalPartido || finalPartido.estado !== 'jugado') {
+        pendientes.push(cat || 'General');
+        return;
+      }
+      resultadosPorCategoria.push({ categoria: cat, partidos: partidosCat });
+    });
+
+    if (pendientes.length > 0) {
+      mostrarToast({
+        titulo: 'Faltan finales por jugar',
+        detalle: `Completa la Final de: ${pendientes.join(', ')} antes de finalizar el torneo.`,
+        tono: 'aviso',
+      });
+      return;
+    }
+
+    setFinalizandoTorneo(true);
+
+    const acumuladoGlobal = new Map(); // `${nombre}::${nivel}` -> {nombre, nivel, puntos, partidos_jugados, partidos_ganados}
+    resultadosPorCategoria.forEach(({ categoria, partidos }) => {
+      const nivel = extraerNivelDeCategoria(categoria);
+      const resultado = calcularResultadosTorneoCategoria(partidos);
+      if (!resultado) return;
+      resultado.forEach((valores, nombre) => {
+        const clave = `${nombre}::${nivel}`;
+        if (!acumuladoGlobal.has(clave)) {
+          acumuladoGlobal.set(clave, { nombre, nivel, puntos: 0, partidos_jugados: 0, partidos_ganados: 0 });
+        }
+        const actual = acumuladoGlobal.get(clave);
+        actual.puntos += valores.puntos;
+        actual.partidos_jugados += valores.partidos_jugados;
+        actual.partidos_ganados += valores.partidos_ganados;
+      });
+    });
+
+    await aplicarResultadosARanking(Array.from(acumuladoGlobal.values()), torneoGestionVivo.id);
+
+    if (!torneoGestionVivo._local) {
+      try {
+        const { error } = await supabase.from('torneos').update({ estado: 'finalizado' }).eq('id', torneoGestionVivo.id);
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Torneos & Retas] No se pudo marcar el torneo como finalizado en Supabase — se aplica solo local.', err);
+      }
+    }
+    setTorneos((prev) =>
+      prev.map((t) => {
+        if (t.id !== torneoGestionVivo.id) return t;
+        const actualizado = { ...t, estado: 'finalizado' };
+        if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEOS_LOCAL, actualizado);
+        return actualizado;
+      })
+    );
+
+    setFinalizandoTorneo(false);
+    mostrarToast({ titulo: 'Torneo finalizado', detalle: 'Puntos asignados — el Ranking del Club ya se actualizó.' });
+  }
+
+  /* ---- Render ---- */
+
+  const subvistas = [
+    { value: 'retas', label: 'Retas Abiertas', icon: Swords },
+    { value: 'torneos', label: 'Torneos', icon: Trophy },
+    { value: 'control', label: 'Mesa de Control', icon: ClipboardList },
+  ];
+
+  return (
+    <>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-wrap rounded-lg border border-slate-700 bg-slate-800 p-1">
+          {subvistas.map((v) => {
+            const Icon = v.icon;
+            return (
+              <button
+                key={v.value}
+                onClick={() => setSubvista(v.value)}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                <Icon size={14} /> {v.label}
+              </button>
+            );
+          })}
+        </div>
+        {subvista === 'retas' && (
+          <BotonPrimario onClick={() => setModalNuevaReta(true)} className="whitespace-nowrap">
+            <Swords size={15} /> Abrir Reta
+          </BotonPrimario>
+        )}
+        {subvista === 'torneos' && (
+          <BotonPrimario onClick={() => setModalNuevoTorneo(true)} className="whitespace-nowrap">
+            <Trophy size={15} /> Nuevo Torneo
+          </BotonPrimario>
+        )}
+      </div>
+
+      {subvista === 'retas' && (
+        <>
+          {errorRetas && <ErrorBanner mensaje={errorRetas} onReintentar={() => cargarRetas()} />}
+          {errorInscripciones && <ErrorBanner mensaje={errorInscripciones} onReintentar={() => cargarInscripciones()} />}
+
+          {retas.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 p-1">
+              <button
+                type="button"
+                onClick={() => setFiltroReta('activas')}
+                className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
+                  filtroReta === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Activas
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltroReta('archivadas')}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
+                  filtroReta === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Archive size={11} /> Archivadas
+                {retasArchivadas.length > 0 && (
+                  <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] font-black text-slate-300">
+                    {retasArchivadas.length}
+                  </span>
+                )}
+              </button>
+            </div>
+          )}
+
+          {loadingRetas || loadingInscripciones ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-72 animate-pulse rounded-2xl bg-slate-900" />
+              ))}
+            </div>
+          ) : retasVisibles.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-16 text-center">
+              <Swords size={26} className="text-slate-700" />
+              <p className="text-sm font-semibold text-slate-400">
+                {filtroReta === 'archivadas' ? 'No hay retas archivadas.' : 'No hay Retas Abiertas activas.'}
+              </p>
+              <p className="text-xs text-slate-600">
+                {filtroReta === 'archivadas'
+                  ? 'Las retas que archives aparecerán aquí, sin perder inscripciones ni pagos.'
+                  : 'Crea una para vender lugares individuales y bloquear el horario en la Parrilla.'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {retasVisibles.map((reta) => (
+                <TarjetaReta
+                  key={reta.id}
+                  reta={reta}
+                  cancha={canchas.find((c) => c.id === reta.cancha_id)}
+                  inscritos={inscripcionesPorReta[reta.id] || []}
+                  onInscribir={setRetaParaInscribir}
+                  onCancelarInscripcion={cancelarInscripcionReta}
+                  cancelandoId={cancelandoInscripcionId}
+                  onDescartarLocal={descartarRetaLocal}
+                  onRenombrar={renombrarReta}
+                  onArchivar={archivarReta}
+                  actualizandoArchivo={actualizandoArchivoRetaId === reta.id}
+                  onEliminarDefinitivo={eliminarRetaDefinitivo}
+                  eliminando={eliminandoRetaId === reta.id}
+                  onCargarMarcador={setRetaMarcador}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {subvista === 'torneos' && (
+        <>
+          {errorTorneos && <ErrorBanner mensaje={errorTorneos} onReintentar={() => cargarTorneos()} />}
+          {errorParticipantes && <ErrorBanner mensaje={errorParticipantes} onReintentar={() => cargarParticipantesTorneo()} />}
+
+          {torneos.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 p-1">
+              <button
+                type="button"
+                onClick={() => setFiltroTorneo('activos')}
+                className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
+                  filtroTorneo === 'activos' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Activos
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltroTorneo('archivados')}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
+                  filtroTorneo === 'archivados' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Archive size={11} /> Archivados
+                {torneosArchivados.length > 0 && (
+                  <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] font-black text-slate-300">
+                    {torneosArchivados.length}
+                  </span>
+                )}
+              </button>
+            </div>
+          )}
+
+          {loadingTorneos || loadingParticipantes ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-64 animate-pulse rounded-2xl bg-slate-900" />
+              ))}
+            </div>
+          ) : torneosVisibles.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-16 text-center">
+              <Trophy size={26} className="text-slate-700" />
+              <p className="text-sm font-semibold text-slate-400">
+                {filtroTorneo === 'archivados' ? 'No hay torneos archivados.' : 'Todavía no hay torneos activos.'}
+              </p>
+              <p className="text-xs text-slate-600">
+                {filtroTorneo === 'archivados'
+                  ? 'Los torneos que archives aparecerán aquí, sin perder pagos, inscritos ni puntos del Ranking.'
+                  : 'Crea uno para bloquear canchas, definir formato y abrir inscripciones.'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {torneosVisibles.map((torneo) => (
+                <TarjetaTorneo
+                  key={torneo.id}
+                  torneo={torneo}
+                  participantes={participantesPorTorneo[torneo.id] || []}
+                  onGestionar={setTorneoGestion}
+                  onDescartarLocal={descartarTorneoLocal}
+                  onArchivar={archivarTorneo}
+                  actualizandoArchivo={actualizandoArchivoId === torneo.id}
+                  onEliminarDefinitivo={eliminarTorneoDefinitivo}
+                  eliminando={eliminandoTorneoId === torneo.id}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {subvista === 'control' && (
+        <MesaDeControl retas={retas} inscripciones={inscripciones} torneos={torneos} participantesTorneo={participantesTorneo} />
+      )}
+
+      {modalNuevaReta && (
+        <ModalNuevaReta
+          canchas={canchas}
+          reservas={reservas}
+          onClose={() => setModalNuevaReta(false)}
+          onCreada={(reta, bloqueo) => {
+            setRetas((prev) => [...prev, reta]);
+            if (reta._local) guardarRegistroLocal(LS_KEY_RETAS_LOCAL, reta);
+            if (bloqueo) upsertReserva?.(bloqueo);
+          }}
+        />
+      )}
+
+      {retaParaInscribir && (
+        <ModalInscribirJugador
+          reta={retaParaInscribir}
+          lugaresDisponibles={Math.max(
+            0,
+            CUPOS_RETA - (inscripcionesPorReta[retaParaInscribir.id] || []).filter((i) => i.estado === 'confirmado').length
+          )}
+          jugadores={jugadoresDirectorio}
+          onClose={() => setRetaParaInscribir(null)}
+          onInscrito={(inscripcion) => {
+            setInscripciones((prev) => [...prev, inscripcion]);
+            if (inscripcion._local) guardarRegistroLocal(LS_KEY_RETA_INSCRIPCIONES_LOCAL, inscripcion);
+          }}
+        />
+      )}
+
+      {modalNuevoTorneo && (
+        <ModalNuevoTorneo
+          canchas={canchas}
+          reservas={reservas}
+          onClose={() => setModalNuevoTorneo(false)}
+          onCreado={(torneo) => {
+            setTorneos((prev) => [...prev, torneo]);
+            if (torneo._local) guardarRegistroLocal(LS_KEY_TORNEOS_LOCAL, torneo);
+            (torneo.bloqueos || []).forEach((b) => {
+              upsertReserva?.({
+                id: b.reserva_bloqueo_id,
+                cancha_id: b.cancha_id,
+                fecha: b.fecha,
+                hora_inicio: b.hora_inicio,
+                hora_fin: b.hora_fin,
+                estado: 'Torneo',
+                estado_pago: 'pagado',
+                jugador_nombre: `TORNEO: ${torneo.nombre}`,
+                jugador_id: null,
+                monto_total: 0,
+              });
+            });
+          }}
+        />
+      )}
+
+      {torneoGestionVivo && (
+        <ModalGestionTorneo
+          torneo={torneoGestionVivo}
+          participantes={participantesPorTorneo[torneoGestionVivo.id] || []}
+          canchas={canchas}
+          partidos={partidosPorTorneo[torneoGestionVivo.id] || []}
+          loadingPartidos={loadingPartidosTorneo}
+          onClose={() => setTorneoGestion(null)}
+          onAgregarParticipante={() => setModalAgregarParticipante(true)}
+          onLiberarBloqueo={liberarBloqueoTorneo}
+          liberandoBloqueoId={liberandoBloqueoId}
+          onGenerarCuadro={(categoria) => {
+            setCategoriaCuadroGenerar(categoria);
+            setModalGenerarCuadro(true);
+          }}
+          onAsignarHorarioPartido={(partido) => setPartidoAsignarHorario(partido)}
+          onCargarMarcadorPartido={(partido) => setPartidoMarcador(partido)}
+          onFinalizarTorneo={finalizarTorneo}
+          finalizandoTorneo={finalizandoTorneo}
+        />
+      )}
+
+      {modalAgregarParticipante && torneoGestionVivo && (
+        <ModalAgregarParticipanteTorneo
+          torneo={torneoGestionVivo}
+          jugadores={jugadoresDirectorio}
+          onClose={() => setModalAgregarParticipante(false)}
+          onAgregado={(participante) => {
+            setParticipantesTorneo((prev) => [...prev, participante]);
+            if (participante._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTICIPANTES_LOCAL, participante);
+          }}
+        />
+      )}
+
+      {modalGenerarCuadro && torneoGestionVivo && (
+        <ModalGenerarCuadro
+          torneo={torneoGestionVivo}
+          participantes={participantesPorTorneo[torneoGestionVivo.id] || []}
+          categoriaInicial={categoriaCuadroGenerar}
+          onClose={() => setModalGenerarCuadro(false)}
+          onGenerar={generarCuadroTorneo}
+          generando={guardandoCuadro}
+        />
+      )}
+
+      {partidoAsignarHorario && (
+        <ModalAsignarHorarioPartido
+          partido={partidoAsignarHorario}
+          canchas={canchas}
+          reservas={reservas}
+          onClose={() => setPartidoAsignarHorario(null)}
+          onAsignar={asignarHorarioPartidoHandler}
+          asignando={asignandoHorarioPartido}
+        />
+      )}
+
+      {partidoMarcador && (
+        <ModalMarcadorPartido
+          partido={partidoMarcador}
+          onClose={() => setPartidoMarcador(null)}
+          onGuardar={cargarMarcadorPartidoHandler}
+          guardando={guardandoMarcador}
+        />
+      )}
+
+      {retaMarcador && (
+        <ModalMarcadorReta
+          reta={retaMarcador}
+          confirmados={(inscripcionesPorReta[retaMarcador.id] || []).filter((i) => i.estado === 'confirmado')}
+          onClose={() => setRetaMarcador(null)}
+          onGuardar={guardarMarcadorReta}
+          guardando={guardandoMarcadorReta}
+        />
+      )}
+    </>
+  );
+}
+
+/* ---------------- Jugadores (CRM) — Ranking del Club ---------------- */
+
+// Tabla del Ranking del Club para UN nivel a la vez (1ª–6ª Fuerza / Open),
+// ordenada por puntos descendente. `ranking` llega ya cargado desde App()
+// (misma tolerancia total al resto del módulo: si `ranking_jugadores` no
+// existe todavía en Supabase, simplemente se ve vacío, sin pantalla roja).
+function RankingDelClub({ ranking, loading, error, onReintentar }) {
+  const [nivelFiltro, setNivelFiltro] = useState(NIVELES_FUERZA[0]);
+
+  const filasNivel = useMemo(() => {
+    return ranking
+      .filter((r) => r.nivel === nivelFiltro)
+      .map((r) => {
+        const jugados = Number(r.partidos_jugados) || 0;
+        const ganados = Number(r.partidos_ganados) || 0;
+        return {
+          ...r,
+          efectividad: jugados > 0 ? Math.round((ganados / jugados) * 100) : 0,
+          torneosDisputados: (r.torneos_ids || []).length,
+        };
+      })
+      .sort((a, b) => (Number(b.puntos) || 0) - (Number(a.puntos) || 0));
+  }, [ranking, nivelFiltro]);
+
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-10 animate-pulse rounded-xl bg-slate-900" />
+        ))}
+      </div>
+    );
+  }
+
+  if (error) return <ErrorBanner mensaje={error} onReintentar={onReintentar} />;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-1.5">
+        {NIVELES_FUERZA.map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => setNivelFiltro(n)}
+            className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+              nivelFiltro === n ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+
+      {filasNivel.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center">
+          <Award size={26} className="text-slate-700" />
+          <p className="text-sm font-semibold text-slate-400">Todavía no hay resultados en {nivelFiltro}.</p>
+          <p className="text-xs text-slate-600">Se llena solo al usar "Finalizar Torneo &amp; Asignar Puntos" en un torneo de esta categoría.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-800">
+          <table className="w-full min-w-[640px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-2.5 text-center">Pos.</th>
+                <th className="px-3 py-2.5">Jugador</th>
+                <th className="px-3 py-2.5 text-right">Puntos</th>
+                <th className="px-3 py-2.5 text-right">Partidos Jugados</th>
+                <th className="px-3 py-2.5 text-right">Efectividad</th>
+                <th className="px-3 py-2.5 text-right">Torneos Disputados</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filasNivel.map((r, idx) => (
+                <tr key={r.id} className="border-b border-slate-800/70 last:border-0">
+                  <td className="px-3 py-2.5 text-center">
+                    <span
+                      className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-black ${
+                        idx === 0
+                          ? 'bg-amber-400/20 text-amber-300'
+                          : idx === 1
+                          ? 'bg-slate-400/20 text-slate-200'
+                          : idx === 2
+                          ? 'bg-orange-400/20 text-orange-300'
+                          : 'text-slate-500'
+                      }`}
+                    >
+                      {idx + 1}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2.5 font-bold text-slate-100">{r.nombre}</td>
+                  <td className="px-3 py-2.5 text-right font-black text-lime-400">{r.puntos}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-300">{r.partidos_jugados}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-300">{r.efectividad}%</td>
+                  <td className="px-3 py-2.5 text-right text-slate-300">{r.torneosDisputados}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
+ * DIRECTORIO & CRM DE JUGADORES — LTV + Customer Health Score (CHS) +
+ * Motor Anti-Churn. Ver el comentario "CRM DE JUGADORES" (junto a
+ * `claveTelefono`/`claveNombre`/`calcularCHS`) para el criterio de cruce.
+ * ==========================================================================*/
+
+function DirectorioJugadoresCRM({
+  canchas,
+  reservas,
+  productos,
+  jugadoresPorId,
+  onActualizarTelefonoJugador,
+  onRefrescarDirectorio,
+  retas,
+  inscripciones,
+  torneos,
+  participantesTorneo,
+  partidosTorneo,
+  bloqueosMaestroTorneoIds,
+}) {
+  /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
+   * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
+   * (reutiliza `consultarVentasEnRango`, que ya sabe caer de `created_at` a
+   * `fecha` y de último recurso a un lote reciente filtrado en cliente) pero
+   * pidiendo TODO el histórico — el LTV es acumulado, no de un periodo. ---- */
+  const [ventasHistoricas, setVentasHistoricas] = useState([]);
+  const [errorVentas, setErrorVentas] = useState('');
+
+  const cargarVentasHistoricas = useCallback(async () => {
+    setErrorVentas('');
+    const inicio = new Date('2000-01-01T00:00:00');
+    const fin = new Date('2100-01-01T00:00:00');
+    const { data, error } = await consultarVentasEnRango(inicio, fin);
+    if (error) {
+      setErrorVentas(error.message || 'No se pudieron cargar las ventas de Smart POS.');
+      setVentasHistoricas([]);
+    } else {
+      setVentasHistoricas(data || []);
+    }
+  }, []);
+
+  useEffect(() => {
+    cargarVentasHistoricas();
+  }, [cargarVentasHistoricas]);
+
+  // Tiempo real: una venta nueva en Smart POS recalcula LTV/CHS al instante.
+  useEffect(() => {
+    const canal = supabase
+      .channel('jugadores-crm-ventas')
+      .on('postgres_changes', canalClubFiltro('ventas'), () => cargarVentasHistoricas())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarVentasHistoricas]);
+
+  /* ---- Agrupaciones O(1): evita recorrer todo el histórico por cada jugador ---- */
+  const productosPorId = useMemo(() => {
+    const mapa = {};
+    (productos || []).forEach((p) => {
+      mapa[p.id] = p;
+    });
+    return mapa;
+  }, [productos]);
+
+  // Nombre de cancha para los paneles desplegables de detalle (historial de
+  // reservas, tickets de renta, Cancha Preferida).
+  const canchasPorId = useMemo(() => {
+    const mapa = {};
+    (canchas || []).forEach((c) => {
+      mapa[c.id] = c;
+    });
+    return mapa;
+  }, [canchas]);
+
+  const reservasPorJugador = useMemo(() => {
+    const mapa = {};
+    reservas.forEach((r) => {
+      if (!r.jugador_id) return;
+      if (bloqueosMaestroTorneoIds?.has(r.id)) return; // apartado general de Torneo, no es un jugador real
+      (mapa[r.jugador_id] = mapa[r.jugador_id] || []).push(r);
+    });
+    return mapa;
+  }, [reservas, bloqueosMaestroTorneoIds]);
+
+  // Reservas por id (enlace directo `venta.reserva_id`) y por cancha+fecha
+  // (para inferir el "ocupante principal" cuando la venta no trae una
+  // reserva puntual enlazada) — ambos alimentan `resolverJugadorIdVentaCancha`.
+  const reservasPorId = useMemo(() => {
+    const mapa = {};
+    reservas.forEach((r) => {
+      mapa[r.id] = r;
+    });
+    return mapa;
+  }, [reservas]);
+
+  const reservasPorCanchaFecha = useMemo(() => {
+    const mapa = {};
+    reservas.forEach((r) => {
+      if (!r.jugador_id || !r.cancha_id || !r.fecha) return;
+      if (r.estado === 'Cancelada') return;
+      if (bloqueosMaestroTorneoIds?.has(r.id)) return; // apartado general de Torneo, no es un jugador real
+      mapa[r.cancha_id] = mapa[r.cancha_id] || {};
+      (mapa[r.cancha_id][r.fecha] = mapa[r.cancha_id][r.fecha] || []).push(r);
+    });
+    Object.values(mapa).forEach((porFecha) => {
+      Object.values(porFecha).forEach((lista) =>
+        lista.sort((a, b) => (parseHoraAMinutos(a.hora_inicio) ?? 0) - (parseHoraAMinutos(b.hora_inicio) ?? 0))
+      );
+    });
+    return mapa;
+  }, [reservas, bloqueosMaestroTorneoIds]);
+
+  // Herencia Automática de Jugador en Ventas POS por Cancha: cada venta
+  // pagada vinculada a una cancha se resuelve UNA sola vez (ver
+  // `resolverJugadorIdVentaCancha`) y se agrupa directo por `jugador_id` —
+  // ya no depende de que la venta cuelgue de una reserva que el jugador
+  // "tenía a la mano"; cubre también las que solo traen `cancha_id` (p. ej.
+  // "Asignar a Cancha") o que se cobraron después de que el partido terminó.
+  const ventasPorJugadorId = useMemo(() => {
+    const mapa = {};
+    (ventasHistoricas || [])
+      .filter((v) => v.estado_pago === 'pagado')
+      .forEach((v) => {
+        const jugadorId = resolverJugadorIdVentaCancha(v, { reservasPorId, reservasPorCanchaFecha });
+        if (!jugadorId) return;
+        (mapa[jugadorId] = mapa[jugadorId] || []).push(v);
+      });
+    return mapa;
+  }, [ventasHistoricas, reservasPorId, reservasPorCanchaFecha]);
+
+  /* ---- Perfil 360° por jugador: LTV interconectado + insumos crudos del CHS ---- */
+  const perfiles = useMemo(() => {
+    const hoyISOStr = hoyISO();
+    const hoy = new Date(`${hoyISOStr}T12:00:00`);
+    const hace90 = new Date(hoy.getTime() - 90 * MS_POR_DIA);
+    const hace180 = new Date(hoy.getTime() - 180 * MS_POR_DIA);
+
+    return Object.values(jugadoresPorId)
+      .filter((j) => j && j.id)
+      .map((j) => {
+        const tel = claveTelefono(j.telefono);
+        const nom = claveNombre(j.nombre);
+
+        /* --- Reservas & Parrilla: identidad exacta por `jugador_id` --- */
+        const propias = reservasPorJugador[j.id] || [];
+        const propiasActivas = propias.filter((r) => r.estado !== 'Cancelada');
+        const propiasCanceladas = propias.filter((r) => r.estado === 'Cancelada');
+        const gastoCanchas = propiasActivas
+          .filter((r) => r.estado_pago === 'pagado')
+          .reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
+
+        /* --- Smart POS / Ventas: herencia automática por cancha — cada venta
+         * pagada ya viene resuelta a un `jugador_id` por
+         * `resolverJugadorIdVentaCancha` (enlace directo por `reserva_id`, o
+         * el "ocupante principal" de esa cancha/fecha/hora cuando la venta
+         * solo traía `cancha_id`), así que aquí solo se agrupan — ya no hace
+         * falta recorrer las reservas propias del jugador una por una. --- */
+        let gastoBar = 0;
+        let gastoProShop = 0;
+        let gastoBarReciente = 0;
+        let gastoProShopReciente = 0;
+        (ventasPorJugadorId[j.id] || []).forEach((v) => {
+          const ts = obtenerTimestampVenta(v);
+          const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
+          items.forEach((item) => {
+            if (item.tipo !== 'producto') return; // la cancha ya se contó desde `reservas`
+            const subtotal = Number(item.subtotal) || 0;
+            // Mismo criterio que "Rentabilidad por Categoría" de Analytics
+            // BI: solo Cafetería/Bar tiene bucket propio, todo lo demás
+            // (Pro-Shop, 'Rentas', sin categoría) cae en Pro-Shop.
+            const esBar = productosPorId[item.producto_id]?.categoria === 'Cafetería/Bar';
+            if (esBar) {
+              gastoBar += subtotal;
+              if (ts && ts >= hace90) gastoBarReciente += subtotal;
+            } else {
+              gastoProShop += subtotal;
+              if (ts && ts >= hace90) gastoProShopReciente += subtotal;
+            }
+          });
+        });
+
+        /* --- Torneos & Retas: sin `jugador_id` (texto libre) — se cruzan
+         * por teléfono normalizado o, de respaldo, por nombre normalizado. --- */
+        const inscripcionesJ = (inscripciones || []).filter(
+          (i) => (tel && claveTelefono(i.telefono) === tel) || claveNombre(i.nombre) === nom
+        );
+        // LTV/participación: cuenta 'confirmado' Y 'retenido' (canceló dentro
+        // de la ventana de tolerancia, pero el club ya cobró y no reembolsa).
+        const inscripcionesValidas = inscripcionesJ.filter((i) => i.estado_pago === 'pagado' && i.estado !== 'cancelado');
+        // Asistencia real (Recencia/Frecuencia): SOLO 'confirmado' — 'retenido'
+        // es justamente lo contrario, no se presentó a jugar.
+        const inscripcionesAsistidas = inscripcionesJ.filter((i) => i.estado_pago === 'pagado' && i.estado === 'confirmado');
+        const gastoRetas = inscripcionesValidas.reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
+        const retasNoAsistidas = inscripcionesJ.filter((i) => i.estado === 'cancelado' || i.estado === 'retenido').length;
+
+        const participacionesJ = (participantesTorneo || []).filter(
+          (p) => (tel && claveTelefono(p.telefono) === tel) || claveNombre(p.nombre) === nom
+        );
+        const participacionesPagadas = participacionesJ.filter((p) => p.estado_pago === 'pagado');
+        const gastoTorneos = participacionesPagadas.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+
+        const gastoTorneosRetas = gastoRetas + gastoTorneos;
+
+        // Participación pagada en los últimos 6 meses (indicador CHS #4).
+        const eventosTorneoRetaUltimos6Meses =
+          inscripcionesValidas.filter((i) => {
+            const reta = (retas || []).find((r) => r.id === i.reta_id);
+            const f = reta?.fecha ? new Date(`${reta.fecha}T12:00:00`) : i.created_at ? new Date(i.created_at) : null;
+            return f && f >= hace180;
+          }).length +
+          participacionesPagadas.filter((p) => {
+            const torneo = (torneos || []).find((t) => t.id === p.torneo_id);
+            const f = torneo?.fecha_inicio ? new Date(`${torneo.fecha_inicio}T12:00:00`) : p.created_at ? new Date(p.created_at) : null;
+            return f && f >= hace180;
+          }).length;
+
+        // Retas realmente jugadas (inscripción asistida cuya fecha ya pasó).
+        const fechasRetasAsistidas = inscripcionesAsistidas
+          .map((i) => (retas || []).find((r) => r.id === i.reta_id)?.fecha)
+          .filter((f) => f && f <= hoyISOStr);
+
+        // Partidos de Torneo realmente jugados (Cuadros & Partidos, estado
+        // 'jugado'), acotados a los torneos en los que el jugador participa y
+        // emparejados por nombre (`separarPareja`, igual criterio que el
+        // enlace de WhatsApp de "Cuadros & Partidos").
+        const torneoIdsJugador = new Set(participacionesJ.map((p) => p.torneo_id));
+        const partidosJugados = (partidosTorneo || []).filter(
+          (p) => torneoIdsJugador.has(p.torneo_id) && p.estado === 'jugado' && partidoIncluyeJugador(p, nom)
+        );
+
+        /* --- Última actividad real (Recencia) y ritmo habitual de visitas --- */
+        const fechasEventos = [
+          ...propiasActivas.filter((r) => r.fecha && r.fecha <= hoyISOStr).map((r) => r.fecha),
+          ...fechasRetasAsistidas,
+          ...partidosJugados.map((p) => p.fecha).filter(Boolean),
+        ].filter(Boolean);
+
+        const fechasUnicas = Array.from(new Set(fechasEventos)).sort();
+        const fechaUltimoPartido = fechasUnicas.length > 0 ? new Date(`${fechasUnicas[fechasUnicas.length - 1]}T12:00:00`) : null;
+
+        let intervaloPromedioDias = 30;
+        if (fechasUnicas.length >= 2) {
+          const primerFecha = new Date(`${fechasUnicas[0]}T12:00:00`);
+          const ultimaFecha = new Date(`${fechasUnicas[fechasUnicas.length - 1]}T12:00:00`);
+          intervaloPromedioDias = (ultimaFecha - primerFecha) / MS_POR_DIA / (fechasUnicas.length - 1);
+        }
+
+        const eventosUltimos90Dias = fechasEventos.filter((f) => new Date(`${f}T12:00:00`) >= hace90).length;
+
+        /* --- Confiabilidad: % de asistencia exitosa (Parrilla + Retas) --- */
+        const totalEventosConfiabilidad = propias.length + inscripcionesJ.length;
+        const totalCancelaciones = propiasCanceladas.length + retasNoAsistidas;
+
+        const ltvTotal = gastoCanchas + gastoBar + gastoTorneosRetas + gastoProShop;
+
+        /* --- Detalle expandible de cada indicador del CHS (ficha del
+         * jugador, tarjetas/acordeón de "Vista 360°") — mismas fuentes que
+         * arriba, solo que aquí se listan línea por línea en vez de
+         * agregarse en un total. --- */
+
+        // 1) Consumo Bar/Tienda: cada línea de producto comprado + favorito.
+        const comprasPOS = [];
+        (ventasPorJugadorId[j.id] || []).forEach((v) => {
+          const ts = obtenerTimestampVenta(v);
+          const fechaVenta = ts ? fechaYMinutosDeTimestamp(ts).fecha : null;
+          const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
+          items.forEach((item) => {
+            if (item.tipo !== 'producto') return;
+            comprasPOS.push({
+              ventaId: v.id,
+              nombre: item.nombre || productosPorId[item.producto_id]?.nombre || 'Producto',
+              cantidad: Number(item.cantidad) || 0,
+              subtotal: Number(item.subtotal) || 0,
+              categoria: productosPorId[item.producto_id]?.categoria === 'Cafetería/Bar' ? 'Cafetería/Bar' : 'Pro-Shop',
+              fecha: fechaVenta,
+            });
+          });
+        });
+        comprasPOS.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+        const productoFavorito = (() => {
+          const conteo = {};
+          comprasPOS.forEach((c) => {
+            conteo[c.nombre] = (conteo[c.nombre] || 0) + c.cantidad;
+          });
+          const entradas = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
+          return entradas.length > 0 ? { nombre: entradas[0][0], cantidad: entradas[0][1] } : null;
+        })();
+
+        // 2) Torneos/Retas: eventos combinados (inscripción o participación).
+        const eventosTorneoRetas = [
+          ...inscripcionesValidas.map((i) => {
+            const reta = (retas || []).find((r) => r.id === i.reta_id);
+            return {
+              tipo: 'Reta',
+              nombre: reta ? `Reta${reta.nivel ? ` · ${reta.nivel}` : ''}${reta.rama ? ` (${reta.rama})` : ''}` : 'Reta',
+              categoria: reta?.nivel || i.nivel_jugador || '—',
+              fecha: reta?.fecha || null,
+              monto: Number(i.monto) || 0,
+            };
+          }),
+          ...participacionesPagadas.map((p) => {
+            const torneo = (torneos || []).find((t) => t.id === p.torneo_id);
+            return {
+              tipo: 'Torneo',
+              nombre: torneo?.nombre || 'Torneo',
+              categoria: p.categoria || '—',
+              fecha: torneo?.fecha_inicio || null,
+              monto: Number(p.monto) || 0,
+            };
+          }),
+        ].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+
+        // 3) Recencia/Frecuencia: historial de reservas de cancha (Parrilla)
+        // + Horario Favorito (bloques de 2h sobre `hora_inicio`) + Cancha
+        // Preferida (la más repetida).
+        const historialCanchas = propiasActivas
+          .map((r) => ({
+            id: r.id,
+            fecha: r.fecha,
+            horaInicio: r.hora_inicio,
+            horaFin: r.hora_fin,
+            canchaNombre: canchasPorId[r.cancha_id]?.nombre || 'Cancha',
+          }))
+          .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.horaInicio || '').localeCompare(a.horaInicio || ''));
+
+        const canchaPreferida = (() => {
+          const conteo = {};
+          propiasActivas.forEach((r) => {
+            if (!r.cancha_id) return;
+            conteo[r.cancha_id] = (conteo[r.cancha_id] || 0) + 1;
+          });
+          const entradas = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
+          return entradas.length > 0 ? { nombre: canchasPorId[entradas[0][0]]?.nombre || 'Cancha', visitas: entradas[0][1] } : null;
+        })();
+
+        const horarioFavorito = (() => {
+          const conteo = {};
+          propiasActivas.forEach((r) => {
+            const min = parseHoraAMinutos(r.hora_inicio);
+            if (min === null) return;
+            const inicioBloque = Math.floor(min / 120) * 120;
+            const clave = `${minutosAHora(inicioBloque)}–${minutosAHora(Math.min(inicioBloque + 120, HORA_FIN_MIN))}`;
+            conteo[clave] = (conteo[clave] || 0) + 1;
+          });
+          const entradas = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
+          return entradas.length > 0 ? { rango: entradas[0][0], visitas: entradas[0][1] } : null;
+        })();
+
+        // 4) Gasto Directo: tickets de renta de cancha ya pagados.
+        const ticketsCanchas = propiasActivas
+          .filter((r) => r.estado_pago === 'pagado')
+          .map((r) => ({
+            id: r.id,
+            fecha: r.fecha,
+            horaInicio: r.hora_inicio,
+            canchaNombre: canchasPorId[r.cancha_id]?.nombre || 'Cancha',
+            monto: Number(r.monto_total) || 0,
+          }))
+          .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+
+        // 5) Confiabilidad: reservas/inscripciones asistidas vs. canceladas.
+        const historialConfiabilidad = [
+          ...propias.map((r) => ({
+            tipo: 'Reserva de Cancha',
+            fecha: r.fecha,
+            resultado: r.estado === 'Cancelada' ? 'Cancelada' : 'Asistida',
+            detalle: `${canchasPorId[r.cancha_id]?.nombre || 'Cancha'} · ${formatoHora12(r.hora_inicio)}`,
+          })),
+          ...inscripcionesJ.map((i) => {
+            const reta = (retas || []).find((r) => r.id === i.reta_id);
+            const resultado = i.estado === 'confirmado' ? 'Asistida' : i.estado === 'retenido' ? 'No se presentó (retenido)' : 'Cancelada';
+            return {
+              tipo: 'Reta',
+              fecha: reta?.fecha || null,
+              resultado,
+              detalle: reta ? `Reta${reta.nivel ? ` · ${reta.nivel}` : ''}` : 'Reta',
+            };
+          }),
+        ].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+
+        const perfilBase = {
+          id: j.id,
+          nombre: j.nombre || 'Jugador',
+          telefono: j.telefono || null,
+          saldoAFavor: Number(j.saldo_a_favor) || 0,
+          gastoCanchas,
+          gastoBar,
+          gastoProShop,
+          gastoTorneosRetas,
+          gastoBarReciente,
+          gastoProShopReciente,
+          ltvTotal,
+          visitasPropias: propiasActivas.length,
+          eventosUltimos90Dias,
+          eventosTorneoRetaUltimos6Meses,
+          totalEventosConfiabilidad,
+          totalCancelaciones,
+          fechaUltimoPartido,
+          intervaloPromedioDias,
+          hoyISO: hoyISOStr,
+          comprasPOS,
+          productoFavorito,
+          eventosTorneoRetas,
+          historialCanchas,
+          canchaPreferida,
+          horarioFavorito,
+          ticketsCanchas,
+          historialConfiabilidad,
+        };
+
+        return { ...perfilBase, chs: calcularCHS(perfilBase), segmento: segmentoPorLTV(ltvTotal) };
+      })
+      .sort((a, b) => b.ltvTotal - a.ltvTotal);
+  }, [
+    jugadoresPorId,
+    reservasPorJugador,
+    ventasPorJugadorId,
+    productosPorId,
+    canchasPorId,
+    retas,
+    inscripciones,
+    torneos,
+    participantesTorneo,
+    partidosTorneo,
+  ]);
+
+  /* ---- Búsqueda, filtros y resumen ejecutivo ---- */
+  const [busqueda, setBusqueda] = useState('');
+  const [filtroSegmento, setFiltroSegmento] = useState('todos');
+  const [soloRiesgo, setSoloRiesgo] = useState(false);
+  const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
+  const [sincronizando, setSincronizando] = useState(false);
+  const mostrarToast = useToast();
+
+  // Botón "Sincronizar": no solo refresca `jugadores`/`reservas`/`canchas`
+  // (`onRefrescarDirectorio`, ver `App.cargarDatos`) — también vuelve a traer
+  // TODAS las ventas (`cargarVentasHistoricas`) para que la Herencia
+  // Automática de Jugador en Ventas POS por Cancha (`ventasPorJugadorId`) se
+  // re-evalúe contra la reserva/ocupante más reciente de cada cancha. Ambos
+  // useMemo dependen de este estado, así que en cuanto las dos promesas
+  // resuelven, `perfiles` (LTV/CHS por jugador) se recalcula solo — no hace
+  // falta "forzar" el recálculo a mano.
+  async function sincronizarDirectorio() {
+    setSincronizando(true);
+    try {
+      await Promise.all([cargarVentasHistoricas(), onRefrescarDirectorio ? onRefrescarDirectorio() : Promise.resolve()]);
+      mostrarToast({ titulo: 'Directorio sincronizado', detalle: 'Jugadores, reservas y ventas de Smart POS al día.' });
+    } catch (_e) {
+      mostrarToast({
+        titulo: 'No se pudo sincronizar del todo',
+        detalle: 'Revisa tu conexión e inténtalo de nuevo.',
+        tono: 'aviso',
+      });
+    }
+    setSincronizando(false);
+  }
+
+  const perfilesFiltrados = useMemo(() => {
+    const q = claveNombre(busqueda);
+    const qDigitos = busqueda.replace(/\D/g, '');
+    return perfiles.filter((p) => {
+      if (filtroSegmento !== 'todos' && p.segmento !== filtroSegmento) return false;
+      if (soloRiesgo && !p.chs.enRiesgo) return false;
+      if (q && !claveNombre(p.nombre).includes(q) && !(qDigitos && (p.telefono || '').replace(/\D/g, '').includes(qDigitos))) return false;
+      return true;
+    });
+  }, [perfiles, busqueda, filtroSegmento, soloRiesgo]);
+
+  const resumen = useMemo(() => {
+    const ltvClubTotal = perfiles.reduce((acc, p) => acc + p.ltvTotal, 0);
+    const enRiesgo = perfiles.filter((p) => p.chs.enRiesgo).length;
+    const vip = perfiles.filter((p) => p.segmento === 'VIP').length;
+    return { totalJugadores: perfiles.length, ltvClubTotal, enRiesgo, vip };
+  }, [perfiles]);
+
+  const jugadorSeleccionado = jugadorSeleccionadoId ? perfiles.find((p) => p.id === jugadorSeleccionadoId) || null : null;
+
+  return (
+    <div className="space-y-4">
+      {errorVentas && <ErrorBanner mensaje={`Smart POS: ${errorVentas}`} onReintentar={cargarVentasHistoricas} />}
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <MetricCard icon={Users} etiqueta="Jugadores en el Directorio" valor={String(resumen.totalJugadores)} tono="sky" />
+        <MetricCard icon={DollarSign} etiqueta="LTV Acumulado del Club" valor={formatoMoneda(resumen.ltvClubTotal)} tono="lime" />
+        <MetricCard
+          icon={Crown}
+          etiqueta="Jugadores VIP"
+          valor={String(resumen.vip)}
+          sub={`LTV ≥ ${formatoMoneda(UMBRAL_LTV_VIP)}`}
+          tono="amber"
+        />
+        <MetricCard
+          icon={ShieldAlert}
+          etiqueta="En Riesgo de Abandono"
+          valor={String(resumen.enRiesgo)}
+          sub="CHS < 60 pts o Recencia en alerta"
+          tono={resumen.enRiesgo > 0 ? 'rose' : 'emerald'}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2.5 rounded-2xl border border-slate-800 bg-slate-900 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="relative flex-1 sm:max-w-xs">
+          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por nombre o teléfono…"
+            className={`${inputClase} pl-8`}
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {['todos', 'VIP', 'Frecuente', 'Estándar'].map((seg) => (
+            <button
+              key={seg}
+              type="button"
+              onClick={() => setFiltroSegmento(seg)}
+              className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+                filtroSegmento === seg ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+              }`}
+            >
+              {seg === 'todos' ? 'Todos' : seg}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setSoloRiesgo((v) => !v)}
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+              soloRiesgo ? 'bg-rose-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+            }`}
+          >
+            <ShieldAlert size={12} /> En riesgo
+          </button>
+          <button
+            type="button"
+            onClick={sincronizarDirectorio}
+            disabled={sincronizando}
+            title="Vuelve a traer jugadores, reservas y ventas de Smart POS, y re-evalúa a qué jugador pertenece cada consumo por cancha"
+            className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300 transition hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw size={12} className={sincronizando ? 'animate-spin' : ''} /> {sincronizando ? 'Sincronizando…' : 'Sincronizar'}
+          </button>
+        </div>
+      </div>
+
+      {perfilesFiltrados.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center">
+          <Users size={26} className="text-slate-700" />
+          <p className="text-sm font-semibold text-slate-400">
+            {perfiles.length === 0 ? 'Todavía no hay jugadores en el directorio.' : 'Ningún jugador coincide con el filtro.'}
+          </p>
+          <p className="text-xs text-slate-600">Se llena solo con cada reserva agendada en la Parrilla (ver "Nueva Reserva").</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {perfilesFiltrados.map((p) => (
+            <TarjetaJugadorCRM key={p.id} perfil={p} onVerDetalle={() => setJugadorSeleccionadoId(p.id)} />
+          ))}
+        </div>
+      )}
+
+      {jugadorSeleccionado && (
+        <ModalPerfilJugadorCRM
+          perfil={jugadorSeleccionado}
+          onClose={() => setJugadorSeleccionadoId(null)}
+          onActualizarTelefono={onActualizarTelefonoJugador}
+        />
+      )}
+    </div>
+  );
+}
+
+function TarjetaJugadorCRM({ perfil, onVerDetalle }) {
+  const metaSeg = SEGMENTO_META[perfil.segmento];
+  const SegIcon = metaSeg.icon;
+  const colorBarra = perfil.chs.puntaje >= 80 ? 'bg-emerald-400' : perfil.chs.puntaje >= 60 ? 'bg-amber-400' : 'bg-rose-400';
+  const colorTexto = perfil.chs.puntaje >= 80 ? 'text-emerald-400' : perfil.chs.puntaje >= 60 ? 'text-amber-400' : 'text-rose-400';
+
+  return (
+    <button
+      type="button"
+      onClick={onVerDetalle}
+      className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-4 text-left transition hover:border-slate-700 hover:bg-slate-800/60"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-bold text-slate-100">{perfil.nombre}</p>
+          <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500">
+            <Phone size={10} /> {perfil.telefono || 'Sin teléfono'}
+          </p>
+        </div>
+        <span
+          className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${metaSeg.bg} ${metaSeg.color} ${metaSeg.ring}`}
+        >
+          <SegIcon size={11} /> {perfil.segmento}
+        </span>
+      </div>
+
+      {perfil.chs.enRiesgo && (
+        <span className="inline-flex w-fit items-center gap-1 rounded-full bg-rose-400/10 px-2 py-0.5 text-[10px] font-bold text-rose-400 ring-1 ring-rose-400/30">
+          <ShieldAlert size={11} /> En Riesgo de Abandono
+        </span>
+      )}
+
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">LTV Total</p>
+          <p className="text-lg font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">CHS</p>
+          <p className={`text-lg font-black ${colorTexto}`}>
+            {perfil.chs.puntaje}
+            <span className="text-xs font-semibold text-slate-500">/100</span>
+          </p>
+        </div>
+      </div>
+
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+        <div className={`h-full rounded-full ${colorBarra}`} style={{ width: `${perfil.chs.puntaje}%` }} />
+      </div>
+    </button>
+  );
+}
+
+/* ---- Historial exacto por indicador del CHS (acordeón de la ficha) ---- */
+
+const filaHistorialClase = 'flex items-center justify-between gap-2 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs';
+const listaHistorialClase = 'max-h-56 space-y-1.5 overflow-y-auto pr-1';
+
+function EstadoVacioHistorial({ mensaje }) {
+  return <p className="px-1 py-2 text-xs text-slate-500">{mensaje}</p>;
+}
+
+function DetalleConsumoPOS({ perfil }) {
+  const compras = perfil.comprasPOS || [];
+  if (compras.length === 0) return <EstadoVacioHistorial mensaje="Sin compras registradas en Smart POS todavía." />;
+  return (
+    <div className="space-y-2">
+      {perfil.productoFavorito && (
+        <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/30">
+          <Star size={11} /> Favorito: {perfil.productoFavorito.nombre} ({perfil.productoFavorito.cantidad}x)
+        </span>
+      )}
+      <div className={listaHistorialClase}>
+        {compras.map((c, idx) => (
+          <div key={`${c.ventaId}-${idx}`} className={filaHistorialClase}>
+            <div className="min-w-0">
+              <p className="truncate font-semibold text-slate-200">
+                {c.cantidad}x {c.nombre}
+              </p>
+              <p className="text-[10px] text-slate-500">
+                {c.fecha ? formatoFechaLarga(c.fecha) : 'Fecha desconocida'} · {c.categoria}
+              </p>
+            </div>
+            <span className="shrink-0 font-bold text-slate-300">{formatoMoneda(c.subtotal)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DetalleTorneosRetas({ perfil }) {
+  const eventos = perfil.eventosTorneoRetas || [];
+  if (eventos.length === 0) return <EstadoVacioHistorial mensaje="Sin inscripciones a Torneos o Retas todavía." />;
+  return (
+    <div className={listaHistorialClase}>
+      {eventos.map((e, idx) => (
+        <div key={idx} className={filaHistorialClase}>
+          <div className="min-w-0">
+            <p className="flex items-center gap-1.5 font-semibold text-slate-200">
+              <span
+                className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                  e.tipo === 'Torneo' ? 'bg-violet-400/20 text-violet-300' : 'bg-fuchsia-400/20 text-fuchsia-300'
+                }`}
+              >
+                {e.tipo}
+              </span>
+              <span className="truncate">{e.nombre}</span>
+            </p>
+            <p className="mt-0.5 text-[10px] text-slate-500">
+              {e.fecha ? formatoFechaLarga(e.fecha) : 'Fecha por confirmar'} · {e.categoria}
+            </p>
+          </div>
+          <span className="shrink-0 font-bold text-slate-300">{formatoMoneda(e.monto)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetalleHistorialCanchas({ perfil }) {
+  const historial = perfil.historialCanchas || [];
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-1.5">
+        {perfil.canchaPreferida && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-300 ring-1 ring-sky-400/30">
+            <MapPin size={11} /> Cancha preferida: {perfil.canchaPreferida.nombre}
+          </span>
+        )}
+        {perfil.horarioFavorito && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11px] font-bold text-violet-300 ring-1 ring-violet-400/30">
+            <Clock size={11} /> Horario favorito: {perfil.horarioFavorito.rango}
+          </span>
+        )}
+      </div>
+      {historial.length === 0 ? (
+        <EstadoVacioHistorial mensaje="Sin reservas de cancha registradas todavía." />
+      ) : (
+        <div className={listaHistorialClase}>
+          {historial.map((r) => (
+            <div key={r.id} className={filaHistorialClase}>
+              <div className="min-w-0">
+                <p className="truncate font-semibold text-slate-200">{r.canchaNombre}</p>
+                <p className="text-[10px] text-slate-500">
+                  {formatoFechaLarga(r.fecha)} · {formatoHora12(r.horaInicio)}–{formatoHora12(r.horaFin)}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DetalleTicketsCanchas({ perfil }) {
+  const tickets = perfil.ticketsCanchas || [];
+  if (tickets.length === 0) return <EstadoVacioHistorial mensaje="Sin rentas de cancha pagadas todavía." />;
+  return (
+    <div className={listaHistorialClase}>
+      {tickets.map((t) => (
+        <div key={t.id} className={filaHistorialClase}>
+          <div className="min-w-0">
+            <p className="truncate font-semibold text-slate-200">{t.canchaNombre}</p>
+            <p className="text-[10px] text-slate-500">
+              {formatoFechaLarga(t.fecha)} · {formatoHora12(t.horaInicio)}
+            </p>
+          </div>
+          <span className="shrink-0 font-bold text-emerald-400">{formatoMoneda(t.monto)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetalleConfiabilidad({ perfil }) {
+  const historial = perfil.historialConfiabilidad || [];
+  if (historial.length === 0) return <EstadoVacioHistorial mensaje="Sin reservas o inscripciones registradas todavía." />;
+  return (
+    <div className={listaHistorialClase}>
+      {historial.map((h, idx) => (
+        <div key={idx} className={filaHistorialClase}>
+          <div className="min-w-0">
+            <p className="truncate font-semibold text-slate-200">{h.tipo}</p>
+            <p className="text-[10px] text-slate-500">{h.fecha ? formatoFechaLarga(h.fecha) : 'Fecha por confirmar'} · {h.detalle}</p>
+          </div>
+          <span
+            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+              h.resultado === 'Asistida' ? 'bg-emerald-400/10 text-emerald-400' : 'bg-rose-400/10 text-rose-400'
+            }`}
+          >
+            {h.resultado}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Despacha, según la llave del indicador de CHS que se expandió, el
+// desglose analítico correspondiente — Recencia y Frecuencia comparten el
+// mismo historial (reservas de cancha + Horario Favorito + Cancha Preferida).
+function DetalleIndicadorCHS({ indKey, perfil }) {
+  switch (indKey) {
+    case 'consumo_bar':
+      return <DetalleConsumoPOS perfil={perfil} />;
+    case 'torneos_retas':
+      return <DetalleTorneosRetas perfil={perfil} />;
+    case 'recencia':
+    case 'frecuencia':
+      return <DetalleHistorialCanchas perfil={perfil} />;
+    case 'gasto_directo':
+      return <DetalleTicketsCanchas perfil={perfil} />;
+    case 'confiabilidad':
+      return <DetalleConfiabilidad perfil={perfil} />;
+    default:
+      return null;
+  }
+}
+
+function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono }) {
+  const [editandoTelefono, setEditandoTelefono] = useState(false);
+  const [telefonoDraft, setTelefonoDraft] = useState(perfil.telefono || '');
+  const [guardando, setGuardando] = useState(false);
+  // Acordeón: qué indicador del CHS está desplegado con su historial exacto
+  // (ver `DetalleIndicadorCHS`) — uno a la vez, null = todos colapsados.
+  const [indicadorExpandido, setIndicadorExpandido] = useState(null);
+
+  async function guardarTelefono() {
+    setGuardando(true);
+    await onActualizarTelefono(perfil.id, telefonoDraft);
+    setGuardando(false);
+    setEditandoTelefono(false);
+  }
+
+  const ltvFilas = [
+    { label: 'Canchas (Parrilla)', valor: perfil.gastoCanchas, color: 'bg-sky-400' },
+    { label: 'Cafetería/Bar', valor: perfil.gastoBar, color: 'bg-amber-400' },
+    { label: 'Torneos/Retas', valor: perfil.gastoTorneosRetas, color: 'bg-violet-400' },
+    { label: 'Pro-Shop', valor: perfil.gastoProShop, color: 'bg-fuchsia-400' },
+  ];
+  const ltvMax = Math.max(perfil.ltvTotal, 1);
+
+  const mensajeWhatsApp = useMemo(() => plantillaWhatsAppAntiChurn(perfil), [perfil]);
+  const linkWhatsApp = useMemo(() => construirEnlaceWhatsApp({ telefono: perfil.telefono, mensaje: mensajeWhatsApp }), [perfil.telefono, mensajeWhatsApp]);
+
+  return (
+    <ModalShell titulo={perfil.nombre} subtitulo="Vista 360° · LTV & Customer Health Score" onClose={onClose} ancho="max-w-2xl" icon={HeartPulse}>
+      <div className="space-y-5">
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5">
+          {editandoTelefono ? (
+            <div className="flex flex-1 flex-wrap items-center gap-2">
+              <Phone size={14} className="shrink-0 text-slate-500" />
+              <input
+                value={telefonoDraft}
+                onChange={(e) => setTelefonoDraft(e.target.value)}
+                placeholder="10 dígitos"
+                className={`${inputClase} min-w-[9rem] flex-1 py-1.5`}
+              />
+              <BotonPrimario onClick={guardarTelefono} disabled={guardando} className="px-3 py-1.5 text-xs">
+                {guardando ? <Loader2 size={13} className="animate-spin" /> : 'Guardar'}
+              </BotonPrimario>
+              <BotonSecundario
+                onClick={() => {
+                  setEditandoTelefono(false);
+                  setTelefonoDraft(perfil.telefono || '');
+                }}
+                className="px-3 py-1.5 text-xs"
+              >
+                Cancelar
+              </BotonSecundario>
+            </div>
+          ) : (
+            <>
+              <span className="flex items-center gap-1.5 text-sm text-slate-300">
+                <Phone size={14} className="text-slate-500" /> {perfil.telefono || 'Sin teléfono registrado'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setEditandoTelefono(true)}
+                className="inline-flex items-center gap-1 text-xs font-bold text-lime-400 hover:text-lime-300"
+              >
+                <Pencil size={12} /> Editar
+              </button>
+            </>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {(() => {
+            const meta = SEGMENTO_META[perfil.segmento];
+            const Icon = meta.icon;
+            return (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${meta.bg} ${meta.color} ${meta.ring}`}
+              >
+                <Icon size={13} /> Segmento {perfil.segmento}
+              </span>
+            );
+          })()}
+          {perfil.chs.enRiesgo && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-rose-400/10 px-2.5 py-1 text-xs font-bold text-rose-400 ring-1 ring-rose-400/30">
+              <ShieldAlert size={13} /> En Riesgo de Abandono
+            </span>
+          )}
+          {perfil.saldoAFavor > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300">
+              <Wallet size={13} /> Saldo a favor: {formatoMoneda(perfil.saldoAFavor)}
+            </span>
+          )}
+        </div>
+
+        <div>
+          <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+            <DollarSign size={15} className="text-lime-400" /> Customer Lifetime Value
+          </h3>
+          <p className="text-2xl font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
+          <div className="mt-3 space-y-2">
+            {ltvFilas.map((f) => (
+              <div key={f.label}>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400">{f.label}</span>
+                  <span className="font-bold text-slate-200">{formatoMoneda(f.valor)}</span>
+                </div>
+                <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                  <div
+                    className={`h-full rounded-full ${f.color}`}
+                    style={{ width: `${Math.max(0, Math.min(100, (f.valor / ltvMax) * 100))}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+            <Gauge size={15} className="text-lime-400" /> Customer Health Score — {perfil.chs.puntaje}/100 pts
+          </h3>
+          <p className="mb-2 text-[11px] text-slate-500">Da clic en cualquier indicador para ver su historial exacto.</p>
+          <div className="space-y-2">
+            {perfil.chs.indicadores.map((ind) => {
+              const meta = NIVEL_CHS_META[ind.nivel];
+              const expandido = indicadorExpandido === ind.key;
+              return (
+                <div key={ind.key} className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+                  <button
+                    type="button"
+                    onClick={() => setIndicadorExpandido(expandido ? null : ind.key)}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-slate-900/70"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="flex items-center gap-1.5 font-bold text-slate-200">
+                          {meta.emoji} {ind.label}
+                        </span>
+                        <span className={`font-bold ${meta.color}`}>
+                          {ind.puntos}/{ind.max} pts
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-slate-500">{ind.detalle}</p>
+                    </div>
+                    <ChevronDown
+                      size={15}
+                      className={`shrink-0 text-slate-500 transition-transform ${expandido ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {expandido && (
+                    <div className="border-t border-slate-800 bg-slate-950/60 px-3 py-2.5">
+                      <DetalleIndicadorCHS indKey={ind.key} perfil={perfil} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-3">
+          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-400">
+            <TrendingDown size={13} /> Motor Anti-Churn — plantilla sugerida
+          </h3>
+          <p className="text-xs text-slate-300">{mensajeWhatsApp}</p>
+          <a
+            href={perfil.telefono ? linkWhatsApp : undefined}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => {
+              if (!perfil.telefono) e.preventDefault();
+            }}
+            className={`mt-3 inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold transition ${
+              perfil.telefono ? 'bg-emerald-500 text-white hover:bg-emerald-400' : 'cursor-not-allowed bg-slate-800 text-slate-500'
+            }`}
+          >
+            <IconoWhatsApp size={15} /> {perfil.telefono ? 'Enviar por WhatsApp' : 'Agrega un teléfono para contactarlo'}
+          </a>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Módulo Jugadores (CRM). "Directorio & CRM" es la vista principal (Health
+// Score + LTV, ver `DirectorioJugadoresCRM`); "Ranking del Club" sigue
+// disponible tal cual estaba.
+function ModuloJugadores({
+  rankingJugadores,
+  loadingRanking,
+  errorRanking,
+  cargarRanking,
+  canchas,
+  reservas,
+  productos,
+  jugadoresPorId,
+  onActualizarTelefonoJugador,
+  onRefrescarDirectorio,
+  retas,
+  inscripciones,
+  torneos,
+  participantesTorneo,
+  partidosTorneo,
+  bloqueosMaestroTorneoIds,
+}) {
+  const [subvista, setSubvista] = useState('crm');
+  const subvistas = [
+    { value: 'crm', label: 'Directorio & CRM', icon: HeartPulse },
+    { value: 'ranking', label: 'Ranking del Club', icon: Award },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap rounded-lg border border-slate-700 bg-slate-800 p-1">
+        {subvistas.map((v) => {
+          const Icon = v.icon;
+          return (
+            <button
+              key={v.value}
+              onClick={() => setSubvista(v.value)}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+                subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              }`}
+            >
+              <Icon size={14} /> {v.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {subvista === 'crm' && (
+        <DirectorioJugadoresCRM
+          canchas={canchas}
+          reservas={reservas}
+          productos={productos}
+          jugadoresPorId={jugadoresPorId}
+          onActualizarTelefonoJugador={onActualizarTelefonoJugador}
+          onRefrescarDirectorio={onRefrescarDirectorio}
+          retas={retas}
+          inscripciones={inscripciones}
+          torneos={torneos}
+          participantesTorneo={participantesTorneo}
+          partidosTorneo={partidosTorneo}
+          bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+        />
+      )}
+
+      {subvista === 'ranking' && (
+        <RankingDelClub ranking={rankingJugadores} loading={loadingRanking} error={errorRanking} onReintentar={cargarRanking} />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
+ * MÓDULO: CONTROL & SEGURIDAD — Empleados, Roles & Auditoría (RBAC)
+ * ----------------------------------------------------------------------------
+ * Ver bloque de cabecera "GESTIÓN DE EMPLEADOS, ROLES & CONTROL INTERNO" y
+ * "MÓDULO DE AUDITORÍA & CONTROL INTERNO" más arriba en el archivo para el
+ * diseño completo de la matriz de permisos y las tablas `empleados` /
+ * `log_actividad` / `cierres_caja`. Este módulo es la única pantalla que
+ * junta los 3: Directorio de Empleados, Cortes de Caja (con Aprobación) y
+ * el Log de Actividad — nada de esto es visible para roles sin
+ * `puedeVerAuditoria`/'seguridad' en `permisos.modulos` (ver `NAV_MODULOS`).
+ * ==========================================================================*/
+
+// Modal doble propósito (mismo criterio que `ModalNuevoProducto`): SIN
+// `empleado` = alta; CON `empleado` = edición (rol, teléfono, PIN,
+// activo/inactivo). El rol es la pieza que de verdad importa aquí: es lo
+// único que decide los permisos efectivos la próxima vez que alguien fiche
+// como este empleado (ver `ModalOperador`).
+function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
+  const editando = Boolean(empleado);
+  const [nombre, setNombre] = useState(empleado?.nombre || '');
+  const [rol, setRol] = useState(empleado?.rol || 'recepcion');
+  const [telefono, setTelefono] = useState(empleado?.telefono || '');
+  const [pin, setPin] = useState(empleado?.pin || '');
+  const [activo, setActivo] = useState(empleado?.activo !== false);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  async function guardar() {
+    if (!nombre.trim()) {
+      setError('El nombre es obligatorio.');
+      return;
+    }
+    setGuardando(true);
+    setError('');
+    if (editando) {
+      await onActualizar(empleado.id, {
+        nombre: nombre.trim(),
+        rol,
+        telefono: telefono.trim() || null,
+        pin: pin.trim() || null,
+        activo,
+      });
+    } else {
+      await onCrear({ nombre: nombre.trim(), rol, telefono, pin });
+    }
+    setGuardando(false);
+    onClose();
+  }
+
+  return (
+    <ModalShell
+      titulo={editando ? 'Editar Empleado' : 'Nuevo Empleado'}
+      subtitulo="Directorio & Roles (RBAC)"
+      onClose={onClose}
+      icon={editando ? Pencil : UserPlus}
+    >
+      <div className="space-y-4">
+        <Campo label="Nombre">
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Nombre completo" />
+        </Campo>
+        <Campo label="Rol" hint="Define qué módulos y acciones puede usar al ficharse.">
+          <div className="grid grid-cols-2 gap-1.5">
+            {ROLES.map((r) => {
+              const RolIcon = r.icon;
+              return (
+                <button
+                  key={r.value}
+                  onClick={() => setRol(r.value)}
+                  className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-[11px] font-bold transition ${
+                    rol === r.value
+                      ? `border-lime-400 ${r.bg} ${r.color}`
+                      : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  <RolIcon size={13} className="shrink-0" />
+                  {r.label}
+                </button>
+              );
+            })}
+          </div>
+        </Campo>
+        <div className="grid grid-cols-2 gap-4">
+          <Campo label="Teléfono (opcional)">
+            <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="55..." />
+          </Campo>
+          <Campo label="PIN (opcional)">
+            <input value={pin} onChange={(e) => setPin(e.target.value)} className={inputClase} placeholder="Código corto" />
+          </Campo>
+        </div>
+        {editando && (
+          <label className="flex items-center gap-2.5 rounded-lg bg-slate-900/60 p-3">
+            <input
+              type="checkbox"
+              checked={activo}
+              onChange={(e) => setActivo(e.target.checked)}
+              className="h-4 w-4 accent-lime-400"
+            />
+            <span className="text-xs font-semibold text-slate-300">Empleado activo (aparece para ficharse)</span>
+          </label>
+        )}
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando || !nombre.trim()}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            {editando ? 'Guardar cambios' : 'Crear empleado'}
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Fila del Directorio de Empleados: rol con su icono/color de `ROLES`,
+// badge Activo/Inactivo, y (si `puedeGestionar`) botón de edición.
+function FilaEmpleado({ empleado, puedeGestionar, onEditar }) {
+  const rolMeta = ROLES_POR_VALOR[empleado.rol];
+  const RolIcon = rolMeta?.icon || Users;
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3">
+      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${rolMeta?.bg || 'bg-slate-800'}`}>
+        <RolIcon size={17} className={rolMeta?.color || 'text-slate-300'} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="flex items-center gap-2 truncate text-sm font-bold text-slate-100">
+          {empleado.nombre}
+          {empleado._local && (
+            <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
+              Local
+            </span>
+          )}
+        </p>
+        <p className="text-[11px] text-slate-500">
+          {rolMeta?.label || empleado.rol}
+          {empleado.telefono ? ` · ${empleado.telefono}` : ''}
+        </p>
+      </div>
+      <span
+        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+          empleado.activo !== false ? 'bg-emerald-400/10 text-emerald-400' : 'bg-slate-800 text-slate-500'
+        }`}
+      >
+        {empleado.activo !== false ? 'Activo' : 'Inactivo'}
+      </span>
+      {puedeGestionar && (
+        <button
+          onClick={() => onEditar(empleado)}
+          className="shrink-0 rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-400 transition hover:border-lime-400/40 hover:text-lime-400"
+        >
+          <Pencil size={13} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Fila de Cortes de Caja (Arqueo Ciego ya resuelto): la diferencia SÍ se
+// muestra aquí — a propósito, el "ciego" es solo para quien está contando
+// el efectivo (ver `ModalArqueo`); este panel es justo la vista
+// administrativa donde sobrantes/faltantes deben notificarse.
+function FilaCierreCaja({ cierre, puedeAprobar, onAprobar }) {
+  const diferencia = Number(cierre.diferencia) || 0;
+  const tieneDiferencia = Math.abs(diferencia) >= 0.01;
+  const fechaHora = cierre.created_at
+    ? new Date(cierre.created_at).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })
+    : cierre.fecha || '';
+  return (
+    <div
+      className={`rounded-xl border p-3.5 ${
+        tieneDiferencia ? 'border-amber-400/30 bg-amber-400/5' : 'border-slate-800 bg-slate-950'
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-bold text-slate-100">
+            {cierre.operador_nombre || 'Operador'}
+            <span className="text-xs font-semibold text-slate-500">
+              {TURNOS.find((t) => t.value === cierre.turno)?.label || cierre.turno || 'Turno'}
+            </span>
+          </p>
+          <p className="text-[11px] text-slate-500">{fechaHora}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {cierre.aprobado ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-400">
+              <CheckCircle2 size={11} /> Aprobado
+            </span>
+          ) : puedeAprobar ? (
+            <button
+              onClick={() => onAprobar(cierre.id)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-lime-400/40 bg-lime-400/10 px-2.5 py-1.5 text-[11px] font-bold text-lime-400 transition hover:bg-lime-400/20"
+            >
+              <CheckCircle2 size={12} /> Aprobar
+            </button>
+          ) : (
+            <span className="rounded-full bg-slate-800 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              Pendiente
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-lg bg-slate-900/60 px-2 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Contado</p>
+          <p className="text-sm font-black text-slate-100">{formatoMoneda(cierre.monto_reportado_efectivo)}</p>
+        </div>
+        <div className="rounded-lg bg-slate-900/60 px-2 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Teórico</p>
+          <p className="text-sm font-black text-slate-100">{formatoMoneda(cierre.monto_teorico_efectivo)}</p>
+        </div>
+        <div className={`rounded-lg px-2 py-2 ${tieneDiferencia ? 'bg-amber-400/10' : 'bg-slate-900/60'}`}>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Diferencia</p>
+          <p className={`text-sm font-black ${diferencia > 0 ? 'text-emerald-400' : diferencia < 0 ? 'text-rose-400' : 'text-slate-100'}`}>
+            {diferencia > 0 ? '+' : ''}
+            {formatoMoneda(diferencia)}
+          </p>
+        </div>
+      </div>
+      {tieneDiferencia && (
+        <p className="mt-2 flex items-center gap-1.5 text-[11px] font-semibold text-amber-300">
+          <AlertTriangle size={12} /> {diferencia > 0 ? 'Sobrante' : 'Faltante'} notificado — revisar con el operador del turno.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Fila del Log de Actividad: un renglón por evento, usando el catálogo
+// `TIPOS_EVENTO_AUDITORIA` (icono/color/texto) para no repetir esa lógica.
+function FilaLogActividad({ evento }) {
+  const meta = TIPOS_EVENTO_AUDITORIA[evento.tipo];
+  const Icon = meta?.icon || Info;
+  const fechaHora = evento.created_at
+    ? new Date(evento.created_at).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })
+    : '';
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3">
+      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${meta?.bg || 'bg-slate-800'}`}>
+        <Icon size={14} className={meta?.color || 'text-slate-400'} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <p className="text-xs font-bold text-slate-100">{etiquetaTipoEvento(evento.tipo)}</p>
+          <p className="text-[10px] text-slate-500">{fechaHora}</p>
+        </div>
+        <p className="mt-0.5 text-[11px] text-slate-400">{meta?.detalleTexto?.(evento.detalle) || ''}</p>
+        <p className="mt-1 text-[10px] font-semibold text-slate-600">
+          {evento.empleado_nombre || 'Operador'} · {ROLES_POR_VALOR[evento.empleado_rol]?.label || evento.empleado_rol || ''}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ModuloControlSeguridad({
+  operador,
+  permisos,
+  empleados,
+  loadingEmpleados,
+  errorEmpleados,
+  cargarEmpleados,
+  crearEmpleado,
+  actualizarEmpleado,
+  cierresCaja,
+  loadingCierresCaja,
+  errorCierresCaja,
+  cargarCierresCaja,
+  aprobarCierreCaja,
+  logActividad,
+  loadingLogActividad,
+  errorLogActividad,
+  cargarLogActividad,
+}) {
+  const [subvista, setSubvista] = useState('empleados'); // 'empleados' | 'cortes' | 'log'
+  const [modalEmpleado, setModalEmpleado] = useState(null); // null = cerrado, {} = alta, {...} = edición
+  const [filtroTipoLog, setFiltroTipoLog] = useState('todos');
+  const [busquedaLog, setBusquedaLog] = useState('');
+
+  const empleadosOrdenados = useMemo(
+    () => [...empleados].sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '')),
+    [empleados]
+  );
+  const cierresOrdenados = useMemo(
+    () => [...cierresCaja].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')),
+    [cierresCaja]
+  );
+  const cortesConDiferencia = cierresOrdenados.filter((c) => Math.abs(Number(c.diferencia) || 0) >= 0.01).length;
+  const cortesPendientesAprobar = cierresOrdenados.filter((c) => !c.aprobado).length;
+
+  const logFiltrado = useMemo(() => {
+    return logActividad.filter((ev) => {
+      if (filtroTipoLog !== 'todos' && ev.tipo !== filtroTipoLog) return false;
+      if (busquedaLog.trim()) {
+        const q = busquedaLog.trim().toLowerCase();
+        if (!(ev.empleado_nombre || '').toLowerCase().includes(q) && !etiquetaTipoEvento(ev.tipo).toLowerCase().includes(q)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [logActividad, filtroTipoLog, busquedaLog]);
+
+  const SUBVISTAS = [
+    { value: 'empleados', label: 'Empleados', icon: Users },
+    { value: 'cortes', label: 'Cortes de Caja', icon: Calculator },
+    { value: 'log', label: 'Log de Actividad', icon: History },
+  ];
+
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <MetricCard icon={Users} etiqueta="Empleados" valor={empleadosOrdenados.length} sub={`${ROLES.length} roles disponibles`} tono="lime" />
+        <MetricCard
+          icon={Calculator}
+          etiqueta="Cortes Pendientes de Aprobar"
+          valor={cortesPendientesAprobar}
+          sub={`${cierresOrdenados.length} registrados en total`}
+          tono="sky"
+        />
+        <MetricCard
+          icon={AlertTriangle}
+          etiqueta="Cortes con Diferencia"
+          valor={cortesConDiferencia}
+          sub="Sobrantes o faltantes notificados"
+          tono="amber"
+        />
+        <MetricCard icon={History} etiqueta="Eventos en el Log" valor={logActividad.length} sub="Cancelaciones, descuentos, ediciones..." tono="violet" />
+      </div>
+
+      <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+        {SUBVISTAS.map((sv) => {
+          const Icon = sv.icon;
+          return (
+            <button
+              key={sv.value}
+              onClick={() => setSubvista(sv.value)}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+                subvista === sv.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              }`}
+            >
+              <Icon size={14} /> {sv.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {subvista === 'empleados' && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Directorio de Empleados</p>
+            {permisos?.puedeGestionarEmpleados && (
+              <BotonPrimario onClick={() => setModalEmpleado({})}>
+                <UserPlus size={15} /> Nuevo Empleado
+              </BotonPrimario>
+            )}
+          </div>
+          {errorEmpleados && <ErrorBanner mensaje={errorEmpleados} onReintentar={() => cargarEmpleados()} />}
+          {loadingEmpleados ? (
+            <SkeletonGrid />
+          ) : empleadosOrdenados.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+              Sin empleados todavía. Usa "Cambiar Operador" en el header para dar de alta al primero.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {empleadosOrdenados.map((emp) => (
+                <FilaEmpleado
+                  key={emp.id}
+                  empleado={emp}
+                  puedeGestionar={Boolean(permisos?.puedeGestionarEmpleados)}
+                  onEditar={(e) => setModalEmpleado(e)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {subvista === 'cortes' && (
+        <div className="space-y-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Cortes de Caja / Arqueos — Aprobación de Cortes
+          </p>
+          {errorCierresCaja && <ErrorBanner mensaje={errorCierresCaja} onReintentar={() => cargarCierresCaja()} />}
+          {loadingCierresCaja ? (
+            <SkeletonGrid />
+          ) : cierresOrdenados.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+              Sin cortes de caja registrados todavía. Se crean desde "Cerrar Turno / Arqueo" en Smart POS.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {cierresOrdenados.map((c) => (
+                <FilaCierreCaja
+                  key={c.id}
+                  cierre={c}
+                  puedeAprobar={Boolean(permisos?.puedeAprobarCorteCaja)}
+                  onAprobar={aprobarCierreCaja}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {subvista === 'log' && (
+        <div className="space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Log de Actividad / Historial Auditable
+            </p>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                value={busquedaLog}
+                onChange={(e) => setBusquedaLog(e.target.value)}
+                className={`${inputClase} sm:w-56`}
+                placeholder="Buscar por empleado o evento..."
+              />
+              <select value={filtroTipoLog} onChange={(e) => setFiltroTipoLog(e.target.value)} className={`${inputClase} sm:w-56`}>
+                <option value="todos">Todos los eventos</option>
+                {Object.entries(TIPOS_EVENTO_AUDITORIA).map(([key, meta]) => (
+                  <option key={key} value={key}>
+                    {meta.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {errorLogActividad && <ErrorBanner mensaje={errorLogActividad} onReintentar={() => cargarLogActividad()} />}
+          {loadingLogActividad ? (
+            <SkeletonGrid />
+          ) : logFiltrado.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+              Sin eventos que coincidan. Cancelaciones, descuentos, ediciones de precio y cambios de horario/cancha aparecen aquí automáticamente.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {logFiltrado.map((ev) => (
+                <FilaLogActividad key={ev.id} evento={ev} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {modalEmpleado && (
+        <ModalGestionEmpleados
+          empleado={modalEmpleado.id ? modalEmpleado : null}
+          onClose={() => setModalEmpleado(null)}
+          onCrear={crearEmpleado}
+          onActualizar={actualizarEmpleado}
+        />
+      )}
+    </>
+  );
+}
+
+/* ============================================================================
+ * PORTAL PÚBLICO DE JUGADORES — /canchas/:clubSlug
+ * ==========================================================================*/
+// Vista pública, SIN login de operador, para que un jugador vea desde su
+// celular las canchas disponibles para renta, los torneos activos y las
+// retas abiertas de un club — y, identificándose con su teléfono (sin
+// contraseña ni OTP: no hay proveedor de SMS conectado, ver nota abajo),
+// pueda inscribirse directo a una Reta o Torneo abierto.
+//
+// Identidad Unificada de Jugadores (Phone-First / Sin Duplicados): la
+// identificación de aquí usa EXACTAMENTE el mismo `resolverJugadorId` que ya
+// usa el mostrador (Nueva Reserva, Smart POS, inscripción presencial) — el
+// mismo criterio de cruce por teléfono (últimos 10 dígitos, ver
+// `claveTelefono`). Si un recepcionista dio de alta a un jugador en
+// mostrador solo con Nombre y Teléfono, y ese jugador entra aquí con el
+// mismo número, `resolverJugadorId` lo encuentra y reutiliza el MISMO
+// expediente — nunca crea uno duplicado.
+//
+// Límite de seguridad conocido y deliberado (ver conversación con Adrián):
+// esta identificación es una conveniencia, no una autenticación real —
+// cualquiera que sepa el teléfono de alguien podría "entrar" como esa
+// persona en este portal. Es aceptable para lo que este portal expone hoy
+// (ver/inscribirse a eventos públicos del club, nada financiero ni privado
+// de otros jugadores). Si más adelante se conecta un proveedor de SMS/OTP
+// (Twilio o similar), `identificarse()` de abajo es el único lugar que
+// habría que endurecer con un código de verificación real.
+
+function slugificarClub(texto) {
+  return (
+    (texto || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'club'
+  );
+}
+
+// Sesión del Portal: recuerda SOLO qué jugador se identificó en ESTE
+// navegador — una conveniencia de sesión, igual criterio que el sidebar
+// colapsado (`LS_KEY_SIDEBAR_COLAPSADO`), NUNCA la fuente de verdad del
+// expediente del jugador (eso vive en Supabase, tabla `jugadores`, resuelto
+// vía `resolverJugadorId` en cada identificación). Se usa `sessionStorage`
+// (no `localStorage`) a propósito: se olvida al cerrar la pestaña, como
+// corresponde a un kiosko/celular compartido. La clave incluye el id del
+// club para que identificarse en el portal de un club no arrastre la
+// sesión al portal de otro.
+function claveSesionPortal(clubId) {
+  return `smashpadel_portal_sesion_${clubId || 'default'}_v1`;
+}
+function leerSesionPortalLocal(clubId) {
+  try {
+    const crudo = window.sessionStorage.getItem(claveSesionPortal(clubId));
+    return crudo ? JSON.parse(crudo) : null;
+  } catch (_e) {
+    return null;
+  }
+}
+function guardarSesionPortalLocal(clubId, jugador) {
+  try {
+    window.sessionStorage.setItem(claveSesionPortal(clubId), JSON.stringify(jugador));
+  } catch (_e) {
+    /* sesión no disponible — la identificación dura solo esta pantalla */
+  }
+}
+function borrarSesionPortalLocal(clubId) {
+  try {
+    window.sessionStorage.removeItem(claveSesionPortal(clubId));
+  } catch (_e) {
+    /* nada que limpiar */
+  }
+}
+
+// Normaliza una fila de club a la forma que espera el Portal
+// ({id, nombre, logo_url, slug}), sin importar de qué tabla vino ni qué
+// nombres de columna use — `configuracion_club` (nombre/logo_url) o
+// `clubes` (proyectos que hayan armado un catálogo de clubes aparte, con
+// nombres de columna en inglés o distintos).
+function normalizarFilaClub(fila, tabla) {
+  if (!fila) return null;
+  return {
+    id: fila.id,
+    nombre: fila.nombre || fila.name || fila.nombre_club || 'Club de Pádel',
+    logo_url: fila.logo_url || fila.logo || fila.logoUrl || fila.imagen_url || null,
+    slug: fila.slug || null,
+    _tabla: tabla,
+  };
+}
+
+/* ============================================================================
+ * PORTAL PÚBLICO — Reserva de canchas con Add-ons + Wallet
+ * ==========================================================================*/
+
+// TODAS las franjas de inicio del día para una cancha, dada una duración —
+// cada 30 minutos entre `HORA_INICIO_MIN` y `HORA_FIN_MIN` — con su estado
+// de disponibilidad (`ocupado: true/false`), NO solo las libres: así el
+// modal de reserva puede pintar una cuadrícula de horarios donde los
+// ocupados se ven claramente deshabilitados/marcados como "Reservado" en
+// vez de simplemente desaparecer de una lista. Mismo
+// `haySolapeEnCancha` que ya usa el panel interno de la Parrilla, así el
+// Portal nunca deja reservar un horario que el mostrador ya considera
+// ocupado, y viceversa.
+function franjasDelDiaConEstado(canchaId, fecha, duracionHoras, reservas) {
+  const duracionMin = Math.round((Number(duracionHoras) || 1) * 60);
+  const franjas = [];
+  for (let inicio = HORA_INICIO_MIN; inicio + duracionMin <= HORA_FIN_MIN; inicio += 30) {
+    const horaInicio = minutosAHora(inicio);
+    const horaFin = minutosAHora(inicio + duracionMin);
+    const ocupado = haySolapeEnCancha(reservas, canchaId, fecha, horaInicio, horaFin);
+    franjas.push({ horaInicio, horaFin, ocupado });
+  }
+  return franjas;
+}
+
+// Wallet del Jugador — Arquitectura Flexible: `jugadores.saldo_a_favor` es
+// la fuente de verdad del saldo (ya documentada en el esquema de este
+// proyecto); `wallet_movimientos` es un historial best-effort — si la tabla
+// no existe todavía en tu Supabase (falta correr `migracion_v5_wallet.sql`),
+// el saldo se sigue descontando bien, solo no queda un registro histórico
+// (se avisa en consola, nunca bloquea el cobro).
+//
+// Nota de seguridad deliberada: el Portal no tiene autenticación real (ver
+// comentario de `identificarse`), así que este cargo es "honor system" del
+// lado del cliente — aceptable para el alcance actual (nada bancario de
+// verdad, solo saldo interno del club). Si more adelante esto maneja dinero
+// real de terceros, este descuento debería moverse a una función de
+// Supabase (RPC) con `security definer` en vez de un UPDATE directo desde
+// el navegador.
+async function leerSaldoWalletFresco(jugadorId) {
+  if (!jugadorId) return 0;
+  try {
+    const { data, error } = await supabase.from('jugadores').select('saldo_a_favor').eq('id', jugadorId).maybeSingle();
+    if (error) {
+      console.error('[Wallet] Error detallado Supabase (leer saldo_a_favor):', error);
+      return 0;
+    }
+    return Number(data?.saldo_a_favor) || 0;
+  } catch (e) {
+    console.error('[Wallet] Error detallado Supabase (leer saldo_a_favor):', e);
+    return 0;
+  }
+}
+
+async function aplicarCargoWallet({ jugadorId, monto, motivo, referenciaTipo, referenciaId }) {
+  if (!jugadorId || !(monto > 0)) return { ok: true, saldoNuevo: null };
+  try {
+    const saldoActual = await leerSaldoWalletFresco(jugadorId);
+    const saldoNuevo = Math.max(0, Math.round((saldoActual - monto) * 100) / 100);
+    const { error: errUpdate } = await supabase.from('jugadores').update({ saldo_a_favor: saldoNuevo }).eq('id', jugadorId);
+    if (errUpdate) {
+      console.error('[Wallet] Error detallado Supabase (descontar saldo_a_favor):', errUpdate);
+      return { ok: false, error: errUpdate, saldoNuevo: null };
+    }
+    try {
+      const { error: errMov } = await supabase.from('wallet_movimientos').insert(
+        withClubId({
+          jugador_id: jugadorId,
+          tipo: 'cargo',
+          monto: -Math.abs(monto),
+          saldo_resultante: saldoNuevo,
+          motivo: motivo || null,
+          referencia_tipo: referenciaTipo || null,
+          referencia_id: referenciaId || null,
+        })
+      );
+      if (errMov) console.error('[Wallet] Error detallado Supabase (insertar wallet_movimientos):', errMov);
+    } catch (eMov) {
+      console.error('[Wallet] Error detallado Supabase (excepción en wallet_movimientos, tabla probablemente no existe todavía):', eMov);
+    }
+    return { ok: true, saldoNuevo };
+  } catch (e) {
+    console.error('[Wallet] Error detallado Supabase (aplicar cargo):', e);
+    return { ok: false, error: e, saldoNuevo: null };
+  }
+}
+
+// Reparte un monto entre Wallet (hasta donde alcance el saldo) y el resto —
+// pagado en Recepción. Pura, no toca Supabase.
+function repartirPagoConWallet(monto, saldoDisponible, usarWallet) {
+  const total = Math.round((Number(monto) || 0) * 100) / 100;
+  if (!usarWallet) return { montoWallet: 0, montoRestante: total };
+  const montoWallet = Math.round(Math.min(total, Math.max(0, Number(saldoDisponible) || 0)) * 100) / 100;
+  const montoRestante = Math.round((total - montoWallet) * 100) / 100;
+  return { montoWallet, montoRestante };
+}
+
+// Resuelve qué club corresponde a la URL — Arquitectura Flexible: busca
+// primero en `configuracion_club` (la tabla que usa el resto de la app) y,
+// si ahí no hay filas (tabla vacía, sin migrar, o bloqueada por RLS para el
+// acceso público), intenta también `clubes`, por si el catálogo de clubes
+// vive en una tabla aparte con ese nombre. El match por slug es insensible
+// a mayúsculas/minúsculas y, si no hay coincidencia exacta (o la columna
+// `slug` ni siquiera existe todavía), cae al slug derivado del nombre y, en
+// último caso, al PRIMER registro que se haya encontrado — el Portal nunca
+// debe quedarse en "Club no encontrado" mientras exista al menos una fila
+// en cualquiera de las dos tablas.
+//
+// AUDITORÍA — causas raíz reales que hacían que esto siguiera fallando
+// después del primer intento de arreglo:
+//   1. `.order('id', { ascending: true })`: si la tabla del club no tiene
+//      una columna llamada exactamente `id` (o el acceso público a esa
+//      columna está restringido), Postgres regresa un error y la consulta
+//      COMPLETA se descartaba como "sin filas" — aunque la tabla sí tuviera
+//      datos. Se quitó el `.order()`: se listan las filas tal cual vengan.
+//   2. Cero logging: si Supabase regresaba un error (tabla inexistente, RLS,
+//      columna faltante) o simplemente cero filas (RLS que filtra en
+//      silencio — Postgres NO marca eso como error, solo regresa un arreglo
+//      vacío), no había forma de saberlo desde la consola del navegador.
+//      Ahora cada intento se registra con `console.error` con el detalle
+//      exacto de Supabase.
+//   3. Sin el fallback explícito `.select('*').limit(1)` que se pidió: se
+//      agrega como último recurso, después del listado completo, por si
+//      alguna política RLS particular permite un `limit` pequeño pero no un
+//      listado sin acotar.
+//
+// `establecerClubActivo` (multitenant) solo se activa cuando de verdad hay
+// más de un club en la tabla que se terminó usando — con uno solo, el resto
+// de la app sigue leyendo/escribiendo exactamente igual que hoy (sin filtro
+// de club_id).
+async function resolverClubDelPortal(clubSlug) {
+  const slugBuscado = (clubSlug || '').toLowerCase().trim();
+  const tablasClub = ['configuracion_club', 'clubes'];
+
+  let filas = [];
+  let tablaUsada = null;
+
+  // Paso 1 — listado completo de cada tabla candidata (sin `.order()`, ver
+  // nota de causa raíz #1 arriba).
+  for (const tabla of tablasClub) {
+    try {
+      const { data, error } = await supabase.from(tabla).select('*');
+      console.error(`[Portal] ${tabla} → select('*'):`, { filas: data?.length ?? 0, error: error || null });
+      if (error) continue;
+      if (Array.isArray(data) && data.length > 0) {
+        filas = data;
+        tablaUsada = tabla;
+        break;
+      }
+    } catch (e) {
+      console.error(`[Portal] Excepción consultando ${tabla}:`, e);
+    }
+  }
+
+  // Paso 2 — FALLBACK DE SEGURIDAD explícito, tal como se pidió: si el
+  // listado de arriba no trajo nada, se reintenta con la consulta más
+  // simple posible antes de rendirse.
+  if (filas.length === 0) {
+    for (const tabla of tablasClub) {
+      try {
+        const { data, error } = await supabase.from(tabla).select('*').limit(1);
+        console.error(`[Portal] Fallback ${tabla} → select('*').limit(1):`, { filas: data?.length ?? 0, error: error || null });
+        if (!error && Array.isArray(data) && data.length > 0) {
+          filas = data;
+          tablaUsada = tabla;
+          break;
+        }
+      } catch (e) {
+        console.error(`[Portal] Excepción en fallback limit(1) de ${tabla}:`, e);
+      }
+    }
+  }
+
+  if (filas.length === 0) {
+    console.error(
+      '[Portal] No se encontró NINGÚN club en configuracion_club ni en clubes. Si la tabla SÍ tiene filas en Supabase, ' +
+        'la causa casi segura es una política RLS que no permite SELECT al rol "anon" (visitante público, sin sesión) — ' +
+        'revisa Authentication → Policies para esa tabla.'
+    );
+    return null;
+  }
+  if (filas.length === 1) return normalizarFilaClub(filas[0], tablaUsada);
+
+  const porSlug = filas.find((c) => {
+    const slugFila = (c.slug || '').toLowerCase().trim();
+    return (slugFila && slugFila === slugBuscado) || slugificarClub(c.nombre || c.name) === slugBuscado;
+  });
+  if (!porSlug) {
+    console.error(`[Portal] El slug "${slugBuscado}" no coincidió con ninguno de los ${filas.length} clubes en ${tablaUsada}; se usa el primero como respaldo.`);
+  }
+  const club = porSlug || filas[0]; // fallback final: nunca se queda sin club
+  establecerClubActivo(club.id);
+  return normalizarFilaClub(club, tablaUsada);
+}
+
+function PortalPublicoJugadores({ clubSlug }) {
+  const [toasts, setToasts] = useState([]);
+  const toastIdRef = useRef(0);
+  const mostrarToast = useCallback(({ titulo, detalle, tono = 'ok' }) => {
+    const id = ++toastIdRef.current;
+    setToasts((prev) => [...prev, { id, titulo, detalle, tono }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4200);
+  }, []);
+
+  const [club, setClub] = useState(null);
+  const [cargandoClub, setCargandoClub] = useState(true);
+  const [jugador, setJugador] = useState(null);
+
+  const [canchas, setCanchas] = useState([]);
+  const [reservas, setReservas] = useState([]);
+  const [torneos, setTorneos] = useState([]);
+  const [retas, setRetas] = useState([]);
+  const [inscripciones, setInscripciones] = useState([]);
+  const [participantes, setParticipantes] = useState([]);
+  const [productos, setProductos] = useState([]);
+  const [cargandoDatos, setCargandoDatos] = useState(true);
+
+  const [vista, setVista] = useState('canchas');
+  const [modalIdentificacion, setModalIdentificacion] = useState(false);
+  const [eventoParaInscribir, setEventoParaInscribir] = useState(null); // { tipo: 'reta'|'torneo', evento }
+
+  // Wallet — Módulo de Wallet/Monedero Digital: saldo leído fresco de
+  // Supabase (nunca del objeto de sesión, que puede quedar desactualizado
+  // entre pestañas/dispositivos) + historial best-effort.
+  const [saldoWallet, setSaldoWallet] = useState(0);
+  const [walletMovimientos, setWalletMovimientos] = useState([]);
+  const [cargandoWallet, setCargandoWallet] = useState(false);
+
+  // Tienda (Pro-Shop) — carrito propio del Portal, independiente del
+  // carrito del mostrador (Smart POS): un visitante del Portal nunca debe
+  // tocar la comanda que un cajero tenga abierta en ese momento.
+  const [carritoTienda, setCarritoTienda] = useState([]);
+  const [modalCarritoAbierto, setModalCarritoAbierto] = useState(false);
+  const [productoParaVariantePortal, setProductoParaVariantePortal] = useState(null); // { producto, destino: 'tienda'|'addon' }
+
+  // Reserva de cancha con Add-ons — modal interactivo (ver requerimiento
+  // "RESERVA DE CANCHAS (+ ADD-ONS DE CONSUMO)").
+  const [canchaParaReservar, setCanchaParaReservar] = useState(null);
+
+  // Flujo de pago de inscripción a Reta/Torneo — se intercala ANTES de
+  // insertar la inscripción, para poder ofrecer "Pagar con Wallet".
+  const [flujoPago, setFlujoPago] = useState(null); // { tipo: 'reta'|'torneo', evento, categoria, monto }
+
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      setCargandoClub(true);
+      const clubResuelto = await resolverClubDelPortal(clubSlug);
+      if (cancelado) return;
+      setClub(clubResuelto);
+      setJugador(leerSesionPortalLocal(clubResuelto?.id));
+      setCargandoClub(false);
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [clubSlug]);
+
+  const cargarDatosPortal = useCallback(async () => {
+    setCargandoDatos(true);
+    const [resCanchas, resReservas, resTorneos, resRetas, resInscripciones, resParticipantes, resProductos] = await Promise.all([
+      conClubId(supabase.from('canchas').select('*')).order('nombre', { ascending: true }),
+      conClubId(supabase.from('reservas').select('*')),
+      conClubId(supabase.from('torneos').select('*')).order('fecha_inicio', { ascending: true }),
+      conClubId(supabase.from('retas').select('*')).order('fecha', { ascending: true }),
+      conClubId(supabase.from('reta_inscripciones').select('*')),
+      conClubId(supabase.from('torneo_participantes').select('*')),
+      conClubId(supabase.from('productos').select('*')),
+    ]);
+    setCanchas(resCanchas.data || []);
+    setReservas(resReservas.data || []);
+    setTorneos(resTorneos.data || []);
+    setRetas(resRetas.data || []);
+    setInscripciones(resInscripciones.data || []);
+    setParticipantes(resParticipantes.data || []);
+    // FIX DEFINITIVO de variantes: `productos` ya trae su propio arreglo
+    // JSONB `variantes` — no hay una tabla `producto_variantes` aparte que
+    // consultar. `variantesPorProductoPortal` (abajo) deriva de esta misma
+    // lista con `variantesDeProductoJSONB`.
+    setProductos(resProductos.data || []);
+    setCargandoDatos(false);
+  }, []);
+
+  useEffect(() => {
+    if (!club) return;
+    cargarDatosPortal();
+  }, [club, cargarDatosPortal]);
+
+  // Realtime: cualquier cambio hecho desde el mostrador (nueva reta, cupo
+  // que se llena, torneo que se archiva, producto que se agota) se refleja
+  // aquí solo, sin recargar.
+  useEffect(() => {
+    if (!club) return;
+    const canal = supabase
+      .channel(`portal-publico-${club.id}`)
+      .on('postgres_changes', canalClubFiltro('canchas'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('reservas'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('torneos'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('retas'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('reta_inscripciones'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('torneo_participantes'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('productos'), () => cargarDatosPortal())
+      .subscribe();
+    return () => supabase.removeChannel(canal);
+  }, [club, cargarDatosPortal]);
+
+  // Wallet: se recarga cada vez que hay un jugador identificado (login del
+  // Portal, o al volver de una compra/reserva que acaba de cobrar contra el
+  // saldo) — siempre lee fresco de Supabase, nunca confía en un valor
+  // guardado en sessionStorage.
+  const cargarWallet = useCallback(async (jugadorId) => {
+    if (!jugadorId) {
+      setSaldoWallet(0);
+      setWalletMovimientos([]);
+      return;
+    }
+    setCargandoWallet(true);
+    const saldo = await leerSaldoWalletFresco(jugadorId);
+    setSaldoWallet(saldo);
+    try {
+      const { data, error } = await supabase
+        .from('wallet_movimientos')
+        .select('*')
+        .eq('jugador_id', jugadorId)
+        .order('created_at', { ascending: false })
+        .limit(30);
+      if (error) console.error('[Wallet] Error detallado Supabase (leer wallet_movimientos):', error);
+      setWalletMovimientos(error ? [] : data || []);
+    } catch (e) {
+      console.error('[Wallet] Error detallado Supabase (excepción leyendo wallet_movimientos):', e);
+      setWalletMovimientos([]);
+    }
+    setCargandoWallet(false);
+  }, []);
+
+  useEffect(() => {
+    cargarWallet(jugador?.id || null);
+  }, [jugador?.id, cargarWallet]);
+
+  // FIX DEFINITIVO de variantes: ya no hay estado `variantesProductos` (ni
+  // su fetch, ni su canal de Realtime aparte) — el mapa de variantes por
+  // producto se deriva directo de `productos`, exactamente igual que en
+  // `AppInterno` (ver `variantesDeProductoJSONB`), así el Portal y el
+  // mostrador nunca pueden desincronizarse.
+  const variantesPorProductoPortal = useMemo(() => {
+    const mapa = {};
+    productos.forEach((p) => {
+      mapa[p.id] = variantesDeProductoJSONB(p);
+    });
+    return mapa;
+  }, [productos]);
+
+  const productosTienda = useMemo(
+    () => productos.filter((p) => p.categoria === 'Pro-Shop' && p.disponible !== false),
+    [productos]
+  );
+  const productosAddOns = useMemo(
+    () => productos.filter((p) => (p.categoria === 'Pro-Shop' || p.categoria === 'Cafetería/Bar') && p.disponible !== false),
+    [productos]
+  );
+
+  const canchasPorId = useMemo(() => {
+    const mapa = {};
+    canchas.forEach((c) => (mapa[c.id] = c));
+    return mapa;
+  }, [canchas]);
+
+  const retasAbiertas = useMemo(
+    () => retas.filter((r) => r.archivado !== true && (r.estado || 'abierta') !== 'cancelada'),
+    [retas]
+  );
+  const torneosActivos = useMemo(() => torneos.filter((t) => t.archivado !== true && t.estado !== 'finalizado'), [torneos]);
+  const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+
+  const inscripcionesPorReta = useMemo(() => {
+    const mapa = {};
+    inscripciones.forEach((i) => {
+      if (!mapa[i.reta_id]) mapa[i.reta_id] = [];
+      mapa[i.reta_id].push(i);
+    });
+    return mapa;
+  }, [inscripciones]);
+  const participantesPorTorneo = useMemo(() => {
+    const mapa = {};
+    participantes.forEach((p) => {
+      if (!mapa[p.torneo_id]) mapa[p.torneo_id] = [];
+      mapa[p.torneo_id].push(p);
+    });
+    return mapa;
+  }, [participantes]);
+
+  // Identidad Unificada de Jugadores: mismo resolvedor que usa el
+  // mostrador — busca por teléfono, y si no hay match crea el expediente.
+  // `directorio: []` a propósito (el Portal es una página pública, no trae
+  // el directorio completo de jugadores del club) — `resolverJugadorId` ya
+  // sabe caer a una búsqueda por teléfono del lado de Supabase cuando no
+  // recibe un directorio local con el que cruzar primero.
+  async function identificarse(nombre, telefono) {
+    const claveTel = claveTelefono(telefono);
+    if (!claveTel) {
+      mostrarToast({ titulo: 'Teléfono inválido', detalle: 'Captura tu teléfono a 10 dígitos.', tono: 'aviso' });
+      return false;
+    }
+    const id = await resolverJugadorId(nombre, { telefono, directorio: [] });
+    if (!id) {
+      mostrarToast({ titulo: 'No se pudo identificar', detalle: 'Intenta de nuevo en un momento.', tono: 'error' });
+      return false;
+    }
+    const nuevoJugador = { id, nombre: nombre.trim(), telefono: telefono.trim() };
+    setJugador(nuevoJugador);
+    guardarSesionPortalLocal(club?.id, nuevoJugador);
+    mostrarToast({ titulo: `¡Hola, ${nombre.trim()}!`, detalle: 'Ya puedes inscribirte a Retas y Torneos abiertos.' });
+    return true;
+  }
+
+  function cerrarSesionPortal() {
+    setJugador(null);
+    borrarSesionPortalLocal(club?.id);
+  }
+
+  // Inscripción — Reta: mismo payload/criterio de tolerancia total que
+  // `ModalInscribirJugador` (mostrador), pero con el jugador YA identificado
+  // arriba, así que no vuelve a pedir nombre/teléfono. `metodo` ('wallet' |
+  // 'recepcion') decide si se cobra contra el saldo del jugador antes de
+  // insertar — ver `ModalElegirPago`/`confirmarFlujoPago`.
+  async function inscribirseAReta(reta, metodo) {
+    if (!jugador) return setModalIdentificacion(true);
+    const monto = Number(reta.precio_inscripcion) || 0;
+    const esPagoTarjeta = metodo === 'tarjeta';
+    const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
+    // "Pagar con Tarjeta" (simulación de TPV) se trata como cobro inmediato
+    // completo — ver `SelectorMetodoPagoPortal`/`tarjetaEsValida`: el
+    // formulario ya validó los datos antes de llegar aquí, así que no queda
+    // nada pendiente por cobrar en recepción.
+    const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
+    const payloadInscripcion = withClubId({
+      reta_id: reta.id,
+      nombre: jugador.nombre,
+      telefono: jugador.telefono,
+      jugador_id: jugador.id,
+      monto,
+      estado_pago: esPagoTarjeta || (montoRestante <= 0 && monto > 0) ? 'pagado' : 'pendiente',
+      estado: 'confirmado',
+    });
+    try {
+      const { data, error } = await supabase.from('reta_inscripciones').insert(payloadInscripcion).select().single();
+      if (error) throw error;
+      if (montoWallet > 0) {
+        await aplicarCargoWallet({
+          jugadorId: jugador.id,
+          monto: montoWallet,
+          motivo: `Inscripción a Reta · ${reta.nombre}`,
+          referenciaTipo: 'reta_inscripcion',
+          referenciaId: data.id,
+        });
+        cargarWallet(jugador.id);
+      }
+      setInscripciones((prev) => [...prev, data]);
+      mostrarToast({
+        titulo: '¡Inscripción confirmada!',
+        detalle:
+          montoRestante > 0
+            ? `${reta.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
+            : `${reta.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
+      });
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (inscripción a Reta):', err);
+      mostrarToast({ titulo: 'No se pudo completar tu inscripción', detalle: 'Intenta de nuevo o pide ayuda en recepción.', tono: 'error' });
+    }
+  }
+
+  // Inscripción — Torneo: igual criterio que `ModalAgregarParticipanteTorneo`.
+  async function inscribirseATorneo(torneo, categoria, metodo) {
+    if (!jugador) return setModalIdentificacion(true);
+    const monto = Number(torneo.precio) || 0;
+    const esPagoTarjeta = metodo === 'tarjeta';
+    const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
+    const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
+    const payloadParticipante = withClubId({
+      torneo_id: torneo.id,
+      nombre: jugador.nombre,
+      telefono: jugador.telefono,
+      jugador_id: jugador.id,
+      categoria: categoria || null,
+      monto,
+      estado_pago: esPagoTarjeta || (montoRestante <= 0 && monto > 0) ? 'pagado' : 'pendiente',
+    });
+    try {
+      const { data, error } = await supabase.from('torneo_participantes').insert(payloadParticipante).select().single();
+      if (error) throw error;
+      if (montoWallet > 0) {
+        await aplicarCargoWallet({
+          jugadorId: jugador.id,
+          monto: montoWallet,
+          motivo: `Inscripción a Torneo · ${torneo.nombre}`,
+          referenciaTipo: 'torneo_participante',
+          referenciaId: data.id,
+        });
+        cargarWallet(jugador.id);
+      }
+      setParticipantes((prev) => [...prev, data]);
+      mostrarToast({
+        titulo: '¡Inscripción confirmada!',
+        detalle:
+          montoRestante > 0
+            ? `${torneo.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
+            : `${torneo.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
+      });
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (inscripción a Torneo):', err);
+      mostrarToast({ titulo: 'No se pudo completar tu inscripción', detalle: 'Intenta de nuevo o pide ayuda en recepción.', tono: 'error' });
+    }
+  }
+
+  // Punto de entrada único desde las tarjetas de Reta/Torneo: identifica
+  // primero si hace falta, luego pide categoría (solo Torneo con
+  // categorías), y siempre termina abriendo `ModalElegirPago` antes de
+  // insertar nada — así el jugador puede usar su Wallet.
+  function alIntentarInscribir(tipo, evento) {
+    if (!jugador) {
+      setEventoParaInscribir({ tipo, evento });
+      setModalIdentificacion(true);
+      return;
+    }
+    if (tipo === 'reta') {
+      setFlujoPago({ tipo: 'reta', evento, categoria: null, monto: Number(evento.precio_inscripcion) || 0 });
+    } else if (Array.isArray(evento.categorias) && evento.categorias.length > 0) {
+      setEventoParaInscribir({ tipo: 'torneo-categoria', evento });
+    } else {
+      setFlujoPago({ tipo: 'torneo', evento, categoria: null, monto: Number(evento.precio) || 0 });
+    }
+  }
+
+  // Carrito de la Tienda (Pro-Shop) — mismo criterio de límite de stock que
+  // `agregarProducto` del mostrador, pero en un carrito propio del Portal.
+  function agregarAlCarritoPortal(producto, variante = null) {
+    const nombreArticulo = variante ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
+    const precioArticulo = variante && variante.precio != null ? Number(variante.precio) : Number(producto.precio) || 0;
+    const stockCrudoVariante = variante ? variante.stock ?? variante.cantidad : producto.stock;
+    const manejaStock = variante ? stockCrudoVariante != null : producto.maneja_stock !== false;
+    const stockDisponible = Number(stockCrudoVariante);
+    const hayLimiteStock = manejaStock && Number.isFinite(stockDisponible);
+    const id = `producto-${producto.id}${variante ? `-var-${variante.id}` : ''}`;
+    setCarritoTienda((prev) => {
+      const existente = prev.find((i) => i.id === id);
+      const cantidadActual = existente?.cantidad || 0;
+      if (hayLimiteStock && cantidadActual + 1 > stockDisponible) {
+        mostrarToast({ titulo: 'Sin stock suficiente', detalle: `${nombreArticulo} solo tiene ${stockDisponible} disponible(s).`, tono: 'aviso' });
+        return prev;
+      }
+      if (existente) return prev.map((i) => (i.id === id ? { ...i, cantidad: i.cantidad + 1 } : i));
+      return [
+        ...prev,
+        {
+          id,
+          tipo: 'producto',
+          producto_id: producto.id,
+          productoPadreId: producto.id,
+          variante_id: variante?.id || null,
+          varianteId: variante?.id || null,
+          esVariante: !!variante,
+          varianteNombre: variante?.nombre || null,
+          nombre: nombreArticulo,
+          precio: precioArticulo,
+          cantidad: 1,
+          stock: hayLimiteStock ? stockDisponible : null,
+          manejaStock,
+        },
+      ];
+    });
+    setModalCarritoAbierto(true);
+    mostrarToast({ titulo: 'Agregado al carrito', detalle: nombreArticulo });
+  }
+
+  function cambiarCantidadCarritoPortal(itemId, delta) {
+    setCarritoTienda((prev) =>
+      prev
+        .map((i) => {
+          if (i.id !== itemId) return i;
+          const nuevaCantidad = i.cantidad + delta;
+          if (delta > 0 && Number.isFinite(i.stock) && nuevaCantidad > i.stock) {
+            mostrarToast({ titulo: 'Sin stock suficiente', detalle: `${i.nombre} solo tiene ${i.stock} disponible(s).`, tono: 'aviso' });
+            return i;
+          }
+          return { ...i, cantidad: nuevaCantidad };
+        })
+        .filter((i) => i.cantidad > 0)
+    );
+  }
+
+  const totalCarritoTienda = useMemo(
+    () => Math.round(carritoTienda.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100,
+    [carritoTienda]
+  );
+
+  // Descuenta stock + registra kardex de una lista de artículos tipo
+  // 'producto' — reutiliza EXACTAMENTE los mismos helpers ya corregidos que
+  // usa el Smart POS interno (`descontarStockVariante`/
+  // `descontarStockProductoSimple`/`insertarMovimientoKardex`), para que el
+  // Portal, el mostrador y el Kardex nunca se desincronicen.
+  async function descontarStockYKardexItems(items, motivoBase) {
+    await Promise.all(
+      items
+        .filter((it) => it.tipo === 'producto' && (it.productoPadreId || it.producto_id) && it.manejaStock !== false)
+        .map(async (item) => {
+          const productoId = item.productoPadreId || item.producto_id;
+          const varianteId = item.varianteId || item.variante_id;
+          let stockAnterior = item.stock;
+          let nuevoStock = null;
+          let errStock = null;
+          if (item.esVariante || varianteId) {
+            const resultado = await descontarStockVariante({
+              productoId,
+              varianteId,
+              varianteNombre: item.varianteNombre || item.nombre,
+              cantidad: item.cantidad,
+              upsertProducto: () => {},
+            });
+            if (!resultado.ok) errStock = resultado.error;
+            else {
+              stockAnterior = resultado.stockAnterior;
+              nuevoStock = resultado.nuevoStock;
+            }
+          } else {
+            const resultado = await descontarStockProductoSimple({ productoId, cantidad: item.cantidad, upsertProducto: () => {} });
+            if (!resultado.ok) errStock = resultado.error;
+            else {
+              stockAnterior = resultado.stockAnterior;
+              nuevoStock = resultado.nuevoStock;
+            }
+          }
+          if (errStock) {
+            console.error(`[Portal] Error detallado Supabase al descontar el stock de "${item.nombre}":`, errStock);
+            return;
+          }
+          if (nuevoStock == null) return;
+          const resultadoKardex = await insertarMovimientoKardex({
+            producto_id: productoId,
+            variante_id: varianteId || undefined,
+            producto_nombre: item.nombre,
+            tipo_movimiento: 'salida_venta',
+            cantidad: item.cantidad,
+            stock_anterior: stockAnterior,
+            stock_nuevo: nuevoStock,
+            motivo: `${motivoBase}${item.esVariante || varianteId ? ` · ${item.varianteNombre || item.nombre}` : ''}`,
+            operador: 'Portal Público',
+          });
+          if (!resultadoKardex.ok) {
+            console.error(`[Portal] Error detallado Supabase: stock descontado pero el Kardex no se pudo registrar para "${item.nombre}":`, resultadoKardex.error);
+          }
+        })
+    );
+  }
+
+  // Checkout de la Tienda — crea UNA venta (misma tabla `ventas` que usa
+  // Smart POS, así aparece igual en Analytics/Kardex/Reportes del club),
+  // descuenta stock+kardex de cada línea, y cobra contra la Wallet si se
+  // eligió esa opción.
+  async function confirmarCheckoutTienda(metodo) {
+    if (!jugador) {
+      setModalIdentificacion(true);
+      return;
+    }
+    if (carritoTienda.length === 0) return;
+    const esPagoTarjeta = metodo === 'tarjeta';
+    const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(totalCarritoTienda, saldoWallet, metodo === 'wallet');
+    const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
+    const items = carritoTienda.map((i) => ({
+      tipo: 'producto',
+      producto_id: i.productoPadreId || i.producto_id,
+      cancha_id: null,
+      nombre: i.nombre,
+      precio: i.precio,
+      cantidad: i.cantidad,
+      subtotal: Math.round(i.precio * i.cantidad * 100) / 100,
+    }));
+    const estadoPago = esPagoTarjeta || montoRestante <= 0 ? 'pagado' : 'pendiente';
+    try {
+      const { data, error } = await supabase
+        .from('ventas')
+        .insert(
+          withClubId({
+            total: totalCarritoTienda,
+            metodo_pago: esPagoTarjeta ? 'Tarjeta (Simulado)' : montoWallet > 0 ? (montoRestante > 0 ? 'Wallet + Recepción' : 'Wallet') : 'Recepción',
+            turno: null,
+            operador: 'Portal Público',
+            reserva_id: null,
+            cancha_id: null,
+            detalles: { items, pagos_divididos: null, jugador_id: jugador.id, jugador_nombre: jugador.nombre },
+            estado_pago: estadoPago,
+          })
+        )
+        .select()
+        .single();
+      if (error) throw error;
+      await descontarStockYKardexItems(carritoTienda, 'Compra en Tienda (Portal)');
+      if (montoWallet > 0) {
+        await aplicarCargoWallet({
+          jugadorId: jugador.id,
+          monto: montoWallet,
+          motivo: 'Compra en Tienda (Portal)',
+          referenciaTipo: 'venta',
+          referenciaId: data.id,
+        });
+        cargarWallet(jugador.id);
+      }
+      setCarritoTienda([]);
+      setModalCarritoAbierto(false);
+      mostrarToast({
+        titulo: '¡Compra confirmada!',
+        detalle: montoRestante > 0 ? `Paga ${formatoMoneda(montoRestante)} en recepción al recoger.` : 'Recoge tu pedido en recepción.',
+      });
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (checkout de Tienda):', err);
+      mostrarToast({ titulo: 'No se pudo completar tu compra', detalle: 'Intenta de nuevo o pide ayuda en recepción.', tono: 'error' });
+    }
+  }
+
+  // Confirma la reserva de cancha del `ModalReservarCancha`: identifica al
+  // jugador si hace falta (Nombre/Teléfono del propio modal), inserta en
+  // `reservas` (la MISMA tabla que usa la Parrilla/POS internos — así una
+  // reserva hecha desde el Portal aparece de inmediato en el mostrador),
+  // y si hay Add-ons, arma una `ventas` vinculada por `reserva_id` — igual
+  // patrón que "Reservar y Cobrar en POS" — para que cancha + consumos
+  // queden en un solo ticket, con su stock y kardex reales.
+  async function confirmarReservaConAddons({ cancha, fecha, horaInicio, horaFin, costoCancha, addons, metodo, nombre, telefono }) {
+    let jugadorActivo = jugador;
+    if (!jugadorActivo) {
+      const ok = await identificarse(nombre, telefono);
+      if (!ok) return { ok: false };
+      jugadorActivo = { id: await resolverJugadorId(nombre, { telefono, directorio: [] }), nombre: nombre.trim(), telefono: telefono.trim() };
+    }
+    const addonsSubtotal = Math.round(addons.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100;
+    const totalReserva = Math.round((costoCancha + addonsSubtotal) * 100) / 100;
+    const esPagoTarjeta = metodo === 'tarjeta';
+    const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(totalReserva, saldoWallet, metodo === 'wallet');
+    const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
+    const estadoPago = esPagoTarjeta || montoRestante <= 0 ? 'pagado' : 'pendiente';
+    const metodoTexto = esPagoTarjeta ? 'Tarjeta (Simulado)' : montoWallet > 0 ? (montoRestante > 0 ? 'Wallet + Recepción' : 'Wallet') : 'Recepción';
+
+    try {
+      // `monto_total` se queda como el costo PURO de la renta de cancha (sin
+      // add-ons) — es el campo que ya usa TODA la app para Ingresos de
+      // Canchas / Gasto Directo en CRM / LTV (ver `montoEfectivoReserva` y
+      // los Analytics BI): cambiarle el significado aquí rompería esos
+      // cálculos en cascada. El desglose de add-ons y el remanente real por
+      // cobrar en recepción DESPUÉS de aplicar Wallet se guardan aparte, en
+      // 3 columnas opcionales — igual "Arquitectura Flexible" que
+      // `producto_nombre` en `insertarMovimientoKardex`: si tu Supabase
+      // todavía no las tiene, el insert se reintenta sin ellas (la reserva
+      // se sigue creando con normalidad; el POS cae de vuelta a
+      // `monto_total` a secas, ver `gruposReservasPendientes`).
+      // `addons_detalle`: copia line-by-line de los add-ons elegidos (nombre,
+      // variante, precio, cantidad, subtotal, y el/los id(s) de producto) —
+      // se guarda TAMBIÉN en la propia reserva, no solo en el ticket de
+      // `ventas`, para que "Cuentas Pendientes / Inscripciones" pueda
+      // mostrar el desglose individual ("1x Overgrip Bombarder Tacky -
+      // $80"...) y descontar su stock/Kardex al cobrar INCLUSO cuando el
+      // INSERT de `ventas` de abajo falle silenciosamente (el mismo caso
+      // que ya motivó `saldo_pendiente` arriba) — sin esto, esa información
+      // se perdía por completo y solo quedaba el aviso genérico "Add-ons
+      // (Portal)".
+      const addonsDetalle = addons.map((a) => ({
+        producto_id: a.productoPadreId || a.producto_id,
+        variante_id: a.varianteId || a.variante_id || null,
+        variante_nombre: a.varianteNombre || null,
+        es_variante: !!(a.esVariante || a.varianteId || a.variante_id),
+        nombre: a.nombre,
+        precio: a.precio,
+        cantidad: a.cantidad,
+        subtotal: Math.round(a.precio * a.cantidad * 100) / 100,
+      }));
+      const payloadReserva = withClubId({
+        cancha_id: cancha.id,
+        jugador_id: jugadorActivo.id,
+        jugador_nombre: jugadorActivo.nombre,
+        fecha,
+        hora_inicio: horaInicio,
+        hora_fin: horaFin,
+        estado: 'Reservada',
+        estado_pago: estadoPago,
+        metodo_pago: metodoTexto,
+        monto_total: costoCancha,
+        monto_addons: addonsSubtotal,
+        saldo_wallet_aplicado: montoWallet,
+        saldo_pendiente: montoRestante,
+        addons_detalle: addonsDetalle,
+      });
+      let { data: reservaCreada, error: errReserva } = await supabase.from('reservas').insert(payloadReserva).select().single();
+      if (errReserva && esErrorColumnaInexistente(errReserva)) {
+        delete payloadReserva.monto_addons;
+        delete payloadReserva.saldo_wallet_aplicado;
+        delete payloadReserva.saldo_pendiente;
+        delete payloadReserva.addons_detalle;
+        ({ data: reservaCreada, error: errReserva } = await supabase.from('reservas').insert(payloadReserva).select().single());
+      }
+      if (errReserva) throw errReserva;
+      setReservas((prev) => [...prev, reservaCreada]);
+
+      // NO CREAR TICKET EN `ventas` ANTICIPADO cuando la reserva queda con
+      // pago pendiente en Recepción ("Recepción" pura o "Wallet +
+      // Recepción"): antes se creaba el ticket AQUÍ MISMO, ya con
+      // `estado_pago: 'pendiente'` — eso era precisamente lo que hacía que
+      // el mismo cobro apareciera A LA VEZ en "Cuentas Abiertas" (que lee
+      // `ventas` directo) y en "Cuentas Pendientes" (que lee `reservas`
+      // directo desde el fix anterior). Ahora, si queda algo por cobrar en
+      // Recepción, la reserva se deja SOLO en `reservas` — ya con su
+      // desglose completo en `addons_detalle` (arriba) — y el ticket en
+      // `ventas` (con su descuento de stock/Kardex) se crea hasta que el
+      // recepcionista dé clic en "Liquidar / Cobrar" desde "Cuentas
+      // Pendientes" (ver `liquidarCuenta` en `ModuloSmartPOS`). Cuando la
+      // reserva SÍ quedó totalmente pagada (Tarjeta simulada, o Wallet
+      // cubrió el 100%), no hay nada pendiente que journalizar después, así
+      // que el ticket se sigue creando de inmediato, igual que antes.
+      if (estadoPago === 'pagado' && totalReserva > 0) {
+        const itemsCancha = [
+          {
+            tipo: 'cancha',
+            producto_id: null,
+            cancha_id: cancha.id,
+            nombre: `Renta ${cancha.nombre} (Portal)`,
+            precio: costoCancha,
+            cantidad: 1,
+            subtotal: costoCancha,
+          },
+        ];
+        const itemsAddons = addons.map((a) => ({
+          tipo: 'producto',
+          producto_id: a.productoPadreId || a.producto_id,
+          cancha_id: null,
+          nombre: a.nombre,
+          precio: a.precio,
+          cantidad: a.cantidad,
+          subtotal: Math.round(a.precio * a.cantidad * 100) / 100,
+        }));
+        // `es_reserva`/`origen`: columnas opcionales (Arquitectura Flexible,
+        // igual patrón que `addons_detalle` arriba) para que "Cuentas
+        // Abiertas" pueda excluir explícitamente cualquier venta que venga
+        // de una reserva, sin depender solo de `reserva_id` — si tu
+        // Supabase todavía no las tiene, se reintenta el insert sin ellas.
+        const payloadVenta = withClubId({
+          total: totalReserva,
+          metodo_pago: metodoTexto,
+          turno: null,
+          operador: 'Portal Público',
+          reserva_id: reservaCreada.id,
+          es_reserva: true,
+          origen: 'portal',
+          cancha_id: cancha.id,
+          detalles: {
+            items: [...itemsCancha, ...itemsAddons],
+            pagos_divididos: null,
+            jugador_id: jugadorActivo.id,
+            jugador_nombre: jugadorActivo.nombre,
+            monto_cancha: costoCancha,
+            monto_addons: addonsSubtotal,
+            wallet_aplicado: montoWallet,
+          },
+          estado_pago: estadoPago,
+        });
+        let { data: ventaCreada, error: errVenta } = await supabase.from('ventas').insert(payloadVenta).select().single();
+        if (errVenta && esErrorColumnaInexistente(errVenta)) {
+          delete payloadVenta.es_reserva;
+          delete payloadVenta.origen;
+          ({ data: ventaCreada, error: errVenta } = await supabase.from('ventas').insert(payloadVenta).select().single());
+        }
+        if (errVenta) {
+          console.error('[Portal] Error detallado Supabase (venta de la reserva/add-ons):', errVenta);
+        } else if (addons.length > 0) {
+          await descontarStockYKardexItems(addons, `Reserva en Portal · ${cancha.nombre} ${fecha} ${horaInicio}`);
+        }
+        if (montoWallet > 0) {
+          await aplicarCargoWallet({
+            jugadorId: jugadorActivo.id,
+            monto: montoWallet,
+            motivo: `Reserva de cancha · ${cancha.nombre} ${fecha} ${horaInicio}`,
+            referenciaTipo: 'venta',
+            referenciaId: ventaCreada?.id || reservaCreada.id,
+          });
+          cargarWallet(jugadorActivo.id);
+        }
+      } else if (montoWallet > 0) {
+        // Pago pendiente en Recepción pero con una porción ya cubierta por
+        // Wallet ("Wallet + Recepción"): el cargo a la Wallet SÍ ocurre
+        // ahora mismo (el saldo se descuenta de una vez), aunque el ticket
+        // de `ventas` todavía no exista — se referencia directo la reserva.
+        await aplicarCargoWallet({
+          jugadorId: jugadorActivo.id,
+          monto: montoWallet,
+          motivo: `Reserva de cancha · ${cancha.nombre} ${fecha} ${horaInicio}`,
+          referenciaTipo: 'reserva',
+          referenciaId: reservaCreada.id,
+        });
+        cargarWallet(jugadorActivo.id);
+      }
+
+      mostrarToast({
+        titulo: '¡Reserva confirmada!',
+        detalle:
+          montoRestante > 0
+            ? `${cancha.nombre} · ${formatoFechaLarga(fecha)} ${horaInicio} · Paga ${formatoMoneda(montoRestante)} en recepción.`
+            : `${cancha.nombre} · ${formatoFechaLarga(fecha)} ${horaInicio} · Ya está pagada.`,
+      });
+      return { ok: true };
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (crear reserva desde el Portal):', err);
+      mostrarToast({ titulo: 'No se pudo crear tu reserva', detalle: 'Ese horario podría acabar de ocuparse — intenta con otro.', tono: 'error' });
+      return { ok: false };
+    }
+  }
+
+  if (cargandoClub) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-950 via-gray-900 to-black text-slate-400">
+        <Loader2 size={22} className="animate-spin" />
+      </div>
+    );
+  }
+
+  if (!club) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-950 via-gray-900 to-black px-6 text-center text-slate-400">
+        <MapPin size={28} className="text-slate-600" />
+        <p className="text-lg font-bold text-slate-200">Club no encontrado</p>
+        <p className="max-w-sm text-sm">No encontramos ningún club en esta dirección. Verifica el enlace con tu club.</p>
+      </div>
+    );
+  }
+
+  return (
+    <ToastContext.Provider value={mostrarToast}>
+      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-gray-900 to-black text-slate-100">
+        <header className="sticky top-0 z-30 border-b border-white/5 bg-slate-950/70 px-4 py-3.5 backdrop-blur-xl">
+          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              {club.logo_url ? (
+                <img src={club.logo_url} alt={club.nombre} className="h-9 w-9 rounded-lg object-cover ring-1 ring-white/10" />
+              ) : (
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20">
+                  <Trophy size={17} />
+                </div>
+              )}
+              <div>
+                <p className="text-sm font-black leading-tight text-slate-50">{club.nombre || 'Club de Pádel'}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Portal de jugadores</p>
+              </div>
+            </div>
+            {jugador ? (
+              <button
+                onClick={cerrarSesionPortal}
+                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-slate-900/60 px-2.5 py-1.5 text-xs font-bold text-slate-300 backdrop-blur hover:text-slate-100"
+              >
+                <User size={13} /> {jugador.nombre.split(' ')[0]}
+              </button>
+            ) : (
+              <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
+                <User size={13} /> Identificarme
+              </BotonPrimario>
+            )}
+          </div>
+        </header>
+
+        <main className="mx-auto max-w-3xl px-4 py-5 pb-24">
+          <div className="mb-4 flex rounded-lg border border-white/5 bg-slate-900/50 p-1 backdrop-blur-sm">
+            {[
+              { value: 'canchas', label: 'Canchas', icon: MapPin },
+              { value: 'tienda', label: 'Tienda', icon: ShoppingBag },
+              { value: 'torneos', label: 'Torneos', icon: Trophy },
+              { value: 'retas', label: 'Retas', icon: Swords },
+              { value: 'wallet', label: 'Wallet', icon: Wallet },
+            ].map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.value}
+                  onClick={() => setVista(tab.value)}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-2 text-[11px] font-bold transition ${
+                    vista === tab.value ? 'bg-lime-400 text-slate-950 shadow-lg shadow-lime-400/20' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Icon size={14} /> {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {cargandoDatos ? (
+            <div className="flex items-center justify-center py-16 text-slate-500">
+              <Loader2 size={20} className="animate-spin" />
+            </div>
+          ) : (
+            <>
+              {vista === 'canchas' && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {canchasActivas.length === 0 && (
+                    <p className="col-span-full py-10 text-center text-sm text-slate-500">Este club todavía no tiene canchas publicadas.</p>
+                  )}
+                  {canchasActivas.map((c) => {
+                    const estado = estadoActualCancha(c, reservas);
+                    const meta = ESTATUS_META[estado];
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setCanchaParaReservar(c)}
+                        className="group overflow-hidden rounded-2xl border border-white/5 bg-slate-900/50 text-left backdrop-blur-sm transition hover:border-lime-400/30 hover:bg-slate-900/70"
+                      >
+                        <div className="relative h-28 w-full bg-slate-800">
+                          <img
+                            src={c.imagen_url || fallbackImagen(c.id)}
+                            onError={(e) => {
+                              e.currentTarget.onerror = null;
+                              e.currentTarget.src = fallbackImagen(c.id);
+                            }}
+                            alt={c.nombre}
+                            className="h-full w-full object-cover"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/70 via-transparent to-transparent" />
+                        </div>
+                        <div className="p-3.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="font-black text-slate-100">{c.nombre}</p>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${meta.badge}`}>{meta.label}</span>
+                          </div>
+                          <div className="mt-1 flex items-center justify-between">
+                            <p className="text-sm font-bold text-lime-400">{formatoMoneda(precioPorHoraDeCancha(c))}/hora</p>
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-slate-400 group-hover:text-lime-400">
+                              Reservar <ChevronRight size={13} />
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {vista === 'tienda' && (
+                <div>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {productosTienda.length === 0 && (
+                      <p className="col-span-full py-10 text-center text-sm text-slate-500">Este club todavía no tiene artículos en la Tienda.</p>
+                    )}
+                    {productosTienda.map((p) => {
+                      const variantes = variantesPorProductoPortal[p.id] || [];
+                      const tieneVariantes = variantes.length > 0;
+                      const sinStock = !tieneVariantes && p.maneja_stock !== false && Number(p.stock) <= 0;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          disabled={sinStock}
+                          onClick={() => (tieneVariantes ? setProductoParaVariantePortal({ producto: p, destino: 'tienda' }) : agregarAlCarritoPortal(p))}
+                          className="overflow-hidden rounded-2xl border border-white/5 bg-slate-900/50 text-left backdrop-blur-sm transition hover:border-violet-400/30 hover:bg-slate-900/70 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <div className="h-20 w-full bg-slate-800">
+                            <img
+                              src={p.imagen_url || fallbackImagenProducto(p)}
+                              onError={(e) => {
+                                e.currentTarget.onerror = null;
+                                e.currentTarget.src = fallbackImagenProducto(p);
+                              }}
+                              alt={p.nombre}
+                              className="h-full w-full object-cover"
+                            />
+                          </div>
+                          <div className="p-2.5">
+                            <p className="truncate text-xs font-bold text-slate-100">{p.nombre}</p>
+                            <p className="mt-0.5 text-sm font-black text-violet-400">{formatoMoneda(p.precio)}</p>
+                            {sinStock && <p className="mt-0.5 text-[10px] font-bold text-rose-400">Agotado</p>}
+                            {tieneVariantes && <p className="mt-0.5 text-[10px] font-semibold text-slate-500">{variantes.length} opciones</p>}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {vista === 'torneos' && (
+                <div className="space-y-3">
+                  {torneosActivos.length === 0 && (
+                    <p className="py-10 text-center text-sm text-slate-500">No hay torneos activos por ahora — vuelve pronto.</p>
+                  )}
+                  {torneosActivos.map((t) => (
+                    <div key={t.id} className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 backdrop-blur-sm">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="font-black text-slate-100">{t.nombre}</p>
+                          <p className="mt-0.5 text-xs text-slate-400">
+                            {formatoFechaLarga(t.fecha_inicio)}
+                            {t.fecha_fin && t.fecha_fin !== t.fecha_inicio ? ` — ${formatoFechaLarga(t.fecha_fin)}` : ''}
+                          </p>
+                        </div>
+                        <span className="shrink-0 rounded-full bg-violet-400/10 px-2.5 py-1 text-[10px] font-bold text-violet-400 ring-1 ring-violet-400/30">
+                          {(participantesPorTorneo[t.id] || []).length} inscritos
+                        </span>
+                      </div>
+                      {Array.isArray(t.categorias) && t.categorias.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {t.categorias.map((c, idx) => (
+                            <button
+                              key={idx}
+                              onClick={() => {
+                                const categoria = `${c.rama} ${c.nivel}`.trim();
+                                if (!jugador) {
+                                  setEventoParaInscribir({ tipo: 'torneo', evento: t });
+                                  setModalIdentificacion(true);
+                                  return;
+                                }
+                                setFlujoPago({ tipo: 'torneo', evento: t, categoria, monto: Number(t.precio) || 0 });
+                              }}
+                              className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:border-lime-400/50 hover:text-lime-400"
+                            >
+                              {c.rama} {c.nivel}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="mt-3 flex items-center justify-between">
+                        <p className="text-sm font-bold text-lime-400">
+                          {formatoMoneda(t.precio)} / {t.unidad_precio || 'pareja'}
+                        </p>
+                        {(!Array.isArray(t.categorias) || t.categorias.length === 0) && (
+                          <BotonPrimario onClick={() => alIntentarInscribir('torneo', t)} className="px-3 py-1.5 text-xs">
+                            <UserPlus size={13} /> Inscribirme
+                          </BotonPrimario>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {vista === 'retas' && (
+                <div className="space-y-3">
+                  {retasAbiertas.length === 0 && (
+                    <p className="py-10 text-center text-sm text-slate-500">No hay retas abiertas por ahora — vuelve pronto.</p>
+                  )}
+                  {retasAbiertas.map((r) => {
+                    const inscritos = (inscripcionesPorReta[r.id] || []).filter((i) => i.estado !== 'cancelado');
+                    const lugares = Math.max(0, CUPOS_RETA - inscritos.length);
+                    const cancha = canchasPorId[r.cancha_id];
+                    return (
+                      <div key={r.id} className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 backdrop-blur-sm">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-black text-slate-100">{r.nombre}</p>
+                            <p className="mt-0.5 text-xs text-slate-400">
+                              {formatoFechaLarga(r.fecha)} · {r.hora_inicio}–{r.hora_fin} {cancha ? `· ${cancha.nombre}` : ''}
+                            </p>
+                          </div>
+                          <span
+                            className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold ${
+                              lugares === 0
+                                ? 'bg-rose-400/10 text-rose-400 ring-1 ring-rose-400/30'
+                                : 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+                            }`}
+                          >
+                            {lugares === 0 ? 'Completa' : `${lugares}/${CUPOS_RETA} lugares`}
+                          </span>
+                        </div>
+                        <div className="mt-3 flex items-center justify-between">
+                          <p className="text-sm font-bold text-lime-400">{formatoMoneda(r.precio_inscripcion)}/lugar</p>
+                          <BotonPrimario
+                            onClick={() => alIntentarInscribir('reta', r)}
+                            disabled={lugares === 0}
+                            className="px-3 py-1.5 text-xs"
+                          >
+                            <UserPlus size={13} /> Inscribirme
+                          </BotonPrimario>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {vista === 'wallet' && (
+                <div>
+                  {!jugador ? (
+                    <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/5 bg-slate-900/50 p-8 text-center backdrop-blur-sm">
+                      <Wallet size={26} className="text-lime-400" />
+                      <p className="text-sm text-slate-400">Identifícate para ver tu saldo y tu historial.</p>
+                      <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
+                        <User size={13} /> Identificarme
+                      </BotonPrimario>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="overflow-hidden rounded-2xl border border-lime-400/20 bg-gradient-to-br from-lime-400/10 via-slate-900/60 to-slate-900/60 p-5 backdrop-blur-sm">
+                        <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-lime-400/80">
+                          <Sparkles size={12} /> Saldo disponible
+                        </p>
+                        <p className="mt-1 text-3xl font-black text-slate-50">
+                          {cargandoWallet ? <Loader2 size={22} className="animate-spin text-lime-400" /> : formatoMoneda(saldoWallet)}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Úsalo para pagar canchas, torneos, retas o compras en la Tienda — cubre lo que alcance, el resto se paga en recepción.
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border border-white/5 bg-slate-900/50 backdrop-blur-sm">
+                        <p className="border-b border-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">
+                          Historial de movimientos
+                        </p>
+                        {walletMovimientos.length === 0 ? (
+                          <p className="px-4 py-8 text-center text-xs text-slate-500">Todavía no hay movimientos en tu Wallet.</p>
+                        ) : (
+                          <div className="divide-y divide-white/5">
+                            {walletMovimientos.map((m) => (
+                              <div key={m.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                                <div className="min-w-0">
+                                  <p className="truncate text-xs font-semibold text-slate-200">{m.motivo || 'Movimiento de Wallet'}</p>
+                                  <p className="text-[10px] text-slate-500">{m.created_at ? new Date(m.created_at).toLocaleString('es-MX') : ''}</p>
+                                </div>
+                                <p className={`shrink-0 text-sm font-black ${Number(m.monto) < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                  {Number(m.monto) < 0 ? '−' : '+'}
+                                  {formatoMoneda(Math.abs(Number(m.monto) || 0))}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </main>
+
+        {/* Carrito flotante de la Tienda — visible en cualquier pestaña en
+            cuanto hay algo en el carrito, para no obligar a volver a Tienda
+            solo para pagar. */}
+        {carritoTienda.length > 0 && !modalCarritoAbierto && (
+          <button
+            type="button"
+            onClick={() => setModalCarritoAbierto(true)}
+            className="fixed inset-x-4 bottom-4 z-40 mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-2xl border border-lime-400/30 bg-slate-900/90 px-4 py-3 text-left shadow-2xl shadow-black/50 backdrop-blur-xl"
+          >
+            <span className="flex items-center gap-2 text-sm font-bold text-slate-100">
+              <ShoppingCart size={16} className="text-lime-400" />
+              {carritoTienda.reduce((acc, i) => acc + i.cantidad, 0)} artículo(s)
+            </span>
+            <span className="flex items-center gap-1.5 text-sm font-black text-lime-400">
+              {formatoMoneda(totalCarritoTienda)} <ChevronRight size={15} />
+            </span>
+          </button>
+        )}
+
+        {modalIdentificacion && (
+          <ModalIdentificacionPortal
+            onClose={() => {
+              setModalIdentificacion(false);
+              setEventoParaInscribir(null);
+            }}
+            onIdentificado={async (nombre, telefono) => {
+              const ok = await identificarse(nombre, telefono);
+              if (ok && eventoParaInscribir) {
+                if (eventoParaInscribir.tipo === 'reta') {
+                  setFlujoPago({ tipo: 'reta', evento: eventoParaInscribir.evento, categoria: null, monto: Number(eventoParaInscribir.evento.precio_inscripcion) || 0 });
+                } else if (eventoParaInscribir.tipo === 'torneo') {
+                  const t = eventoParaInscribir.evento;
+                  if (Array.isArray(t.categorias) && t.categorias.length > 0) {
+                    setEventoParaInscribir({ tipo: 'torneo-categoria', evento: t });
+                    setModalIdentificacion(false);
+                    return;
+                  }
+                  setFlujoPago({ tipo: 'torneo', evento: t, categoria: null, monto: Number(t.precio) || 0 });
+                }
+              }
+              setModalIdentificacion(false);
+              setEventoParaInscribir(null);
+            }}
+          />
+        )}
+
+        {eventoParaInscribir?.tipo === 'torneo-categoria' && (
+          <ModalElegirCategoriaTorneo
+            torneo={eventoParaInscribir.evento}
+            onClose={() => setEventoParaInscribir(null)}
+            onElegir={(categoria) => {
+              const t = eventoParaInscribir.evento;
+              setFlujoPago({ tipo: 'torneo', evento: t, categoria, monto: Number(t.precio) || 0 });
+              setEventoParaInscribir(null);
+            }}
+          />
+        )}
+
+        {flujoPago && (
+          <ModalElegirPago
+            monto={flujoPago.monto}
+            saldoWallet={saldoWallet}
+            concepto={flujoPago.tipo === 'reta' ? flujoPago.evento.nombre : flujoPago.evento.nombre}
+            onClose={() => setFlujoPago(null)}
+            onConfirmar={async (metodo) => {
+              if (flujoPago.tipo === 'reta') await inscribirseAReta(flujoPago.evento, metodo);
+              else await inscribirseATorneo(flujoPago.evento, flujoPago.categoria, metodo);
+              setFlujoPago(null);
+            }}
+          />
+        )}
+
+        {productoParaVariantePortal && (
+          <ModalSeleccionarVariante
+            producto={productoParaVariantePortal.producto}
+            variantes={variantesPorProductoPortal[productoParaVariantePortal.producto.id] || []}
+            onClose={() => setProductoParaVariantePortal(null)}
+            onSeleccionar={(variante) => {
+              agregarAlCarritoPortal(productoParaVariantePortal.producto, variante);
+              setProductoParaVariantePortal(null);
+            }}
+          />
+        )}
+
+        {modalCarritoAbierto && (
+          <ModalCarritoTienda
+            carrito={carritoTienda}
+            total={totalCarritoTienda}
+            saldoWallet={saldoWallet}
+            jugador={jugador}
+            onCambiarCantidad={cambiarCantidadCarritoPortal}
+            onClose={() => setModalCarritoAbierto(false)}
+            onRequerirIdentificacion={() => setModalIdentificacion(true)}
+            onConfirmar={confirmarCheckoutTienda}
+          />
+        )}
+
+        {canchaParaReservar && (
+          <ModalReservarCancha
+            cancha={canchaParaReservar}
+            club={club}
+            jugador={jugador}
+            reservas={reservas}
+            productosAddOns={productosAddOns}
+            variantesPorProducto={variantesPorProductoPortal}
+            saldoWallet={saldoWallet}
+            onClose={() => setCanchaParaReservar(null)}
+            onConfirmar={async (payload) => {
+              const resultado = await confirmarReservaConAddons({ ...payload, cancha: canchaParaReservar });
+              if (resultado.ok) setCanchaParaReservar(null);
+              return resultado;
+            }}
+          />
+        )}
+
+        <ToastHost toasts={toasts} />
+      </div>
+    </ToastContext.Provider>
+  );
+}
+
+function ModalIdentificacionPortal({ onClose, onIdentificado }) {
+  const [nombre, setNombre] = useState('');
+  const [telefono, setTelefono] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+
+  async function enviar() {
+    if (!nombre.trim()) return setError('Escribe tu nombre.');
+    if (!claveTelefono(telefono)) return setError('Escribe tu teléfono a 10 dígitos.');
+    setEnviando(true);
+    setError('');
+    await onIdentificado(nombre, telefono);
+    setEnviando(false);
+  }
+
+  return (
+    <ModalShell titulo="Identifícate" subtitulo="Solo tu nombre y teléfono — sin contraseñas" onClose={onClose} icon={Phone} ancho="max-w-sm">
+      <div className="space-y-4">
+        <Campo label="Nombre completo">
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Tu nombre" autoFocus />
+        </Campo>
+        <Campo label="Teléfono (10 dígitos)" hint="Si ya juegas en el club, te reconoceremos por tu teléfono.">
+          <input
+            value={telefono}
+            onChange={(e) => setTelefono(e.target.value)}
+            className={inputClase}
+            placeholder="55 1234 5678"
+            inputMode="tel"
+          />
+        </Campo>
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={enviar} disabled={enviando}>
+            {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Continuar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
+  return (
+    <ModalShell titulo="Elige tu categoría" subtitulo={torneo.nombre} onClose={onClose} icon={Trophy} ancho="max-w-sm">
+      <div className="space-y-2">
+        {(torneo.categorias || []).map((c, idx) => (
+          <button
+            key={idx}
+            onClick={() => onElegir(`${c.rama} ${c.nivel}`.trim())}
+            className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2.5 text-sm font-bold text-slate-200 hover:border-lime-400/50 hover:text-lime-400"
+          >
+            {c.rama} {c.nivel}
+            <ChevronRight size={15} />
+          </button>
+        ))}
+      </div>
+    </ModalShell>
+  );
+}
+
+// Simulación de flujo TPV en línea — MÉTODOS DE PAGO EN EL PORTAL, opción 3:
+// "Pagar con Tarjeta (Débito/Crédito)". El Portal no procesa ningún cargo
+// real (no hay integración con una pasarela de pago todavía) — esto solo
+// captura los datos de la tarjeta y valida su FORMATO en el navegador, para
+// que el club pueda probar el flujo completo de checkout. Rotulado como
+// "Simulación" en la UI (ver `SelectorMetodoPagoPortal`) para que nunca se
+// confunda con un cobro real.
+function tarjetaEsValida(datos) {
+  const numero = (datos?.numero || '').replace(/\s+/g, '');
+  const numeroOk = /^\d{13,19}$/.test(numero);
+  const vencimientoOk = /^(0[1-9]|1[0-2])\/\d{2}$/.test((datos?.vencimiento || '').trim());
+  const cvvOk = /^\d{3,4}$/.test((datos?.cvv || '').trim());
+  const nombreOk = (datos?.nombreTitular || '').trim().length > 0;
+  return numeroOk && vencimientoOk && cvvOk && nombreOk;
+}
+
+const DATOS_TARJETA_VACIOS = { numero: '', vencimiento: '', cvv: '', nombreTitular: '' };
+
+// Selector de método de pago compartido por los tres flujos de checkout del
+// Portal (Reserva de Cancha, Carrito de la Tienda, y el genérico
+// `ModalElegirPago` de Reta/Torneo): 1) Pagar en Recepción, 2) Pagar con
+// Wallet (usando el saldo a favor), 3) Pagar con Tarjeta (Débito/Crédito —
+// simulación de TPV en línea con formulario de datos de tarjeta, ver
+// `tarjetaEsValida` arriba). `mostrarWallet` oculta la opción cuando no hay
+// jugador identificado o su saldo es 0 — igual criterio que ya tenía cada
+// modal por separado.
+function SelectorMetodoPagoPortal({
+  metodo,
+  onCambiarMetodo,
+  mostrarWallet,
+  saldoWallet,
+  montoWallet,
+  montoRestante,
+  datosTarjeta,
+  onCambiarDatosTarjeta,
+  tamano = 'normal',
+}) {
+  const chico = tamano === 'chico';
+  const claseBoton = `flex w-full items-center justify-between rounded-xl border ${
+    chico ? 'px-3.5 py-2.5 text-xs' : 'px-3.5 py-3 text-sm'
+  } text-left font-bold text-slate-100 transition disabled:cursor-not-allowed disabled:opacity-40`;
+  return (
+    <div className="space-y-2">
+      {mostrarWallet && (
+        <button
+          type="button"
+          onClick={() => onCambiarMetodo('wallet')}
+          disabled={saldoWallet <= 0}
+          className={`${claseBoton} justify-between ${metodo === 'wallet' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-700 bg-slate-800'}`}
+        >
+          <span className="flex items-center gap-2">
+            <Wallet size={chico ? 14 : 15} className="text-lime-400" /> Pagar con Wallet
+          </span>
+          <span className="text-[11px] font-semibold text-slate-400">Saldo: {formatoMoneda(saldoWallet)}</span>
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => onCambiarMetodo('recepcion')}
+        className={`${claseBoton} ${metodo === 'recepcion' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-700 bg-slate-800'}`}
+      >
+        <span className="flex items-center gap-2">
+          <Banknote size={chico ? 14 : 15} className="text-slate-400" /> Pagar en Recepción
+        </span>
+      </button>
+      <button
+        type="button"
+        onClick={() => onCambiarMetodo('tarjeta')}
+        className={`${claseBoton} ${metodo === 'tarjeta' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-700 bg-slate-800'}`}
+      >
+        <span className="flex items-center gap-2">
+          <CreditCard size={chico ? 14 : 15} className="text-slate-400" /> Pagar con Tarjeta (Débito/Crédito)
+        </span>
+      </button>
+
+      {metodo === 'wallet' && (
+        <p className="rounded-lg bg-slate-800/60 px-3 py-2 text-xs text-slate-400">
+          {montoRestante > 0
+            ? `Tu Wallet cubre ${formatoMoneda(montoWallet)} — quedan ${formatoMoneda(montoRestante)} por pagar en recepción.`
+            : 'Tu Wallet cubre el total — no debes nada más.'}
+        </p>
+      )}
+
+      {metodo === 'tarjeta' && (
+        <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-3">
+          <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-400">
+            <ShieldAlert size={12} /> Simulación de TPV — no se procesa ningún cargo real
+          </p>
+          <input
+            value={datosTarjeta.numero}
+            onChange={(e) => onCambiarDatosTarjeta({ ...datosTarjeta, numero: e.target.value })}
+            inputMode="numeric"
+            placeholder="Número de tarjeta"
+            maxLength={19}
+            className={inputClase}
+          />
+          <div className="flex gap-2">
+            <input
+              value={datosTarjeta.vencimiento}
+              onChange={(e) => onCambiarDatosTarjeta({ ...datosTarjeta, vencimiento: e.target.value })}
+              placeholder="MM/AA"
+              maxLength={5}
+              className={`${inputClase} w-24`}
+            />
+            <input
+              value={datosTarjeta.cvv}
+              onChange={(e) => onCambiarDatosTarjeta({ ...datosTarjeta, cvv: e.target.value })}
+              inputMode="numeric"
+              placeholder="CVV"
+              maxLength={4}
+              className={`${inputClase} w-20`}
+            />
+          </div>
+          <input
+            value={datosTarjeta.nombreTitular}
+            onChange={(e) => onCambiarDatosTarjeta({ ...datosTarjeta, nombreTitular: e.target.value })}
+            placeholder="Nombre del titular"
+            className={inputClase}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Wallet — selector de método de pago compartido por Reta/Torneo, Tienda y
+// Reserva de Cancha: si el saldo alcanza para cubrir todo, "Pagar con
+// Wallet" liquida el concepto de una vez; si no alcanza, cubre lo que
+// pueda y dice cuánto queda pendiente en recepción.
+function ModalElegirPago({ monto, saldoWallet, concepto, onClose, onConfirmar }) {
+  const [metodo, setMetodo] = useState(saldoWallet > 0 ? 'wallet' : 'recepcion');
+  const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
+  const [enviando, setEnviando] = useState(false);
+  const { montoWallet, montoRestante } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
+  const puedeConfirmar = metodo !== 'tarjeta' || tarjetaEsValida(datosTarjeta);
+
+  async function confirmar() {
+    if (!puedeConfirmar) return;
+    setEnviando(true);
+    await onConfirmar(metodo);
+    setEnviando(false);
+  }
+
+  return (
+    <ModalShell titulo="¿Cómo quieres pagar?" subtitulo={concepto} onClose={onClose} icon={Wallet} ancho="max-w-sm">
+      <div className="space-y-3">
+        <p className="text-center text-2xl font-black text-slate-50">{formatoMoneda(monto)}</p>
+        <SelectorMetodoPagoPortal
+          metodo={metodo}
+          onCambiarMetodo={setMetodo}
+          mostrarWallet={true}
+          saldoWallet={saldoWallet}
+          montoWallet={montoWallet}
+          montoRestante={montoRestante}
+          datosTarjeta={datosTarjeta}
+          onCambiarDatosTarjeta={setDatosTarjeta}
+        />
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={confirmar} disabled={enviando || !puedeConfirmar}>
+            {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Confirmar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Tienda (Pro-Shop) — revisión del carrito del Portal + checkout con Wallet.
+function ModalCarritoTienda({ carrito, total, saldoWallet, jugador, onCambiarCantidad, onClose, onRequerirIdentificacion, onConfirmar }) {
+  const [metodo, setMetodo] = useState(saldoWallet > 0 ? 'wallet' : 'recepcion');
+  const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
+  const [enviando, setEnviando] = useState(false);
+  const { montoWallet, montoRestante } = repartirPagoConWallet(total, saldoWallet, metodo === 'wallet');
+  const puedeConfirmar = metodo !== 'tarjeta' || tarjetaEsValida(datosTarjeta);
+
+  async function confirmar() {
+    if (!jugador) {
+      onRequerirIdentificacion();
+      return;
+    }
+    if (!puedeConfirmar) return;
+    setEnviando(true);
+    await onConfirmar(metodo);
+    setEnviando(false);
+  }
+
+  return (
+    <ModalShell titulo="Tu carrito" subtitulo="Tienda Pro-Shop" onClose={onClose} icon={ShoppingCart} ancho="max-w-md">
+      <div className="space-y-3">
+        {carrito.length === 0 ? (
+          <p className="py-8 text-center text-sm text-slate-500">Tu carrito está vacío.</p>
+        ) : (
+          <div className="max-h-64 space-y-2 overflow-y-auto">
+            {carrito.map((item) => (
+              <div key={item.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-bold text-slate-100">{item.nombre}</p>
+                  <p className="text-[11px] text-slate-500">{formatoMoneda(item.precio)} c/u</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => onCambiarCantidad(item.id, -1)}
+                    className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-700 text-slate-300 hover:bg-slate-600"
+                  >
+                    <Minus size={12} />
+                  </button>
+                  <span className="w-5 text-center text-xs font-bold text-slate-100">{item.cantidad}</span>
+                  <button
+                    type="button"
+                    onClick={() => onCambiarCantidad(item.id, 1)}
+                    className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-700 text-slate-300 hover:bg-slate-600"
+                  >
+                    <Plus size={12} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {carrito.length > 0 && (
+          <>
+            <div className="flex items-center justify-between border-t border-slate-800 pt-3">
+              <span className="text-sm font-bold text-slate-300">Total</span>
+              <span className="text-xl font-black text-lime-400">{formatoMoneda(total)}</span>
+            </div>
+
+            {jugador && (
+              <SelectorMetodoPagoPortal
+                metodo={metodo}
+                onCambiarMetodo={setMetodo}
+                mostrarWallet={true}
+                saldoWallet={saldoWallet}
+                montoWallet={montoWallet}
+                montoRestante={montoRestante}
+                datosTarjeta={datosTarjeta}
+                onCambiarDatosTarjeta={setDatosTarjeta}
+                tamano="chico"
+              />
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <BotonSecundario onClick={onClose}>Seguir viendo</BotonSecundario>
+              <BotonPrimario onClick={confirmar} disabled={enviando || (jugador && !puedeConfirmar)}>
+                {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                {jugador ? 'Confirmar compra' : 'Identificarme y pagar'}
+              </BotonPrimario>
+            </div>
+          </>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
+// OPTIMIZACIÓN DE HORARIOS: en vez de una sola cuadrícula larga con las ~34
+// franjas del día, se agrupan por turno — el jugador filtra a un vistazo en
+// vez de tener que hacer scroll por todo el día. Los rangos son en minutos
+// desde medianoche (mismo formato que `HORA_INICIO_MIN`/`HORA_FIN_MIN`);
+// "Noche" se extiende hasta `HORA_FIN_MIN` (medianoche) para no perder
+// ninguna franja tardía aunque el nombre diga "6pm-11pm".
+const TURNOS_RESERVA_PORTAL = [
+  { id: 'todos', label: 'Todos', desde: HORA_INICIO_MIN, hasta: HORA_FIN_MIN },
+  { id: 'manana', label: 'Mañana', desde: 6 * 60, hasta: 12 * 60 },
+  { id: 'tarde', label: 'Tarde', desde: 12 * 60, hasta: 18 * 60 },
+  { id: 'noche', label: 'Noche', desde: 18 * 60, hasta: HORA_FIN_MIN },
+];
+
+// Reserva de cancha desde el Portal, con Add-ons de consumo — flujo
+// completo: fecha/hora/duración → add-ons opcionales → método de pago →
+// identificación (si hace falta) → confirmar.
+function ModalReservarCancha({ cancha, club, jugador, reservas, productosAddOns, variantesPorProducto, saldoWallet, onClose, onConfirmar }) {
+  const [fecha, setFecha] = useState(hoyISO());
+  const [turnoFiltro, setTurnoFiltro] = useState('todos');
+  const [duracionHoras, setDuracionHoras] = useState(1);
+  const [horaInicio, setHoraInicio] = useState('');
+  const [addons, setAddons] = useState([]);
+  const [addonParaVariante, setAddonParaVariante] = useState(null);
+  const [metodo, setMetodo] = useState(saldoWallet > 0 ? 'wallet' : 'recepcion');
+  const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
+  const [nombre, setNombre] = useState(jugador?.nombre || '');
+  const [telefono, setTelefono] = useState(jugador?.telefono || '');
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+
+  // VISUALIZACIÓN DE DISPONIBILIDAD DE HORARIOS: TODAS las franjas del día
+  // (no solo las libres), cada una con su estado `ocupado` — así se puede
+  // pintar la cuadrícula completa con los horarios reservados claramente
+  // deshabilitados/marcados, en vez de simplemente hacerlos desaparecer de
+  // un <select>.
+  const franjasBase = useMemo(
+    () => franjasDelDiaConEstado(cancha.id, fecha, duracionHoras, reservas),
+    [cancha.id, fecha, duracionHoras, reservas]
+  );
+  // OPTIMIZACIÓN DE HORARIOS: cuando la fecha elegida es HOY, cualquier
+  // franja cuya hora de inicio ya pasó se marca `pasado` (distinto de
+  // `ocupado` — no hay una reserva ahí, simplemente ya no se puede reservar
+  // para "ahora en el pasado") y se deshabilita igual que una ocupada.
+  const esHoy = fecha === hoyISO();
+  const franjas = useMemo(() => {
+    if (!esHoy) return franjasBase.map((f) => ({ ...f, pasado: false }));
+    const ahoraMin = minutosAhora();
+    return franjasBase.map((f) => ({ ...f, pasado: (parseHoraAMinutos(f.horaInicio) || 0) < ahoraMin }));
+  }, [franjasBase, esHoy]);
+  // Pestañas por turno: Todos / Mañana (6am-12pm) / Tarde (12pm-6pm) /
+  // Noche (6pm-11pm) — en vez de las ~34 franjas del día todas juntas.
+  const franjasDelTurno = useMemo(() => {
+    const turno = TURNOS_RESERVA_PORTAL.find((t) => t.id === turnoFiltro) || TURNOS_RESERVA_PORTAL[0];
+    return franjas.filter((f) => {
+      const min = parseHoraAMinutos(f.horaInicio) || 0;
+      return min >= turno.desde && min < turno.hasta;
+    });
+  }, [franjas, turnoFiltro]);
+  const franjasLibres = useMemo(() => franjas.filter((f) => !f.ocupado && !f.pasado), [franjas]);
+
+  useEffect(() => {
+    if (!franjasLibres.some((f) => f.horaInicio === horaInicio)) {
+      setHoraInicio(franjasLibres[0]?.horaInicio || '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [franjasLibres]);
+
+  // Al cambiar de fecha, vuelve al filtro "Todos" — un turno elegido para un
+  // día no debería quedar aplicado silenciosamente al cambiar de fecha.
+  useEffect(() => {
+    setTurnoFiltro('todos');
+  }, [fecha]);
+
+  const costoCancha = Math.round(duracionHoras * precioPorHoraDeCancha(cancha) * 100) / 100;
+  const addonsSubtotal = Math.round(addons.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100;
+  const total = Math.round((costoCancha + addonsSubtotal) * 100) / 100;
+  const { montoWallet, montoRestante } = repartirPagoConWallet(total, saldoWallet, metodo === 'wallet' && !!jugador);
+  const puedeConfirmarPago = metodo !== 'tarjeta' || tarjetaEsValida(datosTarjeta);
+
+  function agregarAddon(producto, variante = null) {
+    const nombreArticulo = variante ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
+    const precioArticulo = variante && variante.precio != null ? Number(variante.precio) : Number(producto.precio) || 0;
+    const stockCrudoVariante = variante ? variante.stock ?? variante.cantidad : producto.stock;
+    const manejaStock = variante ? stockCrudoVariante != null : producto.maneja_stock !== false;
+    const stockDisponible = Number(stockCrudoVariante);
+    const hayLimite = manejaStock && Number.isFinite(stockDisponible);
+    const id = `${producto.id}${variante ? `-var-${variante.id}` : ''}`;
+    setAddons((prev) => {
+      const existente = prev.find((i) => i.id === id);
+      const cantidadActual = existente?.cantidad || 0;
+      if (hayLimite && cantidadActual + 1 > stockDisponible) return prev;
+      if (existente) return prev.map((i) => (i.id === id ? { ...i, cantidad: i.cantidad + 1 } : i));
+      return [
+        ...prev,
+        {
+          id,
+          tipo: 'producto',
+          producto_id: producto.id,
+          productoPadreId: producto.id,
+          variante_id: variante?.id || null,
+          varianteId: variante?.id || null,
+          esVariante: !!variante,
+          varianteNombre: variante?.nombre || null,
+          nombre: nombreArticulo,
+          precio: precioArticulo,
+          cantidad: 1,
+          stock: hayLimite ? stockDisponible : null,
+          manejaStock,
+        },
+      ];
+    });
+  }
+
+  function cambiarCantidadAddon(id, delta) {
+    setAddons((prev) =>
+      prev.map((i) => (i.id === id ? { ...i, cantidad: i.cantidad + delta } : i)).filter((i) => i.cantidad > 0)
+    );
+  }
+
+  async function confirmar() {
+    setError('');
+    if (!horaInicio) return setError('No hay horarios disponibles para esa fecha/duración — elige otra.');
+    if (!jugador) {
+      if (!nombre.trim()) return setError('Escribe tu nombre.');
+      if (!claveTelefono(telefono)) return setError('Escribe tu teléfono a 10 dígitos.');
+    }
+    if (!puedeConfirmarPago) return setError('Completa los datos de la tarjeta para continuar.');
+    const duracionMin = Math.round(duracionHoras * 60);
+    const horaFin = minutosAHora((parseHoraAMinutos(horaInicio) || 0) + duracionMin);
+    setEnviando(true);
+    const resultado = await onConfirmar({ fecha, horaInicio, horaFin, costoCancha, addons, metodo, nombre, telefono });
+    setEnviando(false);
+    if (!resultado?.ok) setError('No se pudo confirmar — intenta de nuevo.');
+  }
+
+  return (
+    <ModalShell titulo={`Reservar ${cancha.nombre}`} subtitulo={club?.nombre} onClose={onClose} icon={CalendarIcon} ancho="max-w-lg">
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <Campo label="Fecha">
+            <input type="date" min={hoyISO()} value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
+            {/* DATEPICKER — accesos rápidos: un click para hoy/mañana sin
+                tener que abrir el calendario nativo. */}
+            <div className="mt-1.5 flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setFecha(hoyISO())}
+                className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
+                  fecha === hoyISO() ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/40'
+                }`}
+              >
+                Hoy
+              </button>
+              <button
+                type="button"
+                onClick={() => setFecha(sumarDia(hoyISO(), 1))}
+                className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
+                  fecha === sumarDia(hoyISO(), 1) ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/40'
+                }`}
+              >
+                Mañana
+              </button>
+            </div>
+          </Campo>
+          <Campo label="Duración">
+            <select value={duracionHoras} onChange={(e) => setDuracionHoras(Number(e.target.value))} className={inputClase}>
+              {DURACIONES_RENTA.map((d) => (
+                <option key={d.horas} value={d.horas}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        </div>
+
+        <Campo label="Hora" hint="Cuadrícula de horarios: gris/tachado = ya reservado o pasado, verde = libre.">
+          {/* OPTIMIZACIÓN DE HORARIOS: pestañas por turno en vez de las ~34
+              franjas del día todas juntas. */}
+          <div className="mb-2 flex gap-1.5 overflow-x-auto pb-0.5">
+            {TURNOS_RESERVA_PORTAL.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTurnoFiltro(t.id)}
+                className={`shrink-0 rounded-full border px-3 py-1 text-[10px] font-bold transition ${
+                  turnoFiltro === t.id ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-400 hover:border-lime-400/40'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {franjas.length === 0 ? (
+            <p className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-400">
+              No hay horarios disponibles ese día para {duracionHoras}h — prueba otra fecha o duración.
+            </p>
+          ) : franjasDelTurno.length === 0 ? (
+            <p className="rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-xs font-semibold text-slate-400">
+              Sin horarios en este turno — prueba otro turno arriba.
+            </p>
+          ) : (
+            <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
+              {franjasDelTurno.map((f) => {
+                const seleccionado = f.horaInicio === horaInicio;
+                const bloqueado = f.ocupado || f.pasado;
+                const etiqueta = f.ocupado ? 'Reservado' : f.pasado ? 'Pasado' : 'Disponible';
+                return (
+                  <button
+                    key={f.horaInicio}
+                    type="button"
+                    disabled={bloqueado}
+                    onClick={() => setHoraInicio(f.horaInicio)}
+                    title={bloqueado ? etiqueta : `${formatoHora12(f.horaInicio)} – ${formatoHora12(f.horaFin)}`}
+                    className={`flex flex-col items-center gap-0.5 rounded-lg border px-1.5 py-2 text-center transition ${
+                      bloqueado
+                        ? 'cursor-not-allowed border-slate-800 bg-slate-900/60 opacity-50'
+                        : seleccionado
+                        ? 'border-lime-400/60 bg-lime-400/15'
+                        : 'border-slate-700 bg-slate-800 hover:border-lime-400/40'
+                    }`}
+                  >
+                    <span className={`text-[11px] font-bold ${bloqueado ? 'text-slate-500 line-through' : seleccionado ? 'text-lime-400' : 'text-slate-200'}`}>
+                      {formatoHora12(f.horaInicio)}
+                    </span>
+                    <span className={`text-[9px] font-semibold ${bloqueado ? 'text-slate-600' : 'text-slate-500'}`}>{etiqueta}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </Campo>
+
+        <div>
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Adicionales (opcional)</p>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {productosAddOns.map((p) => {
+              const variantes = variantesPorProducto[p.id] || [];
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => (variantes.length > 0 ? setAddonParaVariante(p) : agregarAddon(p))}
+                  className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-left hover:border-lime-400/40"
+                >
+                  <span className="text-[11px] font-bold text-slate-200">{p.nombre}</span>
+                  <span className="text-[11px] font-semibold text-lime-400">{formatoMoneda(p.precio)}</span>
+                </button>
+              );
+            })}
+            {productosAddOns.length === 0 && <p className="text-xs text-slate-500">Sin adicionales disponibles.</p>}
+          </div>
+          {addons.length > 0 && (
+            <div className="mt-2 space-y-1.5">
+              {addons.map((a) => (
+                <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-800/60 px-3 py-1.5">
+                  <span className="text-xs text-slate-300">
+                    {a.cantidad}× {a.nombre}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button type="button" onClick={() => cambiarCantidadAddon(a.id, -1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-700 text-slate-300">
+                      <Minus size={10} />
+                    </button>
+                    <button type="button" onClick={() => cambiarCantidadAddon(a.id, 1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-700 text-slate-300">
+                      <Plus size={10} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {!jugador && (
+          <div className="grid grid-cols-2 gap-3">
+            <Campo label="Nombre">
+              <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Tu nombre" />
+            </Campo>
+            <Campo label="Teléfono">
+              <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="55 1234 5678" inputMode="tel" />
+            </Campo>
+          </div>
+        )}
+
+        <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-800/40 p-3">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span>Cancha ({duracionHoras}h)</span>
+            <span>{formatoMoneda(costoCancha)}</span>
+          </div>
+          {addonsSubtotal > 0 && (
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span>Adicionales</span>
+              <span>{formatoMoneda(addonsSubtotal)}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between border-t border-slate-700 pt-2 text-sm font-black text-slate-100">
+            <span>Total</span>
+            <span className="text-lime-400">{formatoMoneda(total)}</span>
+          </div>
+        </div>
+
+        {/* MÉTODOS DE PAGO EN EL PORTAL: mismo componente compartido que usan
+            el Carrito de la Tienda y el flujo de Reta/Torneo — Recepción,
+            Tarjeta (TPV simulado) y Wallet. `mostrarWallet` YA NO exige
+            `saldoWallet > 0`: antes, un jugador identificado pero con saldo
+            en $0 se quedaba sin ver la opción de Wallet por completo (en vez
+            de verla deshabilitada) — inconsistente con los otros dos
+            modales, donde Wallet siempre aparece (solo se deshabilita sin
+            saldo, dentro del propio `SelectorMetodoPagoPortal`). */}
+        <SelectorMetodoPagoPortal
+          metodo={metodo}
+          onCambiarMetodo={setMetodo}
+          mostrarWallet={!!jugador}
+          saldoWallet={saldoWallet}
+          montoWallet={montoWallet}
+          montoRestante={montoRestante}
+          datosTarjeta={datosTarjeta}
+          onCambiarDatosTarjeta={setDatosTarjeta}
+          tamano="chico"
+        />
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={confirmar} disabled={enviando || !horaInicio || !puedeConfirmarPago}>
+            {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Confirmar reserva
+          </BotonPrimario>
+        </div>
+      </div>
+
+      {addonParaVariante && (
+        <ModalSeleccionarVariante
+          producto={addonParaVariante}
+          variantes={variantesPorProducto[addonParaVariante.id] || []}
+          onClose={() => setAddonParaVariante(null)}
+          onSeleccionar={(variante) => {
+            agregarAddon(addonParaVariante, variante);
+            setAddonParaVariante(null);
+          }}
+        />
+      )}
+    </ModalShell>
+  );
+}
+
+/* ============================================================================
+ * APP PRINCIPAL — shell compartido (Sidebar, Header, datos, toasts) + switcher
+ * ==========================================================================*/
+
+// Panel de operación interno (staff): Parrilla, Smart POS, ERP & Inventario,
+// Torneos & Retas, Directorio & CRM, Analytics BI, Control & Seguridad. Ya
+// NO es el export por defecto del archivo — ver `App` (router raíz) al
+// final, que decide entre este panel y el Portal Público de Jugadores según
+// la URL.
+function AppInterno() {
+  // Datos compartidos entre los dos módulos: la Parrilla los usa para todo, y
+  // Smart POS los usa solo para el selector "Vincular a Cancha".
+  const [canchas, setCanchas] = useState([]);
+  const [reservas, setReservas] = useState([]);
+  const [jugadoresPorId, setJugadoresPorId] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [refrescando, setRefrescando] = useState(false);
+  const [error, setError] = useState('');
+
+  // Catálogo de productos: levantado aquí (igual que canchas/reservas) para
+  // que Smart POS y ERP & Inventario compartan exactamente el mismo estado
+  // en vivo, sin depender de que Realtime esté habilitado en Supabase.
+  const [productos, setProductos] = useState([]);
+  const [loadingProductos, setLoadingProductos] = useState(true);
+  const [errorProductos, setErrorProductos] = useState('');
+
+  const [sidebarAbierto, setSidebarAbierto] = useState(false);
+  const [moduloActivo, setModuloActivo] = useState('parrilla'); // 'parrilla' | 'pos' | 'erp' | 'analytics' | 'torneos'
+
+  // Puente Parrilla → Smart POS: "Reservar y Cobrar en POS" deja aquí el
+  // concepto (ya vinculado a la reserva recién creada) para que Smart POS lo
+  // reciba, lo meta a la comanda y el cajero elija cómo cobrarlo.
+  const [conceptoPOS, setConceptoPOS] = useState(null);
+
+  // Sesión activa: arranca con lo que haya en `localStorage`
+  // (`LS_KEY_OPERADOR_ACTIVO`) para que el rol/permisos no se reseteen solos
+  // a medio turno con un refresh de la terminal; si no hay nada guardado,
+  // cae al Owner por defecto (primer arranque del club, nadie ha fichado
+  // todavía). `rol` SIEMPRE es uno de `ROLES` — `permisosDeRol` abajo ya
+  // blinda contra un valor vacío/corrupto.
+  const [operador, setOperador] = useState(
+    () => leerOperadorActivoLocal() || { id: null, nombre: 'Adrián Vargas', turno: 'automatico', rol: 'owner' }
+  );
+  const [modalOperador, setModalOperador] = useState(false);
+
+  useEffect(() => {
+    guardarOperadorActivoLocal(operador);
+  }, [operador]);
+
+  // RBAC: permisos EFECTIVOS de la sesión activa — un solo cálculo
+  // memoizado, repartido hacia abajo a todos los módulos (visibilidad de
+  // pestañas) y a los puntos de registro de Auditoría (qué botones
+  // sensibles se muestran/bloquean).
+  const permisos = useMemo(() => permisosDeRol(operador.rol), [operador.rol]);
+
+  /* ---------------- Gestión de Empleados & Log de Actividad (RBAC / Auditoría) ---------------- */
+
+  const [empleados, setEmpleados] = useState([]);
+  const [loadingEmpleados, setLoadingEmpleados] = useState(true);
+  const [errorEmpleados, setErrorEmpleados] = useState('');
+
+  const cargarEmpleados = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingEmpleados(true);
+    setErrorEmpleados('');
+    const { data, error } = await conClubId(supabase.from('empleados').select('*')).order('nombre', { ascending: true });
+    if (error) {
+      // Igual criterio que Retas/Torneos: tabla ausente = fallback silencioso
+      // en modo local, nunca un banner que bloquee el módulo.
+      if (!esErrorTablaInexistente(error)) setErrorEmpleados(error.message || 'No se pudieron cargar los empleados.');
+      setEmpleados(fusionarConRegistrosLocales([], LS_KEY_EMPLEADOS_LOCAL));
+    } else {
+      setEmpleados(fusionarConRegistrosLocales(data || [], LS_KEY_EMPLEADOS_LOCAL));
+    }
+    setLoadingEmpleados(false);
+  }, []);
+
+  useEffect(() => {
+    cargarEmpleados();
+  }, [cargarEmpleados]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('empleados-directorio')
+      .on('postgres_changes', canalClubFiltro('empleados'), () => cargarEmpleados({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarEmpleados]);
+
+  const [logActividad, setLogActividad] = useState([]);
+  const [loadingLogActividad, setLoadingLogActividad] = useState(true);
+  const [errorLogActividad, setErrorLogActividad] = useState('');
+
+  const cargarLogActividad = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingLogActividad(true);
+    setErrorLogActividad('');
+    const { data, error } = await conClubId(supabase.from('log_actividad').select('*')).order('created_at', { ascending: false }).limit(500);
+    if (error) {
+      if (!esErrorTablaInexistente(error)) setErrorLogActividad(error.message || 'No se pudo cargar el Log de Actividad.');
+      setLogActividad(fusionarConRegistrosLocales([], LS_KEY_LOG_ACTIVIDAD_LOCAL));
+    } else {
+      setLogActividad(fusionarConRegistrosLocales(data || [], LS_KEY_LOG_ACTIVIDAD_LOCAL));
+    }
+    setLoadingLogActividad(false);
+  }, []);
+
+  useEffect(() => {
+    cargarLogActividad();
+  }, [cargarLogActividad]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('log-actividad')
+      .on('postgres_changes', canalClubFiltro('log_actividad'), () => cargarLogActividad({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarLogActividad]);
+
+  const [cierresCaja, setCierresCaja] = useState([]);
+  const [loadingCierresCaja, setLoadingCierresCaja] = useState(true);
+  const [errorCierresCaja, setErrorCierresCaja] = useState('');
+
+  const cargarCierresCaja = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingCierresCaja(true);
+    setErrorCierresCaja('');
+    const { data, error } = await conClubId(supabase.from('cierres_caja').select('*')).order('created_at', { ascending: false }).limit(200);
+    if (error) {
+      if (!esErrorTablaInexistente(error)) setErrorCierresCaja(error.message || 'No se pudieron cargar los cortes de caja.');
+      setCierresCaja(fusionarConRegistrosLocales([], LS_KEY_CIERRES_CAJA_LOCAL));
+    } else {
+      setCierresCaja(fusionarConRegistrosLocales(data || [], LS_KEY_CIERRES_CAJA_LOCAL));
+    }
+    setLoadingCierresCaja(false);
+  }, []);
+
+  useEffect(() => {
+    cargarCierresCaja();
+  }, [cargarCierresCaja]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('cierres-caja')
+      .on('postgres_changes', canalClubFiltro('cierres_caja'), () => cargarCierresCaja({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarCierresCaja]);
+
+  // Punto ÚNICO de escritura del Log de Actividad — reutilizado por los 4+
+  // eventos que pide el control interno (cancelaciones, descuentos,
+  // devoluciones/ediciones de precio en POS, modificación de
+  // horarios/canchas) más el arqueo de caja y la gestión de empleados.
+  // Tolerancia total: si `log_actividad` no existe o el insert falla por
+  // cualquier razón, el evento igual queda visible en el Log (estado local +
+  // `localStorage`) — nunca se pierde ni bloquea la acción que lo disparó.
+  const registrarEventoAuditoria = useCallback(
+    async (tipo, detalle) => {
+      const payload = withClubId({
+        empleado_id: operador.id || null,
+        empleado_nombre: operador.nombre || 'Operador',
+        empleado_rol: operador.rol || null,
+        tipo,
+        detalle: detalle || {},
+      });
+      let eventoCreado = null;
+      try {
+        const { data, error } = await supabase.from('log_actividad').insert(payload).select().single();
+        if (error) throw error;
+        eventoCreado = data;
+      } catch (err) {
+        console.warn('[Auditoría] No se pudo guardar el evento en Supabase — se usa modo local.', err);
+        eventoCreado = { ...payload, id: idLocal('evento'), created_at: new Date().toISOString(), _local: true };
+        guardarRegistroLocal(LS_KEY_LOG_ACTIVIDAD_LOCAL, eventoCreado);
+      }
+      setLogActividad((prev) => [eventoCreado, ...prev]);
+      return eventoCreado;
+    },
+    [operador.id, operador.nombre, operador.rol]
+  );
+
+  async function crearEmpleado({ nombre, rol, telefono, pin }) {
+    const payload = withClubId({
+      nombre: nombre.trim(),
+      rol,
+      telefono: telefono?.trim() || null,
+      pin: pin?.trim() || null,
+      activo: true,
+    });
+    let empleadoCreado = null;
+    try {
+      const { data, error } = await supabase.from('empleados').insert(payload).select().single();
+      if (error) throw error;
+      empleadoCreado = data;
+    } catch (err) {
+      console.warn('[Empleados] No se pudo guardar en Supabase — se usa modo local.', err);
+      empleadoCreado = { ...payload, id: idLocal('empleado'), _local: true };
+      guardarRegistroLocal(LS_KEY_EMPLEADOS_LOCAL, empleadoCreado);
+    }
+    setEmpleados((prev) => [...prev, empleadoCreado].sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '')));
+    registrarEventoAuditoria('empleado_creado', { nombre: empleadoCreado.nombre, rol: empleadoCreado.rol });
+    return empleadoCreado;
+  }
+
+  async function actualizarEmpleado(id, cambios) {
+    const anterior = empleados.find((e) => e.id === id);
+    setEmpleados((prev) => prev.map((e) => (e.id === id ? { ...e, ...cambios } : e)));
+    if (!String(id).startsWith('local-')) {
+      try {
+        const { error } = await supabase.from('empleados').update(cambios).eq('id', id);
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Empleados] No se pudo sincronizar la edición con Supabase — se queda solo local.', err);
+      }
+    } else {
+      guardarRegistroLocal(LS_KEY_EMPLEADOS_LOCAL, { ...anterior, ...cambios });
+    }
+    const etiquetaCambios = Object.keys(cambios || {})
+      .map((k) => (k === 'rol' ? `rol → ${ROLES_POR_VALOR[cambios.rol]?.label || cambios.rol}` : k === 'activo' ? (cambios.activo ? 'reactivado' : 'desactivado') : k))
+      .join(', ');
+    registrarEventoAuditoria('empleado_editado', { nombre: anterior?.nombre, cambios: etiquetaCambios });
+  }
+
+  // Guarda el Arqueo Ciego de Caja (ver `ModalArqueo`, que ya calculó
+  // `montoTeorico`/`diferencia` SIN mostrárselos al cajero) y — a
+  // diferencia de `crearEmpleado`/`actualizarEmpleado` — también deja el
+  // rastro en el Log de Actividad, porque un arqueo SIEMPRE es un evento
+  // auditable, tenga o no diferencia. `aprobado` es opcional: si la columna
+  // todavía no existe en `cierres_caja`, se reintenta sin ella (mismo
+  // patrón de compatibilidad que `estatus_manual` en `actualizarEstatusCancha`)
+  // y la Aprobación de Cortes del Manager simplemente no persiste su check
+  // hasta que se agregue la columna.
+  async function crearCierreCaja({ montoReportado, montoTeorico, diferencia, turno: turnoValor }) {
+    const payloadBase = {
+      operador_id: operador.id || null,
+      operador_nombre: operador?.nombre || null,
+      turno: turnoValor || null,
+      fecha: hoyISO(),
+      monto_reportado_efectivo: montoReportado,
+      monto_teorico_efectivo: montoTeorico,
+      diferencia,
+      aprobado: false,
+    };
+    let cierreCreado = null;
+    try {
+      const { data, error } = await supabase.from('cierres_caja').insert(withClubId(payloadBase)).select().single();
+      if (error) throw error;
+      cierreCreado = data;
+    } catch (err) {
+      if (esErrorColumnaInexistente(err)) {
+        try {
+          const { aprobado: _aprobado, ...sinAprobado } = payloadBase;
+          const { data: data2, error: error2 } = await supabase.from('cierres_caja').insert(withClubId(sinAprobado)).select().single();
+          if (error2) throw error2;
+          cierreCreado = data2;
+        } catch (err2) {
+          console.warn('[Cierres de Caja] No se pudo guardar en Supabase — se usa modo local.', err2);
+        }
+      } else {
+        console.warn('[Cierres de Caja] No se pudo guardar en Supabase — se usa modo local.', err);
+      }
+      if (!cierreCreado) {
+        cierreCreado = { ...payloadBase, id: idLocal('cierre'), created_at: new Date().toISOString(), _local: true };
+        guardarRegistroLocal(LS_KEY_CIERRES_CAJA_LOCAL, cierreCreado);
+      }
+    }
+    setCierresCaja((prev) => [cierreCreado, ...prev]);
+    // Notificable al Admin: el evento de auditoría queda en el Log sin
+    // importar si hubo o no diferencia — el panel de Control & Seguridad es
+    // quien decide resaltarla (ver `ModuloControlSeguridad`, pestaña Cortes).
+    registrarEventoAuditoria('arqueo_caja', { turno: turnoValor, montoReportado, montoTeorico, diferencia });
+    return cierreCreado;
+  }
+
+  // Aprobación de Cortes (rol Manager/Admin/Owner, ver `puedeAprobarCorteCaja`).
+  async function aprobarCierreCaja(id) {
+    const anterior = cierresCaja.find((c) => c.id === id);
+    setCierresCaja((prev) => prev.map((c) => (c.id === id ? { ...c, aprobado: true } : c)));
+    if (!String(id).startsWith('local-')) {
+      try {
+        const { error } = await supabase.from('cierres_caja').update({ aprobado: true }).eq('id', id);
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Cierres de Caja] No se pudo sincronizar la aprobación con Supabase.', err);
+      }
+    } else if (anterior) {
+      guardarRegistroLocal(LS_KEY_CIERRES_CAJA_LOCAL, { ...anterior, aprobado: true });
+    }
+    mostrarToast({ titulo: 'Corte aprobado', detalle: `Turno ${anterior?.turno || ''}`.trim() });
+  }
+
+  // Personalización del Club (Nombre, Logo) — Persistencia Centralizada:
+  // vive en la tabla `configuracion_club` (`configuracionClubId` guarda el
+  // `id` de esa fila, si existe, para poder hacer `update` en vez de
+  // `insert` la próxima vez que se edite), así que Mac/iPad/celular la leen
+  // todos de Supabase en vez de cada quien tener su propio localStorage.
+  // Arranca con lo último visto en este navegador (`leerConfigClubLocal`)
+  // para que el primer render ya tenga algo usable, y
+  // `cargarConfigClubSupabase` (ver abajo) la refresca en cuanto Supabase
+  // responde; un canal de Realtime en `configuracion_club` propaga
+  // cualquier edición hecha desde otro dispositivo al instante.
+  const [configuracionClubId, setConfiguracionClubId] = useState(null);
+  const [configClub, setConfigClub] = useState(() => leerConfigClubLocal());
+  const [guardandoConfigClub, setGuardandoConfigClub] = useState(false);
+
+  const [toasts, setToasts] = useState([]);
+  const toastIdRef = useRef(0);
+
+  const mostrarToast = useCallback(({ titulo, detalle, tono = 'ok' }) => {
+    const id = ++toastIdRef.current;
+    setToasts((prev) => [...prev, { id, titulo, detalle, tono }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4200);
+  }, []);
+
+  /* ---------------- Carga de datos (Parrilla, compartida) ---------------- */
+
+  const cargarDatos = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoading(true);
+    setRefrescando(true);
+    setError('');
+
+    const [resCanchas, resReservas, resJugadores] = await Promise.all([
+      conClubId(supabase.from('canchas').select('*')).order('nombre', { ascending: true }),
+      conClubId(supabase.from('reservas').select('*'))
+        .order('fecha', { ascending: true })
+        .order('hora_inicio', { ascending: true }),
+      conClubId(supabase.from('jugadores').select('id, nombre, telefono, saldo_a_favor')),
+    ]);
+
+    if (resCanchas.error) {
+      setError(resCanchas.error.message || 'No se pudieron cargar las canchas.');
+      setLoading(false);
+      setRefrescando(false);
+      return;
+    }
+
+    setCanchas(resCanchas.data || []);
+
+    const mapaJugadores = {};
+    if (!resJugadores.error) {
+      (resJugadores.data || []).forEach((j) => {
+        mapaJugadores[j.id] = j;
+      });
+    }
+    setJugadoresPorId(mapaJugadores);
+
+    if (!resReservas.error) {
+      const conNombre = (resReservas.data || []).map((r) => ({
+        ...r,
+        // La columna real `jugador_nombre` manda; si viniera vacía, se cae al nombre
+        // vinculado en `jugadores` por jugador_id, y de último recurso a 'Jugador'.
+        jugador_nombre: r.jugador_nombre || (r.jugador_id ? mapaJugadores[r.jugador_id]?.nombre : null) || 'Jugador',
+      }));
+      setReservas(conNombre);
+    } else {
+      setReservas([]);
+    }
+
+    setLoading(false);
+    setRefrescando(false);
+  }, []);
+
+  useEffect(() => {
+    cargarDatos();
+  }, [cargarDatos]);
+
+  // Realtime: canchas, reservas y jugadores
+  useEffect(() => {
+    const canal = supabase
+      .channel('parrilla-operativa')
+      .on('postgres_changes', canalClubFiltro('canchas'), () => cargarDatos({ silencioso: true }))
+      .on('postgres_changes', canalClubFiltro('reservas'), () => cargarDatos({ silencioso: true }))
+      .on('postgres_changes', canalClubFiltro('jugadores'), () => cargarDatos({ silencioso: true }))
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarDatos]);
+
+  /* ---------------- Carga de datos (Smart POS + ERP, compartida) ---------------- */
+
+  const cargarProductos = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingProductos(true);
+    setErrorProductos('');
+    const { data, error: errProductos } = await conClubId(supabase.from('productos').select('*')).order('nombre', { ascending: true });
+    if (errProductos) {
+      setErrorProductos(errProductos.message || 'No se pudieron cargar los productos.');
+      setProductos([]);
+    } else {
+      setProductos(data || []);
+    }
+    setLoadingProductos(false);
+  }, []);
+
+  useEffect(() => {
+    cargarProductos();
+  }, [cargarProductos]);
+
+  // Realtime: refleja en vivo el stock/costo cuando otra terminal vende o
+  // cuando se edita el catálogo desde ERP & Inventario.
+  useEffect(() => {
+    const canal = supabase
+      .channel('productos-catalogo')
+      .on('postgres_changes', canalClubFiltro('productos'), () => cargarProductos({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarProductos]);
+
+  function upsertProducto(producto) {
+    setProductos((prev) => {
+      const existe = prev.some((p) => p.id === producto.id);
+      return existe ? prev.map((p) => (p.id === producto.id ? { ...p, ...producto } : p)) : [...prev, producto];
+    });
+  }
+
+  /* ---------------- Catálogo Inteligente: Variantes/Modificadores ----------------
+   * FIX DEFINITIVO: este proyecto de Supabase NO tiene tabla
+   * `producto_variantes` — las variantes viven ÚNICAMENTE en el arreglo
+   * JSONB `productos.variantes`, dentro de la MISMA fila del producto padre
+   * que ya carga `cargarProductos` arriba. Por eso ya no hay un fetch aparte,
+   * ni un canal de Realtime aparte, ni un respaldo local
+   * (`LS_KEY_VARIANTES_LOCAL`): `variantesPorProducto` se deriva del mismo
+   * estado `productos`, así que nunca puede desincronizarse de él.
+   * `upsertVarianteProducto`/`quitarVarianteProductoLocal` se dejan como
+   * no-ops (con la misma firma de siempre) porque siguen recibidos como
+   * props por ComandaPanel/ModuloERPInventario/etc. — el POS ya actualiza
+   * el producto padre completo (con su `variantes` al día) vía
+   * `upsertProducto`, así que no hace falta ninguna otra acción aquí. */
+  function upsertVarianteProducto() {
+    /* no-op: las variantes viven en productos.variantes — upsertProducto()
+       ya refleja cualquier cambio de una variante en el producto padre. */
+  }
+
+  function quitarVarianteProductoLocal() {
+    /* no-op: ver comentario de upsertVarianteProducto arriba. */
+  }
+
+  // Agrupación por producto padre — así el POS y el catálogo de Inventario
+  // solo consultan `variantesPorProducto[producto.id]` sin recorrer el
+  // arreglo completo en cada render. Fuente única: `productos[].variantes`.
+  const variantesPorProducto = useMemo(() => {
+    const mapa = {};
+    for (const p of productos) {
+      mapa[p.id] = variantesDeProductoJSONB(p);
+    }
+    return mapa;
+  }, [productos]);
+
+  // Directorio/CRM de Jugadores: captura o corrige el teléfono de un jugador
+  // ya existente en `jugadores` (nace vacío desde `resolverJugadorId`, ver
+  // el comentario de "CRM DE JUGADORES" más arriba) — es la llave que permite
+  // cruzarlo contra `reta_inscripciones`/`torneo_participantes` y habilitar
+  // el botón de WhatsApp. Best effort, igual criterio que el resto del
+  // módulo: si Supabase falla, el directorio no se queda a medias, solo se
+  // avisa para reintentar.
+  async function actualizarTelefonoJugador(jugadorId, telefono) {
+    const telefonoLimpio = (telefono || '').trim() || null;
+    setJugadoresPorId((prev) => ({
+      ...prev,
+      [jugadorId]: { ...(prev[jugadorId] || { id: jugadorId }), telefono: telefonoLimpio },
+    }));
+    // Sincronización Silenciosa: el teléfono ya se aplicó de forma optimista
+    // arriba — si Supabase no lo acepta, se reintentará solo en el próximo
+    // guardado/Realtime, sin interrumpir al operador con un aviso flotante.
+    try {
+      const { error: errUpdate } = await supabase.from('jugadores').update({ telefono: telefonoLimpio }).eq('id', jugadorId);
+      if (errUpdate) console.warn('[CRM] No se pudo sincronizar el teléfono con Supabase — se aplica solo en esta pantalla.', errUpdate);
+    } catch (_e) {
+      console.warn('[CRM] No se pudo sincronizar el teléfono con Supabase — se aplica solo en esta pantalla.', _e);
+    }
+  }
+
+  /* ---------------- Carga de datos (Torneos & Retas, compartida) ----------------
+   * Igual criterio que canchas/reservas/productos arriba: se levanta aquí, no
+   * dentro de `ModuloTorneosRetas`, para que (a) el estado NUNCA se resetee
+   * al cambiar de pestaña — antes vivía en el módulo, que se desmontaba cada
+   * vez — y (b) Smart POS pueda leer exactamente los mismos arreglos para su
+   * panel "Inscripción Torneo/Reta", sin una segunda consulta a Supabase que
+   * podía quedar desincronizada. Cada loader además fusiona lo que trae el
+   * servidor con los registros en "modo local" guardados en `localStorage`
+   * (los que cayeron al fallback por RLS/esquema/red) para que tampoco se
+   * pierdan al recargar la página entera. */
+
+  const [retas, setRetas] = useState([]);
+  const [loadingRetas, setLoadingRetas] = useState(true);
+  const [errorRetas, setErrorRetas] = useState('');
+  const [inscripciones, setInscripciones] = useState([]);
+  const [loadingInscripciones, setLoadingInscripciones] = useState(true);
+  const [errorInscripciones, setErrorInscripciones] = useState('');
+  const [torneos, setTorneos] = useState([]);
+  const [loadingTorneos, setLoadingTorneos] = useState(true);
+  const [errorTorneos, setErrorTorneos] = useState('');
+  const [participantesTorneo, setParticipantesTorneo] = useState([]);
+  const [loadingParticipantes, setLoadingParticipantes] = useState(true);
+  const [errorParticipantes, setErrorParticipantes] = useState('');
+  const [partidosTorneo, setPartidosTorneo] = useState([]);
+  const [loadingPartidosTorneo, setLoadingPartidosTorneo] = useState(true);
+  const [errorPartidosTorneo, setErrorPartidosTorneo] = useState('');
+
+  // Ids de Bloqueos Maestro de Torneo (ver `idsBloqueosMaestroTorneo`) — se
+  // calcula una sola vez aquí y se comparte entre la Parrilla Operativa
+  // (estilo visual discreto, sin pelear carril con los partidos) y Analytics
+  // BI (exclusión total de Horas/Ocupación/Ingresos), para que ambos módulos
+  // usen exactamente el mismo criterio de "qué reserva es el apartado
+  // general vs. un partido/reta real".
+  const bloqueosMaestroTorneoIds = useMemo(() => idsBloqueosMaestroTorneo(torneos), [torneos]);
+
+  const [rankingJugadores, setRankingJugadores] = useState([]);
+  const [loadingRanking, setLoadingRanking] = useState(true);
+  const [errorRanking, setErrorRanking] = useState('');
+
+  const cargarRetas = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingRetas(true);
+    setErrorRetas('');
+    const { data, error } = await conClubId(supabase.from('retas').select('*'))
+      .eq('estado', 'abierta')
+      .order('fecha', { ascending: true });
+    if (error) {
+      // Tabla `retas` todavía no existe en este proyecto de Supabase:
+      // fallback en memoria (más lo que haya en localStorage), sin banner
+      // de error bloqueante.
+      if (!esErrorTablaInexistente(error)) setErrorRetas(error.message || 'No se pudieron cargar las Retas.');
+      setRetas(fusionarConRegistrosLocales([], LS_KEY_RETAS_LOCAL));
+    } else {
+      setRetas(fusionarConRegistrosLocales(data || [], LS_KEY_RETAS_LOCAL));
+    }
+    setLoadingRetas(false);
+  }, []);
+
+  const cargarInscripciones = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingInscripciones(true);
+    setErrorInscripciones('');
+    const { data, error } = await conClubId(supabase.from('reta_inscripciones').select('*'));
+    if (error) {
+      // Igual criterio que `cargarRetas`: tabla ausente = fallback silencioso.
+      if (!esErrorTablaInexistente(error)) setErrorInscripciones(error.message || 'No se pudieron cargar las inscripciones.');
+      setInscripciones(fusionarConRegistrosLocales([], LS_KEY_RETA_INSCRIPCIONES_LOCAL));
+    } else {
+      setInscripciones(fusionarConRegistrosLocales(data || [], LS_KEY_RETA_INSCRIPCIONES_LOCAL));
+    }
+    setLoadingInscripciones(false);
+  }, []);
+
+  const cargarTorneos = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingTorneos(true);
+    setErrorTorneos('');
+    const { data, error } = await conClubId(supabase.from('torneos').select('*')).order('fecha_inicio', { ascending: true });
+    if (error) {
+      // Tabla `torneos` todavía no existe en este proyecto de Supabase:
+      // fallback en memoria (más lo que haya en localStorage), sin banner
+      // de error bloqueante.
+      if (!esErrorTablaInexistente(error)) setErrorTorneos(error.message || 'No se pudieron cargar los torneos.');
+      setTorneos(fusionarConRegistrosLocales([], LS_KEY_TORNEOS_LOCAL));
+    } else {
+      setTorneos(fusionarConRegistrosLocales(data || [], LS_KEY_TORNEOS_LOCAL));
+    }
+    setLoadingTorneos(false);
+  }, []);
+
+  const cargarParticipantesTorneo = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingParticipantes(true);
+    setErrorParticipantes('');
+    const { data, error } = await conClubId(supabase.from('torneo_participantes').select('*'));
+    if (error) {
+      // Igual criterio que `cargarTorneos`: tabla ausente = fallback silencioso.
+      if (!esErrorTablaInexistente(error)) setErrorParticipantes(error.message || 'No se pudieron cargar los participantes.');
+      setParticipantesTorneo(fusionarConRegistrosLocales([], LS_KEY_TORNEO_PARTICIPANTES_LOCAL));
+    } else {
+      setParticipantesTorneo(fusionarConRegistrosLocales(data || [], LS_KEY_TORNEO_PARTICIPANTES_LOCAL));
+    }
+    setLoadingParticipantes(false);
+  }, []);
+
+  // Motor de Torneos: Cuadros & Partidos (Fase 1) — mismo criterio de
+  // tolerancia y fusión con `localStorage` que el resto del módulo. Vive
+  // aquí (levantado en App(), nunca se desmonta) por la misma razón que
+  // `retas`/`torneos`/`participantesTorneo`: si viviera dentro de
+  // `ModuloTorneosRetas`, un cuadro armado en modo local se perdería al
+  // cambiar de pestaña.
+  const cargarPartidosTorneo = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingPartidosTorneo(true);
+    setErrorPartidosTorneo('');
+    const { data, error } = await conClubId(supabase.from('torneo_partidos').select('*')).order('ronda_orden', { ascending: true });
+    if (error) {
+      // Igual criterio que `cargarTorneos`: tabla ausente = fallback silencioso.
+      if (!esErrorTablaInexistente(error)) setErrorPartidosTorneo(error.message || 'No se pudieron cargar los partidos.');
+      setPartidosTorneo(fusionarConRegistrosLocales([], LS_KEY_TORNEO_PARTIDOS_LOCAL));
+    } else {
+      setPartidosTorneo(fusionarConRegistrosLocales(data || [], LS_KEY_TORNEO_PARTIDOS_LOCAL));
+    }
+    setLoadingPartidosTorneo(false);
+  }, []);
+
+  // Ranking del Club (Jugadores/CRM) — se llena cuando "Finalizar Torneo &
+  // Asignar Puntos" reparte puntos; se levanta aquí (no dentro de
+  // `ModuloJugadores`) para que un torneo finalizado desde Torneos & Retas
+  // actualice el Ranking al instante sin depender de que el operador tenga
+  // esa pestaña abierta.
+  const cargarRanking = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingRanking(true);
+    setErrorRanking('');
+    const { data, error } = await conClubId(supabase.from('ranking_jugadores').select('*')).order('puntos', { ascending: false });
+    if (error) {
+      if (!esErrorTablaInexistente(error)) setErrorRanking(error.message || 'No se pudo cargar el Ranking del Club.');
+      setRankingJugadores(fusionarConRegistrosLocales([], LS_KEY_RANKING_LOCAL));
+    } else {
+      setRankingJugadores(fusionarConRegistrosLocales(data || [], LS_KEY_RANKING_LOCAL));
+    }
+    setLoadingRanking(false);
+  }, []);
+
+  // Personalización del Club (Nombre/Logo) — vive en la tabla
+  // `configuracion_club` (id, nombre, logo_url, club_id). Si la tabla no
+  // existe todavía (o cualquier otro error de Supabase), se queda en
+  // silencio con lo que ya haya en `localStorage` (`configClub` ya arrancó
+  // con eso).
+  const cargarConfigClubSupabase = useCallback(async (opts = {}) => {
+    try {
+      // `select('*')` a propósito (no se enumeran columnas a mano): así, si
+      // `nombre`/`logo_url` todavía no existen en un proyecto viejo, la
+      // consulta no truena — simplemente esos campos vienen `undefined` y el
+      // bloque de abajo los ignora, dejando el nombre/logo por defecto.
+      const { data, error } = await supabase.from('configuracion_club').select('*').limit(1).maybeSingle();
+      if (error) throw error;
+      if (data) {
+        setConfiguracionClubId(data.id);
+        if (data.nombre != null || data.logo_url != null) {
+          const nuevaConfig = {
+            nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
+            logoUrl: data.logo_url || '',
+          };
+          setConfigClub(nuevaConfig);
+          guardarConfigClubLocal(nuevaConfig);
+        }
+      }
+    } catch (err) {
+      if (!esErrorTablaInexistente(err) && !opts.silencioso) {
+        console.warn('[ERP] No se pudo cargar la configuración del club — se usa el valor local.', err);
+      }
+    }
+  }, []);
+
+  // Guarda Nombre/Logo del Club: SIEMPRE actualiza el estado en vivo y el
+  // respaldo en `localStorage` de inmediato (nunca deja al operador viendo
+  // el spinner ni el nombre viejo mientras Supabase responde), y trata de
+  // persistirlo best effort en la misma fila de `configuracion_club` — update
+  // si ya había fila, insert si es la primera vez. Si la columna
+  // `nombre`/`logo_url` todavía no existe en el proyecto, el cambio se
+  // queda en modo local (este navegador) sin bloquear nada.
+  const guardarConfigClub = useCallback(
+    async (nuevaConfig) => {
+      const limpia = { nombre: (nuevaConfig.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre, logoUrl: nuevaConfig.logoUrl || '' };
+      setGuardandoConfigClub(true);
+      setConfigClub(limpia);
+      guardarConfigClubLocal(limpia);
+      try {
+        const campos = { nombre: limpia.nombre, logo_url: limpia.logoUrl || null };
+        if (configuracionClubId) {
+          const { error } = await supabase.from('configuracion_club').update(campos).eq('id', configuracionClubId);
+          if (error) throw error;
+        } else {
+          const { data, error } = await supabase.from('configuracion_club').insert(withClubId(campos)).select().maybeSingle();
+          if (error) throw error;
+          if (data?.id) setConfiguracionClubId(data.id);
+        }
+      } catch (err) {
+        // Sincronización Silenciosa: el nombre/logo ya se aplicó de forma
+        // optimista arriba — si Supabase no lo acepta todavía (columnas sin
+        // migrar, red), se reintentará solo con el próximo guardado o
+        // Realtime, sin interrumpir al operador con un aviso flotante.
+        console.warn('[Club] No se pudo guardar el nombre/logo en Supabase — se guardó en modo local.', err);
+      }
+      mostrarToast({ titulo: 'Club actualizado', detalle: `${limpia.nombre} — ya se ve igual en todos los dispositivos.` });
+      setGuardandoConfigClub(false);
+    },
+    [configuracionClubId, mostrarToast]
+  );
+
+  useEffect(() => {
+    cargarRetas();
+    cargarInscripciones();
+    cargarTorneos();
+    cargarParticipantesTorneo();
+    cargarPartidosTorneo();
+    cargarRanking();
+    cargarConfigClubSupabase();
+  }, [
+    cargarRetas,
+    cargarInscripciones,
+    cargarTorneos,
+    cargarParticipantesTorneo,
+    cargarPartidosTorneo,
+    cargarRanking,
+    cargarConfigClubSupabase,
+  ]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('ranking-club')
+      .on('postgres_changes', canalClubFiltro('ranking_jugadores'), () => cargarRanking({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarRanking]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('torneos-retas')
+      .on('postgres_changes', canalClubFiltro('retas'), () => cargarRetas({ silencioso: true }))
+      .on('postgres_changes', canalClubFiltro('reta_inscripciones'), () => cargarInscripciones({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarRetas, cargarInscripciones]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('torneos-gestion')
+      .on('postgres_changes', canalClubFiltro('torneos'), () => cargarTorneos({ silencioso: true }))
+      .on('postgres_changes', canalClubFiltro('torneo_participantes'), () => cargarParticipantesTorneo({ silencioso: true }))
+      .on('postgres_changes', canalClubFiltro('torneo_partidos'), () => cargarPartidosTorneo({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarTorneos, cargarParticipantesTorneo, cargarPartidosTorneo]);
+
+  // Sincronización Universal del Nombre/Logo del Club: si se edita desde la
+  // Mac, el iPad y el celular lo reflejan solos, sin recargar la página.
+  useEffect(() => {
+    const canal = supabase
+      .channel('configuracion-club')
+      .on('postgres_changes', canalClubFiltro('configuracion_club'), () =>
+        cargarConfigClubSupabase({ silencioso: true })
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarConfigClubSupabase]);
+
+  // Reloj vivo: se usa como dependencia de `metrics` (dentro de la Parrilla)
+  // para que Ocupación Actual / Ingresos del Día se recalculen solos cada
+  // minuto, incluso si no llega ningún cambio nuevo de Supabase.
+  const [tick, forzarTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => forzarTick((n) => n + 1), 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Respaldo defensivo: fija el fondo de <html>/<body> al mismo slate-950 del
+  // panel. Sin esto, el rebote elástico de scroll (iOS/Safari/trackpads) o
+  // cualquier overflow accidental puede asomar el blanco por defecto del
+  // navegador detrás de la parrilla, especialmente en el scroll horizontal
+  // del Cronograma.
+  useEffect(() => {
+    const prevHtmlBg = document.documentElement.style.backgroundColor;
+    const prevBodyBg = document.body.style.backgroundColor;
+    document.documentElement.style.backgroundColor = '#020617';
+    document.body.style.backgroundColor = '#020617';
+    return () => {
+      document.documentElement.style.backgroundColor = prevHtmlBg;
+      document.body.style.backgroundColor = prevBodyBg;
+    };
+  }, []);
+
+  const turno = turnoInfo(operador.turno);
+
+  // RBAC: si el rol activo cambia (o al fichar) y `moduloActivo` ya no está
+  // entre sus módulos permitidos (p. ej. un Coach quedó parado en "pos" de
+  // una sesión anterior), lo manda al primer módulo que SÍ puede ver — nunca
+  // deja la pantalla en un módulo al que no tiene acceso.
+  useEffect(() => {
+    if (permisos.modulos.has(moduloActivo)) return;
+    const primerPermitido = TODOS_LOS_MODULOS.find((m) => permisos.modulos.has(m));
+    if (primerPermitido) setModuloActivo(primerPermitido);
+  }, [permisos, moduloActivo]);
+
+  /* ---------------- Handlers de mutación local (optimista) — Parrilla ---------------- */
+
+  function upsertCancha(cancha) {
+    setCanchas((prev) => {
+      const existe = prev.some((c) => c.id === cancha.id);
+      return existe ? prev.map((c) => (c.id === cancha.id ? { ...c, ...cancha } : c)) : [...prev, cancha];
+    });
+  }
+
+  function upsertReserva(reserva) {
+    setReservas((prev) => {
+      const existe = prev.some((r) => r.id === reserva.id);
+      return existe ? prev.map((r) => (r.id === reserva.id ? { ...r, ...reserva } : r)) : [...prev, reserva];
+    });
+  }
+
+  function marcarReservaCancelada(id) {
+    setReservas((prev) => prev.map((r) => (r.id === id ? { ...r, estado: 'Cancelada' } : r)));
+  }
+
+  // "Reservar y Cobrar en POS": arma el concepto de la comanda a partir de la
+  // reserva recién creada y cambia la vista activa a Smart POS de inmediato.
+  function enviarReservaAPOS(reserva, cancha) {
+    const item = {
+      id: `reserva-${reserva.id}`,
+      tipo: 'cancha',
+      cancha_id: reserva.cancha_id,
+      reserva_id: reserva.id,
+      nombre: `Renta ${cancha?.nombre || 'Cancha'} (${formatoHora12(reserva.hora_inicio)} - ${formatoHora12(reserva.hora_fin)})`,
+      precio: Number(reserva.monto_total) || 0,
+      cantidad: 1,
+    };
+    setConceptoPOS(item);
+    setModuloActivo('pos');
+  }
+
+  async function actualizarEstatusCancha(cancha, opcionElegida) {
+    // "Mantenimiento" es el ÚNICO estatus que se guarda como bandera manual.
+    // Elegir Disponible / Reservada / En Juego en el menú simplemente LIBERA
+    // ese bloqueo — el badge que se ve después siempre lo recalcula
+    // `estadoActualCancha` en vivo a partir de la hora actual y `reservas`.
+    const bloquear = opcionElegida === 'mantenimiento';
+    const nuevoEstatusManual = bloquear ? 'mantenimiento' : null;
+    const activaValue = !bloquear;
+    const anterior = { ...cancha };
+
+    // Optimista
+    upsertCancha({ ...cancha, estatus_manual: nuevoEstatusManual, activa: activaValue });
+
+    let { error: err } = await supabase
+      .from('canchas')
+      .update({ estatus_manual: nuevoEstatusManual, activa: activaValue })
+      .eq('id', cancha.id);
+
+    if (err) {
+      // Compatibilidad: si `estatus_manual` no existe todavía en el esquema, usar solo `activa`.
+      const reintento = await supabase.from('canchas').update({ activa: activaValue }).eq('id', cancha.id);
+      err = reintento.error;
+    }
+
+    if (err) {
+      upsertCancha(anterior); // rollback
+      mostrarToast({ titulo: 'Error al cambiar estatus', detalle: err.message, tono: 'error' });
+      return;
+    }
+
+    mostrarToast({
+      titulo: bloquear ? 'Cancha bloqueada' : 'Bloqueo liberado',
+      detalle: bloquear
+        ? `${cancha.nombre} quedó en Mantenimiento.`
+        : `${cancha.nombre} vuelve a calcular su estatus automáticamente.`,
+    });
+
+    // Auditoría — Control Interno: "Modificación de horarios o canchas".
+    registrarEventoAuditoria('modificacion_cancha', {
+      cancha: cancha.nombre,
+      antes: anterior.estatus_manual === 'mantenimiento' ? 'Mantenimiento' : 'Operativa',
+      despues: bloquear ? 'Mantenimiento' : 'Operativa',
+    });
+  }
+
+  /* ---------------- Render ---------------- */
+
+  return (
+    <ToastContext.Provider value={mostrarToast}>
+      <div className="flex min-h-screen w-full min-w-0 overflow-x-hidden bg-slate-950 text-slate-100">
+        <Sidebar
+          operador={operador}
+          turno={turno}
+          permisos={permisos}
+          abierto={sidebarAbierto}
+          onCerrar={() => setSidebarAbierto(false)}
+          moduloActivo={moduloActivo}
+          onCambiarModulo={setModuloActivo}
+          configClub={configClub}
+          onGuardarConfigClub={guardarConfigClub}
+          guardandoConfigClub={guardandoConfigClub}
+        />
+
+        <div className="flex min-h-screen min-w-0 flex-1 flex-col lg:pl-0">
+          <TopHeader
+            operador={operador}
+            turno={turno}
+            permisos={permisos}
+            moduloActivo={moduloActivo}
+            onCambiarModulo={setModuloActivo}
+            onAbrirSidebar={() => setSidebarAbierto(true)}
+            onAbrirOperador={() => setModalOperador(true)}
+            onRefrescar={() => cargarDatos()}
+            refrescando={refrescando}
+          />
+
+          <main className="min-w-0 flex-1 space-y-5 px-4 py-5 sm:px-6">
+            {error && <ErrorBanner mensaje={error} onReintentar={() => cargarDatos()} />}
+
+            {moduloActivo === 'parrilla' ? (
+              <ModuloParrillaOperativa
+                canchas={canchas}
+                reservas={reservas}
+                loading={loading}
+                tick={tick}
+                permisos={permisos}
+                onRegistrarAuditoria={registrarEventoAuditoria}
+                upsertCancha={upsertCancha}
+                upsertReserva={upsertReserva}
+                marcarReservaCancelada={marcarReservaCancelada}
+                actualizarEstatusCancha={actualizarEstatusCancha}
+                onReservaParaCobro={enviarReservaAPOS}
+                bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+                jugadoresPorId={jugadoresPorId}
+              />
+            ) : moduloActivo === 'pos' ? (
+              <ModuloSmartPOS
+                canchas={canchas}
+                reservas={reservas}
+                operador={operador}
+                turno={turno}
+                permisos={permisos}
+                onRegistrarAuditoria={registrarEventoAuditoria}
+                onGuardarCierre={crearCierreCaja}
+                upsertReserva={upsertReserva}
+                conceptoPendiente={conceptoPOS}
+                onConceptoConsumido={() => setConceptoPOS(null)}
+                productos={productos}
+                loadingProductos={loadingProductos}
+                errorProductos={errorProductos}
+                cargarProductos={cargarProductos}
+                upsertProducto={upsertProducto}
+                retas={retas}
+                setRetas={setRetas}
+                torneos={torneos}
+                setTorneos={setTorneos}
+                inscripciones={inscripciones}
+                setInscripciones={setInscripciones}
+                participantesTorneo={participantesTorneo}
+                setParticipantesTorneo={setParticipantesTorneo}
+                loadingInscripciones={loadingInscripciones}
+                loadingParticipantes={loadingParticipantes}
+                jugadoresPorId={jugadoresPorId}
+                variantesPorProducto={variantesPorProducto}
+                upsertVarianteProducto={upsertVarianteProducto}
+                quitarVarianteProductoLocal={quitarVarianteProductoLocal}
+              />
+            ) : moduloActivo === 'erp' ? (
+              <ModuloERPInventario
+                productos={productos}
+                loadingProductos={loadingProductos}
+                errorProductos={errorProductos}
+                cargarProductos={cargarProductos}
+                upsertProducto={upsertProducto}
+                operador={operador}
+                variantesPorProducto={variantesPorProducto}
+                upsertVarianteProducto={upsertVarianteProducto}
+                quitarVarianteProductoLocal={quitarVarianteProductoLocal}
+              />
+            ) : moduloActivo === 'contabilidad' ? (
+              <ModuloContabilidadCompras reservas={reservas} operador={operador} />
+            ) : moduloActivo === 'analytics' ? (
+              <ModuloAnalyticsBI
+                canchas={canchas}
+                reservas={reservas}
+                productos={productos}
+                variantesPorProducto={variantesPorProducto}
+                retas={retas}
+                inscripciones={inscripciones}
+                torneos={torneos}
+                participantesTorneo={participantesTorneo}
+                partidosTorneo={partidosTorneo}
+              />
+            ) : moduloActivo === 'jugadores' ? (
+              <ModuloJugadores
+                rankingJugadores={rankingJugadores}
+                loadingRanking={loadingRanking}
+                errorRanking={errorRanking}
+                cargarRanking={cargarRanking}
+                canchas={canchas}
+                reservas={reservas}
+                productos={productos}
+                jugadoresPorId={jugadoresPorId}
+                onActualizarTelefonoJugador={actualizarTelefonoJugador}
+                onRefrescarDirectorio={() => cargarDatos({ silencioso: true })}
+                retas={retas}
+                inscripciones={inscripciones}
+                torneos={torneos}
+                participantesTorneo={participantesTorneo}
+                partidosTorneo={partidosTorneo}
+                bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+              />
+            ) : moduloActivo === 'torneos' ? (
+              <ModuloTorneosRetas
+                canchas={canchas}
+                reservas={reservas}
+                upsertReserva={upsertReserva}
+                marcarReservaCancelada={marcarReservaCancelada}
+                retas={retas}
+                setRetas={setRetas}
+                loadingRetas={loadingRetas}
+                errorRetas={errorRetas}
+                cargarRetas={cargarRetas}
+                inscripciones={inscripciones}
+                setInscripciones={setInscripciones}
+                loadingInscripciones={loadingInscripciones}
+                errorInscripciones={errorInscripciones}
+                cargarInscripciones={cargarInscripciones}
+                torneos={torneos}
+                setTorneos={setTorneos}
+                loadingTorneos={loadingTorneos}
+                errorTorneos={errorTorneos}
+                cargarTorneos={cargarTorneos}
+                participantesTorneo={participantesTorneo}
+                setParticipantesTorneo={setParticipantesTorneo}
+                loadingParticipantes={loadingParticipantes}
+                errorParticipantes={errorParticipantes}
+                cargarParticipantesTorneo={cargarParticipantesTorneo}
+                partidosTorneo={partidosTorneo}
+                setPartidosTorneo={setPartidosTorneo}
+                loadingPartidosTorneo={loadingPartidosTorneo}
+                errorPartidosTorneo={errorPartidosTorneo}
+                cargarPartidosTorneo={cargarPartidosTorneo}
+                rankingJugadores={rankingJugadores}
+                setRankingJugadores={setRankingJugadores}
+                jugadoresPorId={jugadoresPorId}
+              />
+            ) : moduloActivo === 'seguridad' ? (
+              <ModuloControlSeguridad
+                operador={operador}
+                permisos={permisos}
+                empleados={empleados}
+                loadingEmpleados={loadingEmpleados}
+                errorEmpleados={errorEmpleados}
+                cargarEmpleados={cargarEmpleados}
+                crearEmpleado={crearEmpleado}
+                actualizarEmpleado={actualizarEmpleado}
+                cierresCaja={cierresCaja}
+                loadingCierresCaja={loadingCierresCaja}
+                errorCierresCaja={errorCierresCaja}
+                cargarCierresCaja={cargarCierresCaja}
+                aprobarCierreCaja={aprobarCierreCaja}
+                logActividad={logActividad}
+                loadingLogActividad={loadingLogActividad}
+                errorLogActividad={errorLogActividad}
+                cargarLogActividad={cargarLogActividad}
+              />
+            ) : null}
+          </main>
+        </div>
+
+        {modalOperador && (
+          <ModalOperador
+            operador={operador}
+            empleados={empleados}
+            onGuardar={(datos) => setOperador(datos)}
+            onCrearEmpleado={crearEmpleado}
+            onClose={() => setModalOperador(false)}
+          />
+        )}
+
+        <ToastHost toasts={toasts} />
+      </div>
+    </ToastContext.Provider>
+  );
+}
+
+/* ============================================================================
+ * ROUTER RAÍZ — decide entre el Panel interno (staff) y el Portal Público
+ * ==========================================================================*/
+// Router mínimo, sin dependencias nuevas (nada de `react-router-dom`): todo
+// este proyecto se entrega como un solo archivo (`App.jsx`) que reemplaza
+// directamente al que ya tienes en tu proyecto Vite, así que agregar una
+// librería de rutas obligaría a tocar también `main.jsx` y `package.json`.
+// En vez de eso, se lee `window.location.pathname` a mano y se reacciona a
+// `popstate` (atrás/adelante del navegador) — suficiente para las dos
+// "páginas" que tiene la app: el panel interno (cualquier URL que no
+// matchee el patrón de abajo) y el Portal Público en `/canchas/:clubSlug`.
+function usarRutaActual() {
+  const [ruta, setRuta] = useState(() => (typeof window !== 'undefined' ? window.location.pathname : '/'));
+  useEffect(() => {
+    function onCambioRuta() {
+      setRuta(window.location.pathname);
+    }
+    window.addEventListener('popstate', onCambioRuta);
+    return () => window.removeEventListener('popstate', onCambioRuta);
+  }, []);
+  return ruta;
+}
+
+// Navegación SPA (sin recargar la página) para cualquier link interno del
+// Portal Público que en el futuro necesite cambiar de URL — no se usa desde
+// dentro del Portal en esta entrega (todo vive en una sola pantalla con
+// pestañas), pero queda lista para cuando agregues más rutas públicas.
+function navegarA(path) {
+  window.history.pushState({}, '', path);
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
+const PATRON_RUTA_PORTAL = /^\/canchas\/([a-z0-9-]+)\/?$/i;
+
+export default function App() {
+  const ruta = usarRutaActual();
+  const matchPortal = ruta.match(PATRON_RUTA_PORTAL);
+  if (matchPortal) return <PortalPublicoJugadores clubSlug={matchPortal[1]} />;
+  // Salvaguarda: si el operador llegó a estar en el Portal Público de otro
+  // club dentro de esta misma pestaña (p. ej. atrás/adelante del navegador)
+  // y vuelve al panel interno, `CLUB_ACTIVO_ID` no debe quedarse pegado al
+  // club del Portal — el panel interno de HOY siempre opera sin filtro de
+  // club_id (ver comentario de cabecera de `CLUB_ACTIVO_ID`).
+  establecerClubActivo(null);
+  return <AppInterno />;
+}
