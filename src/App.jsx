@@ -6656,6 +6656,49 @@ function ModuloSmartPOS({
       .sort((a, b) => (a.cancha?.nombre || 'zzz').localeCompare(b.cancha?.nombre || 'zzz'));
   }, [reservasPendientesRecepcion, cuentasAbiertas, canchas]);
 
+  // COMPRAS DE TIENDA (PRO-SHOP) DEL PORTAL CON "PAGAR EN RECEPCIÓN":
+  // `confirmarCheckoutTienda` inserta estas ventas SIN `reserva_id` (no hay
+  // cancha de por medio, solo productos) y con `origen: ORIGEN_VENTA_WEB` —
+  // por eso `gruposCuentasAbiertas` las excluye a propósito (esa lista es
+  // solo mostrador) y `reservasPendientesRecepcion` nunca las ve (lee
+  // `reservas`, no `ventas`). Sin este grupo, un pedido de Tienda pagado
+  // "en Recepción" desde el Portal quedaba guardado en Supabase pero
+  // invisible en TODO Smart POS — nadie podía cobrarlo. Se arma con la
+  // MISMA forma de "grupo" que ya usa `CuentasAbiertasPanel`/
+  // `ModalLiquidarCuenta`, y como el ticket en `ventas` YA EXISTE (a
+  // diferencia de las reservas pendientes, que crean su ticket hasta el
+  // cobro), `liquidarCuenta` lo liquida con su rama normal
+  // (`grupo.ventas.length > 0` → `UPDATE ventas SET estado_pago='pagado'`),
+  // sin ningún cambio adicional ahí.
+  const gruposTiendaWebPendientes = useMemo(() => {
+    const pendientes = cuentasAbiertas.filter(
+      (v) => !v.reserva_id && v.es_reserva !== true && esOrigenPortalWeb(v.origen) && v.estado_pago === 'pendiente'
+    );
+    return pendientes
+      .map((v) => {
+        const items = {};
+        const arr = v?.detalles?.items;
+        if (Array.isArray(arr)) {
+          arr.forEach((item) => {
+            const nombre = item.nombre || 'Artículo';
+            if (!items[nombre]) items[nombre] = { cantidad: 0, subtotal: 0 };
+            items[nombre].cantidad += Number(item.cantidad) || 0;
+            items[nombre].subtotal += Number(item.subtotal) || 0;
+          });
+        }
+        return {
+          clave: `tienda-web-pendiente::${v.id}`,
+          cancha: null,
+          reserva: null,
+          ventas: [v],
+          total: Number(v.total) || 0,
+          items,
+          clienteNombre: v?.detalles?.jugador_nombre || '',
+        };
+      })
+      .sort((a, b) => (a.clienteNombre || 'zzz').localeCompare(b.clienteNombre || 'zzz'));
+  }, [cuentasAbiertas]);
+
   // Liquida TODOS los renglones pendientes de un grupo de una sola vez,
   // marcándolos `estado_pago: 'pagado'` con el método de pago elegido —
   // nunca se manda `metodo_pago: null` (mismo criterio que `registrarVenta`).
@@ -6757,9 +6800,18 @@ function ModuloSmartPOS({
     // Si la cuenta viene de una reserva real (Portal · "Pagar en
     // Recepción"), su propia fila en `reservas` también nace con
     // `estado_pago: 'pendiente'` (ver `confirmarReservaConAddons`) — se
-    // sincroniza aquí a 'pagado' para que la Parrilla deje de mostrarla como
-    // pendiente de cobro. Best effort: si falla, la venta YA quedó cobrada
-    // arriba, así que nunca se revierte ni se bloquea por esto.
+    // sincroniza aquí a 'pagado' para que la Parrilla Y "Cuentas Pendientes"
+    // dejen de mostrarla como pendiente de cobro. Best effort: si falla, la
+    // venta YA quedó cobrada arriba, así que nunca se revierte ni se
+    // bloquea por esto — PERO si esta actualización no se guarda de verdad
+    // en Supabase (el caso típico: falta la política RLS de UPDATE sobre
+    // `reservas` para el rol `anon` — ver `migracion_v8_rls_reservas_update.sql`),
+    // la reserva se queda 'pendiente' en la base de datos para siempre y
+    // reaparece en "Cuentas Pendientes" en cuanto se recarga la página,
+    // aunque localmente haya desaparecido un momento. Por eso, a diferencia
+    // de otros "best effort" del archivo, este SÍ se avisa con un toast
+    // (no solo `console.warn`) — para que Recepción sepa que debe correr
+    // esa migración en vez de pensar que el cobro se perdió.
     if (grupo.reserva?.id) {
       try {
         const { error: errReserva } = await supabase
@@ -6770,6 +6822,17 @@ function ModuloSmartPOS({
         upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: metodoPago });
       } catch (errReserva) {
         console.warn('[Smart POS] La venta se cobró, pero no se pudo sincronizar estado_pago de la reserva vinculada:', errReserva);
+        // Se refleja igual en la UI local para que la tarjeta desaparezca
+        // AHORA MISMO (el cobro sí se guardó) — el toast de abajo avisa que
+        // falta correr la migración para que esto sea permanente.
+        upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: metodoPago });
+        mostrarToast({
+          titulo: 'Cobro guardado, pero sin sincronizar la reserva',
+          detalle: esErrorPermisoRLS(errReserva)
+            ? 'Falta correr migracion_v8_rls_reservas_update.sql en Supabase — la reserva podría reaparecer como pendiente al recargar.'
+            : 'No se pudo actualizar el estatus de la reserva en Supabase. Puede reaparecer como pendiente al recargar.',
+          tono: 'error',
+        });
       }
     }
     const idsVentasLiquidadas = grupo.ventas.map((v) => v.id);
@@ -7541,13 +7604,13 @@ function ModuloSmartPOS({
             }`}
           >
             <Trophy size={14} /> Cuentas Pendientes / Inscripciones
-            {inscripcionesEventoPendientes.length + gruposReservasPendientes.length > 0 && (
+            {inscripcionesEventoPendientes.length + gruposReservasPendientes.length + gruposTiendaWebPendientes.length > 0 && (
               <span
                 className={`ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-black ${
                   vistaPOS === 'inscripciones' ? 'bg-slate-950 text-lime-400' : 'bg-rose-500 text-rose-50'
                 }`}
               >
-                {inscripcionesEventoPendientes.length + gruposReservasPendientes.length}
+                {inscripcionesEventoPendientes.length + gruposReservasPendientes.length + gruposTiendaWebPendientes.length}
               </span>
             )}
           </button>
@@ -7602,6 +7665,22 @@ function ModuloSmartPOS({
               vacioIcon={CalendarIcon}
               vacioTitulo="No hay reservas pendientes de pago en Recepción."
               vacioDetalle='Se llenan solas cuando un jugador reserva desde el Portal y elige "Pagar en Recepción".'
+            />
+          </div>
+          <div>
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+              <ShoppingBag size={13} /> Compras de Tienda (Portal) pendientes de pago en Recepción
+            </p>
+            <CuentasAbiertasPanel
+              grupos={gruposTiendaWebPendientes}
+              cargando={loadingCuentas}
+              error={errorCuentas}
+              onReintentar={() => cargarCuentasAbiertas()}
+              onLiquidar={(grupo) => setGrupoALiquidar(grupo)}
+              liquidandoClave={liquidandoClave}
+              vacioIcon={ShoppingBag}
+              vacioTitulo="No hay compras de Tienda pendientes de pago en Recepción."
+              vacioDetalle='Se llenan solas cuando un jugador compra en la Tienda (Pro-Shop) del Portal y elige "Pagar en Recepción".'
             />
           </div>
           <div>
@@ -9054,8 +9133,17 @@ function ModalRegistrarEntrada({ productos, productoInicial, onClose, onRegistra
 // calendario nativo con un solo clic (`showPicker()`), en cualquier punto
 // del control — no solo el ícono — para que el operador nunca tenga que
 // editar los números a mano ni dar varios clics para atinarle al picker.
-function SelectorFechaCompacto({ value, onChange }) {
+// `tamano="compacto"` (default) es el chip angosto original, pensado para
+// las tarjetas KPI de ERP & Inventario ("Ventas del Día"/"Ventas del Mes"),
+// donde el espacio horizontal es muy limitado. `tamano="amplio"` es un
+// tamaño de fuente/ancho normal (misma altura y familia visual que
+// `inputClase`) para usarse dentro de formularios/filtros con más espacio —
+// Egresos & Compras y P&L/Estado de Resultados lo necesitan porque
+// `w-[86px]` + `text-[10px]` recortaba fechas de 10 caracteres como
+// "02/09/2026". Un solo componente, dos anchos — así ERP no se ve afectado.
+function SelectorFechaCompacto({ value, onChange, tamano = 'compacto' }) {
   const inputRef = useRef(null);
+  const amplio = tamano === 'amplio';
   function abrirCalendario() {
     try {
       inputRef.current?.showPicker?.();
@@ -9067,15 +9155,23 @@ function SelectorFechaCompacto({ value, onChange }) {
   return (
     <div
       onClick={abrirCalendario}
-      className="flex cursor-pointer items-center gap-1 rounded-md border border-slate-700 bg-slate-950 px-1.5 py-0.5 transition hover:border-lime-400/60"
+      className={`flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950 transition hover:border-lime-400/60 ${
+        // `min-w-[160px]` en vez de `w-full`: este chip vive tanto dentro de
+        // un grid de formulario (Egresos, columna ya con ancho propio) como
+        // dentro de una barra de filtros flex sin ancho fijo (P&L) — un
+        // ancho mínimo fijo se ve bien y no se rompe en ninguno de los dos
+        // contenedores, a diferencia de `w-full` (que en el flex de P&L
+        // dependía del tamaño del contenedor padre, poco predecible).
+        amplio ? 'min-w-[160px] px-2.5 py-2' : 'px-1.5 py-0.5'
+      }`}
     >
-      <CalendarDays size={11} className="shrink-0 text-slate-500" />
+      <CalendarDays size={amplio ? 14 : 11} className="shrink-0 text-slate-500" />
       <input
         ref={inputRef}
         type="date"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-[86px] cursor-pointer bg-transparent text-[10px] text-slate-300 outline-none"
+        className={`cursor-pointer bg-transparent text-slate-300 outline-none ${amplio ? 'w-[120px] text-xs' : 'w-[86px] text-[10px]'}`}
       />
     </div>
   );
@@ -10484,11 +10580,17 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
   //      cargada sin filtros desde App()) — NUNCA de `ventas.total` en un
   //      ticket ligado a la reserva, porque ese monto puede ser solo el
   //      remanente después de aplicar saldo de Wallet, no el valor
-  //      económico completo. `monto_total` (renta de cancha) +
-  //      `monto_addons` (consumo adicional agregado desde el Portal o
-  //      Recepción) sí es el valor completo, cobrado en efectivo, tarjeta o
-  //      Wallet. Excluye los bloqueos sintéticos de Torneo/Reta (su dinero
-  //      real se cuenta en el inciso (d), no aquí).
+  //      económico completo. Cuenta ÚNICAMENTE `monto_total` — la renta
+  //      PURA de la cancha, originada tanto desde la Web (Portal) como
+  //      desde Mostrador (Smart POS) — nunca `monto_addons`: ese consumo
+  //      adicional (grips, bebidas, accesorios elegidos durante la reserva
+  //      en el Portal) se cuenta en el inciso (b), "Ventas Tienda Web", en
+  //      vez de aquí (ver más abajo). `monto_addons` SIEMPRE es 0 en
+  //      reservas creadas desde Mostrador — solo `confirmarReservaConAddons`
+  //      (flujo del Portal) lo llena — así que mover ese monto a (b) nunca
+  //      pierde ni duplica ingresos, solo los reclasifica. Excluye los
+  //      bloqueos sintéticos de Torneo/Reta (su dinero real se cuenta en el
+  //      inciso (d), no aquí).
   //   d) Torneos y Retas (Inscripciones) — suma de `reta_inscripciones` +
   //      `torneo_participantes` pagadas, por fecha de registro/cobro de la
   //      inscripción (`created_at`), NO por fecha de la reserva de bloqueo.
@@ -10502,7 +10604,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
     const filasVentasMostrador = ventasNoLigadasAReserva.filter((v) => !esOrigenPortalWeb(v.origen));
     const filasVentasWeb = ventasNoLigadasAReserva.filter((v) => esOrigenPortalWeb(v.origen));
     const ventasMostrador = filasVentasMostrador.reduce((acc, v) => acc + (Number(v.total) || 0), 0);
-    const ventasWeb = filasVentasWeb.reduce((acc, v) => acc + (Number(v.total) || 0), 0);
+    const ventasWebTienda = filasVentasWeb.reduce((acc, v) => acc + (Number(v.total) || 0), 0);
 
     const filasReservas = (reservas || []).filter(
       (r) =>
@@ -10512,10 +10614,15 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
         r.estado !== 'Reta' &&
         r.estado_pago === 'pagado'
     );
-    const reservasCanchas = filasReservas.reduce(
-      (acc, r) => acc + (Number(r.monto_total) || 0) + (Number(r.monto_addons) || 0),
-      0
-    );
+    // Renta PURA de cancha (sin add-ons) — ver el comentario del inciso (c)
+    // arriba.
+    const reservasCanchas = filasReservas.reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
+    // Add-ons elegidos durante el proceso de reserva en la página web
+    // (grips, bebidas, accesorios) — se suman a "Ventas Tienda Web" en vez
+    // de a "Reservas de Canchas" (ver comentario arriba). Siempre 0 para
+    // reservas hechas desde Mostrador.
+    const addonsDeReservasWeb = filasReservas.reduce((acc, r) => acc + (Number(r.monto_addons) || 0), 0);
+    const ventasWeb = ventasWebTienda + addonsDeReservasWeb;
 
     const filasInscripcionesRetas = (inscripciones || []).filter(
       (i) => i.estado_pago === 'pagado' && i.estado !== 'cancelado' && dentroDeRangoPorCreatedAt(i, rangoPnl)
@@ -10559,6 +10666,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
       _filasVentasWeb: filasVentasWeb,
       _filasReservas: filasReservas,
       _egresosEnRango: egresosEnRango,
+      _addonsDeReservasWeb: addonsDeReservasWeb,
     };
   }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, rangoPnl]);
 
@@ -10592,15 +10700,54 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
     (canchas || []).forEach((c) => {
       canchasPorId[c.id] = c;
     });
-    const filasReservasDesglose = pnl._filasReservas.map((r) => ({
-      id: r.id,
-      idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
-      hora: r.hora_inicio || '—',
-      concepto: `Renta ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}${r.jugador_nombre ? ` — ${r.jugador_nombre}` : ''}`,
-      canal: 'Reserva',
-      metodoPago: r.metodo_pago || '—',
-      monto: (Number(r.monto_total) || 0) + (Number(r.monto_addons) || 0),
-    }));
+    // Renta PURA de cancha (sin add-ons) — desglose de la tarjeta "Reservas
+    // de Canchas", consistente con `pnl.reservasCanchas` (ver comentario en
+    // el useMemo de `pnl`).
+    const filasReservasDesglose = pnl._filasReservas
+      .filter((r) => (Number(r.monto_total) || 0) > 0)
+      .map((r) => ({
+        id: r.id,
+        idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        hora: r.hora_inicio || '—',
+        concepto: `Renta ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}${r.jugador_nombre ? ` — ${r.jugador_nombre}` : ''}`,
+        canal: 'Reserva',
+        metodoPago: r.metodo_pago || '—',
+        monto: Number(r.monto_total) || 0,
+      }));
+    // Add-ons elegidos durante el proceso de reserva en la Web (grips,
+    // bebidas, accesorios) — se muestran dentro del desglose de "Ventas
+    // Tienda Web" (no en "Reservas de Canchas"), un renglón por artículo
+    // cuando `addons_detalle` está disponible (mismo dato que usa
+    // `gruposReservasPendientes`), o uno agregado por reserva si no.
+    const filasAddonsReservaWebDesglose = pnl._filasReservas
+      .filter((r) => (Number(r.monto_addons) || 0) > 0)
+      .flatMap((r) => {
+        const canchaNombre = canchasPorId[r.cancha_id]?.nombre || 'Cancha';
+        const etiquetaReserva = `Reserva ${canchaNombre}${r.jugador_nombre ? ` — ${r.jugador_nombre}` : ''}`;
+        const addonsDetalle = Array.isArray(r.addons_detalle) ? r.addons_detalle : [];
+        if (addonsDetalle.length > 0) {
+          return addonsDetalle.map((a, i) => ({
+            id: `${r.id}-addon-${i}`,
+            idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+            hora: r.hora_inicio || '—',
+            concepto: `${a?.nombre || 'Add-on'} — ${etiquetaReserva}`,
+            canal: 'Tienda Web (add-on de reserva)',
+            metodoPago: r.metodo_pago || '—',
+            monto: Number(a?.subtotal) || 0,
+          }));
+        }
+        return [
+          {
+            id: `${r.id}-addons`,
+            idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+            hora: r.hora_inicio || '—',
+            concepto: `Add-ons — ${etiquetaReserva}`,
+            canal: 'Tienda Web (add-on de reserva)',
+            metodoPago: r.metodo_pago || '—',
+            monto: Number(r.monto_addons) || 0,
+          },
+        ];
+      });
     const filasEgresosDesglose = pnl._egresosEnRango.map((g) => ({
       id: g.id,
       idCorto: (g.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
@@ -10611,7 +10758,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
       monto: Number(g.monto) || 0,
     }));
     const ventasMostradorDesglose = filasVenta(pnl._filasVentasMostrador, 'Mostrador (POS)');
-    const ventasWebDesglose = filasVenta(pnl._filasVentasWeb, 'Tienda Web');
+    const ventasWebDesglose = [...filasVenta(pnl._filasVentasWeb, 'Tienda Web'), ...filasAddonsReservaWebDesglose];
     return {
       ventasMostrador: ventasMostradorDesglose,
       ventasWeb: ventasWebDesglose,
@@ -10751,7 +10898,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
       ['Matriz de Ingresos Consolidados', 'Monto'],
       ['a) Ventas Mostrador (POS)', pnl.ventasMostrador.toFixed(2)],
       ['b) Ventas Tienda Web (PORTAL_WEB)', pnl.ventasWeb.toFixed(2)],
-      ['c) Reservas de Canchas (Rentas de cancha)', pnl.reservasCanchas.toFixed(2)],
+      ['c) Reservas de Canchas (Renta pura de canchas, Web + Mostrador)', pnl.reservasCanchas.toFixed(2)],
       ['d) Torneos y Retas (Inscripciones)', pnl.torneosRetas.toFixed(2)],
       ['e) Clases y Clínicas', pnl.clasesClinicas.toFixed(2)],
       ['Ingresos Totales Consolidados', pnl.ingresosTotalesConsolidados.toFixed(2)],
@@ -10821,9 +10968,13 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
             <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
               <PackagePlus size={16} className="text-lime-400" /> Registrar Compra / Gasto
             </h3>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
+            <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-6">
               <Campo label="Fecha">
-                <SelectorFechaCompacto value={formEgreso.fecha} onChange={(v) => setFormEgreso((f) => ({ ...f, fecha: v }))} />
+                <SelectorFechaCompacto
+                  value={formEgreso.fecha}
+                  onChange={(v) => setFormEgreso((f) => ({ ...f, fecha: v }))}
+                  tamano="amplio"
+                />
               </Campo>
               <div className="sm:col-span-2 lg:col-span-2">
                 <Campo label="Concepto">
@@ -11099,7 +11250,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
                   <CalendarRange size={14} /> Año
                 </button>
               </div>
-              {modoFiltroPnl === 'dia' && <SelectorFechaCompacto value={fechaDiaPnl} onChange={setFechaDiaPnl} />}
+              {modoFiltroPnl === 'dia' && <SelectorFechaCompacto value={fechaDiaPnl} onChange={setFechaDiaPnl} tamano="amplio" />}
               {modoFiltroPnl === 'mes' && (
                 <>
                   <select value={mesSelPnl} onChange={(e) => setMesSelPnl(Number(e.target.value))} className={`${inputClase} w-auto`}>
@@ -11160,7 +11311,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
                 icon={Truck}
                 etiqueta="Ventas Tienda Web"
                 valor={formatoMoneda(pnl.ventasWeb)}
-                sub="Tienda del Portal, sin ligar a reserva"
+                sub="Tienda del Portal + add-ons de reservas web"
                 tono="violet"
                 onClick={() => setModalDesglose({ titulo: 'Ventas Tienda Web', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.ventasWeb })}
               />
@@ -11168,7 +11319,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
                 icon={CalendarDays}
                 etiqueta="Reservas de Canchas"
                 valor={formatoMoneda(pnl.reservasCanchas)}
-                sub="Rentas de cancha + add-ons"
+                sub="Renta pura de canchas (Web + Mostrador)"
                 tono="sky"
                 onClick={() => setModalDesglose({ titulo: 'Reservas de Canchas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.reservas })}
               />
