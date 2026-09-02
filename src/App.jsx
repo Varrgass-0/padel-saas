@@ -11989,51 +11989,62 @@ function ModuloAnalyticsBI({
     const ingresoCanchas = reservasActivasPagadas.reduce((acc, r) => acc + montoEfectivoReserva(r), 0);
     const transaccionesCanchas = reservasActivasPagadas.length;
 
-    // Movimientos de salida por venta dentro del rango: alimentan tanto las
-    // "unidades vendidas" (Top Productos, COGS) como la auditoría del Kardex.
     // Variantes como Productos Completos: se agrupan con una CLAVE COMPUESTA
-    // — `v:<variante_id>` cuando el movimiento trae variante (columna nueva y
-    // opcional, ver `insertarMovimientoKardex`), o `p:<producto_id>` si no —
-    // así "Top Productos Más Vendidos" y el COGS distinguen "Cerveza —
+    // — `v:<variante_id>` cuando el item trae variante, o `p:<producto_id>`
+    // si no — así "Top Productos Más Vendidos" distingue "Cerveza —
     // Victoria" de "Cerveza — Corona" en vez de sumarlos indiferenciados bajo
-    // el producto padre. Un proyecto sin la columna `variante_id` migrada
-    // sigue viendo exactamente el mismo comportamiento de antes (todo cae en
-    // `p:<producto_id>`).
+    // el producto padre.
     const claveVentaItem = (productoId, varianteId) => (varianteId ? `v:${varianteId}` : `p:${productoId}`);
-    const salidasVenta = kardexRango.filter((mov) => mov.tipo_movimiento === 'salida_venta');
-    const unidadesPorProducto = {};
-    // COSTO VINCULADO A CADA VENTA (Costo Total = unidades × costo_unitario):
-    // se suma movimiento por movimiento en vez de "unidades del periodo ×
-    // costo actual del catálogo" — cada movimiento de Kardex trae su propio
-    // snapshot de `costo_unitario` (ver `insertarMovimientoKardex`/
-    // `resolverCostoUnitarioVenta`, tomado en el momento REAL de la venta,
-    // en POS o Tienda Web), así el costo no se pierde si el producto se
-    // borra o le cambian el costo después. Un movimiento de antes de que
-    // existiera esa columna (o de un proyecto que todavía no la tiene) cae
-    // de vuelta al costo ACTUAL del catálogo — mismo comportamiento que
-    // antes, así ningún dato histórico se queda en blanco.
-    const costoPorProducto = {};
-    salidasVenta.forEach((mov) => {
-      if (!mov.producto_id) return;
-      const clave = claveVentaItem(mov.producto_id, mov.variante_id);
-      const cant = Math.abs(Number(mov.cantidad) || 0);
-      unidadesPorProducto[clave] = (unidadesPorProducto[clave] || 0) + cant;
-      let costoUnitarioMov = mov.costo_unitario != null ? Number(mov.costo_unitario) : NaN;
-      if (!Number.isFinite(costoUnitarioMov)) {
-        const esVarianteMov = !!mov.variante_id;
-        const varianteMov = esVarianteMov ? variantesPorId[mov.variante_id] : null;
-        const prodMov = esVarianteMov ? varianteMov?._productoPadre || null : productosPorId[mov.producto_id] || null;
-        const crudo = esVarianteMov
-          ? varianteMov?.costo_unitario != null
-            ? varianteMov.costo_unitario
-            : prodMov?.costo_unitario
-          : prodMov?.costo_unitario;
-        costoUnitarioMov = Number(crudo);
-      }
-      if (Number.isFinite(costoUnitarioMov)) {
-        costoPorProducto[clave] = (costoPorProducto[clave] || 0) + cant * costoUnitarioMov;
-      }
-    });
+
+    // FIX "Ingreso Total y Margen en $0 aunque las unidades sí se ven bien":
+    // antes, "unidades vendidas" salía de `kardex` (movimientos
+    // `salida_venta`) e "ingreso" salía por separado de `ventas.detalles.
+    // items`, cruzando ambas fuentes con la clave compuesta de arriba — si
+    // esa clave no coincidía EXACTO entre las dos tablas (ej. un movimiento
+    // de Kardex con `variante_id` cuyo item de venta correspondiente se
+    // guardó sin `variante_id`, o viceversa — un desfase de datos histórico
+    // plausible aunque el código ya guarde ambos de forma consistente hacia
+    // adelante), el cruce fallaba en silencio: "unidades" se seguía viendo
+    // bien (viene solo de Kardex) pero "ingreso" resolvía a $0 (nunca
+    // encontraba su pareja en el otro mapa). Ahora unidades E ingreso salen
+    // de la MISMA fuente, en la MISMA pasada, por cada item de
+    // `ventas.detalles.items` (`item.cantidad` y `item.subtotal` son del
+    // mismo registro — nunca pueden desalinearse entre sí).
+    //
+    // Costo por unidad promedio del periodo, a nivel de PRODUCTO (no de
+    // variante puntual): se toma del snapshot real guardado en cada
+    // movimiento de Kardex `salida_venta` (`costo_unitario`, ver
+    // `insertarMovimientoKardex`/`resolverCostoUnitarioVenta`). Promediar a
+    // nivel de producto — no cruzando por la clave compuesta exacta — evita
+    // depender de que `variante_id` coincida entre Kardex y `ventas` (la
+    // misma causa raíz del bug de "Ingreso Total"), ya que las variantes de
+    // un mismo producto casi siempre comparten costo. Si el producto no
+    // tiene ningún movimiento de Kardex con costo (proyecto sin migrar, o
+    // venta anterior a la migración), cae de vuelta al costo ACTUAL del
+    // catálogo (variante o producto padre) — mismo comportamiento de
+    // siempre, así ningún dato histórico se queda en blanco.
+    const costoPorProductoKardex = {}; // productoId -> { total, unidades }
+    kardexRango
+      .filter((mov) => mov.tipo_movimiento === 'salida_venta' && mov.producto_id)
+      .forEach((mov) => {
+        const cant = Math.abs(Number(mov.cantidad) || 0);
+        const costoMov = Number(mov.costo_unitario);
+        if (!Number.isFinite(costoMov) || cant <= 0) return;
+        const acc = costoPorProductoKardex[mov.producto_id] || { total: 0, unidades: 0 };
+        acc.total += cant * costoMov;
+        acc.unidades += cant;
+        costoPorProductoKardex[mov.producto_id] = acc;
+      });
+
+    function costoUnitarioParaItem(productoId, varianteId) {
+      const kx = costoPorProductoKardex[productoId];
+      if (kx && kx.unidades > 0) return kx.total / kx.unidades;
+      const variante = varianteId ? variantesPorId[varianteId] : null;
+      const prod = variante?._productoPadre || productosPorId[productoId] || null;
+      const crudo = variante?.costo_unitario != null ? variante.costo_unitario : prod?.costo_unitario;
+      const n = Number(crudo);
+      return Number.isFinite(n) ? n : 0;
+    }
 
     // Ingreso de Pro-Shop / Cafetería-Bar: criterio de COBRO — siempre por la
     // fecha en que se liquidó el ticket en el Smart POS (`ventas`), tal cual
@@ -12041,9 +12052,14 @@ function ModuloAnalyticsBI({
     // estos mismos tickets se IGNORAN aquí a propósito: su ingreso ya se
     // contó arriba desde `reservas`, para no duplicarlo bajo dos criterios de
     // fecha distintos dentro del mismo ticket.
-    const ingresoPorProducto = {};
     const ingresoPorCategoria = { Canchas: ingresoCanchas, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
+    // COGS: Costo Total = unidades × costo_unitario, resuelto item por item
+    // con `costoUnitarioParaItem` (ver arriba) — ya NO de un cruce Kardex↔
+    // ventas por clave compuesta exacta.
+    const cogsPorCategoria = { Canchas: 0, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
+    let cogsTotal = 0;
     let transaccionesConProducto = 0;
+    const filasPorClave = {};
     ventasPagadas.forEach((v) => {
       const items = v?.detalles?.items;
       if (!Array.isArray(items)) return;
@@ -12051,62 +12067,56 @@ function ModuloAnalyticsBI({
       items.forEach((item) => {
         if (item.tipo !== 'producto') return; // cancha ya contada desde `reservas`
         tieneProducto = true;
+        const cantidad = Number(item.cantidad) || 0;
         const subtotal = Number(item.subtotal) || 0;
-        const claveItem = claveVentaItem(item.producto_id, item.variante_id);
-        ingresoPorProducto[claveItem] = (ingresoPorProducto[claveItem] || 0) + subtotal;
-        const cat = productosPorId[item.producto_id]?.categoria;
-        if (cat === 'Cafetería/Bar') {
-          ingresoPorCategoria['Cafetería/Bar'] += subtotal;
-        } else if (cat === 'Canchas') {
-          // Caso explícito: un producto de catálogo tarifado como "pista
-          // pura" (categoría literal Canchas, costo $0) sí suma aquí.
-          ingresoPorCategoria.Canchas += subtotal;
-        } else {
-          // 'Pro-Shop', 'Rentas' (palas/accesorios) o cualquier categoría no
-          // reconocida: se agrupa con Pro-Shop — NUNCA con Canchas, para que
-          // el costo de rentar una pala no ensucie el margen de Canchas
-          // (que debe reflejar solo la renta de la pista).
-          ingresoPorCategoria['Pro-Shop'] += subtotal;
+        const varianteId = item.variante_id || null;
+        const clave = claveVentaItem(item.producto_id, varianteId);
+        const variante = varianteId ? variantesPorId[varianteId] : null;
+        const prod = variante?._productoPadre || productosPorId[item.producto_id] || null;
+        const costoUnitario = costoUnitarioParaItem(item.producto_id, varianteId);
+        const costo = cantidad * costoUnitario;
+
+        if (!filasPorClave[clave]) {
+          filasPorClave[clave] = {
+            productoId: variante ? prod?.id || item.producto_id || null : item.producto_id || null,
+            varianteId,
+            producto: prod,
+            nombre: variante
+              ? `${prod?.nombre || 'Producto eliminado'} — ${variante?.nombre || item.nombre || 'Variante'}`
+              : prod?.nombre || item.nombre || 'Producto eliminado',
+            categoria: prod?.categoria || null,
+            unidades: 0,
+            ingreso: 0,
+            costo: 0,
+          };
         }
+        filasPorClave[clave].unidades += cantidad;
+        filasPorClave[clave].ingreso += subtotal;
+        filasPorClave[clave].costo += costo;
+
+        cogsTotal += costo;
+        const cat = prod?.categoria;
+        // Mismo criterio en ingreso y COGS: Cafetería/Bar y Canchas
+        // (literal) se quedan en su propia categoría; todo lo demás
+        // (Pro-Shop, 'Rentas' de palas/equipo, o cualquier categoría no
+        // reconocida) cae en Pro-Shop — NUNCA en Canchas, para que el costo
+        // de rentar una pala no ensucie el margen de Canchas (que debe
+        // reflejar solo la renta de la pista).
+        const catBucket = cat === 'Cafetería/Bar' ? 'Cafetería/Bar' : cat === 'Canchas' ? 'Canchas' : 'Pro-Shop';
+        cogsPorCategoria[catBucket] += costo;
+        if (cat === 'Cafetería/Bar') ingresoPorCategoria['Cafetería/Bar'] += subtotal;
+        else if (cat === 'Canchas') ingresoPorCategoria.Canchas += subtotal;
+        else ingresoPorCategoria['Pro-Shop'] += subtotal;
       });
       if (tieneProducto) transaccionesConProducto += 1;
     });
 
     const totalTransacciones = transaccionesCanchas + transaccionesConProducto;
 
-    // COGS: Costo Total = unidades × costo_unitario, tomado del snapshot por
-    // movimiento armado arriba (`costoPorProducto`) — ya NO de una relectura
-    // en vivo del catálogo (ver el comentario completo arriba, en
-    // `costoPorProducto`).
-    let cogsTotal = 0;
-    const cogsPorCategoria = { Canchas: 0, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
-    const filasProducto = Object.keys(unidadesPorProducto).map((clave) => {
-      const esVariante = clave.startsWith('v:');
-      const idPuro = clave.slice(2);
-      const variante = esVariante ? variantesPorId[idPuro] : null;
-      const prod = esVariante ? variante?._productoPadre || null : productosPorId[idPuro] || null;
-      const unidades = unidadesPorProducto[clave];
-      const costo = costoPorProducto[clave] || 0;
-      cogsTotal += costo;
-      // Mismo criterio que el ingreso: Cafetería/Bar y Canchas (literal) se
-      // quedan en su propia categoría; todo lo demás (Pro-Shop, 'Rentas' de
-      // palas/equipo, o cualquier categoría no reconocida) cae en Pro-Shop,
-      // para que Canchas conserve Costo Total: $0 salvo que exista un
-      // producto de pista con costo operativo asignado explícitamente.
-      const catBucket = prod?.categoria === 'Cafetería/Bar' ? 'Cafetería/Bar' : prod?.categoria === 'Canchas' ? 'Canchas' : 'Pro-Shop';
-      cogsPorCategoria[catBucket] += costo;
-      const ingreso = ingresoPorProducto[clave] || 0;
-      return {
-        productoId: esVariante ? prod?.id || null : idPuro,
-        varianteId: esVariante ? idPuro : null,
-        producto: prod,
-        nombre: esVariante ? `${prod?.nombre || 'Producto eliminado'} — ${variante?.nombre || 'Variante'}` : prod?.nombre || 'Producto eliminado',
-        categoria: prod?.categoria || null,
-        unidades,
-        ingreso,
-        ganancia: ingreso - costo,
-      };
-    });
+    const filasProducto = Object.values(filasPorClave).map((f) => ({
+      ...f,
+      ganancia: f.ingreso - f.costo,
+    }));
 
     // `cogsPorCategoria.Canchas` se queda en $0 salvo que exista un producto
     // de catálogo literal "Canchas" con `costo_unitario` cargado (caso
@@ -14064,9 +14074,12 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
     setError('');
 
     // Mapeo de compatibilidad total: se manda `correo` junto con su alias
-    // `email`, y el nivel tanto en `nivel_jugador` (columna esperada) como
-    // en los alias genéricos `nivel`/`categoria` — por si el proyecto de
-    // Supabase tiene esta tabla migrada con otros nombres de columna.
+    // `email`, el nivel tanto en `nivel_jugador` (columna esperada) como en
+    // los alias genéricos `nivel`/`categoria`, y `estado_pago` junto con su
+    // alias `estatus_pago` — por si el proyecto de Supabase tiene esta
+    // tabla migrada con otros nombres de columna. `insertarConColumnasOpcionales`
+    // quita SOLO la columna puntual que en verdad no exista y reintenta, en
+    // vez de arriesgarse a perder TODO el payload de golpe.
     const payloadInscripcion = withClubId({
       reta_id: reta.id,
       nombre: nombre.trim(),
@@ -14078,22 +14091,42 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       categoria: nivelJugador || null,
       monto: precioDeReta(reta),
       estado_pago: estadoPago,
+      estatus_pago: estadoPago,
       estado: 'confirmado',
     });
 
     let inscripcionCreada = null;
+    let modoLocal = false;
 
-    try {
-      const { data, error: err } = await supabase.from('reta_inscripciones').insert(payloadInscripcion).select().single();
-      if (err) throw err;
+    const { data, error: errInscripcion } = await insertarConColumnasOpcionales('reta_inscripciones', payloadInscripcion, [
+      'correo',
+      'email',
+      'nivel_jugador',
+      'nivel',
+      'categoria',
+      'estado_pago',
+      'estatus_pago',
+      'estado',
+    ]);
+
+    if (!errInscripcion && data) {
       inscripcionCreada = data;
-    } catch (err) {
-      // Tolerancia total a fallos: columna faltante, desfase de esquema,
-      // política RLS o error de red — nunca se bloquea al operador con una
-      // alerta roja. La inscripción se guarda en memoria local hasta que
-      // se corrija la causa de fondo en Supabase.
-      console.warn('[Torneos & Retas] No se pudo guardar la inscripción en Supabase — se usa modo local.', err);
+    } else {
+      // FALLA REAL del INSERT — misma "Tolerancia total a fallos" que el
+      // resto del módulo (nunca bloquea al operador con una alerta roja),
+      // pero ahora avisando siempre con un toast de error explícito (antes
+      // era 100% silencioso, solo `console.warn`) en vez de dejar que la
+      // inscripción se vea "guardada" sin en verdad estarlo.
+      console.error('[Torneos & Retas] No se pudo guardar la inscripción en Supabase.', errInscripcion);
+      modoLocal = true;
       inscripcionCreada = { ...payloadInscripcion, id: idLocal('inscripcion'), _local: true };
+      toast({
+        titulo: 'Inscripción guardada solo en este navegador',
+        detalle: esErrorPermisoRLS(errInscripcion)
+          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
+          : `${errInscripcion?.message || 'Error desconocido.'}`,
+        tono: 'error',
+      });
     }
 
     // Auto-Registro Universal (Directorio & CRM): igual que "Nueva Reserva",
@@ -14106,7 +14139,11 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
     await resolverJugadorId(nombre, { telefono, directorio: jugadores });
 
     setGuardando(false);
-    toast({ titulo: 'Jugador inscrito', detalle: `${nombre.trim()} · ${formatoMoneda(precioDeReta(reta))}` });
+    // El toast de éxito solo se muestra si de verdad quedó en Supabase —
+    // en modo local ya se avisó arriba con un toast de error explícito.
+    if (!modoLocal) {
+      toast({ titulo: 'Jugador inscrito', detalle: `${nombre.trim()} · ${formatoMoneda(precioDeReta(reta))}` });
+    }
     onInscrito(inscripcionCreada);
     onClose();
   }
@@ -19108,17 +19145,33 @@ function PortalPublicoJugadores({ clubSlug }) {
     // formulario ya validó los datos antes de llegar aquí, así que no queda
     // nada pendiente por cobrar en recepción.
     const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
+    const pagado = esPagoTarjeta || (montoRestante <= 0 && monto > 0);
+    // Mapeo defensivo de columnas (mismo criterio que `inscribirseATorneo`):
+    // `estado_pago` sigue siendo el nombre "oficial" que ya lee el resto de
+    // la app (Smart POS, Analytics BI), pero se manda TAMBIÉN bajo
+    // `estatus_pago` por si tu proyecto de Supabase usa ese nombre — y
+    // `estado` como columna aparte, para proyectos donde la tabla de
+    // inscripciones no tiene esa columna genérica. `insertarConColumnasOpcionales`
+    // quita SOLO la que en verdad no exista, así que el resto del payload
+    // (incluyendo `jugador_id`/`reta_id`/`monto`, los campos obligatorios)
+    // nunca se pierde por un desfase de esquema en un campo secundario.
     const payloadInscripcion = withClubId({
       reta_id: reta.id,
       nombre: jugador.nombre,
       telefono: jugador.telefono,
       jugador_id: jugador.id,
       monto,
-      estado_pago: esPagoTarjeta || (montoRestante <= 0 && monto > 0) ? 'pagado' : 'pendiente',
+      estado_pago: pagado ? 'pagado' : 'pendiente',
+      estatus_pago: pagado ? 'pagado' : 'pendiente',
       estado: 'confirmado',
     });
     try {
-      const { data, error } = await supabase.from('reta_inscripciones').insert(payloadInscripcion).select().single();
+      const { data, error } = await insertarConColumnasOpcionales('reta_inscripciones', payloadInscripcion, [
+        'estado_pago',
+        'estatus_pago',
+        'estado',
+        'telefono',
+      ]);
       if (error) throw error;
       if (montoWallet > 0) {
         await aplicarCargoWallet({
@@ -19140,7 +19193,13 @@ function PortalPublicoJugadores({ clubSlug }) {
       });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (inscripción a Reta):', err);
-      mostrarToast({ titulo: 'No se pudo completar tu inscripción', detalle: 'Intenta de nuevo o pide ayuda en recepción.', tono: 'error' });
+      mostrarToast({
+        titulo: 'No se pudo completar tu inscripción',
+        detalle: esErrorPermisoRLS(err)
+          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
+          : 'Intenta de nuevo o pide ayuda en recepción.',
+        tono: 'error',
+      });
     }
   }
 
