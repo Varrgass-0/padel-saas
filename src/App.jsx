@@ -1430,6 +1430,32 @@ function formatoMoneda(valor) {
   return n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 });
 }
 
+// MAPEO DEFENSIVO DE PRECIO/CATEGORÍA DE RETAS — el esquema propio de esta
+// app guarda el precio de inscripción de una Reta en `precio_inscripcion`
+// (ver el comentario de cabecera del Módulo 5, Torneos & Retas), pero
+// `ModalNuevaReta.guardar()` manda ese mismo valor bajo varios alias a la
+// vez (Arquitectura Flexible) por si el proyecto de Supabase del club
+// terminó con la columna real bajo otro nombre. Estas 3 funciones son el
+// lado LECTOR de ese mismo mapeo: se usan en TODO lugar que muestre o
+// cobre el precio/nivel/rama de una Reta (tarjeta del Portal, modal de
+// pago, `ModalInscribirJugador` del mostrador) para que, sin importar cuál
+// alias haya recibido de verdad el dato en tu Supabase, siempre se lea el
+// mismo valor real en vez de $0 o "sin categoría".
+function precioDeReta(reta) {
+  if (!reta) return 0;
+  const candidatos = [reta.precio_inscripcion, reta.precio_individual, reta.precio_persona, reta.precio, reta.costo];
+  const encontrado = candidatos.find((c) => c !== null && c !== undefined && c !== '');
+  return Number(encontrado) || 0;
+}
+
+function nivelDeReta(reta) {
+  return ((reta?.nivel || reta?.categoria || reta?.nivel_juego || '') + '').trim();
+}
+
+function ramaDeReta(reta) {
+  return ((reta?.rama || reta?.genero || reta?.categoria_rama || '') + '').trim();
+}
+
 function sumarDia(fechaISO, dias) {
   const [y, m, d] = fechaISO.split('-').map(Number);
   const fecha = new Date(y, m - 1, d);
@@ -7284,6 +7310,17 @@ function ModuloSmartPOS({
     const items = comanda.map((i) => ({
       tipo: i.tipo,
       producto_id: i.tipo === 'producto' ? i.producto_id : null,
+      // FIX DE INGRESO EN VARIANTES (Top 5 Productos): la comanda SÍ trae
+      // `variante_id` desde que se agrega al carrito (ver arriba, "Fix
+      // definitivo de inventario/kárdex en variantes"), pero se perdía
+      // justo aquí, al armar el ticket — el Kardex de la venta (que sí
+      // guarda `variante_id`, ver `insertarMovimientoKardex`) y el ingreso
+      // de `ventas.detalles.items` (que se cruzan por
+      // `v:<variante_id>`/`p:<producto_id>`, ver `claveVentaItem` en
+      // `ModuloAnalyticsBI`) terminaban con claves distintas para el mismo
+      // producto — el Ingreso Total/Margen Bruto de esa fila se veía en
+      // $0 en el reporte aunque las unidades sí contaran bien.
+      variante_id: i.tipo === 'producto' ? i.varianteId || i.variante_id || null : null,
       cancha_id: i.tipo === 'cancha' ? i.cancha_id : null,
       nombre: i.nombre,
       precio: i.precio,
@@ -12060,6 +12097,19 @@ function ModuloAnalyticsBI({
     return { valle: calcularBloque(BLOQUE_OCUPACION_VALLE), pico: calcularBloque(BLOQUE_OCUPACION_PICO) };
   }, [reservasActivasPagadas, rango, numCanchasActivas]);
 
+  // Mapa de reservas por id — usado abajo por `ingresosCruzados` para
+  // atribuir el ingreso de Add-ons/Pro-Shop/Cafetería de una venta LIGADA a
+  // una reserva (`ventas.reserva_id`) al bloque horario en que en verdad se
+  // JUEGA (`reservas.hora_inicio`), no al momento en que se cobró el
+  // ticket — ver el comentario completo donde se usa, más abajo.
+  const reservasPorIdBI = useMemo(() => {
+    const mapa = {};
+    reservas.forEach((r) => {
+      if (r?.id != null) mapa[r.id] = r;
+    });
+    return mapa;
+  }, [reservas]);
+
   /* ---- Ingresos Cruzados por Cancha y Bloque Horario ---- */
   const ingresosCruzados = useMemo(() => {
     const canchasActivas = canchas.filter((c) => c.activa !== false);
@@ -12078,17 +12128,30 @@ function ModuloAnalyticsBI({
         }, 0);
 
         // Ingreso Cafetería/Pro-Shop: tickets de `ventas` vinculados a ESTA
-        // cancha (cuenta abierta / Renta Exprés), cuyo momento de cobro cae
-        // en este bloque — criterio de fecha/hora de cobro, como el resto de
-        // ingresos de mostrador.
+        // cancha (cuenta abierta / Renta Exprés / Add-ons "Para ti" del
+        // Portal), atribuidos al bloque de la HORA DE JUEGO cuando el
+        // ticket está ligado a una reserva (`reserva_id`) — un jugador
+        // puede reservar de noche para jugar en la mañana, y lo que importa
+        // aquí es en qué bloque se consumió el producto (junto con la
+        // cancha), no a qué hora se pagó. Sin reserva ligada (venta de
+        // mostrador pura, o Tienda Web sin cancha) se sigue usando la
+        // fecha/hora de cobro, como antes.
         let ingresoCafeteria = 0;
         let ingresoProShop = 0;
         const unidadesProductoBloque = {};
         ventasPagadas.forEach((v) => {
           if (v.cancha_id !== c.id) return;
-          const ts = obtenerTimestampVenta(v);
-          if (!ts) return;
-          const minutosDia = ts.getHours() * 60 + ts.getMinutes();
+          const reservaLigada = v.reserva_id != null ? reservasPorIdBI[v.reserva_id] : null;
+          let minutosDia;
+          if (reservaLigada) {
+            const hi = parseHoraAMinutos(reservaLigada.hora_inicio);
+            if (hi === null) return;
+            minutosDia = hi;
+          } else {
+            const ts = obtenerTimestampVenta(v);
+            if (!ts) return;
+            minutosDia = ts.getHours() * 60 + ts.getMinutes();
+          }
           if (minutosDia < bloque.inicio || minutosDia >= bloque.fin) return;
           const items = v?.detalles?.items;
           if (!Array.isArray(items)) return;
@@ -12115,7 +12178,7 @@ function ModuloAnalyticsBI({
       });
     });
     return filas;
-  }, [canchas, ventasRango, reservasActivasPagadas, productosPorId, ingresoEfectivoPorReservaId]);
+  }, [canchas, ventasRango, reservasActivasPagadas, productosPorId, ingresoEfectivoPorReservaId, reservasPorIdBI]);
 
   const cargandoFinanciero = loadingVentas || loadingKardexRango;
   const errorPeriodo = errorVentas || errorKardexRango;
@@ -13472,11 +13535,11 @@ function TarjetaReta({
 
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">
-          <Award size={10} /> {reta.nivel || 'Nivel libre'}
+          <Award size={10} /> {nivelDeReta(reta) || 'Nivel libre'}
         </span>
-        <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">{reta.rama}</span>
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">{ramaDeReta(reta)}</span>
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">
-          {formatoMoneda(reta.precio_inscripcion)}/lugar
+          {formatoMoneda(precioDeReta(reta))}/lugar
         </span>
       </div>
 
@@ -13636,10 +13699,12 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
 
     // Mapeo defensivo de columnas: distintos proyectos de Supabase pueden
     // tener este módulo migrado con nombres de columna distintos (`nivel`
-    // vs `categoria`, `precio_inscripcion` vs `precio_individual`) — se
-    // mandan ambos alias a la vez para maximizar compatibilidad. Si de
-    // todos modos falta alguna columna, el catch de abajo cae a modo local
-    // en vez de bloquear al operador.
+    // vs `categoria`, `precio_inscripcion` vs `precio_individual`/
+    // `precio_persona`/`precio`/`costo`) — se mandan TODOS los alias a la
+    // vez para maximizar compatibilidad (ver el lado lector de este mismo
+    // mapeo en `precioDeReta`/`nivelDeReta`/`ramaDeReta`). Si de todos
+    // modos falta alguna columna, `insertarConColumnasOpcionales` la va
+    // quitando una por una y reintenta en vez de bloquear al operador.
     const payloadReta = withClubId({
       nombre: nombre.trim() || nombreAutomatico,
       cancha_id: canchaId,
@@ -13651,6 +13716,9 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
       rama,
       precio_inscripcion: Number(precio) || 0,
       precio_individual: Number(precio) || 0,
+      precio_persona: Number(precio) || 0,
+      precio: Number(precio) || 0,
+      costo: Number(precio) || 0,
       tolerancia_horas: Number(tolerancia) || TOLERANCIA_HORAS_DEFAULT,
       estado: 'abierta',
     });
@@ -13669,6 +13737,9 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
       'nivel',
       'precio_inscripcion',
       'precio_individual',
+      'precio_persona',
+      'precio',
+      'costo',
       'tolerancia_horas',
     ]);
 
@@ -13850,7 +13921,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       nivel_jugador: nivelJugador || null,
       nivel: nivelJugador || null,
       categoria: nivelJugador || null,
-      monto: Number(reta.precio_inscripcion) || 0,
+      monto: precioDeReta(reta),
       estado_pago: estadoPago,
       estado: 'confirmado',
     });
@@ -13880,7 +13951,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
     await resolverJugadorId(nombre, { telefono, directorio: jugadores });
 
     setGuardando(false);
-    toast({ titulo: 'Jugador inscrito', detalle: `${nombre.trim()} · ${formatoMoneda(reta.precio_inscripcion)}` });
+    toast({ titulo: 'Jugador inscrito', detalle: `${nombre.trim()} · ${formatoMoneda(precioDeReta(reta))}` });
     onInscrito(inscripcionCreada);
     onClose();
   }
@@ -13888,7 +13959,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
   return (
     <ModalShell
       titulo="Inscribir Jugador"
-      subtitulo={`Quedan ${lugaresDisponibles}/${CUPOS_RETA} lugares · ${formatoMoneda(reta.precio_inscripcion)}/lugar`}
+      subtitulo={`Quedan ${lugaresDisponibles}/${CUPOS_RETA} lugares · ${formatoMoneda(precioDeReta(reta))}/lugar`}
       onClose={onClose}
       icon={UserPlus}
       ancho="max-w-md"
@@ -18874,7 +18945,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   // insertar — ver `ModalElegirPago`/`confirmarFlujoPago`.
   async function inscribirseAReta(reta, metodo) {
     if (!jugador) return setModalIdentificacion(true);
-    const monto = Number(reta.precio_inscripcion) || 0;
+    const monto = precioDeReta(reta);
     const esPagoTarjeta = metodo === 'tarjeta';
     const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
     // "Pagar con Tarjeta" (simulación de TPV) se trata como cobro inmediato
@@ -19083,7 +19154,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       return;
     }
     if (tipo === 'reta') {
-      setFlujoPago({ tipo: 'reta', evento, categoria: null, monto: Number(evento.precio_inscripcion) || 0 });
+      setFlujoPago({ tipo: 'reta', evento, categoria: null, monto: precioDeReta(evento) });
     } else if (Array.isArray(evento.categorias) && evento.categorias.length > 0) {
       setEventoParaInscribir({ tipo: 'torneo-categoria', evento });
     } else {
@@ -19255,6 +19326,15 @@ function PortalPublicoJugadores({ clubSlug }) {
     const items = carritoTienda.map((i) => ({
       tipo: 'producto',
       producto_id: i.productoPadreId || i.producto_id,
+      // FIX DE INGRESO EN VARIANTES: sin `variante_id` aquí, "Top 5
+      // Productos" (que junta unidades del Kardex con ingreso de `ventas`
+      // por la clave compuesta `v:<variante_id>`/`p:<producto_id>`, ver
+      // `claveVentaItem` en `ModuloAnalyticsBI`) nunca encontraba el
+      // ingreso de un producto CON variantes comprado en la Tienda Web —
+      // el Kardex sí quedaba bien (por eso "unidades" se veía correcto),
+      // pero el join con `ventas.detalles.items` fallaba y el Ingreso
+      // Total/Margen Bruto de esa fila se quedaban en $0.
+      variante_id: i.varianteId || i.variante_id || null,
       cancha_id: null,
       nombre: i.nombre,
       precio: i.precio,
@@ -19422,6 +19502,14 @@ function PortalPublicoJugadores({ clubSlug }) {
         const itemsAddons = addons.map((a) => ({
           tipo: 'producto',
           producto_id: a.productoPadreId || a.producto_id,
+          // FIX DE INGRESO EN VARIANTES — mismo criterio que
+          // `confirmarCheckoutTienda`: sin `variante_id` el join entre las
+          // unidades del Kardex (`descontarStockYKardexItems`, que SÍ
+          // guarda `variante_id`) y el ingreso de este ticket fallaba en
+          // silencio para cualquier Add-on con variante, dejando su
+          // Ingreso Total/Margen Bruto en $0 en "Top 5 Productos" aunque
+          // las unidades vendidas sí se contaran bien.
+          variante_id: a.varianteId || a.variante_id || null,
           cancha_id: null,
           nombre: a.nombre,
           precio: a.precio,
@@ -19760,8 +19848,26 @@ function PortalPublicoJugadores({ clubSlug }) {
                             {lugares === 0 ? 'Completa' : `${lugares}/${CUPOS_RETA} lugares`}
                           </span>
                         </div>
+                        {/* Categoría/Nivel/Rama de la Reta — antes no se mostraban
+                            aquí (solo en el panel interno), así que el jugador no
+                            tenía forma de saber si una Reta era, por ejemplo,
+                            "Varonil · 4ª Fuerza" antes de inscribirse. */}
+                        {(nivelDeReta(r) || ramaDeReta(r)) && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {ramaDeReta(r) && (
+                              <span className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300">
+                                {ramaDeReta(r)}
+                              </span>
+                            )}
+                            {nivelDeReta(r) && (
+                              <span className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300">
+                                {nivelDeReta(r)}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <div className="mt-3 flex items-center justify-between">
-                          <p className="text-sm font-bold text-lime-400">{formatoMoneda(r.precio_inscripcion)}/lugar</p>
+                          <p className="text-sm font-bold text-lime-400">{formatoMoneda(precioDeReta(r))}/lugar</p>
                           <BotonPrimario
                             onClick={() => alIntentarInscribir('reta', r)}
                             disabled={lugares === 0}
@@ -19859,7 +19965,7 @@ function PortalPublicoJugadores({ clubSlug }) {
               const ok = await identificarse(nombre, telefono);
               if (ok && eventoParaInscribir) {
                 if (eventoParaInscribir.tipo === 'reta') {
-                  setFlujoPago({ tipo: 'reta', evento: eventoParaInscribir.evento, categoria: null, monto: Number(eventoParaInscribir.evento.precio_inscripcion) || 0 });
+                  setFlujoPago({ tipo: 'reta', evento: eventoParaInscribir.evento, categoria: null, monto: precioDeReta(eventoParaInscribir.evento) });
                 } else if (eventoParaInscribir.tipo === 'torneo') {
                   const t = eventoParaInscribir.evento;
                   if (Array.isArray(t.categorias) && t.categorias.length > 0) {
@@ -19892,7 +19998,18 @@ function PortalPublicoJugadores({ clubSlug }) {
           <ModalElegirPago
             monto={flujoPago.monto}
             saldoWallet={saldoWallet}
-            concepto={flujoPago.tipo === 'reta' ? flujoPago.evento.nombre : flujoPago.evento.nombre}
+            concepto={
+              flujoPago.tipo === 'reta'
+                ? // Rama/Nivel explícitos en el modal de pago — el nombre de
+                  // la Reta normalmente ya los trae (autogenerado como "Reta
+                  // {rama} · {nivel}"), pero si el operador lo personalizó
+                  // (ej. "Reta de los Lunes") esa info se perdería justo en
+                  // el paso donde el jugador confirma qué está pagando.
+                  [flujoPago.evento.nombre, [ramaDeReta(flujoPago.evento), nivelDeReta(flujoPago.evento)].filter(Boolean).join(' ')]
+                    .filter(Boolean)
+                    .join(' · ')
+                : flujoPago.evento.nombre
+            }
             onClose={() => setFlujoPago(null)}
             onConfirmar={async (metodo) => {
               if (flujoPago.tipo === 'reta') await inscribirseAReta(flujoPago.evento, metodo);
