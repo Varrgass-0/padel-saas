@@ -207,10 +207,12 @@
 //      parámetro "Costo Operativo Asignado por Hora/Cancha" ($170 MXN/hora),
 //      eliminado por completo del ERP & Inventario, y no tienen reemplazo
 //      dentro de Analytics BI. La P&L / Estado de Resultados real del club
-//      (Ventas POS + Reservas Cobradas − Egresos de `compras_gastos`) vive
-//      exclusivamente en el módulo Contabilidad & Compras (ver 2.3.1) —
-//      Analytics BI se enfoca en Mapa de Calor, Rendimiento por Cancha e
-//      Ingresos Cruzados, sin duplicar esa P&L en su tablero.
+//      (Matriz de Ingresos Consolidados — Ventas Mostrador POS + Ventas
+//      Tienda Web + Reservas de Canchas + Torneos y Retas + Clases y
+//      Clínicas − Egresos de `compras_gastos`) vive exclusivamente en el
+//      módulo Contabilidad & Compras (ver 2.3.1) — Analytics BI se enfoca
+//      en Mapa de Calor, Rendimiento por Cancha e Ingresos Cruzados, sin
+//      duplicar esa P&L en su tablero.
 //
 //      Imputación de Ingresos de Torneos/Retas a Rendimiento por Cancha — por
 //      TARIFA OFICIAL, no por reparto del pozo: los bloqueos que ocupan
@@ -224,16 +226,14 @@
 //      Renta Oficial de la Cancha` (`precioPorHoraDeCancha`) — NUNCA una
 //      fracción proporcional del total recaudado en inscripciones: una
 //      cancha de $300/hr que aloja 5h de partidos de un torneo que recaudó
-//      $10,000 produjo $1,500 de ingreso de cancha, no $10,000. El
-//      excedente (`Total Inscripciones − Total Valor Renta de Canchas
-//      Consumidas`) se acumula en `margenEventosOrganizacion` y se expone
-//      como su propio concepto — "Ingreso por Organización de
-//      Torneos/Retas" / "Margen de Eventos" — en las métricas globales del
-//      dashboard y del CSV, nunca mezclado en el ingreso de ninguna cancha
-//      (SÍ entra al Margen Total del Periodo, porque es dinero real que el
-//      club cobró — pero no a `ingresosTotales`/Ticket Promedio/Ratio de
-//      Gasto Secundario, que son métricas por transacción de cancha/
-//      producto). Para Retas (1 reserva = 1 evento) y para cada sub-bloqueo
+//      $10,000 produjo $1,500 de ingreso de cancha (imputado a
+//      `ingresoPorReservaId`), no $10,000. Por separado, la suma BRUTA de lo
+//      recaudado en inscripciones (sin restar nada) se acumula en
+//      `ingresosBrutosTorneosRetas` y se expone como su propio concepto —
+//      "Ingresos Brutos por Torneos/Retas" — en las métricas globales del
+//      dashboard y del CSV, nunca mezclado en el ingreso de ninguna cancha ni
+//      en `ingresosTotales`/Ticket Promedio/Ratio de Gasto Secundario, que
+//      son métricas por transacción de cancha/producto. Para Retas (1 reserva
 //      de PARTIDO individual de un Torneo (`torneo_partidos`) — nunca el
 //      Bloqueo Maestro del evento, ver el párrafo siguiente. Como cada
 //      reserva ya vive en su propia fecha real, el ingreso queda reconocido
@@ -937,6 +937,23 @@ const METODOS_PAGO = [
   { value: 'transferencia', label: 'Transferencia', icon: ArrowRightLeft },
   { value: 'pos', label: 'Enviar a POS', icon: ShoppingCart },
 ];
+
+// Atribución de Canal de Venta (`ventas.origen`) — canónico para TODA la
+// app: 'POS_MOSTRADOR' para cualquier venta cobrada desde Smart POS
+// (mostrador físico) y 'PORTAL_WEB' para cualquier venta creada desde el
+// Portal Público (Tienda, reserva de cancha con pago inmediato, o
+// liquidación de una reserva pendiente). Contabilidad & Compras usa esto
+// para separar "Ventas Mostrador (POS)" de "Ventas Tienda Web" en el P&L.
+const ORIGEN_VENTA_POS = 'POS_MOSTRADOR';
+const ORIGEN_VENTA_WEB = 'PORTAL_WEB';
+
+// 'portal' es el valor histórico que usaba esta columna antes de este
+// ajuste (ver `origen: 'portal'` en versiones previas) — se sigue tratando
+// como equivalente a `ORIGEN_VENTA_WEB` para no perder de las métricas de
+// Tienda Web las filas que ya existen en Supabase con el valor viejo.
+function esOrigenPortalWeb(origen) {
+  return origen === ORIGEN_VENTA_WEB || origen === 'portal';
+}
 
 // Nota de color: "En Juego" es el único estatus que bloquea la cancha EN ESTE
 // MINUTO, así que va en rojo; "Reservada" (usado solo para pintar los bloques
@@ -2008,7 +2025,7 @@ function TopHeader({ operador, turno, permisos, moduloActivo, onCambiarModulo, o
  * MÉTRICAS
  * ==========================================================================*/
 
-function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime' }) {
+function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime', onClick }) {
   const tonos = {
     lime: 'text-lime-400 bg-lime-400/10',
     sky: 'text-sky-400 bg-sky-400/10',
@@ -2017,8 +2034,31 @@ function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime' }) {
     emerald: 'text-emerald-400 bg-emerald-400/10',
     rose: 'text-rose-400 bg-rose-400/10',
   };
+  // `onClick` opcional: cuando se pasa (Modal de Desglose Interactivo en
+  // Contabilidad, por ejemplo), la tarjeta se vuelve clicable/enfocable con
+  // teclado (Enter/Espacio) y gana un aro de foco + hover — sin tocar
+  // ninguno de los demás usos de `MetricCard` en el resto del archivo, que
+  // no pasan esta prop y se quedan exactamente igual que antes.
+  const interactiva = typeof onClick === 'function';
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+    <div
+      className={`rounded-2xl border border-slate-800 bg-slate-900 p-4 ${
+        interactiva ? 'cursor-pointer transition hover:border-lime-400/50 hover:bg-slate-800/60' : ''
+      }`}
+      onClick={onClick}
+      role={interactiva ? 'button' : undefined}
+      tabIndex={interactiva ? 0 : undefined}
+      onKeyDown={
+        interactiva
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick(e);
+              }
+            }
+          : undefined
+      }
+    >
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{etiqueta}</span>
         <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${tonos[tono]}`}>
@@ -6483,7 +6523,7 @@ function ModuloSmartPOS({
   // Cuenta" del mostrador que NO traigan reserva ligada no se tocan.
   const gruposCuentasAbiertas = useMemo(() => {
     const cuentasSinReservasDePortal = cuentasAbiertas.filter(
-      (v) => !v.reserva_id && v.es_reserva !== true && v.origen !== 'portal'
+      (v) => !v.reserva_id && v.es_reserva !== true && !esOrigenPortalWeb(v.origen)
     );
     const mapa = new Map();
     cuentasSinReservasDePortal.forEach((v) => {
@@ -6676,7 +6716,7 @@ function ModuloSmartPOS({
         operador: 'Recepción (Cuentas Pendientes)',
         reserva_id: grupo.reserva.id,
         es_reserva: true,
-        origen: 'portal',
+        origen: ORIGEN_VENTA_POS,
         cancha_id: grupo.reserva.cancha_id || null,
         detalles: {
           items: filasItems,
@@ -7207,13 +7247,19 @@ function ModuloSmartPOS({
       }
     }
 
-    const payload = {
+    // `origen: ORIGEN_VENTA_POS` — atribución de canal: TODA venta cobrada
+    // desde Smart POS (mostrador físico) se marca así, en contraste con
+    // `ORIGEN_VENTA_WEB` del Portal Público (Tienda, reserva con pago
+    // inmediato). Contabilidad & Compras usa esta columna para separar
+    // "Ventas Mostrador (POS)" de "Ventas Tienda Web" en el P&L.
+    let payloadVenta = {
       total,
       metodo_pago: metodoPagoParaVenta,
       turno: turno?.valor || null,
       operador: operador?.nombre || null,
       reserva_id: reservaIdParaVenta,
       cancha_id: canchaIdParaVenta,
+      origen: ORIGEN_VENTA_POS,
       detalles: {
         items,
         pagos_divididos: pagosDivididos,
@@ -7223,7 +7269,34 @@ function ModuloSmartPOS({
       estado_pago: estadoPago,
     };
 
-    const { data, error } = await supabase.from('ventas').insert(payload).select().single();
+    let { data, error } = await supabase.from('ventas').insert(payloadVenta).select().single();
+
+    // Columna `origen` opcional (Arquitectura Flexible): si tu Supabase
+    // todavía no la tiene, se reintenta sin ella en vez de bloquear el cobro.
+    if (error && esErrorColumnaInexistente(error)) {
+      const { origen, ...sinOrigen } = payloadVenta;
+      payloadVenta = sinOrigen;
+      ({ data, error } = await supabase.from('ventas').insert(payloadVenta).select().single());
+    }
+
+    // Manejo de RLS en Smart POS: si el INSERT sí se guardó (la política de
+    // escritura para `anon` ya lo permite — ver migraciones) pero no hay
+    // política de SELECT que deje leer la fila de vuelta, PostgREST regresa
+    // un error aunque el dinero YA se cobró (ver `esErrorPermisoRLS`). Antes
+    // esto le mostraba al cajero "Error al registrar la venta" con la venta
+    // ya guardada en Supabase — el peor de los casos: dinero cobrado, más
+    // pantalla de error, invitando a cobrar dos veces. Ahora se reintenta el
+    // INSERT puro (sin pedir la fila de vuelta) y, si ese sí pasa, el cobro
+    // sigue con un folio local en vez de bloquear la venta.
+    if (error && esErrorPermisoRLS(error)) {
+      const { error: errorSoloInsert } = await supabase.from('ventas').insert(payloadVenta);
+      if (!errorSoloInsert) {
+        data = { id: idLocal('venta'), ...payloadVenta };
+        error = null;
+      } else {
+        error = errorSoloInsert;
+      }
+    }
 
     if (error) {
       setRegistrandoVenta(false);
@@ -9550,6 +9623,20 @@ function calcularRangoFiltroBI(modo, { fechaDia, mesSel, anioSel }) {
   return { inicio, fin, inicioFechaISO, finFechaISO, etiqueta, dias };
 }
 
+// Filtro de rango por `created_at` para registros que no tienen su propio
+// campo de fecha "de negocio" (p. ej. `reta_inscripciones`/
+// `torneo_participantes` en la P&L de Contabilidad & Compras — ahí el
+// criterio es la fecha en que se cobró/registró la inscripción, no la
+// fecha del partido). Si el registro no trae `created_at` (proyecto viejo
+// sin esa columna, o dato corrupto), se EXCLUYE en vez de incluirse
+// siempre — es la opción conservadora: preferible sub-contar un caso raro a
+// inflar cada periodo por igual con filas sin fecha real.
+function dentroDeRangoPorCreatedAt(registro, rango) {
+  const ts = registro?.created_at ? new Date(registro.created_at) : null;
+  if (!ts || Number.isNaN(ts.getTime())) return false;
+  return ts >= rango.inicio && ts < rango.fin;
+}
+
 // Cuenta cuántas veces cae cada día-de-la-semana (getDay()) dentro de
 // [inicio, fin) — denominador del heatmap en modo Mes/Año, para que la
 // intensidad sea un promedio real por franja horaria y no se distorsione con
@@ -9973,6 +10060,7 @@ function generarCSVReporte({
   ingresosCruzados,
   picoValle,
   revPACP,
+  ocupacionCanchasPct,
   ventasPorProductoSemana,
   variantesPorProducto,
   ventasPorVarianteSemana,
@@ -9987,8 +10075,8 @@ function generarCSVReporte({
   filas.push(['Métrica', 'Valor']);
   filas.push(['Ingresos Totales (Canchas a tarifa oficial + Pro-Shop + Cafetería)', analisis.ingresosTotales.toFixed(2)]);
   filas.push(['Costo Total de lo Vendido (COGS)', analisis.cogsTotal.toFixed(2)]);
-  filas.push(['Ingreso por Organización de Torneos/Retas (Margen de Eventos)', analisis.margenEventosOrganizacion.toFixed(2)]);
-  filas.push(['Margen Total del Periodo (Ingresos + Margen de Eventos − COGS)', analisis.margenTotalPeriodo.toFixed(2)]);
+  filas.push(['Ingresos Brutos por Torneos/Retas (Inscripciones recaudadas)', analisis.ingresosBrutosTorneosRetas.toFixed(2)]);
+  filas.push(['Ocupación de Canchas (%)', `${ocupacionCanchasPct.toFixed(1)}%`]);
   filas.push(['Ticket Promedio por Venta', analisis.ticketPromedio !== null ? analisis.ticketPromedio.toFixed(2) : '']);
   filas.push(['Transacciones Totales', analisis.totalTransacciones]);
   filas.push(['  · Reservas de Cancha (por fecha de juego)', analisis.transaccionesCanchas]);
@@ -10146,18 +10234,25 @@ function descargarArchivoTexto(nombreArchivo, contenido, tipoMime) {
  * La P&L / Estado de Resultados de este módulo es la ÚNICA fuente de
  * "Utilidad Real" del club — Analytics BI (ver 2.3 arriba) ya NO calcula
  * ningún indicador de utilidad/rentabilidad global, precisamente para que
- * ese número exista en un solo lugar:
- *   Utilidad Real = (Ventas POS + Reservas Cobradas) − Egresos Totales
- * "Ventas POS" excluye cualquier venta ligada al flujo de reservas (mismo
- * criterio que `gruposCuentasAbiertas` en Smart POS: sin `reserva_id`,
- * `es_reserva !== true`, `origen !== 'portal'`) para no contar dos veces el
- * mismo dinero. "Reservas Cobradas" se lee directo de `reservas.monto_total
- * + reservas.monto_addons` (nunca de `ventas.total` en un ticket ligado a
- * una reserva, cuyo valor puede ser solo el remanente después de aplicar
- * Wallet) — ver el comentario dentro de `pnl` más abajo para el detalle
- * completo. Los bloqueos sintéticos de Torneo/Reta se excluyen de
- * "Reservas Cobradas" (su dinero real vive en `reta_inscripciones`/
- * `torneo_participantes`, fuera del alcance de esta P&L).
+ * ese número exista en un solo lugar. Matriz de Ingresos Consolidados (5
+ * categorías, sin traslapes) − Egresos Totales:
+ *   Utilidad Real = (Ventas Mostrador POS + Ventas Tienda Web +
+ *                     Reservas de Canchas + Torneos y Retas +
+ *                     Clases y Clínicas) − Egresos Totales
+ * "Ventas Mostrador (POS)"/"Ventas Tienda Web" excluyen cualquier venta
+ * ligada al flujo de reservas (mismo criterio que `gruposCuentasAbiertas`
+ * en Smart POS: sin `reserva_id`, `es_reserva !== true`) y se separan entre
+ * sí por `ventas.origen` (`ORIGEN_VENTA_POS` vs `ORIGEN_VENTA_WEB`/
+ * `esOrigenPortalWeb`) para no contar dos veces el mismo dinero ni mezclar
+ * canales. "Reservas de Canchas" se lee directo de
+ * `reservas.monto_total + reservas.monto_addons` (nunca de `ventas.total`
+ * en un ticket ligado a una reserva, cuyo valor puede ser solo el
+ * remanente después de aplicar Wallet) — ver el comentario dentro de `pnl`
+ * más abajo para el detalle completo. Los bloqueos sintéticos de
+ * Torneo/Reta se excluyen de "Reservas de Canchas" (su dinero real se
+ * cuenta en "Torneos y Retas", vía `reta_inscripciones`/
+ * `torneo_participantes`). "Clases y Clínicas" queda en $0 a propósito: no
+ * existe todavía un módulo que capture esa fuente de ingresos.
  * ==========================================================================*/
 
 const CATEGORIAS_GASTO = [
@@ -10183,9 +10278,62 @@ function BannerTablaFaltante({ tabla }) {
   );
 }
 
-function ModuloContabilidadCompras({ reservas, operador }) {
+// Modal de Desglose Interactivo (Contabilidad & Compras): se abre al hacer
+// clic en una tarjeta de la matriz de P&L (Ventas Mostrador, Ventas Web,
+// Reservas de Canchas, Ingresos Totales, Egresos Totales) — tabla del
+// periodo filtrado con ID de transacción, hora, concepto, canal, método de
+// pago y monto, ya normalizados por `desglosePnl` sin importar si la fila
+// original viene de `ventas`, `reservas` o `compras_gastos`.
+function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
+  const total = filas.reduce((acc, f) => acc + f.monto, 0);
+  return (
+    <ModalShell titulo={titulo} subtitulo={subtitulo} onClose={onClose} ancho="max-w-3xl" icon={Receipt}>
+      {filas.length === 0 ? (
+        <p className="py-8 text-center text-xs text-slate-500">Sin movimientos en este periodo.</p>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-800">
+          <table className="w-full min-w-[620px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-2.5">ID</th>
+                <th className="px-3 py-2.5">Hora</th>
+                <th className="px-3 py-2.5">Concepto</th>
+                <th className="px-3 py-2.5">Canal</th>
+                <th className="px-3 py-2.5">Método de Pago</th>
+                <th className="px-3 py-2.5 text-right">Monto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f, idx) => (
+                <tr key={`${f.id ?? idx}-${idx}`} className="border-b border-slate-800/70 last:border-0">
+                  <td className="px-3 py-2.5 font-mono text-slate-500">{f.idCorto}</td>
+                  <td className="px-3 py-2.5 text-slate-400">{f.hora}</td>
+                  <td className="px-3 py-2.5 font-semibold text-slate-200">{f.concepto}</td>
+                  <td className="px-3 py-2.5 text-slate-400">{f.canal}</td>
+                  <td className="px-3 py-2.5 text-slate-400">{f.metodoPago || '—'}</td>
+                  <td className="px-3 py-2.5 text-right font-bold text-slate-100">{formatoMoneda(f.monto)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={5} className="px-3 py-2.5 text-right text-xs font-bold uppercase tracking-wide text-slate-400">
+                  Total ({filas.length} {filas.length === 1 ? 'movimiento' : 'movimientos'})
+                </td>
+                <td className="px-3 py-2.5 text-right text-sm font-black text-lime-400">{formatoMoneda(total)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
+function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones, participantesTorneo }) {
   const mostrarToast = useToast();
   const [vista, setVista] = useState('egresos'); // 'egresos' | 'proveedores' | 'pnl'
+  const [modalDesglose, setModalDesglose] = useState(null); // { titulo, subtitulo, filas } | null
 
   /* ---- Proveedores: catálogo, compartido con el selector del form de Egresos ---- */
   const [proveedores, setProveedores] = useState([]);
@@ -10323,27 +10471,40 @@ function ModuloContabilidadCompras({ reservas, operador }) {
     };
   }, [cargarVentasRangoPnl]);
 
+  // Matriz de Ingresos Consolidados — 5 categorías, sin traslapes entre sí
+  // (el 100% de lo cobrado por el club cae en exactamente una):
+  //   a) Ventas Mostrador (POS) — ventas de Smart POS, `origen`
+  //      = ORIGEN_VENTA_POS (o sin columna `origen` todavía, respaldo
+  //      histórico), sin ligar a una reserva.
+  //   b) Ventas Tienda Web (PORTAL_WEB) — compras hechas directo en la
+  //      Tienda del Portal (`confirmarCheckoutTienda`), sin ligar a una
+  //      reserva. Antes de la corrección de atribución de canal (ver
+  //      `ORIGEN_VENTA_WEB`) estas cayían sin querer en "Ventas Mostrador".
+  //   c) Reservas de Canchas — se lee directo de `reservas` (prop, ya
+  //      cargada sin filtros desde App()) — NUNCA de `ventas.total` en un
+  //      ticket ligado a la reserva, porque ese monto puede ser solo el
+  //      remanente después de aplicar saldo de Wallet, no el valor
+  //      económico completo. `monto_total` (renta de cancha) +
+  //      `monto_addons` (consumo adicional agregado desde el Portal o
+  //      Recepción) sí es el valor completo, cobrado en efectivo, tarjeta o
+  //      Wallet. Excluye los bloqueos sintéticos de Torneo/Reta (su dinero
+  //      real se cuenta en el inciso (d), no aquí).
+  //   d) Torneos y Retas (Inscripciones) — suma de `reta_inscripciones` +
+  //      `torneo_participantes` pagadas, por fecha de registro/cobro de la
+  //      inscripción (`created_at`), NO por fecha de la reserva de bloqueo.
+  //   e) Clases y Clínicas — todavía no hay un módulo que las capture en el
+  //      sistema; se deja inicializada en $0 MXN a propósito, lista para
+  //      conectarse el día que exista esa fuente de datos.
   const pnl = useMemo(() => {
-    // "Ventas POS": mismo criterio de exclusión que "Cuentas Abiertas" (ver
-    // `gruposCuentasAbiertas` en Smart POS) — cualquier venta ligada al
-    // flujo de reservas se excluye de aquí para no contarla dos veces; esa
-    // misma reserva se suma abajo como "Reservas Cobradas", con su propia
-    // fuente de verdad.
-    const ventasPOS = ventasRangoPnl
-      .filter((v) => v.estado_pago === 'pagado' && !v.reserva_id && v.es_reserva !== true && v.origen !== 'portal')
-      .reduce((acc, v) => acc + (Number(v.total) || 0), 0);
+    const ventasNoLigadasAReserva = ventasRangoPnl.filter(
+      (v) => v.estado_pago === 'pagado' && !v.reserva_id && v.es_reserva !== true
+    );
+    const filasVentasMostrador = ventasNoLigadasAReserva.filter((v) => !esOrigenPortalWeb(v.origen));
+    const filasVentasWeb = ventasNoLigadasAReserva.filter((v) => esOrigenPortalWeb(v.origen));
+    const ventasMostrador = filasVentasMostrador.reduce((acc, v) => acc + (Number(v.total) || 0), 0);
+    const ventasWeb = filasVentasWeb.reduce((acc, v) => acc + (Number(v.total) || 0), 0);
 
-    // "Reservas Cobradas": se lee directo de `reservas` (prop, ya cargada
-    // sin filtros desde App()) — NUNCA de `ventas.total` en un ticket ligado
-    // a la reserva, porque ese monto puede ser solo el remanente después de
-    // aplicar saldo de Wallet, no el valor económico completo de la
-    // reserva. `monto_total` (renta de cancha) + `monto_addons` (consumo
-    // adicional agregado desde el Portal) sí es el valor completo — el club
-    // ya cobró ese dinero sin importar si fue en efectivo, tarjeta o
-    // Wallet. Se excluyen los bloqueos sintéticos de Torneo/Reta: su dinero
-    // real vive en `reta_inscripciones`/`torneo_participantes`, fuera del
-    // alcance de esta P&L.
-    const reservasEnRango = (reservas || []).filter(
+    const filasReservas = (reservas || []).filter(
       (r) =>
         r.fecha >= rangoPnl.inicioFechaISO &&
         r.fecha < rangoPnl.finFechaISO &&
@@ -10351,12 +10512,25 @@ function ModuloContabilidadCompras({ reservas, operador }) {
         r.estado !== 'Reta' &&
         r.estado_pago === 'pagado'
     );
-    const reservasCobradas = reservasEnRango.reduce(
+    const reservasCanchas = filasReservas.reduce(
       (acc, r) => acc + (Number(r.monto_total) || 0) + (Number(r.monto_addons) || 0),
       0
     );
 
-    const ingresosTotales = ventasPOS + reservasCobradas;
+    const filasInscripcionesRetas = (inscripciones || []).filter(
+      (i) => i.estado_pago === 'pagado' && i.estado !== 'cancelado' && dentroDeRangoPorCreatedAt(i, rangoPnl)
+    );
+    const filasInscripcionesTorneos = (participantesTorneo || []).filter(
+      (p) => p.estado_pago === 'pagado' && dentroDeRangoPorCreatedAt(p, rangoPnl)
+    );
+    const torneosRetas =
+      filasInscripcionesRetas.reduce((acc, i) => acc + (Number(i.monto) || 0), 0) +
+      filasInscripcionesTorneos.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+
+    // Clases y Clínicas: sin módulo propio todavía — placeholder en $0.
+    const clasesClinicas = 0;
+
+    const ingresosTotalesConsolidados = ventasMostrador + ventasWeb + reservasCanchas + torneosRetas + clasesClinicas;
 
     const egresosEnRango = egresos.filter((g) => g.fecha >= rangoPnl.inicioFechaISO && g.fecha < rangoPnl.finFechaISO);
     const egresosTotales = egresosEnRango.reduce((acc, g) => acc + (Number(g.monto) || 0), 0);
@@ -10367,10 +10541,85 @@ function ModuloContabilidadCompras({ reservas, operador }) {
       egresosPorCategoria[cat] = (egresosPorCategoria[cat] || 0) + (Number(g.monto) || 0);
     });
 
-    const utilidadReal = ingresosTotales - egresosTotales;
+    const utilidadReal = ingresosTotalesConsolidados - egresosTotales;
 
-    return { ventasPOS, reservasCobradas, ingresosTotales, egresosTotales, egresosPorCategoria, utilidadReal };
-  }, [ventasRangoPnl, reservas, egresos, rangoPnl]);
+    return {
+      ventasMostrador,
+      ventasWeb,
+      reservasCanchas,
+      torneosRetas,
+      clasesClinicas,
+      ingresosTotalesConsolidados,
+      egresosTotales,
+      egresosPorCategoria,
+      utilidadReal,
+      // Filas crudas — insumo de `desglosePnl` (tarjetas interactivas) y del
+      // exportador CSV, para no recalcular los mismos filtros dos veces.
+      _filasVentasMostrador: filasVentasMostrador,
+      _filasVentasWeb: filasVentasWeb,
+      _filasReservas: filasReservas,
+      _egresosEnRango: egresosEnRango,
+    };
+  }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, rangoPnl]);
+
+  // Desglose para las tarjetas interactivas (ver Modal de Desglose más
+  // abajo): ID de transacción, hora, concepto, canal, método de pago y
+  // monto — normalizado a una sola forma sin importar si la fila viene de
+  // `ventas`, `reservas` o `compras_gastos`.
+  const desglosePnl = useMemo(() => {
+    const horaDe = (iso) => {
+      if (!iso) return '—';
+      const fecha = new Date(iso);
+      return Number.isNaN(fecha.getTime()) ? '—' : fecha.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+    };
+    const conceptoVenta = (v) => {
+      const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
+      if (items.length === 0) return 'Venta';
+      if (items.length === 1) return items[0].nombre || 'Artículo';
+      return `${items.length} artículos (${items[0]?.nombre || ''}${items.length > 1 ? '...' : ''})`;
+    };
+    const filasVenta = (lista, canal) =>
+      lista.map((v) => ({
+        id: v.id,
+        idCorto: (v.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        hora: horaDe(v.created_at || v.fecha),
+        concepto: conceptoVenta(v),
+        canal,
+        metodoPago: v.metodo_pago || '—',
+        monto: Number(v.total) || 0,
+      }));
+    const canchasPorId = {};
+    (canchas || []).forEach((c) => {
+      canchasPorId[c.id] = c;
+    });
+    const filasReservasDesglose = pnl._filasReservas.map((r) => ({
+      id: r.id,
+      idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      hora: r.hora_inicio || '—',
+      concepto: `Renta ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}${r.jugador_nombre ? ` — ${r.jugador_nombre}` : ''}`,
+      canal: 'Reserva',
+      metodoPago: r.metodo_pago || '—',
+      monto: (Number(r.monto_total) || 0) + (Number(r.monto_addons) || 0),
+    }));
+    const filasEgresosDesglose = pnl._egresosEnRango.map((g) => ({
+      id: g.id,
+      idCorto: (g.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      hora: g.fecha ? formatoFechaLarga(g.fecha) : '—',
+      concepto: g.concepto,
+      canal: g.categoria || 'Otro',
+      metodoPago: g.metodo_pago || '—',
+      monto: Number(g.monto) || 0,
+    }));
+    const ventasMostradorDesglose = filasVenta(pnl._filasVentasMostrador, 'Mostrador (POS)');
+    const ventasWebDesglose = filasVenta(pnl._filasVentasWeb, 'Tienda Web');
+    return {
+      ventasMostrador: ventasMostradorDesglose,
+      ventasWeb: ventasWebDesglose,
+      reservas: filasReservasDesglose,
+      egresos: filasEgresosDesglose,
+      ingresosTotales: [...ventasMostradorDesglose, ...ventasWebDesglose, ...filasReservasDesglose],
+    };
+  }, [pnl, canchas]);
 
   /* ---- Formulario de Egresos & Compras ---- */
   const [formEgreso, setFormEgreso] = useState({
@@ -10463,6 +10712,79 @@ function ModuloContabilidadCompras({ reservas, operador }) {
   const anioActualPnl = new Date().getFullYear();
   const aniosDisponiblesPnl = Array.from({ length: 6 }, (_, i) => anioActualPnl - i);
 
+  // Exportar Reporte (.CSV) — Historial de Egresos: exporta tal cual se ve
+  // la tabla (hasta 500 registros más recientes, sin filtro de periodo
+  // propio en esta sub-pestaña — el filtro Día/Mes/Año vive en P&L).
+  function exportarEgresosCSV() {
+    const filas = [
+      ['Smash Pádel Club — Historial de Compras & Gastos'],
+      ['Generado', new Date().toLocaleString('es-MX')],
+      [],
+      ['Fecha', 'Concepto', 'Categoría', 'Proveedor', 'Método de Pago', 'Operador', 'Monto'],
+      ...egresos.map((g) => [
+        g.fecha || '',
+        g.concepto || '',
+        g.categoria || '',
+        g.proveedor_nombre || '',
+        g.metodo_pago || '',
+        g.operador || '',
+        (Number(g.monto) || 0).toFixed(2),
+      ]),
+      [],
+      ['Total', '', '', '', '', '', egresos.reduce((acc, g) => acc + (Number(g.monto) || 0), 0).toFixed(2)],
+    ];
+    const csv = '﻿' + filas.map((fila) => fila.map(escaparCSV).join(',')).join('\n');
+    const nombreArchivo = `egresos-compras_${hoyISO()}.csv`;
+    descargarArchivoTexto(nombreArchivo, csv, 'text/csv;charset=utf-8;');
+    mostrarToast({ titulo: 'Reporte exportado', detalle: nombreArchivo });
+  }
+
+  // Exportar Reporte (.CSV) — P&L / Estado de Resultados: matriz de ingresos
+  // consolidados + egresos por categoría + desglose de cada renglón, todo
+  // acotado al periodo activo (`rangoPnl`).
+  function exportarPnlCSV() {
+    const filas = [
+      ['Smash Pádel Club — P&L / Estado de Resultados'],
+      [rangoPnl.etiqueta],
+      ['Generado', new Date().toLocaleString('es-MX')],
+      [],
+      ['Matriz de Ingresos Consolidados', 'Monto'],
+      ['a) Ventas Mostrador (POS)', pnl.ventasMostrador.toFixed(2)],
+      ['b) Ventas Tienda Web (PORTAL_WEB)', pnl.ventasWeb.toFixed(2)],
+      ['c) Reservas de Canchas (Rentas de cancha)', pnl.reservasCanchas.toFixed(2)],
+      ['d) Torneos y Retas (Inscripciones)', pnl.torneosRetas.toFixed(2)],
+      ['e) Clases y Clínicas', pnl.clasesClinicas.toFixed(2)],
+      ['Ingresos Totales Consolidados', pnl.ingresosTotalesConsolidados.toFixed(2)],
+      ['Egresos Totales', pnl.egresosTotales.toFixed(2)],
+      ['Utilidad Real (Ingresos Totales Consolidados − Egresos Totales)', pnl.utilidadReal.toFixed(2)],
+      [],
+      ['Egresos por Categoría', 'Monto', '% del Total'],
+      ...Object.entries(pnl.egresosPorCategoria)
+        .sort((a, b) => b[1] - a[1])
+        .map(([categoria, monto]) => [
+          categoria,
+          monto.toFixed(2),
+          pnl.egresosTotales > 0 ? `${((monto / pnl.egresosTotales) * 100).toFixed(1)}%` : '',
+        ]),
+      [],
+    ];
+    const seccionDesglose = (titulo, lista) => {
+      filas.push([titulo]);
+      filas.push(['ID', 'Hora', 'Concepto', 'Canal', 'Método de Pago', 'Monto']);
+      lista.forEach((f) => filas.push([f.idCorto, f.hora, f.concepto, f.canal, f.metodoPago, f.monto.toFixed(2)]));
+      filas.push([]);
+    };
+    seccionDesglose('Detalle — Ventas Mostrador (POS)', desglosePnl.ventasMostrador);
+    seccionDesglose('Detalle — Ventas Tienda Web', desglosePnl.ventasWeb);
+    seccionDesglose('Detalle — Reservas de Canchas', desglosePnl.reservas);
+    seccionDesglose('Detalle — Egresos', desglosePnl.egresos);
+
+    const csv = '﻿' + filas.map((fila) => fila.map(escaparCSV).join(',')).join('\n');
+    const nombreArchivo = `pnl-contabilidad_${rangoPnl.inicioFechaISO}_a_${rangoPnl.finFechaISO}.csv`;
+    descargarArchivoTexto(nombreArchivo, csv, 'text/csv;charset=utf-8;');
+    mostrarToast({ titulo: 'Reporte exportado', detalle: nombreArchivo });
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1 lg:w-fit">
@@ -10501,12 +10823,7 @@ function ModuloContabilidadCompras({ reservas, operador }) {
             </h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
               <Campo label="Fecha">
-                <input
-                  type="date"
-                  value={formEgreso.fecha}
-                  onChange={(e) => setFormEgreso((f) => ({ ...f, fecha: e.target.value }))}
-                  className={inputClase}
-                />
+                <SelectorFechaCompacto value={formEgreso.fecha} onChange={(v) => setFormEgreso((f) => ({ ...f, fecha: v }))} />
               </Campo>
               <div className="sm:col-span-2 lg:col-span-2">
                 <Campo label="Concepto">
@@ -10584,9 +10901,14 @@ function ModuloContabilidadCompras({ reservas, operador }) {
           </div>
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
-              <History size={16} className="text-lime-400" /> Historial de Compras & Gastos
-            </h3>
+            <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+                <History size={16} className="text-lime-400" /> Historial de Compras & Gastos
+              </h3>
+              <BotonSecundario onClick={exportarEgresosCSV} disabled={egresos.length === 0} className="text-xs">
+                <Download size={14} /> Exportar Reporte (.CSV)
+              </BotonSecundario>
+            </div>
             {loadingEgresos ? (
               <div className="h-40 animate-pulse rounded-xl bg-slate-800/60" />
             ) : errorEgresos ? (
@@ -10634,7 +10956,7 @@ function ModuloContabilidadCompras({ reservas, operador }) {
             <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
               <UserPlus size={16} className="text-lime-400" /> Alta de Proveedor
             </h3>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
               <Campo label="Nombre">
                 <input
                   type="text"
@@ -10777,14 +11099,7 @@ function ModuloContabilidadCompras({ reservas, operador }) {
                   <CalendarRange size={14} /> Año
                 </button>
               </div>
-              {modoFiltroPnl === 'dia' && (
-                <input
-                  type="date"
-                  value={fechaDiaPnl}
-                  onChange={(e) => setFechaDiaPnl(e.target.value)}
-                  className={`${inputClase} w-auto`}
-                />
-              )}
+              {modoFiltroPnl === 'dia' && <SelectorFechaCompacto value={fechaDiaPnl} onChange={setFechaDiaPnl} />}
               {modoFiltroPnl === 'mes' && (
                 <>
                   <select value={mesSelPnl} onChange={(e) => setMesSelPnl(Number(e.target.value))} className={`${inputClase} w-auto`}>
@@ -10813,39 +11128,95 @@ function ModuloContabilidadCompras({ reservas, operador }) {
                 </select>
               )}
             </div>
-            <p className="text-xs font-semibold text-slate-400">
-              Mostrando: <span className="text-slate-100">{rangoPnl.etiqueta}</span>
-            </p>
+            <div className="flex items-center gap-3">
+              <p className="text-xs font-semibold text-slate-400">
+                Mostrando: <span className="text-slate-100">{rangoPnl.etiqueta}</span>
+              </p>
+              <BotonSecundario onClick={exportarPnlCSV} className="text-xs">
+                <Download size={14} /> Exportar Reporte (.CSV)
+              </BotonSecundario>
+            </div>
           </div>
 
           {(loadingVentasPnl || loadingEgresos) && <div className="h-24 animate-pulse rounded-2xl bg-slate-900" />}
           {errorVentasPnl && <ErrorBanner mensaje={errorVentasPnl} onReintentar={() => cargarVentasRangoPnl()} />}
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <MetricCard icon={ShoppingCart} etiqueta="Ventas POS" valor={formatoMoneda(pnl.ventasPOS)} sub="Mostrador, sin ligar a reserva" tono="sky" />
+          <div>
+            <h3 className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+              Matriz de Ingresos Consolidados — clic en una tarjeta para ver el desglose
+            </h3>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <MetricCard
+                icon={ShoppingCart}
+                etiqueta="Ventas Mostrador (POS)"
+                valor={formatoMoneda(pnl.ventasMostrador)}
+                sub="Smart POS, sin ligar a reserva"
+                tono="sky"
+                onClick={() =>
+                  setModalDesglose({ titulo: 'Ventas Mostrador (POS)', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.ventasMostrador })
+                }
+              />
+              <MetricCard
+                icon={Truck}
+                etiqueta="Ventas Tienda Web"
+                valor={formatoMoneda(pnl.ventasWeb)}
+                sub="Tienda del Portal, sin ligar a reserva"
+                tono="violet"
+                onClick={() => setModalDesglose({ titulo: 'Ventas Tienda Web', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.ventasWeb })}
+              />
+              <MetricCard
+                icon={CalendarDays}
+                etiqueta="Reservas de Canchas"
+                valor={formatoMoneda(pnl.reservasCanchas)}
+                sub="Rentas de cancha + add-ons"
+                tono="sky"
+                onClick={() => setModalDesglose({ titulo: 'Reservas de Canchas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.reservas })}
+              />
+              <MetricCard
+                icon={Trophy}
+                etiqueta="Torneos y Retas"
+                valor={formatoMoneda(pnl.torneosRetas)}
+                sub="Inscripciones recaudadas"
+                tono="amber"
+              />
+              <MetricCard icon={Award} etiqueta="Clases y Clínicas" valor={formatoMoneda(pnl.clasesClinicas)} sub="Sin módulo propio todavía" tono="lime" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <MetricCard
-              icon={CalendarDays}
-              etiqueta="Reservas Cobradas"
-              valor={formatoMoneda(pnl.reservasCobradas)}
-              sub="Renta de cancha + add-ons del Portal"
-              tono="sky"
+              icon={TrendingUp}
+              etiqueta="Ingresos Totales Consolidados"
+              valor={formatoMoneda(pnl.ingresosTotalesConsolidados)}
+              sub="Suma de las 5 categorías de arriba"
+              tono="emerald"
+              onClick={() => setModalDesglose({ titulo: 'Ingresos Totales Consolidados', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.ingresosTotales })}
             />
-            <MetricCard icon={TrendingUp} etiqueta="Ingresos Totales" valor={formatoMoneda(pnl.ingresosTotales)} sub="Ventas POS + Reservas Cobradas" tono="emerald" />
             <MetricCard
               icon={TrendingDown}
               etiqueta="Egresos Totales"
               valor={formatoMoneda(pnl.egresosTotales)}
               sub="Compras + Gastos Operativos"
               tono="rose"
+              onClick={() => setModalDesglose({ titulo: 'Egresos Totales', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.egresos })}
             />
             <MetricCard
               icon={Landmark}
               etiqueta="Utilidad Real"
               valor={formatoMoneda(pnl.utilidadReal)}
-              sub="Ingresos Totales − Egresos Totales"
+              sub="Ingresos Totales Consolidados − Egresos Totales"
               tono={pnl.utilidadReal >= 0 ? 'emerald' : 'rose'}
             />
           </div>
+
+          {modalDesglose && (
+            <ModalDesglosePnl
+              titulo={modalDesglose.titulo}
+              subtitulo={modalDesglose.subtitulo}
+              filas={modalDesglose.filas}
+              onClose={() => setModalDesglose(null)}
+            />
+          )}
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
             <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
@@ -11052,15 +11423,12 @@ function ModuloAnalyticsBI({
   // es SIEMPRE `Horas de Partido × Precio de Renta Oficial de la Cancha`
   // (`precioPorHoraDeCancha`) — nunca una fracción proporcional del pozo.
   //
-  // El excedente entre lo recaudado en inscripciones y el valor de renta de
-  // las canchas realmente consumidas (`Total Inscripciones − Total Valor
-  // Renta Canchas`) es dinero real que el club sí cobró, pero que no le
-  // corresponde a ninguna cancha específica — es el margen de organizar el
-  // evento (arbitraje, premios, logística, marca del torneo, etc.). Se
-  // acumula aparte en `margenEventosOrganizacion` y se expone como su propio
-  // concepto — "Ingreso por Organización de Torneos/Retas" / "Margen de
-  // Eventos" — en las métricas globales del dashboard, nunca mezclado en el
-  // ingreso de ninguna cancha (ver `resumenGlobalEventos` más abajo).
+  // "Ingresos Brutos por Torneos/Retas": suma DIRECTA de lo recaudado en
+  // inscripciones (Retas + Torneos), sin restar el valor de renta de las
+  // canchas consumidas — a diferencia del `ingresoPorReservaId` de arriba
+  // (que SÍ sigue usando la tarifa oficial para no inflar el Rendimiento
+  // por Cancha / Ingresos Cruzados), esta métrica es deliberadamente bruta:
+  // el dinero real que entró por organizar el evento, sin ninguna resta.
   //
   // Retas: 1 reta = 1 sola reserva de bloqueo, en su propia cancha/horario —
   // ya vive en la fecha exacta en que se juega (criterio de devengo
@@ -11068,11 +11436,10 @@ function ModuloAnalyticsBI({
   // queda FUERA de este cálculo a propósito — ya no representa ocupación
   // real (ver `idsMaestroTorneo`/`reservasActivasPagadas` arriba); solo los
   // sub-bloqueos de partido (`torneo_partidos`, la ocupación física real)
-  // reciben su tarifa oficial, y el resto del pozo del torneo cae completo
-  // en `margenEventosOrganizacion`.
+  // reciben su tarifa oficial dentro de `ingresoPorReservaId`.
   const imputacionEventosCancha = useMemo(() => {
     const ingresoPorReservaId = {};
-    let margenEventosOrganizacion = 0;
+    let ingresosBrutosTorneosRetas = 0;
 
     (retas || []).forEach((reta) => {
       if (!reta.reserva_bloqueo_id) return;
@@ -11083,7 +11450,7 @@ function ModuloAnalyticsBI({
       const horas = duracionHorasBloque(reta.hora_inicio, reta.hora_fin);
       const ingresoCancha = horas * precioPorHoraDeCancha(canchasPorId[reta.cancha_id]);
       ingresoPorReservaId[reta.reserva_bloqueo_id] = (ingresoPorReservaId[reta.reserva_bloqueo_id] || 0) + ingresoCancha;
-      margenEventosOrganizacion += totalReta - ingresoCancha;
+      ingresosBrutosTorneosRetas += totalReta;
     });
 
     (torneos || []).forEach((torneo) => {
@@ -11093,20 +11460,18 @@ function ModuloAnalyticsBI({
       if (totalTorneo <= 0) return;
 
       // SOLO partidos individuales asignados — nunca el Bloqueo Maestro.
-      let valorRentaTorneo = 0;
       (partidosTorneo || []).forEach((p) => {
         if (p.torneo_id !== torneo.id || !p.reserva_bloqueo_id) return;
         const horas = duracionHorasBloque(p.hora_inicio, p.hora_fin);
         if (horas <= 0) return;
         const ingresoCancha = horas * precioPorHoraDeCancha(canchasPorId[p.cancha_id]);
         ingresoPorReservaId[p.reserva_bloqueo_id] = (ingresoPorReservaId[p.reserva_bloqueo_id] || 0) + ingresoCancha;
-        valorRentaTorneo += ingresoCancha;
       });
 
-      margenEventosOrganizacion += totalTorneo - valorRentaTorneo;
+      ingresosBrutosTorneosRetas += totalTorneo;
     });
 
-    return { ingresoPorReservaId, margenEventosOrganizacion };
+    return { ingresoPorReservaId, ingresosBrutosTorneosRetas };
   }, [retas, inscripciones, torneos, participantesTorneo, partidosTorneo, canchasPorId]);
 
   const ingresoEfectivoPorReservaId = imputacionEventosCancha.ingresoPorReservaId;
@@ -11329,23 +11694,17 @@ function ModuloAnalyticsBI({
     const ingresosTotales = ingresoPorCategoria.Canchas + ingresoPorCategoria['Pro-Shop'] + ingresoPorCategoria['Cafetería/Bar'];
     const ticketPromedio = totalTransacciones > 0 ? ingresosTotales / totalTransacciones : null;
 
-    // Ingreso por Organización de Torneos/Retas ("Margen de Eventos"): el
-    // excedente entre lo recaudado en inscripciones y el valor de renta de
-    // canchas a tarifa oficial (ver `imputacionEventosCancha`) — dinero real
-    // ya cobrado por el club, pero que NO le pertenece a ninguna cancha.
-    // Deliberadamente NO se suma a `ingresosTotales`/`ticketPromedio`/
-    // `ratioCrossSelling` (esas métricas son por transacción de
-    // cancha/producto, y un torneo es UN evento con muchas transacciones de
-    // cancha ya contadas) — pero SÍ entra al margen/utilidad global del club
-    // más abajo, para no perder ese ingreso real del balance.
-    const margenEventosOrganizacion = imputacionEventosCancha.margenEventosOrganizacion;
-
-    // Ingresos − COGS + Margen de Eventos: suma de Margen Bruto + Margen de
-    // Contribución (a tarifa oficial) + Margen de Eventos del periodo —
-    // TODAVÍA sin egresos operativos, comisiones ni impuestos, así que NO es
-    // "Utilidad Real" (esa P&L completa vive en el módulo Contabilidad &
-    // Compras → P&L / Estado de Resultados).
-    const margenTotalPeriodo = ingresosTotales + margenEventosOrganizacion - cogsTotal;
+    // "Ingresos Brutos por Torneos/Retas": suma directa de lo recaudado en
+    // inscripciones (Retas + Torneos), SIN restar el valor de renta oficial
+    // de las canchas consumidas (ver `imputacionEventosCancha`) — dinero
+    // real ya cobrado por el club. Deliberadamente NO se suma a
+    // `ingresosTotales`/`ticketPromedio`/`ratioCrossSelling` (esas métricas
+    // son por transacción de cancha/producto, y un torneo es UN evento con
+    // muchas transacciones de cancha ya contadas). La P&L real (Ingresos
+    // Totales Consolidados − Egresos) vive en el módulo Contabilidad &
+    // Compras → P&L / Estado de Resultados, que también expone su propio
+    // desglose de "Torneos y Retas (Inscripciones)".
+    const ingresosBrutosTorneosRetas = imputacionEventosCancha.ingresosBrutosTorneosRetas;
 
     // Ratio de Gasto Secundario (% Cross-Selling): qué porción de los
     // ingresos totales NO viene de rentar la pista, sino de lo que se
@@ -11391,8 +11750,7 @@ function ModuloAnalyticsBI({
       transaccionesConProducto,
       ticketPromedio,
       cogsTotal,
-      margenEventosOrganizacion,
-      margenTotalPeriodo,
+      ingresosBrutosTorneosRetas,
       rentabilidadPorCategoria,
       categoriaEstrella,
       topProductos,
@@ -11417,6 +11775,18 @@ function ModuloAnalyticsBI({
     if (horasDisponiblesTotales <= 0) return null;
     return analisis.ingresoCanchas / horasDisponiblesTotales;
   }, [analisis, rango, numCanchasActivas]);
+
+  // Ocupación de Canchas (%) — reemplaza a "Margen Total del Periodo" (esa
+  // P&L real ahora vive en Contabilidad & Compras): horas reservadas
+  // (`rendimientoPorCancha`, ya excluye Bloqueos Maestro de Torneo) sobre la
+  // capacidad total del club en el periodo — Nº de canchas activas × horas
+  // de operación diarias × días del rango. Mismo denominador que RevPACP.
+  const ocupacionCanchasPct = useMemo(() => {
+    const horasDisponiblesTotales = rango.dias * ((HORA_FIN_MIN - HORA_INICIO_MIN) / 60) * numCanchasActivas;
+    if (horasDisponiblesTotales <= 0) return 0;
+    const horasReservadasTotales = rendimientoPorCancha.reduce((acc, f) => acc + f.horas, 0);
+    return Math.min(100, (horasReservadasTotales / horasDisponiblesTotales) * 100);
+  }, [rendimientoPorCancha, rango, numCanchasActivas]);
 
   /* ---- Ocupación Pico (17:00–23:00) vs. Valle (07:00–17:00) ---- */
   const picoValle = useMemo(() => {
@@ -11515,6 +11885,7 @@ function ModuloAnalyticsBI({
       ingresosCruzados,
       picoValle,
       revPACP,
+      ocupacionCanchasPct,
       ventasPorProductoSemana,
       variantesPorProducto,
       ventasPorVarianteSemana,
@@ -11551,13 +11922,15 @@ function ModuloAnalyticsBI({
 
       {/* Métricas financieras duplicadas con el nuevo módulo Contabilidad &
           Compras (Utilidad Operativa, Rentabilidad por Cancha/Hora, Utilidad
-          Neta del Club — todas dependían del Costo Operativo Asignado por
-          Hora/Cancha, eliminado por completo) se quitaron de este tablero
-          para no saturarlo; la P&L real ahora vive en Contabilidad &
-          Compras → P&L / Estado de Resultados. "Ingreso por Organización de
-          Torneos/Retas" es una métrica de BI propia (no depende del Costo
-          Operativo ni se calcula en Contabilidad), así que se conserva aquí
-          arriba, junto con las demás. */}
+          Neta del Club, Margen Total del Periodo) se quitaron de este
+          tablero para no saturarlo; la P&L real ahora vive en Contabilidad &
+          Compras → P&L / Estado de Resultados. "Ocupación de Canchas (%)"
+          reemplaza a "Margen Total del Periodo" con una métrica puramente
+          operativa (horas reservadas ÷ capacidad total), sin depender de
+          ningún cálculo financiero. "Ingresos Brutos por Torneos/Retas" es
+          la suma directa de inscripciones recaudadas, sin restar nada — la
+          versión neta (Margen de Eventos) se eliminó junto con el resto de
+          las métricas financieras. */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <MetricCard
           icon={Receipt}
@@ -11567,11 +11940,11 @@ function ModuloAnalyticsBI({
           tono="sky"
         />
         <MetricCard
-          icon={TrendingUp}
-          etiqueta="Margen Total del Periodo"
-          valor={formatoMoneda(analisis.margenTotalPeriodo)}
-          sub={`Ingresos ${formatoMoneda(analisis.ingresosTotales)} − Costo ${formatoMoneda(analisis.cogsTotal)}`}
-          tono={analisis.margenTotalPeriodo >= 0 ? 'emerald' : 'rose'}
+          icon={Gauge}
+          etiqueta="Ocupación de Canchas (%)"
+          valor={`${ocupacionCanchasPct.toFixed(1)}%`}
+          sub="Horas reservadas ÷ capacidad total del periodo"
+          tono={ocupacionCanchasPct >= 50 ? 'emerald' : ocupacionCanchasPct >= 25 ? 'amber' : 'rose'}
         />
         <MetricCard
           icon={Star}
@@ -11596,10 +11969,10 @@ function ModuloAnalyticsBI({
         />
         <MetricCard
           icon={Trophy}
-          etiqueta="Ingreso por Organización de Torneos/Retas"
-          valor={formatoMoneda(analisis.margenEventosOrganizacion)}
-          sub="Margen de Eventos: inscripciones − valor de renta de canchas a tarifa oficial"
-          tono={analisis.margenEventosOrganizacion >= 0 ? 'emerald' : 'rose'}
+          etiqueta="Ingresos Brutos por Torneos/Retas"
+          valor={formatoMoneda(analisis.ingresosBrutosTorneosRetas)}
+          sub="Suma de inscripciones recaudadas (Retas + Torneos)"
+          tono="amber"
         />
       </div>
 
@@ -12296,6 +12669,20 @@ function esErrorTablaInexistente(error) {
   if (['42P01', 'PGRST205', 'PGRST202'].includes(error.code)) return true;
   const msg = error.message || '';
   return /relation .* does not exist/i.test(msg) || /could not find the table/i.test(msg) || /schema cache/i.test(msg);
+}
+
+// Detecta un bloqueo de RLS/permisos de Postgres — incluye el caso clásico
+// de PostgREST cuando un `INSERT` SÍ se guardó (la política de escritura
+// para `anon` lo permite) pero no hay política de SELECT que deje leer la
+// fila de vuelta: la respuesta llega como "0 filas" (PGRST116, porque
+// `.single()` esperaba exactamente 1) aunque el dinero/registro ya quedó
+// guardado. Sin este chequeo, ese caso se veía idéntico a un INSERT
+// realmente rechazado — ver su uso en Smart POS (`registrarVenta`).
+function esErrorPermisoRLS(error) {
+  if (!error) return false;
+  if (['42501', 'PGRST116'].includes(error.code)) return true;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('row-level security') || msg.includes('permission denied') || msg.includes('rls');
 }
 
 // Id sintético para un registro que se queda solo en memoria local (modo
@@ -18394,22 +18781,30 @@ function PortalPublicoJugadores({ clubSlug }) {
     }));
     const estadoPago = esPagoTarjeta || montoRestante <= 0 ? 'pagado' : 'pendiente';
     try {
-      const { data, error } = await supabase
-        .from('ventas')
-        .insert(
-          withClubId({
-            total: totalCarritoTienda,
-            metodo_pago: esPagoTarjeta ? 'Tarjeta (Simulado)' : montoWallet > 0 ? (montoRestante > 0 ? 'Wallet + Recepción' : 'Wallet') : 'Recepción',
-            turno: null,
-            operador: 'Portal Público',
-            reserva_id: null,
-            cancha_id: null,
-            detalles: { items, pagos_divididos: null, jugador_id: jugador.id, jugador_nombre: jugador.nombre },
-            estado_pago: estadoPago,
-          })
-        )
-        .select()
-        .single();
+      // `origen: ORIGEN_VENTA_WEB` — esta es la compra de Tienda (Pro-Shop)
+      // hecha DIRECTO desde el Portal, sin pasar por Smart POS: antes no
+      // llevaba ninguna marca de canal, así que caía (incorrectamente) en el
+      // bucket "Ventas Mostrador (POS)" del P&L en vez de "Ventas Tienda
+      // Web". Columna
+      // opcional (Arquitectura Flexible): si tu Supabase todavía no la
+      // tiene, se reintenta sin ella.
+      let payloadVenta = withClubId({
+        total: totalCarritoTienda,
+        metodo_pago: esPagoTarjeta ? 'Tarjeta (Simulado)' : montoWallet > 0 ? (montoRestante > 0 ? 'Wallet + Recepción' : 'Wallet') : 'Recepción',
+        turno: null,
+        operador: 'Portal Público',
+        reserva_id: null,
+        cancha_id: null,
+        origen: ORIGEN_VENTA_WEB,
+        detalles: { items, pagos_divididos: null, jugador_id: jugador.id, jugador_nombre: jugador.nombre },
+        estado_pago: estadoPago,
+      });
+      let { data, error } = await supabase.from('ventas').insert(payloadVenta).select().single();
+      if (error && esErrorColumnaInexistente(error)) {
+        const { origen, ...sinOrigen } = payloadVenta;
+        payloadVenta = sinOrigen;
+        ({ data, error } = await supabase.from('ventas').insert(payloadVenta).select().single());
+      }
       if (error) throw error;
       await descontarStockYKardexItems(carritoTienda, 'Compra en Tienda (Portal)');
       if (montoWallet > 0) {
@@ -18563,7 +18958,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           operador: 'Portal Público',
           reserva_id: reservaCreada.id,
           es_reserva: true,
-          origen: 'portal',
+          origen: ORIGEN_VENTA_WEB,
           cancha_id: cancha.id,
           detalles: {
             items: [...itemsCancha, ...itemsAddons],
@@ -20699,7 +21094,13 @@ function AppInterno() {
                 quitarVarianteProductoLocal={quitarVarianteProductoLocal}
               />
             ) : moduloActivo === 'contabilidad' ? (
-              <ModuloContabilidadCompras reservas={reservas} operador={operador} />
+              <ModuloContabilidadCompras
+                reservas={reservas}
+                operador={operador}
+                canchas={canchas}
+                inscripciones={inscripciones}
+                participantesTorneo={participantesTorneo}
+              />
             ) : moduloActivo === 'analytics' ? (
               <ModuloAnalyticsBI
                 canchas={canchas}
