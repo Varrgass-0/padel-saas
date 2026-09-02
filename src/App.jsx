@@ -1443,7 +1443,19 @@ function formatoMoneda(valor) {
 // mismo valor real en vez de $0 o "sin categoría".
 function precioDeReta(reta) {
   if (!reta) return 0;
-  const candidatos = [reta.precio_inscripcion, reta.precio_individual, reta.precio_persona, reta.precio, reta.costo];
+  // `costo_inscripcion`/`precio_persona` explícitos (además de
+  // `precio_inscripcion`, el nombre "oficial" de este proyecto) — el
+  // proyecto real de Supabase del club puede tener la columna bajo
+  // cualquiera de estos nombres; ver `ModalNuevaReta.guardar` para el
+  // mismo mapeo del lado escritor.
+  const candidatos = [
+    reta.precio_inscripcion,
+    reta.costo_inscripcion,
+    reta.precio_persona,
+    reta.precio_individual,
+    reta.precio,
+    reta.costo,
+  ];
   const encontrado = candidatos.find((c) => c !== null && c !== undefined && c !== '');
   return Number(encontrado) || 0;
 }
@@ -4063,15 +4075,36 @@ function esErrorColumnaInexistente(error) {
   return error.code === '42703' || error.code === 'PGRST204' || /does not exist/i.test(mensaje) || /could not find the .* column/i.test(mensaje);
 }
 
-// Nombre de la columna que PostgREST reporta como faltante en un error
-// `PGRST204` ("Could not find the 'xyz' column of 'tabla' in the schema
-// cache") — `null` si el mensaje no trae ese patrón. Permite un reintento
+// Nombre de la columna que Supabase reporta como faltante — `null` si el
+// mensaje no trae ninguno de los 2 formatos reales que puede regresar:
+//   1) PostgREST (PGRST204): "Could not find the 'xyz' column of 'tabla' in
+//      the schema cache" — el nombre va ANTES de la palabra "column".
+//   2) Postgres nativo (42703): column "xyz" of relation "tabla" does not
+//      exist — el nombre va DESPUÉS de la palabra "column".
+// BUG DE RAÍZ ENCONTRADO Y CORREGIDO: la versión anterior de este regex
+// (`/column ['"]?([a-zA-Z0-9_]+)['"]?/i`) solo cubría el formato 2 — contra
+// un mensaje real de PGRST204 (formato 1, el que en la práctica devuelve
+// Supabase casi siempre) capturaba la palabra "of" (lo que sigue a
+// "column " en "... 'xyz' column of 'tabla' ...") en vez del nombre de la
+// columna. Como "of" nunca es una de las `columnasOpcionales` reales,
+// `conColumnasOpcionales` caía SIEMPRE a su respaldo de "quitar TODAS las
+// columnas opcionales de una vez" desde el primer intento — así que
+// CUALQUIER insert/update con más de una columna opcional (precio de
+// Retas, alias de pareja en Torneos, `costo_unitario`/`variante_id` de
+// Kardex, etc.) perdía TODAS sus columnas opcionales aunque solo UNA
+// realmente no existiera en el proyecto — nunca solo la que de verdad
+// faltaba. Esto explica campos que "se guardan en $0/vacío" incluso cuando
+// la columna correcta sí existe en Supabase. Permite un reintento
 // QUIRÚRGICO (quitar solo esa llave del payload) en vez de tener que
 // enumerar a mano cada combinación posible de columnas opcionales — ver
-// `insertarConColumnasOpcionales` más abajo.
+// `conColumnasOpcionales`/`insertarConColumnasOpcionales` más abajo.
 function columnaFaltanteDeError(error) {
-  const match = /column ['"]?([a-zA-Z0-9_]+)['"]?/i.exec(error?.message || '');
-  return match ? match[1] : null;
+  const mensaje = error?.message || '';
+  const formatoPostgREST = /['"]([a-zA-Z0-9_]+)['"]\s+column\b/i.exec(mensaje);
+  if (formatoPostgREST) return formatoPostgREST[1];
+  const formatoPostgres = /\bcolumn\s+['"]([a-zA-Z0-9_]+)['"]/i.exec(mensaje);
+  if (formatoPostgres) return formatoPostgres[1];
+  return null;
 }
 
 // Núcleo "auto-adaptable" compartido por insert/update: intenta con el
@@ -6478,6 +6511,7 @@ function ModuloSmartPOS({
           cantidad: item.cantidad,
           stock_anterior: stockAnterior,
           stock_nuevo: nuevoStock,
+          costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
           motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`})${
             esVariante ? ` · ${varianteNombreEtiqueta}` : ''
           }`,
@@ -6897,6 +6931,8 @@ function ModuloSmartPOS({
           operador: operador?.nombre,
           upsertProducto,
           upsertVarianteProducto,
+          productos,
+          variantesPorProducto,
         });
       }
     }
@@ -7580,6 +7616,7 @@ function ModuloSmartPOS({
           cantidad: item.cantidad,
           stock_anterior: stockAnterior,
           stock_nuevo: nuevoStock,
+          costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
           motivo: esVariante ? `Venta en Smart POS · ${varianteNombreEtiqueta}` : 'Venta en Smart POS',
           operador: operador?.nombre,
         });
@@ -8241,6 +8278,7 @@ async function insertarMovimientoKardex({
   stock_nuevo,
   motivo,
   operador,
+  costo_unitario,
 }) {
   const payload = withClubId({
     producto_id,
@@ -8251,19 +8289,43 @@ async function insertarMovimientoKardex({
     motivo: motivo || null,
     operador: operador || null,
   });
-  if (variante_id) payload.variante_id = variante_id;
+  const columnasOpcionales = [];
+  if (variante_id) {
+    payload.variante_id = variante_id;
+    columnasOpcionales.push('variante_id');
+  }
   // `producto_nombre` compuesto (p. ej. "Overgrips — Bombarder Tacky") —
   // FIX DEFINITIVO de variantes: deja el kardex legible incluso si la
-  // variante o el producto se renombran/eliminan después. Es una columna
-  // opcional (Arquitectura Flexible): si el proyecto todavía no la tiene,
-  // se reintenta el insert sin ella, igual que ya se hace con `variante_id`.
-  if (producto_nombre) payload.producto_nombre = producto_nombre;
-  let { error } = await supabase.from('kardex').insert(payload);
-  if (error && (variante_id || producto_nombre) && esErrorColumnaInexistente(error)) {
-    delete payload.variante_id;
-    delete payload.producto_nombre;
-    ({ error } = await supabase.from('kardex').insert(payload));
+  // variante o el producto se renombran/eliminan después.
+  if (producto_nombre) {
+    payload.producto_nombre = producto_nombre;
+    columnasOpcionales.push('producto_nombre');
   }
+  // `costo_unitario` — SNAPSHOT del costo real del producto/variante AL
+  // MOMENTO de la venta (ver `resolverCostoUnitarioVenta`): Analytics BI lo
+  // usa para "Costo Total"/"Margen Bruto" en vez de tener que re-consultar
+  // el costo ACTUAL del catálogo cada vez que se arma el reporte — así el
+  // cálculo no se rompe si el producto se borra, le cambian el costo
+  // después, o la variante se reestructura. Columna opcional (Arquitectura
+  // Flexible): si tu Supabase todavía no la tiene, se reintenta sin ella
+  // (Analytics cae de vuelta al costo actual del catálogo, ver `analisis`
+  // en `ModuloAnalyticsBI`).
+  if (costo_unitario !== null && costo_unitario !== undefined && Number.isFinite(Number(costo_unitario))) {
+    payload.costo_unitario = Number(costo_unitario);
+    columnasOpcionales.push('costo_unitario');
+  }
+  // `conColumnasOpcionales` (reintento adaptativo: quita SOLO la columna
+  // puntual que Supabase reporte como inexistente, una por una) en vez del
+  // reintento manual de antes, que borraba `variante_id` Y
+  // `producto_nombre` A LA VEZ ante cualquier error de columna faltante —
+  // aunque solo una de las dos en verdad no existiera en tu proyecto.
+  // OJO: a propósito NO se usa `insertarConColumnasOpcionales` aquí — ese
+  // helper hace `.select().single()` después del INSERT, y `kardex` (a
+  // diferencia de `productos`/`retas`/`torneos`) nunca tuvo una migración
+  // de RLS de SELECT dedicada; exigir la lectura de vuelta rompería el
+  // insert en cualquier proyecto donde `anon` sí pueda escribir en
+  // `kardex` pero no leerlo. Se mantiene el `.insert(payload)` a secas.
+  const { error } = await conColumnasOpcionales(payload, columnasOpcionales, (p) => supabase.from('kardex').insert(p));
   if (error) {
     console.error('[kardex] insert bloqueado:', error);
     return { ok: false, error, esRLS: esErrorRLS(error) };
@@ -8368,6 +8430,27 @@ function productoEstaAgotado(producto, variantesNormalizadas) {
   if (producto?.maneja_stock === false) return false;
   const stock = Number(producto?.stock);
   return Number.isFinite(stock) && stock <= 0;
+}
+
+// COSTO REAL VINCULADO A CADA VENTA: resuelve el `costo_unitario` (producto
+// o variante) EN EL MOMENTO de la venta, para guardarlo como snapshot en el
+// propio movimiento de Kardex (`insertarMovimientoKardex` → columna
+// opcional `costo_unitario`) en vez de depender SIEMPRE de una relectura en
+// vivo del catálogo al momento de generar el reporte — así "Top 5
+// Productos"/"Rendimiento por Categoría" en Analytics BI pueden calcular
+// Costo Total = unidades × costo_unitario incluso si el producto se borra o
+// le cambian el costo después, y el join nunca depende de que la variante
+// siga existiendo tal cual en `productos.variantes` cuando se arma el
+// reporte. Prioriza el costo de la VARIANTE si tiene uno propio; si no,
+// hereda el del producto padre — mismo criterio que ya usa el resto del
+// archivo (`FilaVarianteInventarioCompleta`, COGS de Analytics BI).
+function resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto) {
+  const prod = (productos || []).find((p) => p.id === productoId) || null;
+  if (varianteId) {
+    const variante = (variantesPorProducto?.[productoId] || []).find((v) => v.id === varianteId);
+    if (variante?.costo_unitario != null) return Number(variante.costo_unitario);
+  }
+  return prod?.costo_unitario != null ? Number(prod.costo_unitario) : null;
 }
 
 // Descuento Real al Vender un producto SIN variantes: a diferencia de la
@@ -8522,7 +8605,10 @@ async function descontarStockVariante({ productoId, varianteId, varianteNombre, 
 // de sus add-ons se descontó cuando ese ticket se creó (en
 // `confirmarReservaConAddons`), así que llamar esto de nuevo ahí
 // DUPLICARÍA el descuento — por eso NO se invoca en ese otro camino.
-async function descontarStockKardexAddonsReserva(itemsAddons, { motivoBase, operador, upsertProducto, upsertVarianteProducto }) {
+async function descontarStockKardexAddonsReserva(
+  itemsAddons,
+  { motivoBase, operador, upsertProducto, upsertVarianteProducto, productos, variantesPorProducto }
+) {
   const resultados = await Promise.all(
     (itemsAddons || [])
       .filter((it) => it && (it.producto_id || it.productoPadreId))
@@ -8573,6 +8659,7 @@ async function descontarStockKardexAddonsReserva(itemsAddons, { motivoBase, oper
           cantidad: item.cantidad,
           stock_anterior: stockAnterior,
           stock_nuevo: nuevoStock,
+          costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
           motivo: `${motivoBase}${esVariante ? ` · ${varianteNombreEtiqueta}` : ''}`,
           operador: operador || 'Recepción',
         });
@@ -10180,12 +10267,12 @@ function IngresosCruzadosTabla({ filas, cargando }) {
                 <th className="px-3 py-2.5 text-right">Ingreso Cancha</th>
                 <th className="px-3 py-2.5 text-right">Ingreso Cafetería</th>
                 <th className="px-3 py-2.5 text-right">Ingreso Pro-Shop</th>
-                <th className="px-3 py-2.5">Producto Más Vendido</th>
+                <th className="px-3 py-2.5">Productos Vendidos (desglose)</th>
               </tr>
             </thead>
             <tbody>
               {filas.map((f) => (
-                <tr key={`${f.cancha.id}-${f.bloque.key}`} className="border-b border-slate-800/70 last:border-0">
+                <tr key={`${f.cancha.id}-${f.bloque.key}`} className="border-b border-slate-800/70 last:border-0 align-top">
                   <td className="px-3 py-2.5 font-bold text-slate-100">{f.cancha.nombre}</td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-slate-300">
                     {f.bloque.label} <span className="text-slate-500">({f.bloque.rango})</span>
@@ -10194,8 +10281,21 @@ function IngresosCruzadosTabla({ filas, cargando }) {
                   <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingresoCafeteria)}</td>
                   <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingresoProShop)}</td>
                   <td className="px-3 py-2.5 text-slate-300">
-                    {f.productoTop ? (
-                      `${f.productoTop.nombre} (${f.productoTop.unidades} u.)`
+                    {/* DESGLOSE COMPLETO: ya no se colapsa a un solo "más
+                        vendido" — cada producto/variante del bloque aparece
+                        con sus propias unidades e ingreso, para que un
+                        ticket de "Pelotas + Overgrip" muestre ambos. */}
+                    {f.productosVendidos && f.productosVendidos.length > 0 ? (
+                      <ul className="space-y-0.5">
+                        {f.productosVendidos.map((p, idx) => (
+                          <li key={idx} className="flex items-center justify-between gap-3">
+                            <span className="truncate">
+                              {p.nombre} <span className="text-slate-500">× {p.unidades}</span>
+                            </span>
+                            <span className="shrink-0 text-slate-400">{formatoMoneda(p.ingreso)}</span>
+                          </li>
+                        ))}
+                      </ul>
                     ) : (
                       <span className="text-slate-600">—</span>
                     )}
@@ -10328,15 +10428,22 @@ function generarCSVReporte({
   filas.push([]);
 
   filas.push(['Ingresos Cruzados por Cancha y Bloque Horario']);
-  filas.push(['Cancha', 'Bloque', 'Ingreso Cancha', 'Ingreso Cafetería', 'Ingreso Pro-Shop', 'Producto Más Vendido']);
+  filas.push(['Cancha', 'Bloque', 'Ingreso Cancha', 'Ingreso Cafetería', 'Ingreso Pro-Shop', 'Productos Vendidos (desglose completo)']);
   ingresosCruzados.forEach((f) => {
+    // DESGLOSE COMPLETO, no solo el más vendido — cada producto/variante
+    // del bloque en su propio "Nombre (unidades u., $ingreso)", separados
+    // por " · ", para que el CSV refleje el mismo detalle que la tabla.
+    const desglose =
+      f.productosVendidos && f.productosVendidos.length > 0
+        ? f.productosVendidos.map((p) => `${p.nombre} (${p.unidades} u., $${p.ingreso.toFixed(2)})`).join(' · ')
+        : 'Sin ventas de producto';
     filas.push([
       f.cancha.nombre,
       `${f.bloque.label} (${f.bloque.rango})`,
       f.ingresoCancha.toFixed(2),
       f.ingresoCafeteria.toFixed(2),
       f.ingresoProShop.toFixed(2),
-      f.productoTop ? `${f.productoTop.nombre} (${f.productoTop.unidades} u.)` : 'Sin ventas de producto',
+      desglose,
     ]);
   });
   filas.push([]);
@@ -11895,10 +12002,37 @@ function ModuloAnalyticsBI({
     const claveVentaItem = (productoId, varianteId) => (varianteId ? `v:${varianteId}` : `p:${productoId}`);
     const salidasVenta = kardexRango.filter((mov) => mov.tipo_movimiento === 'salida_venta');
     const unidadesPorProducto = {};
+    // COSTO VINCULADO A CADA VENTA (Costo Total = unidades × costo_unitario):
+    // se suma movimiento por movimiento en vez de "unidades del periodo ×
+    // costo actual del catálogo" — cada movimiento de Kardex trae su propio
+    // snapshot de `costo_unitario` (ver `insertarMovimientoKardex`/
+    // `resolverCostoUnitarioVenta`, tomado en el momento REAL de la venta,
+    // en POS o Tienda Web), así el costo no se pierde si el producto se
+    // borra o le cambian el costo después. Un movimiento de antes de que
+    // existiera esa columna (o de un proyecto que todavía no la tiene) cae
+    // de vuelta al costo ACTUAL del catálogo — mismo comportamiento que
+    // antes, así ningún dato histórico se queda en blanco.
+    const costoPorProducto = {};
     salidasVenta.forEach((mov) => {
       if (!mov.producto_id) return;
       const clave = claveVentaItem(mov.producto_id, mov.variante_id);
-      unidadesPorProducto[clave] = (unidadesPorProducto[clave] || 0) + Math.abs(Number(mov.cantidad) || 0);
+      const cant = Math.abs(Number(mov.cantidad) || 0);
+      unidadesPorProducto[clave] = (unidadesPorProducto[clave] || 0) + cant;
+      let costoUnitarioMov = mov.costo_unitario != null ? Number(mov.costo_unitario) : NaN;
+      if (!Number.isFinite(costoUnitarioMov)) {
+        const esVarianteMov = !!mov.variante_id;
+        const varianteMov = esVarianteMov ? variantesPorId[mov.variante_id] : null;
+        const prodMov = esVarianteMov ? varianteMov?._productoPadre || null : productosPorId[mov.producto_id] || null;
+        const crudo = esVarianteMov
+          ? varianteMov?.costo_unitario != null
+            ? varianteMov.costo_unitario
+            : prodMov?.costo_unitario
+          : prodMov?.costo_unitario;
+        costoUnitarioMov = Number(crudo);
+      }
+      if (Number.isFinite(costoUnitarioMov)) {
+        costoPorProducto[clave] = (costoPorProducto[clave] || 0) + cant * costoUnitarioMov;
+      }
     });
 
     // Ingreso de Pro-Shop / Cafetería-Bar: criterio de COBRO — siempre por la
@@ -11940,9 +12074,10 @@ function ModuloAnalyticsBI({
 
     const totalTransacciones = transaccionesCanchas + transaccionesConProducto;
 
-    // COGS: cruza unidades (kardex) × costo_unitario ACTUAL del producto (o
-    // de la variante específica — hereda el del padre si no tiene uno
-    // propio, igual criterio que `FilaVarianteInventarioCompleta`).
+    // COGS: Costo Total = unidades × costo_unitario, tomado del snapshot por
+    // movimiento armado arriba (`costoPorProducto`) — ya NO de una relectura
+    // en vivo del catálogo (ver el comentario completo arriba, en
+    // `costoPorProducto`).
     let cogsTotal = 0;
     const cogsPorCategoria = { Canchas: 0, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
     const filasProducto = Object.keys(unidadesPorProducto).map((clave) => {
@@ -11951,13 +12086,7 @@ function ModuloAnalyticsBI({
       const variante = esVariante ? variantesPorId[idPuro] : null;
       const prod = esVariante ? variante?._productoPadre || null : productosPorId[idPuro] || null;
       const unidades = unidadesPorProducto[clave];
-      const costoUnitarioCrudo = esVariante
-        ? variante?.costo_unitario != null
-          ? variante.costo_unitario
-          : prod?.costo_unitario
-        : prod?.costo_unitario;
-      const costoUnitario = Number(costoUnitarioCrudo);
-      const costo = Number.isFinite(costoUnitario) ? unidades * costoUnitario : 0;
+      const costo = costoPorProducto[clave] || 0;
       cogsTotal += costo;
       // Mismo criterio que el ingreso: Cafetería/Bar y Canchas (literal) se
       // quedan en su propia categoría; todo lo demás (Pro-Shop, 'Rentas' de
@@ -12138,7 +12267,19 @@ function ModuloAnalyticsBI({
         // fecha/hora de cobro, como antes.
         let ingresoCafeteria = 0;
         let ingresoProShop = 0;
-        const unidadesProductoBloque = {};
+        // DESGLOSE INDIVIDUAL DE PRODUCTOS: cada producto/variante del
+        // ticket es SU PROPIA entrada — antes se agregaban todos en un solo
+        // mapa de unidades y al final SOLO se quedaba el de más unidades
+        // (`productoTop`), así que un ticket con "2x Pelotas + 1x Overgrip"
+        // mostraba nada más "Pelotas" y el Overgrip desaparecía por
+        // completo de esta tabla (ni sus unidades ni su ingreso quedaban
+        // visibles en ningún lado). Ahora se construye un desglose completo
+        // — clave por variante cuando la hay, para no fusionar "Cerveza —
+        // Corona" con "Cerveza — Victoria" — con el ingreso EXACTO de cada
+        // renglón ya clasificado en su categoría (Cafetería/Bar vs.
+        // Pro-Shop), y se sigue exponiendo `productoTop` (el de mayor
+        // ingreso) por compatibilidad con quien ya lo lea.
+        const desglosePorProducto = {};
         ventasPagadas.forEach((v) => {
           if (v.cancha_id !== c.id) return;
           const reservaLigada = v.reserva_id != null ? reservasPorIdBI[v.reserva_id] : null;
@@ -12162,19 +12303,23 @@ function ModuloAnalyticsBI({
             // Mismo criterio que "Rentabilidad por Categoría": solo
             // Cafetería/Bar tiene columna propia; Pro-Shop y 'Rentas'
             // (palas/accesorios) caen en Ingreso Pro-Shop.
-            if (prod?.categoria === 'Cafetería/Bar') ingresoCafeteria += subtotal;
+            const categoriaItem = prod?.categoria === 'Cafetería/Bar' ? 'Cafetería/Bar' : 'Pro-Shop';
+            if (categoriaItem === 'Cafetería/Bar') ingresoCafeteria += subtotal;
             else ingresoProShop += subtotal;
-            const nombreProd = prod?.nombre || item.nombre || 'Producto';
-            unidadesProductoBloque[nombreProd] = (unidadesProductoBloque[nombreProd] || 0) + (Number(item.cantidad) || 0);
+            const claveDesglose = item.variante_id ? `v:${item.variante_id}` : `p:${item.producto_id || item.nombre}`;
+            const nombreProd = item.nombre || prod?.nombre || 'Producto';
+            if (!desglosePorProducto[claveDesglose]) {
+              desglosePorProducto[claveDesglose] = { nombre: nombreProd, categoria: categoriaItem, unidades: 0, ingreso: 0 };
+            }
+            desglosePorProducto[claveDesglose].unidades += Number(item.cantidad) || 0;
+            desglosePorProducto[claveDesglose].ingreso += subtotal;
           });
         });
 
-        let productoTop = null;
-        Object.entries(unidadesProductoBloque).forEach(([nombre, unidades]) => {
-          if (!productoTop || unidades > productoTop.unidades) productoTop = { nombre, unidades };
-        });
+        const productosVendidos = Object.values(desglosePorProducto).sort((a, b) => b.ingreso - a.ingreso);
+        const productoTop = productosVendidos[0] || null;
 
-        filas.push({ cancha: c, bloque, ingresoCancha, ingresoCafeteria, ingresoProShop, productoTop });
+        filas.push({ cancha: c, bloque, ingresoCancha, ingresoCafeteria, ingresoProShop, productoTop, productosVendidos });
       });
     });
     return filas;
@@ -13699,12 +13844,20 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
 
     // Mapeo defensivo de columnas: distintos proyectos de Supabase pueden
     // tener este módulo migrado con nombres de columna distintos (`nivel`
-    // vs `categoria`, `precio_inscripcion` vs `precio_individual`/
-    // `precio_persona`/`precio`/`costo`) — se mandan TODOS los alias a la
-    // vez para maximizar compatibilidad (ver el lado lector de este mismo
-    // mapeo en `precioDeReta`/`nivelDeReta`/`ramaDeReta`). Si de todos
-    // modos falta alguna columna, `insertarConColumnasOpcionales` la va
-    // quitando una por una y reintenta en vez de bloquear al operador.
+    // vs `categoria`, `precio_inscripcion` vs `costo_inscripcion`/
+    // `precio_individual`/`precio_persona`/`precio`/`costo`) — se mandan
+    // TODOS los alias a la vez para maximizar compatibilidad (ver el lado
+    // lector de este mismo mapeo en `precioDeReta`/`nivelDeReta`/
+    // `ramaDeReta`). `precio_inscripcion` sigue siendo el nombre "oficial"
+    // de este proyecto (ver el comentario de cabecera del Módulo 5), pero
+    // `costo_inscripcion` y `precio_persona` se mandan EXPLÍCITAMENTE
+    // también, tal cual se pidió, por si tu Supabase usa alguno de esos dos
+    // nombres en su lugar. Si de todos modos falta alguna columna,
+    // `insertarConColumnasOpcionales` la va quitando una por una y
+    // reintenta en vez de bloquear al operador — y desde el fix del regex
+    // de `columnaFaltanteDeError` (ver su comentario), ese reintento SOLO
+    // quita la columna puntual que en verdad no exista, nunca todas de
+    // golpe, así que las demás (incluyendo el precio) sí se guardan.
     const payloadReta = withClubId({
       nombre: nombre.trim() || nombreAutomatico,
       cancha_id: canchaId,
@@ -13715,8 +13868,9 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
       nivel: nivel || null,
       rama,
       precio_inscripcion: Number(precio) || 0,
-      precio_individual: Number(precio) || 0,
+      costo_inscripcion: Number(precio) || 0,
       precio_persona: Number(precio) || 0,
+      precio_individual: Number(precio) || 0,
       precio: Number(precio) || 0,
       costo: Number(precio) || 0,
       tolerancia_horas: Number(tolerancia) || TOLERANCIA_HORAS_DEFAULT,
@@ -13736,8 +13890,9 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
       'categoria',
       'nivel',
       'precio_inscripcion',
-      'precio_individual',
+      'costo_inscripcion',
       'precio_persona',
+      'precio_individual',
       'precio',
       'costo',
       'tolerancia_horas',
@@ -19290,6 +19445,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             cantidad: item.cantidad,
             stock_anterior: stockAnterior,
             stock_nuevo: nuevoStock,
+            costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProductoPortal),
             motivo: `${motivoBase}${item.esVariante || varianteId ? ` · ${item.varianteNombre || item.nombre}` : ''}`,
             operador: 'Portal Público',
           });
