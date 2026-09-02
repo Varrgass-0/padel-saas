@@ -807,12 +807,27 @@ function withClubId(payload) {
   return CLUB_ACTIVO_ID ? { ...payload, club_id: CLUB_ACTIVO_ID } : payload;
 }
 
-// Encadena `.eq('club_id', CLUB_ACTIVO_ID)` a cualquier query-builder de
-// Supabase (select/update/delete) — úsalo en TODAS las consultas que
-// devuelven listas de filas (canchas, productos, jugadores, retas, torneos,
-// ventas, etc.), para que un club nunca vea los datos de otro.
+// Encadena el filtro de `club_id` a cualquier query-builder de Supabase
+// (select/update/delete) — úsalo en TODAS las consultas que devuelven
+// listas de filas (canchas, productos, jugadores, retas, torneos, ventas,
+// etc.), para que un club nunca vea los datos de otro.
+//
+// FIX CRÍTICO (retas/torneos "invisibles" en el Portal): un `.eq('club_id',
+// CLUB_ACTIVO_ID)` estricto EXCLUYE en SQL cualquier fila con `club_id`
+// `NULL` — y el panel interno SIEMPRE inserta con `CLUB_ACTIVO_ID = null`
+// (ver `establecerClubActivo(null)` en el router raíz, arriba de `App()`),
+// así que TODA Reta/Torneo/reserva/venta creada desde el panel nace con
+// `club_id` vacío en Supabase. En el escenario de un solo club real (el de
+// hoy) eso es invisible porque el Portal también corre con
+// `CLUB_ACTIVO_ID = null` (sin filtro) — pero en cuanto la tabla de clubes
+// tiene MÁS de una fila, `resolverClubDelPortal` sí llama
+// `establecerClubActivo(club.id)` para el Portal, y desde ese momento CADA
+// consulta del Portal empezaba a excluir todo lo creado por el panel
+// (`club_id IS NULL`) sin que nada lo avisara. Ahora se usa `.or(...)` para
+// traer las filas del club activo O sin club asignado todavía — nunca se
+// pierde nada por una migración a multitenant a medias.
 function conClubId(query) {
-  return CLUB_ACTIVO_ID ? query.eq('club_id', CLUB_ACTIVO_ID) : query;
+  return CLUB_ACTIVO_ID ? query.or(`club_id.eq.${CLUB_ACTIVO_ID},club_id.is.null`) : query;
 }
 
 // Igual que `conClubId`, pero para la config `{event, schema, table}` de un
@@ -4001,9 +4016,76 @@ function ModuloParrillaOperativa({
 //      filtro de servidor y filtra en el cliente con `v.created_at || v.fecha`.
 // `select('*')` a propósito en los 3 intentos: enumerar columnas a mano es
 // justo lo que rompía la consulta cuando una de ellas no existe.
+// FIX CRÍTICO: docenas de sitios en este archivo dependen de este helper
+// para reintentar un INSERT/UPDATE/SELECT sin una columna opcional que tu
+// Supabase todavía no tenga (Arquitectura Flexible) — pero solo cubría el
+// error NATIVO de Postgres (`42703`, "column ... does not exist"), que es
+// el que se ve al referenciar una columna inexistente en un WHERE/SELECT
+// armado a mano. El error que en realidad regresa PostgREST cuando el JSON
+// de un INSERT/UPDATE trae una llave que no es ninguna columna de la tabla
+// es OTRO, muy distinto: `PGRST204` con el mensaje "Could not find the
+// 'xyz' column of 'tabla' in the schema cache" — SIN la frase "does not
+// exist" en ningún lado. Como ese es justo el caso más común de todos (un
+// campo opcional como `pareja_nombre`, `origen`, `es_reserva`, etc. que tu
+// proyecto de Supabase no tiene todavía), la función se quedaba corta
+// exactamente donde más se necesitaba: el INSERT fallaba derecho, sin
+// reintento, y el usuario veía un error genérico aunque el resto de la
+// fila era perfectamente válida.
 function esErrorColumnaInexistente(error) {
   if (!error) return false;
-  return error.code === '42703' || /does not exist/i.test(error.message || '');
+  const mensaje = error.message || '';
+  return error.code === '42703' || error.code === 'PGRST204' || /does not exist/i.test(mensaje) || /could not find the .* column/i.test(mensaje);
+}
+
+// Nombre de la columna que PostgREST reporta como faltante en un error
+// `PGRST204` ("Could not find the 'xyz' column of 'tabla' in the schema
+// cache") — `null` si el mensaje no trae ese patrón. Permite un reintento
+// QUIRÚRGICO (quitar solo esa llave del payload) en vez de tener que
+// enumerar a mano cada combinación posible de columnas opcionales — ver
+// `insertarConColumnasOpcionales` más abajo.
+function columnaFaltanteDeError(error) {
+  const match = /column ['"]?([a-zA-Z0-9_]+)['"]?/i.exec(error?.message || '');
+  return match ? match[1] : null;
+}
+
+// Núcleo "auto-adaptable" compartido por insert/update: intenta con el
+// payload completo y, cada vez que Supabase regresa "columna inexistente",
+// quita ESA columna puntual (si `columnaFaltanteDeError` la puede
+// identificar) o, como respaldo, TODAS las de `columnasOpcionales` de una
+// vez, y reintenta — hasta que la operación se guarda o ya no queda
+// ninguna columna opcional que quitar. Así una sola llamada tolera
+// cualquier combinación de columnas que falten en un proyecto de Supabase
+// dado (incluyendo nombres alternativos mandados "por si acaso", como
+// `estatus_pago` junto con `estado_pago`), sin tener que escribir un
+// reintento a mano por cada una, y sin arriesgarse a fallar solo porque la
+// columna que falta no es la primera que se prueba a quitar.
+async function conColumnasOpcionales(payloadCompleto, columnasOpcionales, ejecutar) {
+  let payload = { ...payloadCompleto };
+  let pendientes = new Set(columnasOpcionales);
+  for (let intento = 0; intento <= columnasOpcionales.length; intento++) {
+    const { data, error } = await ejecutar(payload);
+    if (!error) return { data, error: null };
+    if (!esErrorColumnaInexistente(error) || pendientes.size === 0) return { data: null, error };
+    const faltante = columnaFaltanteDeError(error);
+    if (faltante && pendientes.has(faltante)) {
+      delete payload[faltante];
+      pendientes.delete(faltante);
+    } else {
+      pendientes.forEach((col) => delete payload[col]);
+      pendientes.clear();
+    }
+  }
+  return { data: null, error: new Error('No se pudo guardar ni siquiera sin las columnas opcionales.') };
+}
+
+async function insertarConColumnasOpcionales(tabla, payloadCompleto, columnasOpcionales) {
+  return conColumnasOpcionales(payloadCompleto, columnasOpcionales, (payload) =>
+    supabase.from(tabla).insert(payload).select().single()
+  );
+}
+
+async function actualizarConColumnasOpcionales(tabla, id, payloadCompleto, columnasOpcionales) {
+  return conColumnasOpcionales(payloadCompleto, columnasOpcionales, (payload) => supabase.from(tabla).update(payload).eq('id', id));
 }
 
 function obtenerTimestampVenta(venta) {
@@ -8226,6 +8308,29 @@ function normalizarVarianteJSONB(v, indice) {
 function variantesDeProductoJSONB(producto) {
   if (!Array.isArray(producto?.variantes)) return [];
   return producto.variantes.map(normalizarVarianteJSONB).filter((v) => v.activo !== false);
+}
+
+// Control de Stock 0 = No Disponible — CRITERIO ÚNICO, compartido por
+// `ProductoCard` (Smart POS), el grid de la Tienda del Portal y cualquier
+// otro punto que necesite decidir "¿se puede vender esto ahora mismo?":
+// - Sin variantes: agotado si `stock <= 0` (y el producto SÍ controla
+//   stock — `maneja_stock !== false`).
+// - Con variantes: agotado solo cuando TODAS las variantes con control de
+//   stock propio están en 0 (una variante sin `stock`/`cantidad`/
+//   `existencias` en su JSONB no tiene control propio y no cuenta para
+//   este cálculo) — mismo criterio que ya usaba `ProductoCard`, ahora
+//   reutilizable en vez de reimplementado en cada lugar (antes, el grid de
+//   la Tienda del Portal ni siquiera lo intentaba para productos con
+//   variantes: `!tieneVariantes && ...` los daba siempre por disponibles).
+function productoEstaAgotado(producto, variantesNormalizadas) {
+  const variantes = variantesNormalizadas || [];
+  if (variantes.length > 0) {
+    const conControl = variantes.filter((v) => v.stock != null);
+    return conControl.length > 0 && conControl.reduce((acc, v) => acc + (Number(v.stock) || 0), 0) <= 0;
+  }
+  if (producto?.maneja_stock === false) return false;
+  const stock = Number(producto?.stock);
+  return Number.isFinite(stock) && stock <= 0;
 }
 
 // Descuento Real al Vender un producto SIN variantes: a diferencia de la
@@ -18808,27 +18913,45 @@ function PortalPublicoJugadores({ clubSlug }) {
     const esPagoTarjeta = metodo === 'tarjeta';
     const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
     const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
-    let payloadParticipante = withClubId({
+    const pagado = esPagoTarjeta || (montoRestante <= 0 && monto > 0);
+    const nombrePareja = pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.nombre || null : null;
+    const telefonoPareja = pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.telefono || null : null;
+    // Mapeo defensivo de columnas (mismo criterio que `correo`/`email` en
+    // `ModalAgregarParticipanteTorneo`): distintos proyectos de Supabase
+    // pueden tener esta tabla con nombres de columna distintos —
+    // `pareja_nombre` vs `nombre_pareja`, `estado_pago` vs `estatus_pago` (y
+    // con valores distintos: 'pendiente' vs 'pendiente_recepcion'). Se
+    // mandan TODOS los alias a la vez y `insertarConColumnasOpcionales`
+    // quita, uno por uno, cualquiera que tu esquema no reconozca — así el
+    // INSERT nunca falla solo por un desfase de nombre de columna.
+    const payloadParticipante = withClubId({
       torneo_id: torneo.id,
       nombre: jugador.nombre,
       telefono: jugador.telefono,
       jugador_id: jugador.id,
       categoria: categoria || null,
       monto,
-      estado_pago: esPagoTarjeta || (montoRestante <= 0 && monto > 0) ? 'pagado' : 'pendiente',
-      pareja_nombre: pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.nombre || null : null,
-      pareja_telefono: pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.telefono || null : null,
+      estado_pago: pagado ? 'pagado' : 'pendiente',
+      estatus_pago: pagado ? 'pagado' : 'pendiente_recepcion',
+      pareja_nombre: nombrePareja,
+      nombre_pareja: nombrePareja,
+      pareja_telefono: telefonoPareja,
+      telefono_pareja: telefonoPareja,
       pareja_correo: pareja?.modo === 'nueva' ? pareja.correo || null : null,
       pareja_jugador_id: pareja?.modo === 'registrada' ? pareja.jugadorId || null : null,
       busca_pareja: pareja?.modo === 'ninguna',
     });
     try {
-      let { data, error } = await supabase.from('torneo_participantes').insert(payloadParticipante).select().single();
-      if (error && esErrorColumnaInexistente(error)) {
-        const { pareja_nombre, pareja_telefono, pareja_correo, pareja_jugador_id, busca_pareja, ...sinPareja } = payloadParticipante;
-        payloadParticipante = sinPareja;
-        ({ data, error } = await supabase.from('torneo_participantes').insert(payloadParticipante).select().single());
-      }
+      const { data, error } = await insertarConColumnasOpcionales('torneo_participantes', payloadParticipante, [
+        'estatus_pago',
+        'pareja_nombre',
+        'nombre_pareja',
+        'pareja_telefono',
+        'telefono_pareja',
+        'pareja_correo',
+        'pareja_jugador_id',
+        'busca_pareja',
+      ]);
       if (error) throw error;
       if (montoWallet > 0) {
         await aplicarCargoWallet({
@@ -18881,16 +19004,21 @@ function PortalPublicoJugadores({ clubSlug }) {
     }
     const payload = {
       pareja_nombre: jugador.nombre,
+      nombre_pareja: jugador.nombre,
       pareja_telefono: jugador.telefono,
+      telefono_pareja: jugador.telefono,
       pareja_jugador_id: jugador.id,
       busca_pareja: false,
     };
     try {
-      let { error } = await supabase.from('torneo_participantes').update(payload).eq('id', participante.id);
-      if (error && esErrorColumnaInexistente(error)) {
-        const { pareja_jugador_id, ...sinJugadorId } = payload;
-        ({ error } = await supabase.from('torneo_participantes').update(sinJugadorId).eq('id', participante.id));
-      }
+      const { error } = await actualizarConColumnasOpcionales('torneo_participantes', participante.id, payload, [
+        'pareja_nombre',
+        'nombre_pareja',
+        'pareja_telefono',
+        'telefono_pareja',
+        'pareja_jugador_id',
+        'busca_pareja',
+      ]);
       if (error) throw error;
       setParticipantes((prev) => prev.map((p) => (p.id === participante.id ? { ...p, ...payload } : p)));
       mostrarToast({ titulo: '¡Listo, ya son pareja!', detalle: `Te uniste a ${participante.nombre} en ${participante.categoria || 'el torneo'}.` });
@@ -19473,7 +19601,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                     {productosTienda.map((p) => {
                       const variantes = variantesPorProductoPortal[p.id] || [];
                       const tieneVariantes = variantes.length > 0;
-                      const sinStock = !tieneVariantes && p.maneja_stock !== false && Number(p.stock) <= 0;
+                      const sinStock = productoEstaAgotado(p, variantes);
                       return (
                         <button
                           key={p.id}
@@ -20429,6 +20557,19 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, productosAddOns,
   }, [franjas, turnoFiltro]);
   const franjasLibres = useMemo(() => franjas.filter((f) => !f.ocupado && !f.pasado), [franjas]);
 
+  // INDICADOR DE DEMANDA/OCUPACIÓN — Ocupación diaria de ESTA cancha, para
+  // ESTA fecha y duración elegidas: Slots Reservados / Slots Totales del
+  // Día * 100 (usa `franjas`, el mismo cálculo de 30 en 30 minutos que ya
+  // pinta la cuadrícula de horarios de abajo, así que el % siempre
+  // coincide con lo que el jugador ve marcado como "Reservado"/"Pasado").
+  const ocupacionPct = franjas.length > 0 ? Math.round((franjas.filter((f) => f.ocupado).length / franjas.length) * 100) : 0;
+  const demanda =
+    ocupacionPct >= 80
+      ? { etiqueta: 'Alta Demanda', clases: 'bg-rose-400/10 text-rose-400 ring-1 ring-rose-400/30' }
+      : ocupacionPct >= 40
+      ? { etiqueta: 'Demanda Media', clases: 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30' }
+      : { etiqueta: 'Alta Disponibilidad', clases: 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30' };
+
   useEffect(() => {
     if (!franjasLibres.some((f) => f.horaInicio === horaInicio)) {
       setHoraInicio(franjasLibres[0]?.horaInicio || '');
@@ -20490,6 +20631,11 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, productosAddOns,
 
   async function confirmar() {
     setError('');
+    // BLOQUEO DE FECHAS PASADAS: el `min={hoyISO()}` del input ya evita
+    // esto en el calendario nativo de la mayoría de navegadores, pero un
+    // valor tecleado a mano (o un navegador que ignore `min`) igual podría
+    // colarse hasta aquí — última barrera antes de mandar la reserva.
+    if (fecha < hoyISO()) return setError('No puedes reservar en una fecha anterior a hoy.');
     if (!horaInicio) return setError('No hay horarios disponibles para esa fecha/duración — elige otra.');
     if (!jugador) {
       if (!nombre.trim()) return setError('Escribe tu nombre.');
@@ -20509,7 +20655,20 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, productosAddOns,
       <div className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
           <Campo label="Fecha">
-            <input type="date" min={hoyISO()} value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
+            <input
+              type="date"
+              min={hoyISO()}
+              value={fecha}
+              onChange={(e) => {
+                const valor = e.target.value;
+                // Clamp defensivo: un valor tecleado a mano (o un navegador
+                // que no respete `min`) nunca debe dejar pasar una fecha
+                // anterior a hoy — se ajusta silenciosamente a hoy en vez
+                // de aceptarlo.
+                setFecha(valor && valor < hoyISO() ? hoyISO() : valor);
+              }}
+              className={inputClase}
+            />
             {/* DATEPICKER — accesos rápidos: un click para hoy/mañana sin
                 tener que abrir el calendario nativo. */}
             <div className="mt-1.5 flex gap-1.5">
@@ -20545,6 +20704,16 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, productosAddOns,
         </div>
 
         <Campo label="Hora" hint="Cuadrícula de horarios: gris/tachado = ya reservado o pasado, verde = libre.">
+          {/* INDICADOR DE DEMANDA/OCUPACIÓN — % de horarios de ESTA cancha,
+              ESTA fecha y duración ya reservados hoy (Slots Reservados /
+              Slots Totales del Día * 100). Insignia roja/amarilla/verde
+              según el % de ocupación, calculada a partir de las mismas
+              `franjas` que pintan la cuadrícula de abajo. */}
+          <div className="mb-2 flex justify-end">
+            <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${demanda.clases}`}>
+              {demanda.etiqueta} • {ocupacionPct}% Ocupado
+            </span>
+          </div>
           {/* OPTIMIZACIÓN DE HORARIOS: pestañas por turno en vez de las ~34
               franjas del día todas juntas. */}
           <div className="mb-2 flex gap-1.5 overflow-x-auto pb-0.5">
@@ -20602,19 +20771,22 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, productosAddOns,
         </Campo>
 
         <div>
-          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Adicionales (opcional)</p>
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Para ti</p>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {productosAddOns.map((p) => {
               const variantes = variantesPorProducto[p.id] || [];
+              const sinStock = productoEstaAgotado(p, variantes);
               return (
                 <button
                   key={p.id}
                   type="button"
+                  disabled={sinStock}
                   onClick={() => (variantes.length > 0 ? setAddonParaVariante(p) : agregarAddon(p))}
-                  className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-left hover:border-lime-400/40"
+                  className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-left hover:border-lime-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-700"
                 >
                   <span className="text-[11px] font-bold text-slate-200">{p.nombre}</span>
                   <span className="text-[11px] font-semibold text-lime-400">{formatoMoneda(p.precio)}</span>
+                  {sinStock && <span className="text-[10px] font-bold text-rose-400">Agotado</span>}
                 </button>
               );
             })}
