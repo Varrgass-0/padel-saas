@@ -13658,36 +13658,43 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
     let retaCreada = null;
     let modoLocal = false;
 
-    try {
-      const { data, error: errReta } = await supabase.from('retas').insert(payloadReta).select().single();
-      if (errReta) throw errReta;
+    // INSERT EXPLÍCITO E INMEDIATO en la tabla `retas` de Supabase — ya NO
+    // depende de guardarse solo en el estado local: se manda el payload
+    // completo (con los alias de columna de arriba) y, si tu esquema real
+    // no reconoce alguna de esas columnas, `insertarConColumnasOpcionales`
+    // las va quitando una por una y reintenta — así el INSERT nunca falla
+    // solo por un desfase de nombre de columna.
+    const { data, error: errReta } = await insertarConColumnasOpcionales('retas', payloadReta, [
+      'categoria',
+      'nivel',
+      'precio_inscripcion',
+      'precio_individual',
+      'tolerancia_horas',
+    ]);
+
+    if (!errReta && data) {
       retaCreada = data;
-    } catch (errReta) {
-      // Tolerancia total a fallos: CUALQUIER error al insertar — política
-      // RLS ("new row violates row-level security policy"), columna o
-      // tabla ausente, error de red, o cualquier otra causa — se absorbe
-      // aquí. Nunca se bloquea al operador con una alerta roja; el
-      // registro se guarda en memoria local hasta que se corrija la causa
-      // de fondo en Supabase (política RLS, esquema, o conectividad).
-      console.warn('[Torneos & Retas] No se pudo guardar la Reta en Supabase — se usa modo local.', errReta);
+    } else {
+      // FALLA REAL del INSERT — política RLS ("new row violates
+      // row-level security policy"), columna o tabla ausente que no se
+      // pudo resolver ni quitando las opcionales, error de red, o
+      // cualquier otra causa. YA NO se absorbe en silencio: se avisa con
+      // un toast de ERROR explícito e inmediato, siempre (antes solo se
+      // avisaba para el caso puntual de RLS). La Reta se conserva en
+      // memoria para no perder lo ya capturado en el formulario, pero el
+      // operador debe saber DE INMEDIATO que esta Reta NO quedó guardada
+      // en Supabase y por lo tanto NO va a aparecer en el Portal de
+      // Jugadores hasta corregir la causa de fondo.
+      console.error('[Torneos & Retas] No se pudo guardar la Reta en Supabase.', errReta);
       modoLocal = true;
       retaCreada = { ...payloadReta, id: idLocal('reta'), _local: true };
-      // AVISO NO BLOQUEANTE: una reta en "modo local" solo existe en ESTE
-      // navegador (memoria/localStorage) — el Portal de Jugadores lee
-      // `retas` directo de Supabase, así que nunca la va a ver, aunque aquí
-      // se muestre perfectamente normal. La causa casi siempre es que
-      // faltan las políticas RLS de INSERT sobre `retas` para el rol `anon`
-      // (nunca se declararon — ver `migracion_v10_rls_retas_torneos.sql`).
-      // Antes esto pasaba 100% en silencio (solo `console.warn`); ahora se
-      // avisa con un toast — sigue sin bloquear al operador (la reta se
-      // sigue creando en modo local para no perder el flujo).
-      if (esErrorPermisoRLS(errReta)) {
-        toast({
-          titulo: 'Reta guardada solo en este navegador',
-          detalle: 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase — mientras tanto, esta Reta NO aparecerá en el Portal de Jugadores.',
-          tono: 'error',
-        });
-      }
+      toast({
+        titulo: 'No se pudo guardar la Reta en Supabase',
+        detalle: esErrorPermisoRLS(errReta)
+          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase — esta Reta solo existe en este navegador y NO aparecerá en el Portal de Jugadores.'
+          : `${errReta?.message || 'Error desconocido.'} — esta Reta solo existe en este navegador y NO aparecerá en el Portal de Jugadores.`,
+        tono: 'error',
+      });
     }
 
     // Nombre Personalizado desde la creación: la Parrilla y el Cronograma
@@ -13718,7 +13725,13 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
     }
 
     setGuardando(false);
-    toast({ titulo: 'Reta Abierta creada', detalle: `${formatoFechaLarga(fecha)} · ${formatoHora12(horaInicio)}` });
+    // El toast de éxito solo se muestra si de verdad quedó en Supabase —
+    // en modo local ya se avisó arriba con un toast de ERROR explícito, y
+    // mostrar además "Reta Abierta creada" encima confundiría al operador
+    // haciéndole creer que todo salió bien.
+    if (!modoLocal) {
+      toast({ titulo: 'Reta Abierta creada', detalle: `${formatoFechaLarga(fecha)} · ${formatoHora12(horaInicio)}` });
+    }
     onCreada(retaCreada, bloqueo || null);
     onClose();
   }
@@ -14170,35 +14183,37 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
     let torneoCreado = null;
     let modoLocal = false;
 
-    try {
-      const { data, error: errTorneo } = await supabase.from('torneos').insert(payloadTorneo).select().single();
-      if (errTorneo) throw errTorneo;
+    // INSERT EXPLÍCITO E INMEDIATO en `torneos` — mismo criterio que
+    // `ModalNuevaReta`: ya NO depende de guardarse solo en el estado
+    // local, y las columnas alias de arriba se reintentan sin la que
+    // falte en vez de tumbar el INSERT completo.
+    const { data, error: errTorneo } = await insertarConColumnasOpcionales('torneos', payloadTorneo, [
+      'formato_juego',
+      'reglas',
+      'fecha_fin',
+    ]);
+
+    if (!errTorneo && data) {
       torneoCreado = data;
-    } catch (errTorneo) {
-      // Tolerancia total a fallos: CUALQUIER error al insertar — política
-      // RLS ("new row violates row-level security policy"), columna o
-      // tabla ausente, error de red, o cualquier otra causa — se absorbe
-      // aquí. Nunca se bloquea al operador con una alerta roja; el
-      // registro se guarda en memoria local hasta que se corrija la causa
-      // de fondo en Supabase (política RLS, esquema, o conectividad).
-      console.warn('[Torneos & Retas] No se pudo guardar el Torneo en Supabase — se usa modo local.', errTorneo);
+    } else {
+      // FALLA REAL — un torneo en "modo local" nunca aparece en el Portal
+      // (que lee `torneos` directo de Supabase) y, peor aún, cualquier
+      // inscripción que un jugador intente hacer contra este `torneo.id`
+      // local va a fallar con "No se pudo completar tu inscripción" (el
+      // `torneo_id` no existe de verdad en `torneos`, viola la llave
+      // foránea en `torneo_participantes`). YA NO se absorbe en silencio:
+      // se avisa con un toast de ERROR explícito e inmediato, siempre
+      // (antes solo se avisaba para el caso puntual de RLS).
+      console.error('[Torneos & Retas] No se pudo guardar el Torneo en Supabase.', errTorneo);
       modoLocal = true;
       torneoCreado = { ...payloadTorneo, id: idLocal('torneo'), _local: true };
-      // AVISO NO BLOQUEANTE — mismo criterio que `ModalNuevaReta`: un
-      // torneo en "modo local" nunca aparece en el Portal (que lee
-      // `torneos` directo de Supabase) y, peor aún, cualquier inscripción
-      // que un jugador intente hacer contra este `torneo.id` local va a
-      // fallar con "No se pudo completar tu inscripción" (el `torneo_id`
-      // no existe de verdad en `torneos`). Causa casi siempre: falta la
-      // política RLS de INSERT sobre `torneos` para `anon` — ver
-      // `migracion_v10_rls_retas_torneos.sql`.
-      if (esErrorPermisoRLS(errTorneo)) {
-        toast({
-          titulo: 'Torneo guardado solo en este navegador',
-          detalle: 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase — mientras tanto, este Torneo NO aparecerá en el Portal ni aceptará inscripciones desde ahí.',
-          tono: 'error',
-        });
-      }
+      toast({
+        titulo: 'No se pudo guardar el Torneo en Supabase',
+        detalle: esErrorPermisoRLS(errTorneo)
+          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase — este Torneo solo existe en este navegador, NO aparecerá en el Portal y NO aceptará inscripciones desde ahí.'
+          : `${errTorneo?.message || 'Error desconocido.'} — este Torneo solo existe en este navegador, NO aparecerá en el Portal y NO aceptará inscripciones desde ahí.`,
+        tono: 'error',
+      });
     }
 
     const bloqueosValidos = bloqueos.filter((b) => b.canchaId && b.fecha && b.horaInicio && b.horaFin);
@@ -14240,7 +14255,11 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
     }
 
     setGuardando(false);
-    toast({ titulo: 'Torneo creado', detalle: `${nombre.trim()} · ${bloqueosCreados.length} horario(s) bloqueado(s)` });
+    // El toast de éxito solo se muestra si de verdad quedó en Supabase —
+    // en modo local ya se avisó arriba con un toast de ERROR explícito.
+    if (!modoLocal) {
+      toast({ titulo: 'Torneo creado', detalle: `${nombre.trim()} · ${bloqueosCreados.length} horario(s) bloqueado(s)` });
+    }
     onCreado(torneoCreado);
     onClose();
   }
@@ -18916,6 +18935,25 @@ function PortalPublicoJugadores({ clubSlug }) {
     const pagado = esPagoTarjeta || (montoRestante <= 0 && monto > 0);
     const nombrePareja = pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.nombre || null : null;
     const telefonoPareja = pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.telefono || null : null;
+
+    // REGISTRO AUTOMÁTICO DE PAREJA NUEVA EN EL CRM: cuando el jugador
+    // capturó a mano los datos de un compañero NO registrado ("Registrar
+    // pareja nueva"), se da de alta un expediente real en `jugadores`
+    // ANTES de inscribir — mismo helper de "CRM Unificado por Teléfono"
+    // (`resolverJugadorId`) que ya usa el resto de la app (Parrilla, Smart
+    // POS, Tienda) para altas desde nombre+teléfono: si ya existe alguien
+    // con ese teléfono, reutiliza su id en vez de duplicarlo; si no,
+    // inserta uno nuevo. Así la pareja nueva queda de verdad en el CRM del
+    // club (no solo como texto suelto en la inscripción) y la próxima vez
+    // que alguien la busque en "Seleccionar pareja" ya aparece.
+    let parejaJugadorId = pareja?.modo === 'registrada' ? pareja.jugadorId || null : null;
+    if (pareja?.modo === 'nueva' && nombrePareja) {
+      try {
+        parejaJugadorId = await resolverJugadorId(nombrePareja, { telefono: telefonoPareja, directorio: [] });
+      } catch (errCRM) {
+        console.warn('[Portal] No se pudo registrar a la pareja nueva en el CRM (jugadores) — la inscripción continúa sin vincular un id.', errCRM);
+      }
+    }
     // Mapeo defensivo de columnas (mismo criterio que `correo`/`email` en
     // `ModalAgregarParticipanteTorneo`): distintos proyectos de Supabase
     // pueden tener esta tabla con nombres de columna distintos —
@@ -18938,7 +18976,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       pareja_telefono: telefonoPareja,
       telefono_pareja: telefonoPareja,
       pareja_correo: pareja?.modo === 'nueva' ? pareja.correo || null : null,
-      pareja_jugador_id: pareja?.modo === 'registrada' ? pareja.jugadorId || null : null,
+      pareja_jugador_id: parejaJugadorId,
       busca_pareja: pareja?.modo === 'ninguna',
     });
     try {
@@ -21409,9 +21447,18 @@ function AppInterno() {
   const cargarRetas = useCallback(async (opts = {}) => {
     if (!opts.silencioso) setLoadingRetas(true);
     setErrorRetas('');
-    const { data, error } = await conClubId(supabase.from('retas').select('*'))
-      .eq('estado', 'abierta')
-      .order('fecha', { ascending: true });
+    // MISMA CONSULTA que el Portal de Jugadores (`cargarDatosPortal` en
+    // `PortalPublicoJugadores`): `conClubId(supabase.from('retas').select('*'))`
+    // sin más filtro de servidor que el club — antes este módulo agregaba
+    // `.eq('estado', 'abierta')`, un filtro estricto que el Portal NUNCA
+    // tuvo. Ningún flujo de la app pone `estado` en algo distinto de
+    // 'abierta' hoy, así que esto no cambia lo que ve el operador — pero
+    // si algún día se agrega un estado nuevo, o una reta llega con
+    // `estado` vacío/NULL por un insert externo, ambas pantallas ahora
+    // están garantizadas a coincidir en vez de que una la muestre y la
+    // otra la esconda. El filtro de "activas vs. archivadas" que sí ve el
+    // operador aquí es 100% client-side (`retasVisibles`, por `archivado`).
+    const { data, error } = await conClubId(supabase.from('retas').select('*')).order('fecha', { ascending: true });
     if (error) {
       // Tabla `retas` todavía no existe en este proyecto de Supabase:
       // fallback en memoria (más lo que haya en localStorage), sin banner
