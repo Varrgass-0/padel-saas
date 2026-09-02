@@ -13567,6 +13567,22 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
       console.warn('[Torneos & Retas] No se pudo guardar la Reta en Supabase — se usa modo local.', errReta);
       modoLocal = true;
       retaCreada = { ...payloadReta, id: idLocal('reta'), _local: true };
+      // AVISO NO BLOQUEANTE: una reta en "modo local" solo existe en ESTE
+      // navegador (memoria/localStorage) — el Portal de Jugadores lee
+      // `retas` directo de Supabase, así que nunca la va a ver, aunque aquí
+      // se muestre perfectamente normal. La causa casi siempre es que
+      // faltan las políticas RLS de INSERT sobre `retas` para el rol `anon`
+      // (nunca se declararon — ver `migracion_v10_rls_retas_torneos.sql`).
+      // Antes esto pasaba 100% en silencio (solo `console.warn`); ahora se
+      // avisa con un toast — sigue sin bloquear al operador (la reta se
+      // sigue creando en modo local para no perder el flujo).
+      if (esErrorPermisoRLS(errReta)) {
+        toast({
+          titulo: 'Reta guardada solo en este navegador',
+          detalle: 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase — mientras tanto, esta Reta NO aparecerá en el Portal de Jugadores.',
+          tono: 'error',
+        });
+      }
     }
 
     // Nombre Personalizado desde la creación: la Parrilla y el Cronograma
@@ -14063,6 +14079,21 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
       console.warn('[Torneos & Retas] No se pudo guardar el Torneo en Supabase — se usa modo local.', errTorneo);
       modoLocal = true;
       torneoCreado = { ...payloadTorneo, id: idLocal('torneo'), _local: true };
+      // AVISO NO BLOQUEANTE — mismo criterio que `ModalNuevaReta`: un
+      // torneo en "modo local" nunca aparece en el Portal (que lee
+      // `torneos` directo de Supabase) y, peor aún, cualquier inscripción
+      // que un jugador intente hacer contra este `torneo.id` local va a
+      // fallar con "No se pudo completar tu inscripción" (el `torneo_id`
+      // no existe de verdad en `torneos`). Causa casi siempre: falta la
+      // política RLS de INSERT sobre `torneos` para `anon` — ver
+      // `migracion_v10_rls_retas_torneos.sql`.
+      if (esErrorPermisoRLS(errTorneo)) {
+        toast({
+          titulo: 'Torneo guardado solo en este navegador',
+          detalle: 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase — mientras tanto, este Torneo NO aparecerá en el Portal ni aceptará inscripciones desde ahí.',
+          tono: 'error',
+        });
+      }
     }
 
     const bloqueosValidos = bloqueos.filter((b) => b.canchaId && b.fecha && b.horaInicio && b.horaFin);
@@ -18471,6 +18502,20 @@ function PortalPublicoJugadores({ clubSlug }) {
   const [productos, setProductos] = useState([]);
   const [cargandoDatos, setCargandoDatos] = useState(true);
 
+  // Mismo patrón que el `upsertProducto` interno de App() (ERP & Smart
+  // POS): fusiona los campos que llegan (p. ej. solo `{ id, stock }` tras un
+  // descuento) sobre el producto existente, sin esperar el viaje redondo de
+  // Realtime — así el carrito de la Tienda ve el stock real de INMEDIATO
+  // después de cada compra en la MISMA sesión del Portal (antes se pasaba
+  // un no-op aquí y el estado local solo se enteraba cuando llegaba el
+  // evento `postgres_changes` de `productos`, o al recargar la página).
+  function upsertProducto(producto) {
+    setProductos((prev) => {
+      const existe = prev.some((p) => p.id === producto.id);
+      return existe ? prev.map((p) => (p.id === producto.id ? { ...p, ...producto } : p)) : [...prev, producto];
+    });
+  }
+
   const [vista, setVista] = useState('canchas');
   const [modalIdentificacion, setModalIdentificacion] = useState(false);
   const [eventoParaInscribir, setEventoParaInscribir] = useState(null); // { tipo: 'reta'|'torneo', evento }
@@ -18495,7 +18540,13 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   // Flujo de pago de inscripción a Reta/Torneo — se intercala ANTES de
   // insertar la inscripción, para poder ofrecer "Pagar con Wallet".
-  const [flujoPago, setFlujoPago] = useState(null); // { tipo: 'reta'|'torneo', evento, categoria, monto }
+  const [flujoPago, setFlujoPago] = useState(null); // { tipo: 'reta'|'torneo', evento, categoria, monto, pareja }
+
+  // REDISEÑO DE TORNEOS — Modal Detallado: toda la tarjeta del torneo abre
+  // este modal (antes solo la etiqueta de categoría era cliqueable). Desde
+  // aquí se elige categoría (si aplica) y el modo de pareja, y se lanza el
+  // mismo `flujoPago`/`ModalElegirPago` de siempre.
+  const [torneoDetalle, setTorneoDetalle] = useState(null); // torneo completo, o null
 
   useEffect(() => {
     let cancelado = false;
@@ -18669,6 +18720,24 @@ function PortalPublicoJugadores({ clubSlug }) {
     return true;
   }
 
+  // Búsqueda de jugadores YA registrados en el sistema — usada por
+  // "Seleccionar pareja" en `ModalDetalleTorneo`. Consulta bajo demanda
+  // (nunca carga el directorio completo del club en el Portal, por
+  // privacidad/rendimiento) contra `jugadores` con RLS de SELECT ya
+  // concedida a `anon` desde `migracion_v4_portal_rls.sql`.
+  async function buscarJugadoresRegistrados(texto) {
+    const q = (texto || '').trim();
+    if (q.length < 2) return [];
+    try {
+      const { data, error } = await supabase.from('jugadores').select('id, nombre, telefono').ilike('nombre', `%${q}%`).limit(8);
+      if (error) throw error;
+      return data || [];
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (buscar jugadores registrados):', err);
+      return [];
+    }
+  }
+
   function cerrarSesionPortal() {
     setJugador(null);
     borrarSesionPortalLocal(club?.id);
@@ -18725,14 +18794,21 @@ function PortalPublicoJugadores({ clubSlug }) {
     }
   }
 
-  // Inscripción — Torneo: igual criterio que `ModalAgregarParticipanteTorneo`.
-  async function inscribirseATorneo(torneo, categoria, metodo) {
+  // Inscripción — Torneo: igual criterio que `ModalAgregarParticipanteTorneo`,
+  // ahora con Inscripción Flexible de Parejas (ver `ModalDetalleTorneo`):
+  // `pareja` es `null` (sin categorías/flujo viejo) o
+  // `{ modo: 'registrada'|'nueva'|'ninguna', nombre, telefono, correo,
+  // jugadorId }`. Columnas `pareja_*`/`busca_pareja` opcionales
+  // (Arquitectura Flexible): si tu Supabase todavía no las tiene, se
+  // reintenta el insert sin ellas — la inscripción del jugador principal
+  // nunca se pierde por esto.
+  async function inscribirseATorneo(torneo, categoria, metodo, pareja = null) {
     if (!jugador) return setModalIdentificacion(true);
     const monto = Number(torneo.precio) || 0;
     const esPagoTarjeta = metodo === 'tarjeta';
     const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
     const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
-    const payloadParticipante = withClubId({
+    let payloadParticipante = withClubId({
       torneo_id: torneo.id,
       nombre: jugador.nombre,
       telefono: jugador.telefono,
@@ -18740,9 +18816,19 @@ function PortalPublicoJugadores({ clubSlug }) {
       categoria: categoria || null,
       monto,
       estado_pago: esPagoTarjeta || (montoRestante <= 0 && monto > 0) ? 'pagado' : 'pendiente',
+      pareja_nombre: pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.nombre || null : null,
+      pareja_telefono: pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.telefono || null : null,
+      pareja_correo: pareja?.modo === 'nueva' ? pareja.correo || null : null,
+      pareja_jugador_id: pareja?.modo === 'registrada' ? pareja.jugadorId || null : null,
+      busca_pareja: pareja?.modo === 'ninguna',
     });
     try {
-      const { data, error } = await supabase.from('torneo_participantes').insert(payloadParticipante).select().single();
+      let { data, error } = await supabase.from('torneo_participantes').insert(payloadParticipante).select().single();
+      if (error && esErrorColumnaInexistente(error)) {
+        const { pareja_nombre, pareja_telefono, pareja_correo, pareja_jugador_id, busca_pareja, ...sinPareja } = payloadParticipante;
+        payloadParticipante = sinPareja;
+        ({ data, error } = await supabase.from('torneo_participantes').insert(payloadParticipante).select().single());
+      }
       if (error) throw error;
       if (montoWallet > 0) {
         await aplicarCargoWallet({
@@ -18755,16 +18841,68 @@ function PortalPublicoJugadores({ clubSlug }) {
         cargarWallet(jugador.id);
       }
       setParticipantes((prev) => [...prev, data]);
+      const detallePareja =
+        pareja?.modo === 'ninguna'
+          ? ' · En busca de pareja'
+          : pareja?.nombre
+          ? ` · Pareja: ${pareja.nombre}`
+          : '';
       mostrarToast({
         titulo: '¡Inscripción confirmada!',
         detalle:
-          montoRestante > 0
+          (montoRestante > 0
             ? `${torneo.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
-            : `${torneo.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
+            : `${torneo.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`) + detallePareja,
       });
+      return { ok: true, data };
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (inscripción a Torneo):', err);
-      mostrarToast({ titulo: 'No se pudo completar tu inscripción', detalle: 'Intenta de nuevo o pide ayuda en recepción.', tono: 'error' });
+      mostrarToast({
+        titulo: 'No se pudo completar tu inscripción',
+        detalle: esErrorPermisoRLS(err)
+          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
+          : 'Intenta de nuevo o pide ayuda en recepción.',
+        tono: 'error',
+      });
+      return { ok: false, error: err };
+    }
+  }
+
+  // "Unirme como pareja" — un jugador YA identificado se une a una
+  // inscripción ajena marcada "En busca de pareja" (`busca_pareja: true`,
+  // sin pareja asignada). No genera un cobro nuevo: el precio del Torneo ya
+  // es "por pareja" (ver `unidad_precio`) y quien abrió la inscripción ya
+  // cubrió (o dejó pendiente) ese monto — unirse solo completa el registro
+  // con los datos de la segunda persona.
+  async function unirseComoParejaTorneo(participante) {
+    if (!jugador) {
+      setModalIdentificacion(true);
+      return;
+    }
+    const payload = {
+      pareja_nombre: jugador.nombre,
+      pareja_telefono: jugador.telefono,
+      pareja_jugador_id: jugador.id,
+      busca_pareja: false,
+    };
+    try {
+      let { error } = await supabase.from('torneo_participantes').update(payload).eq('id', participante.id);
+      if (error && esErrorColumnaInexistente(error)) {
+        const { pareja_jugador_id, ...sinJugadorId } = payload;
+        ({ error } = await supabase.from('torneo_participantes').update(sinJugadorId).eq('id', participante.id));
+      }
+      if (error) throw error;
+      setParticipantes((prev) => prev.map((p) => (p.id === participante.id ? { ...p, ...payload } : p)));
+      mostrarToast({ titulo: '¡Listo, ya son pareja!', detalle: `Te uniste a ${participante.nombre} en ${participante.categoria || 'el torneo'}.` });
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (unirse como pareja):', err);
+      mostrarToast({
+        titulo: 'No se pudo completar tu unión',
+        detalle: esErrorPermisoRLS(err)
+          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
+          : 'Intenta de nuevo o pide ayuda en recepción.',
+        tono: 'error',
+      });
     }
   }
 
@@ -18854,7 +18992,23 @@ function PortalPublicoJugadores({ clubSlug }) {
   // usa el Smart POS interno (`descontarStockVariante`/
   // `descontarStockProductoSimple`/`insertarMovimientoKardex`), para que el
   // Portal, el mostrador y el Kardex nunca se desincronicen.
+  //
+  // FIX CRÍTICO: antes, esta función SIEMPRE resolvía en silencio (nunca
+  // lanzaba), y `confirmarCheckoutTienda`/`confirmarReservaConAddons` la
+  // llaman DESPUÉS de que la venta ya se insertó — así que aunque el
+  // `UPDATE productos` fallara (típicamente por RLS: falta la política de
+  // UPDATE sobre `productos` para el rol `anon`, ver
+  // `migracion_v9_rls_productos.sql`), el jugador SIEMPRE veía "¡Compra
+  // confirmada!" sin ningún indicio de que el inventario no se movió — el
+  // fallo solo quedaba en `console.error`, que nadie del club llega a ver.
+  // Ahora: (1) pasa el `upsertProducto` REAL del Portal (antes era
+  // `() => {}`, un no-op — el stock SÍ se guardaba en Supabase, pero el
+  // estado local `productos` del Portal nunca se enteraba hasta el próximo
+  // `postgres_changes` de Realtime o recarga completa) y (2) regresa cuáles
+  // artículos fallaron, para que el llamador pueda avisar con un toast
+  // visible en vez de fallar en silencio.
   async function descontarStockYKardexItems(items, motivoBase) {
+    const fallos = [];
     await Promise.all(
       items
         .filter((it) => it.tipo === 'producto' && (it.productoPadreId || it.producto_id) && it.manejaStock !== false)
@@ -18870,7 +19024,7 @@ function PortalPublicoJugadores({ clubSlug }) {
               varianteId,
               varianteNombre: item.varianteNombre || item.nombre,
               cantidad: item.cantidad,
-              upsertProducto: () => {},
+              upsertProducto,
             });
             if (!resultado.ok) errStock = resultado.error;
             else {
@@ -18878,7 +19032,7 @@ function PortalPublicoJugadores({ clubSlug }) {
               nuevoStock = resultado.nuevoStock;
             }
           } else {
-            const resultado = await descontarStockProductoSimple({ productoId, cantidad: item.cantidad, upsertProducto: () => {} });
+            const resultado = await descontarStockProductoSimple({ productoId, cantidad: item.cantidad, upsertProducto });
             if (!resultado.ok) errStock = resultado.error;
             else {
               stockAnterior = resultado.stockAnterior;
@@ -18887,6 +19041,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           }
           if (errStock) {
             console.error(`[Portal] Error detallado Supabase al descontar el stock de "${item.nombre}":`, errStock);
+            fallos.push({ nombre: item.nombre, error: errStock, esRLS: esErrorPermisoRLS(errStock) });
             return;
           }
           if (nuevoStock == null) return;
@@ -18906,6 +19061,16 @@ function PortalPublicoJugadores({ clubSlug }) {
           }
         })
     );
+    if (fallos.length > 0) {
+      mostrarToast({
+        titulo: 'Compra registrada, pero sin descontar inventario',
+        detalle: fallos.some((f) => f.esRLS)
+          ? `Falta correr migracion_v9_rls_productos.sql en Supabase. Avisa a recepción para ajustar "${fallos.map((f) => f.nombre).join(', ')}" manualmente.`
+          : `No se pudo actualizar el stock de: ${fallos.map((f) => f.nombre).join(', ')}. Avisa a recepción.`,
+        tono: 'error',
+      });
+    }
+    return { ok: fallos.length === 0, fallos };
   }
 
   // Checkout de la Tienda — crea UNA venta (misma tabla `ventas` que usa
@@ -19346,53 +19511,58 @@ function PortalPublicoJugadores({ clubSlug }) {
                   {torneosActivos.length === 0 && (
                     <p className="py-10 text-center text-sm text-slate-500">No hay torneos activos por ahora — vuelve pronto.</p>
                   )}
-                  {torneosActivos.map((t) => (
-                    <div key={t.id} className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 backdrop-blur-sm">
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <p className="font-black text-slate-100">{t.nombre}</p>
-                          <p className="mt-0.5 text-xs text-slate-400">
-                            {formatoFechaLarga(t.fecha_inicio)}
-                            {t.fecha_fin && t.fecha_fin !== t.fecha_inicio ? ` — ${formatoFechaLarga(t.fecha_fin)}` : ''}
-                          </p>
+                  {torneosActivos.map((t) => {
+                    const participantesTorneo = participantesPorTorneo[t.id] || [];
+                    const buscandoPareja = participantesTorneo.filter((p) => p.busca_pareja && !p.pareja_nombre).length;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setTorneoDetalle(t)}
+                        className="w-full rounded-2xl border border-white/5 bg-slate-900/50 p-4 text-left backdrop-blur-sm transition hover:border-violet-400/30 hover:bg-slate-900/70"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-black text-slate-100">{t.nombre}</p>
+                            <p className="mt-0.5 text-xs text-slate-400">
+                              {formatoFechaLarga(t.fecha_inicio)}
+                              {t.fecha_fin && t.fecha_fin !== t.fecha_inicio ? ` — ${formatoFechaLarga(t.fecha_fin)}` : ''}
+                            </p>
+                          </div>
+                          <span className="shrink-0 rounded-full bg-violet-400/10 px-2.5 py-1 text-[10px] font-bold text-violet-400 ring-1 ring-violet-400/30">
+                            {participantesTorneo.length} inscritos
+                          </span>
                         </div>
-                        <span className="shrink-0 rounded-full bg-violet-400/10 px-2.5 py-1 text-[10px] font-bold text-violet-400 ring-1 ring-violet-400/30">
-                          {(participantesPorTorneo[t.id] || []).length} inscritos
-                        </span>
-                      </div>
-                      {Array.isArray(t.categorias) && t.categorias.length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {t.categorias.map((c, idx) => (
-                            <button
-                              key={idx}
-                              onClick={() => {
-                                const categoria = `${c.rama} ${c.nivel}`.trim();
-                                if (!jugador) {
-                                  setEventoParaInscribir({ tipo: 'torneo', evento: t });
-                                  setModalIdentificacion(true);
-                                  return;
-                                }
-                                setFlujoPago({ tipo: 'torneo', evento: t, categoria, monto: Number(t.precio) || 0 });
-                              }}
-                              className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:border-lime-400/50 hover:text-lime-400"
-                            >
-                              {c.rama} {c.nivel}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <div className="mt-3 flex items-center justify-between">
-                        <p className="text-sm font-bold text-lime-400">
-                          {formatoMoneda(t.precio)} / {t.unidad_precio || 'pareja'}
-                        </p>
-                        {(!Array.isArray(t.categorias) || t.categorias.length === 0) && (
-                          <BotonPrimario onClick={() => alIntentarInscribir('torneo', t)} className="px-3 py-1.5 text-xs">
-                            <UserPlus size={13} /> Inscribirme
-                          </BotonPrimario>
+                        {Array.isArray(t.categorias) && t.categorias.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {t.categorias.map((c, idx) => (
+                              <span
+                                key={idx}
+                                className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300"
+                              >
+                                {c.rama} {c.nivel}
+                              </span>
+                            ))}
+                          </div>
                         )}
-                      </div>
-                    </div>
-                  ))}
+                        <div className="mt-3 flex items-center justify-between gap-2">
+                          <p className="text-sm font-bold text-lime-400">
+                            {formatoMoneda(t.precio)} / {t.unidad_precio || 'pareja'}
+                          </p>
+                          <span className="flex items-center gap-2">
+                            {buscandoPareja > 0 && (
+                              <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-400 ring-1 ring-amber-400/30">
+                                {buscandoPareja} en busca de pareja
+                              </span>
+                            )}
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-slate-400">
+                              Ver detalle <ChevronRight size={13} />
+                            </span>
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
@@ -19560,8 +19730,26 @@ function PortalPublicoJugadores({ clubSlug }) {
             onClose={() => setFlujoPago(null)}
             onConfirmar={async (metodo) => {
               if (flujoPago.tipo === 'reta') await inscribirseAReta(flujoPago.evento, metodo);
-              else await inscribirseATorneo(flujoPago.evento, flujoPago.categoria, metodo);
+              else await inscribirseATorneo(flujoPago.evento, flujoPago.categoria, metodo, flujoPago.pareja || null);
               setFlujoPago(null);
+            }}
+          />
+        )}
+
+        {torneoDetalle && (
+          <ModalDetalleTorneo
+            torneo={torneoDetalle}
+            participantes={participantesPorTorneo[torneoDetalle.id] || []}
+            jugador={jugador}
+            onClose={() => setTorneoDetalle(null)}
+            onBuscarJugadores={buscarJugadoresRegistrados}
+            onUnirseComoPareja={async (participante) => {
+              await unirseComoParejaTorneo(participante);
+            }}
+            onRequerirIdentificacion={() => setModalIdentificacion(true)}
+            onInscribirme={(categoria, pareja) => {
+              setFlujoPago({ tipo: 'torneo', evento: torneoDetalle, categoria, monto: Number(torneoDetalle.precio) || 0, pareja });
+              setTorneoDetalle(null);
             }}
           />
         )}
@@ -19672,6 +19860,252 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
             <ChevronRight size={15} />
           </button>
         ))}
+      </div>
+    </ModalShell>
+  );
+}
+
+// Modal Detallado de Torneo — REDISEÑO: antes solo la etiqueta de categoría
+// abría el flujo de inscripción; ahora toda la tarjeta del torneo abre este
+// modal, con la información completa Y la Inscripción Flexible de Parejas:
+// (a) elegir una pareja ya registrada (búsqueda en vivo sobre `jugadores`),
+// (b) registrar una pareja nueva a mano (nombre + teléfono/correo), o
+// (c) inscribirse sin pareja ("En busca de pareja") — visible aquí mismo
+// para que otro jugador se una desde "Unirme" en la lista de abajo.
+function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJugadores, onUnirseComoPareja, onRequerirIdentificacion, onInscribirme }) {
+  const tieneCategorias = Array.isArray(torneo.categorias) && torneo.categorias.length > 0;
+  const [categoria, setCategoria] = useState(tieneCategorias ? '' : null);
+  const [modoPareja, setModoPareja] = useState('ninguna'); // 'registrada' | 'nueva' | 'ninguna'
+  const [busqueda, setBusqueda] = useState('');
+  const [resultados, setResultados] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+  const [parejaSeleccionada, setParejaSeleccionada] = useState(null);
+  const [parejaNombre, setParejaNombre] = useState('');
+  const [parejaTelefono, setParejaTelefono] = useState('');
+  const [parejaCorreo, setParejaCorreo] = useState('');
+  const [uniendoId, setUniendoId] = useState(null);
+  const [error, setError] = useState('');
+
+  // Búsqueda con debounce corto (350ms) — evita una consulta a Supabase por
+  // cada tecla mientras el jugador todavía está escribiendo el nombre.
+  useEffect(() => {
+    if (modoPareja !== 'registrada' || busqueda.trim().length < 2) {
+      setResultados([]);
+      return;
+    }
+    let cancelado = false;
+    setBuscando(true);
+    const timer = setTimeout(async () => {
+      const datos = await onBuscarJugadores(busqueda);
+      if (!cancelado) {
+        setResultados(datos);
+        setBuscando(false);
+      }
+    }, 350);
+    return () => {
+      cancelado = true;
+      clearTimeout(timer);
+    };
+  }, [busqueda, modoPareja, onBuscarJugadores]);
+
+  const enBuscaDePareja = (participantes || []).filter(
+    (p) => p.busca_pareja && !p.pareja_nombre && p.jugador_id !== jugador?.id
+  );
+
+  async function unirse(p) {
+    setUniendoId(p.id);
+    await onUnirseComoPareja(p);
+    setUniendoId(null);
+  }
+
+  function confirmarInscripcion() {
+    setError('');
+    if (tieneCategorias && !categoria) return setError('Elige tu categoría.');
+    let pareja = { modo: 'ninguna' };
+    if (modoPareja === 'registrada') {
+      if (!parejaSeleccionada) return setError('Busca y selecciona a tu pareja registrada.');
+      pareja = { modo: 'registrada', nombre: parejaSeleccionada.nombre, telefono: parejaSeleccionada.telefono, jugadorId: parejaSeleccionada.id };
+    } else if (modoPareja === 'nueva') {
+      if (!parejaNombre.trim()) return setError('Indica el nombre de tu pareja.');
+      if (!parejaTelefono.trim() && !parejaCorreo.trim()) return setError('Indica el teléfono o correo de tu pareja.');
+      pareja = { modo: 'nueva', nombre: parejaNombre.trim(), telefono: parejaTelefono.trim() || null, correo: parejaCorreo.trim() || null };
+    }
+    if (!jugador) {
+      onRequerirIdentificacion();
+      return;
+    }
+    onInscribirme(categoria, pareja);
+  }
+
+  return (
+    <ModalShell titulo={torneo.nombre} subtitulo="Detalle del torneo" onClose={onClose} icon={Trophy} ancho="max-w-lg">
+      <div className="space-y-4">
+        <div className="rounded-xl border border-white/5 bg-slate-800/60 p-3.5">
+          <p className="flex items-center gap-1.5 text-xs text-slate-400">
+            <CalendarIcon size={13} />
+            {formatoFechaLarga(torneo.fecha_inicio)}
+            {torneo.fecha_fin && torneo.fecha_fin !== torneo.fecha_inicio ? ` — ${formatoFechaLarga(torneo.fecha_fin)}` : ''}
+          </p>
+          <p className="mt-2 text-lg font-black text-lime-400">
+            {formatoMoneda(torneo.precio)} <span className="text-xs font-semibold text-slate-500">/ {torneo.unidad_precio || 'pareja'}</span>
+          </p>
+          {(torneo.reglas || torneo.regla_puntuacion) && (
+            <p className="mt-2 text-xs leading-relaxed text-slate-400">{torneo.reglas || torneo.regla_puntuacion}</p>
+          )}
+          <p className="mt-2 text-xs font-semibold text-slate-500">{(participantes || []).length} inscritos</p>
+        </div>
+
+        {tieneCategorias && (
+          <div>
+            <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Tu categoría</p>
+            <div className="flex flex-wrap gap-1.5">
+              {torneo.categorias.map((c, idx) => {
+                const valor = `${c.rama} ${c.nivel}`.trim();
+                const activa = categoria === valor;
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setCategoria(valor)}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
+                      activa ? 'border-lime-400 bg-lime-400/10 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/50'
+                    }`}
+                  >
+                    {c.rama} {c.nivel}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {enBuscaDePareja.length > 0 && (
+          <div>
+            <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+              <Users size={13} /> Jugadores en busca de pareja
+            </p>
+            <div className="space-y-1.5">
+              {enBuscaDePareja.map((p) => (
+                <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-bold text-slate-100">{p.nombre}</p>
+                    {p.categoria && <p className="text-[10px] text-slate-500">{p.categoria}</p>}
+                  </div>
+                  <BotonSecundario onClick={() => unirse(p)} disabled={uniendoId === p.id} className="shrink-0 px-2.5 py-1 text-[11px]">
+                    {uniendoId === p.id ? <Loader2 size={12} className="animate-spin" /> : <UserPlus size={12} />}
+                    Unirme
+                  </BotonSecundario>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Inscribirme con...</p>
+          <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+            {[
+              { id: 'ninguna', label: 'Sin pareja' },
+              { id: 'nueva', label: 'Pareja nueva' },
+              { id: 'registrada', label: 'Pareja registrada' },
+            ].map((op) => (
+              <button
+                key={op.id}
+                type="button"
+                onClick={() => setModoPareja(op.id)}
+                className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
+                  modoPareja === op.id ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                {op.label}
+              </button>
+            ))}
+          </div>
+
+          {modoPareja === 'ninguna' && (
+            <p className="mt-2.5 rounded-lg border border-white/5 bg-slate-800/40 p-2.5 text-[11px] leading-relaxed text-slate-400">
+              Te inscribes como "En busca de pareja" — otros jugadores podrán verte aquí mismo y unirse contigo antes del torneo.
+            </p>
+          )}
+
+          {modoPareja === 'nueva' && (
+            <div className="mt-2.5 space-y-2">
+              <input
+                value={parejaNombre}
+                onChange={(e) => setParejaNombre(e.target.value)}
+                placeholder="Nombre de tu pareja"
+                className={inputClase}
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  value={parejaTelefono}
+                  onChange={(e) => setParejaTelefono(e.target.value)}
+                  placeholder="Teléfono"
+                  className={inputClase}
+                />
+                <input
+                  value={parejaCorreo}
+                  onChange={(e) => setParejaCorreo(e.target.value)}
+                  placeholder="Correo (opcional)"
+                  className={inputClase}
+                />
+              </div>
+            </div>
+          )}
+
+          {modoPareja === 'registrada' && (
+            <div className="mt-2.5 space-y-2">
+              <input
+                value={busqueda}
+                onChange={(e) => {
+                  setBusqueda(e.target.value);
+                  setParejaSeleccionada(null);
+                }}
+                placeholder="Busca por nombre..."
+                className={inputClase}
+              />
+              {parejaSeleccionada ? (
+                <div className="flex items-center justify-between rounded-lg border border-lime-400/30 bg-lime-400/10 px-3 py-2">
+                  <p className="text-xs font-bold text-lime-400">{parejaSeleccionada.nombre}</p>
+                  <button type="button" onClick={() => setParejaSeleccionada(null)} className="text-[11px] font-bold text-slate-400 hover:text-slate-200">
+                    Cambiar
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {buscando && <p className="text-[11px] text-slate-500">Buscando...</p>}
+                  {!buscando && busqueda.trim().length >= 2 && resultados.length === 0 && (
+                    <p className="text-[11px] text-slate-500">Sin resultados — puedes usar "Pareja nueva" en su lugar.</p>
+                  )}
+                  {resultados.length > 0 && (
+                    <div className="max-h-32 space-y-1 overflow-y-auto">
+                      {resultados.map((r) => (
+                        <button
+                          key={r.id}
+                          type="button"
+                          onClick={() => setParejaSeleccionada(r)}
+                          className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-left hover:border-lime-400/50"
+                        >
+                          <span className="text-xs font-bold text-slate-200">{r.nombre}</span>
+                          <ChevronRight size={13} className="text-slate-500" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+          <BotonPrimario onClick={confirmarInscripcion}>
+            <UserPlus size={15} /> {jugador ? 'Continuar a pago' : 'Identificarme e inscribirme'}
+          </BotonPrimario>
+        </div>
       </div>
     </ModalShell>
   );
