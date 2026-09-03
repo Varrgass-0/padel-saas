@@ -1532,6 +1532,42 @@ function inscripcionOcupaLugar(fila) {
   return fila?.estado !== 'cancelado' && fila?.estado !== 'retenido';
 }
 
+// Lectura TOLERANTE A ALIAS de los datos de "pareja" en
+// `torneo_participantes` — mismo criterio que `estadoPagoInscripcion` de
+// arriba, aplicado a los pares de columnas que `inscribirseATorneo`/
+// `unirseComoParejaTorneo` escriben por duplicado (`pareja_nombre` +
+// `nombre_pareja`, `pareja_telefono` + `telefono_pareja`) "por si acaso":
+// Supabase solo persiste de verdad la que exista en el esquema de ESTE
+// proyecto (`insertarConColumnasOpcionales`/`actualizarConColumnasOpcionales`
+// quitan la otra si no existe) — así que la fila real, una vez releída de
+// Supabase (por ejemplo tras el refresh que dispara Realtime), solo trae UNA
+// de las dos. FIX DE RAÍZ de "un jugador se queda para siempre en 'Jugadores
+// en busca de pareja' aunque ya se haya unido con alguien" y de "quien se
+// unió nunca ve 'Pareja confirmada'": leer una sola de las dos columnas (sin
+// respaldo) podía no encontrar nunca el dato correcto.
+function parejaNombreDeParticipante(p) {
+  return p?.pareja_nombre ?? p?.nombre_pareja ?? null;
+}
+function parejaTelefonoDeParticipante(p) {
+  return p?.pareja_telefono ?? p?.telefono_pareja ?? null;
+}
+// "¿Ya tiene pareja confirmada?" — NUNCA depende de una sola columna: es
+// `true` en cuanto CUALQUIER señal de que la unión ya se guardó esté
+// presente (`busca_pareja` puesto explícitamente en `false`, o cualquiera de
+// los datos de la pareja ya guardado bajo cualquiera de sus alias), sin
+// importar cuál de las columnas sobrevivió en este proyecto de Supabase.
+function parejaConfirmadaDeParticipante(p) {
+  return p?.busca_pareja === false || !!(parejaNombreDeParticipante(p) || parejaTelefonoDeParticipante(p) || p?.pareja_jugador_id);
+}
+// "¿Sigue en busca de pareja?" — criterio ÚNICO para la lista pública
+// "Jugadores en busca de pareja" del Portal y para el contador "buscando
+// pareja" de la tarjeta del torneo: marcado `busca_pareja` Y sin ninguna
+// señal de pareja ya confirmada — el filtro estricto que pidió el club
+// (equivalente a "pareja_id IS NULL Y sin estatus de pareja confirmada").
+function participanteEnBuscaDePareja(p) {
+  return !!p?.busca_pareja && !parejaConfirmadaDeParticipante(p);
+}
+
 function sumarDia(fechaISO, dias) {
   const [y, m, d] = fechaISO.split('-').map(Number);
   const fecha = new Date(y, m - 1, d);
@@ -12700,21 +12736,42 @@ function generarPartidosCuadro({ torneoId, categoria, parejasReales }) {
 // no usa categorías) — para AUTO-LLENAR "Generar Cuadro" con quien ya está
 // realmente inscrito, en vez de dejar cada casilla de Pareja 1/2/... en
 // blanco esperando que el operador las teclee a mano. Solo cuenta como
-// "dupla confirmada" un `torneo_participantes` con `busca_pareja` en falso
-// (incluye tanto los inscritos con pareja desde el inicio como los que se
-// unieron después vía `unirseComoParejaTorneo`) — un registro que sigue "en
-// busca de pareja" no tiene todavía un segundo nombre que ofrecer, así que
-// se deja fuera del auto-llenado (el operador puede añadirlo a mano cuando
-// se resuelva). `nombre`/`pareja_nombre` es EXACTAMENTE el mismo par de
-// columnas que ya arma "Pareja confirmada" en el Portal (ver
-// `ModalDetalleTorneo`), así que ambas pantallas describen la misma pareja
-// con el mismo texto.
+// "dupla confirmada" un `torneo_participantes` que YA NO está "en busca de
+// pareja" (`participanteEnBuscaDePareja`, tolerante a alias — incluye tanto
+// los inscritos con pareja desde el inicio como los que se unieron después
+// vía `unirseComoParejaTorneo`) — un registro que sigue en busca no tiene
+// todavía un segundo nombre que ofrecer, así que se deja fuera del
+// auto-llenado (el operador puede añadirlo a mano cuando se resuelva).
+// `nombre`/`pareja_nombre` es EXACTAMENTE el mismo par de columnas que ya
+// arma "Pareja confirmada" en el Portal (ver `ModalDetalleTorneo`), así que
+// ambas pantallas describen la misma pareja con el mismo texto.
+//
+// DEDUPLICACIÓN por pareja (no por fila): desde que "Pareja nueva" inserta
+// UNA FILA POR CADA integrante (ver `inscribirseATorneo`), la misma dupla
+// real aparece en DOS filas de `participantes` — una diría "Juan / María" y
+// la otra, "María / Juan" (invertida). Sin normalizar, el auto-llenado del
+// cuadro vería estas dos filas como DOS parejas distintas y las colocaría
+// dos veces. Se normaliza cada pareja como el par de nombres ordenado
+// alfabéticamente, para contar cada dupla real una sola vez sin importar
+// cuál de sus dos filas se procese primero.
 function duplasConfirmadasTorneo(participantes, categoria) {
-  return (participantes || [])
+  const vistos = new Set();
+  const resultado = [];
+  (participantes || [])
     .filter((p) => !categoria || p.categoria === categoria)
-    .filter((p) => !p.busca_pareja)
-    .map((p) => (p.pareja_nombre ? `${p.nombre} / ${p.pareja_nombre}` : p.nombre))
-    .filter(Boolean);
+    .filter((p) => !participanteEnBuscaDePareja(p))
+    .forEach((p) => {
+      const nombrePareja = parejaNombreDeParticipante(p);
+      const etiqueta = nombrePareja ? `${p.nombre} / ${nombrePareja}` : p.nombre;
+      if (!etiqueta) return;
+      const clave = nombrePareja
+        ? [p.nombre, nombrePareja].map((n) => (n || '').trim().toLowerCase()).sort().join('•')
+        : `${etiqueta.trim().toLowerCase()}•`;
+      if (vistos.has(clave)) return;
+      vistos.add(clave);
+      resultado.push(etiqueta);
+    });
+  return resultado;
 }
 
 // Lista PLANA de los casilleros reales (sin "BYE") ya guardados en la Ronda 0
@@ -19756,11 +19813,21 @@ function PortalPublicoJugadores({ clubSlug }) {
   // nunca se pierde por esto.
   async function inscribirseATorneo(torneo, categoria, metodo, pareja = null) {
     if (!jugador) return setModalIdentificacion(true);
-    const monto = Number(torneo.precio) || 0;
+    // Monto REAL de este registro — el MISMO cálculo que ya se le mostró y
+    // cobró al jugador en `ModalElegirPago` (`montoInscripcionTorneo`, ver su
+    // comentario): dobla el precio base cuando el Torneo cobra "por jugador"
+    // (`unidad_precio === 'jugador'`) y trae pareja (nueva o registrada); si
+    // cobra "por pareja", `torneo.precio` ya es el total de la dupla. Usar
+    // este mismo cálculo aquí (en vez de recalcular solo con `torneo.precio`,
+    // como hacía antes) asegura que lo que se PERSISTE como `monto` sea
+    // EXACTAMENTE lo que se cobró, sin importar la unidad de precio.
+    const monto = montoInscripcionTorneo(torneo, pareja);
     const esPagoTarjeta = metodo === 'tarjeta';
     const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
     const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
     const pagado = esPagoTarjeta || (montoRestante <= 0 && monto > 0);
+    const estadoPagoTexto = pagado ? 'pagado' : 'pendiente';
+    const estatusPagoTexto = pagado ? 'pagado' : 'pendiente_recepcion';
     const nombrePareja = pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.nombre || null : null;
     const telefonoPareja = pareja?.modo === 'registrada' || pareja?.modo === 'nueva' ? pareja.telefono || null : null;
 
@@ -19782,6 +19849,22 @@ function PortalPublicoJugadores({ clubSlug }) {
         console.warn('[Portal] No se pudo registrar a la pareja nueva en el CRM (jugadores) — la inscripción continúa sin vincular un id.', errCRM);
       }
     }
+
+    // REGISTRO DE PAREJA NUEVA = 2 PARTICIPANTES: el pago cubre a la DUPLA
+    // completa, así que ambas personas deben quedar como su PROPIO registro
+    // en `torneo_participantes` — no solo el titular con el nombre de su
+    // pareja colgado como texto suelto. Así: (a) el contador de
+    // "Participantes/Inscritos" (Mesa de Control y tarjetas del torneo, que
+    // simplemente cuentan filas de esta tabla) sube en +2, no +1; (b) la
+    // tabla "Participantes" del Resumen los lista a los dos, cada uno con su
+    // propio estatus de pago. El monto total se REPARTE entre las dos filas
+    // (mitad y mitad) — nunca se duplica completo en ambas — porque
+    // `recaudado`/el P&L suman `monto` de TODAS las filas pagadas de este
+    // torneo; si las dos filas llevaran el total completo, el ingreso se
+    // vería doble.
+    const esParejaNueva = pareja?.modo === 'nueva' && !!nombrePareja;
+    const montoPorFila = esParejaNueva ? monto / 2 : monto;
+
     // Mapeo defensivo de columnas (mismo criterio que `correo`/`email` en
     // `ModalAgregarParticipanteTorneo`): distintos proyectos de Supabase
     // pueden tener esta tabla con nombres de columna distintos —
@@ -19797,15 +19880,26 @@ function PortalPublicoJugadores({ clubSlug }) {
     // (`migracion_v15_jugador_id_torneos_retas.sql`) corrida, Supabase
     // responde 400 "Could not find the 'jugador_id' column..." y quitarla
     // era obligatorio para que la inscripción se guardara.
+    const columnasOpcionalesParticipante = [
+      'jugador_id',
+      'estatus_pago',
+      'pareja_nombre',
+      'nombre_pareja',
+      'pareja_telefono',
+      'telefono_pareja',
+      'pareja_correo',
+      'pareja_jugador_id',
+      'busca_pareja',
+    ];
     const payloadParticipante = withClubId({
       torneo_id: torneo.id,
       nombre: jugador.nombre,
       telefono: jugador.telefono,
       jugador_id: jugador.id,
       categoria: categoria || null,
-      monto,
-      estado_pago: pagado ? 'pagado' : 'pendiente',
-      estatus_pago: pagado ? 'pagado' : 'pendiente_recepcion',
+      monto: montoPorFila,
+      estado_pago: estadoPagoTexto,
+      estatus_pago: estatusPagoTexto,
       pareja_nombre: nombrePareja,
       nombre_pareja: nombrePareja,
       pareja_telefono: telefonoPareja,
@@ -19815,18 +19909,52 @@ function PortalPublicoJugadores({ clubSlug }) {
       busca_pareja: pareja?.modo === 'ninguna',
     });
     try {
-      const { data, error } = await insertarConColumnasOpcionales('torneo_participantes', payloadParticipante, [
-        'jugador_id',
-        'estatus_pago',
-        'pareja_nombre',
-        'nombre_pareja',
-        'pareja_telefono',
-        'telefono_pareja',
-        'pareja_correo',
-        'pareja_jugador_id',
-        'busca_pareja',
-      ]);
+      const { data, error } = await insertarConColumnasOpcionales('torneo_participantes', payloadParticipante, columnasOpcionalesParticipante);
       if (error) throw error;
+      const filasCreadas = [data];
+
+      // Segunda fila — la pareja nueva como SU PROPIO participante, con los
+      // mismos datos de pago que el titular (ambos "pagado"/"pendiente" a la
+      // vez, es un solo pago cubriendo a los dos). Se intenta DESPUÉS de que
+      // la fila del titular ya haya quedado guardada — el lugar/dinero del
+      // titular nunca se pierde si esta segunda fila fallara por cualquier
+      // motivo (mismo criterio de tolerancia total que el resto del módulo).
+      if (esParejaNueva) {
+        const payloadParejaNueva = withClubId({
+          torneo_id: torneo.id,
+          nombre: nombrePareja,
+          telefono: telefonoPareja,
+          correo: pareja.correo || null,
+          jugador_id: parejaJugadorId,
+          categoria: categoria || null,
+          monto: montoPorFila,
+          estado_pago: estadoPagoTexto,
+          estatus_pago: estatusPagoTexto,
+          pareja_nombre: jugador.nombre,
+          nombre_pareja: jugador.nombre,
+          pareja_telefono: jugador.telefono,
+          telefono_pareja: jugador.telefono,
+          pareja_jugador_id: jugador.id,
+          busca_pareja: false,
+        });
+        try {
+          const { data: dataParejaNueva, error: errorParejaNueva } = await insertarConColumnasOpcionales(
+            'torneo_participantes',
+            payloadParejaNueva,
+            columnasOpcionalesParticipante
+          );
+          if (errorParejaNueva) throw errorParejaNueva;
+          filasCreadas.push(dataParejaNueva);
+        } catch (errPareja) {
+          console.warn('[Portal] No se pudo crear el registro individual de la pareja nueva — el titular ya quedó inscrito.', errPareja);
+          mostrarToast({
+            titulo: 'Pareja registrada parcialmente',
+            detalle: `${nombrePareja} no quedó como participante individual — pide a recepción que la agregue a mano.`,
+            tono: 'aviso',
+          });
+        }
+      }
+
       if (montoWallet > 0) {
         await aplicarCargoWallet({
           jugadorId: jugador.id,
@@ -19837,7 +19965,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         });
         cargarWallet(jugador.id);
       }
-      setParticipantes((prev) => [...prev, data]);
+      setParticipantes((prev) => [...prev, ...filasCreadas]);
       const detallePareja =
         pareja?.modo === 'ninguna'
           ? ' · En busca de pareja'
@@ -20533,7 +20661,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                   )}
                   {torneosActivos.map((t) => {
                     const participantesTorneo = participantesPorTorneo[t.id] || [];
-                    const buscandoPareja = participantesTorneo.filter((p) => p.busca_pareja && !p.pareja_nombre).length;
+                    const buscandoPareja = participantesTorneo.filter((p) => participanteEnBuscaDePareja(p)).length;
                     return (
                       <button
                         key={t.id}
@@ -20989,22 +21117,42 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
   // mismo en esta lista y darle "Unirme" a su propia inscripción.
   const esUnoMismo = (p) =>
     (jugador?.id && p.jugador_id === jugador.id) || (jugador?.telefono && claveTelefono(p.telefono) === claveTelefono(jugador.telefono));
-  const enBuscaDePareja = (participantes || []).filter((p) => p.busca_pareja && !p.pareja_nombre && !esUnoMismo(p));
+  // `participanteEnBuscaDePareja` (tolerante a alias — ver su comentario) es
+  // el filtro ESTRICTO que pidió el club: solo entra aquí quien de verdad
+  // sigue sin pareja, sin importar cuál de los dos alias de
+  // `pareja_nombre`/`nombre_pareja` sobrevivió en este proyecto de Supabase
+  // — así la lista se limpia sola en cuanto la unión se guarda, para TODOS
+  // los usuarios del Portal (el próximo refresh/Realtime ya no la muestra).
+  const enBuscaDePareja = (participantes || []).filter((p) => participanteEnBuscaDePareja(p) && !esUnoMismo(p));
 
   // Mi propia inscripción a este Torneo (si ya existe) — como titular
   // (`esUnoMismo`) o como la pareja de alguien más que ya se inscribió y
-  // luego se unió conmigo (`pareja_jugador_id`/`pareja_telefono`). Alimenta
-  // el aviso de estatus de abajo: "En busca de pareja" mientras
-  // `busca_pareja` siga en `true`, o "Pareja confirmada" en cuanto
-  // `unirseComoParejaTorneo` la complete (ver su comentario) — visible tanto
-  // para quien abrió la inscripción como para quien se unió después.
+  // luego se unió conmigo (`pareja_jugador_id`/`pareja_telefono`, con
+  // respaldo de alias vía `parejaTelefonoDeParticipante`). Alimenta el aviso
+  // de estatus de abajo: "En busca de pareja" mientras siga sin confirmarse,
+  // o "Pareja confirmada" en cuanto `unirseComoParejaTorneo` la complete (ver
+  // su comentario) — visible tanto para quien abrió la inscripción como para
+  // quien se unió después.
   const miInscripcion = (participantes || []).find(
     (p) =>
       esUnoMismo(p) ||
       (jugador?.id && p.pareja_jugador_id === jugador.id) ||
-      (jugador?.telefono && claveTelefono(p.pareja_telefono) === claveTelefono(jugador.telefono))
+      (jugador?.telefono && claveTelefono(parejaTelefonoDeParticipante(p)) === claveTelefono(jugador.telefono))
   );
   const soyTitularDeMiInscripcion = miInscripcion ? esUnoMismo(miInscripcion) : false;
+  // Lectura tolerante a alias (`parejaConfirmadaDeParticipante`/
+  // `parejaNombreDeParticipante`) — mismo criterio que `enBuscaDePareja` de
+  // arriba, para que el banner de estatus y el bloqueo de abajo respondan
+  // igual sin importar cuál alias de columna sobrevivió en este proyecto.
+  const parejaYaConfirmada = miInscripcion ? parejaConfirmadaDeParticipante(miInscripcion) : false;
+  const nombreDeMiPareja = miInscripcion ? (soyTitularDeMiInscripcion ? parejaNombreDeParticipante(miInscripcion) : miInscripcion.nombre) : null;
+  // "Ya tengo lugar en ESTA categoría" — si el torneo tiene categorías, solo
+  // cuenta cuando la categoría activa es la misma en la que ya está inscrito
+  // (`miInscripcion.categoria`); un torneo sin categorías siempre aplica. Con
+  // esto en `true` ya no tiene sentido ofrecer "Unirme" a alguien más ni
+  // volver a registrarse "Sin pareja" — el jugador ya tiene un lugar (y, si
+  // `parejaYaConfirmada`, ya tiene pareja) en esta categoría.
+  const yaInscritoEnEstaCategoria = !!miInscripcion && (!tieneCategorias || (miInscripcion.categoria || '') === categoria);
 
   // "Unirme" YA NO llama a `onUnirseComoPareja` de inmediato: en vez de
   // completar la unión al primer clic, fija la UI en el modo "Unirme a
@@ -21155,25 +21303,18 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
 
         {miInscripcion &&
           (() => {
-            // Confirmada en cuanto `busca_pareja` sea `false` — para el
-            // titular eso solo ocurre junto con `pareja_nombre` (ver
-            // `unirseComoParejaTorneo`, que actualiza ambos campos en el
-            // mismo UPDATE); para quien se unió después, `miInscripcion` ya
-            // solo se encuentra aquí una vez que ese mismo UPDATE ocurrió.
-            const parejaConfirmada = !miInscripcion.busca_pareja;
-            const nombrePareja = soyTitularDeMiInscripcion ? miInscripcion.pareja_nombre : miInscripcion.nombre;
             return (
               <div
                 className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${
-                  parejaConfirmada
+                  parejaYaConfirmada
                     ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-400'
                     : 'border-amber-400/30 bg-amber-400/10 text-amber-400'
                 }`}
               >
-                {parejaConfirmada ? (
+                {parejaYaConfirmada ? (
                   <>
                     <CheckCircle2 size={13} className="shrink-0" />
-                    Pareja confirmada{nombrePareja ? ` · ${nombrePareja}` : ''}
+                    Pareja confirmada{nombreDeMiPareja ? ` · ${nombreDeMiPareja}` : ''}
                   </>
                 ) : (
                   <>
@@ -21185,7 +21326,16 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
             );
           })()}
 
-        {modoPareja === 'unirme' && parejaParaUnirme ? (
+        {yaInscritoEnEstaCategoria ? (
+          // Ya tiene un lugar (con o sin pareja confirmada) en ESTA
+          // categoría — el banner de estatus de arriba ya lo dice, así que
+          // aquí abajo ya no se ofrece "Unirme" a alguien más ni volver a
+          // registrarse "Sin pareja": ambas opciones crearían un segundo
+          // registro/unión sin sentido sobre una inscripción que ya existe.
+          <p className="rounded-lg border border-white/5 bg-slate-800/40 p-2.5 text-[11px] leading-relaxed text-slate-400">
+            Ya tienes tu lugar en esta categoría — no puedes volver a inscribirte ni unirte a alguien más aquí.
+          </p>
+        ) : modoPareja === 'unirme' && parejaParaUnirme ? (
           // Modo "Unirme a pareja seleccionada": la UI queda fija en ESTA
           // confirmación — nada de tabs, nada de búsqueda — hasta que el
           // jugador confirme (o le dé "Cambiar" para volver a las opciones
@@ -21338,10 +21488,12 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
 
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
-          <BotonPrimario onClick={confirmarInscripcion}>
-            <UserPlus size={15} />
-            {modoPareja === 'unirme' ? 'Confirmar unión' : jugador ? 'Continuar a pago' : 'Identificarme e inscribirme'}
-          </BotonPrimario>
+          {!yaInscritoEnEstaCategoria && (
+            <BotonPrimario onClick={confirmarInscripcion}>
+              <UserPlus size={15} />
+              {modoPareja === 'unirme' ? 'Confirmar unión' : jugador ? 'Continuar a pago' : 'Identificarme e inscribirme'}
+            </BotonPrimario>
+          )}
         </div>
       </div>
     </ModalShell>
