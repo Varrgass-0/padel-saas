@@ -1557,7 +1557,10 @@ function parejaTelefonoDeParticipante(p) {
 // los datos de la pareja ya guardado bajo cualquiera de sus alias), sin
 // importar cuál de las columnas sobrevivió en este proyecto de Supabase.
 function parejaConfirmadaDeParticipante(p) {
-  return p?.busca_pareja === false || !!(parejaNombreDeParticipante(p) || parejaTelefonoDeParticipante(p) || p?.pareja_jugador_id);
+  return (
+    p?.busca_pareja === false ||
+    !!(parejaNombreDeParticipante(p) || parejaTelefonoDeParticipante(p) || p?.pareja_jugador_id || p?.pareja_grupo_id)
+  );
 }
 // "¿Sigue en busca de pareja?" — criterio ÚNICO para la lista pública
 // "Jugadores en busca de pareja" del Portal y para el contador "buscando
@@ -12782,32 +12785,39 @@ function generarPartidosCuadro({ torneoId, categoria, parejasReales }) {
 // blanco esperando que el operador las teclee a mano, y para saber cuántas
 // PAREJAS reales hay (no cuántas FILAS) al sugerir el tamaño del cuadro (ver
 // `ModalGenerarCuadro`). Solo cuenta como "dupla confirmada" un
-// `torneo_participantes` que YA NO está "en busca de pareja"
-// (`participanteEnBuscaDePareja`, tolerante a alias — incluye tanto los
-// inscritos con pareja desde el inicio como los que se unieron después vía
-// "Unirme") — un registro que sigue en busca no tiene todavía un segundo
-// nombre que ofrecer, así que se deja fuera del auto-llenado (el operador
-// puede añadirlo a mano cuando se resuelva). `nombre`/`pareja_nombre` es
+// `torneo_participantes` con una CONFIRMACIÓN EXPLÍCITA de pareja
+// (`parejaConfirmadaDeParticipante`: `pareja_grupo_id`, o cualquiera de los
+// alias de nombre/teléfono/id de la pareja, o `busca_pareja` puesto en
+// `false` a propósito) — NUNCA basta con "no está en busca de pareja",
+// porque un participante agregado individualmente desde Mesa de Control
+// ("Agregar Participante") o el mostrador no trae NINGUNA de esas señales
+// (ni `busca_pareja` en `true` ni en `false`): antes caía en este listado
+// como si fuera "su propia pareja" y el auto-llenado lo colocaba SOLO y
+// AISLADO en un casillero, separado de quien en realidad debía ser su
+// compañero. Ahora, sin una pareja confirmada, un registro individual queda
+// FUERA del auto-llenado — el operador lo arma a mano en "Editar Cuadro"
+// (`SelectorParejaCompleta`, que sigue mostrando a TODOS los inscritos,
+// confirmados o no) o reasignando el casillero. `nombre`/`pareja_nombre` es
 // EXACTAMENTE el mismo par de columnas que ya arma "Pareja confirmada" en el
 // Portal (ver `ModalDetalleTorneo`), así que ambas pantallas describen la
 // misma pareja con el mismo texto.
 //
-// DEDUPLICACIÓN por pareja (no por fila): "Pareja nueva" y "Unirme" (ver
-// `inscribirseATorneo`/`confirmarUnionTorneo`) insertan UNA FILA POR CADA
-// integrante — la misma dupla real aparece en DOS filas de `participantes`
-// ("Juan / María" desde la fila de Juan, "María / Juan" desde la de María).
-// Sin agrupar, el armado del cuadro vería estas dos filas como DOS parejas
-// DISTINTAS y las enfrentaría entre sí (a la pareja contra sí misma). Se
-// agrupa por `claveGrupoPareja` (el `pareja_grupo_id` compartido explícito,
-// o su respaldo por nombres ordenados alfabéticamente) para contar/armar
-// cada dupla real UNA sola vez, en UNA sola posición, sin importar cuál de
-// sus dos filas se procese primero.
+// DEDUPLICACIÓN por pareja (no por fila): "Pareja nueva"/"Pareja registrada"
+// y "Unirme" (ver `inscribirseATorneo`/`confirmarUnionTorneo`) insertan UNA
+// FILA POR CADA integrante — la misma dupla real aparece en DOS filas de
+// `participantes` ("Juan / María" desde la fila de Juan, "María / Juan"
+// desde la de María). Sin agrupar, el armado del cuadro vería estas dos
+// filas como DOS parejas DISTINTAS y las enfrentaría entre sí (a la pareja
+// contra sí misma). Se agrupa por `claveGrupoPareja` (el `pareja_grupo_id`
+// compartido explícito, o su respaldo por nombres ordenados
+// alfabéticamente) para contar/armar cada dupla real UNA sola vez, en UNA
+// sola posición, sin importar cuál de sus dos filas se procese primero.
 function duplasConfirmadasTorneo(participantes, categoria) {
   const vistos = new Set();
   const resultado = [];
   (participantes || [])
     .filter((p) => !categoria || p.categoria === categoria)
-    .filter((p) => !participanteEnBuscaDePareja(p))
+    .filter((p) => parejaConfirmadaDeParticipante(p))
     .forEach((p) => {
       const clave = claveGrupoPareja(p);
       if (vistos.has(clave)) return;
@@ -19902,25 +19912,28 @@ function PortalPublicoJugadores({ clubSlug }) {
       }
     }
 
-    // REGISTRO DE PAREJA NUEVA = 2 PARTICIPANTES: el pago cubre a la DUPLA
-    // completa, así que ambas personas deben quedar como su PROPIO registro
-    // en `torneo_participantes` — no solo el titular con el nombre de su
-    // pareja colgado como texto suelto. Así: (a) el contador de
-    // "Participantes/Inscritos" (Mesa de Control y tarjetas del torneo, que
-    // simplemente cuentan filas de esta tabla) sube en +2, no +1; (b) la
-    // tabla "Participantes" del Resumen los lista a los dos, cada uno con su
-    // propio estatus de pago. El monto total se REPARTE entre las dos filas
-    // (mitad y mitad) — nunca se duplica completo en ambas — porque
-    // `recaudado`/el P&L suman `monto` de TODAS las filas pagadas de este
-    // torneo; si las dos filas llevaran el total completo, el ingreso se
-    // vería doble.
-    const esParejaNueva = pareja?.modo === 'nueva' && !!nombrePareja;
-    const montoPorFila = esParejaNueva ? monto / 2 : monto;
+    // REGISTRO DE PAREJA (NUEVA O REGISTRADA) = 2 PARTICIPANTES: el pago
+    // cubre a la DUPLA completa, así que ambas personas deben quedar como su
+    // PROPIO registro en `torneo_participantes` — no solo el titular con el
+    // nombre de su pareja colgado como texto suelto. Esto aplica IGUAL para
+    // "Pareja nueva" (compañero capturado a mano) y "Pareja registrada"
+    // (compañero elegido del directorio de jugadores, `pareja.jugadorId` ya
+    // conocido — ver `parejaJugadorId` arriba, que ya cubre ambos modos):
+    // (a) el contador de "Participantes/Inscritos" (Mesa de Control y
+    // tarjetas del torneo, que simplemente cuentan filas de esta tabla) sube
+    // en +2, no +1; (b) la tabla "Participantes" del Resumen los lista a los
+    // dos, cada uno con su propio estatus de pago. El monto total se
+    // REPARTE entre las dos filas (mitad y mitad) — nunca se duplica
+    // completo en ambas — porque `recaudado`/el P&L suman `monto` de TODAS
+    // las filas pagadas de este torneo; si las dos filas llevaran el total
+    // completo, el ingreso se vería doble.
+    const esDuplaDosFilas = (pareja?.modo === 'nueva' || pareja?.modo === 'registrada') && !!nombrePareja;
+    const montoPorFila = esDuplaDosFilas ? monto / 2 : monto;
     // Agrupador compartido entre las 2 filas de esta pareja — ver
     // `claveGrupoPareja`: es lo que le permite al armado de duplas/brackets
     // (`duplasConfirmadasTorneo`) reconocer que estas dos filas son LA MISMA
     // pareja y no enfrentarlas nunca entre sí.
-    const grupoParejaId = esParejaNueva ? idGrupoPareja() : null;
+    const grupoParejaId = esDuplaDosFilas ? idGrupoPareja() : null;
 
     // Mapeo defensivo de columnas (mismo criterio que `correo`/`email` en
     // `ModalAgregarParticipanteTorneo`): distintos proyectos de Supabase
@@ -19972,14 +19985,15 @@ function PortalPublicoJugadores({ clubSlug }) {
       if (error) throw error;
       const filasCreadas = [data];
 
-      // Segunda fila — la pareja nueva como SU PROPIO participante, con los
-      // mismos datos de pago que el titular (ambos "pagado"/"pendiente" a la
-      // vez, es un solo pago cubriendo a los dos). Se intenta DESPUÉS de que
-      // la fila del titular ya haya quedado guardada — el lugar/dinero del
-      // titular nunca se pierde si esta segunda fila fallara por cualquier
-      // motivo (mismo criterio de tolerancia total que el resto del módulo).
-      if (esParejaNueva) {
-        const payloadParejaNueva = withClubId({
+      // Segunda fila — la pareja (nueva O registrada) como SU PROPIO
+      // participante, con los mismos datos de pago que el titular (ambos
+      // "pagado"/"pendiente" a la vez, es un solo pago cubriendo a los dos).
+      // Se intenta DESPUÉS de que la fila del titular ya haya quedado
+      // guardada — el lugar/dinero del titular nunca se pierde si esta
+      // segunda fila fallara por cualquier motivo (mismo criterio de
+      // tolerancia total que el resto del módulo).
+      if (esDuplaDosFilas) {
+        const payloadFilaPareja = withClubId({
           torneo_id: torneo.id,
           nombre: nombrePareja,
           telefono: telefonoPareja,
@@ -19998,15 +20012,15 @@ function PortalPublicoJugadores({ clubSlug }) {
           pareja_grupo_id: grupoParejaId,
         });
         try {
-          const { data: dataParejaNueva, error: errorParejaNueva } = await insertarConColumnasOpcionales(
+          const { data: dataFilaPareja, error: errorFilaPareja } = await insertarConColumnasOpcionales(
             'torneo_participantes',
-            payloadParejaNueva,
+            payloadFilaPareja,
             columnasOpcionalesParticipante
           );
-          if (errorParejaNueva) throw errorParejaNueva;
-          filasCreadas.push(dataParejaNueva);
+          if (errorFilaPareja) throw errorFilaPareja;
+          filasCreadas.push(dataFilaPareja);
         } catch (errPareja) {
-          console.warn('[Portal] No se pudo crear el registro individual de la pareja nueva — el titular ya quedó inscrito.', errPareja);
+          console.warn('[Portal] No se pudo crear el registro individual de la pareja — el titular ya quedó inscrito.', errPareja);
           mostrarToast({
             titulo: 'Pareja registrada parcialmente',
             detalle: `${nombrePareja} no quedó como participante individual — pide a recepción que la agregue a mano.`,
