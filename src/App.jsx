@@ -12929,6 +12929,88 @@ function separarPareja(parejaTexto) {
     .filter(Boolean);
 }
 
+// LIMPIEZA IDEMPOTENTE Y DESTRUCTIVA DE DUPLICADOS DEL CUADRO: recibe el
+// arreglo COMPLETO de `torneo_partidos` de un torneo (todas sus categorías y
+// rondas) y devuelve una copia donde ningún jugador aparece en más de UN
+// casillero de Ronda 0 a la vez — la única ronda editable a mano/auto (las
+// siguientes se llenan solas conforme avanza cada ganador; un nombre
+// repetido ahí es la progresión normal del cuadro, NUNCA un duplicado, así
+// que `sanearBracket` no las toca).
+//
+// REGLA DE ORO: si un jugador aparece en un casillero como parte de una
+// PAREJA COMPLETA ("Willer Ditta / Fernando Alcala") y ADEMÁS aparece solo
+// (o en otra combinación) en cualquier otro casillero, la pareja completa
+// gana y el/los casillero(s) sueltos se vacían a "Vacante" — nunca al revés.
+// Entre dos apariciones del mismo "peso" (dos parejas completas que
+// comparten integrante, o dos apariciones solitarias del mismo jugador),
+// gana la PRIMERA en orden de posición y las demás se vacían — así el
+// resultado es siempre determinista (idempotente: aplicarla dos veces sobre
+// el mismo cuadro da exactamente el mismo resultado) sin importar en qué
+// orden hayan quedado guardados los casilleros.
+//
+// Cada categoría se sanea por separado (un mismo nombre en dos categorías
+// distintas de un mismo torneo es legítimo — homónimos, o el mismo jugador
+// anotado en dos ramas — y nunca debe cruzarse entre ellas).
+function sanearBracket(partidos) {
+  const lista = partidos || [];
+  const porCategoria = new Map();
+  lista.forEach((p) => {
+    if (p.ronda_orden !== 0) return;
+    const clave = p.categoria || '';
+    if (!porCategoria.has(clave)) porCategoria.set(clave, []);
+    porCategoria.get(clave).push(p);
+  });
+
+  // clave `${partidoId}:${slot}` -> true si ese casillero debe vaciarse.
+  const aVaciar = new Set();
+
+  porCategoria.forEach((partidosCategoria) => {
+    const apariciones = [];
+    [...partidosCategoria]
+      .sort((a, b) => a.posicion - b.posicion)
+      .forEach((p) => {
+        ['pareja1', 'pareja2'].forEach((slot) => {
+          const texto = p[slot];
+          if (!texto || texto === BYE) return;
+          const nombres = separarPareja(texto);
+          if (nombres.length === 0) return;
+          apariciones.push({ partidoId: p.id, slot, nombres });
+        });
+      });
+
+    // Para cada nombre individual, la aparición "ganadora" es la más
+    // completa (pareja > solitario) y, entre apariciones igual de
+    // completas, la primera en orden de posición.
+    const ganadoraPorNombre = new Map();
+    apariciones.forEach((ap) => {
+      ap.nombres.forEach((n) => {
+        const actual = ganadoraPorNombre.get(n);
+        if (!actual || ap.nombres.length > actual.nombres.length) {
+          ganadoraPorNombre.set(n, ap);
+        }
+      });
+    });
+
+    apariciones.forEach((ap) => {
+      const esGanadora = ap.nombres.every((n) => ganadoraPorNombre.get(n) === ap);
+      if (!esGanadora) aVaciar.add(`${ap.partidoId}:${ap.slot}`);
+    });
+  });
+
+  if (aVaciar.size === 0) return lista;
+  return lista.map((p) => {
+    if (p.ronda_orden !== 0) return p;
+    let cambios = null;
+    ['pareja1', 'pareja2'].forEach((slot) => {
+      if (aVaciar.has(`${p.id}:${slot}`)) {
+        cambios = cambios || {};
+        cambios[slot] = '';
+      }
+    });
+    return cambios ? { ...p, ...cambios } : p;
+  });
+}
+
 // Busca, entre los participantes inscritos al torneo, el teléfono de
 // cualquiera de los dos integrantes de la pareja (comparación flexible:
 // coincidencia exacta o que un nombre contenga al otro, para tolerar que el
@@ -15526,10 +15608,18 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
   const categorias = torneo.categorias || [];
   const [categoriaFiltro, setCategoriaFiltro] = useState(categorias[0] ? `${categorias[0].rama} ${categorias[0].nivel}` : '');
 
+  // Saneado ANTES de mostrar cualquier casillero (`sanearBracket`, ver su
+  // comentario): si por cualquier motivo el cuadro guardado en Supabase
+  // quedó con un jugador repetido en dos posiciones de Ronda 0 (ej. datos
+  // de antes de este fix, o una edición manual defectuosa), esta pantalla
+  // SIEMPRE lo muestra ya corregido — nunca depende de que alguien
+  // reabra "Editar Cuadro" para arreglarlo a mano.
+  const partidosSaneados = useMemo(() => sanearBracket(partidos), [partidos]);
+
   const partidosCategoria = useMemo(() => {
-    if (categorias.length === 0) return partidos;
-    return partidos.filter((p) => p.categoria === categoriaFiltro);
-  }, [partidos, categorias.length, categoriaFiltro]);
+    if (categorias.length === 0) return partidosSaneados;
+    return partidosSaneados.filter((p) => p.categoria === categoriaFiltro);
+  }, [partidosSaneados, categorias.length, categoriaFiltro]);
 
   // Duplas ya confirmadas (pagadas, con pareja) de esta categoría que
   // TODAVÍA no aparecen en ningún casillero de Ronda 0 del cuadro — son las
@@ -15816,9 +15906,31 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
   // falta que sea potencia de 2, ver `armarPartidosRonda0`/`BYE`.
   const [modoTamano, setModoTamano] = useState(TAMANOS_CUADRO.includes(numParejasSugerido) ? 'fichas' : 'personalizado');
   const [numParejas, setNumParejas] = useState(numParejasSugerido);
+  // AUTO-LLENADO EXPLÍCITO — el ÚNICO lugar del sistema donde una dupla
+  // confirmada se coloca sola en un casillero (ver el comentario del efecto
+  // de limpieza en `ModuloTorneosRetas`: ese efecto YA NO auto-llena nada,
+  // solo limpia duplicados). Al abrir "Generar Cuadro" desde cero se
+  // precargan directamente las duplas confirmadas (`duplasConfirmadasTexto`);
+  // al REABRIR "Editar Cuadro" sobre un cuadro ya generado, lo ya capturado
+  // (`duplasExistentesTexto`) se respeta tal cual y SOLO los casilleros que
+  // sigan vacíos se ofrecen precargados con las duplas confirmadas que
+  // todavía no aparecen en ningún casillero. En ambos casos el operador ve
+  // el resultado en el modal y decide si lo deja así, lo corrige o lo deja
+  // vacío — nada se escribe en Supabase hasta que presiona "Generar
+  // Cuadro"/"Guardar cambios" a propósito.
   const [parejas, setParejas] = useState(() => {
-    const textosBase = modoEdicion ? duplasExistentesTexto : duplasConfirmadasTexto;
-    return Array.from({ length: numParejasSugerido }, (_, i) => nuevaParejaDesdeTexto(textosBase[i]));
+    if (!modoEdicion) {
+      return Array.from({ length: numParejasSugerido }, (_, i) => nuevaParejaDesdeTexto(duplasConfirmadasTexto[i]));
+    }
+    const yaColocadas = new Set(duplasExistentesTexto.filter(Boolean));
+    const pendientes = duplasConfirmadasTexto.filter((n) => !yaColocadas.has(n));
+    let idxPendiente = 0;
+    return Array.from({ length: numParejasSugerido }, (_, i) => {
+      const existente = duplasExistentesTexto[i];
+      if (existente) return nuevaParejaDesdeTexto(existente);
+      if (idxPendiente < pendientes.length) return nuevaParejaDesdeTexto(pendientes[idxPendiente++]);
+      return nuevaParejaVacia();
+    });
   });
   const [error, setError] = useState('');
 
@@ -16848,6 +16960,16 @@ function ModuloTorneosRetas({
   //      cualquier ronda de esa categoría (no cuenta el "gana automático"
   //      de un BYE) — no hay forma de "cambiar el tamaño" sin perder ese
   //      resultado, así que se avisa en vez de borrarlo en silencio.
+  // NOTA sobre `sanearBracket`: no hace falta llamarla aquí a propósito —
+  // `parejasReales` ya llega deduplicada desde `ModalGenerarCuadro`
+  // (`actualizarPareja` limpia cualquier casillero anterior del MISMO
+  // jugador en cuanto se reasigna dentro del modal), y en cuanto este
+  // handler actualiza `partidosTorneo` (cualquiera de sus 3 caminos), el
+  // efecto de limpieza en segundo plano de más abajo (`sanearBracket` sobre
+  // `partidosPorTorneo`) y el saneado al renderizar de
+  // `SeccionCuadroPartidos` corren de inmediato sobre el resultado — así
+  // que un posible duplicado que se colara de todos modos queda cubierto
+  // sin duplicar aquí la misma lógica.
   async function generarCuadroTorneo({ categoria, parejasReales, modoEdicion }) {
     if (!torneoGestionVivo) return;
     const categoriasTorneo = torneoGestionVivo.categorias || [];
@@ -17078,53 +17200,54 @@ function ModuloTorneosRetas({
     }
   }
 
-  // Auto-llenado en tiempo real: cuando entra una inscripción NUEVA ya
-  // confirmada con pareja (desde el Portal o Smart POS/Recepción) para una
-  // categoría que YA tiene un cuadro generado, se coloca sola en el primer
-  // casillero "Vacante" disponible de la Ronda 0 (en orden de posición,
-  // Pareja 1 antes que Pareja 2, nunca en un slot "BYE") — el operador no
-  // tiene que abrir "Editar Cuadro" a mano cada vez que llega una inscripción
-  // nueva. La reubicación manual (`onReasignar`/`FilaPareja`) convive con
-  // esto sin pisarse: en cuanto un casillero tiene CUALQUIER texto (puesto a
-  // mano o solo), este efecto ya no vuelve a tocarlo.
-  const casillerosEnAutoLlenado = useRef(new Set());
+  // LIMPIEZA AUTOMÁTICA EN SEGUNDO PLANO — Y SOLO LIMPIEZA, NUNCA
+  // AUTO-LLENADO: aquí antes había un efecto que colocaba, apenas se
+  // detectaba, cualquier pareja "confirmada" SOLA en el primer casillero
+  // "Vacante" disponible de un cuadro ya generado, cada vez que
+  // `participantesTorneo` cambiaba. Ese disparo reactivo era la causa raíz
+  // del bug reportado: un participante agregado a mano en Mesa de Control
+  // (o cualquier fila que por cualquier motivo se leyera como "confirmada")
+  // terminaba colocado SOLO en un casillero sin que el operador lo pidiera,
+  // apenas se guardaba su registro — nunca al presionar un botón. El
+  // auto-llenado real (colocar duplas confirmadas en casilleros vacíos)
+  // AHORA SOLO ocurre cuando el operador abre "Editar Cuadro" a propósito y
+  // confirma — ver el estado inicial de `parejas` en `ModalGenerarCuadro`,
+  // el ÚNICO lugar donde eso pasa.
+  //
+  // Este efecto es, en cambio, EXCLUSIVAMENTE de limpieza: corre
+  // `sanearBracket` (ver su comentario — la regla de oro pareja-completa
+  // gana sobre solitario) sobre los partidos de cada torneo y, si detecta
+  // que algún jugador quedó duplicado en más de un casillero de Ronda 0
+  // (típicamente arrastrado de antes de este fix), persiste esa corrección
+  // en Supabase — así los datos YA GUARDADOS se autocorrigen con el tiempo,
+  // no solo la vista (`SeccionCuadroPartidos` ya sanea también al
+  // renderizar, así que la corrección se VE de inmediato aunque este
+  // guardado tarde o falle). Nunca inserta un nombre nuevo en un casillero
+  // — solo puede VACIAR uno que ya estaba mal. Blindado con
+  // `casillerosEnLimpieza` para no reintentar el mismo casillero en cada
+  // re-render mientras la corrección está en vuelo.
+  const casillerosEnLimpieza = useRef(new Set());
   useEffect(() => {
     torneos.forEach((torneo) => {
       const partidosDelTorneo = partidosPorTorneo[torneo.id] || [];
       if (partidosDelTorneo.length === 0) return;
-      const participantesDelTorneo = participantesPorTorneo[torneo.id] || [];
-      const categorias = torneo.categorias || [];
-      const listaCategorias = categorias.length > 0 ? categorias.map((c) => `${c.rama} ${c.nivel}`) : [undefined];
-
-      listaCategorias.forEach((categoria) => {
-        const partidosCategoria = categoria === undefined ? partidosDelTorneo : partidosDelTorneo.filter((p) => p.categoria === categoria);
-        const ronda0 = partidosCategoria.filter((p) => p.ronda_orden === 0).sort((a, b) => a.posicion - b.posicion);
-        if (ronda0.length === 0) return;
-
-        const confirmadas = duplasConfirmadasTorneo(participantesDelTorneo, categoria);
-        const yaColocadas = new Set(partidosCategoria.flatMap((p) => [p.pareja1, p.pareja2]).filter((t) => t && t !== BYE));
-        const pendientes = confirmadas.filter((n) => !yaColocadas.has(n));
-        if (pendientes.length === 0) return;
-
-        let idxPendiente = 0;
-        ronda0.forEach((partido) => {
-          ['pareja1', 'pareja2'].forEach((slot) => {
-            if (idxPendiente >= pendientes.length) return;
-            if (partido[slot] === BYE || partido[slot]) return; // BYE u ocupado — no se toca
-            const clave = `${partido.id}:${slot}`;
-            if (casillerosEnAutoLlenado.current.has(clave)) return;
-            const nombre = pendientes[idxPendiente];
-            idxPendiente += 1;
-            casillerosEnAutoLlenado.current.add(clave);
-            reasignarCasilleroCuadro({ partido, slot, texto: nombre }).finally(() => {
-              casillerosEnAutoLlenado.current.delete(clave);
-            });
+      const saneados = sanearBracket(partidosDelTorneo);
+      saneados.forEach((saneado, i) => {
+        const original = partidosDelTorneo[i];
+        if (!original || original.ronda_orden !== 0) return;
+        ['pareja1', 'pareja2'].forEach((slot) => {
+          if (saneado[slot] === original[slot]) return; // sin cambios, nada que limpiar
+          const clave = `${original.id}:${slot}`;
+          if (casillerosEnLimpieza.current.has(clave)) return;
+          casillerosEnLimpieza.current.add(clave);
+          reasignarCasilleroCuadro({ partido: original, slot, texto: '' }).finally(() => {
+            casillerosEnLimpieza.current.delete(clave);
           });
         });
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [torneos, participantesTorneo, partidosTorneo]);
+  }, [torneos, partidosTorneo]);
 
   // Asigna cancha/horario a un partido: sincroniza (best effort) el bloqueo
   // en `reservas` — reutilizando el mismo bloqueo si el partido se está
