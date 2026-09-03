@@ -15195,6 +15195,21 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
     // `inscribirseATorneo`/`inscribirseAReta` del Portal — distintos
     // proyectos de Supabase pueden tener la columna bajo cualquiera de los
     // dos nombres.
+    //
+    // `busca_pareja: false` EXPLÍCITO (antes se omitía este campo por
+    // completo): un participante agregado a mano desde Mesa de Control no
+    // está "buscando pareja" en el sentido del Portal, así que se marca así
+    // desde el insert en vez de dejarlo sin definir — sin esto, si el
+    // proyecto de Supabase tuviera esta columna con un DEFAULT distinto de
+    // `false`, la fila podría volver de la base con `busca_pareja: true` y
+    // aparecer, por error, en la lista pública "Jugadores en busca de
+    // pareja" del Portal. `parejaConfirmadaDeParticipante` (y por lo tanto
+    // `duplasConfirmadasTorneo`/el auto-llenado del cuadro) YA excluía a
+    // estos registros de todos modos, al no traer ninguna señal de pareja
+    // confirmada — este campo es un blindaje adicional, explícito, para que
+    // "Agregar Participante" nunca deje ambigüedad sobre su estado de
+    // pareja: NUNCA se auto-coloca solo en un casillero del cuadro; el
+    // operador lo asigna a mano cuando arme la pareja en "Editar Cuadro".
     const payloadParticipante = withClubId({
       torneo_id: torneo.id,
       jugador_id: jugadorIdResuelto,
@@ -15207,6 +15222,7 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       monto: Number(monto) || 0,
       estado_pago: estadoPago,
       estatus_pago: estadoPago,
+      busca_pareja: false,
     });
 
     let participanteCreado = null;
@@ -15228,6 +15244,7 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       'categoria',
       'estado_pago',
       'estatus_pago',
+      'busca_pareja',
     ]);
     if (!errParticipante && data) {
       participanteCreado = data;
@@ -15635,6 +15652,25 @@ function textoDeParejaCompleta(valor) {
   return [valor.jugador1, valor.jugador2].filter(Boolean).join(' / ');
 }
 
+// Nombres INDIVIDUALES contenidos en un slot de `parejas` (el estado interno
+// de `ModalGenerarCuadro`), sin importar su modo de captura — usado por
+// `actualizarPareja` para detectar cuándo un jugador ya colocado en OTRO
+// casillero se está re-asignando aquí. En modo 'selects' son simplemente
+// `jugador1`/`jugador2`; en modo 'manual' (el modo en el que SIEMPRE arranca
+// un casillero ya existente al reabrir "Editar Cuadro", ver
+// `nuevaParejaDesdeTexto`) el nombre vive como texto libre — "Adrian Vargas"
+// (solo) o "Adrian Vargas / Felipe Ortega" (pareja) — así que se separa por
+// "/" (vía `separarPareja`, el mismo separador tolerante a "/", "y" y comas
+// que ya usa el resto del módulo de Torneos) para poder comparar cada
+// integrante por separado.
+function nombresDeParejaSlot(valor) {
+  if (!valor) return [];
+  if (valor.modo === 'manual') {
+    return separarPareja(valor.texto);
+  }
+  return [valor.jugador1, valor.jugador2].filter(Boolean);
+}
+
 // Captura UNA pareja completa (2 jugadores) para un slot del cuadro: por
 // default deja elegir Jugador 1 y Jugador 2 de la lista de participantes
 // inscritos (se arma sola la etiqueta "Nombre 1 / Nombre 2"); "Escribir a
@@ -15814,36 +15850,31 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
     redimensionarParejas(n);
   }
 
-  // LIMPIEZA DE POSICIONES ANTERIORES: en modo 'selects' cada Jugador 1/2 se
-  // elige del mismo listado de individuos (`sugerencias`) para TODOS los
-  // casilleros a la vez — nada impedía antes elegir al mismo jugador ya
-  // colocado en OTRO casillero (ej. "Juan" como Jugador 1 del slot 0 y
-  // también como Jugador 2 del slot 3), duplicando su nombre en dos
-  // posiciones del cuadro. Cada vez que un jugador queda asignado aquí, se
-  // busca ese mismo nombre en los DEMÁS slots (jugador1 o jugador2, modo
-  // 'selects' únicamente — el modo 'manual' es texto libre y no se toca) y
-  // se limpia esa aparición previa a '' ("Vacante"): si dos individuales que
-  // antes estaban solos en sus propios casilleros se juntan ahora en uno
-  // solo, los casilleros donde aparecían antes quedan vacíos.
+  // LIMPIEZA DE POSICIONES ANTERIORES: nada impedía antes elegir al mismo
+  // jugador ya colocado en OTRO casillero (ej. "Adrian Vargas" como Jugador 1
+  // del slot 0 y, más tarde, otra vez como parte de la pareja "Adrian Vargas
+  // / Felipe Ortega" del slot 3), duplicando su nombre en dos posiciones del
+  // cuadro a la vez. Cada vez que este slot cambia, se comparan sus nombres
+  // (`nombresDeParejaSlot`, tolerante a los dos modos: 'selects' con
+  // jugador1/jugador2, y 'manual' con texto libre — el modo en el que
+  // SIEMPRE arranca un casillero YA EXISTENTE al reabrir "Editar Cuadro", ver
+  // `nuevaParejaDesdeTexto`, así que ignorar ese modo dejaba pasar
+  // justamente el caso más común) contra los de TODOS los demás slots; si
+  // cualquiera de los dos jugadores recién asignados aquí ya aparecía en
+  // OTRO casillero (solo o en pareja con alguien más), ESE casillero
+  // completo se vacía a "Vacante" — así, si dos individuales que antes
+  // estaban cada uno solo en su propio casillero se juntan ahora en uno
+  // solo, los casilleros donde aparecían antes quedan vacíos en vez de
+  // duplicar su nombre en dos posiciones distintas del cuadro.
   function actualizarPareja(idx, valor) {
     setParejas((prev) => {
       const siguientes = prev.map((p, i) => (i === idx ? valor : p));
-      if (!valor || valor.modo === 'manual') return siguientes;
-      const nombresAsignados = [valor.jugador1, valor.jugador2].filter(Boolean);
+      const nombresAsignados = nombresDeParejaSlot(valor);
       if (nombresAsignados.length === 0) return siguientes;
       return siguientes.map((p, i) => {
-        if (i === idx || !p || p.modo === 'manual') return p;
-        let cambio = false;
-        let actualizado = p;
-        if (nombresAsignados.includes(p.jugador1)) {
-          actualizado = { ...actualizado, jugador1: '' };
-          cambio = true;
-        }
-        if (nombresAsignados.includes(p.jugador2)) {
-          actualizado = { ...actualizado, jugador2: '' };
-          cambio = true;
-        }
-        return cambio ? actualizado : p;
+        if (i === idx || !p) return p;
+        const hayColision = nombresDeParejaSlot(p).some((n) => nombresAsignados.includes(n));
+        return hayColision ? nuevaParejaVacia() : p;
       });
     });
   }
@@ -16979,6 +17010,49 @@ function ModuloTorneosRetas({
       })
     );
     if (!partidoActualizado) return;
+
+    // LIMPIEZA DE POSICIONES ANTERIORES (mismo criterio que `actualizarPareja`
+    // de `ModalGenerarCuadro`, aplicado aquí a un cuadro YA GENERADO/en vivo
+    // — vía el <select> de reasignación de `FilaPareja` o el auto-llenado de
+    // más abajo): si el texto recién asignado a este casillero trae a un
+    // jugador (`separarPareja`, tolera "/", "y" y comas) que YA aparecía en
+    // OTRO casillero de Ronda 0 de la MISMA categoría — solo, o en pareja con
+    // alguien más, típicamente porque se había colocado ahí ANTES de que su
+    // pareja real quedara confirmada — ese otro casillero se vacía por
+    // completo a "Vacante". Así un jugador o pareja nunca queda repetido en
+    // dos posiciones del mismo cuadro a la vez.
+    const nombresAsignados = texto && texto !== BYE ? separarPareja(texto) : [];
+    if (nombresAsignados.length > 0) {
+      const otrosPartidosRonda0 = (partidosPorTorneo[partido.torneo_id] || []).filter(
+        (p) => p.ronda_orden === 0 && p.id !== partido.id && p.categoria === partido.categoria
+      );
+      for (const otro of otrosPartidosRonda0) {
+        const cambiosOtro = {};
+        for (const otroSlot of ['pareja1', 'pareja2']) {
+          const otroTexto = otro[otroSlot];
+          if (!otroTexto || otroTexto === BYE) continue;
+          const colisiona = separarPareja(otroTexto).some((n) => nombresAsignados.includes(n));
+          if (colisiona) cambiosOtro[otroSlot] = '';
+        }
+        if (Object.keys(cambiosOtro).length === 0) continue;
+        if (!otro._local) {
+          try {
+            const { error } = await supabase.from('torneo_partidos').update(cambiosOtro).eq('id', otro.id);
+            if (error) throw error;
+          } catch (err) {
+            console.warn('[Torneos & Retas] No se pudo sincronizar en Supabase la limpieza de una asignación previa duplicada.', err);
+          }
+        }
+        setPartidosTorneo((prev) =>
+          prev.map((p) => {
+            if (p.id !== otro.id) return p;
+            const actualizado = { ...p, ...cambiosOtro };
+            if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, actualizado);
+            return actualizado;
+          })
+        );
+      }
+    }
 
     if (slot === 'pareja1') {
       const partidosCategoria = (partidosPorTorneo[partido.torneo_id] || []).map((p) => (p.id === partido.id ? partidoActualizado : p));
