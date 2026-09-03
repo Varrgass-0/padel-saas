@@ -19246,10 +19246,17 @@ function PortalPublicoJugadores({ clubSlug }) {
     // la app (Smart POS, Analytics BI), pero se manda TAMBIÉN bajo
     // `estatus_pago` por si tu proyecto de Supabase usa ese nombre — y
     // `estado` como columna aparte, para proyectos donde la tabla de
-    // inscripciones no tiene esa columna genérica. `insertarConColumnasOpcionales`
-    // quita SOLO la que en verdad no exista, así que el resto del payload
-    // (incluyendo `jugador_id`/`reta_id`/`monto`, los campos obligatorios)
-    // nunca se pierde por un desfase de esquema en un campo secundario.
+    // inscripciones no tiene esa columna genérica. Los ÚNICOS campos
+    // realmente obligatorios (nunca se quitan) son `reta_id`/`monto` — el
+    // resto, incluyendo `jugador_id`, va como columna OPCIONAL: la tabla
+    // documentada de este proyecto (ver el comentario de cabecera de
+    // `reta_inscripciones`, arriba en el archivo) nunca tuvo `jugador_id` en
+    // su esquema original, así que exigirla rompía el INSERT completo con
+    // "Could not find the 'jugador_id' column..." — un proyecto sin la
+    // migración v15 (`migracion_v15_jugador_id_torneos_retas.sql`) sigue
+    // guardando la inscripción igual, solo sin el vínculo directo a
+    // `jugadores.id` (el cruce por teléfono/nombre en Directorio & CRM y
+    // Perfiles 360° sigue funcionando de respaldo).
     const payloadInscripcion = withClubId({
       reta_id: reta.id,
       nombre: jugador.nombre,
@@ -19262,6 +19269,7 @@ function PortalPublicoJugadores({ clubSlug }) {
     });
     try {
       const { data, error } = await insertarConColumnasOpcionales('reta_inscripciones', payloadInscripcion, [
+        'jugador_id',
         'estado_pago',
         'estatus_pago',
         'estado',
@@ -19342,6 +19350,13 @@ function PortalPublicoJugadores({ clubSlug }) {
     // mandan TODOS los alias a la vez y `insertarConColumnasOpcionales`
     // quita, uno por uno, cualquiera que tu esquema no reconozca — así el
     // INSERT nunca falla solo por un desfase de nombre de columna.
+    // `jugador_id` va como columna OPCIONAL (igual que en
+    // `ModalAgregarParticipanteTorneo`/`inscribirseAReta`): el esquema
+    // documentado original de `torneo_participantes` (ver cabecera del
+    // archivo) nunca la tuvo — sin la migración v15
+    // (`migracion_v15_jugador_id_torneos_retas.sql`) corrida, Supabase
+    // responde 400 "Could not find the 'jugador_id' column..." y quitarla
+    // era obligatorio para que la inscripción se guardara.
     const payloadParticipante = withClubId({
       torneo_id: torneo.id,
       nombre: jugador.nombre,
@@ -19361,6 +19376,7 @@ function PortalPublicoJugadores({ clubSlug }) {
     });
     try {
       const { data, error } = await insertarConColumnasOpcionales('torneo_participantes', payloadParticipante, [
+        'jugador_id',
         'estatus_pago',
         'pareja_nombre',
         'nombre_pareja',
