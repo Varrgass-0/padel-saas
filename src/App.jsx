@@ -7178,6 +7178,15 @@ function ModuloSmartPOS({
         };
       });
 
+    // DESGLOSE INDIVIDUAL EN RECEPCIÓN: como cada integrante de una pareja
+    // ("Pareja nueva"/"Pareja registrada"/"Unirme") ya vive en su PROPIA fila
+    // de `torneo_participantes` con su propio `monto` (mitad y mitad) y su
+    // propio `estado_pago` (ver `inscribirseATorneo`/`confirmarUnionTorneo`),
+    // este `.map` los recorre uno por uno — nunca agrupados por pareja — así
+    // que una dupla que eligió "Pagar en Recepción" aparece aquí como DOS
+    // tickets separados (titular y pareja, ej. $700 + $700), cada uno con su
+    // propio botón "Cobrar" para que cada jugador liquide su parte por
+    // separado en caja sin depender de que el otro también pague.
     const filasTorneos = (participantesTorneo || [])
       .filter((p) => esPendiente(estadoPagoInscripcion(p)))
       .map((p) => {
@@ -12784,7 +12793,21 @@ function generarPartidosCuadro({ torneoId, categoria, parejasReales }) {
 // realmente inscrito, en vez de dejar cada casilla de Pareja 1/2/... en
 // blanco esperando que el operador las teclee a mano, y para saber cuántas
 // PAREJAS reales hay (no cuántas FILAS) al sugerir el tamaño del cuadro (ver
-// `ModalGenerarCuadro`). Solo cuenta como "dupla confirmada" un
+// `ModalGenerarCuadro`).
+//
+// CRITERIO DE AUTO-LLENADO (única fuente de verdad — la usan tanto
+// `ModalGenerarCuadro` como el auto-llenado en tiempo real de
+// `ModuloTorneosRetas`): SOLO entran aquí las parejas ya CONFIRMADAS, sin
+// importar CÓMO se confirmaron — juntas desde el registro ("Pareja
+// nueva"/"Pareja registrada", ver `inscribirseATorneo`) o completadas
+// después mediante "Unirme" (ver `confirmarUnionTorneo`, que pone
+// `busca_pareja: false` + `pareja_grupo_id` compartido en las DOS filas en
+// cuanto la unión se confirma). Un jugador que sigue "en busca de pareja"
+// (nadie se le ha unido todavía) NUNCA aparece aquí ni se auto-llena solo en
+// un casillero del cuadro: se queda visible en la lista pública "Jugadores
+// en busca de pareja" del Portal (`participanteEnBuscaDePareja`) hasta que
+// alguien lo confirme por "Unirme" o el operador lo empareje a mano en
+// "Editar Cuadro". Solo cuenta como "dupla confirmada" un
 // `torneo_participantes` con una CONFIRMACIÓN EXPLÍCITA de pareja
 // (`parejaConfirmadaDeParticipante`: `pareja_grupo_id`, o cualquiera de los
 // alias de nombre/teléfono/id de la pareja, o `busca_pareja` puesto en
@@ -15791,8 +15814,38 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
     redimensionarParejas(n);
   }
 
+  // LIMPIEZA DE POSICIONES ANTERIORES: en modo 'selects' cada Jugador 1/2 se
+  // elige del mismo listado de individuos (`sugerencias`) para TODOS los
+  // casilleros a la vez — nada impedía antes elegir al mismo jugador ya
+  // colocado en OTRO casillero (ej. "Juan" como Jugador 1 del slot 0 y
+  // también como Jugador 2 del slot 3), duplicando su nombre en dos
+  // posiciones del cuadro. Cada vez que un jugador queda asignado aquí, se
+  // busca ese mismo nombre en los DEMÁS slots (jugador1 o jugador2, modo
+  // 'selects' únicamente — el modo 'manual' es texto libre y no se toca) y
+  // se limpia esa aparición previa a '' ("Vacante"): si dos individuales que
+  // antes estaban solos en sus propios casilleros se juntan ahora en uno
+  // solo, los casilleros donde aparecían antes quedan vacíos.
   function actualizarPareja(idx, valor) {
-    setParejas((prev) => prev.map((p, i) => (i === idx ? valor : p)));
+    setParejas((prev) => {
+      const siguientes = prev.map((p, i) => (i === idx ? valor : p));
+      if (!valor || valor.modo === 'manual') return siguientes;
+      const nombresAsignados = [valor.jugador1, valor.jugador2].filter(Boolean);
+      if (nombresAsignados.length === 0) return siguientes;
+      return siguientes.map((p, i) => {
+        if (i === idx || !p || p.modo === 'manual') return p;
+        let cambio = false;
+        let actualizado = p;
+        if (nombresAsignados.includes(p.jugador1)) {
+          actualizado = { ...actualizado, jugador1: '' };
+          cambio = true;
+        }
+        if (nombresAsignados.includes(p.jugador2)) {
+          actualizado = { ...actualizado, jugador2: '' };
+          cambio = true;
+        }
+        return cambio ? actualizado : p;
+      });
+    });
   }
 
   // A propósito NO se bloquea si algún casillero quedó vacío (parejaTexto ===
