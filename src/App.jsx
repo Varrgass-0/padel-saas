@@ -1511,6 +1511,27 @@ function inscripcionEstaPagada(fila) {
   return estadoPagoInscripcion(fila) === 'pagado';
 }
 
+// Ocupa un lugar/slot del roster de una Reta (Mesa de Control): TRUE salvo
+// que el registro esté explícitamente 'cancelado' o 'retenido' (canceló
+// dentro de la ventana de tolerancia — el club ya cobró, pero no juega).
+// FIX DE RAÍZ de "las inscripciones del Portal no aparecen en la tarjeta
+// operativa de la Reta (sigue mostrando 'Lugar disponible')": antes,
+// `TarjetaReta`/`ModalMarcadorReta` filtraban con la condición POSITIVA
+// `i.estado === 'confirmado'` — pero `estado` es una columna OPCIONAL en el
+// INSERT (`inscribirseAReta`/`ModalInscribirJugador`, ver
+// `insertarConColumnasOpcionales`): si la tabla real del proyecto no la
+// tiene, el reintento adaptativo la quita del payload y el registro se
+// guarda SIN ese campo. Contra una condición positiva estricta,
+// `undefined === 'confirmado'` es `false`, así que la inscripción —pagada,
+// real, recién hecha desde el Portal— nunca contaba como ocupando un lugar.
+// Esta función usa el mismo criterio NEGATIVO (tolerante a `estado`
+// ausente) que ya usaban correctamente otras partes de la app (el propio
+// Portal, Analytics BI, P&L): todo lo que NO esté marcado cancelado/
+// retenido, sí ocupa su lugar.
+function inscripcionOcupaLugar(fila) {
+  return fila?.estado !== 'cancelado' && fila?.estado !== 'retenido';
+}
+
 function sumarDia(fechaISO, dias) {
   const [y, m, d] = fechaISO.split('-').map(Number);
   const fecha = new Date(y, m - 1, d);
@@ -12675,6 +12696,42 @@ function generarPartidosCuadro({ torneoId, categoria, parejasReales }) {
   return partidos;
 }
 
+// Duplas ya confirmadas de un Torneo (categoría dada, o todas si el torneo
+// no usa categorías) — para AUTO-LLENAR "Generar Cuadro" con quien ya está
+// realmente inscrito, en vez de dejar cada casilla de Pareja 1/2/... en
+// blanco esperando que el operador las teclee a mano. Solo cuenta como
+// "dupla confirmada" un `torneo_participantes` con `busca_pareja` en falso
+// (incluye tanto los inscritos con pareja desde el inicio como los que se
+// unieron después vía `unirseComoParejaTorneo`) — un registro que sigue "en
+// busca de pareja" no tiene todavía un segundo nombre que ofrecer, así que
+// se deja fuera del auto-llenado (el operador puede añadirlo a mano cuando
+// se resuelva). `nombre`/`pareja_nombre` es EXACTAMENTE el mismo par de
+// columnas que ya arma "Pareja confirmada" en el Portal (ver
+// `ModalDetalleTorneo`), así que ambas pantallas describen la misma pareja
+// con el mismo texto.
+function duplasConfirmadasTorneo(participantes, categoria) {
+  return (participantes || [])
+    .filter((p) => !categoria || p.categoria === categoria)
+    .filter((p) => !p.busca_pareja)
+    .map((p) => (p.pareja_nombre ? `${p.nombre} / ${p.pareja_nombre}` : p.nombre))
+    .filter(Boolean);
+}
+
+// Lista PLANA de parejas reales (sin "BYE") ya guardadas en la Ronda 0 de un
+// cuadro existente, en orden de `posicion` — el inverso de
+// `armarPartidosRonda0`, para poder REABRIR "Generar Cuadro" sobre un cuadro
+// que ya se generó (editarlo) sin perder lo que ya estaba capturado.
+function parejasDesdeCuadroExistente(partidosRonda0) {
+  const textos = [];
+  [...(partidosRonda0 || [])]
+    .sort((a, b) => (a.posicion ?? 0) - (b.posicion ?? 0))
+    .forEach((p) => {
+      if (p.pareja1 && p.pareja1 !== BYE) textos.push(p.pareja1);
+      if (p.pareja2 && p.pareja2 !== BYE) textos.push(p.pareja2);
+    });
+  return textos;
+}
+
 // Determina el ganador de un partido a partir de los sets capturados: cuenta
 // cuántos sets se llevó cada pareja (un set con marcador empatado no cuenta
 // para nadie — típicamente significa que ese set no se llegó a jugar) y
@@ -13638,7 +13695,7 @@ function TarjetaReta({
   eliminando,
   onCargarMarcador,
 }) {
-  const confirmados = inscritos.filter((i) => i.estado === 'confirmado');
+  const confirmados = inscritos.filter(inscripcionOcupaLugar);
   const lugaresDisponibles = Math.max(0, CUPOS_RETA - confirmados.length);
   const completa = lugaresDisponibles === 0;
   const archivado = reta.archivado === true;
@@ -15287,24 +15344,31 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
           </BotonPrimario>
         </div>
       ) : (
-        <div className="overflow-x-auto pb-2">
-          <div className="flex items-start gap-4">
-            {columnas.map((col) => (
-              <div key={col.ronda_orden} className="flex flex-col gap-3">
-                <p className="text-center text-xs font-black uppercase tracking-wide text-violet-400">{col.ronda}</p>
-                {col.partidos.map((p) => (
-                  <TarjetaPartido
-                    key={p.id}
-                    partido={p}
-                    canchas={canchas}
-                    participantes={participantes}
-                    torneoNombre={torneo.nombre}
-                    onAsignarHorario={onAsignarHorario}
-                    onCargarMarcador={onCargarMarcador}
-                  />
-                ))}
-              </div>
-            ))}
+        <div className="space-y-2">
+          <div className="flex justify-end">
+            <BotonSecundario onClick={() => onGenerarCuadro(categoriaFiltro)} className="px-2.5 py-1.5 text-[11px]">
+              <Pencil size={12} /> Editar Cuadro
+            </BotonSecundario>
+          </div>
+          <div className="overflow-x-auto pb-2">
+            <div className="flex items-start gap-4">
+              {columnas.map((col) => (
+                <div key={col.ronda_orden} className="flex flex-col gap-3">
+                  <p className="text-center text-xs font-black uppercase tracking-wide text-violet-400">{col.ronda}</p>
+                  {col.partidos.map((p) => (
+                    <TarjetaPartido
+                      key={p.id}
+                      partido={p}
+                      canchas={canchas}
+                      participantes={participantes}
+                      torneoNombre={torneo.nombre}
+                      onAsignarHorario={onAsignarHorario}
+                      onCargarMarcador={onCargarMarcador}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -15426,7 +15490,7 @@ function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
   );
 }
 
-function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, onClose, onGenerar, generando }) {
+function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosExistentes, onClose, onGenerar, generando }) {
   const categoria = categoriaInicial || '';
 
   const sugerencias = useMemo(
@@ -15438,14 +15502,39 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, onClose, 
     () => participantes.filter((p) => !categoria || p.categoria === categoria).length,
     [participantes, categoria]
   );
-  const numParejasSugerido = TAMANOS_CUADRO.find((t) => t >= Math.max(2, numConfirmados)) || Math.max(2, numConfirmados);
+
+  // Reeditar un cuadro YA GENERADO (`partidosExistentes` = sus partidos de
+  // Ronda 0, ver `SeccionCuadroPartidos`/`ModalGestionTorneo`): auto-llena
+  // cada casilla con lo que ya estaba capturado (`parejasDesdeCuadroExistente`)
+  // en vez de arrancar en blanco — así reabrir el modal para corregir un
+  // nombre nunca borra el resto de las parejas ya asignadas.
+  const duplasExistentesTexto = useMemo(() => parejasDesdeCuadroExistente(partidosExistentes), [partidosExistentes]);
+  const modoEdicion = duplasExistentesTexto.length > 0;
+
+  // Generación NUEVA (sin cuadro previo): auto-llena con las duplas que ya
+  // están confirmadas en `torneo_participantes` para esta categoría — el
+  // operador ya no tiene que volver a escribir a mano nombres que el jugador
+  // ya capturó desde el Portal; solo revisa/ajusta antes de generar.
+  const duplasConfirmadasTexto = useMemo(() => duplasConfirmadasTorneo(participantes, categoria), [participantes, categoria]);
+
+  const numParejasSugerido = modoEdicion
+    ? duplasExistentesTexto.length
+    : TAMANOS_CUADRO.find((t) => t >= Math.max(2, numConfirmados)) || Math.max(2, numConfirmados);
+
+  function nuevaParejaDesdeTexto(texto) {
+    const limpio = (texto || '').trim();
+    return limpio ? { modo: 'manual', jugador1: '', jugador2: '', texto: limpio } : nuevaParejaVacia();
+  }
 
   // 'fichas' = una de las 5 fichas rápidas (2/4/8/16/32); 'personalizado' =
   // cualquier número de parejas escrito a mano (12, 24, 40, 48...) — no hace
   // falta que sea potencia de 2, ver `armarPartidosRonda0`/`BYE`.
-  const [modoTamano, setModoTamano] = useState('fichas');
+  const [modoTamano, setModoTamano] = useState(TAMANOS_CUADRO.includes(numParejasSugerido) ? 'fichas' : 'personalizado');
   const [numParejas, setNumParejas] = useState(numParejasSugerido);
-  const [parejas, setParejas] = useState(() => Array.from({ length: numParejasSugerido }, nuevaParejaVacia));
+  const [parejas, setParejas] = useState(() => {
+    const textosBase = modoEdicion ? duplasExistentesTexto : duplasConfirmadasTexto;
+    return Array.from({ length: numParejasSugerido }, (_, i) => nuevaParejaDesdeTexto(textosBase[i]));
+  });
   const [error, setError] = useState('');
 
   const numParejasValido = Math.max(2, Math.min(128, Number(numParejas) || 0));
@@ -15486,11 +15575,17 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, onClose, 
       return;
     }
     setError('');
-    onGenerar({ categoria, parejasReales: parejasTexto });
+    onGenerar({ categoria, parejasReales: parejasTexto, modoEdicion });
   }
 
   return (
-    <ModalShell titulo="Generar Cuadro" subtitulo={categoria || torneo.nombre} onClose={onClose} icon={Trophy} ancho="max-w-2xl">
+    <ModalShell
+      titulo={modoEdicion ? 'Editar Cuadro' : 'Generar Cuadro'}
+      subtitulo={categoria || torneo.nombre}
+      onClose={onClose}
+      icon={Trophy}
+      ancho="max-w-2xl"
+    >
       <div className="space-y-4">
         <Campo label="Número de parejas">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -15557,8 +15652,10 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, onClose, 
         </div>
 
         <p className="flex items-start gap-1.5 rounded-lg bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-300 ring-1 ring-violet-400/20">
-          <Info size={13} className="mt-0.5 shrink-0" /> Se genera el cuadro completo — las rondas después de la primera empiezan "Por
-          definir" y se llenan solas conforme cargues los marcadores.
+          <Info size={13} className="mt-0.5 shrink-0" />
+          {modoEdicion
+            ? 'Editando el cuadro ya generado — si dejas el mismo número de parejas, solo se corrigen los nombres de la Ronda 0 (nada más se toca). Si lo cambias, el cuadro se vuelve a armar completo; si ya hay marcadores reales cargados, primero tendrás que borrarlos.'
+            : 'Se genera el cuadro completo — las rondas después de la primera empiezan "Por definir" y se llenan solas conforme cargues los marcadores.'}
         </p>
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
@@ -15567,7 +15664,7 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, onClose, 
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={guardar} disabled={generando}>
             {generando ? <Loader2 size={15} className="animate-spin" /> : <Trophy size={15} />}
-            Generar Cuadro
+            {modoEdicion ? 'Guardar Cambios' : 'Generar Cuadro'}
           </BotonPrimario>
         </div>
       </div>
@@ -16427,9 +16524,124 @@ function ModuloTorneosRetas({
   // tabla todavía no creada, red caída), el cuadro entero se arma en memoria
   // local con ids sintéticos y se persiste en `localStorage`, sin bloquear
   // nunca al operador con una pantalla roja.
-  async function generarCuadroTorneo({ categoria, parejasReales }) {
+  //
+  // REEDITAR un cuadro ya generado (`modoEdicion`, ver `ModalGenerarCuadro`)
+  // tiene DOS caminos, según si el número de parejas cambió o no:
+  //   1) MISMO número de parejas: solo se corrige el texto de Pareja 1/2 de
+  //      cada partido YA EXISTENTE de la Ronda 0 (por posición) — nunca se
+  //      borra ni se vuelve a crear nada, así que rondas posteriores y
+  //      cualquier marcador ya cargado ahí quedan intactos.
+  //   2) Número de parejas DISTINTO: la estructura del cuadro cambia de
+  //      raíz (más/menos rondas), así que hay que regenerarlo completo. Se
+  //      rechaza el cambio si ya existe un marcador REAL cargado en
+  //      cualquier ronda de esa categoría (no cuenta el "gana automático"
+  //      de un BYE) — no hay forma de "cambiar el tamaño" sin perder ese
+  //      resultado, así que se avisa en vez de borrarlo en silencio.
+  async function generarCuadroTorneo({ categoria, parejasReales, modoEdicion }) {
     if (!torneoGestionVivo) return;
+    const categoriasTorneo = torneoGestionVivo.categorias || [];
+    const partidosCategoriaExistentes = (partidosPorTorneo[torneoGestionVivo.id] || []).filter(
+      (p) => categoriasTorneo.length === 0 || p.categoria === categoria
+    );
+    const partidosRonda0Existentes = partidosCategoriaExistentes.filter((p) => p.ronda_orden === 0);
+    const numRealesExistentes = parejasDesdeCuadroExistente(partidosRonda0Existentes).length;
+
     setGuardandoCuadro(true);
+
+    // Camino 1: mismo tamaño — corrección de texto in-place.
+    if (modoEdicion && partidosRonda0Existentes.length > 0 && parejasReales.length === numRealesExistentes) {
+      const { partidosRonda0: nuevaReparticion } = armarPartidosRonda0(parejasReales);
+      const ordenados = [...partidosRonda0Existentes].sort((a, b) => a.posicion - b.posicion);
+      const actualizaciones = ordenados
+        .map((filaExistente, i) => (nuevaReparticion[i] ? { filaExistente, cambios: { pareja1: nuevaReparticion[i].pareja1, pareja2: nuevaReparticion[i].pareja2 }, esBye: nuevaReparticion[i].esBye } : null))
+        .filter(Boolean);
+
+      for (const { filaExistente, cambios } of actualizaciones) {
+        if (!filaExistente._local) {
+          try {
+            const { error } = await supabase.from('torneo_partidos').update(cambios).eq('id', filaExistente.id);
+            if (error) throw error;
+          } catch (err) {
+            console.warn('[Torneos & Retas] No se pudo sincronizar la corrección del cuadro en Supabase — se aplica solo local.', err);
+          }
+        }
+      }
+      setPartidosTorneo((prev) =>
+        prev.map((p) => {
+          const encontrado = actualizaciones.find((a) => a.filaExistente.id === p.id);
+          if (!encontrado) return p;
+          const actualizado = { ...p, ...encontrado.cambios };
+          if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, actualizado);
+          return actualizado;
+        })
+      );
+
+      // Bye ya resuelto automáticamente: si el nombre de quien avanzó a la
+      // Ronda 1 cambió, corrige también ese slot (misma propagación que
+      // `generarPartidosCuadro`/`cargarMarcadorPartidoHandler`).
+      for (const { filaExistente, cambios, esBye } of actualizaciones) {
+        if (!esBye) continue;
+        const siguientePosicion = Math.floor(filaExistente.posicion / 2);
+        const siguienteSlot = filaExistente.posicion % 2 === 0 ? 'pareja1' : 'pareja2';
+        const siguientePartido = (partidosPorTorneo[torneoGestionVivo.id] || []).find(
+          (p) => p.categoria === filaExistente.categoria && p.ronda_orden === 1 && p.posicion === siguientePosicion
+        );
+        if (!siguientePartido) continue;
+        const cambiosSiguiente = { [siguienteSlot]: cambios.pareja1 };
+        if (!siguientePartido._local) {
+          try {
+            await supabase.from('torneo_partidos').update(cambiosSiguiente).eq('id', siguientePartido.id);
+          } catch (err) {
+            console.warn('[Torneos & Retas] No se pudo propagar el bye corregido a la siguiente ronda.', err);
+          }
+        }
+        setPartidosTorneo((prev) =>
+          prev.map((p) => {
+            if (p.id !== siguientePartido.id) return p;
+            const actualizado = { ...p, ...cambiosSiguiente };
+            if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, actualizado);
+            return actualizado;
+          })
+        );
+      }
+
+      setGuardandoCuadro(false);
+      setModalGenerarCuadro(false);
+      mostrarToast({ titulo: 'Cuadro actualizado', detalle: `${categoria || torneoGestionVivo.nombre} · ${parejasReales.length} pareja(s)` });
+      return;
+    }
+
+    // Camino 2: cambió el tamaño de un cuadro ya generado — bloquea si ya
+    // hay un marcador REAL cargado (nunca se descarta un resultado real en
+    // silencio); si está libre, borra el cuadro viejo de esta categoría y
+    // cae al mismo flujo de generación completa de abajo.
+    if (modoEdicion && partidosCategoriaExistentes.length > 0) {
+      const hayResultadosReales = partidosCategoriaExistentes.some(
+        (p) => p.estado === 'jugado' && Array.isArray(p.sets) && p.sets.length > 0
+      );
+      if (hayResultadosReales) {
+        setGuardandoCuadro(false);
+        mostrarToast({
+          titulo: 'No se pudo cambiar el tamaño del cuadro',
+          detalle: 'Ya hay marcadores reales cargados en este cuadro — bórralos primero desde su tarjeta antes de cambiar el número de parejas.',
+          tono: 'error',
+        });
+        return;
+      }
+      const idsAEliminar = partidosCategoriaExistentes.filter((p) => !p._local).map((p) => p.id);
+      if (idsAEliminar.length > 0) {
+        try {
+          const { error } = await supabase.from('torneo_partidos').delete().in('id', idsAEliminar);
+          if (error) throw error;
+        } catch (err) {
+          console.warn('[Torneos & Retas] No se pudo borrar el cuadro anterior en Supabase — se reemplaza solo local.', err);
+        }
+      }
+      partidosCategoriaExistentes.filter((p) => p._local).forEach((p) => quitarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, p.id));
+      const idsExistentesSet = new Set(partidosCategoriaExistentes.map((p) => p.id));
+      setPartidosTorneo((prev) => prev.filter((p) => !idsExistentesSet.has(p.id)));
+    }
+
     const payloadPartidos = generarPartidosCuadro({ torneoId: torneoGestionVivo.id, categoria, parejasReales });
 
     let partidosCreados = null;
@@ -16448,7 +16660,7 @@ function ModuloTorneosRetas({
     setModalGenerarCuadro(false);
     const tamanoCuadro = siguientePotenciaDeDos(parejasReales.length);
     mostrarToast({
-      titulo: 'Cuadro generado',
+      titulo: modoEdicion ? 'Cuadro regenerado' : 'Cuadro generado',
       detalle: `${categoria || torneoGestionVivo.nombre} · ${parejasReales.length} pareja(s) · ${Math.log2(tamanoCuadro)} ronda(s)`,
     });
   }
@@ -16955,7 +17167,7 @@ function ModuloTorneosRetas({
           reta={retaParaInscribir}
           lugaresDisponibles={Math.max(
             0,
-            CUPOS_RETA - (inscripcionesPorReta[retaParaInscribir.id] || []).filter((i) => i.estado === 'confirmado').length
+            CUPOS_RETA - (inscripcionesPorReta[retaParaInscribir.id] || []).filter(inscripcionOcupaLugar).length
           )}
           jugadores={jugadoresDirectorio}
           onClose={() => setRetaParaInscribir(null)}
@@ -17031,6 +17243,16 @@ function ModuloTorneosRetas({
           torneo={torneoGestionVivo}
           participantes={participantesPorTorneo[torneoGestionVivo.id] || []}
           categoriaInicial={categoriaCuadroGenerar}
+          // Partidos de Ronda 0 YA GUARDADOS para esta categoría (si los
+          // hay) — mismo criterio de filtro que `SeccionCuadroPartidos`
+          // (sin categorías, el torneo no las distingue). Presencia de
+          // datos aquí = "Editar Cuadro" en vez de "Generar Cuadro" (ver
+          // `modoEdicion` dentro de `ModalGenerarCuadro`).
+          partidosExistentes={(partidosPorTorneo[torneoGestionVivo.id] || []).filter(
+            (p) =>
+              p.ronda_orden === 0 &&
+              ((torneoGestionVivo.categorias || []).length === 0 || p.categoria === categoriaCuadroGenerar)
+          )}
           onClose={() => setModalGenerarCuadro(false)}
           onGenerar={generarCuadroTorneo}
           generando={guardandoCuadro}
@@ -17060,7 +17282,7 @@ function ModuloTorneosRetas({
       {retaMarcador && (
         <ModalMarcadorReta
           reta={retaMarcador}
-          confirmados={(inscripcionesPorReta[retaMarcador.id] || []).filter((i) => i.estado === 'confirmado')}
+          confirmados={(inscripcionesPorReta[retaMarcador.id] || []).filter(inscripcionOcupaLugar)}
           onClose={() => setRetaMarcador(null)}
           onGuardar={guardarMarcadorReta}
           guardando={guardandoMarcadorReta}
@@ -20520,11 +20742,38 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
     };
   }, [busqueda, modoPareja, onBuscarJugadores]);
 
-  const enBuscaDePareja = (participantes || []).filter(
-    (p) => p.busca_pareja && !p.pareja_nombre && p.jugador_id !== jugador?.id
+  // Excluye la propia inscripción de la lista de "en busca de pareja" — con
+  // respaldo por TELÉFONO además de `jugador_id`: esta última es una
+  // columna opcional (ver `migracion_v15_jugador_id_torneos_retas.sql`) que
+  // un proyecto sin esa migración corrida no tiene todavía, así que un
+  // registro viejo/sin migrar puede traer `jugador_id: undefined` en TODAS
+  // sus filas — contra esa comparación sola, un jugador podía verse a sí
+  // mismo en esta lista y darle "Unirme" a su propia inscripción.
+  const esUnoMismo = (p) =>
+    (jugador?.id && p.jugador_id === jugador.id) || (jugador?.telefono && claveTelefono(p.telefono) === claveTelefono(jugador.telefono));
+  const enBuscaDePareja = (participantes || []).filter((p) => p.busca_pareja && !p.pareja_nombre && !esUnoMismo(p));
+
+  // Mi propia inscripción a este Torneo (si ya existe) — como titular
+  // (`esUnoMismo`) o como la pareja de alguien más que ya se inscribió y
+  // luego se unió conmigo (`pareja_jugador_id`/`pareja_telefono`). Alimenta
+  // el aviso de estatus de abajo: "En busca de pareja" mientras
+  // `busca_pareja` siga en `true`, o "Pareja confirmada" en cuanto
+  // `unirseComoParejaTorneo` la complete (ver su comentario) — visible tanto
+  // para quien abrió la inscripción como para quien se unió después.
+  const miInscripcion = (participantes || []).find(
+    (p) =>
+      esUnoMismo(p) ||
+      (jugador?.id && p.pareja_jugador_id === jugador.id) ||
+      (jugador?.telefono && claveTelefono(p.pareja_telefono) === claveTelefono(jugador.telefono))
   );
+  const soyTitularDeMiInscripcion = miInscripcion ? esUnoMismo(miInscripcion) : false;
 
   async function unirse(p) {
+    // Blindaje adicional (defensa a fondo, además del filtro de arriba): si
+    // por cualquier motivo `p` resultara ser la propia inscripción, nunca
+    // se manda el UPDATE — evitaría un estado sin sentido (pareja_jugador_id
+    // apuntando al mismo jugador que ya es el titular de la fila).
+    if (esUnoMismo(p)) return;
     setUniendoId(p.id);
     await onUnirseComoPareja(p);
     setUniendoId(null);
@@ -20604,6 +20853,38 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
             </div>
           </div>
         )}
+
+        {miInscripcion &&
+          (() => {
+            // Confirmada en cuanto `busca_pareja` sea `false` — para el
+            // titular eso solo ocurre junto con `pareja_nombre` (ver
+            // `unirseComoParejaTorneo`, que actualiza ambos campos en el
+            // mismo UPDATE); para quien se unió después, `miInscripcion` ya
+            // solo se encuentra aquí una vez que ese mismo UPDATE ocurrió.
+            const parejaConfirmada = !miInscripcion.busca_pareja;
+            const nombrePareja = soyTitularDeMiInscripcion ? miInscripcion.pareja_nombre : miInscripcion.nombre;
+            return (
+              <div
+                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${
+                  parejaConfirmada
+                    ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-400'
+                    : 'border-amber-400/30 bg-amber-400/10 text-amber-400'
+                }`}
+              >
+                {parejaConfirmada ? (
+                  <>
+                    <CheckCircle2 size={13} className="shrink-0" />
+                    Pareja confirmada{nombrePareja ? ` · ${nombrePareja}` : ''}
+                  </>
+                ) : (
+                  <>
+                    <Users size={13} className="shrink-0" />
+                    Ya estás inscrito · En busca de pareja
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
         {enBuscaDePareja.length > 0 && (
           <div>
