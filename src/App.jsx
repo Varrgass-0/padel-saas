@@ -1535,7 +1535,7 @@ function inscripcionOcupaLugar(fila) {
 // Lectura TOLERANTE A ALIAS de los datos de "pareja" en
 // `torneo_participantes` — mismo criterio que `estadoPagoInscripcion` de
 // arriba, aplicado a los pares de columnas que `inscribirseATorneo`/
-// `unirseComoParejaTorneo` escriben por duplicado (`pareja_nombre` +
+// `confirmarUnionTorneo` escriben por duplicado (`pareja_nombre` +
 // `nombre_pareja`, `pareja_telefono` + `telefono_pareja`) "por si acaso":
 // Supabase solo persiste de verdad la que exista en el esquema de ESTE
 // proyecto (`insertarConColumnasOpcionales`/`actualizarConColumnasOpcionales`
@@ -1566,6 +1566,50 @@ function parejaConfirmadaDeParticipante(p) {
 // (equivalente a "pareja_id IS NULL Y sin estatus de pareja confirmada").
 function participanteEnBuscaDePareja(p) {
   return !!p?.busca_pareja && !parejaConfirmadaDeParticipante(p);
+}
+
+// Identificador ÚNICO que agrupa las 2 filas de UNA MISMA pareja en
+// `torneo_participantes` — "Pareja nueva" y "Unirme" (ver `inscribirseATorneo`
+// / `confirmarUnionTorneo`) ya NO guardan a la dupla como una sola fila con
+// el nombre de la pareja colgado en texto: cada integrante queda con su
+// PROPIO registro (su propio pago/estatus), y ambas filas comparten este
+// mismo `pareja_grupo_id`, escrito idéntico en las dos al crearlas/unirlas.
+// Columna OPCIONAL (Arquitectura Flexible): en un proyecto sin ella, cae al
+// respaldo por nombres normalizados de `claveGrupoPareja`.
+function grupoParejaDeParticipante(p) {
+  return p?.pareja_grupo_id || null;
+}
+
+// `crypto.randomUUID` cuando está disponible (todo navegador moderno); si no
+// (entornos viejos/inusuales), un id igual de único aunque no criptográfico
+// — aquí solo hace falta que no choque entre parejas distintas, no que sea
+// impredecible.
+function idGrupoPareja() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `pareja-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Clave de AGRUPACIÓN de una fila de `torneo_participantes` para "¿esta fila
+// es la MISMA pareja que esta otra?" — usada por `duplasConfirmadasTorneo`
+// para armar los enfrentamientos del cuadro SIN enfrentar nunca a una pareja
+// contra sí misma. FIX DE RAÍZ de "Jugador A / Jugador B" vs "Jugador B /
+// Jugador A" en el mismo cuadro: desde que una pareja puede vivir en DOS
+// filas (una por integrante), agrupar por texto de nombres invertidos ya no
+// bastaba por sí solo en todos los casos — se prefiere el `pareja_grupo_id`
+// COMPARTIDO explícito (inequívoco, no depende del orden de los nombres) y
+// solo cae al respaldo por nombres normalizados (ordenados alfabéticamente,
+// para que "A / B" y "B / A" caigan en la MISMA clave) cuando esa columna no
+// existe todavía en el proyecto o la fila es de antes de tenerla. Una fila
+// SIN pareja (todavía en busca) nunca se agrupa con ninguna otra — cada una
+// es su propio grupo, por su `id` de fila.
+function claveGrupoPareja(p) {
+  const grupoId = grupoParejaDeParticipante(p);
+  if (grupoId) return `id:${grupoId}`;
+  const nombrePareja = parejaNombreDeParticipante(p);
+  if (nombrePareja) {
+    return `nombres:${[p?.nombre, nombrePareja].map((n) => (n || '').trim().toLowerCase()).sort().join('•')}`;
+  }
+  return `fila:${p?.id}`;
 }
 
 function sumarDia(fechaISO, dias) {
@@ -12735,25 +12779,29 @@ function generarPartidosCuadro({ torneoId, categoria, parejasReales }) {
 // Duplas ya confirmadas de un Torneo (categoría dada, o todas si el torneo
 // no usa categorías) — para AUTO-LLENAR "Generar Cuadro" con quien ya está
 // realmente inscrito, en vez de dejar cada casilla de Pareja 1/2/... en
-// blanco esperando que el operador las teclee a mano. Solo cuenta como
-// "dupla confirmada" un `torneo_participantes` que YA NO está "en busca de
-// pareja" (`participanteEnBuscaDePareja`, tolerante a alias — incluye tanto
-// los inscritos con pareja desde el inicio como los que se unieron después
-// vía `unirseComoParejaTorneo`) — un registro que sigue en busca no tiene
-// todavía un segundo nombre que ofrecer, así que se deja fuera del
-// auto-llenado (el operador puede añadirlo a mano cuando se resuelva).
-// `nombre`/`pareja_nombre` es EXACTAMENTE el mismo par de columnas que ya
-// arma "Pareja confirmada" en el Portal (ver `ModalDetalleTorneo`), así que
-// ambas pantallas describen la misma pareja con el mismo texto.
+// blanco esperando que el operador las teclee a mano, y para saber cuántas
+// PAREJAS reales hay (no cuántas FILAS) al sugerir el tamaño del cuadro (ver
+// `ModalGenerarCuadro`). Solo cuenta como "dupla confirmada" un
+// `torneo_participantes` que YA NO está "en busca de pareja"
+// (`participanteEnBuscaDePareja`, tolerante a alias — incluye tanto los
+// inscritos con pareja desde el inicio como los que se unieron después vía
+// "Unirme") — un registro que sigue en busca no tiene todavía un segundo
+// nombre que ofrecer, así que se deja fuera del auto-llenado (el operador
+// puede añadirlo a mano cuando se resuelva). `nombre`/`pareja_nombre` es
+// EXACTAMENTE el mismo par de columnas que ya arma "Pareja confirmada" en el
+// Portal (ver `ModalDetalleTorneo`), así que ambas pantallas describen la
+// misma pareja con el mismo texto.
 //
-// DEDUPLICACIÓN por pareja (no por fila): desde que "Pareja nueva" inserta
-// UNA FILA POR CADA integrante (ver `inscribirseATorneo`), la misma dupla
-// real aparece en DOS filas de `participantes` — una diría "Juan / María" y
-// la otra, "María / Juan" (invertida). Sin normalizar, el auto-llenado del
-// cuadro vería estas dos filas como DOS parejas distintas y las colocaría
-// dos veces. Se normaliza cada pareja como el par de nombres ordenado
-// alfabéticamente, para contar cada dupla real una sola vez sin importar
-// cuál de sus dos filas se procese primero.
+// DEDUPLICACIÓN por pareja (no por fila): "Pareja nueva" y "Unirme" (ver
+// `inscribirseATorneo`/`confirmarUnionTorneo`) insertan UNA FILA POR CADA
+// integrante — la misma dupla real aparece en DOS filas de `participantes`
+// ("Juan / María" desde la fila de Juan, "María / Juan" desde la de María).
+// Sin agrupar, el armado del cuadro vería estas dos filas como DOS parejas
+// DISTINTAS y las enfrentaría entre sí (a la pareja contra sí misma). Se
+// agrupa por `claveGrupoPareja` (el `pareja_grupo_id` compartido explícito,
+// o su respaldo por nombres ordenados alfabéticamente) para contar/armar
+// cada dupla real UNA sola vez, en UNA sola posición, sin importar cuál de
+// sus dos filas se procese primero.
 function duplasConfirmadasTorneo(participantes, categoria) {
   const vistos = new Set();
   const resultado = [];
@@ -12761,13 +12809,11 @@ function duplasConfirmadasTorneo(participantes, categoria) {
     .filter((p) => !categoria || p.categoria === categoria)
     .filter((p) => !participanteEnBuscaDePareja(p))
     .forEach((p) => {
+      const clave = claveGrupoPareja(p);
+      if (vistos.has(clave)) return;
       const nombrePareja = parejaNombreDeParticipante(p);
       const etiqueta = nombrePareja ? `${p.nombre} / ${nombrePareja}` : p.nombre;
       if (!etiqueta) return;
-      const clave = nombrePareja
-        ? [p.nombre, nombrePareja].map((n) => (n || '').trim().toLowerCase()).sort().join('•')
-        : `${etiqueta.trim().toLowerCase()}•`;
-      if (vistos.has(clave)) return;
       vistos.add(clave);
       resultado.push(etiqueta);
     });
@@ -15659,13 +15705,12 @@ function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
 function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosExistentes, onClose, onGenerar, generando }) {
   const categoria = categoriaInicial || '';
 
+  // Nombres INDIVIDUALES (una entrada por persona, no por dupla) — para los
+  // selects de "Jugador 1"/"Jugador 2" de `SelectorParejaCompleta`, donde sí
+  // hace falta ver a cada integrante por separado (incluyendo a los dos de
+  // una "Pareja nueva"/"Unirme", cada uno con su propia fila).
   const sugerencias = useMemo(
     () => participantes.filter((p) => !categoria || p.categoria === categoria).map((p) => p.nombre).filter(Boolean),
-    [participantes, categoria]
-  );
-
-  const numConfirmados = useMemo(
-    () => participantes.filter((p) => !categoria || p.categoria === categoria).length,
     [participantes, categoria]
   );
 
@@ -15681,7 +15726,14 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
   // están confirmadas en `torneo_participantes` para esta categoría — el
   // operador ya no tiene que volver a escribir a mano nombres que el jugador
   // ya capturó desde el Portal; solo revisa/ajusta antes de generar.
+  // YA DEDUPLICADA por pareja (`duplasConfirmadasTorneo`/`claveGrupoPareja`)
+  // — su `.length` es el número de PAREJAS reales, nunca el de FILAS de
+  // `torneo_participantes` (una "Pareja nueva"/"Unirme" ocupa 2 filas por 1
+  // sola pareja): usarlo también para sugerir el tamaño del cuadro evita que
+  // el bracket salga más grande de lo que debería y dos filas de la MISMA
+  // pareja terminen enfrentadas entre sí.
   const duplasConfirmadasTexto = useMemo(() => duplasConfirmadasTorneo(participantes, categoria), [participantes, categoria]);
+  const numConfirmados = duplasConfirmadasTexto.length;
 
   const numParejasSugerido = modoEdicion
     ? duplasExistentesTexto.length
@@ -19864,6 +19916,11 @@ function PortalPublicoJugadores({ clubSlug }) {
     // vería doble.
     const esParejaNueva = pareja?.modo === 'nueva' && !!nombrePareja;
     const montoPorFila = esParejaNueva ? monto / 2 : monto;
+    // Agrupador compartido entre las 2 filas de esta pareja — ver
+    // `claveGrupoPareja`: es lo que le permite al armado de duplas/brackets
+    // (`duplasConfirmadasTorneo`) reconocer que estas dos filas son LA MISMA
+    // pareja y no enfrentarlas nunca entre sí.
+    const grupoParejaId = esParejaNueva ? idGrupoPareja() : null;
 
     // Mapeo defensivo de columnas (mismo criterio que `correo`/`email` en
     // `ModalAgregarParticipanteTorneo`): distintos proyectos de Supabase
@@ -19890,6 +19947,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       'pareja_correo',
       'pareja_jugador_id',
       'busca_pareja',
+      'pareja_grupo_id',
     ];
     const payloadParticipante = withClubId({
       torneo_id: torneo.id,
@@ -19907,6 +19965,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       pareja_correo: pareja?.modo === 'nueva' ? pareja.correo || null : null,
       pareja_jugador_id: parejaJugadorId,
       busca_pareja: pareja?.modo === 'ninguna',
+      pareja_grupo_id: grupoParejaId,
     });
     try {
       const { data, error } = await insertarConColumnasOpcionales('torneo_participantes', payloadParticipante, columnasOpcionalesParticipante);
@@ -19936,6 +19995,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           telefono_pareja: jugador.telefono,
           pareja_jugador_id: jugador.id,
           busca_pareja: false,
+          pareja_grupo_id: grupoParejaId,
         });
         try {
           const { data: dataParejaNueva, error: errorParejaNueva } = await insertarConColumnasOpcionales(
@@ -19993,37 +20053,126 @@ function PortalPublicoJugadores({ clubSlug }) {
     }
   }
 
+  // Monto que le toca cubrir a quien se UNE a una inscripción ajena marcada
+  // "En busca de pareja" — YA NO se asume que unirse es gratis: se calcula
+  // el precio TOTAL de la dupla (`montoInscripcionTorneo`, mismo cálculo que
+  // "Pareja nueva" — dobla el precio base si el Torneo cobra "por jugador",
+  // o usa el precio base tal cual si cobra "por pareja") y se le resta lo
+  // que la fila del titular YA tiene registrado como `monto` — normalmente
+  // $0 si el torneo cobra "por pareja" y el titular ya cubrió el total al
+  // abrir su inscripción (nada queda pendiente), o el precio individual
+  // completo si cobra "por jugador" (cada quien paga su parte). El
+  // resultado nunca es negativo.
+  function montoParaUnirseATorneo(torneo, participanteExistente) {
+    const montoEquipo = montoInscripcionTorneo(torneo, { modo: 'nueva' });
+    const montoYaCubierto = Number(participanteExistente?.monto) || 0;
+    return Math.max(0, montoEquipo - montoYaCubierto);
+  }
+
   // "Unirme como pareja" — un jugador YA identificado se une a una
-  // inscripción ajena marcada "En busca de pareja" (`busca_pareja: true`,
-  // sin pareja asignada). No genera un cobro nuevo: el precio del Torneo ya
-  // es "por pareja" (ver `unidad_precio`) y quien abrió la inscripción ya
-  // cubrió (o dejó pendiente) ese monto — unirse solo completa el registro
-  // con los datos de la segunda persona.
-  async function unirseComoParejaTorneo(participante) {
+  // inscripción ajena marcada "En busca de pareja". A diferencia de la
+  // versión anterior, esto YA NO asume que la unión es gratis: pasa por el
+  // MISMO flujo normal de pago (Recepción/Tarjeta/Wallet, ver
+  // `ModalElegirPago`/`montoParaUnirseATorneo`) que cualquier otra
+  // inscripción, y queda registrado como SU PROPIO participante — con su
+  // propio `monto`/estatus de pago, visible en la tabla de Participantes y
+  // en "Inscripciones a Torneo Pendientes"/Mesa de Control — en vez de una
+  // simple actualización silenciosa de la fila del titular. Las DOS filas
+  // (titular + quien se une) comparten `pareja_grupo_id` (ver
+  // `claveGrupoPareja`) para que el armado del cuadro las trate como UNA
+  // sola pareja, nunca enfrentada consigo misma.
+  async function confirmarUnionTorneo(participanteExistente, metodo, monto) {
     if (!jugador) {
       setModalIdentificacion(true);
       return;
     }
-    const payload = {
-      pareja_nombre: jugador.nombre,
-      nombre_pareja: jugador.nombre,
-      pareja_telefono: jugador.telefono,
-      telefono_pareja: jugador.telefono,
-      pareja_jugador_id: jugador.id,
+    const esPagoTarjeta = metodo === 'tarjeta';
+    const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
+    const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
+    // `monto` puede ser $0 (el titular ya cubrió el total) — en ese caso no
+    // hay nada que cobrar, así que siempre queda "pagado" sin importar el
+    // método elegido.
+    const pagado = esPagoTarjeta || montoRestante <= 0;
+    const estadoPagoTexto = pagado ? 'pagado' : 'pendiente';
+    const estatusPagoTexto = pagado ? 'pagado' : 'pendiente_recepcion';
+    const grupoParejaId = grupoParejaDeParticipante(participanteExistente) || idGrupoPareja();
+    const columnasOpcionalesParticipante = [
+      'jugador_id',
+      'estatus_pago',
+      'pareja_nombre',
+      'nombre_pareja',
+      'pareja_telefono',
+      'telefono_pareja',
+      'pareja_jugador_id',
+      'busca_pareja',
+      'pareja_grupo_id',
+    ];
+
+    const payloadNuevaFila = withClubId({
+      torneo_id: participanteExistente.torneo_id,
+      nombre: jugador.nombre,
+      telefono: jugador.telefono,
+      jugador_id: jugador.id,
+      categoria: participanteExistente.categoria || null,
+      monto,
+      estado_pago: estadoPagoTexto,
+      estatus_pago: estatusPagoTexto,
+      pareja_nombre: participanteExistente.nombre,
+      nombre_pareja: participanteExistente.nombre,
+      pareja_telefono: participanteExistente.telefono,
+      telefono_pareja: participanteExistente.telefono,
+      pareja_jugador_id: participanteExistente.jugador_id || null,
       busca_pareja: false,
-    };
+      pareja_grupo_id: grupoParejaId,
+    });
+
     try {
-      const { error } = await actualizarConColumnasOpcionales('torneo_participantes', participante.id, payload, [
-        'pareja_nombre',
-        'nombre_pareja',
-        'pareja_telefono',
-        'telefono_pareja',
-        'pareja_jugador_id',
-        'busca_pareja',
-      ]);
+      const { data, error } = await insertarConColumnasOpcionales('torneo_participantes', payloadNuevaFila, columnasOpcionalesParticipante);
       if (error) throw error;
-      setParticipantes((prev) => prev.map((p) => (p.id === participante.id ? { ...p, ...payload } : p)));
-      mostrarToast({ titulo: '¡Listo, ya son pareja!', detalle: `Te uniste a ${participante.nombre} en ${participante.categoria || 'el torneo'}.` });
+
+      if (montoWallet > 0) {
+        await aplicarCargoWallet({
+          jugadorId: jugador.id,
+          monto: montoWallet,
+          motivo: `Unirme a pareja · Torneo`,
+          referenciaTipo: 'torneo_participante',
+          referenciaId: data.id,
+        });
+        cargarWallet(jugador.id);
+      }
+
+      // Fila del titular: se actualiza para reflejar la unión (mismos
+      // alias de siempre) + el `pareja_grupo_id` compartido — si el titular
+      // no tenía uno todavía, queda sincronizado con la fila nueva.
+      const payloadTitular = {
+        pareja_nombre: jugador.nombre,
+        nombre_pareja: jugador.nombre,
+        pareja_telefono: jugador.telefono,
+        telefono_pareja: jugador.telefono,
+        pareja_jugador_id: jugador.id,
+        busca_pareja: false,
+        pareja_grupo_id: grupoParejaId,
+      };
+      const { error: errorTitular } = await actualizarConColumnasOpcionales(
+        'torneo_participantes',
+        participanteExistente.id,
+        payloadTitular,
+        ['pareja_nombre', 'nombre_pareja', 'pareja_telefono', 'telefono_pareja', 'pareja_jugador_id', 'busca_pareja', 'pareja_grupo_id']
+      );
+      if (errorTitular) throw errorTitular;
+
+      setParticipantes((prev) => [...prev.map((p) => (p.id === participanteExistente.id ? { ...p, ...payloadTitular } : p)), data]);
+
+      mostrarToast({
+        titulo: '¡Listo, ya son pareja!',
+        detalle:
+          `Te uniste a ${participanteExistente.nombre} en ${participanteExistente.categoria || 'el torneo'}. ` +
+          (montoRestante > 0
+            ? `Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
+            : monto > 0
+            ? `Cubierto ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`
+            : 'No había saldo pendiente por cubrir.'),
+      });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (unirse como pareja):', err);
       mostrarToast({
@@ -20902,11 +21051,14 @@ function PortalPublicoJugadores({ clubSlug }) {
                   [flujoPago.evento.nombre, [ramaDeReta(flujoPago.evento), nivelDeReta(flujoPago.evento)].filter(Boolean).join(' ')]
                     .filter(Boolean)
                     .join(' · ')
+                : flujoPago.tipo === 'torneo-union'
+                ? `${flujoPago.evento.nombre} · Unirme a ${flujoPago.participanteExistente?.nombre || 'pareja'}`
                 : flujoPago.evento.nombre
             }
             onClose={() => setFlujoPago(null)}
             onConfirmar={async (metodo) => {
               if (flujoPago.tipo === 'reta') await inscribirseAReta(flujoPago.evento, metodo);
+              else if (flujoPago.tipo === 'torneo-union') await confirmarUnionTorneo(flujoPago.participanteExistente, metodo, flujoPago.monto);
               else await inscribirseATorneo(flujoPago.evento, flujoPago.categoria, metodo, flujoPago.pareja || null);
               setFlujoPago(null);
             }}
@@ -20920,24 +21072,30 @@ function PortalPublicoJugadores({ clubSlug }) {
             jugador={jugador}
             onClose={() => setTorneoDetalle(null)}
             onBuscarJugadores={buscarJugadoresRegistrados}
-            onUnirseComoPareja={async (participante) => {
-              await unirseComoParejaTorneo(participante);
-            }}
             onRequerirIdentificacion={() => setModalIdentificacion(true)}
             onInscribirme={(categoria, pareja) => {
               // "Unirme a pareja seleccionada" (botón "Unirme", o la
               // búsqueda "Pareja registrada" cuando cae sobre alguien que ya
               // está "en busca de pareja" para este torneo — ver
-              // `confirmarInscripcion` en `ModalDetalleTorneo`): NUNCA pasa
-              // por `ModalElegirPago`/`inscribirseATorneo` (eso crearía una
-              // fila nueva y duplicaría al jugador en "Inscripciones a
-              // Torneo Pendientes"). Se llama directo a la misma función
-              // UPDATE-only que ya usa el botón "Unirme" de toda la vida —
-              // no genera ningún cobro nuevo.
+              // `confirmarInscripcion` en `ModalDetalleTorneo`): YA NO se
+              // asume gratis — pasa por el MISMO `ModalElegirPago` que
+              // cualquier otra inscripción, por el monto que le falta cubrir
+              // a la pareja (`montoParaUnirseATorneo`), y queda como SU
+              // PROPIO registro en Mesa de Control (`confirmarUnionTorneo`)
+              // — nunca crea una segunda fila "en busca de pareja" ni pisa
+              // el pago ya hecho por el titular.
               if (pareja?.modo === 'unirme') {
                 const participanteReal = (participantesPorTorneo[torneoDetalle.id] || []).find((p) => p.id === pareja.participanteId);
                 setTorneoDetalle(null);
-                if (participanteReal) unirseComoParejaTorneo(participanteReal);
+                if (participanteReal) {
+                  setFlujoPago({
+                    tipo: 'torneo-union',
+                    evento: torneoDetalle,
+                    categoria: categoria || participanteReal.categoria || null,
+                    monto: montoParaUnirseATorneo(torneoDetalle, participanteReal),
+                    participanteExistente: participanteReal,
+                  });
+                }
                 return;
               }
               // Monto real del cobro — duplica el precio individual cuando
@@ -21067,7 +21225,7 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
 // (b) registrar una pareja nueva a mano (nombre + teléfono/correo), o
 // (c) inscribirse sin pareja ("En busca de pareja") — visible aquí mismo
 // para que otro jugador se una desde "Unirme" en la lista de abajo.
-function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJugadores, onUnirseComoPareja, onRequerirIdentificacion, onInscribirme }) {
+function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme }) {
   const tieneCategorias = Array.isArray(torneo.categorias) && torneo.categorias.length > 0;
   const [categoria, setCategoria] = useState(tieneCategorias ? '' : null);
   const [modoPareja, setModoPareja] = useState('ninguna'); // 'registrada' | 'nueva' | 'ninguna' | 'unirme'
@@ -21130,7 +21288,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
   // luego se unió conmigo (`pareja_jugador_id`/`pareja_telefono`, con
   // respaldo de alias vía `parejaTelefonoDeParticipante`). Alimenta el aviso
   // de estatus de abajo: "En busca de pareja" mientras siga sin confirmarse,
-  // o "Pareja confirmada" en cuanto `unirseComoParejaTorneo` la complete (ver
+  // o "Pareja confirmada" en cuanto `confirmarUnionTorneo` la complete (ver
   // su comentario) — visible tanto para quien abrió la inscripción como para
   // quien se unió después.
   const miInscripcion = (participantes || []).find(
@@ -21154,13 +21312,14 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
   // `parejaYaConfirmada`, ya tiene pareja) en esta categoría.
   const yaInscritoEnEstaCategoria = !!miInscripcion && (!tieneCategorias || (miInscripcion.categoria || '') === categoria);
 
-  // "Unirme" YA NO llama a `onUnirseComoPareja` de inmediato: en vez de
-  // completar la unión al primer clic, fija la UI en el modo "Unirme a
-  // pareja seleccionada" (`modoPareja === 'unirme'`, con `p` guardada en
-  // `parejaParaUnirme`) — el jugador ve una confirmación clara ("Te unes a
-  // {nombre}") y solo se une de verdad al presionar el botón final
-  // ("Continuar", ver `confirmarInscripcion`), igual que cualquier otra
-  // opción de pareja de este modal.
+  // "Unirme" ya NO completa la unión al primer clic: fija la UI en el modo
+  // "Unirme a pareja seleccionada" (`modoPareja === 'unirme'`, con `p`
+  // guardada en `parejaParaUnirme`) — el jugador ve una confirmación clara
+  // ("Te unes a {nombre}") y solo se une de verdad al presionar el botón
+  // final ("Confirmar unión", ver `confirmarInscripcion`), que ahora SIEMPRE
+  // pasa por el flujo normal de pago (ver `onInscribirme` en el Portal /
+  // `confirmarUnionTorneo`) — igual que cualquier otra opción de pareja de
+  // este modal.
   function unirse(p) {
     // Blindaje adicional (defensa a fondo, además del filtro de arriba): si
     // por cualquier motivo `p` resultara ser la propia inscripción, nunca
@@ -21178,10 +21337,11 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
 
     // Modo "Unirme a pareja seleccionada": el ÚNICO payload válido es la
     // unión a esa fila existente — nunca se arma un `pareja = {...}` de los
-    // otros modos, así que es IMPOSIBLE que este camino termine creando una
-    // inscripción nueva (ver `onInscribirme` en el Portal, que para
-    // `pareja.modo === 'unirme'` llama directo a `unirseComoParejaTorneo`,
-    // sin pasar por `inscribirseATorneo`/`ModalElegirPago`).
+    // otros modos, así que este camino NUNCA crea una segunda inscripción
+    // "en busca de pareja" duplicada (ver `onInscribirme` en el Portal, que
+    // para `pareja.modo === 'unirme'` abre el flujo normal de pago —
+    // `ModalElegirPago`/`confirmarUnionTorneo` — por lo que le falte cubrir
+    // a la pareja, y registra la unión como su propio participante).
     if (modoPareja === 'unirme') {
       if (!parejaParaUnirme) {
         setModoPareja('ninguna');
@@ -21348,7 +21508,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
             <p className="mt-1.5 text-sm font-black text-slate-100">Te unes a {parejaParaUnirme.nombre}</p>
             {parejaParaUnirme.categoria && <p className="text-xs text-slate-400">{parejaParaUnirme.categoria}</p>}
             <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
-              No genera un cobro nuevo — {parejaParaUnirme.nombre} ya cubrió (o dejó pendiente) la inscripción de la pareja.
+              Al confirmar, elegirás cómo pagar tu parte (si queda algo pendiente — {parejaParaUnirme.nombre} ya pudo haber cubierto todo o solo parte de la inscripción de la pareja).
             </p>
             <button
               type="button"
