@@ -12717,19 +12717,46 @@ function duplasConfirmadasTorneo(participantes, categoria) {
     .filter(Boolean);
 }
 
-// Lista PLANA de parejas reales (sin "BYE") ya guardadas en la Ronda 0 de un
-// cuadro existente, en orden de `posicion` — el inverso de
+// Lista PLANA de los casilleros reales (sin "BYE") ya guardados en la Ronda 0
+// de un cuadro existente, en orden de `posicion` — el inverso de
 // `armarPartidosRonda0`, para poder REABRIR "Generar Cuadro" sobre un cuadro
 // que ya se generó (editarlo) sin perder lo que ya estaba capturado.
+//
+// A propósito conserva los casilleros VACÍOS como '' (no los descarta): desde
+// que "Generar Cuadro" permite dejar posiciones sin pareja ("Vacante"), un
+// casillero vacío sigue siendo un casillero REAL del cuadro (a diferencia de
+// "BYE", que ni siquiera es una posición jugable) — si se descartara, tanto
+// la edición del cuadro (se recorrerían mal las posiciones siguientes) como
+// la detección de "mismo tamaño" en `generarCuadroTorneo` (que compara este
+// mismo largo) quedarían mal.
 function parejasDesdeCuadroExistente(partidosRonda0) {
   const textos = [];
   [...(partidosRonda0 || [])]
     .sort((a, b) => (a.posicion ?? 0) - (b.posicion ?? 0))
     .forEach((p) => {
-      if (p.pareja1 && p.pareja1 !== BYE) textos.push(p.pareja1);
-      if (p.pareja2 && p.pareja2 !== BYE) textos.push(p.pareja2);
+      if (p.pareja1 !== BYE) textos.push(p.pareja1 || '');
+      if (p.pareja2 !== BYE) textos.push(p.pareja2 || '');
     });
   return textos;
+}
+
+// Si `partido` es un "BYE" ya resuelto (pase directo automático, ver
+// `generarPartidosCuadro`), su única pareja real (`pareja1`) ya avanzó de
+// inmediato al slot que le toca en la ronda siguiente. Cuando esa pareja se
+// LLENA o se REASIGNA después de generado el cuadro (casillero "Vacante"
+// que se auto-llena o que el operador corrige a mano), ese nombre nuevo
+// tiene que propagarse también a ese slot ya ganado — de lo contrario la
+// Ronda 1 se queda mostrando el nombre viejo (o vacío) aunque la Ronda 0 ya
+// se haya corregido. Devuelve `null` si `partido` no es un bye resuelto, o
+// si no hay (todavía) un partido de la siguiente ronda en esa posición.
+function sucesorDeBye(partido, partidosCategoria) {
+  if (!(partido.estado === 'jugado' && partido.ganador === 'pareja1')) return null;
+  const siguientePosicion = Math.floor(partido.posicion / 2);
+  const siguienteSlot = partido.posicion % 2 === 0 ? 'pareja1' : 'pareja2';
+  const siguientePartido = (partidosCategoria || []).find(
+    (p) => p.ronda_orden === partido.ronda_orden + 1 && p.posicion === siguientePosicion
+  );
+  return siguientePartido ? { siguientePartido, siguienteSlot } : null;
 }
 
 // Determina el ganador de un partido a partir de los sets capturados: cuenta
@@ -14806,6 +14833,7 @@ function ModalGestionTorneo({
   onCargarMarcadorPartido,
   onFinalizarTorneo,
   finalizandoTorneo,
+  onReasignarCasillero,
 }) {
   const recaudado = participantes.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
   const pendiente = participantes
@@ -14977,6 +15005,7 @@ function ModalGestionTorneo({
             onGenerarCuadro={onGenerarCuadro}
             onAsignarHorario={onAsignarHorarioPartido}
             onCargarMarcador={onCargarMarcadorPartido}
+            onReasignarCasillero={onReasignarCasillero}
           />
         )}
       </div>
@@ -15161,7 +15190,75 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
 // asignó) y su marcador (si ya se jugó). El mismo componente sirve para las
 // rondas "Por definir" (parejas null, sin acciones disponibles) como para un
 // partido ya cerrado (fondo verde + set a set).
-function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsignarHorario, onCargarMarcador }) {
+// Fila de un slot (pareja1 o pareja2) dentro de una `TarjetaPartido`. Se
+// define a nivel de módulo (NO anidada dentro de `TarjetaPartido`) a propósito:
+// un componente definido dentro del cuerpo de otro es un tipo NUEVO en cada
+// render del padre, así que React lo desmonta/remonta en cada re-render —
+// eso resetearía `editandoSlot` (el <select> se cerraría solo) cada vez que
+// `TarjetaPartido` se re-renderiza por cualquier motivo ajeno (por ejemplo,
+// que llegue un partido actualizado por Realtime). Al vivir en el módulo,
+// React lo reconoce como el mismo componente entre renders y solo el estado
+// `editandoSlot` (que sigue viviendo en `TarjetaPartido`, el dueño real del
+// dato) decide cuándo mostrar el `<select>`.
+function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, setEditandoSlot, opcionesReasignar, onReasignar, partido, puedeNotificar, onNotificar }) {
+  function etiquetaPareja(t) {
+    return t === BYE ? 'BYE (pase directo)' : t || 'Vacante';
+  }
+
+  if (editandoSlot === slot) {
+    // Opciones: la propia pareja actual (para no perderla de la lista si no
+    // se cambia), "Vacante" (limpiar el casillero), y las duplas confirmadas
+    // que todavía no están en NINGÚN casillero de este cuadro.
+    const opciones = [texto || '', ...(opcionesReasignar || [])].filter((v, i, arr) => arr.indexOf(v) === i);
+    return (
+      <select
+        autoFocus
+        value={texto || ''}
+        onChange={(e) => {
+          onReasignar(partido, slot, e.target.value);
+          setEditandoSlot(null);
+        }}
+        onBlur={() => setEditandoSlot(null)}
+        className="w-full rounded-lg border border-lime-400/40 bg-slate-950 px-2 py-1.5 text-xs font-semibold text-slate-100"
+      >
+        {opciones.map((op) => (
+          <option key={op || '__vacante__'} value={op}>
+            {op || 'Vacante'}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  return (
+    <div
+      onClick={editable ? () => setEditandoSlot(slot) : undefined}
+      className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs ${editable ? 'cursor-pointer hover:ring-1 hover:ring-lime-400/40' : ''} ${
+        esGanador ? 'bg-emerald-400/10 font-black text-emerald-300 ring-1 ring-emerald-400/30' : 'bg-slate-900 font-semibold text-slate-200'
+      }`}
+      title={editable ? 'Clic para asignar/reasignar pareja' : undefined}
+    >
+      <span className={`truncate ${esBySlot ? 'italic text-slate-500' : !texto ? 'italic text-slate-600' : ''}`}>{etiquetaPareja(texto)}</span>
+      {esGanador && <CheckCircle2 size={12} className="shrink-0" />}
+      {puedeNotificar && texto && !esBySlot && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onNotificar(texto);
+          }}
+          title="Notificar por WhatsApp"
+          className="shrink-0 rounded-md p-1 text-emerald-400 transition hover:bg-emerald-400/10"
+        >
+          <IconoWhatsApp size={12} />
+        </button>
+      )}
+      {editable && <Pencil size={10} className="shrink-0 text-slate-600" />}
+    </div>
+  );
+}
+
+function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsignarHorario, onCargarMarcador, opcionesReasignar, onReasignar }) {
   const parejasListas = !!partido.pareja1 && !!partido.pareja2;
   const jugado = partido.estado === 'jugado';
   const esBye = partido.pareja1 === BYE || partido.pareja2 === BYE;
@@ -15171,10 +15268,15 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
   // (necesita fecha/hora/cancha para el mensaje) y todavía no jugado — un
   // BYE ya nace "jugado" (pase directo automático), así que nunca lo pide.
   const puedeNotificar = tieneHorario && !jugado;
-
-  function etiquetaPareja(texto) {
-    return texto === BYE ? 'BYE (pase directo)' : texto || 'Por definir';
-  }
+  // Reasignación manual de casillero — SOLO Ronda 0 y solo si el partido no
+  // se ha jugado: es la única ronda con nombres reales editables a mano (las
+  // siguientes se llenan solas conforme avanzan ganadores). Un slot "BYE"
+  // nunca se reasigna (no es una pareja real). "Vacante" (`etiquetaPareja`
+  // de un texto vacío) también se puede reasignar — así se llena a mano un
+  // casillero que el auto-llenado (ver `ModuloTorneosRetas`) todavía no
+  // resolvió.
+  const puedeReasignar = typeof onReasignar === 'function' && partido.ronda_orden === 0 && !jugado;
+  const [editandoSlot, setEditandoSlot] = useState(null); // 'pareja1' | 'pareja2' | null
 
   function notificarWhatsApp(parejaTexto) {
     const telefono = buscarTelefonoPareja(parejaTexto, participantes);
@@ -15192,47 +15294,35 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
       <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">{partido.ronda}</p>
 
       <div className="space-y-1">
-        <div
-          className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs ${
-            jugado && partido.ganador === 'pareja1'
-              ? 'bg-emerald-400/10 font-black text-emerald-300 ring-1 ring-emerald-400/30'
-              : 'bg-slate-900 font-semibold text-slate-200'
-          }`}
-        >
-          <span className={`truncate ${partido.pareja1 === BYE ? 'italic text-slate-500' : ''}`}>{etiquetaPareja(partido.pareja1)}</span>
-          {jugado && partido.ganador === 'pareja1' && <CheckCircle2 size={12} className="shrink-0" />}
-          {puedeNotificar && (
-            <button
-              type="button"
-              onClick={() => notificarWhatsApp(partido.pareja1)}
-              title="Notificar por WhatsApp"
-              className="shrink-0 rounded-md p-1 text-emerald-400 transition hover:bg-emerald-400/10"
-            >
-              <IconoWhatsApp size={12} />
-            </button>
-          )}
-        </div>
+        <FilaPareja
+          slot="pareja1"
+          texto={partido.pareja1}
+          esGanador={jugado && partido.ganador === 'pareja1'}
+          esBySlot={partido.pareja1 === BYE}
+          editable={puedeReasignar && partido.pareja1 !== BYE}
+          editandoSlot={editandoSlot}
+          setEditandoSlot={setEditandoSlot}
+          opcionesReasignar={opcionesReasignar}
+          onReasignar={onReasignar}
+          partido={partido}
+          puedeNotificar={puedeNotificar}
+          onNotificar={notificarWhatsApp}
+        />
         <p className="text-center text-[9px] font-bold text-slate-600">VS</p>
-        <div
-          className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs ${
-            jugado && partido.ganador === 'pareja2'
-              ? 'bg-emerald-400/10 font-black text-emerald-300 ring-1 ring-emerald-400/30'
-              : 'bg-slate-900 font-semibold text-slate-200'
-          }`}
-        >
-          <span className={`truncate ${partido.pareja2 === BYE ? 'italic text-slate-500' : ''}`}>{etiquetaPareja(partido.pareja2)}</span>
-          {jugado && partido.ganador === 'pareja2' && <CheckCircle2 size={12} className="shrink-0" />}
-          {puedeNotificar && (
-            <button
-              type="button"
-              onClick={() => notificarWhatsApp(partido.pareja2)}
-              title="Notificar por WhatsApp"
-              className="shrink-0 rounded-md p-1 text-emerald-400 transition hover:bg-emerald-400/10"
-            >
-              <IconoWhatsApp size={12} />
-            </button>
-          )}
-        </div>
+        <FilaPareja
+          slot="pareja2"
+          texto={partido.pareja2}
+          esGanador={jugado && partido.ganador === 'pareja2'}
+          esBySlot={partido.pareja2 === BYE}
+          editable={puedeReasignar && partido.pareja2 !== BYE}
+          editandoSlot={editandoSlot}
+          setEditandoSlot={setEditandoSlot}
+          opcionesReasignar={opcionesReasignar}
+          onReasignar={onReasignar}
+          partido={partido}
+          puedeNotificar={puedeNotificar}
+          onNotificar={notificarWhatsApp}
+        />
       </div>
 
       {jugado ? (
@@ -15281,7 +15371,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
 // identificado por `partido.categoria`); las rondas se pintan como columnas
 // horizontales (scroll lateral en pantallas angostas), ordenadas por
 // `ronda_orden` y, dentro de cada una, por `posicion`.
-function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadingPartidos, onGenerarCuadro, onAsignarHorario, onCargarMarcador }) {
+function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadingPartidos, onGenerarCuadro, onAsignarHorario, onCargarMarcador, onReasignarCasillero }) {
   const categorias = torneo.categorias || [];
   const [categoriaFiltro, setCategoriaFiltro] = useState(categorias[0] ? `${categorias[0].rama} ${categorias[0].nivel}` : '');
 
@@ -15289,6 +15379,23 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
     if (categorias.length === 0) return partidos;
     return partidos.filter((p) => p.categoria === categoriaFiltro);
   }, [partidos, categorias.length, categoriaFiltro]);
+
+  // Duplas ya confirmadas (pagadas, con pareja) de esta categoría que
+  // TODAVÍA no aparecen en ningún casillero de Ronda 0 del cuadro — son las
+  // que se pueden asignar a mano a un casillero "Vacante" o reasignar en su
+  // lugar (ver `FilaPareja`/`onReasignar`). Si el cuadro no tiene categorías
+  // (torneo de una sola categoría), se usa el string vacío como categoría.
+  const opcionesReasignar = useMemo(() => {
+    const catActual = categorias.length === 0 ? undefined : categoriaFiltro;
+    const confirmadas = duplasConfirmadasTorneo(participantes, catActual);
+    const yaColocadas = new Set(
+      partidosCategoria
+        .filter((p) => p.ronda_orden === 0)
+        .flatMap((p) => [p.pareja1, p.pareja2])
+        .filter((t) => t && t !== BYE)
+    );
+    return confirmadas.filter((nombre) => !yaColocadas.has(nombre));
+  }, [participantes, categorias.length, categoriaFiltro, partidosCategoria]);
 
   const columnas = useMemo(() => {
     const mapa = new Map();
@@ -15364,6 +15471,8 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
                       torneoNombre={torneo.nombre}
                       onAsignarHorario={onAsignarHorario}
                       onCargarMarcador={onCargarMarcador}
+                      opcionesReasignar={opcionesReasignar}
+                      onReasignar={onReasignarCasillero}
                     />
                   ))}
                 </div>
@@ -15567,13 +15676,14 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
     setParejas((prev) => prev.map((p, i) => (i === idx ? valor : p)));
   }
 
+  // A propósito NO se bloquea si algún casillero quedó vacío (parejaTexto ===
+  // '') — el operador puede generar/editar el cuadro aunque todavía no haya
+  // parejas registradas o seleccionadas en todas las posiciones; esos
+  // casilleros se guardan con texto vacío y `TarjetaPartido` los muestra como
+  // "Vacante" hasta que se llenen (a mano, ver `onReasignar`, o solos vía
+  // auto-llenado en tiempo real, ver `reasignarCasilleroCuadro`).
   function guardar() {
     const parejasTexto = parejas.map((p) => textoDeParejaCompleta(p));
-    const incompletas = parejasTexto.some((texto) => !texto);
-    if (incompletas) {
-      setError('Completa las 2 personas (o el texto libre) de cada pareja antes de generar el cuadro.');
-      return;
-    }
     setError('');
     onGenerar({ categoria, parejasReales: parejasTexto, modoEdicion });
   }
@@ -16665,6 +16775,113 @@ function ModuloTorneosRetas({
     });
   }
 
+  // Reasigna A MANO el texto de UN solo casillero (pareja1/pareja2) de UN
+  // partido de Ronda 0 — usado tanto por la reasignación manual en
+  // `TarjetaPartido` (clic + <select>, vía `onReasignar`) como por el
+  // auto-llenado en tiempo real de más abajo. Si el casillero reasignado es
+  // la única pareja real de un BYE ya resuelto (pase directo automático), el
+  // nombre nuevo se propaga también al slot de la Ronda 1 que ya heredó ese
+  // triunfo (`sucesorDeBye`) — así la corrección se ve en las dos rondas a
+  // la vez, sin romper la estructura del cuadro. Igual que
+  // `generarCuadroTorneo`: tolerante a que el partido esté en "Modo local"
+  // (`_local`, nunca llegó a Supabase) o a que la sincronización falle — el
+  // cambio siempre queda reflejado en memoria/`localStorage`.
+  async function reasignarCasilleroCuadro({ partido, slot, texto }) {
+    const cambios = { [slot]: texto || '' };
+    if (!partido._local) {
+      try {
+        const { error } = await supabase.from('torneo_partidos').update(cambios).eq('id', partido.id);
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Torneos & Retas] No se pudo sincronizar la reasignación del casillero en Supabase — se aplica solo local.', err);
+      }
+    }
+
+    let partidoActualizado = null;
+    setPartidosTorneo((prev) =>
+      prev.map((p) => {
+        if (p.id !== partido.id) return p;
+        partidoActualizado = { ...p, ...cambios };
+        if (partidoActualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, partidoActualizado);
+        return partidoActualizado;
+      })
+    );
+    if (!partidoActualizado) return;
+
+    if (slot === 'pareja1') {
+      const partidosCategoria = (partidosPorTorneo[partido.torneo_id] || []).map((p) => (p.id === partido.id ? partidoActualizado : p));
+      const sucesor = sucesorDeBye(partidoActualizado, partidosCategoria);
+      if (sucesor) {
+        const { siguientePartido, siguienteSlot } = sucesor;
+        const cambiosSiguiente = { [siguienteSlot]: texto || '' };
+        if (!siguientePartido._local) {
+          try {
+            const { error } = await supabase.from('torneo_partidos').update(cambiosSiguiente).eq('id', siguientePartido.id);
+            if (error) throw error;
+          } catch (err) {
+            console.warn('[Torneos & Retas] No se pudo propagar la reasignación del bye a la siguiente ronda.', err);
+          }
+        }
+        setPartidosTorneo((prev) =>
+          prev.map((p) => {
+            if (p.id !== siguientePartido.id) return p;
+            const actualizado = { ...p, ...cambiosSiguiente };
+            if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, actualizado);
+            return actualizado;
+          })
+        );
+      }
+    }
+  }
+
+  // Auto-llenado en tiempo real: cuando entra una inscripción NUEVA ya
+  // confirmada con pareja (desde el Portal o Smart POS/Recepción) para una
+  // categoría que YA tiene un cuadro generado, se coloca sola en el primer
+  // casillero "Vacante" disponible de la Ronda 0 (en orden de posición,
+  // Pareja 1 antes que Pareja 2, nunca en un slot "BYE") — el operador no
+  // tiene que abrir "Editar Cuadro" a mano cada vez que llega una inscripción
+  // nueva. La reubicación manual (`onReasignar`/`FilaPareja`) convive con
+  // esto sin pisarse: en cuanto un casillero tiene CUALQUIER texto (puesto a
+  // mano o solo), este efecto ya no vuelve a tocarlo.
+  const casillerosEnAutoLlenado = useRef(new Set());
+  useEffect(() => {
+    torneos.forEach((torneo) => {
+      const partidosDelTorneo = partidosPorTorneo[torneo.id] || [];
+      if (partidosDelTorneo.length === 0) return;
+      const participantesDelTorneo = participantesPorTorneo[torneo.id] || [];
+      const categorias = torneo.categorias || [];
+      const listaCategorias = categorias.length > 0 ? categorias.map((c) => `${c.rama} ${c.nivel}`) : [undefined];
+
+      listaCategorias.forEach((categoria) => {
+        const partidosCategoria = categoria === undefined ? partidosDelTorneo : partidosDelTorneo.filter((p) => p.categoria === categoria);
+        const ronda0 = partidosCategoria.filter((p) => p.ronda_orden === 0).sort((a, b) => a.posicion - b.posicion);
+        if (ronda0.length === 0) return;
+
+        const confirmadas = duplasConfirmadasTorneo(participantesDelTorneo, categoria);
+        const yaColocadas = new Set(partidosCategoria.flatMap((p) => [p.pareja1, p.pareja2]).filter((t) => t && t !== BYE));
+        const pendientes = confirmadas.filter((n) => !yaColocadas.has(n));
+        if (pendientes.length === 0) return;
+
+        let idxPendiente = 0;
+        ronda0.forEach((partido) => {
+          ['pareja1', 'pareja2'].forEach((slot) => {
+            if (idxPendiente >= pendientes.length) return;
+            if (partido[slot] === BYE || partido[slot]) return; // BYE u ocupado — no se toca
+            const clave = `${partido.id}:${slot}`;
+            if (casillerosEnAutoLlenado.current.has(clave)) return;
+            const nombre = pendientes[idxPendiente];
+            idxPendiente += 1;
+            casillerosEnAutoLlenado.current.add(clave);
+            reasignarCasilleroCuadro({ partido, slot, texto: nombre }).finally(() => {
+              casillerosEnAutoLlenado.current.delete(clave);
+            });
+          });
+        });
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [torneos, participantesTorneo, partidosTorneo]);
+
   // Asigna cancha/horario a un partido: sincroniza (best effort) el bloqueo
   // en `reservas` — reutilizando el mismo bloqueo si el partido se está
   // reasignando — y el renglón de `torneo_partidos`. El bloqueo lleva como
@@ -17223,6 +17440,7 @@ function ModuloTorneosRetas({
           onCargarMarcadorPartido={(partido) => setPartidoMarcador(partido)}
           onFinalizarTorneo={finalizarTorneo}
           finalizandoTorneo={finalizandoTorneo}
+          onReasignarCasillero={(partido, slot, texto) => reasignarCasilleroCuadro({ partido, slot, texto })}
         />
       )}
 
@@ -20579,6 +20797,21 @@ function PortalPublicoJugadores({ clubSlug }) {
             }}
             onRequerirIdentificacion={() => setModalIdentificacion(true)}
             onInscribirme={(categoria, pareja) => {
+              // "Unirme a pareja seleccionada" (botón "Unirme", o la
+              // búsqueda "Pareja registrada" cuando cae sobre alguien que ya
+              // está "en busca de pareja" para este torneo — ver
+              // `confirmarInscripcion` en `ModalDetalleTorneo`): NUNCA pasa
+              // por `ModalElegirPago`/`inscribirseATorneo` (eso crearía una
+              // fila nueva y duplicaría al jugador en "Inscripciones a
+              // Torneo Pendientes"). Se llama directo a la misma función
+              // UPDATE-only que ya usa el botón "Unirme" de toda la vida —
+              // no genera ningún cobro nuevo.
+              if (pareja?.modo === 'unirme') {
+                const participanteReal = (participantesPorTorneo[torneoDetalle.id] || []).find((p) => p.id === pareja.participanteId);
+                setTorneoDetalle(null);
+                if (participanteReal) unirseComoParejaTorneo(participanteReal);
+                return;
+              }
               // Monto real del cobro — duplica el precio individual cuando
               // el jugador trae pareja (nueva o registrada) y el Torneo
               // cobra "por jugador" (ver `montoInscripcionTorneo`).
@@ -20709,7 +20942,7 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
 function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJugadores, onUnirseComoPareja, onRequerirIdentificacion, onInscribirme }) {
   const tieneCategorias = Array.isArray(torneo.categorias) && torneo.categorias.length > 0;
   const [categoria, setCategoria] = useState(tieneCategorias ? '' : null);
-  const [modoPareja, setModoPareja] = useState('ninguna'); // 'registrada' | 'nueva' | 'ninguna'
+  const [modoPareja, setModoPareja] = useState('ninguna'); // 'registrada' | 'nueva' | 'ninguna' | 'unirme'
   const [busqueda, setBusqueda] = useState('');
   const [resultados, setResultados] = useState([]);
   const [buscando, setBuscando] = useState(false);
@@ -20717,7 +20950,12 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
   const [parejaNombre, setParejaNombre] = useState('');
   const [parejaTelefono, setParejaTelefono] = useState('');
   const [parejaCorreo, setParejaCorreo] = useState('');
-  const [uniendoId, setUniendoId] = useState(null);
+  // Fila completa de `torneo_participantes` (de "Jugadores en busca de
+  // pareja", ver `enBuscaDePareja` abajo) a la que el jugador le dio
+  // "Unirme" — fija el flujo entero en modo `modoPareja === 'unirme'`: ya no
+  // hay nada que buscar/capturar, solo confirmar la unión a ESA fila
+  // específica (ver `confirmarInscripcion`).
+  const [parejaParaUnirme, setParejaParaUnirme] = useState(null);
   const [error, setError] = useState('');
 
   // Búsqueda con debounce corto (350ms) — evita una consulta a Supabase por
@@ -20768,23 +21006,84 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
   );
   const soyTitularDeMiInscripcion = miInscripcion ? esUnoMismo(miInscripcion) : false;
 
-  async function unirse(p) {
+  // "Unirme" YA NO llama a `onUnirseComoPareja` de inmediato: en vez de
+  // completar la unión al primer clic, fija la UI en el modo "Unirme a
+  // pareja seleccionada" (`modoPareja === 'unirme'`, con `p` guardada en
+  // `parejaParaUnirme`) — el jugador ve una confirmación clara ("Te unes a
+  // {nombre}") y solo se une de verdad al presionar el botón final
+  // ("Continuar", ver `confirmarInscripcion`), igual que cualquier otra
+  // opción de pareja de este modal.
+  function unirse(p) {
     // Blindaje adicional (defensa a fondo, además del filtro de arriba): si
     // por cualquier motivo `p` resultara ser la propia inscripción, nunca
-    // se manda el UPDATE — evitaría un estado sin sentido (pareja_jugador_id
+    // se ofrece unirse — evitaría un estado sin sentido (pareja_jugador_id
     // apuntando al mismo jugador que ya es el titular de la fila).
     if (esUnoMismo(p)) return;
-    setUniendoId(p.id);
-    await onUnirseComoPareja(p);
-    setUniendoId(null);
+    setError('');
+    setParejaParaUnirme(p);
+    setModoPareja('unirme');
+    if (p.categoria) setCategoria(p.categoria);
   }
 
   function confirmarInscripcion() {
     setError('');
+
+    // Modo "Unirme a pareja seleccionada": el ÚNICO payload válido es la
+    // unión a esa fila existente — nunca se arma un `pareja = {...}` de los
+    // otros modos, así que es IMPOSIBLE que este camino termine creando una
+    // inscripción nueva (ver `onInscribirme` en el Portal, que para
+    // `pareja.modo === 'unirme'` llama directo a `unirseComoParejaTorneo`,
+    // sin pasar por `inscribirseATorneo`/`ModalElegirPago`).
+    if (modoPareja === 'unirme') {
+      if (!parejaParaUnirme) {
+        setModoPareja('ninguna');
+        return;
+      }
+      if (!jugador) {
+        onRequerirIdentificacion();
+        return;
+      }
+      onInscribirme(parejaParaUnirme.categoria || categoria, {
+        modo: 'unirme',
+        participanteId: parejaParaUnirme.id,
+        nombre: parejaParaUnirme.nombre,
+        telefono: parejaParaUnirme.telefono,
+        jugadorId: parejaParaUnirme.jugador_id,
+      });
+      return;
+    }
+
     if (tieneCategorias && !categoria) return setError('Elige tu categoría.');
     let pareja = { modo: 'ninguna' };
     if (modoPareja === 'registrada') {
       if (!parejaSeleccionada) return setError('Busca y selecciona a tu pareja registrada.');
+      // Blindaje anti-duplicados: si la persona elegida por búsqueda YA
+      // tiene una inscripción abierta "en busca de pareja" para ESTE
+      // torneo (la misma lista que alimenta el botón "Unirme" de arriba),
+      // se une a ESA fila en vez de crear una inscripción nueva — así no
+      // importa por cuál de los dos caminos (el botón "Unirme" directo, o
+      // buscarla aquí) haya llegado el jugador a la misma persona: nunca
+      // se genera un registro duplicado en "Inscripciones a Torneo
+      // Pendientes" (Smart POS/Recepción).
+      const yaEnBusca = enBuscaDePareja.find(
+        (p) =>
+          (parejaSeleccionada.id && p.jugador_id === parejaSeleccionada.id) ||
+          (parejaSeleccionada.telefono && claveTelefono(p.telefono) === claveTelefono(parejaSeleccionada.telefono))
+      );
+      if (yaEnBusca) {
+        if (!jugador) {
+          onRequerirIdentificacion();
+          return;
+        }
+        onInscribirme(yaEnBusca.categoria || categoria, {
+          modo: 'unirme',
+          participanteId: yaEnBusca.id,
+          nombre: yaEnBusca.nombre,
+          telefono: yaEnBusca.telefono,
+          jugadorId: yaEnBusca.jugador_id,
+        });
+        return;
+      }
       pareja = { modo: 'registrada', nombre: parejaSeleccionada.nombre, telefono: parejaSeleccionada.telefono, jugadorId: parejaSeleccionada.id };
     } else if (modoPareja === 'nueva') {
       if (!parejaNombre.trim()) return setError('Indica el nombre de tu pareja.');
@@ -20830,7 +21129,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
           <p className="mt-2 text-xs font-semibold text-slate-500">{(participantes || []).length} inscritos</p>
         </div>
 
-        {tieneCategorias && (
+        {tieneCategorias && modoPareja !== 'unirme' && (
           <div>
             <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Tu categoría</p>
             <div className="flex flex-wrap gap-1.5">
@@ -20886,131 +21185,162 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
             );
           })()}
 
-        {enBuscaDePareja.length > 0 && (
-          <div>
-            <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
-              <Users size={13} /> Jugadores en busca de pareja
+        {modoPareja === 'unirme' && parejaParaUnirme ? (
+          // Modo "Unirme a pareja seleccionada": la UI queda fija en ESTA
+          // confirmación — nada de tabs, nada de búsqueda — hasta que el
+          // jugador confirme (o le dé "Cambiar" para volver a las opciones
+          // normales). El único camino de aquí en adelante es
+          // `confirmarInscripcion` → `onInscribirme(..., {modo:'unirme',...})`.
+          <div className="rounded-xl border border-lime-400/30 bg-lime-400/10 p-3.5">
+            <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-lime-400">
+              <UserPlus size={13} /> Unirme a pareja seleccionada
             </p>
-            <div className="space-y-1.5">
-              {enBuscaDePareja.map((p) => (
-                <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2">
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-bold text-slate-100">{p.nombre}</p>
-                    {p.categoria && <p className="text-[10px] text-slate-500">{p.categoria}</p>}
-                  </div>
-                  <BotonSecundario onClick={() => unirse(p)} disabled={uniendoId === p.id} className="shrink-0 px-2.5 py-1 text-[11px]">
-                    {uniendoId === p.id ? <Loader2 size={12} className="animate-spin" /> : <UserPlus size={12} />}
-                    Unirme
-                  </BotonSecundario>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div>
-          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Inscribirme con...</p>
-          <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
-            {[
-              { id: 'ninguna', label: 'Sin pareja' },
-              { id: 'nueva', label: 'Pareja nueva' },
-              { id: 'registrada', label: 'Pareja registrada' },
-            ].map((op) => (
-              <button
-                key={op.id}
-                type="button"
-                onClick={() => setModoPareja(op.id)}
-                className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
-                  modoPareja === op.id ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
-                }`}
-              >
-                {op.label}
-              </button>
-            ))}
-          </div>
-
-          {modoPareja === 'ninguna' && (
-            <p className="mt-2.5 rounded-lg border border-white/5 bg-slate-800/40 p-2.5 text-[11px] leading-relaxed text-slate-400">
-              Te inscribes como "En busca de pareja" — otros jugadores podrán verte aquí mismo y unirse contigo antes del torneo.
+            <p className="mt-1.5 text-sm font-black text-slate-100">Te unes a {parejaParaUnirme.nombre}</p>
+            {parejaParaUnirme.categoria && <p className="text-xs text-slate-400">{parejaParaUnirme.categoria}</p>}
+            <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
+              No genera un cobro nuevo — {parejaParaUnirme.nombre} ya cubrió (o dejó pendiente) la inscripción de la pareja.
             </p>
-          )}
-
-          {modoPareja === 'nueva' && (
-            <div className="mt-2.5 space-y-2">
-              <input
-                value={parejaNombre}
-                onChange={(e) => setParejaNombre(e.target.value)}
-                placeholder="Nombre de tu pareja"
-                className={inputClase}
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  value={parejaTelefono}
-                  onChange={(e) => setParejaTelefono(e.target.value)}
-                  placeholder="Teléfono"
-                  className={inputClase}
-                />
-                <input
-                  value={parejaCorreo}
-                  onChange={(e) => setParejaCorreo(e.target.value)}
-                  placeholder="Correo (opcional)"
-                  className={inputClase}
-                />
-              </div>
-            </div>
-          )}
-
-          {modoPareja === 'registrada' && (
-            <div className="mt-2.5 space-y-2">
-              <input
-                value={busqueda}
-                onChange={(e) => {
-                  setBusqueda(e.target.value);
-                  setParejaSeleccionada(null);
-                }}
-                placeholder="Busca por nombre..."
-                className={inputClase}
-              />
-              {parejaSeleccionada ? (
-                <div className="flex items-center justify-between rounded-lg border border-lime-400/30 bg-lime-400/10 px-3 py-2">
-                  <p className="text-xs font-bold text-lime-400">{parejaSeleccionada.nombre}</p>
-                  <button type="button" onClick={() => setParejaSeleccionada(null)} className="text-[11px] font-bold text-slate-400 hover:text-slate-200">
-                    Cambiar
-                  </button>
-                </div>
-              ) : (
-                <>
-                  {buscando && <p className="text-[11px] text-slate-500">Buscando...</p>}
-                  {!buscando && busqueda.trim().length >= 2 && resultados.length === 0 && (
-                    <p className="text-[11px] text-slate-500">Sin resultados — puedes usar "Pareja nueva" en su lugar.</p>
-                  )}
-                  {resultados.length > 0 && (
-                    <div className="max-h-32 space-y-1 overflow-y-auto">
-                      {resultados.map((r) => (
-                        <button
-                          key={r.id}
-                          type="button"
-                          onClick={() => setParejaSeleccionada(r)}
-                          className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-left hover:border-lime-400/50"
-                        >
-                          <span className="text-xs font-bold text-slate-200">{r.nombre}</span>
-                          <ChevronRight size={13} className="text-slate-500" />
-                        </button>
-                      ))}
+            <button
+              type="button"
+              onClick={() => {
+                setModoPareja('ninguna');
+                setParejaParaUnirme(null);
+              }}
+              className="mt-2 text-[11px] font-bold text-slate-400 hover:text-slate-200"
+            >
+              Cambiar
+            </button>
+          </div>
+        ) : (
+          <>
+            {enBuscaDePareja.length > 0 && (
+              <div>
+                <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+                  <Users size={13} /> Jugadores en busca de pareja
+                </p>
+                <div className="space-y-1.5">
+                  {enBuscaDePareja.map((p) => (
+                    <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-bold text-slate-100">{p.nombre}</p>
+                        {p.categoria && <p className="text-[10px] text-slate-500">{p.categoria}</p>}
+                      </div>
+                      <BotonSecundario onClick={() => unirse(p)} className="shrink-0 px-2.5 py-1 text-[11px]">
+                        <UserPlus size={12} />
+                        Unirme
+                      </BotonSecundario>
                     </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Inscribirme con...</p>
+              <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+                {[
+                  { id: 'ninguna', label: 'Sin pareja' },
+                  { id: 'nueva', label: 'Pareja nueva' },
+                  { id: 'registrada', label: 'Pareja registrada' },
+                ].map((op) => (
+                  <button
+                    key={op.id}
+                    type="button"
+                    onClick={() => setModoPareja(op.id)}
+                    className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
+                      modoPareja === op.id ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                    }`}
+                  >
+                    {op.label}
+                  </button>
+                ))}
+              </div>
+
+              {modoPareja === 'ninguna' && (
+                <p className="mt-2.5 rounded-lg border border-white/5 bg-slate-800/40 p-2.5 text-[11px] leading-relaxed text-slate-400">
+                  Te inscribes como "En busca de pareja" — otros jugadores podrán verte aquí mismo y unirse contigo antes del torneo.
+                </p>
+              )}
+
+              {modoPareja === 'nueva' && (
+                <div className="mt-2.5 space-y-2">
+                  <input
+                    value={parejaNombre}
+                    onChange={(e) => setParejaNombre(e.target.value)}
+                    placeholder="Nombre de tu pareja"
+                    className={inputClase}
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      value={parejaTelefono}
+                      onChange={(e) => setParejaTelefono(e.target.value)}
+                      placeholder="Teléfono"
+                      className={inputClase}
+                    />
+                    <input
+                      value={parejaCorreo}
+                      onChange={(e) => setParejaCorreo(e.target.value)}
+                      placeholder="Correo (opcional)"
+                      className={inputClase}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {modoPareja === 'registrada' && (
+                <div className="mt-2.5 space-y-2">
+                  <input
+                    value={busqueda}
+                    onChange={(e) => {
+                      setBusqueda(e.target.value);
+                      setParejaSeleccionada(null);
+                    }}
+                    placeholder="Busca por nombre..."
+                    className={inputClase}
+                  />
+                  {parejaSeleccionada ? (
+                    <div className="flex items-center justify-between rounded-lg border border-lime-400/30 bg-lime-400/10 px-3 py-2">
+                      <p className="text-xs font-bold text-lime-400">{parejaSeleccionada.nombre}</p>
+                      <button type="button" onClick={() => setParejaSeleccionada(null)} className="text-[11px] font-bold text-slate-400 hover:text-slate-200">
+                        Cambiar
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      {buscando && <p className="text-[11px] text-slate-500">Buscando...</p>}
+                      {!buscando && busqueda.trim().length >= 2 && resultados.length === 0 && (
+                        <p className="text-[11px] text-slate-500">Sin resultados — puedes usar "Pareja nueva" en su lugar.</p>
+                      )}
+                      {resultados.length > 0 && (
+                        <div className="max-h-32 space-y-1 overflow-y-auto">
+                          {resultados.map((r) => (
+                            <button
+                              key={r.id}
+                              type="button"
+                              onClick={() => setParejaSeleccionada(r)}
+                              className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-left hover:border-lime-400/50"
+                            >
+                              <span className="text-xs font-bold text-slate-200">{r.nombre}</span>
+                              <ChevronRight size={13} className="text-slate-500" />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
-                </>
+                </div>
               )}
             </div>
-          )}
-        </div>
+          </>
+        )}
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
           <BotonPrimario onClick={confirmarInscripcion}>
-            <UserPlus size={15} /> {jugador ? 'Continuar a pago' : 'Identificarme e inscribirme'}
+            <UserPlus size={15} />
+            {modoPareja === 'unirme' ? 'Confirmar unión' : jugador ? 'Continuar a pago' : 'Identificarme e inscribirme'}
           </BotonPrimario>
         </div>
       </div>
