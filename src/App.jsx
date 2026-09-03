@@ -4294,6 +4294,40 @@ async function actualizarConColumnasOpcionales(tabla, id, payloadCompleto, colum
   return conColumnasOpcionales(payloadCompleto, columnasOpcionales, (payload) => supabase.from(tabla).update(payload).eq('id', id));
 }
 
+// Mismo criterio que `conColumnasOpcionales`, pero para un INSERT MASIVO (un
+// arreglo de varias filas de una sola vez, ej. TODOS los partidos de un
+// cuadro recién generado en `torneo_partidos`) — `conColumnasOpcionales` no
+// sirve tal cual aquí porque hace `{ ...payloadCompleto }`, que sobre un
+// ARREGLO no clona sus filas (las trataría como un objeto con llaves "0",
+// "1", "2"...). Cada intento quita la misma columna faltante de TODAS las
+// filas del lote antes de reintentar el insert completo. Root cause real
+// que motivó esto: `torneo_partidos.cancha_id` (junto con `fecha`/
+// `hora_inicio`/`hora_fin`/`reserva_bloqueo_id`, los campos de horario que
+// se guardan en null al generar el cuadro y se llenan después al asignar
+// horario) puede no existir todavía en un proyecto de Supabase que no
+// corrió la migración que la agregó — antes esto tronaba el `insert()`
+// completo con "PGRST204: Could not find the 'cancha_id' column..." y el
+// cuadro entero caía a "Modo local" (nunca llegaba a guardarse de verdad),
+// en vez de guardarse igual sin esas columnas opcionales.
+async function insertarMuchosConColumnasOpcionales(tabla, payloadsCompletos, columnasOpcionales) {
+  let payloads = (payloadsCompletos || []).map((p) => ({ ...p }));
+  let pendientes = new Set(columnasOpcionales);
+  for (let intento = 0; intento <= columnasOpcionales.length; intento++) {
+    const { data, error } = await supabase.from(tabla).insert(payloads).select();
+    if (!error) return { data, error: null };
+    if (!esErrorColumnaInexistente(error) || pendientes.size === 0) return { data: null, error };
+    const faltante = columnaFaltanteDeError(error);
+    if (faltante && pendientes.has(faltante)) {
+      payloads.forEach((p) => delete p[faltante]);
+      pendientes.delete(faltante);
+    } else {
+      pendientes.forEach((col) => payloads.forEach((p) => delete p[col]));
+      pendientes.clear();
+    }
+  }
+  return { data: null, error: new Error('No se pudo guardar ni siquiera sin las columnas opcionales.') };
+}
+
 function obtenerTimestampVenta(venta) {
   const crudo = venta?.created_at || venta?.fecha;
   if (!crudo) return null;
@@ -13631,6 +13665,38 @@ function fusionarConRegistrosLocales(datosServidor, key) {
   return [...datosServidor, ...localesUnicos];
 }
 
+// PURGA DE CUADROS ("torneo_partidos") LOCALES DESFASADOS — se llama al
+// cargar la pantalla de Torneos & Retas (`cargarPartidosTorneo`), ANTES de
+// fusionar con `localStorage`. Un cuadro que en algún momento cayó a "Modo
+// local" (ej. el bug ya corregido de `cancha_id`/`fecha`/`hora_inicio`/
+// `hora_fin`/`reserva_bloqueo_id` faltantes en el esquema de Supabase, que
+// antes tronaba el `insert()` completo del cuadro) deja sus filas guardadas
+// en `localStorage` bajo `LS_KEY_TORNEO_PARTIDOS_LOCAL` con un id
+// `local-...`, y `fusionarConRegistrosLocales` las sigue mezclando con lo
+// real en CADA carga de pantalla — para siempre, hasta que algo las borre.
+// Si esa MISMA categoría de ese MISMO torneo YA tiene partidos REALES en
+// Supabase (típicamente porque el cuadro se volvió a generar después de
+// corregido el bug), la copia local vieja ya no sirve de nada: es un cuadro
+// fantasma de una sesión anterior, y mezclarlo con el cuadro real es
+// exactamente el tipo de duplicado/jugador repetido que este archivo lleva
+// varias rondas persiguiendo. Se purga por categoría (nunca a lo bruto:
+// nunca toca el localStorage de un torneo/categoría que TODAVÍA no tiene
+// nada real en el servidor — ese sí podría ser un cuadro legítimo esperando
+// a sincronizar).
+function purgarPartidosLocalesDesfasados(datosServidor) {
+  try {
+    const locales = leerRegistrosLocales(LS_KEY_TORNEO_PARTIDOS_LOCAL);
+    if (locales.length === 0) return;
+    const categoriasConDatosReales = new Set((datosServidor || []).map((p) => `${p.torneo_id}::${p.categoria || ''}`));
+    const vigentes = locales.filter((p) => !categoriasConDatosReales.has(`${p.torneo_id}::${p.categoria || ''}`));
+    if (vigentes.length !== locales.length) {
+      window.localStorage.setItem(LS_KEY_TORNEO_PARTIDOS_LOCAL, JSON.stringify(vigentes));
+    }
+  } catch (err) {
+    // Sin soporte de localStorage no hay nada que purgar.
+  }
+}
+
 /* ============================================================================
  * MÓDULO DE AUDITORÍA & CONTROL INTERNO — Seguridad de Caja
  * ----------------------------------------------------------------------------
@@ -15649,6 +15715,34 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
       .map((col) => ({ ...col, partidos: [...col.partidos].sort((a, b) => a.posicion - b.posicion) }));
   }, [partidosCategoria]);
 
+  // BLINDAJE EXTRA justo al momento de pintar (además de `sanearBracket` ya
+  // aplicado arriba sobre `partidosSaneados` — con eso normalmente no hay
+  // nada que corregir aquí, este es el último fusible): recorre los
+  // casilleros de Ronda 0 en orden de posición llevando un Set de jugadores
+  // YA renderizados; si un nombre que ya apareció (solo o en pareja) vuelve
+  // a aparecer en un casillero posterior, ESE casillero se fuerza a
+  // "Vacante" en el momento de pintarlo, sin importar qué diga el dato.
+  const textosForzadosVacante = useMemo(() => {
+    const forzados = new Set(); // `${partidoId}:${slot}`
+    const vistos = new Set();
+    partidosCategoria
+      .filter((p) => p.ronda_orden === 0)
+      .sort((a, b) => a.posicion - b.posicion)
+      .forEach((p) => {
+        ['pareja1', 'pareja2'].forEach((slot) => {
+          const texto = p[slot];
+          if (!texto || texto === BYE) return;
+          const nombres = separarPareja(texto);
+          if (nombres.some((n) => vistos.has(n))) {
+            forzados.add(`${p.id}:${slot}`);
+          } else {
+            nombres.forEach((n) => vistos.add(n));
+          }
+        });
+      });
+    return forzados;
+  }, [partidosCategoria]);
+
   if (loadingPartidos) {
     return (
       <div className="space-y-2">
@@ -15703,10 +15797,18 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
               {columnas.map((col) => (
                 <div key={col.ronda_orden} className="flex flex-col gap-3">
                   <p className="text-center text-xs font-black uppercase tracking-wide text-violet-400">{col.ronda}</p>
-                  {col.partidos.map((p) => (
+                  {col.partidos.map((p) => {
+                    // `textosForzadosVacante` fuerza a "Vacante" cualquier
+                    // casillero cuyo jugador ya se pintó antes en este mismo
+                    // recorrido — se aplica aquí, al momento de armar las
+                    // props de `TarjetaPartido`, sin mutar `p` ni el estado.
+                    const pareja1 = textosForzadosVacante.has(`${p.id}:pareja1`) ? '' : p.pareja1;
+                    const pareja2 = textosForzadosVacante.has(`${p.id}:pareja2`) ? '' : p.pareja2;
+                    const partidoParaRender = pareja1 === p.pareja1 && pareja2 === p.pareja2 ? p : { ...p, pareja1, pareja2 };
+                    return (
                     <TarjetaPartido
                       key={p.id}
-                      partido={p}
+                      partido={partidoParaRender}
                       canchas={canchas}
                       participantes={participantes}
                       torneoNombre={torneo.nombre}
@@ -15715,7 +15817,8 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
                       opcionesReasignar={opcionesReasignar}
                       onReasignar={onReasignarCasillero}
                     />
-                  ))}
+                    );
+                  })}
                 </div>
               ))}
             </div>
@@ -17077,13 +17180,26 @@ function ModuloTorneosRetas({
 
     const payloadPartidos = generarPartidosCuadro({ torneoId: torneoGestionVivo.id, categoria, parejasReales });
 
+    // Insert MASIVO tolerante a columnas faltantes (Arquitectura Flexible,
+    // ver `insertarMuchosConColumnasOpcionales`): `cancha_id`/`fecha`/
+    // `hora_inicio`/`hora_fin`/`reserva_bloqueo_id` van en null al generar
+    // el cuadro (se llenan después al "Asignar Horario") y son justo las
+    // columnas que un proyecto de Supabase sin la migración de horarios de
+    // Torneos podría no tener todavía — antes esto tronaba TODO el insert
+    // con "PGRST204: Could not find the 'cancha_id' column..." y el cuadro
+    // completo caía a "Modo local" en vez de guardarse de verdad.
     let partidosCreados = null;
-    try {
-      const { data, error } = await supabase.from('torneo_partidos').insert(payloadPartidos).select();
-      if (error) throw error;
+    const { data, error } = await insertarMuchosConColumnasOpcionales('torneo_partidos', payloadPartidos, [
+      'cancha_id',
+      'fecha',
+      'hora_inicio',
+      'hora_fin',
+      'reserva_bloqueo_id',
+    ]);
+    if (!error && data) {
       partidosCreados = data;
-    } catch (err) {
-      console.warn('[Torneos & Retas] No se pudo guardar el cuadro en Supabase — se usa modo local.', err);
+    } else {
+      console.warn('[Torneos & Retas] No se pudo guardar el cuadro en Supabase — se usa modo local.', error);
       partidosCreados = payloadPartidos.map((p) => ({ ...p, id: idLocal('partido'), _local: true }));
       partidosCreados.forEach((p) => guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, p));
     }
@@ -17303,12 +17419,23 @@ function ModuloTorneosRetas({
       reserva_bloqueo_id: bloqueoReserva.id,
     };
 
+    // Tolerante a columnas faltantes (mismo motivo que en
+    // `generarCuadroTorneo`): `cancha_id`/`fecha`/`hora_inicio`/`hora_fin`/
+    // `reserva_bloqueo_id` pueden no existir todavía en `torneo_partidos` en
+    // este proyecto de Supabase — sin esto, un simple "Asignar Horario"
+    // tronaba con "PGRST204: Could not find the 'cancha_id' column..." y el
+    // partido se quedaba solo en modo local aunque el bloqueo en `reservas`
+    // (arriba) sí se hubiera guardado bien.
     if (!partido._local) {
-      try {
-        const { error } = await supabase.from('torneo_partidos').update(cambiosPartido).eq('id', partido.id);
-        if (error) throw error;
-      } catch (err) {
-        console.warn('[Torneos & Retas] No se pudo sincronizar el horario del partido en Supabase — se aplica solo local.', err);
+      const { error } = await actualizarConColumnasOpcionales('torneo_partidos', partido.id, cambiosPartido, [
+        'cancha_id',
+        'fecha',
+        'hora_inicio',
+        'hora_fin',
+        'reserva_bloqueo_id',
+      ]);
+      if (error) {
+        console.warn('[Torneos & Retas] No se pudo sincronizar el horario del partido en Supabase — se aplica solo local.', error);
       }
     }
 
@@ -23175,6 +23302,11 @@ function AppInterno() {
       if (!esErrorTablaInexistente(error)) setErrorPartidosTorneo(error.message || 'No se pudieron cargar los partidos.');
       setPartidosTorneo(fusionarConRegistrosLocales([], LS_KEY_TORNEO_PARTIDOS_LOCAL));
     } else {
+      // Purga ANTES de fusionar (`purgarPartidosLocalesDesfasados`, ver su
+      // comentario): cualquier cuadro en modo local de una sesión anterior
+      // cuya categoría YA tiene datos reales en Supabase se descarta aquí,
+      // en vez de seguir mezclándose con el cuadro real en cada carga.
+      purgarPartidosLocalesDesfasados(data || []);
       setPartidosTorneo(fusionarConRegistrosLocales(data || [], LS_KEY_TORNEO_PARTIDOS_LOCAL));
     }
     setLoadingPartidosTorneo(false);
