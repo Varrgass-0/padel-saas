@@ -1468,6 +1468,49 @@ function ramaDeReta(reta) {
   return ((reta?.rama || reta?.genero || reta?.categoria_rama || '') + '').trim();
 }
 
+// Monto real a cobrar por una inscripción a Torneo, considerando pareja:
+// `torneo.precio` se cobra TAL CUAL cuando `unidad_precio === 'pareja'` (el
+// precio publicado ya es "por pareja", cubre a los 2 — caso por default) o
+// cuando el jugador se inscribe "Sin pareja"/"En busca de pareja" (paga solo
+// lo suyo). Cuando `unidad_precio === 'jugador'` (precio publicado "por
+// persona") Y el jugador trae una pareja consigo (nueva o registrada) — el
+// flujo del Portal solo genera UN cobro por la inscripción completa, así que
+// ese cobro asume el pago de ambos lugares — el subtotal/total real es
+// `precio × 2`, no el precio de un solo jugador. FIX de "el cobro de pareja
+// nueva/registrada no duplicaba el monto" reportado en producción.
+function montoInscripcionTorneo(torneo, pareja) {
+  const precioBase = Number(torneo?.precio) || 0;
+  const incluyePareja = pareja?.modo === 'registrada' || pareja?.modo === 'nueva';
+  if (incluyePareja && torneo?.unidad_precio === 'jugador') {
+    return precioBase * 2;
+  }
+  return precioBase;
+}
+
+// Estado de pago real de una fila de `reta_inscripciones`/
+// `torneo_participantes`: `estado_pago` es el nombre "oficial" que lee el
+// resto de la app, pero `inscribirseAReta`/`inscribirseATorneo`/
+// `ModalInscribirJugador`/`ModalAgregarParticipanteTorneo` lo escriben
+// TAMBIÉN bajo el alias `estatus_pago` (Arquitectura Flexible, por si el
+// proyecto de Supabase tiene la tabla con ese nombre de columna en vez del
+// oficial). FIX DE RAÍZ de "Torneos y Retas" en $0 en la Matriz de Ingresos
+// Consolidados/P&L (y en Analytics BI, Directorio & CRM, Mesa de Control)
+// aunque sí hubiera inscripciones pagadas: si el proyecto real SOLO tiene
+// `estatus_pago` (no `estado_pago`), el reintento adaptativo de
+// `insertarConColumnasOpcionales` quita `estado_pago` del payload (columna
+// inexistente) y el registro queda guardado solo bajo `estatus_pago` — toda
+// lectura que solo revisara `fila.estado_pago` lo veía como "no pagado"
+// (`undefined !== 'pagado'`) sin importar que sí estuviera cobrado. Esta
+// función centraliza la lectura con el mismo criterio de respaldo que ya
+// usa la escritura, para que nunca se vuelvan a desalinear.
+function estadoPagoInscripcion(fila) {
+  return fila?.estado_pago ?? fila?.estatus_pago ?? null;
+}
+
+function inscripcionEstaPagada(fila) {
+  return estadoPagoInscripcion(fila) === 'pagado';
+}
+
 function sumarDia(fechaISO, dias) {
   const [y, m, d] = fechaISO.split('-').map(Number);
   const fecha = new Date(y, m - 1, d);
@@ -7007,10 +7050,14 @@ function ModuloSmartPOS({
     const retasPorId = new Map((retas || []).map((r) => [r.id, r]));
     const torneosPorId = new Map((torneos || []).map((t) => [t.id, t]));
 
-    const esPendiente = (estadoPago) => estadoPago === 'pendiente' || estadoPago === 'cobro_recepcion';
+    // Lee `estado_pago` con respaldo a `estatus_pago` (ver `estadoPagoInscripcion`)
+    // — de lo contrario, un proyecto cuya tabla solo tenga la columna
+    // `estatus_pago` nunca mostraría aquí nada por cobrar, aunque sí hubiera
+    // inscripciones pendientes reales.
+    const esPendiente = (estadoPago) => estadoPago === 'pendiente' || estadoPago === 'cobro_recepcion' || estadoPago === 'pendiente_recepcion';
 
     const filasRetas = (inscripciones || [])
-      .filter((i) => i.estado !== 'cancelado' && esPendiente(i.estado_pago))
+      .filter((i) => i.estado !== 'cancelado' && esPendiente(estadoPagoInscripcion(i)))
       .map((i) => {
         const reta = retasPorId.get(i.reta_id);
         return {
@@ -7028,7 +7075,7 @@ function ModuloSmartPOS({
       });
 
     const filasTorneos = (participantesTorneo || [])
-      .filter((p) => esPendiente(p.estado_pago))
+      .filter((p) => esPendiente(estadoPagoInscripcion(p)))
       .map((p) => {
         const torneo = torneosPorId.get(p.torneo_id);
         return {
@@ -10873,11 +10920,16 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
     const addonsDeReservasWeb = filasReservas.reduce((acc, r) => acc + (Number(r.monto_addons) || 0), 0);
     const ventasWeb = ventasWebTienda + addonsDeReservasWeb;
 
+    // `inscripcionEstaPagada` lee `estado_pago` CON RESPALDO a `estatus_pago`
+    // (ver su comentario) — FIX de la tarjeta "Torneos y Retas" en $0: antes
+    // de este fix, un proyecto de Supabase cuya tabla solo tuviera la
+    // columna `estatus_pago` (no la oficial `estado_pago`) nunca sumaba nada
+    // aquí, aunque sí hubiera inscripciones realmente pagadas.
     const filasInscripcionesRetas = (inscripciones || []).filter(
-      (i) => i.estado_pago === 'pagado' && i.estado !== 'cancelado' && dentroDeRangoPorCreatedAt(i, rangoPnl)
+      (i) => inscripcionEstaPagada(i) && i.estado !== 'cancelado' && dentroDeRangoPorCreatedAt(i, rangoPnl)
     );
     const filasInscripcionesTorneos = (participantesTorneo || []).filter(
-      (p) => p.estado_pago === 'pagado' && dentroDeRangoPorCreatedAt(p, rangoPnl)
+      (p) => inscripcionEstaPagada(p) && dentroDeRangoPorCreatedAt(p, rangoPnl)
     );
     const torneosRetas =
       filasInscripcionesRetas.reduce((acc, i) => acc + (Number(i.monto) || 0), 0) +
@@ -11844,7 +11896,7 @@ function ModuloAnalyticsBI({
     (retas || []).forEach((reta) => {
       if (!reta.reserva_bloqueo_id) return;
       const totalReta = (inscripciones || [])
-        .filter((i) => i.reta_id === reta.id && i.estado_pago === 'pagado' && i.estado !== 'cancelado')
+        .filter((i) => i.reta_id === reta.id && inscripcionEstaPagada(i) && i.estado !== 'cancelado')
         .reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
       if (totalReta <= 0) return;
       const horas = duracionHorasBloque(reta.hora_inicio, reta.hora_fin);
@@ -11855,7 +11907,7 @@ function ModuloAnalyticsBI({
 
     (torneos || []).forEach((torneo) => {
       const totalTorneo = (participantesTorneo || [])
-        .filter((p) => p.torneo_id === torneo.id && p.estado_pago === 'pagado')
+        .filter((p) => p.torneo_id === torneo.id && inscripcionEstaPagada(p))
         .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
       if (totalTorneo <= 0) return;
 
@@ -13718,7 +13770,7 @@ function TarjetaReta({
                 <span className="truncate">{jugador.nombre}</span>
               </span>
               <div className="flex shrink-0 items-center gap-1.5">
-                {jugador.estado_pago === 'pendiente' && <AlertTriangle size={11} className="text-amber-400" />}
+                {estadoPagoInscripcion(jugador) === 'pendiente' && <AlertTriangle size={11} className="text-amber-400" />}
                 <button
                   onClick={() => onCancelarInscripcion(reta, jugador)}
                   disabled={cancelandoId === jugador.id}
@@ -14217,8 +14269,10 @@ function TarjetaTorneo({
   onEliminarDefinitivo,
   eliminando,
 }) {
-  const recaudado = participantes.filter((p) => p.estado_pago === 'pagado').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
-  const pendiente = participantes.filter((p) => p.estado_pago === 'pendiente').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const recaudado = participantes.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const pendiente = participantes
+    .filter((p) => !inscripcionEstaPagada(p) && estadoPagoInscripcion(p) != null)
+    .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
   const archivado = torneo.archivado === true;
   // Eliminación Definitiva: solo se ofrece si el torneo no tiene
   // participantes/ingresos que proteger — de lo contrario, Archivar es la
@@ -14696,8 +14750,10 @@ function ModalGestionTorneo({
   onFinalizarTorneo,
   finalizandoTorneo,
 }) {
-  const recaudado = participantes.filter((p) => p.estado_pago === 'pagado').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
-  const pendiente = participantes.filter((p) => p.estado_pago === 'pendiente').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const recaudado = participantes.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const pendiente = participantes
+    .filter((p) => !inscripcionEstaPagada(p) && estadoPagoInscripcion(p) != null)
+    .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
   const bloqueosActivos = torneo.bloqueos || [];
   const finalizado = torneo.estado === 'finalizado';
 
@@ -14838,12 +14894,12 @@ function ModalGestionTorneo({
                           <td className="px-3 py-2">
                             <span
                               className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                                p.estado_pago === 'pagado'
+                                inscripcionEstaPagada(p)
                                   ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
                                   : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
                               }`}
                             >
-                              {p.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                              {inscripcionEstaPagada(p) ? 'Pagado' : 'Pendiente'}
                             </span>
                           </td>
                         </tr>
@@ -14893,14 +14949,33 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
     setGuardando(true);
     setError('');
 
+    // Auto-Registro Universal (Directorio & CRM): igual que "Nueva Reserva" y
+    // la inscripción a Retas, busca/crea el expediente de este jugador en
+    // `jugadores` por teléfono (identificador único) — se resuelve ANTES del
+    // insert (no después) para poder guardar `jugador_id` en el propio
+    // registro de `torneo_participantes` (campo requerido junto con
+    // `torneo_id`/`monto`/`estado_pago`, ver el fix de "No se pudo completar
+    // tu inscripción" del Portal).
+    let jugadorIdResuelto = null;
+    try {
+      jugadorIdResuelto = await resolverJugadorId(nombre, { telefono, directorio: jugadores });
+    } catch (errCRM) {
+      console.warn('[Torneos & Retas] No se pudo resolver/crear el expediente del participante en el CRM (jugadores).', errCRM);
+    }
+
     // Mapeo de compatibilidad total: se manda `correo` junto con su alias
     // `email` — por si el proyecto de Supabase tiene esta tabla migrada
     // con otro nombre de columna (justo el error reportado). `nivel` y
     // `categoria` ya son dos campos distintos e intencionales en este
     // formulario (nivel de juego del jugador vs. categoría del torneo en
     // la que participa), así que se mandan tal cual, sin fusionarlos.
+    // `estado_pago`/`estatus_pago` van duplicados por el mismo motivo que en
+    // `inscribirseATorneo`/`inscribirseAReta` del Portal — distintos
+    // proyectos de Supabase pueden tener la columna bajo cualquiera de los
+    // dos nombres.
     const payloadParticipante = withClubId({
       torneo_id: torneo.id,
+      jugador_id: jugadorIdResuelto,
       nombre: nombre.trim(),
       telefono: telefono.trim() || null,
       correo: correo.trim() || null,
@@ -14909,32 +14984,48 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       categoria: categoria || null,
       monto: Number(monto) || 0,
       estado_pago: estadoPago,
+      estatus_pago: estadoPago,
     });
 
     let participanteCreado = null;
+    let modoLocal = false;
 
-    try {
-      const { data, error: err } = await supabase.from('torneo_participantes').insert(payloadParticipante).select().single();
-      if (err) throw err;
+    // Reintento adaptativo (Arquitectura Flexible): quita SOLO la columna
+    // opcional que Supabase reporte como inexistente y reintenta — igual
+    // criterio que `ModalInscribirJugador.guardar()` (Retas) e
+    // `inscribirseATorneo` (Portal), en vez del `.insert()` a secas de
+    // antes, que tronaba la inscripción completa ante cualquier desfase de
+    // esquema en un campo secundario (`correo`/`email`/`jugador_id`/
+    // `estatus_pago`, etc.) — la causa raíz real de "No se pudo completar
+    // tu inscripción" reportada también desde este formulario del panel.
+    const { data, error: errParticipante } = await insertarConColumnasOpcionales('torneo_participantes', payloadParticipante, [
+      'jugador_id',
+      'correo',
+      'email',
+      'nivel',
+      'categoria',
+      'estado_pago',
+      'estatus_pago',
+    ]);
+    if (!errParticipante && data) {
       participanteCreado = data;
-    } catch (err) {
-      // Tolerancia total a fallos: columna faltante, desfase de esquema,
-      // política RLS o error de red — nunca se bloquea al operador con una
-      // alerta roja. El participante se guarda en memoria local hasta que
-      // se corrija la causa de fondo en Supabase.
-      console.warn('[Torneos & Retas] No se pudo guardar el participante en Supabase — se usa modo local.', err);
+    } else {
+      console.error('[Torneos & Retas] No se pudo guardar el participante en Supabase.', errParticipante);
+      modoLocal = true;
       participanteCreado = { ...payloadParticipante, id: idLocal('participante'), _local: true };
+      toast({
+        titulo: 'Participante guardado solo en este navegador',
+        detalle: esErrorPermisoRLS(errParticipante)
+          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
+          : `${errParticipante?.message || 'Error desconocido.'}`,
+        tono: 'error',
+      });
     }
 
-    // Auto-Registro Universal (Directorio & CRM): igual que "Nueva Reserva" y
-    // la inscripción a Retas, busca/crea el expediente de este jugador en
-    // `jugadores` por teléfono (identificador único) — se espera (`await`)
-    // para garantizar que el teléfono, obligatorio en este formulario, sí
-    // quede guardado en `jugadores.telefono` antes de cerrar el modal.
-    await resolverJugadorId(nombre, { telefono, directorio: jugadores });
-
     setGuardando(false);
-    toast({ titulo: 'Participante agregado', detalle: nombre.trim() });
+    if (!modoLocal) {
+      toast({ titulo: 'Participante agregado', detalle: nombre.trim() });
+    }
     onAgregado(participanteCreado);
     onClose();
   }
@@ -15788,10 +15879,14 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
   }, [participantesTorneo, tipoFiltro, idFiltro]);
 
   const resumen = useMemo(() => {
-    const cobradoRetas = inscripcionesFiltradas.filter((i) => i.estado_pago === 'pagado').reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
-    const pendienteRetas = inscripcionesFiltradas.filter((i) => i.estado_pago === 'pendiente').reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
-    const cobradoTorneos = participantesFiltrados.filter((p) => p.estado_pago === 'pagado').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
-    const pendienteTorneos = participantesFiltrados.filter((p) => p.estado_pago === 'pendiente').reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+    const cobradoRetas = inscripcionesFiltradas.filter((i) => inscripcionEstaPagada(i)).reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
+    const pendienteRetas = inscripcionesFiltradas
+      .filter((i) => !inscripcionEstaPagada(i) && estadoPagoInscripcion(i) != null)
+      .reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
+    const cobradoTorneos = participantesFiltrados.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+    const pendienteTorneos = participantesFiltrados
+      .filter((p) => !inscripcionEstaPagada(p) && estadoPagoInscripcion(p) != null)
+      .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
     return {
       cobrado: cobradoRetas + cobradoTorneos,
       pendiente: pendienteRetas + pendienteTorneos,
@@ -15809,7 +15904,7 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
         correo: i.correo,
         nivel: i.nivel_jugador || reta?.nivel || '—',
         origen: 'Reta Abierta',
-        estadoPago: i.estado_pago,
+        estadoPago: estadoPagoInscripcion(i),
       };
     });
     const filasTorneos = participantesFiltrados.map((p) => {
@@ -15821,7 +15916,7 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
         correo: p.correo,
         nivel: p.nivel || '—',
         origen: torneo ? `Torneo: ${torneo.nombre}` : 'Torneo',
-        estadoPago: p.estado_pago,
+        estadoPago: estadoPagoInscripcion(p),
       };
     });
     return [...filasRetas, ...filasTorneos];
@@ -17269,17 +17364,17 @@ function DirectorioJugadoresCRM({
         );
         // LTV/participación: cuenta 'confirmado' Y 'retenido' (canceló dentro
         // de la ventana de tolerancia, pero el club ya cobró y no reembolsa).
-        const inscripcionesValidas = inscripcionesJ.filter((i) => i.estado_pago === 'pagado' && i.estado !== 'cancelado');
+        const inscripcionesValidas = inscripcionesJ.filter((i) => inscripcionEstaPagada(i) && i.estado !== 'cancelado');
         // Asistencia real (Recencia/Frecuencia): SOLO 'confirmado' — 'retenido'
         // es justamente lo contrario, no se presentó a jugar.
-        const inscripcionesAsistidas = inscripcionesJ.filter((i) => i.estado_pago === 'pagado' && i.estado === 'confirmado');
+        const inscripcionesAsistidas = inscripcionesJ.filter((i) => inscripcionEstaPagada(i) && i.estado === 'confirmado');
         const gastoRetas = inscripcionesValidas.reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
         const retasNoAsistidas = inscripcionesJ.filter((i) => i.estado === 'cancelado' || i.estado === 'retenido').length;
 
         const participacionesJ = (participantesTorneo || []).filter(
           (p) => (tel && claveTelefono(p.telefono) === tel) || claveNombre(p.nombre) === nom
         );
-        const participacionesPagadas = participacionesJ.filter((p) => p.estado_pago === 'pagado');
+        const participacionesPagadas = participacionesJ.filter((p) => inscripcionEstaPagada(p));
         const gastoTorneos = participacionesPagadas.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
 
         const gastoTorneosRetas = gastoRetas + gastoTorneos;
@@ -20246,7 +20341,10 @@ function PortalPublicoJugadores({ clubSlug }) {
             }}
             onRequerirIdentificacion={() => setModalIdentificacion(true)}
             onInscribirme={(categoria, pareja) => {
-              setFlujoPago({ tipo: 'torneo', evento: torneoDetalle, categoria, monto: Number(torneoDetalle.precio) || 0, pareja });
+              // Monto real del cobro — duplica el precio individual cuando
+              // el jugador trae pareja (nueva o registrada) y el Torneo
+              // cobra "por jugador" (ver `montoInscripcionTorneo`).
+              setFlujoPago({ tipo: 'torneo', evento: torneoDetalle, categoria, monto: montoInscripcionTorneo(torneoDetalle, pareja), pareja });
               setTorneoDetalle(null);
             }}
           />
@@ -20435,6 +20533,15 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
     onInscribirme(categoria, pareja);
   }
 
+  // Preview del monto real a cobrar según la opción de pareja elegida —
+  // mismo cálculo que `montoInscripcionTorneo` (ver su comentario), para que
+  // el jugador vea el total ANTES de llegar al paso de pago, no solo al
+  // confirmar.
+  const parejaPreview =
+    modoPareja === 'registrada' || modoPareja === 'nueva' ? { modo: modoPareja } : null;
+  const montoAPagar = montoInscripcionTorneo(torneo, parejaPreview);
+  const seDuplicaPorPareja = montoAPagar !== (Number(torneo.precio) || 0);
+
   return (
     <ModalShell titulo={torneo.nombre} subtitulo="Detalle del torneo" onClose={onClose} icon={Trophy} ancho="max-w-lg">
       <div className="space-y-4">
@@ -20447,6 +20554,11 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
           <p className="mt-2 text-lg font-black text-lime-400">
             {formatoMoneda(torneo.precio)} <span className="text-xs font-semibold text-slate-500">/ {torneo.unidad_precio || 'pareja'}</span>
           </p>
+          {seDuplicaPorPareja && (
+            <p className="mt-1 text-xs font-bold text-amber-400">
+              Total a pagar con tu pareja: {formatoMoneda(montoAPagar)} ({formatoMoneda(torneo.precio)} × 2)
+            </p>
+          )}
           {(torneo.reglas || torneo.regla_puntuacion) && (
             <p className="mt-2 text-xs leading-relaxed text-slate-400">{torneo.reglas || torneo.regla_puntuacion}</p>
           )}
