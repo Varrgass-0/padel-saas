@@ -15862,6 +15862,45 @@ function nombresDeParejaSlot(valor) {
   return [valor.jugador1, valor.jugador2].filter(Boolean);
 }
 
+// SANEADO EXHAUSTIVO de TODO el arreglo `parejas` del modal — se corre en
+// `guardar()`, justo antes de mandarlo a `onGenerar`/Supabase. `actualizarPareja`
+// ya limpia al jugador recién asignado de cualquier OTRO casillero en el
+// momento en que se edita ESE campo puntual, pero eso deja un hueco real: si
+// dos casilleros YA llegaban duplicados desde el estado INICIAL del modal
+// (ej. un casillero viejo con "Erick Lira" solo, arrastrado de una edición
+// o carga anterior, y el precargado nuevo "Erick Lira / Carlos Rivera" — ver
+// el estado inicial de `parejas` en `ModalGenerarCuadro`) y el operador
+// nunca llega a tocar/editar esos dos casilleros en particular, la limpieza
+// incremental de `actualizarPareja` NUNCA se dispara para ellos — el
+// duplicado sobrevive intacto hasta el guardado. Esta función aplica la
+// MISMA regla de oro que `sanearBracket` (pareja completa gana sobre
+// solitario; entre dos apariciones del mismo peso gana la primera en orden)
+// sobre TODO el arreglo de una sola pasada, así que lo que se manda a
+// Supabase NUNCA puede llevar a un mismo jugador repetido en dos
+// casilleros — se haya editado ese casillero en esta sesión o no.
+function sanearParejasModal(parejas) {
+  const apariciones = (parejas || [])
+    .map((p, i) => ({ i, nombres: nombresDeParejaSlot(p) }))
+    .filter((a) => a.nombres.length > 0);
+
+  const ganadoraPorNombre = new Map();
+  apariciones.forEach((ap) => {
+    ap.nombres.forEach((n) => {
+      const actual = ganadoraPorNombre.get(n);
+      if (!actual || ap.nombres.length > actual.nombres.length) {
+        ganadoraPorNombre.set(n, ap);
+      }
+    });
+  });
+
+  return (parejas || []).map((p, i) => {
+    const ap = apariciones.find((a) => a.i === i);
+    if (!ap) return p;
+    const esGanadora = ap.nombres.every((n) => ganadoraPorNombre.get(n) === ap);
+    return esGanadora ? p : nuevaParejaVacia();
+  });
+}
+
 // Captura UNA pareja completa (2 jugadores) para un slot del cuadro: por
 // default deja elegir Jugador 1 y Jugador 2 de la lista de participantes
 // inscritos (se arma sola la etiqueta "Nombre 1 / Nombre 2"); "Escribir a
@@ -16098,8 +16137,19 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
   // casilleros se guardan con texto vacío y `TarjetaPartido` los muestra como
   // "Vacante" hasta que se llenen (a mano, ver `onReasignar`, o solos vía
   // auto-llenado en tiempo real, ver `reasignarCasilleroCuadro`).
+  //
+  // GARANTÍA DE UNICIDAD justo antes de mandar el cuadro a Supabase (ver
+  // `sanearParejasModal`): pasada final y exhaustiva sobre TODO el arreglo
+  // `parejas`, no solo sobre el casillero que se acaba de editar — cubre
+  // cualquier duplicado que ya viniera arrastrado desde el estado inicial
+  // del modal y que el operador nunca llegó a tocar. `setParejas` también
+  // se actualiza con el resultado saneado para que, si el guardado falla y
+  // el modal se queda abierto, lo que se ve en pantalla sea exactamente lo
+  // que se intentó guardar — nunca un duplicado silencioso.
   function guardar() {
-    const parejasTexto = parejas.map((p) => textoDeParejaCompleta(p));
+    const parejasLimpias = sanearParejasModal(parejas);
+    setParejas(parejasLimpias);
+    const parejasTexto = parejasLimpias.map((p) => textoDeParejaCompleta(p));
     setError('');
     onGenerar({ categoria, parejasReales: parejasTexto, modoEdicion });
   }
