@@ -15196,20 +15196,20 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
     // proyectos de Supabase pueden tener la columna bajo cualquiera de los
     // dos nombres.
     //
-    // `busca_pareja: false` EXPLÍCITO (antes se omitía este campo por
-    // completo): un participante agregado a mano desde Mesa de Control no
-    // está "buscando pareja" en el sentido del Portal, así que se marca así
-    // desde el insert en vez de dejarlo sin definir — sin esto, si el
-    // proyecto de Supabase tuviera esta columna con un DEFAULT distinto de
-    // `false`, la fila podría volver de la base con `busca_pareja: true` y
-    // aparecer, por error, en la lista pública "Jugadores en busca de
-    // pareja" del Portal. `parejaConfirmadaDeParticipante` (y por lo tanto
-    // `duplasConfirmadasTorneo`/el auto-llenado del cuadro) YA excluía a
-    // estos registros de todos modos, al no traer ninguna señal de pareja
-    // confirmada — este campo es un blindaje adicional, explícito, para que
-    // "Agregar Participante" nunca deje ambigüedad sobre su estado de
-    // pareja: NUNCA se auto-coloca solo en un casillero del cuadro; el
-    // operador lo asigna a mano cuando arme la pareja en "Editar Cuadro".
+    // OJO — `busca_pareja` se manda SIN DEFINIR a propósito (NO `false`, NI
+    // `true`): `parejaConfirmadaDeParticipante` trata `busca_pareja === false`
+    // como "esta fila YA tiene pareja confirmada" (así lo usan
+    // `inscribirseATorneo`/`confirmarUnionTorneo`, que ponen `false` siempre
+    // JUNTO con el nombre/id real de la pareja). Un intento anterior de
+    // mandar aquí `busca_pareja: false` "por seguridad" en realidad
+    // REACTIVÓ el bug de auto-llenado: hacía que TODO participante agregado
+    // a mano desde Mesa de Control se leyera como "pareja confirmada" (sin
+    // serlo) y el auto-llenado en tiempo real lo colocaba solo en un
+    // casillero del cuadro apenas se creaba. Dejando el campo sin definir,
+    // `parejaConfirmadaDeParticipante` da `false` (correcto: nadie confirmó
+    // nada todavía) y el participante se queda ÚNICAMENTE en la lista de
+    // Participantes y en los selectores manuales de "Editar Cuadro" hasta
+    // que el operador lo asigne a propósito.
     const payloadParticipante = withClubId({
       torneo_id: torneo.id,
       jugador_id: jugadorIdResuelto,
@@ -15222,7 +15222,6 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       monto: Number(monto) || 0,
       estado_pago: estadoPago,
       estatus_pago: estadoPago,
-      busca_pareja: false,
     });
 
     let participanteCreado = null;
@@ -15244,7 +15243,6 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       'categoria',
       'estado_pago',
       'estatus_pago',
-      'busca_pareja',
     ]);
     if (!errParticipante && data) {
       participanteCreado = data;
