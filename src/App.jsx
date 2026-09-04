@@ -6444,7 +6444,7 @@ function InscripcionesEventoPanel({ filas, cargando, error, onReintentar, busque
           <Trophy size={26} className="text-slate-700" />
           <p className="text-sm font-semibold text-slate-400">Sin inscripciones pendientes de cobro.</p>
           <p className="text-xs text-slate-600">
-            Se llenan solas desde Torneos &amp; Retas — retas y torneos con saldo pendiente aparecen aquí.
+            Se llenan solas desde Torneos &amp; Retas y Academia &amp; Clínicas — cualquier inscripción con saldo pendiente aparece aquí.
           </p>
         </div>
       ) : (
@@ -6752,6 +6752,10 @@ function ModuloSmartPOS({
   setParticipantesTorneo,
   loadingInscripciones,
   loadingParticipantes,
+  academiaClases,
+  academiaAlumnos,
+  setAcademiaAlumnos,
+  loadingAcademiaAlumnos,
   jugadoresPorId,
   variantesPorProducto,
   upsertVarianteProducto,
@@ -7665,10 +7669,36 @@ function ModuloSmartPOS({
         };
       });
 
-    return [...filasRetas, ...filasTorneos];
-  }, [retas, torneos, inscripciones, participantesTorneo]);
+    // Academia & Clínicas: mismo criterio que Retas/Torneos — un alumno dado
+    // de alta con "Pago pendiente" (`ModalDetalleClase` → "Agregar alumno",
+    // o una inscripción del Portal Público que el jugador dejó "Pagar en
+    // Recepción") aparece aquí para que cualquier cajero lo cobre; al
+    // cobrarlo (`cobrarInscripcionEvento`, abajo) su estatus pasa a
+    // "Pagado/Activo" — mismo flujo, ahora para las 3 fuentes de inscripción
+    // del club.
+    const clasesPorId = new Map((academiaClases || []).map((c) => [c.id, c]));
+    const filasAcademia = (academiaAlumnos || [])
+      .filter((a) => a.estado !== 'baja' && esPendiente(estadoPagoInscripcion(a)))
+      .map((a) => {
+        const clase = clasesPorId.get(a.clase_id);
+        return {
+          clave: `academia:${a.id}`,
+          tabla: 'academia_alumnos',
+          id: a.id,
+          esLocal: !!a._local,
+          nombre: a.nombre,
+          telefono: a.telefono,
+          correo: null,
+          monto: Number(a.monto) || 0,
+          origen: clase ? `Academia — ${clase.nombre} (${a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta'})` : 'Academia & Clínicas',
+          canchaId: clase?.cancha_id || null,
+        };
+      });
 
-  const loadingInscripcionesEvento = Boolean(loadingInscripciones) || Boolean(loadingParticipantes);
+    return [...filasRetas, ...filasTorneos, ...filasAcademia];
+  }, [retas, torneos, inscripciones, participantesTorneo, academiaClases, academiaAlumnos]);
+
+  const loadingInscripcionesEvento = Boolean(loadingInscripciones) || Boolean(loadingParticipantes) || Boolean(loadingAcademiaAlumnos);
 
   const inscripcionesEventoFiltradas = useMemo(() => {
     const q = busquedaInscripcion.trim().toLowerCase();
@@ -7688,9 +7718,14 @@ function ModuloSmartPOS({
   async function cobrarInscripcionEvento(fila, metodoPago, cambio) {
     setCobrandoInscripcionId(fila.clave);
 
+    // Academia & Clínicas es la única de las 3 fuentes con un segundo campo
+    // de estatus (`estado`, activo/baja) además de `estado_pago` — al
+    // cobrarse aquí, el alumno pasa a "Pagado/Activo" tal cual se pidió.
+    const camposPago = fila.tabla === 'academia_alumnos' ? { estado_pago: 'pagado', estado: 'activo' } : { estado_pago: 'pagado' };
+
     if (!fila.esLocal) {
       try {
-        const { error: errEstado } = await supabase.from(fila.tabla).update({ estado_pago: 'pagado' }).eq('id', fila.id);
+        const { error: errEstado } = await supabase.from(fila.tabla).update(camposPago).eq('id', fila.id);
         if (errEstado) throw errEstado;
       } catch (err) {
         console.warn(`[Smart POS] No se pudo sincronizar el cobro de "${fila.tabla}" con Supabase, se aplica solo local:`, err);
@@ -7707,6 +7742,15 @@ function ModuloSmartPOS({
           // también o un F5 la traería de vuelta con el estatus viejo
           // ('pendiente'), revirtiendo el cobro visualmente.
           if (actualizado._local) guardarRegistroLocal(LS_KEY_RETA_INSCRIPCIONES_LOCAL, actualizado);
+          return actualizado;
+        })
+      );
+    } else if (fila.tabla === 'academia_alumnos') {
+      setAcademiaAlumnos((prev) =>
+        prev.map((a) => {
+          if (a.id !== fila.id) return a;
+          const actualizado = { ...a, ...camposPago };
+          if (actualizado._local) guardarRegistroLocal(LS_KEY_ACADEMIA_ALUMNOS_LOCAL, actualizado);
           return actualizado;
         })
       );
@@ -8461,7 +8505,7 @@ function ModuloSmartPOS({
           </div>
           <div>
             <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
-              <Trophy size={13} /> Inscripciones a Reta / Torneo pendientes
+              <Trophy size={13} /> Inscripciones a Reta / Torneo / Academia pendientes
             </p>
             <InscripcionesEventoPanel
               filas={inscripcionesEventoFiltradas}
@@ -13789,15 +13833,22 @@ function calcularCHS(perfil) {
   }
 
   // 5) Participación en Comunidad (15 pts): inscripciones activas a
-  // Torneos/Retas EN LOS ÚLTIMOS 6 MESES + asistencias a clases de Academia &
-  // Clínicas en la misma ventana (`asistenciasClaseUltimos6Meses` — ver
-  // `DirectorioJugadoresCRM`/`academia_asistencias`, `asistio: true`). Cada
-  // asistencia a clase cuenta como un "evento" más, igual que una inscripción
-  // a Torneo/Reta — así una racha de clases también puede llevar al jugador
-  // al tope de 15 pts de este indicador (el máximo del indicador SIGUE
-  // siendo 15 — Academia no suma puntos extra por fuera de los 100 totales).
+  // Torneos/Retas EN LOS ÚLTIMOS 6 MESES + dos señales de Academia &
+  // Clínicas en la misma ventana — asistencias reales a clase
+  // (`asistenciasClaseUltimos6Meses`) e inscripciones YA PAGADAS
+  // (`inscripcionesClasePagadasUltimos6Meses`, ver `DirectorioJugadoresCRM`):
+  // esta última es la que hace que completar el pago de una inscripción en
+  // Smart POS (`cobrarInscripcionEvento`, tabla `academia_alumnos`) sume de
+  // inmediato a este indicador, igual que ya pasa con una inscripción
+  // pagada a Torneo/Reta — sin depender de que el alumno ya haya tomado
+  // clase. Cada señal cuenta como un "evento" más; el máximo del indicador
+  // SIGUE siendo 15 (Academia no suma puntos extra por fuera de los 100
+  // totales).
   {
-    const eventos = perfil.eventosTorneoRetaUltimos6Meses + (perfil.asistenciasClaseUltimos6Meses || 0);
+    const eventos =
+      perfil.eventosTorneoRetaUltimos6Meses +
+      (perfil.asistenciasClaseUltimos6Meses || 0) +
+      (perfil.inscripcionesClasePagadasUltimos6Meses || 0);
     let puntos = 0;
     let nivel = 'bajo';
     if (eventos >= 2) {
@@ -13808,7 +13859,8 @@ function calcularCHS(perfil) {
       nivel = 'medio';
     }
     const partesDetalle = [`${perfil.eventosTorneoRetaUltimos6Meses} a Torneo/Reta`];
-    if (perfil.asistenciasClaseUltimos6Meses > 0) partesDetalle.push(`${perfil.asistenciasClaseUltimos6Meses} a clases de Academia`);
+    if (perfil.inscripcionesClasePagadasUltimos6Meses > 0) partesDetalle.push(`${perfil.inscripcionesClasePagadasUltimos6Meses} inscripción(es) pagada(s) a Academia`);
+    if (perfil.asistenciasClaseUltimos6Meses > 0) partesDetalle.push(`${perfil.asistenciasClaseUltimos6Meses} asistencia(s) a clase`);
     indicadores.push({
       key: 'comunidad',
       label: 'Participación en Comunidad',
@@ -18646,6 +18698,19 @@ const DIAS_SEMANA_ACADEMIA = [
 ];
 const DIA_ACADEMIA_POR_VALOR = Object.fromEntries(DIAS_SEMANA_ACADEMIA.map((d) => [d.value, d]));
 
+// Reverso de `DIA_ACADEMIA_POR_VALOR`: dado un ISO de fecha, regresa la
+// entrada de `DIAS_SEMANA_ACADEMIA` cuyo `indice` coincide con
+// `Date.prototype.getDay()` de esa fecha. `ModalNuevaClase` ya no le pide al
+// operador elegir el día de la semana como texto suelto — captura una fecha
+// real (selector de calendario, prellenable al crear desde un clic en el
+// Cronograma interactivo) y este helper deriva el patrón semanal a partir de
+// ella, así `academia_clases.dia_semana` sigue guardándose igual que antes.
+function diaSemanaDeFecha(fechaISO) {
+  if (!fechaISO) return DIAS_SEMANA_ACADEMIA[0];
+  const dow = new Date(`${fechaISO}T12:00:00`).getDay();
+  return DIAS_SEMANA_ACADEMIA.find((d) => d.indice === dow) || DIAS_SEMANA_ACADEMIA[0];
+}
+
 const CANTIDAD_SESIONES_GENERADAS = 6;
 // "2+ inasistencias consecutivas" — umbral pedido tal cual para la Alerta de
 // Riesgo de Deserción (ver `alumnosEnRiesgoDesercion`, dentro de
@@ -18696,7 +18761,10 @@ async function generarSesionesClase({ clase, cantidad = CANTIDAD_SESIONES_GENERA
       horaInicio: clase.hora_inicio,
       horaFin: clase.hora_fin,
       estado: 'Clase',
-      etiqueta: `Clase: ${clase.nombre}`,
+      // Formato pedido explícitamente: "Clase - [Nombre]" — así se
+      // distingue de un vistazo en la Parrilla Operativa principal de
+      // cualquier reserva normal o bloqueo de Torneo/Reta.
+      etiqueta: `Clase - ${clase.nombre}`,
     });
     if (error || !bloqueo) continue;
     bloqueosCreados.push({ fecha, bloqueo });
@@ -18718,10 +18786,16 @@ async function generarSesionesClase({ clase, cantidad = CANTIDAD_SESIONES_GENERA
   return { data: sesiones, error: data ? null : error, bloqueos: bloqueosCreados.map((b) => b.bloqueo) };
 }
 
-// Selector visual de Cancha/Coach/Día/Horario compartido entre "Nueva Clase"
-// y (si algún día se agrega) su edición — separado del formulario para que
-// `ModalNuevaClase` no crezca más de la cuenta.
-function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada }) {
+// Selector visual de Cancha/Coach/Fecha/Horario compartido entre "Nueva
+// Clase" y (si algún día se agrega) su edición — separado del formulario
+// para que `ModalNuevaClase` no crezca más de la cuenta.
+//
+// `prellenado` (opcional): { canchaId, fecha, horaInicio } — lo manda el
+// Cronograma interactivo de la Parrilla de Clases cuando el operador da
+// clic directo sobre una celda libre (cancha+hora concretas); si no viene
+// (ej. desde el botón "Nueva Clase" suelto), el formulario arranca con los
+// valores por defecto de siempre.
+function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prellenado }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
@@ -18730,10 +18804,16 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada }) {
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
   const [coachEmpleadoId, setCoachEmpleadoId] = useState(coachesDisponibles[0]?.id || '');
   const [coachNombreLibre, setCoachNombreLibre] = useState('');
-  const [canchaId, setCanchaId] = useState(canchasActivas[0]?.id || '');
-  const [diaSemana, setDiaSemana] = useState('lunes');
-  const [horaInicio, setHoraInicio] = useState('17:00');
-  const [horaFin, setHoraFin] = useState('18:00');
+  const [canchaId, setCanchaId] = useState(prellenado?.canchaId || canchasActivas[0]?.id || '');
+  // Selector de fecha/calendario estructurado (reemplaza el selector de día
+  // de semana en texto suelto) — `dia_semana` se DERIVA de esta fecha con
+  // `diaSemanaDeFecha` al guardar, así el esquema/las sesiones recurrentes
+  // (`proximasFechasDiaSemana`) siguen funcionando exactamente igual.
+  const [fecha, setFecha] = useState(prellenado?.fecha || hoyISO());
+  const [horaInicio, setHoraInicio] = useState(prellenado?.horaInicio || '17:00');
+  const [horaFin, setHoraFin] = useState(
+    prellenado?.horaInicio ? minutosAHora(Math.min(parseHoraAMinutos(prellenado.horaInicio) + 60, HORA_FIN_MIN)) : '18:00'
+  );
   const [capacidad, setCapacidad] = useState('6');
   const [precioMensualidad, setPrecioMensualidad] = useState('1200');
   const [precioClaseSuelta, setPrecioClaseSuelta] = useState('180');
@@ -18741,15 +18821,33 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada }) {
   const [error, setError] = useState('');
 
   const coachNombre = coachEmpleadoId ? coachesDisponibles.find((c) => c.id === coachEmpleadoId)?.nombre || '' : coachNombreLibre.trim();
+  const diaSemanaMeta = diaSemanaDeFecha(fecha);
 
   async function guardar() {
     if (!nombre.trim()) return setError('Ponle un nombre a la clase (ej. "Iniciación Adultos").');
     if (!canchaId) return setError('Selecciona una cancha.');
+    if (!fecha) return setError('Elige la fecha de la primera sesión.');
     if (!coachNombre) return setError('Indica el Coach (elige uno del directorio o escribe su nombre).');
     const ini = parseHoraAMinutos(horaInicio);
     const fin = parseHoraAMinutos(horaFin);
     if (ini === null || fin === null || fin <= ini) return setError('La hora de fin debe ser posterior a la de inicio.');
     if (!(Number(capacidad) > 0)) return setError('La capacidad máxima debe ser mayor a 0.');
+
+    // Igual candado anti-encimado que una reserva/reta normal — clave para
+    // el flujo de "clic en celda libre del Cronograma" (item 1): si la
+    // celda dejó de estar libre entre que se abrió el modal y que se dio
+    // clic en "Crear clase", no se deja crear un choque de horario.
+    const solape = buscarSolapeEnCancha(reservas || [], canchaId, fecha, horaInicio, horaFin);
+    if (solape) {
+      const mensaje =
+        solape.estado === 'Torneo' || solape.estado === 'Reta' || solape.estado === 'Clase'
+          ? 'La cancha ya está ocupada por otro evento en ese horario.'
+          : 'Esa cancha ya tiene una reserva en ese horario.';
+      setError(mensaje);
+      toast({ titulo: mensaje, tono: 'aviso' });
+      return;
+    }
+
     setGuardando(true);
     setError('');
 
@@ -18759,7 +18857,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada }) {
       coach_empleado_id: coachEmpleadoId || null,
       coach_nombre: coachNombre,
       cancha_id: canchaId,
-      dia_semana: diaSemana,
+      dia_semana: diaSemanaMeta.value,
       hora_inicio: horaInicio,
       hora_fin: horaFin,
       capacidad_maxima: Number(capacidad) || 1,
@@ -18791,7 +18889,12 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada }) {
 
     let sesionesCreadas = [];
     if (!modoLocal) {
-      const resultado = await generarSesionesClase({ clase: claseCreada, reservasExistentes: reservas });
+      // `desdeISO: fecha` — la fecha elegida en el calendario es LA MISMA
+      // fecha de la primera sesión (`proximasFechasDiaSemana` ya no tiene
+      // que "buscar" el próximo lunes/martes/etc.: `dia_semana` viene
+      // derivado de esta misma fecha, así que coincide desde la primera
+      // iteración).
+      const resultado = await generarSesionesClase({ clase: claseCreada, reservasExistentes: reservas, desdeISO: fecha });
       sesionesCreadas = resultado.data || [];
       if (resultado.error) {
         console.warn('[Academia & Clínicas] Clase creada, pero no se pudieron generar sus sesiones/bloqueos.', resultado.error);
@@ -18802,7 +18905,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada }) {
     if (!modoLocal) {
       toast({
         titulo: 'Clase creada',
-        detalle: `${claseCreada.nombre} · ${DIA_ACADEMIA_POR_VALOR[diaSemana]?.label} ${formatoHora12(horaInicio)} · ${sesionesCreadas.length} sesión${sesionesCreadas.length === 1 ? '' : 'es'} programada${sesionesCreadas.length === 1 ? '' : 's'}`,
+        detalle: `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)} · ${sesionesCreadas.length} sesión${sesionesCreadas.length === 1 ? '' : 'es'} programada${sesionesCreadas.length === 1 ? '' : 's'}`,
       });
     }
     onCreada(claseCreada, sesionesCreadas);
@@ -18860,14 +18963,8 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada }) {
           )}
         </Campo>
         <div className="grid grid-cols-3 gap-4">
-          <Campo label="Día">
-            <select value={diaSemana} onChange={(e) => setDiaSemana(e.target.value)} className={inputClase}>
-              {DIAS_SEMANA_ACADEMIA.map((d) => (
-                <option key={d.value} value={d.value}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
+          <Campo label="Fecha" hint={`Se repite cada ${diaSemanaMeta.label}`}>
+            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
           </Campo>
           <Campo label="Hora inicio">
             <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
@@ -18907,7 +19004,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada }) {
         </div>
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
         <p className="text-[11px] text-slate-500">
-          Al guardar se generan y bloquean automáticamente las próximas {CANTIDAD_SESIONES_GENERADAS} sesiones ({DIA_ACADEMIA_POR_VALOR[diaSemana]?.label}) en la Parrilla Operativa.
+          Al guardar se generan y bloquean automáticamente las próximas {CANTIDAD_SESIONES_GENERADAS} sesiones ({diaSemanaMeta.label}, empezando {formatoFechaLarga(fecha)}) en la Parrilla Operativa.
         </p>
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
@@ -18973,14 +19070,18 @@ function ModalDetalleClase({
   alumnos,
   asistencias,
   jugadoresPorId,
+  empleados,
   onClose,
   onAlumnoAgregado,
   onAlumnoActualizado,
   onAsistenciaGuardada,
   onGenerarMasSesiones,
+  onGuardarEdicion,
+  onEliminarClase,
 }) {
   const toast = useToast();
   const directorioJugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+  const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
   const alumnosActivos = useMemo(() => alumnos.filter((a) => a.estado !== 'baja'), [alumnos]);
   const alumnosBaja = useMemo(() => alumnos.filter((a) => a.estado === 'baja'), [alumnos]);
 
@@ -19051,6 +19152,71 @@ function ModalDetalleClase({
     const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, { estado_pago: nuevoEstado }, []);
     if (error) return toast({ titulo: 'No se pudo actualizar el pago', detalle: error.message, tono: 'error' });
     onAlumnoActualizado({ ...alumno, estado_pago: nuevoEstado });
+  }
+
+  /* ---- Editar / Eliminar la clase (item "Ajustes") ----
+   * El HORARIO (cancha/día/hora) NO es editable aquí a propósito: cambiarlo
+   * exigiría regenerar/mover los bloqueos ya creados en `reservas` y las
+   * `academia_sesiones` ya programadas, con todo el riesgo de dejar huecos
+   * o choques — si el horario está mal, lo más seguro es Eliminar esta
+   * clase (libera la cancha en ambas parrillas) y crear una nueva desde el
+   * Cronograma. Lo que sí se edita: nombre, nivel, coach, capacidad y
+   * precios — datos que no afectan ninguna cancha ya bloqueada. */
+  const [editando, setEditando] = useState(false);
+  const [nombreEdit, setNombreEdit] = useState(clase.nombre);
+  const [nivelEdit, setNivelEdit] = useState(clase.nivel);
+  const [coachEmpleadoIdEdit, setCoachEmpleadoIdEdit] = useState(clase.coach_empleado_id || '');
+  const [coachNombreLibreEdit, setCoachNombreLibreEdit] = useState(clase.coach_empleado_id ? '' : clase.coach_nombre || '');
+  const [capacidadEdit, setCapacidadEdit] = useState(String(clase.capacidad_maxima));
+  const [precioMensualidadEdit, setPrecioMensualidadEdit] = useState(String(clase.precio_mensualidad ?? 0));
+  const [precioClaseSueltaEdit, setPrecioClaseSueltaEdit] = useState(String(clase.precio_clase_suelta ?? 0));
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false);
+  const [errorEdicion, setErrorEdicion] = useState('');
+
+  const coachNombreEdit = coachEmpleadoIdEdit
+    ? coachesDisponibles.find((c) => c.id === coachEmpleadoIdEdit)?.nombre || ''
+    : coachNombreLibreEdit.trim();
+
+  async function guardarEdicion() {
+    if (!nombreEdit.trim()) return setErrorEdicion('Ponle un nombre a la clase.');
+    if (!coachNombreEdit) return setErrorEdicion('Indica el Coach.');
+    const nuevaCapacidad = Number(capacidadEdit) || 0;
+    if (nuevaCapacidad < alumnosActivos.length) {
+      return setErrorEdicion(`Ya hay ${alumnosActivos.length} alumnos activos — la capacidad no puede bajar de eso.`);
+    }
+    setGuardandoEdicion(true);
+    setErrorEdicion('');
+    const cambios = {
+      nombre: nombreEdit.trim(),
+      nivel: nivelEdit,
+      coach_empleado_id: coachEmpleadoIdEdit || null,
+      coach_nombre: coachNombreEdit,
+      capacidad_maxima: nuevaCapacidad,
+      precio_mensualidad: Number(precioMensualidadEdit) || 0,
+      precio_clase_suelta: Number(precioClaseSueltaEdit) || 0,
+    };
+    const { error } = await onGuardarEdicion(cambios);
+    setGuardandoEdicion(false);
+    if (error) {
+      setErrorEdicion(error.message || 'No se pudo guardar — inténtalo de nuevo.');
+      return;
+    }
+    toast({ titulo: 'Clase actualizada', detalle: nombreEdit.trim() });
+    setEditando(false);
+  }
+
+  const [confirmarEliminar, setConfirmarEliminar] = useState(false);
+  const [eliminando, setEliminando] = useState(false);
+  async function eliminarClase() {
+    setEliminando(true);
+    const { error } = await onEliminarClase();
+    setEliminando(false);
+    if (error) {
+      toast({ titulo: 'No se pudo eliminar la clase', detalle: error.message, tono: 'error' });
+      return;
+    }
+    toast({ titulo: 'Clase eliminada', detalle: `${clase.nombre} — se liberó la cancha en ambas parrillas.` });
+    onClose();
   }
 
   /* ---- Pase de lista ---- */
@@ -19141,6 +19307,7 @@ function ModalDetalleClase({
           {[
             { value: 'alumnos', label: 'Alumnos', icon: Users },
             { value: 'asistencia', label: 'Pase de lista', icon: UserCheck },
+            { value: 'ajustes', label: 'Ajustes', icon: Settings2 },
           ].map((v) => {
             const Icon = v.icon;
             return (
@@ -19320,6 +19487,153 @@ function ModalDetalleClase({
             </div>
           </div>
         )}
+
+        {subvista === 'ajustes' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-bold text-slate-400">Editar datos de la clase</p>
+              {!editando && (
+                <BotonSecundario onClick={() => setEditando(true)} className="px-2.5 py-1.5 text-xs">
+                  <Pencil size={13} /> Editar
+                </BotonSecundario>
+              )}
+            </div>
+
+            {editando ? (
+              <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <Campo label="Nombre de la clase">
+                  <input value={nombreEdit} onChange={(e) => setNombreEdit(e.target.value)} className={inputClase} />
+                </Campo>
+                <div className="grid grid-cols-2 gap-3">
+                  <Campo label="Nivel">
+                    <select value={nivelEdit} onChange={(e) => setNivelEdit(e.target.value)} className={inputClase}>
+                      {NIVELES_ACADEMIA.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </Campo>
+                  <Campo label="Capacidad máxima">
+                    <input
+                      type="number"
+                      min={alumnosActivos.length || 1}
+                      value={capacidadEdit}
+                      onChange={(e) => setCapacidadEdit(e.target.value)}
+                      className={inputClase}
+                    />
+                  </Campo>
+                </div>
+                <Campo label="Coach" hint={coachesDisponibles.length === 0 ? 'Sin empleados con rol Coach todavía — escribe su nombre.' : undefined}>
+                  {coachesDisponibles.length > 0 ? (
+                    <select value={coachEmpleadoIdEdit} onChange={(e) => setCoachEmpleadoIdEdit(e.target.value)} className={inputClase}>
+                      {coachesDisponibles.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.nombre}
+                        </option>
+                      ))}
+                      <option value="">Otro (escribir nombre)…</option>
+                    </select>
+                  ) : null}
+                  {(coachesDisponibles.length === 0 || !coachEmpleadoIdEdit) && (
+                    <input
+                      value={coachNombreLibreEdit}
+                      onChange={(e) => setCoachNombreLibreEdit(e.target.value)}
+                      className={`${inputClase} mt-2`}
+                      placeholder="Nombre del coach"
+                    />
+                  )}
+                </Campo>
+                <div className="grid grid-cols-2 gap-3">
+                  <Campo label="Precio mensualidad">
+                    <input
+                      type="number"
+                      min="0"
+                      value={precioMensualidadEdit}
+                      onChange={(e) => setPrecioMensualidadEdit(e.target.value)}
+                      className={inputClase}
+                    />
+                  </Campo>
+                  <Campo label="Precio clase suelta">
+                    <input
+                      type="number"
+                      min="0"
+                      value={precioClaseSueltaEdit}
+                      onChange={(e) => setPrecioClaseSueltaEdit(e.target.value)}
+                      className={inputClase}
+                    />
+                  </Campo>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  El horario (cancha/día/hora) no se edita aquí — si necesitas cambiarlo, elimina esta clase y créala de nuevo desde el Cronograma.
+                </p>
+                {errorEdicion && <p className="text-xs font-semibold text-rose-400">{errorEdicion}</p>}
+                <div className="flex justify-end gap-2">
+                  <BotonSecundario onClick={() => setEditando(false)}>Cancelar</BotonSecundario>
+                  <BotonPrimario onClick={guardarEdicion} disabled={guardandoEdicion}>
+                    {guardandoEdicion ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Guardar
+                  </BotonPrimario>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="rounded-lg border border-slate-800 bg-slate-900 p-2.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Nivel</p>
+                  <p className="font-bold text-slate-100">{clase.nivel}</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900 p-2.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Coach</p>
+                  <p className="font-bold text-slate-100">{clase.coach_nombre || '—'}</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900 p-2.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Mensualidad</p>
+                  <p className="font-bold text-slate-100">{formatoMoneda(clase.precio_mensualidad)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900 p-2.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Clase suelta</p>
+                  <p className="font-bold text-slate-100">{formatoMoneda(clase.precio_clase_suelta)}</p>
+                </div>
+              </div>
+            )}
+
+            <div className="pt-2">
+              {!confirmarEliminar ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmarEliminar(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
+                >
+                  <Trash size={12} /> Eliminar Clase
+                </button>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
+                  <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
+                    ¿Eliminar "{clase.nombre}"? Se cancelan sus sesiones y se libera la cancha en la Parrilla Operativa y en el Portal. El historial de alumnos y asistencia se conserva.
+                  </p>
+                  <div className="flex shrink-0 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmarEliminar(false)}
+                      disabled={eliminando}
+                      className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={eliminarClase}
+                      disabled={eliminando}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
+                    >
+                      {eliminando ? <Loader2 size={12} className="animate-spin" /> : <Trash size={12} />}
+                      Confirmar
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </ModalShell>
   );
@@ -19455,25 +19769,66 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
       .sort((a, b) => b.racha - a.racha);
   }, [alumnosActivos, asistencias, clasesPorId]);
 
-  // Asistencia y Retención por Coach: agrupa TODAS las clases por
-  // `coach_nombre` — alumnos activos que da y % de asistencia real
-  // (asistencias con `asistio: true` / total de asistencias registradas)
-  // entre todas sus clases.
-  const retencionPorCoach = useMemo(() => {
+  // KPIs Operativos de Coaches (item 5) — ÚNICAMENTE estos 3 indicadores por
+  // entrenador, pedidos tal cual:
+  //   1) Tasa de Llenado de Grupos: alumnos activos / capacidad máxima,
+  //      sumado sobre TODAS las clases activas del coach (no promedio simple
+  //      de porcentajes por clase — así una clase grande pesa más que una
+  //      chica, igual criterio que una ocupación agregada).
+  //   2) Índice de Retención de Alumnos: % de continuidad mes a mes — para
+  //      cada par de meses consecutivos con asistencia registrada, qué
+  //      fracción de los alumnos que asistieron en el mes N TAMBIÉN
+  //      asistieron en el mes N+1 (`asistio: true`, agrupado por
+  //      `fecha.slice(0,7)`); se promedia entre todos los pares de meses
+  //      disponibles. `null` (se muestra "Sin datos suficientes") si el
+  //      coach todavía no acumula 2 meses de asistencia registrada.
+  //   3) Total de Alumnos Activos: alumnos (`estado !== 'baja'`) inscritos
+  //      en cualquiera de sus clases activas.
+  const kpisPorCoach = useMemo(() => {
     const mapa = {};
-    clases.forEach((c) => {
-      const nombre = c.coach_nombre || 'Sin asignar';
-      if (!mapa[nombre]) mapa[nombre] = { nombre, clases: 0, alumnosActivos: 0, asistenciasTotales: 0, asistenciasPresentes: 0 };
-      mapa[nombre].clases += 1;
-      mapa[nombre].alumnosActivos += (alumnosPorClase[c.id] || []).length;
-    });
+    clases
+      .filter((c) => c.estado !== 'cancelada')
+      .forEach((c) => {
+        const nombre = c.coach_nombre || 'Sin asignar';
+        if (!mapa[nombre]) mapa[nombre] = { nombre, capacidadTotal: 0, alumnosActivos: 0 };
+        mapa[nombre].capacidadTotal += Number(c.capacidad_maxima) || 0;
+        mapa[nombre].alumnosActivos += (alumnosPorClase[c.id] || []).length;
+      });
+
+    // { coachNombre: { 'YYYY-MM': Set<alumno_id> } } — solo asistencias
+    // reales (`asistio: true`) con fecha, agrupadas por mes calendario.
+    const presentesPorCoachMes = {};
     asistencias.forEach((a) => {
+      if (a.asistio !== true || !a.fecha) return;
       const clase = clasesPorId[a.clase_id];
       const nombre = clase?.coach_nombre || 'Sin asignar';
-      if (!mapa[nombre]) return;
-      mapa[nombre].asistenciasTotales += 1;
-      if (a.asistio === true) mapa[nombre].asistenciasPresentes += 1;
+      if (!mapa[nombre]) return; // coach sin clases activas — no aporta KPI vigente
+      const mes = a.fecha.slice(0, 7);
+      presentesPorCoachMes[nombre] = presentesPorCoachMes[nombre] || {};
+      (presentesPorCoachMes[nombre][mes] = presentesPorCoachMes[nombre][mes] || new Set()).add(a.alumno_id);
     });
+
+    Object.keys(mapa).forEach((nombre) => {
+      const c = mapa[nombre];
+      c.tasaLlenado = c.capacidadTotal > 0 ? Math.round((c.alumnosActivos / c.capacidadTotal) * 100) : null;
+
+      const mesesOrdenados = Object.keys(presentesPorCoachMes[nombre] || {}).sort();
+      let sumaPct = 0;
+      let paresConDatos = 0;
+      for (let i = 0; i < mesesOrdenados.length - 1; i++) {
+        const alumnosMesActual = presentesPorCoachMes[nombre][mesesOrdenados[i]];
+        const alumnosMesSiguiente = presentesPorCoachMes[nombre][mesesOrdenados[i + 1]];
+        if (alumnosMesActual.size === 0) continue;
+        let continuos = 0;
+        alumnosMesActual.forEach((id) => {
+          if (alumnosMesSiguiente.has(id)) continuos += 1;
+        });
+        sumaPct += (continuos / alumnosMesActual.size) * 100;
+        paresConDatos += 1;
+      }
+      c.retencionPct = paresConDatos > 0 ? Math.round(sumaPct / paresConDatos) : null;
+    });
+
     return Object.values(mapa).sort((a, b) => b.alumnosActivos - a.alumnosActivos);
   }, [clases, alumnosPorClase, asistencias, clasesPorId]);
 
@@ -19525,9 +19880,9 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
         <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
-          <Award size={16} className="text-teal-400" /> Asistencia y Retención por Coach
+          <Award size={16} className="text-teal-400" /> KPIs Operativos por Coach
         </h3>
-        {retencionPorCoach.length === 0 ? (
+        {kpisPorCoach.length === 0 ? (
           <p className="py-4 text-center text-xs text-slate-500">Todavía no hay clases con Coach asignado.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -19535,23 +19890,20 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
               <thead>
                 <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                   <th className="pb-2 pr-3">Coach</th>
-                  <th className="pb-2 pr-3">Clases</th>
-                  <th className="pb-2 pr-3">Alumnos activos</th>
-                  <th className="pb-2">% Asistencia</th>
+                  <th className="pb-2 pr-3">Tasa de Llenado de Grupos</th>
+                  <th className="pb-2 pr-3">Índice de Retención de Alumnos</th>
+                  <th className="pb-2">Total de Alumnos Activos</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {retencionPorCoach.map((c) => {
-                  const pctAsistencia = c.asistenciasTotales > 0 ? Math.round((c.asistenciasPresentes / c.asistenciasTotales) * 100) : null;
-                  return (
-                    <tr key={c.nombre}>
-                      <td className="py-2 pr-3 font-bold text-slate-100">{c.nombre}</td>
-                      <td className="py-2 pr-3 text-slate-300">{c.clases}</td>
-                      <td className="py-2 pr-3 text-slate-300">{c.alumnosActivos}</td>
-                      <td className="py-2 text-slate-300">{pctAsistencia === null ? 'Sin registros' : `${pctAsistencia}%`}</td>
-                    </tr>
-                  );
-                })}
+                {kpisPorCoach.map((c) => (
+                  <tr key={c.nombre}>
+                    <td className="py-2 pr-3 font-bold text-slate-100">{c.nombre}</td>
+                    <td className="py-2 pr-3 text-slate-300">{c.tasaLlenado === null ? '—' : `${c.tasaLlenado}%`}</td>
+                    <td className="py-2 pr-3 text-slate-300">{c.retencionPct === null ? 'Sin datos suficientes' : `${c.retencionPct}%`}</td>
+                    <td className="py-2 text-slate-300">{c.alumnosActivos}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -19574,10 +19926,12 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
 function ModuloAcademiaClinicas({
   canchas,
   reservas,
+  marcarReservaCancelada,
   empleados,
   jugadoresPorId,
   academiaClases,
   onAcademiaClaseCreada,
+  onAcademiaClaseActualizada,
   academiaAlumnos,
   onAcademiaAlumnoAgregado,
   onAcademiaAlumnoActualizado,
@@ -19589,6 +19943,10 @@ function ModuloAcademiaClinicas({
   const [subvista, setSubvista] = useState('operativa');
   const [modalNuevaClase, setModalNuevaClase] = useState(false);
   const [claseSeleccionadaId, setClaseSeleccionadaId] = useState(null);
+  // Cronograma interactivo (item 1): día que se está viendo + la celda
+  // (cancha/hora) sobre la que se dio clic para prellenar "Nueva Clase".
+  const [fechaCronograma, setFechaCronograma] = useState(hoyISO());
+  const [celdaParaNuevaClase, setCeldaParaNuevaClase] = useState(null); // { canchaId, fecha, horaInicio }
 
   const canchasPorId = useMemo(() => {
     const mapa = {};
@@ -19661,6 +20019,91 @@ function ModuloAcademiaClinicas({
     }
   }
 
+  /* ---- Cronograma interactivo: cargar disponibilidad + crear/editar/eliminar ----
+   * `sesionPorReservaId` es el enlace inverso que hace posible "dar clic a
+   * cualquier clase creada" DESDE el bloqueo que se ve en la Parrilla
+   * (`reservas`, `estado: 'Clase'`): cada bloqueo solo sabe su propio id, así
+   * que hay que buscar en `academia_sesiones` cuál trae ese id como
+   * `reserva_bloqueo_id` para llegar de vuelta a la `clase_id` real. */
+  const sesionPorReservaId = useMemo(() => {
+    const mapa = {};
+    academiaSesiones.forEach((s) => {
+      if (s.reserva_bloqueo_id) mapa[s.reserva_bloqueo_id] = s;
+    });
+    return mapa;
+  }, [academiaSesiones]);
+
+  function manejarClicCeldaLibre(cancha, hora) {
+    setCeldaParaNuevaClase({ canchaId: cancha.id, fecha: fechaCronograma, horaInicio: hora });
+    setModalNuevaClase(true);
+  }
+
+  function manejarClicReservaCronograma(reserva) {
+    if (reserva.estado !== 'Clase') {
+      toast({ titulo: 'Esa es una reserva normal', detalle: 'Gestiónala desde la Parrilla Operativa.', tono: 'aviso' });
+      return;
+    }
+    const sesion = sesionPorReservaId[reserva.id];
+    const clase = sesion ? (academiaClases || []).find((c) => c.id === sesion.clase_id) : null;
+    if (!clase) {
+      toast({ titulo: 'No se encontró la clase de este bloqueo', detalle: 'Puede que ya se haya eliminado.', tono: 'aviso' });
+      return;
+    }
+    setClaseSeleccionadaId(clase.id);
+  }
+
+  // Editar/Eliminar (item 2 de la interconexión): mismo criterio de
+  // "Sincronización Silenciosa" que el resto de la app (`guardarConfigClub`,
+  // `cobrarInscripcionEvento`) — el cambio se aplica de inmediato en el
+  // estado local levantado en `AppInterno` sin importar si Supabase
+  // responde; si falla, solo se registra en consola, nunca bloquea al
+  // operador ni le muestra un error por algo que ya se resolvió en pantalla.
+  async function guardarEdicionClase(cambios) {
+    if (!claseSeleccionada) return { error: new Error('Sin clase seleccionada.') };
+    if (!claseSeleccionada._local) {
+      const { error } = await actualizarConColumnasOpcionales('academia_clases', claseSeleccionada.id, cambios, ['coach_empleado_id']);
+      if (error) console.warn('[Academia & Clínicas] No se pudo editar la clase en Supabase, se aplicó solo local.', error);
+    }
+    onAcademiaClaseActualizada({ ...claseSeleccionada, ...cambios });
+    return { error: null };
+  }
+
+  async function eliminarClaseSeleccionada() {
+    if (!claseSeleccionada) return { error: new Error('Sin clase seleccionada.') };
+    const sesionesDeClase = academiaSesiones.filter((s) => s.clase_id === claseSeleccionada.id && s.estado !== 'cancelada');
+    // Libera la cancha en AMBAS parrillas: cancela el bloqueo real en
+    // `reservas` (lo que la Parrilla Operativa y el Cronograma de Academia
+    // en verdad leen para pintar ocupación) y marca la sesión como
+    // cancelada — nunca se borran filas, así el historial de asistencia
+    // (`academia_asistencias.sesion_id`) sigue apuntando a algo válido.
+    await Promise.all(
+      sesionesDeClase.map(async (s) => {
+        if (s.reserva_bloqueo_id) {
+          try {
+            await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', s.reserva_bloqueo_id);
+          } catch (_e) {
+            /* Sincronización Silenciosa — el estado local ya se actualiza abajo */
+          }
+          marcarReservaCancelada?.(s.reserva_bloqueo_id);
+        }
+        if (!s._local) {
+          try {
+            await supabase.from('academia_sesiones').update({ estado: 'cancelada' }).eq('id', s.id);
+          } catch (_e) {
+            /* idem */
+          }
+        }
+      })
+    );
+    setAcademiaSesiones((prev) => prev.map((s) => (s.clase_id === claseSeleccionada.id ? { ...s, estado: 'cancelada' } : s)));
+    if (!claseSeleccionada._local) {
+      const { error } = await actualizarConColumnasOpcionales('academia_clases', claseSeleccionada.id, { estado: 'cancelada' }, []);
+      if (error) console.warn('[Academia & Clínicas] No se pudo marcar la clase como cancelada en Supabase, se aplicó solo local.', error);
+    }
+    onAcademiaClaseActualizada({ ...claseSeleccionada, estado: 'cancelada' });
+    return { error: null };
+  }
+
   const subvistas = [
     { value: 'operativa', label: 'Parrilla de Clases', icon: GraduationCap },
     { value: 'analytics', label: 'Analytics', icon: BarChart3 },
@@ -19693,7 +20136,7 @@ function ModuloAcademiaClinicas({
       </div>
 
       {subvista === 'operativa' && (
-        <div>
+        <div className="space-y-4">
           {loadingSesiones && clasesActivas.length === 0 ? (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {[0, 1, 2].map((i) => (
@@ -19704,21 +20147,50 @@ function ModuloAcademiaClinicas({
             <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center text-slate-500">
               <GraduationCap size={26} />
               <p className="text-sm font-semibold">Todavía no hay clases creadas.</p>
-              <p className="text-xs">"Nueva Clase" arma su parrilla y bloquea la cancha automáticamente.</p>
+              <p className="text-xs">Da clic en una celda libre del Cronograma de abajo (o "Nueva Clase") para armar su parrilla y bloquear la cancha automáticamente.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            // Acceso rápido: todas las clases activas, sin importar el día
+            // que se esté viendo en el Cronograma de abajo — clic abre la
+            // misma ficha (roster/asistencia/ajustes) que un clic sobre su
+            // bloqueo en el Cronograma.
+            <div className="flex gap-3 overflow-x-auto pb-1">
               {clasesActivas.map((c) => (
-                <TarjetaClaseAcademia
-                  key={c.id}
-                  clase={c}
-                  cancha={canchasPorId[c.cancha_id]}
-                  alumnosActivos={alumnosActivosPorClase[c.id] || []}
-                  onVerDetalle={() => setClaseSeleccionadaId(c.id)}
-                />
+                <div key={c.id} className="w-64 shrink-0">
+                  <TarjetaClaseAcademia
+                    clase={c}
+                    cancha={canchasPorId[c.cancha_id]}
+                    alumnosActivos={alumnosActivosPorClase[c.id] || []}
+                    onVerDetalle={() => setClaseSeleccionadaId(c.id)}
+                  />
+                </div>
               ))}
             </div>
           )}
+
+          {/* Cronograma interactivo por Cancha × Hora — MISMO componente que
+              el Cronograma de la Parrilla Operativa principal
+              (`VistaCronograma`), con TODAS las reservas del día (no solo
+              clases) para que el operador vea la disponibilidad real antes
+              de dar clic en una celda libre y crear una clase ahí mismo. */}
+          <div className="flex items-center justify-between gap-2">
+            <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+              <CalendarClock size={13} /> Cronograma — disponibilidad de canchas
+            </p>
+            <input
+              type="date"
+              value={fechaCronograma}
+              onChange={(e) => setFechaCronograma(e.target.value)}
+              className={`${inputClase} w-auto`}
+            />
+          </div>
+          <VistaCronograma
+            canchas={canchas}
+            reservas={reservas}
+            fechaSeleccionada={fechaCronograma}
+            onSlotClick={manejarClicCeldaLibre}
+            onReservaClick={manejarClicReservaCronograma}
+          />
         </div>
       )}
 
@@ -19737,10 +20209,15 @@ function ModuloAcademiaClinicas({
           canchas={canchas}
           reservas={reservas}
           empleados={empleados}
-          onClose={() => setModalNuevaClase(false)}
+          prellenado={celdaParaNuevaClase}
+          onClose={() => {
+            setModalNuevaClase(false);
+            setCeldaParaNuevaClase(null);
+          }}
           onCreada={(clase, sesiones) => {
             onAcademiaClaseCreada(clase);
             if (sesiones?.length > 0) setAcademiaSesiones((prev) => [...prev, ...sesiones]);
+            setCeldaParaNuevaClase(null);
           }}
         />
       )}
@@ -19753,11 +20230,14 @@ function ModuloAcademiaClinicas({
           alumnos={alumnosDeClaseSeleccionada}
           asistencias={asistenciasDeClaseSeleccionada}
           jugadoresPorId={jugadoresPorId}
+          empleados={empleados}
           onClose={() => setClaseSeleccionadaId(null)}
           onAlumnoAgregado={onAcademiaAlumnoAgregado}
           onAlumnoActualizado={onAcademiaAlumnoActualizado}
           onAsistenciaGuardada={onAcademiaAsistenciaGuardada}
           onGenerarMasSesiones={generarMasSesiones}
+          onGuardarEdicion={guardarEdicionClase}
+          onEliminarClase={eliminarClaseSeleccionada}
         />
       )}
     </div>
@@ -19973,14 +20453,29 @@ function DirectorioJugadoresCRM({
 
         const gastoTorneosRetas = gastoRetas + gastoTorneos;
 
-        /* --- Academia & Clínicas: asistencias a clase en los últimos 6 meses
-         * (indicador CHS "Participación en Comunidad") — se cruza por
-         * `jugador_id` en `academia_alumnos` (mismo `resolverJugadorId` que
-         * usa el resto del CRM) y de ahí a `academia_asistencias.asistio`. --- */
-        const alumnoIdsJ = new Set((academiaAlumnos || []).filter((a) => a.jugador_id === j.id).map((a) => a.id));
+        /* --- Academia & Clínicas: dos señales para el indicador CHS
+         * "Participación en Comunidad", se cruzan por `jugador_id` en
+         * `academia_alumnos` (mismo `resolverJugadorId` que usa el resto
+         * del CRM):
+         *   1) Asistencias reales a clase (`academia_asistencias.asistio`).
+         *   2) Inscripciones a clase YA PAGADAS — el mismo momento en que
+         *      Smart POS cobra una inscripción pendiente de Academia
+         *      (`cobrarInscripcionEvento`, tabla `academia_alumnos`) cuenta
+         *      aquí exactamente igual que una inscripción pagada a
+         *      Reta/Torneo (`eventosTorneoRetaUltimos6Meses`, abajo) — así
+         *      completar el pago en POS "suma" de inmediato al Score de
+         *      Fidelidad, tal como se pidió, sin depender de que el alumno
+         *      ya haya tomado una clase. */
+        const alumnosDeJ = (academiaAlumnos || []).filter((a) => a.jugador_id === j.id);
+        const alumnoIdsJ = new Set(alumnosDeJ.map((a) => a.id));
         const asistenciasClaseUltimos6Meses = (academiaAsistencias || []).filter((a) => {
           if (!alumnoIdsJ.has(a.alumno_id) || a.asistio !== true) return false;
           const f = a.fecha ? new Date(`${a.fecha}T12:00:00`) : null;
+          return f && f >= hace180;
+        }).length;
+        const inscripcionesClasePagadasUltimos6Meses = alumnosDeJ.filter((a) => {
+          if (a.estado_pago !== 'pagado') return false;
+          const f = a.created_at ? new Date(a.created_at) : null;
           return f && f >= hace180;
         }).length;
 
@@ -20196,6 +20691,7 @@ function DirectorioJugadoresCRM({
           eventosUltimos90Dias,
           eventosTorneoRetaUltimos6Meses,
           asistenciasClaseUltimos6Meses,
+          inscripcionesClasePagadasUltimos6Meses,
           totalEventosConfiabilidad,
           totalCancelaciones,
           fechaUltimoPartido,
@@ -25835,6 +26331,10 @@ function AppInterno() {
                 setParticipantesTorneo={setParticipantesTorneo}
                 loadingInscripciones={loadingInscripciones}
                 loadingParticipantes={loadingParticipantes}
+                academiaClases={academiaClases}
+                academiaAlumnos={academiaAlumnos}
+                setAcademiaAlumnos={setAcademiaAlumnos}
+                loadingAcademiaAlumnos={loadingAcademiaAlumnos}
                 jugadoresPorId={jugadoresPorId}
                 variantesPorProducto={variantesPorProducto}
                 upsertVarianteProducto={upsertVarianteProducto}
@@ -25934,10 +26434,14 @@ function AppInterno() {
               <ModuloAcademiaClinicas
                 canchas={canchas}
                 reservas={reservas}
+                marcarReservaCancelada={marcarReservaCancelada}
                 empleados={empleados}
                 jugadoresPorId={jugadoresPorId}
                 academiaClases={academiaClases}
                 onAcademiaClaseCreada={(clase) => setAcademiaClases((prev) => [...prev, clase])}
+                onAcademiaClaseActualizada={(clase) =>
+                  setAcademiaClases((prev) => prev.map((c) => (c.id === clase.id ? { ...c, ...clase } : c)))
+                }
                 academiaAlumnos={academiaAlumnos}
                 onAcademiaAlumnoAgregado={(alumno) => setAcademiaAlumnos((prev) => [...prev, alumno])}
                 onAcademiaAlumnoActualizado={(alumno) =>
