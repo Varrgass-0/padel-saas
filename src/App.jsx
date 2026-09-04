@@ -798,6 +798,11 @@ import {
   Gift,
   Bell,
   CalendarClock,
+  CalendarPlus,
+  GripVertical,
+  GraduationCap,
+  UserX,
+  UserCheck,
   ShieldAlert,
   TrendingDown,
   Pencil,
@@ -1099,6 +1104,16 @@ const ESTATUS_META = {
     dot: 'bg-violet-400/50',
     card: 'ring-violet-400/10',
   },
+  // Igual criterio que `torneo`/`reta` arriba — colorea en el Cronograma los
+  // bloques de `reservas` con `estado: 'Clase'` que crea "Academia &
+  // Clínicas" al programar las sesiones de una clase (ver
+  // `crearBloqueoParrilla`/`generarSesionesClase`).
+  clase: {
+    label: 'Clase',
+    badge: 'bg-teal-400/10 text-teal-400 ring-1 ring-teal-400/30',
+    dot: 'bg-teal-400',
+    card: 'ring-teal-400/20',
+  },
 };
 
 /* ============================================================================
@@ -1135,13 +1150,23 @@ const ROLES = [
   { value: 'caja', label: 'Caja', descripcion: 'Únicamente cobrar ventas de mostrador y POS.', icon: DollarSign, color: 'text-emerald-300', bg: 'bg-emerald-400/10', ring: 'ring-emerald-400/30' },
   { value: 'bar', label: 'Bar', descripcion: 'Gestión de comandas y stock de alimentos/bebidas.', icon: Coffee, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
   { value: 'coach', label: 'Coach', descripcion: 'Vista de agenda de clases y asistencia de alumnos.', icon: Award, color: 'text-fuchsia-300', bg: 'bg-fuchsia-400/10', ring: 'ring-fuchsia-400/30' },
+  {
+    value: 'contador',
+    label: 'Contador',
+    descripcion: 'Solo lectura y exportación: Contabilidad, Analytics y POS. Sin edición de reservas ni torneos.',
+    icon: Landmark,
+    color: 'text-teal-300',
+    bg: 'bg-teal-400/10',
+    ring: 'ring-teal-400/30',
+  },
 ];
 
 const ROLES_POR_VALOR = Object.fromEntries(ROLES.map((r) => [r.value, r]));
 
 // Todos los módulos existen bajo estas mismas claves de `moduloActivo` — ver
-// `NAV_MODULOS`/`MODULOS_META` más abajo, donde se agregó 'seguridad'.
-const TODOS_LOS_MODULOS = ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'jugadores', 'seguridad'];
+// `NAV_MODULOS`/`MODULOS_META` más abajo, donde se agregó 'seguridad' y,
+// después, 'academia' (Academia & Clínicas).
+const TODOS_LOS_MODULOS = ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'];
 
 // Matriz de permisos por rol. `modulos: 'todos'` es azúcar para
 // `TODOS_LOS_MODULOS` (Owner/Admin) en vez de listarlos a mano.
@@ -1175,7 +1200,7 @@ const PERMISOS_POR_ROL = {
     puedeCambiarEstatusCancha: true,
   },
   manager: {
-    modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'jugadores', 'seguridad'],
+    modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'],
     puedeCancelarReservas: true,
     puedeReprogramarReservas: true,
     puedeAplicarDescuentoManual: true,
@@ -1189,7 +1214,7 @@ const PERMISOS_POR_ROL = {
     puedeCambiarEstatusCancha: true,
   },
   recepcion: {
-    modulos: ['parrilla', 'pos', 'torneos', 'jugadores'],
+    modulos: ['parrilla', 'pos', 'torneos', 'academia', 'jugadores'],
     puedeCancelarReservas: true,
     puedeReprogramarReservas: true,
     puedeAplicarDescuentoManual: false,
@@ -1203,7 +1228,10 @@ const PERMISOS_POR_ROL = {
     puedeCambiarEstatusCancha: false,
   },
   caja: {
-    modulos: ['pos'], // "Únicamente cobrar ventas de mostrador y POS"
+    // "Únicamente cobrar ventas de mostrador y POS" — Academia se agrega
+    // porque Caja también cobra mensualidad/clase suelta ahí (Vista
+    // Operativa y Control de "Academia & Clínicas" pide acceso de Caja).
+    modulos: ['pos', 'academia'],
     puedeCancelarReservas: false,
     puedeReprogramarReservas: false,
     puedeAplicarDescuentoManual: false,
@@ -1231,7 +1259,35 @@ const PERMISOS_POR_ROL = {
     puedeCambiarEstatusCancha: false,
   },
   coach: {
-    modulos: ['parrilla', 'jugadores'], // agenda de clases (Parrilla) + asistencia de alumnos (CRM de Jugadores)
+    // Agenda de clases (Parrilla) + asistencia de alumnos (CRM de
+    // Jugadores) + la operación real de "Academia & Clínicas" (parrilla de
+    // clases propia, pase de lista) que antes solo tenía este comentario
+    // como intención — ahora sí existe el módulo.
+    modulos: ['parrilla', 'academia', 'jugadores'],
+    puedeCancelarReservas: false,
+    puedeReprogramarReservas: false,
+    puedeAplicarDescuentoManual: false,
+    puedeEditarPrecioPOS: false,
+    puedeRegistrarDevolucionPOS: false,
+    puedeCerrarTurnoCaja: false,
+    puedeAprobarCorteCaja: false,
+    puedeGestionarEmpleados: false,
+    puedeVerAuditoria: false,
+    puedeGestionarProductos: false,
+    puedeCambiarEstatusCancha: false,
+  },
+  contador: {
+    // Rol de solo lectura/exportación: Contabilidad & Compras + Analytics BI
+    // (reportes, P&L, exportar CSV) y Smart POS (para revisar ventas/cortes
+    // ya cerrados) — SIN Parrilla ni Torneos & Retas, así que no hay forma
+    // de tocar una reserva o una inscripción (el propio filtro de `modulos`
+    // ya es la restricción más fuerte posible). Dentro de POS, este
+    // proyecto no separa las pantallas en "modo lectura" vs "modo
+    // escritura" — así que, igual que los roles `caja`/`bar` ya
+    // restringidos, la lectura-only se logra apagando TODOS los flags de
+    // acción sensible: no cobra, no aplica descuentos, no edita precios, no
+    // registra devoluciones, no cierra ni aprueba cortes de caja.
+    modulos: ['contabilidad', 'analytics', 'pos'],
     puedeCancelarReservas: false,
     puedeReprogramarReservas: false,
     puedeAplicarDescuentoManual: false,
@@ -1929,9 +1985,61 @@ const NAV_MODULOS = [
   { id: 'contabilidad', label: 'Contabilidad & Compras', labelCorto: 'Contabilidad', icon: Landmark },
   { id: 'analytics', label: 'Analytics BI', labelCorto: 'Analytics', icon: BarChart3 },
   { id: 'torneos', label: 'Torneos & Retas', labelCorto: 'Torneos', icon: Trophy },
+  { id: 'academia', label: 'Academia & Clínicas', labelCorto: 'Academia', icon: GraduationCap },
   { id: 'jugadores', label: 'Jugadores', labelCorto: 'Jugadores', icon: Users },
   { id: 'seguridad', label: 'Control & Seguridad', labelCorto: 'Seguridad', icon: ShieldAlert },
 ];
+
+// Navegación Reordenable: el ORDEN preferido de las pestañas/módulos
+// (Parrilla, Smart POS, Inventario...) se guarda por dispositivo en
+// `localStorage` — mismo criterio que `LS_KEY_SIDEBAR_COLAPSADO` arriba (es
+// una preferencia de "cómo quiero ver MI navegación en esta pantalla", no
+// un dato de negocio que tenga que sincronizarse entre Mac/iPad/celular).
+// Se guarda solo el ARREGLO DE IDS (`['torneos','parrilla',...]`), nunca los
+// objetos completos — así, si `NAV_MODULOS` gana un módulo nuevo (ej.
+// `academia`, ver arriba) o un operador tiene menos módulos visibles por
+// RBAC, `ordenarNavModulos` de abajo hace el merge solo, sin perder el
+// orden ya guardado ni "perder" módulos nuevos que nunca se guardaron.
+const LS_KEY_NAV_ORDEN = 'smashpadel_nav_orden_v1';
+function leerNavOrdenLocal() {
+  try {
+    const crudo = window.localStorage.getItem(LS_KEY_NAV_ORDEN);
+    const ids = crudo ? JSON.parse(crudo) : [];
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : [];
+  } catch (_e) {
+    return [];
+  }
+}
+function guardarNavOrdenLocal(ids) {
+  try {
+    window.localStorage.setItem(LS_KEY_NAV_ORDEN, JSON.stringify(ids));
+  } catch (_e) {
+    /* localStorage no disponible — el orden solo dura esta sesión */
+  }
+}
+
+// Aplica el orden guardado (arreglo de ids) sobre una lista de módulos ya
+// filtrada por RBAC: los ids guardados que SÍ siguen visibles van primero,
+// en su orden guardado; cualquier módulo visible que el operador nunca
+// reordenó (uno nuevo, o uno al que antes no tenía acceso) se agrega al
+// final, en su orden original de `NAV_MODULOS` — nunca desaparece un
+// módulo solo porque no estaba en el arreglo guardado.
+function ordenarNavModulos(modulos, ordenIds) {
+  if (!ordenIds || ordenIds.length === 0) return modulos;
+  const porId = new Map(modulos.map((m) => [m.id, m]));
+  const ordenados = [];
+  ordenIds.forEach((id) => {
+    const m = porId.get(id);
+    if (m) {
+      ordenados.push(m);
+      porId.delete(id);
+    }
+  });
+  modulos.forEach((m) => {
+    if (porId.has(m.id)) ordenados.push(m);
+  });
+  return ordenados;
+}
 
 // Nombre y Logo del Club Editable — Persistencia Centralizada: la fuente de
 // verdad es Supabase (tabla `configuracion_club`, columnas `nombre`/
@@ -2078,6 +2186,7 @@ function Sidebar({
   configClub,
   onGuardarConfigClub,
   guardandoConfigClub,
+  modulosOrdenados,
 }) {
   const itemBase = 'flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-bold transition';
   const itemActivo = 'bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20';
@@ -2088,7 +2197,11 @@ function Sidebar({
     onCerrar();
   }
 
-  const modulosVisibles = NAV_MODULOS.filter((m) => permisos.modulos.has(m.id));
+  // `modulosOrdenados` (prop, ya filtrado por RBAC Y en el orden que el
+  // operador arrastró/movió desde el TopHeader — ver `ordenarNavModulos` en
+  // `AppInterno`) es la fuente compartida con TopHeader; el filtro sin
+  // ordenar queda como respaldo si algún día se usa `Sidebar` sin pasarla.
+  const modulosVisibles = modulosOrdenados || NAV_MODULOS.filter((m) => permisos.modulos.has(m.id));
 
   // Nombre y Logo del Club Editable: la tarjeta de usuario (nombre, rol,
   // turno) YA vive arriba a la derecha en `TopHeader`, junto al reloj — este
@@ -2134,8 +2247,16 @@ function Sidebar({
               iniciales(configClubActual.nombre) || 'SP'
             )}
           </div>
+          {/* Limpieza de UI: el nombre del club (`configClubActual.nombre`,
+              texto libre y sin límite de longitud desde `ModalConfigClub`)
+              se quitó de aquí — en una franja tan angosta terminaba
+              recortado por `truncate` a un fragmento ilegible tipo "R…".
+              El logo/iniciales de la izquierda y el engrane de "Editar
+              nombre y logo del club" ya bastan para identificar/editar el
+              club desde el sidebar; el nombre completo se sigue viendo
+              siempre en el título del módulo activo (`TopHeader`) y en el
+              propio `ModalConfigClub`. */}
           <div className={`min-w-0 flex-1 ${colapsado ? 'lg:hidden' : ''}`}>
-            <p className="truncate text-sm font-black leading-tight text-slate-100">{configClubActual.nombre}</p>
             <p className="text-[11px] font-medium text-slate-500">Panel operativo</p>
           </div>
           <button
@@ -2215,8 +2336,14 @@ const MODULOS_META = {
   parrilla: { titulo: 'Parrilla Operativa', subtitulo: 'Canchas dinámicas en tiempo real' },
   pos: { titulo: 'Smart POS', subtitulo: 'Punto de venta de alta velocidad' },
   erp: { titulo: 'Inventario', subtitulo: 'Catálogo, costos, margen y kardex' },
+  // `contabilidad` faltaba aquí desde antes de este cambio (gap
+  // preexistente en `MODULOS_META` vs. `NAV_MODULOS`) — el título del
+  // módulo activo caía de vuelta a "Parrilla Operativa" por el `|| MODULOS_META.parrilla`
+  // de `TopHeader`; se corrige de paso al agregar 'academia' abajo.
+  contabilidad: { titulo: 'Contabilidad & Compras', subtitulo: 'Estado de resultados, egresos y cuentas por cobrar' },
   analytics: { titulo: 'Analytics BI', subtitulo: 'Inteligencia de negocio y rentabilidad' },
   torneos: { titulo: 'Torneos & Retas', subtitulo: 'Competencias, retas abiertas y bloqueo inteligente de canchas' },
+  academia: { titulo: 'Academia & Clínicas', subtitulo: 'Clases, alumnos, asistencia y retención' },
   jugadores: { titulo: 'Jugadores (CRM)', subtitulo: 'Ranking del club y clasificación por categoría' },
   seguridad: { titulo: 'Control & Seguridad', subtitulo: 'Empleados, roles, arqueos y Log de Actividad' },
 };
@@ -2235,10 +2362,51 @@ function TopHeader({
   onMarcarAlertaLeida,
   onMarcarTodasLeidas,
   onIrAJugadorDesdeAlerta,
+  modulosOrdenados,
+  onReordenarModulos,
 }) {
   const meta = MODULOS_META[moduloActivo] || MODULOS_META.parrilla;
   const rolMeta = ROLES_POR_VALOR[operador.rol];
-  const modulosVisibles = NAV_MODULOS.filter((m) => permisos.modulos.has(m.id));
+  // Mismo criterio que `Sidebar`: `modulosOrdenados` (prop, RBAC + orden del
+  // operador, ver `ordenarNavModulos` en `AppInterno`) es la fuente
+  // compartida; el filtro sin ordenar queda como respaldo.
+  const modulosVisibles = modulosOrdenados || NAV_MODULOS.filter((m) => permisos.modulos.has(m.id));
+
+  // Navegación Reordenable: "modo de reordenar" evita que un tap accidental
+  // sobre una pestaña navegue mientras el operador está arrastrando o usando
+  // los botones ‹ › — se sale solo al volver a pulsar el icono de asas, o al
+  // cambiar de módulo. Drag & Drop nativo (sin librería) para mouse/trackpad
+  // + botones ‹ › siempre visibles en este modo, para touch/teclado.
+  const [modoReordenar, setModoReordenar] = useState(false);
+  const [arrastrandoId, setArrastrandoId] = useState(null);
+
+  function moverModulo(id, direccion) {
+    const idx = modulosVisibles.findIndex((m) => m.id === id);
+    if (idx === -1) return;
+    const nuevoIdx = idx + direccion;
+    if (nuevoIdx < 0 || nuevoIdx >= modulosVisibles.length) return;
+    const nuevoOrden = modulosVisibles.map((m) => m.id);
+    const [movidoId] = nuevoOrden.splice(idx, 1);
+    nuevoOrden.splice(nuevoIdx, 0, movidoId);
+    onReordenarModulos?.(nuevoOrden);
+  }
+
+  function soltarModulo(idDestino) {
+    if (!arrastrandoId || arrastrandoId === idDestino) {
+      setArrastrandoId(null);
+      return;
+    }
+    const nuevoOrden = modulosVisibles.map((m) => m.id);
+    const origenIdx = nuevoOrden.indexOf(arrastrandoId);
+    const destinoIdx = nuevoOrden.indexOf(idDestino);
+    if (origenIdx !== -1 && destinoIdx !== -1) {
+      nuevoOrden.splice(origenIdx, 1);
+      nuevoOrden.splice(destinoIdx, 0, arrastrandoId);
+      onReordenarModulos?.(nuevoOrden);
+    }
+    setArrastrandoId(null);
+  }
+
   return (
     <header className="sticky top-0 z-20 flex min-w-0 items-center justify-between gap-2 border-b border-slate-800 bg-slate-950/95 px-4 py-3.5 backdrop-blur sm:gap-3 sm:px-6">
       <div className="flex min-w-0 shrink items-center gap-3">
@@ -2261,9 +2429,54 @@ function TopHeader({
           primero, con scroll horizontal propio en vez de empujar al resto
           fuera de la pantalla. */}
       <div className="flex min-w-0 shrink-0 items-center gap-2 sm:gap-3">
-        <div className="hidden min-w-0 items-center gap-1 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 p-1 md:flex">
+        <div
+          className={`hidden min-w-0 items-center gap-1 overflow-x-auto rounded-lg border p-1 md:flex ${
+            modoReordenar ? 'border-lime-400/40 bg-lime-400/5' : 'border-slate-800 bg-slate-900'
+          }`}
+        >
           {modulosVisibles.map((m) => {
             const Icon = m.icon;
+            const idx = modulosVisibles.findIndex((x) => x.id === m.id);
+            if (modoReordenar) {
+              return (
+                <div
+                  key={m.id}
+                  draggable
+                  onDragStart={() => setArrastrandoId(m.id)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => soltarModulo(m.id)}
+                  onDragEnd={() => setArrastrandoId(null)}
+                  className={`inline-flex shrink-0 cursor-grab items-center gap-1 rounded-md border border-dashed border-slate-700 bg-slate-950 px-1.5 py-1 text-xs font-bold text-slate-300 transition active:cursor-grabbing ${
+                    arrastrandoId === m.id ? 'opacity-40' : ''
+                  }`}
+                  title="Arrastra para reordenar"
+                >
+                  <GripVertical size={13} className="shrink-0 text-slate-600" />
+                  <Icon size={14} className="shrink-0" />
+                  <span className="whitespace-nowrap">{m.labelCorto}</span>
+                  <div className="flex shrink-0 flex-col">
+                    <button
+                      type="button"
+                      onClick={() => moverModulo(m.id, -1)}
+                      disabled={idx === 0}
+                      title="Mover a la izquierda"
+                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
+                    >
+                      <ChevronLeft size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moverModulo(m.id, 1)}
+                      disabled={idx === modulosVisibles.length - 1}
+                      title="Mover a la derecha"
+                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
+                    >
+                      <ChevronRight size={12} />
+                    </button>
+                  </div>
+                </div>
+              );
+            }
             return (
               <button
                 key={m.id}
@@ -2276,6 +2489,18 @@ function TopHeader({
               </button>
             );
           })}
+          {onReordenarModulos && (
+            <button
+              type="button"
+              onClick={() => setModoReordenar((v) => !v)}
+              title={modoReordenar ? 'Listo — salir de reordenar' : 'Reordenar pestañas'}
+              className={`ml-0.5 inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-xs font-bold transition ${
+                modoReordenar ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              {modoReordenar ? <CheckCircle2 size={14} /> : <GripVertical size={14} />}
+            </button>
+          )}
         </div>
         <button
           onClick={onRefrescar}
@@ -2321,6 +2546,7 @@ const TIPO_ALERTA_META = {
   reserva: { icon: CalendarClock, color: 'text-sky-400', bg: 'bg-sky-400/10' },
   torneo_reta: { icon: Award, color: 'text-violet-400', bg: 'bg-violet-400/10' },
   compra: { icon: ShoppingCart, color: 'text-amber-400', bg: 'bg-amber-400/10' },
+  academia: { icon: GraduationCap, color: 'text-teal-400', bg: 'bg-teal-400/10' },
 };
 
 // Centro de Alertas del Club: campana con contador de no leídas + dropdown,
@@ -2771,9 +2997,10 @@ function FilaCronograma({ cancha, estadoActual, reservasDelDia, onSlotClick, onR
             </button>
           ))}
           {bloquesConCarril.map(({ reserva, startIdx, span, carril, totalCarriles }) => {
-            // 'Torneo'/'Reta' son bloqueos creados por el módulo Torneos &
-            // Retas (ver cabecera del archivo) — se pintan distinto para que
-            // el operador nunca los confunda con una reserva normal.
+            // 'Torneo'/'Reta'/'Clase' son bloqueos creados por Torneos &
+            // Retas / Academia & Clínicas (ver cabecera del archivo) — se
+            // pintan distinto para que el operador nunca los confunda con
+            // una reserva normal.
             const pmeta =
               reserva.estado === 'En Juego'
                 ? ESTATUS_META.en_juego
@@ -2781,6 +3008,8 @@ function FilaCronograma({ cancha, estadoActual, reservasDelDia, onSlotClick, onR
                 ? ESTATUS_META.torneo
                 : reserva.estado === 'Reta'
                 ? ESTATUS_META.reta
+                : reserva.estado === 'Clase'
+                ? ESTATUS_META.clase
                 : ESTATUS_META.reservada;
             // Si este bloque se solapa con otro, se reparte la altura de la
             // celda entre `totalCarriles` — así ambos quedan visibles uno
@@ -3805,17 +4034,24 @@ function DetalleReserva({
     onClose();
   }
 
-  // Bloqueo del módulo Torneos & Retas (ver cabecera del archivo): es una
-  // fila de `reservas` sin jugador ni cobro real, así que no tiene sentido
-  // mostrarle el detalle de pago/abono de una reserva normal — solo un
-  // resumen y el botón para liberar el horario.
-  const esBloqueoEvento = reserva.estado === 'Torneo' || reserva.estado === 'Reta';
+  // Bloqueo del módulo Torneos & Retas o de Academia & Clínicas (ver
+  // cabecera del archivo): es una fila de `reservas` sin jugador ni cobro
+  // real, así que no tiene sentido mostrarle el detalle de pago/abono de
+  // una reserva normal — solo un resumen y el botón para liberar el
+  // horario.
+  const esBloqueoEvento = reserva.estado === 'Torneo' || reserva.estado === 'Reta' || reserva.estado === 'Clase';
   if (esBloqueoEvento) {
+    const colorBloqueo =
+      reserva.estado === 'Torneo'
+        ? { borde: 'border-violet-400/30 bg-violet-400/5', icono: 'text-violet-400' }
+        : reserva.estado === 'Reta'
+        ? { borde: 'border-fuchsia-400/30 bg-fuchsia-400/5', icono: 'text-fuchsia-400' }
+        : { borde: 'border-teal-400/30 bg-teal-400/5', icono: 'text-teal-400' };
     return (
       <div className="space-y-4">
-        <div className={`rounded-xl border p-4 ${reserva.estado === 'Torneo' ? 'border-violet-400/30 bg-violet-400/5' : 'border-fuchsia-400/30 bg-fuchsia-400/5'}`}>
+        <div className={`rounded-xl border p-4 ${colorBloqueo.borde}`}>
           <div className="flex items-center gap-2">
-            <Lock size={15} className={reserva.estado === 'Torneo' ? 'text-violet-400' : 'text-fuchsia-400'} />
+            <Lock size={15} className={colorBloqueo.icono} />
             <p className="text-sm font-black text-slate-100">{reserva.jugador_nombre}</p>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-y-2 text-xs text-slate-400">
@@ -3830,8 +4066,9 @@ function DetalleReserva({
             </span>
           </div>
           <p className="mt-3 text-[11px] text-slate-500">
-            Gestiona los cupos/participantes desde el módulo Torneos &amp; Retas. Liberar este bloqueo solo abre de nuevo el horario en la
-            Parrilla para reservas regulares.
+            {reserva.estado === 'Clase'
+              ? 'Gestiona alumnos/asistencia desde el módulo Academia & Clínicas. Liberar este bloqueo solo abre de nuevo el horario en la Parrilla para reservas regulares.'
+              : 'Gestiona los cupos/participantes desde el módulo Torneos & Retas. Liberar este bloqueo solo abre de nuevo el horario en la Parrilla para reservas regulares.'}
           </p>
         </div>
         <div className="flex justify-between gap-2">
@@ -13552,10 +13789,15 @@ function calcularCHS(perfil) {
   }
 
   // 5) Participación en Comunidad (15 pts): inscripciones activas a
-  // Torneos/Retas en los últimos 6 meses (Clases se sumará automáticamente
-  // en cuanto exista su propio módulo — hoy no genera datos propios).
+  // Torneos/Retas EN LOS ÚLTIMOS 6 MESES + asistencias a clases de Academia &
+  // Clínicas en la misma ventana (`asistenciasClaseUltimos6Meses` — ver
+  // `DirectorioJugadoresCRM`/`academia_asistencias`, `asistio: true`). Cada
+  // asistencia a clase cuenta como un "evento" más, igual que una inscripción
+  // a Torneo/Reta — así una racha de clases también puede llevar al jugador
+  // al tope de 15 pts de este indicador (el máximo del indicador SIGUE
+  // siendo 15 — Academia no suma puntos extra por fuera de los 100 totales).
   {
-    const eventos = perfil.eventosTorneoRetaUltimos6Meses;
+    const eventos = perfil.eventosTorneoRetaUltimos6Meses + (perfil.asistenciasClaseUltimos6Meses || 0);
     let puntos = 0;
     let nivel = 'bajo';
     if (eventos >= 2) {
@@ -13565,13 +13807,15 @@ function calcularCHS(perfil) {
       puntos = 8;
       nivel = 'medio';
     }
+    const partesDetalle = [`${perfil.eventosTorneoRetaUltimos6Meses} a Torneo/Reta`];
+    if (perfil.asistenciasClaseUltimos6Meses > 0) partesDetalle.push(`${perfil.asistenciasClaseUltimos6Meses} a clases de Academia`);
     indicadores.push({
       key: 'comunidad',
       label: 'Participación en Comunidad',
       puntos,
       max: 15,
       nivel,
-      detalle: `${eventos} inscripción${eventos === 1 ? '' : 'es'} a Torneo/Reta en 6 meses`,
+      detalle: `${eventos} evento${eventos === 1 ? '' : 's'} en 6 meses (${partesDetalle.join(' + ')})`,
     });
   }
 
@@ -18332,6 +18576,1195 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
 }
 
 /* ============================================================================
+ * MÓDULO: ACADEMIA & CLÍNICAS
+ * ----------------------------------------------------------------------------
+ * Clases recurrentes (Iniciación, Clínicas, etc.) con Coach/Cancha/Día-Hora/
+ * Capacidad fijos. Sigue el MISMO patrón de "Bloqueo Inteligente" que Torneos
+ * & Retas (ver `crearBloqueoParrilla`, arriba): cada OCURRENCIA concreta de
+ * una clase (`academia_sesiones`, una fila por fecha real) nace con su propio
+ * bloqueo sintético en `reservas` (`estado: 'Clase'`) — así la Parrilla
+ * Operativa NUNCA necesitó tocarse: ya trata cualquier fila de `reservas` de
+ * forma uniforme para ocupación (`estadoActualCancha`/`FilaCronograma`), solo
+ * se le agregó su propio color (`ESTATUS_META.clase`) para no confundirla con
+ * una reserva normal.
+ *
+ * Esquema nuevo (4 tablas, todas con `club_id` y por Arquitectura Flexible —
+ * si tu Supabase no las tiene todavía, el módulo sigue funcionando en "Modo
+ * local", igual que Retas/Torneos):
+ *   - academia_clases:      id, nombre, nivel ('Principiante'|'Intermedio'|
+ *                            'Avanzado'), coach_empleado_id, coach_nombre,
+ *                            cancha_id, dia_semana ('lunes'..'domingo'),
+ *                            hora_inicio, hora_fin, capacidad_maxima,
+ *                            precio_mensualidad, precio_clase_suelta,
+ *                            estado ('activa'|'cancelada'), club_id,
+ *                            created_at.
+ *   - academia_sesiones:    id, clase_id, fecha, hora_inicio, hora_fin,
+ *                            cancha_id, reserva_bloqueo_id (uuid → reservas,
+ *                            igual criterio que `retas.reserva_bloqueo_id`),
+ *                            estado ('programada'|'cancelada'), club_id,
+ *                            created_at. Se generan en bloque (próximas
+ *                            `CANTIDAD_SESIONES_GENERADAS` fechas) al crear
+ *                            la clase vía `generarSesionesClase` — "Generar
+ *                            más sesiones" en el detalle de la clase extiende
+ *                            la ventana cuando se van agotando.
+ *   - academia_alumnos:     id, clase_id, jugador_id (resuelto vía
+ *                            `resolverJugadorId`, igual que Retas/Torneos),
+ *                            nombre, telefono, tipo_pago
+ *                            ('mensualidad'|'clase_suelta'), estado_pago
+ *                            ('pagado'|'pendiente'), monto, estado
+ *                            ('activo'|'baja'), canal_origen (Portal Web —
+ *                            ver Centro de Alertas), club_id, created_at.
+ *   - academia_asistencias: id, clase_id, sesion_id, alumno_id, fecha,
+ *                            asistio (bool), club_id, created_at — una fila
+ *                            por alumno y fecha de pase de lista.
+ *
+ * Interconexión: la asistencia a clase suma al indicador "Participación en
+ * Comunidad" del Score de Fidelidad (`calcularCHS`, ver más abajo), y una
+ * inscripción hecha desde el Portal Público de Jugadores dispara una alerta
+ * en `CentroAlertasClub` (canal `centro-alertas-club`, tabla
+ * `academia_alumnos`).
+ * ==========================================================================*/
+
+const NIVELES_ACADEMIA = ['Principiante', 'Intermedio', 'Avanzado'];
+
+const TIPOS_PAGO_ACADEMIA = [
+  { value: 'mensualidad', label: 'Mensualidad' },
+  { value: 'clase_suelta', label: 'Clase suelta' },
+];
+
+// `indice` = el mismo valor que regresa `Date.prototype.getDay()` (0 =
+// domingo) — así `proximasFechasDiaSemana` no necesita su propia tabla de
+// conversión.
+const DIAS_SEMANA_ACADEMIA = [
+  { value: 'lunes', label: 'Lunes', indice: 1 },
+  { value: 'martes', label: 'Martes', indice: 2 },
+  { value: 'miercoles', label: 'Miércoles', indice: 3 },
+  { value: 'jueves', label: 'Jueves', indice: 4 },
+  { value: 'viernes', label: 'Viernes', indice: 5 },
+  { value: 'sabado', label: 'Sábado', indice: 6 },
+  { value: 'domingo', label: 'Domingo', indice: 0 },
+];
+const DIA_ACADEMIA_POR_VALOR = Object.fromEntries(DIAS_SEMANA_ACADEMIA.map((d) => [d.value, d]));
+
+const CANTIDAD_SESIONES_GENERADAS = 6;
+// "2+ inasistencias consecutivas" — umbral pedido tal cual para la Alerta de
+// Riesgo de Deserción (ver `alumnosEnRiesgoDesercion`, dentro de
+// `ModuloAcademiaClinicas`).
+const UMBRAL_INASISTENCIAS_RIESGO = 2;
+
+// Próximas `cantidad` fechas (ISO) que caen en `diaSemana`, empezando HOY (si
+// hoy mismo es ese día de la semana) o el próximo que le siga.
+function proximasFechasDiaSemana(diaSemana, cantidad, desdeISO) {
+  const meta = DIA_ACADEMIA_POR_VALOR[diaSemana];
+  if (!meta) return [];
+  const cursor = desdeISO ? new Date(`${desdeISO}T12:00:00`) : new Date();
+  cursor.setHours(12, 0, 0, 0);
+  let guardia = 0;
+  while (cursor.getDay() !== meta.indice && guardia < 8) {
+    cursor.setDate(cursor.getDate() + 1);
+    guardia += 1;
+  }
+  const fechas = [];
+  for (let i = 0; i < cantidad; i++) {
+    fechas.push(`${cursor.getFullYear()}-${pad2(cursor.getMonth() + 1)}-${pad2(cursor.getDate())}`);
+    cursor.setDate(cursor.getDate() + 7);
+  }
+  return fechas;
+}
+
+const LS_KEY_ACADEMIA_CLASES_LOCAL = 'smashpadel_academia_clases_local_v1';
+const LS_KEY_ACADEMIA_SESIONES_LOCAL = 'smashpadel_academia_sesiones_local_v1';
+const LS_KEY_ACADEMIA_ALUMNOS_LOCAL = 'smashpadel_academia_alumnos_local_v1';
+const LS_KEY_ACADEMIA_ASISTENCIAS_LOCAL = 'smashpadel_academia_asistencias_local_v1';
+
+// Genera (o extiende) las próximas sesiones concretas de una clase: por cada
+// fecha libre, crea el bloqueo sintético en `reservas` (`crearBloqueoParrilla`,
+// `estado: 'Clase'` — mismo mecanismo que Torneos & Retas) y luego inserta en
+// bloque las filas de `academia_sesiones` ya enlazadas a su bloqueo
+// (`insertarMuchosConColumnasOpcionales`, la misma variante masiva que ya usa
+// la generación de cuadros de Torneos). Una fecha que se solapa con otra
+// reserva existente en esa cancha simplemente se omite — las demás sí se
+// generan; el operador puede volver a pedir más sesiones cuando quiera.
+async function generarSesionesClase({ clase, cantidad = CANTIDAD_SESIONES_GENERADAS, reservasExistentes = [], desdeISO }) {
+  const fechas = proximasFechasDiaSemana(clase.dia_semana, cantidad, desdeISO);
+  const bloqueosCreados = [];
+  for (const fecha of fechas) {
+    if (haySolapeEnCancha(reservasExistentes, clase.cancha_id, fecha, clase.hora_inicio, clase.hora_fin)) continue;
+    const { data: bloqueo, error } = await crearBloqueoParrilla({
+      canchaId: clase.cancha_id,
+      fecha,
+      horaInicio: clase.hora_inicio,
+      horaFin: clase.hora_fin,
+      estado: 'Clase',
+      etiqueta: `Clase: ${clase.nombre}`,
+    });
+    if (error || !bloqueo) continue;
+    bloqueosCreados.push({ fecha, bloqueo });
+  }
+  if (bloqueosCreados.length === 0) return { data: [], error: null, bloqueos: [] };
+  const payloadsSesiones = bloqueosCreados.map(({ fecha, bloqueo }) =>
+    withClubId({
+      clase_id: clase.id,
+      fecha,
+      hora_inicio: clase.hora_inicio,
+      hora_fin: clase.hora_fin,
+      cancha_id: clase.cancha_id,
+      reserva_bloqueo_id: bloqueo.id,
+      estado: 'programada',
+    })
+  );
+  const { data, error } = await insertarMuchosConColumnasOpcionales('academia_sesiones', payloadsSesiones, ['reserva_bloqueo_id']);
+  const sesiones = data || payloadsSesiones.map((s) => ({ ...s, id: idLocal('academia_sesion'), _local: true }));
+  return { data: sesiones, error: data ? null : error, bloqueos: bloqueosCreados.map((b) => b.bloqueo) };
+}
+
+// Selector visual de Cancha/Coach/Día/Horario compartido entre "Nueva Clase"
+// y (si algún día se agrega) su edición — separado del formulario para que
+// `ModalNuevaClase` no crezca más de la cuenta.
+function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada }) {
+  const toast = useToast();
+  const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+  const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
+
+  const [nombre, setNombre] = useState('');
+  const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
+  const [coachEmpleadoId, setCoachEmpleadoId] = useState(coachesDisponibles[0]?.id || '');
+  const [coachNombreLibre, setCoachNombreLibre] = useState('');
+  const [canchaId, setCanchaId] = useState(canchasActivas[0]?.id || '');
+  const [diaSemana, setDiaSemana] = useState('lunes');
+  const [horaInicio, setHoraInicio] = useState('17:00');
+  const [horaFin, setHoraFin] = useState('18:00');
+  const [capacidad, setCapacidad] = useState('6');
+  const [precioMensualidad, setPrecioMensualidad] = useState('1200');
+  const [precioClaseSuelta, setPrecioClaseSuelta] = useState('180');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  const coachNombre = coachEmpleadoId ? coachesDisponibles.find((c) => c.id === coachEmpleadoId)?.nombre || '' : coachNombreLibre.trim();
+
+  async function guardar() {
+    if (!nombre.trim()) return setError('Ponle un nombre a la clase (ej. "Iniciación Adultos").');
+    if (!canchaId) return setError('Selecciona una cancha.');
+    if (!coachNombre) return setError('Indica el Coach (elige uno del directorio o escribe su nombre).');
+    const ini = parseHoraAMinutos(horaInicio);
+    const fin = parseHoraAMinutos(horaFin);
+    if (ini === null || fin === null || fin <= ini) return setError('La hora de fin debe ser posterior a la de inicio.');
+    if (!(Number(capacidad) > 0)) return setError('La capacidad máxima debe ser mayor a 0.');
+    setGuardando(true);
+    setError('');
+
+    const payloadClase = withClubId({
+      nombre: nombre.trim(),
+      nivel,
+      coach_empleado_id: coachEmpleadoId || null,
+      coach_nombre: coachNombre,
+      cancha_id: canchaId,
+      dia_semana: diaSemana,
+      hora_inicio: horaInicio,
+      hora_fin: horaFin,
+      capacidad_maxima: Number(capacidad) || 1,
+      precio_mensualidad: Number(precioMensualidad) || 0,
+      precio_clase_suelta: Number(precioClaseSuelta) || 0,
+      estado: 'activa',
+    });
+
+    let claseCreada = null;
+    let modoLocal = false;
+    const { data, error: errClase } = await insertarConColumnasOpcionales('academia_clases', payloadClase, [
+      'coach_empleado_id',
+      'coach_nombre',
+      'precio_mensualidad',
+      'precio_clase_suelta',
+    ]);
+    if (!errClase && data) {
+      claseCreada = data;
+    } else {
+      console.error('[Academia & Clínicas] No se pudo guardar la clase en Supabase.', errClase);
+      modoLocal = true;
+      claseCreada = { ...payloadClase, id: idLocal('academia_clase'), _local: true };
+      toast({
+        titulo: 'No se pudo guardar la clase en Supabase',
+        detalle: `${errClase?.message || 'Error desconocido.'} — esta clase solo existe en este navegador y NO bloqueará canchas ni aparecerá en el Portal.`,
+        tono: 'error',
+      });
+    }
+
+    let sesionesCreadas = [];
+    if (!modoLocal) {
+      const resultado = await generarSesionesClase({ clase: claseCreada, reservasExistentes: reservas });
+      sesionesCreadas = resultado.data || [];
+      if (resultado.error) {
+        console.warn('[Academia & Clínicas] Clase creada, pero no se pudieron generar sus sesiones/bloqueos.', resultado.error);
+      }
+    }
+
+    setGuardando(false);
+    if (!modoLocal) {
+      toast({
+        titulo: 'Clase creada',
+        detalle: `${claseCreada.nombre} · ${DIA_ACADEMIA_POR_VALOR[diaSemana]?.label} ${formatoHora12(horaInicio)} · ${sesionesCreadas.length} sesión${sesionesCreadas.length === 1 ? '' : 'es'} programada${sesionesCreadas.length === 1 ? '' : 's'}`,
+      });
+    }
+    onCreada(claseCreada, sesionesCreadas);
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Nueva Clase" subtitulo="Academia & Clínicas — parrilla de clases" onClose={onClose} icon={GraduationCap} ancho="max-w-lg">
+      <div className="space-y-4">
+        <Campo label="Nombre de la clase">
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Iniciación Adultos" />
+        </Campo>
+        <div className="grid grid-cols-2 gap-4">
+          <Campo label="Nivel">
+            <select value={nivel} onChange={(e) => setNivel(e.target.value)} className={inputClase}>
+              {NIVELES_ACADEMIA.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Cancha">
+            <select value={canchaId} onChange={(e) => setCanchaId(e.target.value)} className={inputClase}>
+              {canchasActivas.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        </div>
+        <Campo label="Coach" hint={coachesDisponibles.length === 0 ? 'Sin empleados con rol Coach todavía — escribe su nombre.' : undefined}>
+          {coachesDisponibles.length > 0 ? (
+            <select
+              value={coachEmpleadoId}
+              onChange={(e) => setCoachEmpleadoId(e.target.value)}
+              className={inputClase}
+            >
+              {coachesDisponibles.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre}
+                </option>
+              ))}
+              <option value="">Otro (escribir nombre)…</option>
+            </select>
+          ) : null}
+          {(coachesDisponibles.length === 0 || !coachEmpleadoId) && (
+            <input
+              value={coachNombreLibre}
+              onChange={(e) => setCoachNombreLibre(e.target.value)}
+              className={`${inputClase} mt-2`}
+              placeholder="Nombre del coach"
+            />
+          )}
+        </Campo>
+        <div className="grid grid-cols-3 gap-4">
+          <Campo label="Día">
+            <select value={diaSemana} onChange={(e) => setDiaSemana(e.target.value)} className={inputClase}>
+              {DIAS_SEMANA_ACADEMIA.map((d) => (
+                <option key={d.value} value={d.value}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Hora inicio">
+            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+          </Campo>
+          <Campo label="Hora fin">
+            <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
+          </Campo>
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          <Campo label="Capacidad máxima">
+            <input
+              type="number"
+              min="1"
+              value={capacidad}
+              onChange={(e) => setCapacidad(e.target.value)}
+              className={inputClase}
+            />
+          </Campo>
+          <Campo label="Precio mensualidad">
+            <input
+              type="number"
+              min="0"
+              value={precioMensualidad}
+              onChange={(e) => setPrecioMensualidad(e.target.value)}
+              className={inputClase}
+            />
+          </Campo>
+          <Campo label="Precio clase suelta">
+            <input
+              type="number"
+              min="0"
+              value={precioClaseSuelta}
+              onChange={(e) => setPrecioClaseSuelta(e.target.value)}
+              className={inputClase}
+            />
+          </Campo>
+        </div>
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <p className="text-[11px] text-slate-500">
+          Al guardar se generan y bloquean automáticamente las próximas {CANTIDAD_SESIONES_GENERADAS} sesiones ({DIA_ACADEMIA_POR_VALOR[diaSemana]?.label}) en la Parrilla Operativa.
+        </p>
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />} Crear clase
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Tarjeta compacta de una clase en la "Parrilla de Clases" (subvista
+// operativa) — cupos en vivo (`alumnosActivos.length`/`capacidad_maxima`).
+function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle }) {
+  const cupos = alumnosActivos.length;
+  const lleno = cupos >= clase.capacidad_maxima;
+  const dia = DIA_ACADEMIA_POR_VALOR[clase.dia_semana]?.label || clase.dia_semana;
+  return (
+    <button
+      type="button"
+      onClick={onVerDetalle}
+      className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-4 text-left transition hover:border-teal-400/40 hover:bg-slate-800/60"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-black text-slate-100">{clase.nombre}</p>
+          <p className="mt-0.5 text-[11px] text-slate-500">{clase.nivel} · Coach {clase.coach_nombre || '—'}</p>
+        </div>
+        <span
+          className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
+            lleno ? 'bg-rose-400/10 text-rose-400 ring-rose-400/30' : 'bg-teal-400/10 text-teal-400 ring-teal-400/30'
+          }`}
+        >
+          {cupos}/{clase.capacidad_maxima} cupos
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+        <span className="flex items-center gap-1">
+          <CalendarClock size={12} /> {dia} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
+        </span>
+        <span className="flex items-center gap-1">
+          <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
+        </span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+        <div className={`h-full rounded-full ${lleno ? 'bg-rose-400' : 'bg-teal-400'}`} style={{ width: `${Math.min(100, (cupos / Math.max(clase.capacidad_maxima, 1)) * 100)}%` }} />
+      </div>
+    </button>
+  );
+}
+
+// Ficha detallada de una clase (roster de alumnos + pase de lista) — el
+// clic en cualquier `TarjetaClaseAcademia` abre este modal. Dos subvistas:
+// "Alumnos" (alta con `SelectorJugadorRegistrado`+`resolverJugadorId`, dar
+// de baja, alternar estatus de pago) y "Pase de lista" (asistencia por
+// `academia_sesiones`, alimenta directo la Alerta de Riesgo de Deserción y
+// el indicador "Participación en Comunidad" del Score de Fidelidad).
+function ModalDetalleClase({
+  clase,
+  cancha,
+  sesiones,
+  alumnos,
+  asistencias,
+  jugadoresPorId,
+  onClose,
+  onAlumnoAgregado,
+  onAlumnoActualizado,
+  onAsistenciaGuardada,
+  onGenerarMasSesiones,
+}) {
+  const toast = useToast();
+  const directorioJugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+  const alumnosActivos = useMemo(() => alumnos.filter((a) => a.estado !== 'baja'), [alumnos]);
+  const alumnosBaja = useMemo(() => alumnos.filter((a) => a.estado === 'baja'), [alumnos]);
+
+  const [subvista, setSubvista] = useState('alumnos'); // 'alumnos' | 'asistencia'
+
+  /* ---- Alta de alumno ---- */
+  const [mostrarAlta, setMostrarAlta] = useState(false);
+  const [nombreAlumno, setNombreAlumno] = useState('');
+  const [telefonoAlumno, setTelefonoAlumno] = useState('');
+  const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
+  const [tipoPago, setTipoPago] = useState('mensualidad');
+  const [estadoPagoAlta, setEstadoPagoAlta] = useState('pendiente');
+  const [guardandoAlta, setGuardandoAlta] = useState(false);
+
+  const cuposDisponibles = Math.max(0, clase.capacidad_maxima - alumnosActivos.length);
+  const claseLlena = cuposDisponibles === 0;
+
+  async function altaAlumno() {
+    if (!nombreAlumno.trim()) return toast({ titulo: 'Ponle un nombre al alumno.', tono: 'aviso' });
+    if (claseLlena) return toast({ titulo: 'La clase ya está llena.', tono: 'aviso' });
+    setGuardandoAlta(true);
+    const jugadorId = jugadorSeleccionadoId || (await resolverJugadorId(nombreAlumno, { telefono: telefonoAlumno, directorio: directorioJugadores }));
+    const monto = tipoPago === 'mensualidad' ? Number(clase.precio_mensualidad) || 0 : Number(clase.precio_clase_suelta) || 0;
+    const payload = withClubId({
+      clase_id: clase.id,
+      jugador_id: jugadorId,
+      nombre: nombreAlumno.trim(),
+      telefono: telefonoAlumno.trim() || null,
+      tipo_pago: tipoPago,
+      estado_pago: estadoPagoAlta,
+      monto,
+      estado: 'activo',
+    });
+    const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payload, ['jugador_id', 'telefono', 'canal_origen']);
+    setGuardandoAlta(false);
+    if (error || !data) {
+      const alumnoLocal = { ...payload, id: idLocal('academia_alumno'), _local: true };
+      toast({
+        titulo: 'No se pudo guardar en Supabase',
+        detalle: `${error?.message || 'Error desconocido.'} — este alumno solo existe en este navegador.`,
+        tono: 'error',
+      });
+      onAlumnoAgregado(alumnoLocal);
+    } else {
+      toast({ titulo: 'Alumno inscrito', detalle: `${data.nombre} · ${clase.nombre}` });
+      onAlumnoAgregado(data);
+    }
+    setNombreAlumno('');
+    setTelefonoAlumno('');
+    setJugadorSeleccionadoId(null);
+    setMostrarAlta(false);
+  }
+
+  async function darDeBaja(alumno) {
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, { estado: 'baja' }, []);
+    if (error) return toast({ titulo: 'No se pudo dar de baja al alumno', detalle: error.message, tono: 'error' });
+    onAlumnoActualizado({ ...alumno, estado: 'baja' });
+  }
+
+  async function reactivar(alumno) {
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, { estado: 'activo' }, []);
+    if (error) return toast({ titulo: 'No se pudo reactivar al alumno', detalle: error.message, tono: 'error' });
+    onAlumnoActualizado({ ...alumno, estado: 'activo' });
+  }
+
+  async function alternarEstadoPago(alumno) {
+    const nuevoEstado = alumno.estado_pago === 'pagado' ? 'pendiente' : 'pagado';
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, { estado_pago: nuevoEstado }, []);
+    if (error) return toast({ titulo: 'No se pudo actualizar el pago', detalle: error.message, tono: 'error' });
+    onAlumnoActualizado({ ...alumno, estado_pago: nuevoEstado });
+  }
+
+  /* ---- Pase de lista ---- */
+  const sesionesOrdenadas = useMemo(
+    () => [...sesiones].filter((s) => s.estado !== 'cancelada').sort((a, b) => (a.fecha || '').localeCompare(b.fecha || '')),
+    [sesiones]
+  );
+  const hoyISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const [sesionSeleccionadaId, setSesionSeleccionadaId] = useState(null);
+  useEffect(() => {
+    if (sesionSeleccionadaId || sesionesOrdenadas.length === 0) return;
+    const deHoy = sesionesOrdenadas.find((s) => s.fecha === hoyISO);
+    const proxima = sesionesOrdenadas.find((s) => s.fecha >= hoyISO);
+    setSesionSeleccionadaId((deHoy || proxima || sesionesOrdenadas[sesionesOrdenadas.length - 1])?.id || null);
+  }, [sesionesOrdenadas, hoyISO, sesionSeleccionadaId]);
+  const sesionSeleccionada = sesionesOrdenadas.find((s) => s.id === sesionSeleccionadaId) || null;
+
+  const asistenciaPorAlumno = useMemo(() => {
+    const mapa = {};
+    if (!sesionSeleccionada) return mapa;
+    asistencias.filter((a) => a.sesion_id === sesionSeleccionada.id).forEach((a) => {
+      mapa[a.alumno_id] = a;
+    });
+    return mapa;
+  }, [asistencias, sesionSeleccionada]);
+
+  const [guardandoAsistenciaId, setGuardandoAsistenciaId] = useState(null);
+
+  async function marcarAsistencia(alumno, asistio) {
+    if (!sesionSeleccionada) return;
+    setGuardandoAsistenciaId(alumno.id);
+    const registroExistente = asistenciaPorAlumno[alumno.id];
+    const payload = withClubId({
+      clase_id: clase.id,
+      sesion_id: sesionSeleccionada.id,
+      alumno_id: alumno.id,
+      fecha: sesionSeleccionada.fecha,
+      asistio,
+    });
+    let resultado;
+    if (registroExistente && !registroExistente._local) {
+      resultado = await actualizarConColumnasOpcionales('academia_asistencias', registroExistente.id, { asistio }, []);
+      if (!resultado.error) resultado.data = { ...registroExistente, asistio };
+    } else {
+      resultado = await insertarConColumnasOpcionales('academia_asistencias', payload, ['clase_id']);
+    }
+    setGuardandoAsistenciaId(null);
+    if (resultado.error || !resultado.data) {
+      const registroLocal = { ...payload, id: registroExistente?.id || idLocal('academia_asistencia'), _local: true };
+      toast({ titulo: 'No se pudo guardar la asistencia en Supabase', detalle: 'Se guardó solo en este navegador.', tono: 'error' });
+      onAsistenciaGuardada(registroLocal);
+      return;
+    }
+    onAsistenciaGuardada(resultado.data);
+  }
+
+  const [generando, setGenerando] = useState(false);
+  async function generarMas() {
+    setGenerando(true);
+    await onGenerarMasSesiones(clase);
+    setGenerando(false);
+  }
+
+  const sesionesFuturas = sesionesOrdenadas.filter((s) => s.fecha >= hoyISO).length;
+
+  return (
+    <ModalShell
+      titulo={clase.nombre}
+      subtitulo={`${clase.nivel} · Coach ${clase.coach_nombre || '—'}`}
+      onClose={onClose}
+      icon={GraduationCap}
+      ancho="max-w-2xl"
+    >
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-[11px] font-semibold text-slate-400">
+          <span className="flex items-center gap-1">
+            <CalendarClock size={12} /> {DIA_ACADEMIA_POR_VALOR[clase.dia_semana]?.label} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
+          </span>
+          <span className="flex items-center gap-1">
+            <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
+          </span>
+          <span className="flex items-center gap-1">
+            <Users size={12} /> {alumnosActivos.length}/{clase.capacidad_maxima} cupos
+          </span>
+        </div>
+
+        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+          {[
+            { value: 'alumnos', label: 'Alumnos', icon: Users },
+            { value: 'asistencia', label: 'Pase de lista', icon: UserCheck },
+          ].map((v) => {
+            const Icon = v.icon;
+            return (
+              <button
+                key={v.value}
+                onClick={() => setSubvista(v.value)}
+                className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md py-2 text-xs font-bold transition ${
+                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                <Icon size={14} /> {v.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {subvista === 'alumnos' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-bold text-slate-400">
+                {alumnosActivos.length} alumno{alumnosActivos.length === 1 ? '' : 's'} inscrito{alumnosActivos.length === 1 ? '' : 's'}
+              </p>
+              <BotonSecundario onClick={() => setMostrarAlta((v) => !v)} disabled={claseLlena && !mostrarAlta} className="px-2.5 py-1.5 text-xs">
+                <UserPlus size={13} /> Agregar alumno
+              </BotonSecundario>
+            </div>
+
+            {mostrarAlta && (
+              <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <SelectorJugadorRegistrado
+                  jugadores={directorioJugadores}
+                  nombre={nombreAlumno}
+                  onNombreChange={setNombreAlumno}
+                  jugadorSeleccionadoId={jugadorSeleccionadoId}
+                  onSeleccionarJugador={(j) => {
+                    setJugadorSeleccionadoId(j?.id || null);
+                    if (j?.telefono) setTelefonoAlumno(j.telefono);
+                  }}
+                  placeholder="Nombre del alumno"
+                />
+                <input
+                  value={telefonoAlumno}
+                  onChange={(e) => setTelefonoAlumno(e.target.value)}
+                  className={inputClase}
+                  placeholder="Teléfono"
+                  inputMode="tel"
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <select value={tipoPago} onChange={(e) => setTipoPago(e.target.value)} className={inputClase}>
+                    {TIPOS_PAGO_ACADEMIA.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select value={estadoPagoAlta} onChange={(e) => setEstadoPagoAlta(e.target.value)} className={inputClase}>
+                    <option value="pendiente">Pago pendiente</option>
+                    <option value="pagado">Ya pagó</option>
+                  </select>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <BotonSecundario onClick={() => setMostrarAlta(false)}>Cancelar</BotonSecundario>
+                  <BotonPrimario onClick={altaAlumno} disabled={guardandoAlta}>
+                    {guardandoAlta ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Inscribir
+                  </BotonPrimario>
+                </div>
+              </div>
+            )}
+
+            <div className="max-h-80 space-y-1.5 overflow-y-auto">
+              {alumnosActivos.length === 0 && <p className="py-6 text-center text-xs text-slate-500">Todavía no hay alumnos inscritos.</p>}
+              {alumnosActivos.map((a) => (
+                <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-bold text-slate-100">{a.nombre}</p>
+                    <p className="text-[10px] text-slate-500">
+                      {TIPOS_PAGO_ACADEMIA.find((t) => t.value === a.tipo_pago)?.label || a.tipo_pago} · {formatoMoneda(a.monto)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      onClick={() => alternarEstadoPago(a)}
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
+                        a.estado_pago === 'pagado'
+                          ? 'bg-emerald-400/10 text-emerald-400 ring-emerald-400/30'
+                          : 'bg-amber-400/10 text-amber-400 ring-amber-400/30'
+                      }`}
+                    >
+                      {a.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                    </button>
+                    <button
+                      onClick={() => darDeBaja(a)}
+                      title="Dar de baja"
+                      className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-1.5 text-rose-400 transition hover:bg-rose-500/15"
+                    >
+                      <UserX size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {alumnosBaja.length > 0 && (
+                <details className="pt-1">
+                  <summary className="cursor-pointer text-[11px] font-bold text-slate-500">
+                    {alumnosBaja.length} dado{alumnosBaja.length === 1 ? '' : 's'} de baja
+                  </summary>
+                  <div className="mt-1.5 space-y-1.5">
+                    {alumnosBaja.map((a) => (
+                      <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 opacity-60">
+                        <p className="truncate text-xs font-semibold text-slate-400">{a.nombre}</p>
+                        <button onClick={() => reactivar(a)} className="text-[10px] font-bold text-lime-400 hover:underline">
+                          Reactivar
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          </div>
+        )}
+
+        {subvista === 'asistencia' && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <select value={sesionSeleccionadaId || ''} onChange={(e) => setSesionSeleccionadaId(e.target.value)} className={`${inputClase} w-auto`}>
+                {sesionesOrdenadas.length === 0 && <option value="">Sin sesiones programadas</option>}
+                {sesionesOrdenadas.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {formatoFechaLarga(s.fecha)}
+                    {s.fecha === hoyISO ? ' · Hoy' : ''}
+                  </option>
+                ))}
+              </select>
+              <BotonSecundario onClick={generarMas} disabled={generando} className="px-2.5 py-1.5 text-xs">
+                {generando ? <Loader2 size={13} className="animate-spin" /> : <CalendarPlus size={13} />} Generar más sesiones
+              </BotonSecundario>
+            </div>
+            {sesionesFuturas <= 2 && sesionesOrdenadas.length > 0 && (
+              <p className="rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-[11px] font-semibold text-amber-300">
+                Quedan {sesionesFuturas} sesión{sesionesFuturas === 1 ? '' : 'es'} programada{sesionesFuturas === 1 ? '' : 's'} — genera más para no dejar huecos en la Parrilla.
+              </p>
+            )}
+            <div className="max-h-80 space-y-1.5 overflow-y-auto">
+              {alumnosActivos.length === 0 && <p className="py-6 text-center text-xs text-slate-500">Sin alumnos inscritos todavía.</p>}
+              {sesionSeleccionada &&
+                alumnosActivos.map((a) => {
+                  const registro = asistenciaPorAlumno[a.id];
+                  const asistio = registro?.asistio === true;
+                  const noAsistio = registro?.asistio === false;
+                  return (
+                    <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
+                      <p className="truncate text-xs font-bold text-slate-100">{a.nombre}</p>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          onClick={() => marcarAsistencia(a, true)}
+                          disabled={guardandoAsistenciaId === a.id}
+                          className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold transition ${
+                            asistio ? 'bg-emerald-400 text-emerald-950' : 'border border-slate-700 text-slate-400 hover:text-emerald-400'
+                          }`}
+                        >
+                          <UserCheck size={12} /> Presente
+                        </button>
+                        <button
+                          onClick={() => marcarAsistencia(a, false)}
+                          disabled={guardandoAsistenciaId === a.id}
+                          className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold transition ${
+                            noAsistio ? 'bg-rose-500 text-white' : 'border border-slate-700 text-slate-400 hover:text-rose-400'
+                          }`}
+                        >
+                          <UserX size={12} /> Ausente
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              {!sesionSeleccionada && <p className="py-6 text-center text-xs text-slate-500">Genera sesiones para poder pasar lista.</p>}
+            </div>
+          </div>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
+// Mapa de Calor de Academia & Clínicas — MISMA rejilla que `HeatmapOcupacion`
+// (Analytics BI: `ORDEN_SEMANA_BI`/`ETIQUETA_DIA_SEMANA`/`HEATMAP_HORAS`/
+// `colorCeldaOcupacion`), pero cada celda es el % de SATURACIÓN DE CUPOS
+// (alumnos activos / capacidad_maxima) de la(s) clase(s) que arrancan en ese
+// día+hora, no % de ocupación de cancha — por eso es su propio componente
+// en vez de reutilizar `HeatmapOcupacion` tal cual (título/leyenda propios).
+function HeatmapAcademia({ clases, alumnosPorClase }) {
+  const { filas, celdas } = useMemo(() => {
+    const filasLocal = ORDEN_SEMANA_BI;
+    const celdasLocal = filasLocal.map((dia) =>
+      HEATMAP_HORAS.map((hora) => {
+        const clasesDelSlot = clases.filter((c) => {
+          const meta = DIA_ACADEMIA_POR_VALOR[c.dia_semana];
+          if (!meta || meta.indice !== dia) return false;
+          const inicioMin = parseHoraAMinutos(c.hora_inicio);
+          return inicioMin !== null && Math.floor(inicioMin / 60) === hora;
+        });
+        if (clasesDelSlot.length === 0) return 0;
+        const promedio =
+          clasesDelSlot.reduce((acc, c) => {
+            const inscritos = (alumnosPorClase[c.id] || []).length;
+            return acc + Math.min(100, Math.round((inscritos / Math.max(c.capacidad_maxima, 1)) * 100));
+          }, 0) / clasesDelSlot.length;
+        return Math.round(promedio);
+      })
+    );
+    return { filas: filasLocal, celdas: celdasLocal };
+  }, [clases, alumnosPorClase]);
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <Flame size={16} className="text-teal-400" /> Mapa de Calor — Saturación de Cupos por Día/Hora
+        </h3>
+        <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-400">
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/70" /> Con cupo
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-400/80" /> Casi lleno
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-rose-500/85" /> Saturado
+          </span>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[820px]">
+          <div className="grid" style={{ gridTemplateColumns: `56px repeat(${HEATMAP_HORAS.length}, minmax(0, 1fr))` }}>
+            <div />
+            {HEATMAP_HORAS.map((h) => (
+              <div key={h} className="pb-1.5 text-center text-[10px] font-bold text-slate-500">
+                {pad2(h)}h
+              </div>
+            ))}
+            {filas.map((dia, filaIdx) => (
+              <React.Fragment key={dia}>
+                <div className="flex items-center pr-2 text-[11px] font-bold text-slate-400">{ETIQUETA_DIA_SEMANA[dia]}</div>
+                {celdas[filaIdx].map((pct, colIdx) => (
+                  <div key={colIdx} className="p-0.5">
+                    <div
+                      title={`${ETIQUETA_DIA_SEMANA[dia]} ${pad2(HEATMAP_HORAS[colIdx])}:00 · ${pct}% de cupo ocupado`}
+                      className={`flex h-8 items-center justify-center rounded-md text-[10px] font-bold transition ${colorCeldaOcupacion(pct)}`}
+                    >
+                      {pct > 0 ? `${pct}%` : ''}
+                    </div>
+                  </div>
+                ))}
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Analytics Operativos de Academia & Clínicas: los 4 puntos pedidos en el
+// requerimiento — Total de Alumnos Activos por nivel, Alertas de Riesgo de
+// Deserción (2+ inasistencias CONSECUTIVAS, ver `UMBRAL_INASISTENCIAS_RIESGO`),
+// el Mapa de Calor de arriba, y Asistencia/Retención por Coach.
+function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrAJugador }) {
+  const alumnosActivos = useMemo(() => alumnos.filter((a) => a.estado !== 'baja'), [alumnos]);
+  const clasesPorId = useMemo(() => {
+    const mapa = {};
+    clases.forEach((c) => (mapa[c.id] = c));
+    return mapa;
+  }, [clases]);
+
+  const alumnosPorClase = useMemo(() => {
+    const mapa = {};
+    alumnosActivos.forEach((a) => {
+      (mapa[a.clase_id] = mapa[a.clase_id] || []).push(a);
+    });
+    return mapa;
+  }, [alumnosActivos]);
+
+  const totalesPorNivel = useMemo(() => {
+    const mapa = Object.fromEntries(NIVELES_ACADEMIA.map((n) => [n, 0]));
+    alumnosActivos.forEach((a) => {
+      const nivel = clasesPorId[a.clase_id]?.nivel;
+      if (nivel && mapa[nivel] != null) mapa[nivel] += 1;
+    });
+    return mapa;
+  }, [alumnosActivos, clasesPorId]);
+
+  // Riesgo de Deserción: para cada alumno activo, ordena SU historial de
+  // asistencia (más reciente primero) y cuenta la racha de "ausente" desde
+  // el registro más reciente hacia atrás — se detiene en el primer
+  // "presente" (o al acabarse el historial). 2+ de racha = en riesgo.
+  const alumnosEnRiesgo = useMemo(() => {
+    const asistenciasPorAlumno = {};
+    asistencias.forEach((a) => {
+      (asistenciasPorAlumno[a.alumno_id] = asistenciasPorAlumno[a.alumno_id] || []).push(a);
+    });
+    return alumnosActivos
+      .map((alumno) => {
+        const historial = (asistenciasPorAlumno[alumno.id] || []).slice().sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+        let racha = 0;
+        for (const registro of historial) {
+          if (registro.asistio === false) racha += 1;
+          else break;
+        }
+        return { alumno, racha, clase: clasesPorId[alumno.clase_id] };
+      })
+      .filter((r) => r.racha >= UMBRAL_INASISTENCIAS_RIESGO)
+      .sort((a, b) => b.racha - a.racha);
+  }, [alumnosActivos, asistencias, clasesPorId]);
+
+  // Asistencia y Retención por Coach: agrupa TODAS las clases por
+  // `coach_nombre` — alumnos activos que da y % de asistencia real
+  // (asistencias con `asistio: true` / total de asistencias registradas)
+  // entre todas sus clases.
+  const retencionPorCoach = useMemo(() => {
+    const mapa = {};
+    clases.forEach((c) => {
+      const nombre = c.coach_nombre || 'Sin asignar';
+      if (!mapa[nombre]) mapa[nombre] = { nombre, clases: 0, alumnosActivos: 0, asistenciasTotales: 0, asistenciasPresentes: 0 };
+      mapa[nombre].clases += 1;
+      mapa[nombre].alumnosActivos += (alumnosPorClase[c.id] || []).length;
+    });
+    asistencias.forEach((a) => {
+      const clase = clasesPorId[a.clase_id];
+      const nombre = clase?.coach_nombre || 'Sin asignar';
+      if (!mapa[nombre]) return;
+      mapa[nombre].asistenciasTotales += 1;
+      if (a.asistio === true) mapa[nombre].asistenciasPresentes += 1;
+    });
+    return Object.values(mapa).sort((a, b) => b.alumnosActivos - a.alumnosActivos);
+  }, [clases, alumnosPorClase, asistencias, clasesPorId]);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {NIVELES_ACADEMIA.map((nivel) => (
+          <div key={nivel} className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{nivel}</p>
+            <p className="mt-1 text-2xl font-black text-slate-100">{totalesPorNivel[nivel]}</p>
+            <p className="text-[11px] text-slate-500">alumno{totalesPorNivel[nivel] === 1 ? '' : 's'} activo{totalesPorNivel[nivel] === 1 ? '' : 's'}</p>
+          </div>
+        ))}
+      </div>
+
+      <HeatmapAcademia clases={clases.filter((c) => c.estado !== 'cancelada')} alumnosPorClase={alumnosPorClase} />
+
+      <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+        <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <UserX size={16} className="text-rose-400" /> Alertas de Riesgo de Deserción
+        </h3>
+        {alumnosEnRiesgo.length === 0 ? (
+          <p className="py-4 text-center text-xs text-slate-500">Nadie tiene 2+ inasistencias consecutivas por ahora.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {alumnosEnRiesgo.map(({ alumno, racha, clase }) => {
+              const jugadorId = alumno.jugador_id;
+              return (
+                <button
+                  key={alumno.id}
+                  type="button"
+                  onClick={() => jugadorId && onIrAJugador?.(jugadorId)}
+                  disabled={!jugadorId}
+                  className="flex w-full items-center justify-between gap-2 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-left transition hover:bg-rose-500/10 disabled:cursor-default"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-bold text-slate-100">{alumno.nombre}</p>
+                    <p className="text-[10px] text-slate-500">{clase?.nombre || 'Clase'}</p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                    {racha} inasistencias seguidas
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+        <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <Award size={16} className="text-teal-400" /> Asistencia y Retención por Coach
+        </h3>
+        {retencionPorCoach.length === 0 ? (
+          <p className="py-4 text-center text-xs text-slate-500">Todavía no hay clases con Coach asignado.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                  <th className="pb-2 pr-3">Coach</th>
+                  <th className="pb-2 pr-3">Clases</th>
+                  <th className="pb-2 pr-3">Alumnos activos</th>
+                  <th className="pb-2">% Asistencia</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {retencionPorCoach.map((c) => {
+                  const pctAsistencia = c.asistenciasTotales > 0 ? Math.round((c.asistenciasPresentes / c.asistenciasTotales) * 100) : null;
+                  return (
+                    <tr key={c.nombre}>
+                      <td className="py-2 pr-3 font-bold text-slate-100">{c.nombre}</td>
+                      <td className="py-2 pr-3 text-slate-300">{c.clases}</td>
+                      <td className="py-2 pr-3 text-slate-300">{c.alumnosActivos}</td>
+                      <td className="py-2 text-slate-300">{pctAsistencia === null ? 'Sin registros' : `${pctAsistencia}%`}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * MÓDULO: ACADEMIA & CLÍNICAS — componente raíz
+ * ----------------------------------------------------------------------------
+ * Dos subvistas: "Parrilla de Clases" (Vista Operativa y Control — Recepción/
+ * Caja/Coaches: tarjetas de clase + `ModalDetalleClase`) y "Analytics"
+ * (`AnalyticsAcademia`, arriba). `academiaClases`/`academiaAlumnos`/
+ * `academiaAsistencias` llegan levantados desde `AppInterno` (otros módulos
+ * los necesitan — ver comentario en `AppInterno`); `academiaSesiones` es
+ * la ÚNICA pieza de estado propia de este módulo (nadie más la lee).
+ * ==========================================================================*/
+function ModuloAcademiaClinicas({
+  canchas,
+  reservas,
+  empleados,
+  jugadoresPorId,
+  academiaClases,
+  onAcademiaClaseCreada,
+  academiaAlumnos,
+  onAcademiaAlumnoAgregado,
+  onAcademiaAlumnoActualizado,
+  academiaAsistencias,
+  onAcademiaAsistenciaGuardada,
+  onIrAJugador,
+}) {
+  const toast = useToast();
+  const [subvista, setSubvista] = useState('operativa');
+  const [modalNuevaClase, setModalNuevaClase] = useState(false);
+  const [claseSeleccionadaId, setClaseSeleccionadaId] = useState(null);
+
+  const canchasPorId = useMemo(() => {
+    const mapa = {};
+    (canchas || []).forEach((c) => (mapa[c.id] = c));
+    return mapa;
+  }, [canchas]);
+
+  const clasesActivas = useMemo(() => (academiaClases || []).filter((c) => c.estado !== 'cancelada'), [academiaClases]);
+
+  const alumnosActivosPorClase = useMemo(() => {
+    const mapa = {};
+    (academiaAlumnos || [])
+      .filter((a) => a.estado !== 'baja')
+      .forEach((a) => {
+        (mapa[a.clase_id] = mapa[a.clase_id] || []).push(a);
+      });
+    return mapa;
+  }, [academiaAlumnos]);
+
+  /* ---- `academia_sesiones`: única pieza de estado propia de este módulo ---- */
+  const [academiaSesiones, setAcademiaSesiones] = useState([]);
+  const [loadingSesiones, setLoadingSesiones] = useState(true);
+
+  const cargarAcademiaSesiones = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingSesiones(true);
+    const { data, error } = await conClubId(supabase.from('academia_sesiones').select('*'));
+    if (error) {
+      setAcademiaSesiones(fusionarConRegistrosLocales([], LS_KEY_ACADEMIA_SESIONES_LOCAL));
+    } else {
+      setAcademiaSesiones(fusionarConRegistrosLocales(data || [], LS_KEY_ACADEMIA_SESIONES_LOCAL));
+    }
+    setLoadingSesiones(false);
+  }, []);
+
+  useEffect(() => {
+    cargarAcademiaSesiones();
+  }, [cargarAcademiaSesiones]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('academia-sesiones')
+      .on('postgres_changes', canalClubFiltro('academia_sesiones'), () => cargarAcademiaSesiones({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarAcademiaSesiones]);
+
+  const claseSeleccionada = clasesActivas.find((c) => c.id === claseSeleccionadaId) || null;
+  const sesionesDeClaseSeleccionada = useMemo(
+    () => (claseSeleccionada ? academiaSesiones.filter((s) => s.clase_id === claseSeleccionada.id) : []),
+    [academiaSesiones, claseSeleccionada]
+  );
+  const alumnosDeClaseSeleccionada = useMemo(
+    () => (claseSeleccionada ? (academiaAlumnos || []).filter((a) => a.clase_id === claseSeleccionada.id) : []),
+    [academiaAlumnos, claseSeleccionada]
+  );
+  const asistenciasDeClaseSeleccionada = useMemo(
+    () => (claseSeleccionada ? academiaAsistencias.filter((a) => a.clase_id === claseSeleccionada.id) : []),
+    [academiaAsistencias, claseSeleccionada]
+  );
+
+  async function generarMasSesiones(clase) {
+    const resultado = await generarSesionesClase({ clase, reservasExistentes: reservas });
+    if (resultado.data?.length > 0) {
+      setAcademiaSesiones((prev) => [...prev, ...resultado.data]);
+      toast({ titulo: 'Sesiones generadas', detalle: `${resultado.data.length} sesión${resultado.data.length === 1 ? '' : 'es'} nueva${resultado.data.length === 1 ? '' : 's'} agregada${resultado.data.length === 1 ? '' : 's'} a la Parrilla.` });
+    } else {
+      toast({ titulo: 'No se generaron sesiones nuevas', detalle: 'Puede que ya estén todas las próximas fechas cubiertas, o haya un choque de horario en la cancha.', tono: 'aviso' });
+    }
+  }
+
+  const subvistas = [
+    { value: 'operativa', label: 'Parrilla de Clases', icon: GraduationCap },
+    { value: 'analytics', label: 'Analytics', icon: BarChart3 },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+          {subvistas.map((v) => {
+            const Icon = v.icon;
+            return (
+              <button
+                key={v.value}
+                onClick={() => setSubvista(v.value)}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                <Icon size={14} /> {v.label}
+              </button>
+            );
+          })}
+        </div>
+        {subvista === 'operativa' && (
+          <BotonPrimario onClick={() => setModalNuevaClase(true)} className="px-3 py-1.5 text-xs">
+            <Plus size={14} /> Nueva Clase
+          </BotonPrimario>
+        )}
+      </div>
+
+      {subvista === 'operativa' && (
+        <div>
+          {loadingSesiones && clasesActivas.length === 0 ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="h-32 animate-pulse rounded-2xl bg-slate-900" />
+              ))}
+            </div>
+          ) : clasesActivas.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center text-slate-500">
+              <GraduationCap size={26} />
+              <p className="text-sm font-semibold">Todavía no hay clases creadas.</p>
+              <p className="text-xs">"Nueva Clase" arma su parrilla y bloquea la cancha automáticamente.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {clasesActivas.map((c) => (
+                <TarjetaClaseAcademia
+                  key={c.id}
+                  clase={c}
+                  cancha={canchasPorId[c.cancha_id]}
+                  alumnosActivos={alumnosActivosPorClase[c.id] || []}
+                  onVerDetalle={() => setClaseSeleccionadaId(c.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {subvista === 'analytics' && (
+        <AnalyticsAcademia
+          clases={academiaClases || []}
+          alumnos={academiaAlumnos || []}
+          asistencias={academiaAsistencias || []}
+          jugadoresPorId={jugadoresPorId}
+          onIrAJugador={onIrAJugador}
+        />
+      )}
+
+      {modalNuevaClase && (
+        <ModalNuevaClase
+          canchas={canchas}
+          reservas={reservas}
+          empleados={empleados}
+          onClose={() => setModalNuevaClase(false)}
+          onCreada={(clase, sesiones) => {
+            onAcademiaClaseCreada(clase);
+            if (sesiones?.length > 0) setAcademiaSesiones((prev) => [...prev, ...sesiones]);
+          }}
+        />
+      )}
+
+      {claseSeleccionada && (
+        <ModalDetalleClase
+          clase={claseSeleccionada}
+          cancha={canchasPorId[claseSeleccionada.cancha_id]}
+          sesiones={sesionesDeClaseSeleccionada}
+          alumnos={alumnosDeClaseSeleccionada}
+          asistencias={asistenciasDeClaseSeleccionada}
+          jugadoresPorId={jugadoresPorId}
+          onClose={() => setClaseSeleccionadaId(null)}
+          onAlumnoAgregado={onAcademiaAlumnoAgregado}
+          onAlumnoActualizado={onAcademiaAlumnoActualizado}
+          onAsistenciaGuardada={onAcademiaAsistenciaGuardada}
+          onGenerarMasSesiones={generarMasSesiones}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
  * DIRECTORIO & CRM DE JUGADORES — Gasto Total Histórico + Nivel de
  * Fidelidad (Score, internamente sigue como `chs`/`calcularCHS`) + Motor
  * Anti-Churn. Ver el comentario "CRM DE JUGADORES" (junto a
@@ -18353,6 +19786,8 @@ function DirectorioJugadoresCRM({
   bloqueosMaestroTorneoIds,
   jugadorAAbrirId,
   onJugadorAAbrirConsumido,
+  academiaAlumnos,
+  academiaAsistencias,
 }) {
   /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
    * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
@@ -18537,6 +19972,17 @@ function DirectorioJugadoresCRM({
         const gastoTorneos = participacionesPagadas.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
 
         const gastoTorneosRetas = gastoRetas + gastoTorneos;
+
+        /* --- Academia & Clínicas: asistencias a clase en los últimos 6 meses
+         * (indicador CHS "Participación en Comunidad") — se cruza por
+         * `jugador_id` en `academia_alumnos` (mismo `resolverJugadorId` que
+         * usa el resto del CRM) y de ahí a `academia_asistencias.asistio`. --- */
+        const alumnoIdsJ = new Set((academiaAlumnos || []).filter((a) => a.jugador_id === j.id).map((a) => a.id));
+        const asistenciasClaseUltimos6Meses = (academiaAsistencias || []).filter((a) => {
+          if (!alumnoIdsJ.has(a.alumno_id) || a.asistio !== true) return false;
+          const f = a.fecha ? new Date(`${a.fecha}T12:00:00`) : null;
+          return f && f >= hace180;
+        }).length;
 
         // Participación pagada en los últimos 6 meses (indicador CHS #4).
         const eventosTorneoRetaUltimos6Meses =
@@ -18749,6 +20195,7 @@ function DirectorioJugadoresCRM({
           visitasPropias: propiasActivas.length,
           eventosUltimos90Dias,
           eventosTorneoRetaUltimos6Meses,
+          asistenciasClaseUltimos6Meses,
           totalEventosConfiabilidad,
           totalCancelaciones,
           fechaUltimoPartido,
@@ -18780,6 +20227,8 @@ function DirectorioJugadoresCRM({
     torneos,
     participantesTorneo,
     partidosTorneo,
+    academiaAlumnos,
+    academiaAsistencias,
   ]);
 
   /* ---- Búsqueda, filtros y resumen ejecutivo ---- */
@@ -19386,6 +20835,8 @@ function ModuloJugadores({
   bloqueosMaestroTorneoIds,
   jugadorAAbrirId,
   onJugadorAAbrirConsumido,
+  academiaAlumnos,
+  academiaAsistencias,
 }) {
   const [subvista, setSubvista] = useState('crm');
   const subvistas = [
@@ -19434,6 +20885,8 @@ function ModuloJugadores({
           bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
           jugadorAAbrirId={jugadorAAbrirId}
           onJugadorAAbrirConsumido={onJugadorAAbrirConsumido}
+          academiaAlumnos={academiaAlumnos}
+          academiaAsistencias={academiaAsistencias}
         />
       )}
 
@@ -20207,6 +21660,12 @@ function PortalPublicoJugadores({ clubSlug }) {
   const [participantes, setParticipantes] = useState([]);
   const [productos, setProductos] = useState([]);
   const [cargandoDatos, setCargandoDatos] = useState(true);
+  // Catálogo de Clases/Clínicas (Academia & Clínicas) — solo lo que
+  // necesita el Portal: las clases activas y sus alumnos (para cupos en
+  // tiempo real). `academia_sesiones`/`academia_asistencias` son 100%
+  // operativas del club, el Portal nunca las toca.
+  const [academiaClasesPortal, setAcademiaClasesPortal] = useState([]);
+  const [academiaAlumnosPortal, setAcademiaAlumnosPortal] = useState([]);
 
   // Mismo patrón que el `upsertProducto` interno de App() (ERP & Smart
   // POS): fusiona los campos que llegan (p. ej. solo `{ id, stock }` tras un
@@ -20271,7 +21730,17 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   const cargarDatosPortal = useCallback(async () => {
     setCargandoDatos(true);
-    const [resCanchas, resReservas, resTorneos, resRetas, resInscripciones, resParticipantes, resProductos] = await Promise.all([
+    const [
+      resCanchas,
+      resReservas,
+      resTorneos,
+      resRetas,
+      resInscripciones,
+      resParticipantes,
+      resProductos,
+      resAcademiaClases,
+      resAcademiaAlumnos,
+    ] = await Promise.all([
       conClubId(supabase.from('canchas').select('*')).order('nombre', { ascending: true }),
       conClubId(supabase.from('reservas').select('*')),
       conClubId(supabase.from('torneos').select('*')).order('fecha_inicio', { ascending: true }),
@@ -20279,6 +21748,8 @@ function PortalPublicoJugadores({ clubSlug }) {
       conClubId(supabase.from('reta_inscripciones').select('*')),
       conClubId(supabase.from('torneo_participantes').select('*')),
       conClubId(supabase.from('productos').select('*')),
+      conClubId(supabase.from('academia_clases').select('*')),
+      conClubId(supabase.from('academia_alumnos').select('*')),
     ]);
     setCanchas(resCanchas.data || []);
     setReservas(resReservas.data || []);
@@ -20291,6 +21762,11 @@ function PortalPublicoJugadores({ clubSlug }) {
     // consultar. `variantesPorProductoPortal` (abajo) deriva de esta misma
     // lista con `variantesDeProductoJSONB`.
     setProductos(resProductos.data || []);
+    // Si `academia_clases`/`academia_alumnos` todavía no existen en este
+    // proyecto de Supabase, `data` llega `null` — el catálogo simplemente
+    // se ve vacío en vez de tronar el resto del Portal.
+    setAcademiaClasesPortal(resAcademiaClases.data || []);
+    setAcademiaAlumnosPortal(resAcademiaAlumnos.data || []);
     setCargandoDatos(false);
   }, []);
 
@@ -20313,6 +21789,8 @@ function PortalPublicoJugadores({ clubSlug }) {
       .on('postgres_changes', canalClubFiltro('reta_inscripciones'), () => cargarDatosPortal())
       .on('postgres_changes', canalClubFiltro('torneo_participantes'), () => cargarDatosPortal())
       .on('postgres_changes', canalClubFiltro('productos'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('academia_clases'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('academia_alumnos'), () => cargarDatosPortal())
       .subscribe();
     return () => supabase.removeChannel(canal);
   }, [club, cargarDatosPortal]);
@@ -20527,6 +22005,72 @@ function PortalPublicoJugadores({ clubSlug }) {
         detalle: esErrorPermisoRLS(err)
           ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
           : 'Intenta de nuevo o pide ayuda en recepción.',
+        tono: 'error',
+      });
+    }
+  }
+
+  // Inscripción — Academia & Clínicas: mismo criterio que `inscribirseAReta`
+  // (identidad por teléfono, `canal_origen: ORIGEN_VENTA_WEB` para que el
+  // Centro de Alertas del club se entere al instante), pero validando cupo
+  // disponible ANTES de insertar — a diferencia de una Reta (que no tiene
+  // límite estricto de lugares en este proyecto), una clase SÍ tiene
+  // `capacidad_maxima` y el catálogo del Portal puede llegar desactualizado
+  // por una fracción de segundo si dos jugadores se inscriben casi a la vez.
+  async function inscribirseAClase(clase, tipoPago, metodo) {
+    if (!jugador) return setModalIdentificacion(true);
+    const inscritosActivos = academiaAlumnosPortal.filter((a) => a.clase_id === clase.id && a.estado !== 'baja').length;
+    if (inscritosActivos >= clase.capacidad_maxima) {
+      mostrarToast({ titulo: 'Esa clase ya no tiene cupo', detalle: 'Elige otro horario o pregunta en recepción por lista de espera.', tono: 'aviso' });
+      return;
+    }
+    const monto = tipoPago === 'mensualidad' ? Number(clase.precio_mensualidad) || 0 : Number(clase.precio_clase_suelta) || 0;
+    const esPagoTarjeta = metodo === 'tarjeta';
+    const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
+    const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
+    const pagado = esPagoTarjeta || (montoRestante <= 0 && monto > 0);
+    const payloadAlumno = withClubId({
+      clase_id: clase.id,
+      jugador_id: jugador.id,
+      nombre: jugador.nombre,
+      telefono: jugador.telefono,
+      tipo_pago: tipoPago,
+      estado_pago: pagado ? 'pagado' : 'pendiente',
+      monto,
+      estado: 'activo',
+      canal_origen: ORIGEN_VENTA_WEB,
+    });
+    try {
+      const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payloadAlumno, [
+        'jugador_id',
+        'telefono',
+        'estado_pago',
+        'canal_origen',
+      ]);
+      if (error) throw error;
+      if (montoWallet > 0) {
+        await aplicarCargoWallet({
+          jugadorId: jugador.id,
+          monto: montoWallet,
+          motivo: `Inscripción a Clase · ${clase.nombre}`,
+          referenciaTipo: 'academia_alumno',
+          referenciaId: data.id,
+        });
+        cargarWallet(jugador.id);
+      }
+      setAcademiaAlumnosPortal((prev) => [...prev, data]);
+      mostrarToast({
+        titulo: '¡Inscripción a la clase confirmada!',
+        detalle:
+          montoRestante > 0
+            ? `${clase.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de tu primera clase.`
+            : `${clase.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
+      });
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (inscripción a Clase de Academia):', err);
+      mostrarToast({
+        titulo: 'No se pudo completar tu inscripción',
+        detalle: 'Intenta de nuevo o pide ayuda en recepción.',
         tono: 'error',
       });
     }
@@ -20890,6 +22434,20 @@ function PortalPublicoJugadores({ clubSlug }) {
     } else {
       setFlujoPago({ tipo: 'torneo', evento, categoria: null, monto: Number(evento.precio) || 0 });
     }
+  }
+
+  // Igual criterio que `alIntentarInscribir`, pero para Academia & Clínicas
+  // — el jugador ya eligió `tipoPago` (mensualidad/clase suelta) en la
+  // propia tarjeta de la clase, así que ese dato viaja junto con el evento
+  // hasta el paso de identificación/pago.
+  function alIntentarInscribirClase(clase, tipoPago) {
+    if (!jugador) {
+      setEventoParaInscribir({ tipo: 'academia', evento: clase, tipoPago });
+      setModalIdentificacion(true);
+      return;
+    }
+    const monto = tipoPago === 'mensualidad' ? Number(clase.precio_mensualidad) || 0 : Number(clase.precio_clase_suelta) || 0;
+    setFlujoPago({ tipo: 'academia', evento: clase, tipoPago, categoria: null, monto });
   }
 
   // Carrito de la Tienda (Pro-Shop) — mismo criterio de límite de stock que
@@ -21386,6 +22944,7 @@ function PortalPublicoJugadores({ clubSlug }) {
               { value: 'tienda', label: 'Tienda', icon: ShoppingBag },
               { value: 'torneos', label: 'Torneos', icon: Trophy },
               { value: 'retas', label: 'Retas', icon: Swords },
+              { value: 'academia', label: 'Clases', icon: GraduationCap },
               { value: 'wallet', label: 'Wallet', icon: Wallet },
             ].map((tab) => {
               const Icon = tab.icon;
@@ -21618,6 +23177,62 @@ function PortalPublicoJugadores({ clubSlug }) {
                 </div>
               )}
 
+              {vista === 'academia' && (
+                <div className="space-y-3">
+                  {academiaClasesPortal.filter((c) => c.estado !== 'cancelada').length === 0 && (
+                    <p className="py-10 text-center text-sm text-slate-500">Este club todavía no publicó clases/clínicas — vuelve pronto.</p>
+                  )}
+                  {academiaClasesPortal
+                    .filter((c) => c.estado !== 'cancelada')
+                    .map((c) => {
+                      const inscritosActivos = academiaAlumnosPortal.filter((a) => a.clase_id === c.id && a.estado !== 'baja').length;
+                      const cupos = Math.max(0, c.capacidad_maxima - inscritosActivos);
+                      const llena = cupos === 0;
+                      const cancha = canchasPorId[c.cancha_id];
+                      const dia = DIA_ACADEMIA_POR_VALOR[c.dia_semana]?.label || c.dia_semana;
+                      return (
+                        <div key={c.id} className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 backdrop-blur-sm">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="font-black text-slate-100">{c.nombre}</p>
+                              <p className="mt-0.5 text-xs text-slate-400">
+                                {c.nivel} · Coach {c.coach_nombre || '—'}
+                              </p>
+                              <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
+                                <CalendarClock size={12} /> {dia} · {formatoHora12(c.hora_inicio)}–{formatoHora12(c.hora_fin)}
+                                {cancha ? ` · ${cancha.nombre}` : ''}
+                              </p>
+                            </div>
+                            <span
+                              className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold ${
+                                llena ? 'bg-rose-400/10 text-rose-400 ring-1 ring-rose-400/30' : 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+                              }`}
+                            >
+                              {llena ? 'Sin cupo' : `${cupos} cupo${cupos === 1 ? '' : 's'}`}
+                            </span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <BotonPrimario
+                              onClick={() => alIntentarInscribirClase(c, 'mensualidad')}
+                              disabled={llena || !(Number(c.precio_mensualidad) > 0)}
+                              className="px-3 py-1.5 text-xs"
+                            >
+                              <UserPlus size={13} /> Mensualidad · {formatoMoneda(c.precio_mensualidad)}
+                            </BotonPrimario>
+                            <BotonSecundario
+                              onClick={() => alIntentarInscribirClase(c, 'clase_suelta')}
+                              disabled={llena || !(Number(c.precio_clase_suelta) > 0)}
+                              className="px-3 py-1.5 text-xs"
+                            >
+                              Clase suelta · {formatoMoneda(c.precio_clase_suelta)}
+                            </BotonSecundario>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+
               {vista === 'wallet' && (
                 <div>
                   {!jugador ? (
@@ -21710,6 +23325,11 @@ function PortalPublicoJugadores({ clubSlug }) {
                     return;
                   }
                   setFlujoPago({ tipo: 'torneo', evento: t, categoria: null, monto: Number(t.precio) || 0 });
+                } else if (eventoParaInscribir.tipo === 'academia') {
+                  const c = eventoParaInscribir.evento;
+                  const tipoPago = eventoParaInscribir.tipoPago;
+                  const monto = tipoPago === 'mensualidad' ? Number(c.precio_mensualidad) || 0 : Number(c.precio_clase_suelta) || 0;
+                  setFlujoPago({ tipo: 'academia', evento: c, tipoPago, categoria: null, monto });
                 }
               }
               setModalIdentificacion(false);
@@ -21746,12 +23366,15 @@ function PortalPublicoJugadores({ clubSlug }) {
                     .join(' · ')
                 : flujoPago.tipo === 'torneo-union'
                 ? `${flujoPago.evento.nombre} · Unirme a ${flujoPago.participanteExistente?.nombre || 'pareja'}`
+                : flujoPago.tipo === 'academia'
+                ? `${flujoPago.evento.nombre} · ${flujoPago.tipoPago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta'}`
                 : flujoPago.evento.nombre
             }
             onClose={() => setFlujoPago(null)}
             onConfirmar={async (metodo) => {
               if (flujoPago.tipo === 'reta') await inscribirseAReta(flujoPago.evento, metodo);
               else if (flujoPago.tipo === 'torneo-union') await confirmarUnionTorneo(flujoPago.participanteExistente, metodo, flujoPago.monto);
+              else if (flujoPago.tipo === 'academia') await inscribirseAClase(flujoPago.evento, flujoPago.tipoPago, metodo);
               else await inscribirseATorneo(flujoPago.evento, flujoPago.categoria, metodo, flujoPago.pareja || null);
               setFlujoPago(null);
             }}
@@ -23030,6 +24653,17 @@ function AppInterno() {
   const [sidebarAbierto, setSidebarAbierto] = useState(false);
   const [moduloActivo, setModuloActivo] = useState('parrilla'); // 'parrilla' | 'pos' | 'erp' | 'analytics' | 'torneos'
 
+  // Navegación Reordenable (Sidebar + pestañas de TopHeader comparten el
+  // mismo `navOrdenIds` — ver `ordenarNavModulos`/`LS_KEY_NAV_ORDEN`): un
+  // solo arreglo de ids vive aquí, en `AppInterno`, y se le pasa YA
+  // aplicado (`navModulosOrdenados`) a ambos, para que nunca queden
+  // desincronizados entre sí.
+  const [navOrdenIds, setNavOrdenIds] = useState(() => leerNavOrdenLocal());
+  const reordenarNavModulos = useCallback((nuevosIds) => {
+    setNavOrdenIds(nuevosIds);
+    guardarNavOrdenLocal(nuevosIds);
+  }, []);
+
   // Puente Parrilla → Smart POS: "Reservar y Cobrar en POS" deja aquí el
   // concepto (ya vinculado a la reserva recién creada) para que Smart POS lo
   // reciba, lo meta a la comanda y el cajero elija cómo cobrarlo.
@@ -23055,6 +24689,15 @@ function AppInterno() {
   // pestañas) y a los puntos de registro de Auditoría (qué botones
   // sensibles se muestran/bloquean).
   const permisos = useMemo(() => permisosDeRol(operador.rol), [operador.rol]);
+
+  // Módulos visibles para este operador, YA en el orden que él mismo
+  // arrastró/movió (o el orden por defecto de `NAV_MODULOS` si nunca
+  // reordenó nada) — fuente única para Sidebar y TopHeader (ver
+  // `navOrdenIds`/`reordenarNavModulos` arriba).
+  const navModulosOrdenados = useMemo(
+    () => ordenarNavModulos(NAV_MODULOS.filter((m) => permisos.modulos.has(m.id)), navOrdenIds),
+    [permisos, navOrdenIds]
+  );
 
   /* ---------------- Gestión de Empleados & Log de Actividad (RBAC / Auditoría) ---------------- */
 
@@ -23752,6 +25395,83 @@ function AppInterno() {
     };
   }, [cargarTorneos, cargarParticipantesTorneo, cargarPartidosTorneo]);
 
+  /* ---------------- Academia & Clínicas: estado levantado en AppInterno ----------------
+   * `academiaClases`/`academiaAlumnos`/`academiaAsistencias` viven aquí (no
+   * dentro de `ModuloAcademiaClinicas`) por la MISMA razón que
+   * `retas`/`torneos`/`participantesTorneo`: los necesitan otros módulos que
+   * pueden estar montados sin que el operador tenga la pestaña Academia
+   * abierta — el Directorio & CRM (Score de Fidelidad, indicador "Participación
+   * en Comunidad") y el Centro de Alertas del Club (`academiaClasesRef`, más
+   * arriba). `academiaSesiones` (las ocurrencias concretas por fecha) en
+   * cambio SÍ vive dentro del propio módulo — nada más la usa.
+   * ------------------------------------------------------------------ */
+  const [academiaClases, setAcademiaClases] = useState([]);
+  const [loadingAcademiaClases, setLoadingAcademiaClases] = useState(true);
+  const [errorAcademiaClases, setErrorAcademiaClases] = useState('');
+  const [academiaAlumnos, setAcademiaAlumnos] = useState([]);
+  const [loadingAcademiaAlumnos, setLoadingAcademiaAlumnos] = useState(true);
+  const [errorAcademiaAlumnos, setErrorAcademiaAlumnos] = useState('');
+  const [academiaAsistencias, setAcademiaAsistencias] = useState([]);
+  const [loadingAcademiaAsistencias, setLoadingAcademiaAsistencias] = useState(true);
+  const [errorAcademiaAsistencias, setErrorAcademiaAsistencias] = useState('');
+
+  const cargarAcademiaClases = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingAcademiaClases(true);
+    setErrorAcademiaClases('');
+    const { data, error } = await conClubId(supabase.from('academia_clases').select('*'));
+    if (error) {
+      if (!esErrorTablaInexistente(error)) setErrorAcademiaClases(error.message || 'No se pudieron cargar las clases de Academia.');
+      setAcademiaClases(fusionarConRegistrosLocales([], LS_KEY_ACADEMIA_CLASES_LOCAL));
+    } else {
+      setAcademiaClases(fusionarConRegistrosLocales(data || [], LS_KEY_ACADEMIA_CLASES_LOCAL));
+    }
+    setLoadingAcademiaClases(false);
+  }, []);
+
+  const cargarAcademiaAlumnos = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingAcademiaAlumnos(true);
+    setErrorAcademiaAlumnos('');
+    const { data, error } = await conClubId(supabase.from('academia_alumnos').select('*'));
+    if (error) {
+      if (!esErrorTablaInexistente(error)) setErrorAcademiaAlumnos(error.message || 'No se pudieron cargar los alumnos de Academia.');
+      setAcademiaAlumnos(fusionarConRegistrosLocales([], LS_KEY_ACADEMIA_ALUMNOS_LOCAL));
+    } else {
+      setAcademiaAlumnos(fusionarConRegistrosLocales(data || [], LS_KEY_ACADEMIA_ALUMNOS_LOCAL));
+    }
+    setLoadingAcademiaAlumnos(false);
+  }, []);
+
+  const cargarAcademiaAsistencias = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingAcademiaAsistencias(true);
+    setErrorAcademiaAsistencias('');
+    const { data, error } = await conClubId(supabase.from('academia_asistencias').select('*'));
+    if (error) {
+      if (!esErrorTablaInexistente(error)) setErrorAcademiaAsistencias(error.message || 'No se pudo cargar la asistencia de Academia.');
+      setAcademiaAsistencias(fusionarConRegistrosLocales([], LS_KEY_ACADEMIA_ASISTENCIAS_LOCAL));
+    } else {
+      setAcademiaAsistencias(fusionarConRegistrosLocales(data || [], LS_KEY_ACADEMIA_ASISTENCIAS_LOCAL));
+    }
+    setLoadingAcademiaAsistencias(false);
+  }, []);
+
+  useEffect(() => {
+    cargarAcademiaClases();
+    cargarAcademiaAlumnos();
+    cargarAcademiaAsistencias();
+  }, [cargarAcademiaClases, cargarAcademiaAlumnos, cargarAcademiaAsistencias]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('academia')
+      .on('postgres_changes', canalClubFiltro('academia_clases'), () => cargarAcademiaClases({ silencioso: true }))
+      .on('postgres_changes', canalClubFiltro('academia_alumnos'), () => cargarAcademiaAlumnos({ silencioso: true }))
+      .on('postgres_changes', canalClubFiltro('academia_asistencias'), () => cargarAcademiaAsistencias({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarAcademiaClases, cargarAcademiaAlumnos, cargarAcademiaAsistencias]);
+
   // Sincronización Universal del Nombre/Logo del Club: si se edita desde la
   // Mac, el iPad y el celular lo reflejan solos, sin recargar la página.
   useEffect(() => {
@@ -23803,6 +25523,7 @@ function AppInterno() {
   const canchasRef = useRef(canchas);
   const retasRef = useRef(retas);
   const torneosRef = useRef(torneos);
+  const academiaClasesRef = useRef(academiaClases);
   useEffect(() => {
     canchasRef.current = canchas;
   }, [canchas]);
@@ -23812,6 +25533,9 @@ function AppInterno() {
   useEffect(() => {
     torneosRef.current = torneos;
   }, [torneos]);
+  useEffect(() => {
+    academiaClasesRef.current = academiaClases;
+  }, [academiaClases]);
 
   useEffect(() => {
     const filtroInsert = (table) => {
@@ -23863,6 +25587,16 @@ function AppInterno() {
           tipo: 'compra',
           titulo: `${detalles.jugador_nombre || 'Un jugador'} realizó una compra web por ${formatoMoneda(Number(fila.total) || 0)}`,
           jugadorId: detalles.jugador_id,
+        });
+      })
+      .on('postgres_changes', filtroInsert('academia_alumnos'), (payload) => {
+        const fila = payload.new || {};
+        if (!esCanalPortalWeb(fila.canal_origen)) return;
+        const clase = academiaClasesRef.current.find((c) => c.id === fila.clase_id);
+        agregarAlertaClub({
+          tipo: 'academia',
+          titulo: `${fila.nombre || 'Un jugador'} se inscribió a la clase ${clase?.nombre || 'de Academia & Clínicas'}`,
+          jugadorId: fila.jugador_id,
         });
       })
       .subscribe();
@@ -24033,6 +25767,7 @@ function AppInterno() {
           configClub={configClub}
           onGuardarConfigClub={guardarConfigClub}
           guardandoConfigClub={guardandoConfigClub}
+          modulosOrdenados={navModulosOrdenados}
         />
 
         <div className="flex min-h-screen min-w-0 flex-1 flex-col lg:pl-0">
@@ -24050,6 +25785,8 @@ function AppInterno() {
             onMarcarAlertaLeida={marcarAlertaLeida}
             onMarcarTodasLeidas={marcarTodasAlertasLeidas}
             onIrAJugadorDesdeAlerta={irAJugadorDesdeAlerta}
+            modulosOrdenados={navModulosOrdenados}
+            onReordenarModulos={reordenarNavModulos}
           />
 
           <main className="min-w-0 flex-1 space-y-5 px-4 py-5 sm:px-6">
@@ -24155,6 +25892,8 @@ function AppInterno() {
                 bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
                 jugadorAAbrirId={jugadorAAbrirId}
                 onJugadorAAbrirConsumido={() => setJugadorAAbrirId(null)}
+                academiaAlumnos={academiaAlumnos}
+                academiaAsistencias={academiaAsistencias}
               />
             ) : moduloActivo === 'torneos' ? (
               <ModuloTorneosRetas
@@ -24190,6 +25929,28 @@ function AppInterno() {
                 rankingJugadores={rankingJugadores}
                 setRankingJugadores={setRankingJugadores}
                 jugadoresPorId={jugadoresPorId}
+              />
+            ) : moduloActivo === 'academia' ? (
+              <ModuloAcademiaClinicas
+                canchas={canchas}
+                reservas={reservas}
+                empleados={empleados}
+                jugadoresPorId={jugadoresPorId}
+                academiaClases={academiaClases}
+                onAcademiaClaseCreada={(clase) => setAcademiaClases((prev) => [...prev, clase])}
+                academiaAlumnos={academiaAlumnos}
+                onAcademiaAlumnoAgregado={(alumno) => setAcademiaAlumnos((prev) => [...prev, alumno])}
+                onAcademiaAlumnoActualizado={(alumno) =>
+                  setAcademiaAlumnos((prev) => prev.map((a) => (a.id === alumno.id ? { ...a, ...alumno } : a)))
+                }
+                academiaAsistencias={academiaAsistencias}
+                onAcademiaAsistenciaGuardada={(asistencia) =>
+                  setAcademiaAsistencias((prev) => {
+                    const existe = prev.some((a) => a.id === asistencia.id);
+                    return existe ? prev.map((a) => (a.id === asistencia.id ? asistencia : a)) : [...prev, asistencia];
+                  })
+                }
+                onIrAJugador={(jugadorId) => irAJugadorDesdeAlerta({ jugadorId })}
               />
             ) : moduloActivo === 'seguridad' ? (
               <ModuloControlSeguridad
