@@ -7692,6 +7692,12 @@ function ModuloSmartPOS({
           monto: Number(a.monto) || 0,
           origen: clase ? `Academia — ${clase.nombre} (${a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta'})` : 'Academia & Clínicas',
           canchaId: clase?.cancha_id || null,
+          // Sistema de Membresías por Créditos (item 3): `cobrarInscripcionEvento`
+          // necesita saber si esta fila es una Mensualidad (para asignarle un
+          // ciclo de créditos al cobrarla) y qué tamaño de paquete se eligió
+          // al darla de alta (`paquete_creditos`, capturado en `altaAlumno`).
+          tipoPagoAcademia: a.tipo_pago,
+          paqueteCreditosAcademia: a.paquete_creditos,
         };
       });
 
@@ -7721,14 +7727,42 @@ function ModuloSmartPOS({
     // Academia & Clínicas es la única de las 3 fuentes con un segundo campo
     // de estatus (`estado`, activo/baja) además de `estado_pago` — al
     // cobrarse aquí, el alumno pasa a "Pagado/Activo" tal cual se pidió.
-    const camposPago = fila.tabla === 'academia_alumnos' ? { estado_pago: 'pagado', estado: 'activo' } : { estado_pago: 'pagado' };
+    // Sistema de Membresías por Créditos (item 3): si además es una
+    // "Mensualidad", este cobro le asigna/renueva su ciclo completo de
+    // créditos — el MISMO código sirve tanto para su alta inicial como para
+    // una renovación (ver "Cobrar en POS" del Dashboard de Membresías, que
+    // regresa una fila ya pagada a "pendiente" para volver a cobrarla aquí).
+    const camposPago =
+      fila.tabla === 'academia_alumnos'
+        ? {
+            estado_pago: 'pagado',
+            estado: 'activo',
+            ...(fila.tipoPagoAcademia === 'mensualidad'
+              ? activarOrenovarMembresia(fila.paqueteCreditosAcademia || PAQUETE_CREDITOS_DEFECTO)
+              : {}),
+          }
+        : { estado_pago: 'pagado' };
 
     if (!fila.esLocal) {
-      try {
-        const { error: errEstado } = await supabase.from(fila.tabla).update(camposPago).eq('id', fila.id);
-        if (errEstado) throw errEstado;
-      } catch (err) {
-        console.warn(`[Smart POS] No se pudo sincronizar el cobro de "${fila.tabla}" con Supabase, se aplica solo local:`, err);
+      // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo:
+      // los 4 campos nuevos de Membresía (`paquete_creditos`/
+      // `creditos_restantes`/`fecha_inicio_membresia`/`fecha_renovacion`)
+      // pueden no existir todavía si el proyecto no corrió
+      // `migracion_v16_academia_creditos.sql` — sin este reintento
+      // tolerante, un solo campo faltante tronaba el UPDATE COMPLETO
+      // (incluyendo `estado_pago`/`estado`, que sí existen desde siempre) y
+      // el cobro se quedaba SOLO local aunque Supabase sí pudiera guardar
+      // el resto. Los nombres de más (irrelevantes para
+      // `reta_inscripciones`/`torneo_participantes`) son inofensivos: solo
+      // se usan si de verdad vienen en `camposPago`.
+      const { error: errEstado } = await actualizarConColumnasOpcionales(fila.tabla, fila.id, camposPago, [
+        'paquete_creditos',
+        'creditos_restantes',
+        'fecha_inicio_membresia',
+        'fecha_renovacion',
+      ]);
+      if (errEstado) {
+        console.warn(`[Smart POS] No se pudo sincronizar el cobro de "${fila.tabla}" con Supabase, se aplica solo local:`, errEstado);
       }
     }
 
@@ -11260,8 +11294,12 @@ function descargarArchivoTexto(nombreArchivo, contenido, tipoMime) {
  * más abajo para el detalle completo. Los bloqueos sintéticos de
  * Torneo/Reta se excluyen de "Reservas de Canchas" (su dinero real se
  * cuenta en "Torneos y Retas", vía `reta_inscripciones`/
- * `torneo_participantes`). "Clases y Clínicas" queda en $0 a propósito: no
- * existe todavía un módulo que capture esa fuente de ingresos.
+ * `torneo_participantes`). "Clases y Clínicas" (item 4 de la reestructuración
+ * de Academia & Clínicas) se lee de `academia_alumnos` pagadas — mismo
+ * criterio que "Torneos y Retas" — y se actualiza en tiempo real: cualquier
+ * cobro de Academia en Smart POS dispara el canal Realtime de
+ * `academia_alumnos` que ya escucha este módulo (ver `cargarAcademia*` en
+ * `AppInterno`), así que la tarjeta se refresca sola sin recargar la página.
  * ==========================================================================*/
 
 const CATEGORIAS_GASTO = [
@@ -11339,7 +11377,7 @@ function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
   );
 }
 
-function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones, participantesTorneo }) {
+function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones, participantesTorneo, academiaAlumnos }) {
   const mostrarToast = useToast();
   const [vista, setVista] = useState('egresos'); // 'egresos' | 'proveedores' | 'pnl'
   const [modalDesglose, setModalDesglose] = useState(null); // { titulo, subtitulo, filas } | null
@@ -11507,9 +11545,11 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
   //   d) Torneos y Retas (Inscripciones) — suma de `reta_inscripciones` +
   //      `torneo_participantes` pagadas, por fecha de registro/cobro de la
   //      inscripción (`created_at`), NO por fecha de la reserva de bloqueo.
-  //   e) Clases y Clínicas — todavía no hay un módulo que las capture en el
-  //      sistema; se deja inicializada en $0 MXN a propósito, lista para
-  //      conectarse el día que exista esa fuente de datos.
+  //   e) Clases y Clínicas — suma de `academia_alumnos` pagadas (mensualidad
+  //      + clase suelta), por fecha de registro/cobro (`created_at`), mismo
+  //      criterio que el inciso (d). Incluye filas pagadas con Créditos de
+  //      una Membresía (monto $0 — es una transacción real, solo sin dinero
+  //      nuevo asociado).
   const pnl = useMemo(() => {
     const ventasNoLigadasAReserva = ventasRangoPnl.filter(
       (v) => v.estado_pago === 'pagado' && !v.reserva_id && v.es_reserva !== true
@@ -11552,8 +11592,17 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
       filasInscripcionesRetas.reduce((acc, i) => acc + (Number(i.monto) || 0), 0) +
       filasInscripcionesTorneos.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
 
-    // Clases y Clínicas: sin módulo propio todavía — placeholder en $0.
-    const clasesClinicas = 0;
+    // Clases y Clínicas (item 4 de la reestructuración de Academia & Clínicas):
+    // ya NO es un placeholder — mismo criterio que Torneos y Retas (inciso
+    // d): inscripciones/mensualidades de `academia_alumnos` pagadas, por
+    // fecha de registro/cobro (`created_at`). Una fila pagada con Créditos
+    // (`pagado_con_creditos: true`, monto $0) suma $0 aquí de forma
+    // correcta — SÍ es una transacción real (consumió 1 crédito), solo que
+    // sin dinero nuevo asociado.
+    const filasInscripcionesAcademia = (academiaAlumnos || []).filter(
+      (a) => inscripcionEstaPagada(a) && a.estado !== 'baja' && dentroDeRangoPorCreatedAt(a, rangoPnl)
+    );
+    const clasesClinicas = filasInscripcionesAcademia.reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
 
     const ingresosTotalesConsolidados = ventasMostrador + ventasWeb + reservasCanchas + torneosRetas + clasesClinicas;
 
@@ -11585,8 +11634,9 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
       _filasReservas: filasReservas,
       _egresosEnRango: egresosEnRango,
       _addonsDeReservasWeb: addonsDeReservasWeb,
+      _filasInscripcionesAcademia: filasInscripcionesAcademia,
     };
-  }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, rangoPnl]);
+  }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, rangoPnl]);
 
   // Desglose para las tarjetas interactivas (ver Modal de Desglose más
   // abajo): ID de transacción, hora, concepto, canal, método de pago y
@@ -11677,11 +11727,23 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
     }));
     const ventasMostradorDesglose = filasVenta(pnl._filasVentasMostrador, 'Mostrador (POS)');
     const ventasWebDesglose = [...filasVenta(pnl._filasVentasWeb, 'Tienda Web'), ...filasAddonsReservaWebDesglose];
+    // Desglose de "Clases y Clínicas" (item 4) — mismo formato normalizado
+    // que el resto de las tarjetas.
+    const clasesClinicasDesglose = pnl._filasInscripcionesAcademia.map((a) => ({
+      id: a.id,
+      idCorto: (a.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      hora: horaDe(a.created_at),
+      concepto: `${a.nombre || 'Alumno'} · ${a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta'}${a.pagado_con_creditos ? ' (crédito)' : ''}`,
+      canal: esCanalPortalWeb(a.canal_origen) ? 'Portal Web' : 'Academia & Clínicas',
+      metodoPago: a.pagado_con_creditos ? 'Crédito' : '—',
+      monto: Number(a.monto) || 0,
+    }));
     return {
       ventasMostrador: ventasMostradorDesglose,
       ventasWeb: ventasWebDesglose,
       reservas: filasReservasDesglose,
       egresos: filasEgresosDesglose,
+      clasesClinicas: clasesClinicasDesglose,
       ingresosTotales: [...ventasMostradorDesglose, ...ventasWebDesglose, ...filasReservasDesglose],
     };
   }, [pnl, canchas]);
@@ -12248,7 +12310,14 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
                 sub="Inscripciones recaudadas"
                 tono="amber"
               />
-              <MetricCard icon={Award} etiqueta="Clases y Clínicas" valor={formatoMoneda(pnl.clasesClinicas)} sub="Sin módulo propio todavía" tono="lime" />
+              <MetricCard
+                icon={Award}
+                etiqueta="Clases y Clínicas"
+                valor={formatoMoneda(pnl.clasesClinicas)}
+                sub="Academia — mensualidades y clases sueltas"
+                tono="lime"
+                onClick={() => setModalDesglose({ titulo: 'Clases y Clínicas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.clasesClinicas })}
+              />
             </div>
           </div>
 
@@ -18640,16 +18709,21 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
  * se le agregó su propio color (`ESTATUS_META.clase`) para no confundirla con
  * una reserva normal.
  *
- * Esquema nuevo (4 tablas, todas con `club_id` y por Arquitectura Flexible —
- * si tu Supabase no las tiene todavía, el módulo sigue funcionando en "Modo
- * local", igual que Retas/Torneos):
+ * Esquema (4 tablas, todas con `club_id`) — creadas por
+ * `migracion_v16_academia_creditos.sql` (ver `BannerTablaFaltante` en la
+ * subvista "Parrilla de Clases" si todavía no se corrió). Por Arquitectura
+ * Flexible el módulo sigue degradando a "Modo local" ante un error de
+ * columna/tabla puntual (igual que Retas/Torneos), pero la fuente de verdad
+ * real es Supabase — el respaldo local ya NO es la única opción como antes
+ * de v16:
  *   - academia_clases:      id, nombre, nivel ('Principiante'|'Intermedio'|
- *                            'Avanzado'), coach_empleado_id, coach_nombre,
- *                            cancha_id, dia_semana ('lunes'..'domingo'),
- *                            hora_inicio, hora_fin, capacidad_maxima,
- *                            precio_mensualidad, precio_clase_suelta,
- *                            estado ('activa'|'cancelada'), club_id,
- *                            created_at.
+ *                            'Avanzado'), tipo_clase ('grupal'|'privada' —
+ *                            NUEVO, ver `TIPOS_CLASE_ACADEMIA`), coach_empleado_id,
+ *                            coach_nombre, cancha_id, dia_semana
+ *                            ('lunes'..'domingo'), hora_inicio, hora_fin,
+ *                            capacidad_maxima, precio_mensualidad,
+ *                            precio_clase_suelta, estado ('activa'|'cancelada'),
+ *                            club_id, created_at.
  *   - academia_sesiones:    id, clase_id, fecha, hora_inicio, hora_fin,
  *                            cancha_id, reserva_bloqueo_id (uuid → reservas,
  *                            igual criterio que `retas.reserva_bloqueo_id`),
@@ -18665,16 +18739,25 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
  *                            ('mensualidad'|'clase_suelta'), estado_pago
  *                            ('pagado'|'pendiente'), monto, estado
  *                            ('activo'|'baja'), canal_origen (Portal Web —
- *                            ver Centro de Alertas), club_id, created_at.
+ *                            ver Centro de Alertas), club_id, created_at, +
+ *                            Membresía por Créditos (NUEVO — ver bloque
+ *                            "Sistema de Membresías por Créditos" más abajo):
+ *                            paquete_creditos, creditos_restantes,
+ *                            fecha_inicio_membresia, fecha_renovacion,
+ *                            pagado_con_creditos, motivo_baja, fecha_baja.
  *   - academia_asistencias: id, clase_id, sesion_id, alumno_id, fecha,
  *                            asistio (bool), club_id, created_at — una fila
  *                            por alumno y fecha de pase de lista.
  *
- * Interconexión: la asistencia a clase suma al indicador "Participación en
- * Comunidad" del Score de Fidelidad (`calcularCHS`, ver más abajo), y una
- * inscripción hecha desde el Portal Público de Jugadores dispara una alerta
- * en `CentroAlertasClub` (canal `centro-alertas-club`, tabla
- * `academia_alumnos`).
+ * Interconexión: la asistencia a clase Y las inscripciones pagadas (dinero
+ * nuevo o créditos) suman al indicador "Participación en Comunidad" del
+ * Score de Fidelidad (`calcularCHS`, ver más abajo); una inscripción hecha
+ * desde el Portal Público de Jugadores dispara una alerta en
+ * `CentroAlertasClub` (canal `centro-alertas-club`, tabla
+ * `academia_alumnos`); un cobro de Academia en Smart POS se refleja en
+ * tiempo real en "Clases y Clínicas" de Contabilidad & Compras
+ * (`ModuloContabilidadCompras`, inciso "e" de la Matriz de Ingresos
+ * Consolidados).
  * ==========================================================================*/
 
 const NIVELES_ACADEMIA = ['Principiante', 'Intermedio', 'Avanzado'];
@@ -18682,6 +18765,16 @@ const NIVELES_ACADEMIA = ['Principiante', 'Intermedio', 'Avanzado'];
 const TIPOS_PAGO_ACADEMIA = [
   { value: 'mensualidad', label: 'Mensualidad' },
   { value: 'clase_suelta', label: 'Clase suelta' },
+];
+
+// NUEVO — Clases Privadas/Personalizadas (item 2 de la reestructuración):
+// 'grupal' es el comportamiento de siempre (varios alumnos, capacidad
+// libre); 'privada' fija la capacidad en 1 alumno automáticamente (ver
+// `ModalNuevaClase`) y cambia el rótulo de los campos de precio a "Precio
+// Clase Individual".
+const TIPOS_CLASE_ACADEMIA = [
+  { value: 'grupal', label: 'Grupal' },
+  { value: 'privada', label: 'Privada / Personalizada' },
 ];
 
 // `indice` = el mismo valor que regresa `Date.prototype.getDay()` (0 =
@@ -18716,6 +18809,81 @@ const CANTIDAD_SESIONES_GENERADAS = 6;
 // Riesgo de Deserción (ver `alumnosEnRiesgoDesercion`, dentro de
 // `ModuloAcademiaClinicas`).
 const UMBRAL_INASISTENCIAS_RIESGO = 2;
+
+/* ----------------------------------------------------------------------------
+ * Sistema de Membresías por Créditos (item 3 de la reestructuración)
+ * ----------------------------------------------------------------------------
+ * Un alumno que paga "Mensualidad" (en Recepción o en Smart POS) recibe un
+ * paquete de créditos consumible en CUALQUIER clase del club — no solo en
+ * la clase donde pagó. Cuando ese MISMO jugador (identificado por
+ * `jugador_id`, igual criterio que el resto del CRM) se inscribe a otra
+ * clase, `buscarMembresiaActivaDeJugador` encuentra su membresía vigente,
+ * la inscripción nueva se confirma en $0 MXN (`pagado_con_creditos: true`,
+ * sin generar una orden en Smart POS) y se descuenta 1 crédito de la fila
+ * original. `activarOrenovarMembresia` es el único punto que asigna/reinicia
+ * un ciclo — se usa igual para el alta inicial y para una renovación
+ * (ver "Cobrar en POS" del Dashboard de Membresías), así nunca hay dos
+ * lugares con la lógica de "cuánto dura un ciclo" duplicada.
+ * -------------------------------------------------------------------------*/
+const PAQUETES_CREDITOS_ACADEMIA = [4, 5, 8];
+const PAQUETE_CREDITOS_DEFECTO = 4;
+const DIAS_CICLO_MEMBRESIA = 30;
+
+function calcularFechaRenovacion(desdeISO) {
+  const base = desdeISO ? new Date(`${desdeISO}T12:00:00`) : new Date();
+  base.setDate(base.getDate() + DIAS_CICLO_MEMBRESIA);
+  return `${base.getFullYear()}-${pad2(base.getMonth() + 1)}-${pad2(base.getDate())}`;
+}
+
+function activarOrenovarMembresia(paqueteCreditos = PAQUETE_CREDITOS_DEFECTO) {
+  const hoy = hoyISO();
+  return {
+    paquete_creditos: paqueteCreditos,
+    creditos_restantes: paqueteCreditos,
+    fecha_inicio_membresia: hoy,
+    fecha_renovacion: calcularFechaRenovacion(hoy),
+  };
+}
+
+// "Vigente" = mensualidad ya pagada, con al menos 1 crédito sin usar y su
+// fecha de renovación todavía no vencida. Un alumno dado de alta SIN cuenta
+// de jugador vinculada (`jugador_id` nulo — ej. "Otro / escribir nombre")
+// nunca comparte créditos entre clases: no hay forma confiable de saber que
+// es la misma persona.
+function buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorId, opts = {}) {
+  if (!jugadorId) return null;
+  const hoy = hoyISO();
+  const excluirId = opts.excluirAlumnoId;
+  return (
+    (academiaAlumnos || []).find(
+      (a) =>
+        a.id !== excluirId &&
+        a.jugador_id === jugadorId &&
+        a.tipo_pago === 'mensualidad' &&
+        estadoPagoInscripcion(a) === 'pagado' &&
+        a.estado !== 'baja' &&
+        Number(a.creditos_restantes) > 0 &&
+        (!a.fecha_renovacion || a.fecha_renovacion >= hoy)
+    ) || null
+  );
+}
+
+// Semáforo de estatus para la Tabla Interactiva de Alumnos con Membresía
+// (Dashboard de Membresías y Recurrencia): 'activa' (verde), 'por_vencer'
+// (ámbar, vence en 7 días o menos), 'vencida' (rojo — ya pasó su fecha de
+// renovación, o se quedó sin créditos), o `null` si el alumno no tiene
+// membresía (nunca pagó mensualidad).
+function estadoSemaforoMembresia(alumno, hoyISOref) {
+  if (!alumno || alumno.tipo_pago !== 'mensualidad' || !alumno.fecha_renovacion) return null;
+  const hoy = hoyISOref || hoyISO();
+  const sinCreditos = alumno.creditos_restantes != null && Number(alumno.creditos_restantes) <= 0;
+  if (alumno.fecha_renovacion < hoy || sinCreditos) return 'vencida';
+  const diasParaVencer = Math.round(
+    (new Date(`${alumno.fecha_renovacion}T12:00:00`) - new Date(`${hoy}T12:00:00`)) / 86400000
+  );
+  if (diasParaVencer <= 7) return 'por_vencer';
+  return 'activa';
+}
 
 // Próximas `cantidad` fechas (ISO) que caen en `diaSemana`, empezando HOY (si
 // hoy mismo es ese día de la semana) o el próximo que le siga.
@@ -18802,6 +18970,14 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
 
   const [nombre, setNombre] = useState('');
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
+  // NUEVO — Tipo de Clase (item 2): 'privada' fija automáticamente la
+  // capacidad en 1 alumno (ver `capacidadEfectiva` más abajo, en vez de un
+  // useEffect que pise lo que el operador haya escrito) y cambia el rótulo
+  // de los 2 campos de precio a "Precio Clase Individual" — se conservan
+  // ambos montos (mensual/por sesión) por debajo para no duplicar el
+  // esquema de Membresías por Créditos, que ya distingue mensualidad de
+  // clase suelta sin importar si la clase es grupal o privada.
+  const [tipoClase, setTipoClase] = useState('grupal');
   const [coachEmpleadoId, setCoachEmpleadoId] = useState(coachesDisponibles[0]?.id || '');
   const [coachNombreLibre, setCoachNombreLibre] = useState('');
   const [canchaId, setCanchaId] = useState(prellenado?.canchaId || canchasActivas[0]?.id || '');
@@ -18822,6 +18998,8 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
 
   const coachNombre = coachEmpleadoId ? coachesDisponibles.find((c) => c.id === coachEmpleadoId)?.nombre || '' : coachNombreLibre.trim();
   const diaSemanaMeta = diaSemanaDeFecha(fecha);
+  const esPrivada = tipoClase === 'privada';
+  const capacidadEfectiva = esPrivada ? '1' : capacidad;
 
   async function guardar() {
     if (!nombre.trim()) return setError('Ponle un nombre a la clase (ej. "Iniciación Adultos").');
@@ -18831,7 +19009,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
     const ini = parseHoraAMinutos(horaInicio);
     const fin = parseHoraAMinutos(horaFin);
     if (ini === null || fin === null || fin <= ini) return setError('La hora de fin debe ser posterior a la de inicio.');
-    if (!(Number(capacidad) > 0)) return setError('La capacidad máxima debe ser mayor a 0.');
+    if (!(Number(capacidadEfectiva) > 0)) return setError('La capacidad máxima debe ser mayor a 0.');
 
     // Igual candado anti-encimado que una reserva/reta normal — clave para
     // el flujo de "clic en celda libre del Cronograma" (item 1): si la
@@ -18854,13 +19032,14 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
     const payloadClase = withClubId({
       nombre: nombre.trim(),
       nivel,
+      tipo_clase: tipoClase,
       coach_empleado_id: coachEmpleadoId || null,
       coach_nombre: coachNombre,
       cancha_id: canchaId,
       dia_semana: diaSemanaMeta.value,
       hora_inicio: horaInicio,
       hora_fin: horaFin,
-      capacidad_maxima: Number(capacidad) || 1,
+      capacidad_maxima: Number(capacidadEfectiva) || 1,
       precio_mensualidad: Number(precioMensualidad) || 0,
       precio_clase_suelta: Number(precioClaseSuelta) || 0,
       estado: 'activa',
@@ -18869,6 +19048,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
     let claseCreada = null;
     let modoLocal = false;
     const { data, error: errClase } = await insertarConColumnasOpcionales('academia_clases', payloadClase, [
+      'tipo_clase',
       'coach_empleado_id',
       'coach_nombre',
       'precio_mensualidad',
@@ -18917,6 +19097,22 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
       <div className="space-y-4">
         <Campo label="Nombre de la clase">
           <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Iniciación Adultos" />
+        </Campo>
+        <Campo label="Tipo de Clase" hint={esPrivada ? 'Capacidad fijada en 1 alumno' : undefined}>
+          <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+            {TIPOS_CLASE_ACADEMIA.map((t) => (
+              <button
+                key={t.value}
+                type="button"
+                onClick={() => setTipoClase(t.value)}
+                className={`flex-1 rounded-md px-3 py-2 text-xs font-bold transition ${
+                  tipoClase === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         </Campo>
         <div className="grid grid-cols-2 gap-4">
           <Campo label="Nivel">
@@ -18978,12 +19174,21 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
             <input
               type="number"
               min="1"
-              value={capacidad}
+              value={capacidadEfectiva}
               onChange={(e) => setCapacidad(e.target.value)}
-              className={inputClase}
+              className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-50`}
+              disabled={esPrivada}
             />
           </Campo>
-          <Campo label="Precio mensualidad">
+          {/* Rótulos dinámicos (item 2): en una clase Privada/Personalizada
+              ambos montos pasan a leerse como "Precio Clase Individual"
+              (mensual y por sesión) en vez de "mensualidad"/"clase suelta",
+              que suena a clase grupal. El dato guardado (precio_mensualidad/
+              precio_clase_suelta) no cambia — solo el rótulo — para no
+              tocar el esquema ni el sistema de Créditos, que ya distingue
+              ambos tipos de pago sin importar si la clase es grupal o
+              privada. */}
+          <Campo label={esPrivada ? 'Precio Clase Individual (mensual)' : 'Precio mensualidad'}>
             <input
               type="number"
               min="0"
@@ -18992,7 +19197,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
               className={inputClase}
             />
           </Campo>
-          <Campo label="Precio clase suelta">
+          <Campo label={esPrivada ? 'Precio Clase Individual (por sesión)' : 'Precio clase suelta'}>
             <input
               type="number"
               min="0"
@@ -19068,6 +19273,7 @@ function ModalDetalleClase({
   cancha,
   sesiones,
   alumnos,
+  todosLosAlumnos,
   asistencias,
   jugadoresPorId,
   empleados,
@@ -19094,28 +19300,65 @@ function ModalDetalleClase({
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [tipoPago, setTipoPago] = useState('mensualidad');
   const [estadoPagoAlta, setEstadoPagoAlta] = useState('pendiente');
+  // NUEVO — Membresías por Créditos (item 3): tamaño del paquete que se le
+  // asignará a este alumno si su Mensualidad se marca "Ya pagó" aquí mismo
+  // (o cuando se cobre después en Smart POS — ver `paquete_creditos` en el
+  // payload de abajo, que viaja con la fila aunque quede "Pago pendiente").
+  const [paqueteCreditos, setPaqueteCreditos] = useState(PAQUETE_CREDITOS_DEFECTO);
   const [guardandoAlta, setGuardandoAlta] = useState(false);
 
   const cuposDisponibles = Math.max(0, clase.capacidad_maxima - alumnosActivos.length);
   const claseLlena = cuposDisponibles === 0;
+
+  // Aviso en vivo (sin esperar al submit): solo cuando el alumno viene del
+  // directorio (`jugadorSeleccionadoId`, ver `SelectorJugadorRegistrado`) —
+  // un nombre escrito a mano todavía no tiene `jugador_id` confirmado.
+  const membresiaActivaPreview = useMemo(
+    () => buscarMembresiaActivaDeJugador(todosLosAlumnos, jugadorSeleccionadoId),
+    [todosLosAlumnos, jugadorSeleccionadoId]
+  );
 
   async function altaAlumno() {
     if (!nombreAlumno.trim()) return toast({ titulo: 'Ponle un nombre al alumno.', tono: 'aviso' });
     if (claseLlena) return toast({ titulo: 'La clase ya está llena.', tono: 'aviso' });
     setGuardandoAlta(true);
     const jugadorId = jugadorSeleccionadoId || (await resolverJugadorId(nombreAlumno, { telefono: telefonoAlumno, directorio: directorioJugadores }));
-    const monto = tipoPago === 'mensualidad' ? Number(clase.precio_mensualidad) || 0 : Number(clase.precio_clase_suelta) || 0;
+
+    // Sistema de Membresías por Créditos: si este jugador YA tiene una
+    // membresía vigente (en ESTA clase o en cualquier otra del club), su
+    // inscripción se confirma en $0 MXN y se descuenta 1 crédito — sin
+    // importar qué tipo/estatus de pago haya elegido el operador arriba,
+    // nunca se le vuelve a cobrar mientras tenga créditos disponibles.
+    const membresiaActiva = buscarMembresiaActivaDeJugador(todosLosAlumnos, jugadorId);
+    const yaPagadoAhora = !membresiaActiva && tipoPago === 'mensualidad' && estadoPagoAlta === 'pagado';
+    const monto = membresiaActiva ? 0 : tipoPago === 'mensualidad' ? Number(clase.precio_mensualidad) || 0 : Number(clase.precio_clase_suelta) || 0;
+
     const payload = withClubId({
       clase_id: clase.id,
       jugador_id: jugadorId,
       nombre: nombreAlumno.trim(),
       telefono: telefonoAlumno.trim() || null,
-      tipo_pago: tipoPago,
-      estado_pago: estadoPagoAlta,
+      tipo_pago: membresiaActiva ? 'clase_suelta' : tipoPago,
+      estado_pago: membresiaActiva ? 'pagado' : estadoPagoAlta,
       monto,
       estado: 'activo',
+      pagado_con_creditos: !!membresiaActiva,
+      // Tamaño de paquete elegido — viaja con la fila aunque quede
+      // pendiente, para que `cobrarInscripcionEvento` (Smart POS) sepa
+      // cuántos créditos asignar cuando se cobre más adelante.
+      paquete_creditos: !membresiaActiva && tipoPago === 'mensualidad' ? paqueteCreditos : null,
+      ...(yaPagadoAhora ? activarOrenovarMembresia(paqueteCreditos) : {}),
     });
-    const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payload, ['jugador_id', 'telefono', 'canal_origen']);
+    const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payload, [
+      'jugador_id',
+      'telefono',
+      'canal_origen',
+      'pagado_con_creditos',
+      'paquete_creditos',
+      'creditos_restantes',
+      'fecha_inicio_membresia',
+      'fecha_renovacion',
+    ]);
     setGuardandoAlta(false);
     if (error || !data) {
       const alumnoLocal = { ...payload, id: idLocal('academia_alumno'), _local: true };
@@ -19126,8 +19369,29 @@ function ModalDetalleClase({
       });
       onAlumnoAgregado(alumnoLocal);
     } else {
-      toast({ titulo: 'Alumno inscrito', detalle: `${data.nombre} · ${clase.nombre}` });
+      toast({
+        titulo: 'Alumno inscrito',
+        detalle: membresiaActiva
+          ? `${data.nombre} · ${clase.nombre} · Pagó con 1 crédito de su membresía (quedan ${Math.max(0, Number(membresiaActiva.creditos_restantes) - 1)})`
+          : `${data.nombre} · ${clase.nombre}`,
+      });
       onAlumnoAgregado(data);
+      // Descuenta el crédito consumido de la membresía ORIGEN — puede ser
+      // una fila de OTRA clase, por eso se actualiza directo por su propio
+      // id en vez de depender de `alumnos` (que solo trae los de esta
+      // clase). Sincronización Silenciosa: nunca bloquea la inscripción ya
+      // confirmada arriba.
+      if (membresiaActiva) {
+        const nuevosCreditos = Math.max(0, Number(membresiaActiva.creditos_restantes) - 1);
+        const { error: errCredito } = await actualizarConColumnasOpcionales(
+          'academia_alumnos',
+          membresiaActiva.id,
+          { creditos_restantes: nuevosCreditos },
+          []
+        );
+        if (errCredito) console.warn('[Academia & Clínicas] No se pudo descontar el crédito en Supabase, se aplicó solo local.', errCredito);
+        onAlumnoActualizado({ ...membresiaActiva, creditos_restantes: nuevosCreditos });
+      }
     }
     setNombreAlumno('');
     setTelefonoAlumno('');
@@ -19149,9 +19413,24 @@ function ModalDetalleClase({
 
   async function alternarEstadoPago(alumno) {
     const nuevoEstado = alumno.estado_pago === 'pagado' ? 'pendiente' : 'pagado';
-    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, { estado_pago: nuevoEstado }, []);
+    // Igual criterio que `cobrarInscripcionEvento` en Smart POS: si esta
+    // fila es una Mensualidad que se está marcando "Ya pagó" a mano en
+    // Recepción (sin pasar por POS), también se le asigna/renueva su ciclo
+    // de créditos — así el alumno queda igual de "Pagado/Activo" y con
+    // membresía vigente sin importar por cuál de los 2 caminos se cobró.
+    const activacionMembresia =
+      nuevoEstado === 'pagado' && alumno.tipo_pago === 'mensualidad' && !alumno.pagado_con_creditos
+        ? activarOrenovarMembresia(alumno.paquete_creditos || PAQUETE_CREDITOS_DEFECTO)
+        : {};
+    const cambios = { estado_pago: nuevoEstado, ...activacionMembresia };
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambios, [
+      'paquete_creditos',
+      'creditos_restantes',
+      'fecha_inicio_membresia',
+      'fecha_renovacion',
+    ]);
     if (error) return toast({ titulo: 'No se pudo actualizar el pago', detalle: error.message, tono: 'error' });
-    onAlumnoActualizado({ ...alumno, estado_pago: nuevoEstado });
+    onAlumnoActualizado({ ...alumno, ...cambios });
   }
 
   /* ---- Editar / Eliminar la clase (item "Ajustes") ----
@@ -19355,19 +19634,38 @@ function ModalDetalleClase({
                   placeholder="Teléfono"
                   inputMode="tel"
                 />
-                <div className="grid grid-cols-2 gap-3">
-                  <select value={tipoPago} onChange={(e) => setTipoPago(e.target.value)} className={inputClase}>
-                    {TIPOS_PAGO_ACADEMIA.map((t) => (
-                      <option key={t.value} value={t.value}>
-                        {t.label}
-                      </option>
-                    ))}
-                  </select>
-                  <select value={estadoPagoAlta} onChange={(e) => setEstadoPagoAlta(e.target.value)} className={inputClase}>
-                    <option value="pendiente">Pago pendiente</option>
-                    <option value="pagado">Ya pagó</option>
-                  </select>
-                </div>
+                {membresiaActivaPreview ? (
+                  <p className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 px-3 py-2 text-[11px] font-semibold text-emerald-300">
+                    <Sparkles size={13} /> Ya tiene {membresiaActivaPreview.creditos_restantes} crédito
+                    {membresiaActivaPreview.creditos_restantes === 1 ? '' : 's'} vigente
+                    {membresiaActivaPreview.creditos_restantes === 1 ? '' : 's'} — esta inscripción será GRATIS (se descuenta 1 crédito, sin pasar por Smart POS).
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <select value={tipoPago} onChange={(e) => setTipoPago(e.target.value)} className={inputClase}>
+                      {TIPOS_PAGO_ACADEMIA.map((t) => (
+                        <option key={t.value} value={t.value}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select value={estadoPagoAlta} onChange={(e) => setEstadoPagoAlta(e.target.value)} className={inputClase}>
+                      <option value="pendiente">Pago pendiente</option>
+                      <option value="pagado">Ya pagó</option>
+                    </select>
+                  </div>
+                )}
+                {!membresiaActivaPreview && tipoPago === 'mensualidad' && (
+                  <Campo label="Paquete de créditos" hint="Cuántas clases/mes incluye esta mensualidad">
+                    <select value={paqueteCreditos} onChange={(e) => setPaqueteCreditos(Number(e.target.value))} className={inputClase}>
+                      {PAQUETES_CREDITOS_ACADEMIA.map((n) => (
+                        <option key={n} value={n}>
+                          {n} clases/mes
+                        </option>
+                      ))}
+                    </select>
+                  </Campo>
+                )}
                 <div className="flex justify-end gap-2">
                   <BotonSecundario onClick={() => setMostrarAlta(false)}>Cancelar</BotonSecundario>
                   <BotonPrimario onClick={altaAlumno} disabled={guardandoAlta}>
@@ -19385,6 +19683,10 @@ function ModalDetalleClase({
                     <p className="truncate text-xs font-bold text-slate-100">{a.nombre}</p>
                     <p className="text-[10px] text-slate-500">
                       {TIPOS_PAGO_ACADEMIA.find((t) => t.value === a.tipo_pago)?.label || a.tipo_pago} · {formatoMoneda(a.monto)}
+                      {a.pagado_con_creditos && <span className="ml-1 text-emerald-400">· pagó con crédito</span>}
+                      {a.tipo_pago === 'mensualidad' && a.creditos_restantes != null && !a.pagado_con_creditos && (
+                        <span className="ml-1">· {a.creditos_restantes} créditos restantes</span>
+                      )}
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
@@ -19514,13 +19816,17 @@ function ModalDetalleClase({
                       ))}
                     </select>
                   </Campo>
-                  <Campo label="Capacidad máxima">
+                  <Campo
+                    label="Capacidad máxima"
+                    hint={clase.tipo_clase === 'privada' ? 'Clase Privada — fija en 1 alumno' : undefined}
+                  >
                     <input
                       type="number"
                       min={alumnosActivos.length || 1}
-                      value={capacidadEdit}
+                      value={clase.tipo_clase === 'privada' ? '1' : capacidadEdit}
                       onChange={(e) => setCapacidadEdit(e.target.value)}
-                      className={inputClase}
+                      className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-50`}
+                      disabled={clase.tipo_clase === 'privada'}
                     />
                   </Campo>
                 </div>
@@ -19717,11 +20023,124 @@ function HeatmapAcademia({ clases, alumnosPorClase }) {
   );
 }
 
-// Analytics Operativos de Academia & Clínicas: los 4 puntos pedidos en el
-// requerimiento — Total de Alumnos Activos por nivel, Alertas de Riesgo de
-// Deserción (2+ inasistencias CONSECUTIVAS, ver `UMBRAL_INASISTENCIAS_RIESGO`),
-// el Mapa de Calor de arriba, y Asistencia/Retención por Coach.
-function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrAJugador }) {
+// Mensaje de WhatsApp para el botón "Recordatorio" del Dashboard de
+// Membresías y Recurrencia — distingue "por vencer" (todavía a tiempo) de
+// "vencida" (ya se pasó del ciclo) para que el tono del mensaje encaje.
+function construirMensajeWhatsAppMembresia(alumno, clase, semaforo) {
+  const nombreClase = clase?.nombre || 'tu clase en la Academia';
+  if (semaforo === 'vencida') {
+    return `¡Hola ${alumno.nombre}! Vimos que tu membresía de ${nombreClase} en Smash Pádel Club ya venció. ¿Renovamos tu mensualidad para que sigas tomando tus clases? Contáctanos o pasa a recepción cuando puedas.`;
+  }
+  return `¡Hola ${alumno.nombre}! Tu membresía de ${nombreClase} en Smash Pádel Club está por vencer el ${formatoFechaLarga(alumno.fecha_renovacion)}. ¿Renovamos tu mensualidad para que no pierdas tu lugar?`;
+}
+
+// Fila de la Tabla Interactiva de Alumnos con Membresía (Dashboard B) — vive
+// como su propio componente para que el estado local del formulario "Dar de
+// baja + motivo" (`mostrarBaja`/`motivo`) no le pegue un re-render a la
+// tabla completa en cada tecla.
+function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar }) {
+  const toast = useToast();
+  const semaforo = estadoSemaforoMembresia(alumno);
+  const [mostrarBaja, setMostrarBaja] = useState(false);
+  const [motivo, setMotivo] = useState('');
+
+  const colorSemaforo =
+    semaforo === 'activa'
+      ? 'bg-emerald-400/10 text-emerald-400 ring-emerald-400/30'
+      : semaforo === 'por_vencer'
+      ? 'bg-amber-400/10 text-amber-400 ring-amber-400/30'
+      : 'bg-rose-500/10 text-rose-400 ring-rose-500/30';
+  const etiquetaSemaforo = semaforo === 'activa' ? 'Activa' : semaforo === 'por_vencer' ? 'Por vencer' : 'Vencida';
+
+  function enviarRecordatorio() {
+    if (!alumno.telefono) {
+      toast({ titulo: 'Falta el teléfono', detalle: `Captura el teléfono de ${alumno.nombre} para poder enviarle el recordatorio.`, tono: 'aviso' });
+      return;
+    }
+    const url = construirEnlaceWhatsApp({ telefono: alumno.telefono, mensaje: construirMensajeWhatsAppMembresia(alumno, clase, semaforo) });
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  return (
+    <tr className="border-b border-slate-800/70 last:border-0 align-top">
+      <td className="px-3 py-2.5 font-bold text-slate-100">{alumno.nombre}</td>
+      <td className="px-3 py-2.5 text-slate-400">
+        {clase?.nombre || '—'}
+        {clase?.coach_nombre && <span className="text-slate-600"> · {clase.coach_nombre}</span>}
+      </td>
+      <td className="px-3 py-2.5 text-slate-300">{alumno.creditos_restantes ?? '—'}</td>
+      <td className="px-3 py-2.5 text-slate-300">{alumno.fecha_renovacion ? formatoFechaLarga(alumno.fecha_renovacion) : '—'}</td>
+      <td className="px-3 py-2.5">
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${colorSemaforo}`}>{etiquetaSemaforo}</span>
+      </td>
+      <td className="px-3 py-2.5">
+        {mostrarBaja ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <input
+              value={motivo}
+              onChange={(e) => setMotivo(e.target.value)}
+              placeholder="Motivo de la baja…"
+              className="w-36 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-lime-400"
+            />
+            <button
+              onClick={() => {
+                onDarDeBaja(alumno, motivo.trim() || 'Sin motivo especificado');
+                setMostrarBaja(false);
+                setMotivo('');
+              }}
+              className="rounded-md bg-rose-500/15 px-2 py-1 text-[10px] font-bold text-rose-300 ring-1 ring-rose-500/30 hover:bg-rose-500/25"
+            >
+              Confirmar
+            </button>
+            <button onClick={() => setMostrarBaja(false)} className="rounded-md px-2 py-1 text-[10px] font-bold text-slate-400 hover:text-slate-200">
+              Cancelar
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={() => onCobrarPOS(alumno)}
+              className="inline-flex items-center gap-1 rounded-md bg-lime-400/10 px-2 py-1 text-[10px] font-bold text-lime-300 ring-1 ring-lime-400/30 hover:bg-lime-400/20"
+            >
+              <ShoppingCart size={11} /> Cobrar en POS
+            </button>
+            <button
+              onClick={enviarRecordatorio}
+              className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-1 text-[10px] font-bold text-emerald-300 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20"
+            >
+              <IconoWhatsApp size={11} /> Recordatorio
+            </button>
+            {alumno.estado !== 'baja' && (
+              <button onClick={() => setMostrarBaja(true)} className="rounded-md px-2 py-1 text-[10px] font-bold text-slate-500 hover:text-rose-400">
+                Dar de baja
+              </button>
+            )}
+            {alumno.estado === 'baja' && (
+              <button
+                onClick={() => onReactivar(alumno)}
+                className="rounded-md bg-sky-500/10 px-2 py-1 text-[10px] font-bold text-sky-300 ring-1 ring-sky-500/30 hover:bg-sky-500/20"
+              >
+                Reactivar
+              </button>
+            )}
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+// Analytics de Academia & Clínicas — 3 dashboards (item 5 de la
+// reestructuración):
+//   A) Operativo de Clases — KPIs de ingreso/hora, ratio Grupal vs Privada,
+//      asistencia global y horas pico.
+//   B) Gestión de Membresías y Recurrencia — KPIs de membresías/MRR/churn +
+//      tabla interactiva filtrable + Panel de Churn/Bajas.
+//   C) KPIs de Coaches + Mapa de Calor + Alertas de Deserción (el contenido
+//      operativo de siempre, ahora en su propia pestaña).
+function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrAJugador, onAlumnoActualizado, onIrAPOS }) {
+  const toast = useToast();
+  const [dashboard, setDashboard] = useState('operativo'); // 'operativo' | 'membresias' | 'coaches'
   const alumnosActivos = useMemo(() => alumnos.filter((a) => a.estado !== 'baja'), [alumnos]);
   const clasesPorId = useMemo(() => {
     const mapa = {};
@@ -19832,83 +20251,489 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
     return Object.values(mapa).sort((a, b) => b.alumnosActivos - a.alumnosActivos);
   }, [clases, alumnosPorClase, asistencias, clasesPorId]);
 
+  /* ---- Dashboard A: Operativo de Clases ----
+   * Ingreso Promedio por Hora/Clase ($/hr): ingreso total (alumnos activos
+   * PAGADOS) entre horas-clase totales — un solo número "por hora" para
+   * TODA la operación, ponderado por duración real de cada clase (una
+   * clase de 1.5h pesa más que una de 1h), en vez de promediar razones
+   * clase-por-clase. Ratio Grupales vs Privadas: % de clases activas por
+   * `tipo_clase`. Tasa de Asistencia Global: histórico completo de
+   * `academia_asistencias` (`asistio: true` / total de pases de lista).
+   * Horas Pico: la hora del día (agregada TODOS los días de la semana) con
+   * más clases programadas. */
+  const clasesActivasKpi = useMemo(() => clases.filter((c) => c.estado !== 'cancelada'), [clases]);
+
+  const kpisOperativos = useMemo(() => {
+    let ingresoTotal = 0;
+    let horasTotales = 0;
+    let ingresoGrupal = 0;
+    let ingresoPrivada = 0;
+    let cuposGrupal = 0;
+    let cuposPrivada = 0;
+    let clasesGrupal = 0;
+    let clasesPrivada = 0;
+
+    clasesActivasKpi.forEach((c) => {
+      const esPrivada = c.tipo_clase === 'privada';
+      if (esPrivada) clasesPrivada += 1;
+      else clasesGrupal += 1;
+
+      const ingresoClase = (alumnosPorClase[c.id] || [])
+        .filter((a) => a.estado_pago === 'pagado')
+        .reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
+      ingresoTotal += ingresoClase;
+      if (esPrivada) ingresoPrivada += ingresoClase;
+      else ingresoGrupal += ingresoClase;
+
+      const ini = parseHoraAMinutos(c.hora_inicio);
+      const fin = parseHoraAMinutos(c.hora_fin);
+      const horas = ini != null && fin != null && fin > ini ? (fin - ini) / 60 : 0;
+      horasTotales += horas;
+
+      const cupos = Number(c.capacidad_maxima) || 0;
+      if (esPrivada) cuposPrivada += cupos;
+      else cuposGrupal += cupos;
+    });
+
+    const totalClases = clasesGrupal + clasesPrivada;
+    const totalAsistenciasRegistradas = asistencias.length;
+    const totalPresentes = asistencias.filter((a) => a.asistio === true).length;
+
+    return {
+      ingresoPorHora: horasTotales > 0 ? ingresoTotal / horasTotales : 0,
+      pctGrupal: totalClases > 0 ? Math.round((clasesGrupal / totalClases) * 100) : null,
+      clasesGrupal,
+      clasesPrivada,
+      ingresoGrupal,
+      ingresoPrivada,
+      ingresoTotal,
+      cuposGrupal,
+      cuposPrivada,
+      tasaAsistenciaGlobal: totalAsistenciasRegistradas > 0 ? Math.round((totalPresentes / totalAsistenciasRegistradas) * 100) : null,
+    };
+  }, [clasesActivasKpi, alumnosPorClase, asistencias]);
+
+  const horaPico = useMemo(() => {
+    const conteoPorHora = {};
+    clasesActivasKpi.forEach((c) => {
+      const ini = parseHoraAMinutos(c.hora_inicio);
+      if (ini == null) return;
+      const hora = Math.floor(ini / 60);
+      conteoPorHora[hora] = (conteoPorHora[hora] || 0) + 1;
+    });
+    const horas = Object.keys(conteoPorHora);
+    if (horas.length === 0) return null;
+    const top = horas.reduce((mejor, h) => (conteoPorHora[h] > conteoPorHora[mejor] ? h : mejor), horas[0]);
+    return { hora: Number(top), clases: conteoPorHora[top] };
+  }, [clasesActivasKpi]);
+
+  /* ---- Dashboard B: Gestión de Membresías y Recurrencia ----
+   * "Con membresía" = cualquier fila de `academia_alumnos` que alguna vez
+   * tuvo un ciclo asignado (`fecha_renovacion` truthy) — incluye vigentes,
+   * por vencer, vencidas Y dadas de baja (para el Panel de Churn). Las
+   * filas pagadas con Créditos (`pagado_con_creditos`) nunca traen
+   * `fecha_renovacion` propio (consumen créditos de OTRA fila), así que
+   * quedan fuera de esta tabla a propósito — no son ellas la "membresía".
+   */
+  const alumnosConMembresia = useMemo(
+    () => alumnos.filter((a) => a.tipo_pago === 'mensualidad' && a.fecha_renovacion),
+    [alumnos]
+  );
+
+  const kpisMembresias = useMemo(() => {
+    const hoy = hoyISO();
+    const mesActual = hoy.slice(0, 7);
+    let activas = 0;
+    let porVencer = 0;
+    let vencidas = 0;
+    let mrr = 0;
+    let bajasEsteMes = 0;
+
+    alumnosConMembresia.forEach((a) => {
+      if (a.estado === 'baja') {
+        if (a.fecha_baja && a.fecha_baja.slice(0, 7) === mesActual) bajasEsteMes += 1;
+        return;
+      }
+      const semaforo = estadoSemaforoMembresia(a, hoy);
+      if (semaforo === 'vencida') vencidas += 1;
+      else {
+        activas += 1;
+        if (semaforo === 'por_vencer') porVencer += 1;
+        // MRR: solo ciclos con dinero real de por medio (no los pagados con
+        // 1 crédito de otra membresía, que no generan ingreso nuevo).
+        if (!a.pagado_con_creditos) mrr += Number(a.monto) || 0;
+      }
+    });
+
+    // Tasa de Churn Mensual: bajas registradas ESTE mes entre el total de
+    // alumnos que alguna vez tuvieron una membresía — una aproximación
+    // razonable sin un conteo histórico "mes a mes" de altas/bajas.
+    const churnPct = alumnosConMembresia.length > 0 ? Math.round((bajasEsteMes / alumnosConMembresia.length) * 100) : null;
+
+    return { activas, porVencer, vencidas, mrr, bajasEsteMes, churnPct };
+  }, [alumnosConMembresia]);
+
+  const [filtroMembresia, setFiltroMembresia] = useState('todas'); // 'todas' | 'activa' | 'por_vencer' | 'vencida'
+  const filtrosMembresia = [
+    { value: 'todas', label: 'Todas' },
+    { value: 'activa', label: 'Activas' },
+    { value: 'por_vencer', label: 'Por Vencer' },
+    { value: 'vencida', label: 'Vencidas' },
+  ];
+  const filasMembresiaFiltradas = useMemo(() => {
+    return alumnosConMembresia
+      .filter((a) => a.estado !== 'baja')
+      .filter((a) => filtroMembresia === 'todas' || estadoSemaforoMembresia(a) === filtroMembresia)
+      .sort((a, b) => (a.fecha_renovacion || '').localeCompare(b.fecha_renovacion || ''));
+  }, [alumnosConMembresia, filtroMembresia]);
+
+  const alumnosChurn = useMemo(
+    () =>
+      alumnosConMembresia
+        .filter((a) => a.estado === 'baja')
+        .sort((a, b) => (b.fecha_baja || '').localeCompare(a.fecha_baja || '')),
+    [alumnosConMembresia]
+  );
+
+  // "Cobrar en POS" (acción rápida de la tabla): regresa la fila a
+  // "pendiente" (sin tocar `estado`, sigue Activo mientras se cobra) para
+  // que reaparezca en "Inscripciones pendientes" de Smart POS — al
+  // cobrarla ahí, `cobrarInscripcionEvento` le asigna un ciclo NUEVO y
+  // completo de créditos (mismo código que una alta inicial, ver
+  // `activarOrenovarMembresia`).
+  async function cobrarMembresiaEnPOS(alumno) {
+    const cambios = { estado_pago: 'pendiente' };
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambios, []);
+    if (error) console.warn('[Academia & Clínicas] No se pudo marcar la renovación como pendiente en Supabase, se aplicó solo local.', error);
+    onAlumnoActualizado?.({ ...alumno, ...cambios });
+    toast({ titulo: 'Lista para cobrar en Smart POS', detalle: `${alumno.nombre} — búscala en "Inscripciones pendientes".` });
+    onIrAPOS?.();
+  }
+
+  async function darDeBajaMembresia(alumno, motivo) {
+    const cambios = { estado: 'baja', motivo_baja: motivo, fecha_baja: hoyISO() };
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambios, ['motivo_baja', 'fecha_baja']);
+    if (error) console.warn('[Academia & Clínicas] No se pudo registrar la baja en Supabase, se aplicó solo local.', error);
+    onAlumnoActualizado?.({ ...alumno, ...cambios });
+    toast({ titulo: 'Baja registrada', detalle: `${alumno.nombre} — ${motivo}` });
+  }
+
+  async function reactivarMembresia(alumno) {
+    const cambios = { estado: 'activo' };
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambios, []);
+    if (error) console.warn('[Academia & Clínicas] No se pudo reactivar en Supabase, se aplicó solo local.', error);
+    onAlumnoActualizado?.({ ...alumno, ...cambios });
+    toast({ titulo: 'Alumno reactivado', detalle: `${alumno.nombre} — pídele renovar su mensualidad para reactivar sus créditos.` });
+  }
+
+  const dashboards = [
+    { value: 'operativo', label: 'Operativo de Clases', icon: Gauge },
+    { value: 'membresias', label: 'Membresías y Recurrencia', icon: Crown },
+    { value: 'coaches', label: 'Coaches & Mapa de Calor', icon: Award },
+  ];
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {NIVELES_ACADEMIA.map((nivel) => (
-          <div key={nivel} className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{nivel}</p>
-            <p className="mt-1 text-2xl font-black text-slate-100">{totalesPorNivel[nivel]}</p>
-            <p className="text-[11px] text-slate-500">alumno{totalesPorNivel[nivel] === 1 ? '' : 's'} activo{totalesPorNivel[nivel] === 1 ? '' : 's'}</p>
-          </div>
-        ))}
+      <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+        {dashboards.map((d) => {
+          const Icon = d.icon;
+          return (
+            <button
+              key={d.value}
+              onClick={() => setDashboard(d.value)}
+              className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-bold transition ${
+                dashboard === d.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              }`}
+            >
+              <Icon size={14} /> {d.label}
+            </button>
+          );
+        })}
       </div>
 
-      <HeatmapAcademia clases={clases.filter((c) => c.estado !== 'cancelada')} alumnosPorClase={alumnosPorClase} />
-
-      <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-        <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
-          <UserX size={16} className="text-rose-400" /> Alertas de Riesgo de Deserción
-        </h3>
-        {alumnosEnRiesgo.length === 0 ? (
-          <p className="py-4 text-center text-xs text-slate-500">Nadie tiene 2+ inasistencias consecutivas por ahora.</p>
-        ) : (
-          <div className="space-y-1.5">
-            {alumnosEnRiesgo.map(({ alumno, racha, clase }) => {
-              const jugadorId = alumno.jugador_id;
-              return (
-                <button
-                  key={alumno.id}
-                  type="button"
-                  onClick={() => jugadorId && onIrAJugador?.(jugadorId)}
-                  disabled={!jugadorId}
-                  className="flex w-full items-center justify-between gap-2 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-left transition hover:bg-rose-500/10 disabled:cursor-default"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-bold text-slate-100">{alumno.nombre}</p>
-                    <p className="text-[10px] text-slate-500">{clase?.nombre || 'Clase'}</p>
-                  </div>
-                  <span className="shrink-0 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
-                    {racha} inasistencias seguidas
-                  </span>
-                </button>
-              );
-            })}
+      {dashboard === 'operativo' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <MetricCard
+              icon={DollarSign}
+              etiqueta="Ingreso Promedio por Hora/Clase"
+              valor={`${formatoMoneda(kpisOperativos.ingresoPorHora)}/hr`}
+              sub="Ponderado por duración real de cada clase"
+              tono="lime"
+            />
+            <MetricCard
+              icon={Layers}
+              etiqueta="Ratio Grupales vs Privadas"
+              valor={kpisOperativos.pctGrupal === null ? 'Sin clases' : `${kpisOperativos.pctGrupal}% Grupal`}
+              sub={`${kpisOperativos.clasesGrupal} grupales · ${kpisOperativos.clasesPrivada} privadas`}
+              tono="violet"
+            />
+            <MetricCard
+              icon={Percent}
+              etiqueta="Tasa de Asistencia Global"
+              valor={kpisOperativos.tasaAsistenciaGlobal === null ? 'Sin datos' : `${kpisOperativos.tasaAsistenciaGlobal}%`}
+              sub="Histórico de pases de lista"
+              tono="sky"
+            />
+            <MetricCard
+              icon={Clock}
+              etiqueta="Horas Pico de Academia"
+              valor={horaPico ? `${pad2(horaPico.hora)}:00 – ${pad2(horaPico.hora + 1)}:00` : 'Sin datos'}
+              sub={horaPico ? `${horaPico.clases} clase${horaPico.clases === 1 ? '' : 's'} programada${horaPico.clases === 1 ? '' : 's'} en ese horario` : undefined}
+              tono="amber"
+            />
           </div>
-        )}
-      </div>
 
-      <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-        <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
-          <Award size={16} className="text-teal-400" /> KPIs Operativos por Coach
-        </h3>
-        {kpisPorCoach.length === 0 ? (
-          <p className="py-4 text-center text-xs text-slate-500">Todavía no hay clases con Coach asignado.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                  <th className="pb-2 pr-3">Coach</th>
-                  <th className="pb-2 pr-3">Tasa de Llenado de Grupos</th>
-                  <th className="pb-2 pr-3">Índice de Retención de Alumnos</th>
-                  <th className="pb-2">Total de Alumnos Activos</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {kpisPorCoach.map((c) => (
-                  <tr key={c.nombre}>
-                    <td className="py-2 pr-3 font-bold text-slate-100">{c.nombre}</td>
-                    <td className="py-2 pr-3 text-slate-300">{c.tasaLlenado === null ? '—' : `${c.tasaLlenado}%`}</td>
-                    <td className="py-2 pr-3 text-slate-300">{c.retencionPct === null ? 'Sin datos suficientes' : `${c.retencionPct}%`}</td>
-                    <td className="py-2 text-slate-300">{c.alumnosActivos}</td>
-                  </tr>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <Layers size={16} className="text-violet-400" /> Distribución de Ingresos y Cupos — Grupal vs Individual
+            </h3>
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+              <div className="space-y-3">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Ingresos generados</p>
+                {[
+                  { label: 'Grupal', valor: kpisOperativos.ingresoGrupal },
+                  { label: 'Privada', valor: kpisOperativos.ingresoPrivada },
+                ].map((it) => {
+                  const total = kpisOperativos.ingresoGrupal + kpisOperativos.ingresoPrivada;
+                  const pct = total > 0 ? Math.round((it.valor / total) * 100) : 0;
+                  return (
+                    <div key={it.label}>
+                      <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-slate-300">
+                        <span>{it.label}</span>
+                        <span>
+                          {formatoMoneda(it.valor)} ({pct}%)
+                        </span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                        <div className="h-full rounded-full bg-lime-400" style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="space-y-3">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Cupos generados (capacidad total)</p>
+                {[
+                  { label: 'Grupal', valor: kpisOperativos.cuposGrupal },
+                  { label: 'Privada', valor: kpisOperativos.cuposPrivada },
+                ].map((it) => {
+                  const total = kpisOperativos.cuposGrupal + kpisOperativos.cuposPrivada;
+                  const pct = total > 0 ? Math.round((it.valor / total) * 100) : 0;
+                  return (
+                    <div key={it.label}>
+                      <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-slate-300">
+                        <span>{it.label}</span>
+                        <span>
+                          {it.valor} cupos ({pct}%)
+                        </span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                        <div className="h-full rounded-full bg-violet-400" style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {dashboard === 'membresias' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <MetricCard
+              icon={Crown}
+              etiqueta="Membresías Activas"
+              valor={kpisMembresias.activas}
+              sub={`${alumnosConMembresia.length} con membresía alguna vez`}
+              tono="lime"
+            />
+            <MetricCard
+              icon={RefreshCw}
+              etiqueta="Ingreso Recurrente Estimado"
+              valor={formatoMoneda(kpisMembresias.mrr)}
+              sub="MRR — ciclos vigentes ya pagados"
+              tono="sky"
+            />
+            <MetricCard icon={Bell} etiqueta="Membresías por Vencer" valor={kpisMembresias.porVencer} sub="Próximos 7 días" tono="amber" />
+            <MetricCard
+              icon={TrendingDown}
+              etiqueta="Tasa de Churn Mensual"
+              valor={kpisMembresias.churnPct === null ? 'Sin datos' : `${kpisMembresias.churnPct}%`}
+              sub={`${kpisMembresias.bajasEsteMes} baja${kpisMembresias.bajasEsteMes === 1 ? '' : 's'} este mes`}
+              tono="rose"
+            />
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+                <Crown size={16} className="text-lime-400" /> Alumnos con Membresía
+              </h3>
+              <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+                {filtrosMembresia.map((f) => (
+                  <button
+                    key={f.value}
+                    onClick={() => setFiltroMembresia(f.value)}
+                    className={`rounded-md px-2.5 py-1.5 text-[11px] font-bold transition ${
+                      filtroMembresia === f.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            </div>
+            {filasMembresiaFiltradas.length === 0 ? (
+              <p className="py-6 text-center text-xs text-slate-500">Nadie en este filtro por ahora.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      <th className="px-3 pb-2">Nombre</th>
+                      <th className="px-3 pb-2">Clase / Coach</th>
+                      <th className="px-3 pb-2">Créditos restantes</th>
+                      <th className="px-3 pb-2">Fecha de Renovación</th>
+                      <th className="px-3 pb-2">Estatus</th>
+                      <th className="px-3 pb-2">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filasMembresiaFiltradas.map((a) => (
+                      <FilaMembresia
+                        key={a.id}
+                        alumno={a}
+                        clase={clasesPorId[a.clase_id]}
+                        onCobrarPOS={cobrarMembresiaEnPOS}
+                        onDarDeBaja={darDeBajaMembresia}
+                        onReactivar={reactivarMembresia}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <UserX size={16} className="text-rose-400" /> Panel de Churn / Bajas
+            </h3>
+            {alumnosChurn.length === 0 ? (
+              <p className="py-4 text-center text-xs text-slate-500">Sin bajas de membresía registradas.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {alumnosChurn.map((a) => {
+                  const clase = clasesPorId[a.clase_id];
+                  return (
+                    <div
+                      key={a.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-bold text-slate-100">{a.nombre}</p>
+                        <p className="text-[10px] text-slate-500">
+                          {clase?.nombre || 'Clase'} · Baja {a.fecha_baja ? formatoFechaLarga(a.fecha_baja) : '—'} ·{' '}
+                          {a.motivo_baja || 'Sin razón registrada'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => reactivarMembresia(a)}
+                        className="shrink-0 rounded-md bg-sky-500/10 px-2.5 py-1 text-[10px] font-bold text-sky-300 ring-1 ring-sky-500/30 hover:bg-sky-500/20"
+                      >
+                        Reactivar para seguimiento
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {dashboard === 'coaches' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {NIVELES_ACADEMIA.map((nivel) => (
+              <div key={nivel} className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{nivel}</p>
+                <p className="mt-1 text-2xl font-black text-slate-100">{totalesPorNivel[nivel]}</p>
+                <p className="text-[11px] text-slate-500">alumno{totalesPorNivel[nivel] === 1 ? '' : 's'} activo{totalesPorNivel[nivel] === 1 ? '' : 's'}</p>
+              </div>
+            ))}
+          </div>
+
+          <HeatmapAcademia clases={clasesActivasKpi} alumnosPorClase={alumnosPorClase} />
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <UserX size={16} className="text-rose-400" /> Alertas de Riesgo de Deserción
+            </h3>
+            {alumnosEnRiesgo.length === 0 ? (
+              <p className="py-4 text-center text-xs text-slate-500">Nadie tiene 2+ inasistencias consecutivas por ahora.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {alumnosEnRiesgo.map(({ alumno, racha, clase }) => {
+                  const jugadorId = alumno.jugador_id;
+                  return (
+                    <button
+                      key={alumno.id}
+                      type="button"
+                      onClick={() => jugadorId && onIrAJugador?.(jugadorId)}
+                      disabled={!jugadorId}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-left transition hover:bg-rose-500/10 disabled:cursor-default"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-bold text-slate-100">{alumno.nombre}</p>
+                        <p className="text-[10px] text-slate-500">{clase?.nombre || 'Clase'}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                        {racha} inasistencias seguidas
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <Award size={16} className="text-teal-400" /> KPIs Operativos por Coach
+            </h3>
+            {kpisPorCoach.length === 0 ? (
+              <p className="py-4 text-center text-xs text-slate-500">Todavía no hay clases con Coach asignado.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      <th className="pb-2 pr-3">Coach</th>
+                      <th className="pb-2 pr-3">Tasa de Llenado de Grupos</th>
+                      <th className="pb-2 pr-3">Índice de Retención de Alumnos</th>
+                      <th className="pb-2">Total de Alumnos Activos</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {kpisPorCoach.map((c) => (
+                      <tr key={c.nombre}>
+                        <td className="py-2 pr-3 font-bold text-slate-100">{c.nombre}</td>
+                        <td className="py-2 pr-3 text-slate-300">{c.tasaLlenado === null ? '—' : `${c.tasaLlenado}%`}</td>
+                        <td className="py-2 pr-3 text-slate-300">{c.retencionPct === null ? 'Sin datos suficientes' : `${c.retencionPct}%`}</td>
+                        <td className="py-2 text-slate-300">{c.alumnosActivos}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -19929,6 +20754,7 @@ function ModuloAcademiaClinicas({
   marcarReservaCancelada,
   empleados,
   jugadoresPorId,
+  tablaAcademiaExiste,
   academiaClases,
   onAcademiaClaseCreada,
   onAcademiaClaseActualizada,
@@ -19938,6 +20764,7 @@ function ModuloAcademiaClinicas({
   academiaAsistencias,
   onAcademiaAsistenciaGuardada,
   onIrAJugador,
+  onIrAPOS,
 }) {
   const toast = useToast();
   const [subvista, setSubvista] = useState('operativa');
@@ -20137,6 +20964,7 @@ function ModuloAcademiaClinicas({
 
       {subvista === 'operativa' && (
         <div className="space-y-4">
+          {!tablaAcademiaExiste && <BannerTablaFaltante tabla="academia_clases (corre migracion_v16_academia_creditos.sql)" />}
           {loadingSesiones && clasesActivas.length === 0 ? (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {[0, 1, 2].map((i) => (
@@ -20201,6 +21029,8 @@ function ModuloAcademiaClinicas({
           asistencias={academiaAsistencias || []}
           jugadoresPorId={jugadoresPorId}
           onIrAJugador={onIrAJugador}
+          onAlumnoActualizado={onAcademiaAlumnoActualizado}
+          onIrAPOS={onIrAPOS}
         />
       )}
 
@@ -20228,6 +21058,7 @@ function ModuloAcademiaClinicas({
           cancha={canchasPorId[claseSeleccionada.cancha_id]}
           sesiones={sesionesDeClaseSeleccionada}
           alumnos={alumnosDeClaseSeleccionada}
+          todosLosAlumnos={academiaAlumnos}
           asistencias={asistenciasDeClaseSeleccionada}
           jugadoresPorId={jugadoresPorId}
           empleados={empleados}
@@ -22520,11 +23351,74 @@ function PortalPublicoJugadores({ clubSlug }) {
       mostrarToast({ titulo: 'Esa clase ya no tiene cupo', detalle: 'Elige otro horario o pregunta en recepción por lista de espera.', tono: 'aviso' });
       return;
     }
+
+    // Sistema de Membresías por Créditos (item 3 de la reestructuración): si
+    // el jugador identificado YA tiene una membresía vigente (en esta clase
+    // o en cualquier otra del club), su inscripción se confirma en $0 MXN
+    // SIN pasar por el flujo de pago (Wallet/Tarjeta) — se descuenta 1
+    // crédito de esa membresía en su lugar. Mismo criterio que `altaAlumno`
+    // en Recepción (`buscarMembresiaActivaDeJugador`).
+    const membresiaActiva = buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id);
+    if (membresiaActiva) {
+      const payloadCredito = withClubId({
+        clase_id: clase.id,
+        jugador_id: jugador.id,
+        nombre: jugador.nombre,
+        telefono: jugador.telefono,
+        tipo_pago: 'clase_suelta',
+        estado_pago: 'pagado',
+        monto: 0,
+        estado: 'activo',
+        canal_origen: ORIGEN_VENTA_WEB,
+        pagado_con_creditos: true,
+      });
+      try {
+        const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payloadCredito, [
+          'jugador_id',
+          'telefono',
+          'estado_pago',
+          'canal_origen',
+          'pagado_con_creditos',
+        ]);
+        if (error) throw error;
+        const nuevosCreditos = Math.max(0, Number(membresiaActiva.creditos_restantes) - 1);
+        const { error: errCredito } = await actualizarConColumnasOpcionales(
+          'academia_alumnos',
+          membresiaActiva.id,
+          { creditos_restantes: nuevosCreditos },
+          []
+        );
+        if (errCredito) console.warn('[Portal] No se pudo descontar el crédito en Supabase, se aplicó solo local.', errCredito);
+        setAcademiaAlumnosPortal((prev) => [
+          ...prev.map((a) => (a.id === membresiaActiva.id ? { ...a, creditos_restantes: nuevosCreditos } : a)),
+          data,
+        ]);
+        mostrarToast({
+          titulo: '¡Inscripción confirmada con tus créditos!',
+          detalle: `${clase.nombre} · Gratis — te quedan ${nuevosCreditos} crédito${nuevosCreditos === 1 ? '' : 's'} de tu membresía.`,
+        });
+      } catch (err) {
+        console.error('[Portal] Error detallado Supabase (inscripción con créditos):', err);
+        mostrarToast({
+          titulo: 'No se pudo completar tu inscripción',
+          detalle: 'Intenta de nuevo o pide ayuda en recepción.',
+          tono: 'error',
+        });
+      }
+      return;
+    }
+
     const monto = tipoPago === 'mensualidad' ? Number(clase.precio_mensualidad) || 0 : Number(clase.precio_clase_suelta) || 0;
     const esPagoTarjeta = metodo === 'tarjeta';
     const { montoWallet, montoRestante: montoRestanteWallet } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
     const montoRestante = esPagoTarjeta ? 0 : montoRestanteWallet;
     const pagado = esPagoTarjeta || (montoRestante <= 0 && monto > 0);
+    // Si el pago quedó cubierto de inmediato (Wallet/Tarjeta) y es
+    // "Mensualidad", esta inscripción arranca su propia membresía con
+    // créditos — igual que si se hubiera cobrado en Recepción o Smart POS
+    // (`activarOrenovarMembresia`, PAQUETE_CREDITOS_DEFECTO: el Portal no
+    // le pregunta al jugador el tamaño del paquete, así que se usa el
+    // estándar del club).
     const payloadAlumno = withClubId({
       clase_id: clase.id,
       jugador_id: jugador.id,
@@ -22535,6 +23429,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       monto,
       estado: 'activo',
       canal_origen: ORIGEN_VENTA_WEB,
+      ...(pagado && tipoPago === 'mensualidad' ? activarOrenovarMembresia(PAQUETE_CREDITOS_DEFECTO) : {}),
     });
     try {
       const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payloadAlumno, [
@@ -22542,6 +23437,10 @@ function PortalPublicoJugadores({ clubSlug }) {
         'telefono',
         'estado_pago',
         'canal_origen',
+        'paquete_creditos',
+        'creditos_restantes',
+        'fecha_inicio_membresia',
+        'fecha_renovacion',
       ]);
       if (error) throw error;
       if (montoWallet > 0) {
@@ -23686,11 +24585,19 @@ function PortalPublicoJugadores({ clubSlug }) {
                       const llena = cupos === 0;
                       const cancha = canchasPorId[c.cancha_id];
                       const dia = DIA_ACADEMIA_POR_VALOR[c.dia_semana]?.label || c.dia_semana;
+                      const esPrivada = c.tipo_clase === 'privada';
                       return (
                         <div key={c.id} className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 backdrop-blur-sm">
                           <div className="flex items-start justify-between gap-2">
                             <div>
-                              <p className="font-black text-slate-100">{c.nombre}</p>
+                              <p className="flex items-center gap-1.5 font-black text-slate-100">
+                                {c.nombre}
+                                {esPrivada && (
+                                  <span className="rounded-full bg-violet-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300 ring-1 ring-violet-400/30">
+                                    Privada
+                                  </span>
+                                )}
+                              </p>
                               <p className="mt-0.5 text-xs text-slate-400">
                                 {c.nivel} · Coach {c.coach_nombre || '—'}
                               </p>
@@ -23713,14 +24620,14 @@ function PortalPublicoJugadores({ clubSlug }) {
                               disabled={llena || !(Number(c.precio_mensualidad) > 0)}
                               className="px-3 py-1.5 text-xs"
                             >
-                              <UserPlus size={13} /> Mensualidad · {formatoMoneda(c.precio_mensualidad)}
+                              <UserPlus size={13} /> {esPrivada ? 'Individual (mensual)' : 'Mensualidad'} · {formatoMoneda(c.precio_mensualidad)}
                             </BotonPrimario>
                             <BotonSecundario
                               onClick={() => alIntentarInscribirClase(c, 'clase_suelta')}
                               disabled={llena || !(Number(c.precio_clase_suelta) > 0)}
                               className="px-3 py-1.5 text-xs"
                             >
-                              Clase suelta · {formatoMoneda(c.precio_clase_suelta)}
+                              {esPrivada ? 'Clase individual suelta' : 'Clase suelta'} · {formatoMoneda(c.precio_clase_suelta)}
                             </BotonSecundario>
                           </div>
                         </div>
@@ -25904,6 +26811,15 @@ function AppInterno() {
   const [academiaClases, setAcademiaClases] = useState([]);
   const [loadingAcademiaClases, setLoadingAcademiaClases] = useState(true);
   const [errorAcademiaClases, setErrorAcademiaClases] = useState('');
+  // NUEVO — visibilidad de persistencia (item 1 de la reestructuración):
+  // antes, si `academia_clases` no existía todavía en Supabase, el módulo
+  // caía en silencio a "Modo local" (Arquitectura Flexible) SIN avisarle al
+  // operador — parecía que todo funcionaba, pero nada se guardaba de
+  // verdad ni se sincronizaba entre dispositivos ni llegaba al Portal. Ahora
+  // se expone en un banner explícito (mismo patrón que
+  // `tablaProveedoresExiste`/`tablaEgresosExiste` en Contabilidad &
+  // Compras), apuntando a `migracion_v16_academia_creditos.sql`.
+  const [tablaAcademiaExiste, setTablaAcademiaExiste] = useState(true);
   const [academiaAlumnos, setAcademiaAlumnos] = useState([]);
   const [loadingAcademiaAlumnos, setLoadingAcademiaAlumnos] = useState(true);
   const [errorAcademiaAlumnos, setErrorAcademiaAlumnos] = useState('');
@@ -25916,9 +26832,12 @@ function AppInterno() {
     setErrorAcademiaClases('');
     const { data, error } = await conClubId(supabase.from('academia_clases').select('*'));
     if (error) {
-      if (!esErrorTablaInexistente(error)) setErrorAcademiaClases(error.message || 'No se pudieron cargar las clases de Academia.');
+      const tablaFalta = esErrorTablaInexistente(error);
+      setTablaAcademiaExiste(!tablaFalta);
+      if (!tablaFalta) setErrorAcademiaClases(error.message || 'No se pudieron cargar las clases de Academia.');
       setAcademiaClases(fusionarConRegistrosLocales([], LS_KEY_ACADEMIA_CLASES_LOCAL));
     } else {
+      setTablaAcademiaExiste(true);
       setAcademiaClases(fusionarConRegistrosLocales(data || [], LS_KEY_ACADEMIA_CLASES_LOCAL));
     }
     setLoadingAcademiaClases(false);
@@ -26359,6 +27278,7 @@ function AppInterno() {
                 canchas={canchas}
                 inscripciones={inscripciones}
                 participantesTorneo={participantesTorneo}
+                academiaAlumnos={academiaAlumnos}
               />
             ) : moduloActivo === 'analytics' ? (
               <ModuloAnalyticsBI
@@ -26437,6 +27357,7 @@ function AppInterno() {
                 marcarReservaCancelada={marcarReservaCancelada}
                 empleados={empleados}
                 jugadoresPorId={jugadoresPorId}
+                tablaAcademiaExiste={tablaAcademiaExiste}
                 academiaClases={academiaClases}
                 onAcademiaClaseCreada={(clase) => setAcademiaClases((prev) => [...prev, clase])}
                 onAcademiaClaseActualizada={(clase) =>
@@ -26455,6 +27376,7 @@ function AppInterno() {
                   })
                 }
                 onIrAJugador={(jugadorId) => irAJugadorDesdeAlerta({ jugadorId })}
+                onIrAPOS={() => setModuloActivo('pos')}
               />
             ) : moduloActivo === 'seguridad' ? (
               <ModuloControlSeguridad
