@@ -455,42 +455,83 @@
 //      ambas alimentan por `useMemo` la Herencia Automática y el LTV/CHS, así
 //      que se re-evalúan solas en cuanto las dos promesas resuelven, sin
 //      esperar a que Realtime propague los cambios.
-//      Cada tarjeta de indicador del CHS, dentro de la ficha del jugador, es
-//      un acordeón (`indicadorExpandido` en `ModalPerfilJugadorCRM`, chevron
-//      que gira al expandir): al dar clic despliega su historial exacto vía
-//      `DetalleIndicadorCHS` — Consumo Bar/Tienda lista cada línea de compra
-//      de Smart POS con su "Producto Más Comprado"; Torneos/Retas lista cada
-//      evento con fecha/categoría/tipo; Recencia y Frecuencia comparten el
-//      historial de reservas de cancha (Parrilla) con "Horario Favorito" y
-//      "Cancha Preferida"; Gasto Directo lista los tickets de renta de cancha
-//      pagados; Confiabilidad lista reservas/inscripciones asistidas vs.
-//      canceladas. Todos estos arreglos (`comprasPOS`, `eventosTorneoRetas`,
-//      `historialCanchas`, `ticketsCanchas`, `historialConfiabilidad`, y los
-//      derivados `productoFavorito`/`canchaPreferida`/`horarioFavorito`) se
-//      calculan una sola vez dentro del mismo `useMemo` de `perfiles`, con
-//      las mismas fuentes que ya alimentan el LTV/CHS agregado — nunca hay
-//      una segunda consulta a Supabase al expandir una tarjeta.
-//      LTV Total = Gasto en Canchas (reservas propias, `monto_total`) + Gasto
-//      en Bar/Cafetería + Gasto en Pro-Shop (ambos de `ventas.detalles.items`
-//      tipo 'producto', mismo bucket de categoría que "Rentabilidad por
-//      Categoría" de Analytics BI) + Gasto en Torneos/Retas (`monto` de las
-//      inscripciones pagadas — cuenta 'confirmado' y 'retenido', que ya
-//      cobró el club aunque el jugador no se haya presentado). Segmento
-//      VIP/Frecuente/Estándar por umbrales de LTV (`UMBRAL_LTV_VIP`,
-//      `UMBRAL_LTV_FRECUENTE`, editables en el código).
-//      Customer Health Score (CHS, `calcularCHS`) sale de 6 indicadores
-//      semaforizados que suman 100 pts: Recencia 25, Frecuencia 20, Gasto
-//      Directo 20, Torneos/Retas 15, Consumo Bar/Tienda 10 y Confiabilidad
-//      10 — "último partido real" combina reservas propias no canceladas,
-//      Retas con inscripción 'confirmado' (no 'retenido') y partidos de
-//      Torneo con `estado: 'jugado'` (emparejados por nombre en `pareja1`/
-//      `pareja2`, igual criterio que el WhatsApp de Cuadros & Partidos).
-//      "En Riesgo de Abandono" = CHS < 60 pts O el indicador de Recencia en
-//      🟡/🔴, y dispara una plantilla de WhatsApp (`plantillaWhatsAppAntiChurn`)
-//      que menciona el indicador más débil del jugador (bebida favorita si
-//      el consumo de bar está bajo, descuento de cancha si la recencia bajó,
-//      etc.), reutilizando `construirEnlaceWhatsApp`/`normalizarTelefonoWhatsApp`
+//      Cada tarjeta de indicador del Nivel de Fidelidad, dentro de la ficha
+//      del jugador, es un acordeón (`indicadorExpandido` en
+//      `ModalPerfilJugadorCRM`, chevron que gira al expandir): al dar clic
+//      despliega su historial exacto vía `DetalleIndicadorCHS` — Consumo
+//      Secundario lista cada línea de compra de Smart POS con su "Producto
+//      Más Comprado" y la barra de Progreso de Cortesía; Participación en
+//      Comunidad lista cada evento de Torneo/Reta con fecha/categoría/tipo
+//      (Clases se sumará automáticamente en cuanto exista ese módulo);
+//      Antigüedad/Constancia y Frecuencia de Juego comparten el historial de
+//      reservas de cancha (Parrilla) con "Horario Favorito" y "Cancha
+//      Preferida"; Gasto Promedio por Visita lista los tickets de renta de
+//      cancha pagados. Todos estos arreglos (`comprasPOS`,
+//      `eventosTorneoRetas`, `historialCanchas`, `ticketsCanchas`, y los
+//      derivados `productoFavorito`/`canchaPreferida`/`horarioFavorito`/
+//      `cortesiaBar`/`cortesiaProShop`) se calculan una sola vez dentro del
+//      mismo `useMemo` de `perfiles`, con las mismas fuentes que ya
+//      alimentan el Gasto Total Histórico/Score agregado — nunca hay una
+//      segunda consulta a Supabase al expandir una tarjeta.
+//      Gasto Total Histórico = Gasto en Canchas (reservas propias,
+//      `monto_total`) + Gasto en Bar/Cafetería + Gasto en Pro-Shop (ambos de
+//      `ventas.detalles.items` tipo 'producto', mismo bucket de categoría
+//      que "Rentabilidad por Categoría" de Analytics BI) + Gasto en
+//      Torneos/Retas (`monto` de las inscripciones pagadas — cuenta
+//      'confirmado' y 'retenido', que ya cobró el club aunque el jugador no
+//      se haya presentado). Segmento VIP/Frecuente/Estándar por umbrales del
+//      Gasto Total Histórico (`UMBRAL_LTV_VIP`, `UMBRAL_LTV_FRECUENTE`,
+//      editables en el código; el nombre interno se conserva, solo cambió el
+//      rótulo visible).
+//      Nivel de Fidelidad (Score, `calcularCHS`) sale de 5 indicadores
+//      semaforizados y transparentes que suman 100 pts: Frecuencia de Juego
+//      30 (4+ partidos/mes = 30, 2-3 = 20, 1 = 10, 0 = 0), Antigüedad/
+//      Constancia 20 (regla binaria: 20 pts si hubo actividad en los últimos
+//      30 días, 0 pts si lleva más de 30 días inactivo), Gasto Promedio por
+//      Visita 20 (ticket promedio global Canchas + POS), Consumo Secundario
+//      15 (compras en Bar/Cafetería/Pro-Shop) y Participación en Comunidad
+//      15 (inscripciones activas a Torneos/Retas — Clases se integrará
+//      cuando exista su propio módulo) — "último partido real" combina
+//      reservas propias no canceladas, Retas con inscripción 'confirmado'
+//      (no 'retenido') y partidos de Torneo con `estado: 'jugado'`
+//      (emparejados por nombre en `pareja1`/`pareja2`, igual criterio que el
+//      WhatsApp de Cuadros & Partidos).
+//      "En Riesgo de Abandono" = Score < 60 pts O el indicador de
+//      Antigüedad/Constancia en 0 pts (más de 30 días sin Actividad
+//      Reciente), y dispara una plantilla de WhatsApp
+//      (`plantillaWhatsAppAntiChurn`) que menciona el indicador más débil
+//      del jugador (bebida favorita si el consumo secundario está bajo,
+//      descuento de cancha si la actividad reciente bajó, etc.),
+//      reutilizando `construirEnlaceWhatsApp`/`normalizarTelefonoWhatsApp`
 //      de Cuadros & Partidos.
+//      Motor de Cortesías (tarjeta Consumo Secundario): sin tabla propia de
+//      canjes en Supabase todavía, el progreso se modela como un ciclo
+//      recurrente sobre el propio conteo de compras — `visitasBarUnicas % 5`
+//      para Alimentos/Bebidas (meta: 5 consumos en visitas distintas) y
+//      `gastoProShopHistorico % 1500` para Pro-Shop (meta: $1,500 MXN
+//      acumulados) — al llegar a la meta se muestra la insignia "¡Cortesía
+//      Lista para Canjear!"; el día que exista una tabla de canjes real,
+//      este cálculo se reemplaza por el saldo pendiente real sin tocar el
+//      resto del componente.
+//      Centro de Alertas del Club (`CentroAlertasClub`, campana en
+//      `TopHeader`): canal Realtime dedicado (`centro-alertas-club`, solo
+//      INSERT) que escucha `reservas`/`reta_inscripciones`/
+//      `torneo_participantes`/`ventas` y filtra SOLO las filas creadas
+//      desde `PortalPublicoJugadores` — marcadas con la columna nueva
+//      `canal_origen` ('PORTAL_WEB', misma constante `ORIGEN_VENTA_WEB` que
+//      ya usaba `ventas.origen`; ver `esCanalPortalWeb`/`esOrigenPortalWeb`).
+//      `reservas.origen`/`torneo_participantes` YA tenían otro significado
+//      (texto descriptivo), así que `canal_origen` es una columna propia,
+//      opcional (Arquitectura Flexible: sin ella en tu Supabase, el Centro
+//      de Alertas simplemente se queda vacío hasta que migres). Cada alerta
+//      dispara un toast inmediato Y queda en la campana con su `jugadorId`
+//      — clic ahí salta directo a Jugadores (CRM) y abre su Vista 360°
+//      (`jugadorAAbrirId`, prop encadenada desde `AppInterno` hasta
+//      `DirectorioJugadoresCRM`). No hay "refresco" adicional que hacer: el
+//      Score de Fidelidad/Gasto Total Histórico/historial de consumos ya se
+//      recalculan solos en tiempo real vía los canales Realtime que ya
+//      mantenían `reservas`/`inscripciones`/`participantesTorneo`/`ventas`
+//      al día desde antes de este Centro de Alertas.
 //
 // 2.6) Módulo 7, Gestión de Empleados, Roles & Control Interno ("Control &
 //      Seguridad") — RBAC de 7 roles (Owner, Admin, Manager, Recepción,
@@ -754,6 +795,9 @@ import {
   HeartPulse,
   Crown,
   Gauge,
+  Gift,
+  Bell,
+  CalendarClock,
   ShieldAlert,
   TrendingDown,
   Pencil,
@@ -968,6 +1012,21 @@ const ORIGEN_VENTA_WEB = 'PORTAL_WEB';
 // Tienda Web las filas que ya existen en Supabase con el valor viejo.
 function esOrigenPortalWeb(origen) {
   return origen === ORIGEN_VENTA_WEB || origen === 'portal';
+}
+
+// Marca de canal para el Centro de Alertas del Club (ver `CentroAlertasClub`
+// / `useAlertasClub`): a diferencia de `ventas.origen` (que ya existía y
+// sigue intacto), `reservas`/`reta_inscripciones`/`torneo_participantes` NO
+// tenían ninguna columna de canal — y `reservas.origen`/`torneo_participantes`
+// no se pueden reutilizar porque ya tienen otro significado (texto
+// descriptivo tipo "Reserva — Cancha 3"). Se agrega `canal_origen` como
+// columna NUEVA y propia (Arquitectura Flexible: si tu Supabase todavía no
+// la tiene, el INSERT se reintenta sin ella — el Centro de Alertas
+// simplemente no verá esa fila hasta que la migres) con el MISMO valor
+// canónico 'PORTAL_WEB' que ya usa `ventas.origen`, para una sola fuente de
+// verdad de "esto lo hizo un jugador desde el Portal".
+function esCanalPortalWeb(canal) {
+  return canal === ORIGEN_VENTA_WEB;
 }
 
 // Nota de color: "En Juego" es el único estatus que bloquea la cancha EN ESTE
@@ -1394,6 +1453,17 @@ function formatoHora12(horaStr) {
   h = h % 12;
   if (h === 0) h = 12;
   return `${h}:${pad2(m)} ${sufijo}`;
+}
+
+// "Hace X min" para eventos muy recientes (Centro de Alertas del Club) y
+// "HH:MM" simple para el resto — recibe un timestamp (número de
+// `Date.now()`/`getTime()`), no una hora de cancha tipo "14:30".
+function formatoHoraCorta(timestampMs) {
+  if (!timestampMs) return '';
+  const diffMin = Math.round((Date.now() - timestampMs) / 60000);
+  if (diffMin < 1) return 'Justo ahora';
+  if (diffMin < 60) return `Hace ${diffMin} min`;
+  return new Date(timestampMs).toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' });
 }
 
 function formatoFechaLarga(fechaISO) {
@@ -2151,7 +2221,21 @@ const MODULOS_META = {
   seguridad: { titulo: 'Control & Seguridad', subtitulo: 'Empleados, roles, arqueos y Log de Actividad' },
 };
 
-function TopHeader({ operador, turno, permisos, moduloActivo, onCambiarModulo, onAbrirSidebar, onAbrirOperador, onRefrescar, refrescando }) {
+function TopHeader({
+  operador,
+  turno,
+  permisos,
+  moduloActivo,
+  onCambiarModulo,
+  onAbrirSidebar,
+  onAbrirOperador,
+  onRefrescar,
+  refrescando,
+  alertasClub,
+  onMarcarAlertaLeida,
+  onMarcarTodasLeidas,
+  onIrAJugadorDesdeAlerta,
+}) {
   const meta = MODULOS_META[moduloActivo] || MODULOS_META.parrilla;
   const rolMeta = ROLES_POR_VALOR[operador.rol];
   const modulosVisibles = NAV_MODULOS.filter((m) => permisos.modulos.has(m.id));
@@ -2200,6 +2284,14 @@ function TopHeader({ operador, turno, permisos, moduloActivo, onCambiarModulo, o
         >
           <RefreshCw size={17} className={refrescando ? 'animate-spin' : ''} />
         </button>
+        {alertasClub && (
+          <CentroAlertasClub
+            alertas={alertasClub}
+            onMarcarLeida={onMarcarAlertaLeida}
+            onMarcarTodasLeidas={onMarcarTodasLeidas}
+            onIrAJugador={onIrAJugadorDesdeAlerta}
+          />
+        )}
         <Reloj />
         <button
           onClick={onAbrirOperador}
@@ -2218,6 +2310,103 @@ function TopHeader({ operador, turno, permisos, moduloActivo, onCambiarModulo, o
         </button>
       </div>
     </header>
+  );
+}
+
+// Metadatos visuales por tipo de alerta (ver `useAlertasClub`, dentro de
+// `AppInterno`) — un icono/color distinto por acción del Portal Público de
+// Jugadores (reserva, inscripción, compra), para que la campana sea
+// escaneable de un vistazo.
+const TIPO_ALERTA_META = {
+  reserva: { icon: CalendarClock, color: 'text-sky-400', bg: 'bg-sky-400/10' },
+  torneo_reta: { icon: Award, color: 'text-violet-400', bg: 'bg-violet-400/10' },
+  compra: { icon: ShoppingCart, color: 'text-amber-400', bg: 'bg-amber-400/10' },
+};
+
+// Centro de Alertas del Club: campana con contador de no leídas + dropdown,
+// alimentada por `useAlertasClub` (canal Realtime dedicado en `AppInterno`
+// que escucha INSERTs con `canal_origen`/`origen` = Portal Web en
+// `reservas`/`reta_inscripciones`/`torneo_participantes`/`ventas`). Cada
+// alerta ya trae `jugadorId` — al hacer clic, navega directo a su Vista
+// 360° (Directorio & CRM), que ya se recalcula sola en tiempo real (mismos
+// canales Realtime que ya mantenían `reservas`/`inscripciones`/
+// `participantesTorneo` al día antes de este Centro de Alertas) — no hace
+// falta ningún refresco adicional aquí, la interconexión ya existía.
+function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJugador }) {
+  const [abierto, setAbierto] = useState(false);
+  const noLeidas = alertas.filter((a) => !a.leida).length;
+
+  useEffect(() => {
+    if (!abierto) return;
+    const cerrar = (e) => {
+      if (!e.target.closest?.('[data-centro-alertas]')) setAbierto(false);
+    };
+    document.addEventListener('mousedown', cerrar);
+    return () => document.removeEventListener('mousedown', cerrar);
+  }, [abierto]);
+
+  return (
+    <div className="relative shrink-0" data-centro-alertas>
+      <button
+        onClick={() => setAbierto((v) => !v)}
+        title="Centro de Alertas"
+        className="relative rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+      >
+        <Bell size={17} />
+        {noLeidas > 0 && (
+          <span className="absolute right-0.5 top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-black text-white">
+            {noLeidas > 9 ? '9+' : noLeidas}
+          </span>
+        )}
+      </button>
+      {abierto && (
+        <div className="absolute right-0 top-full z-30 mt-2 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-800 px-3.5 py-2.5">
+            <p className="text-xs font-black uppercase tracking-wide text-slate-300">Alertas del Portal Web</p>
+            {noLeidas > 0 && (
+              <button onClick={onMarcarTodasLeidas} className="text-[11px] font-bold text-lime-400 hover:text-lime-300">
+                Marcar todas leídas
+              </button>
+            )}
+          </div>
+          <div className="max-h-96 overflow-y-auto">
+            {alertas.length === 0 ? (
+              <p className="px-3.5 py-6 text-center text-xs text-slate-500">
+                Sin actividad del Portal Web todavía. Aquí verás reservas, inscripciones y compras en cuanto un jugador las haga
+                desde su celular.
+              </p>
+            ) : (
+              alertas.map((a) => {
+                const meta = TIPO_ALERTA_META[a.tipo] || TIPO_ALERTA_META.reserva;
+                const Icon = meta.icon;
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => {
+                      onMarcarLeida(a.id);
+                      onIrAJugador(a);
+                      setAbierto(false);
+                    }}
+                    className={`flex w-full items-start gap-2.5 border-b border-slate-800/70 px-3.5 py-2.5 text-left transition last:border-0 hover:bg-slate-800/60 ${
+                      a.leida ? 'opacity-60' : ''
+                    }`}
+                  >
+                    <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${meta.bg} ${meta.color}`}>
+                      <Icon size={13} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold leading-snug text-slate-200">{a.titulo}</p>
+                      <p className="mt-0.5 text-[10px] text-slate-500">{formatoHoraCorta(a.creadaEn)}</p>
+                    </div>
+                    {!a.leida && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-lime-400" />}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -13221,6 +13410,12 @@ function resolverJugadorIdVentaCancha(venta, { reservasPorId, reservasPorCanchaF
 const UMBRAL_LTV_VIP = 15000;
 const UMBRAL_LTV_FRECUENTE = 5000;
 
+// Metas del Motor de Cortesías (tarjeta "Consumo Bar/Tienda" de la Vista
+// 360°) — ver nota en el comentario maestro sobre el modelado cíclico
+// mientras no exista una tabla de canjes propia en Supabase.
+const META_CORTESIA_BAR_CONSUMOS = 5;
+const META_CORTESIA_PROSHOP_MONTO = 1500;
+
 function segmentoPorLTV(ltvTotal) {
   if (ltvTotal >= UMBRAL_LTV_VIP) return 'VIP';
   if (ltvTotal >= UMBRAL_LTV_FRECUENTE) return 'Frecuente';
@@ -13233,7 +13428,7 @@ const SEGMENTO_META = {
   Estándar: { color: 'text-slate-300', bg: 'bg-slate-400/10', ring: 'ring-slate-500/30', icon: Users },
 };
 
-// Semáforo compartido por los 6 indicadores del Customer Health Score.
+// Semáforo compartido por los 5 indicadores del Nivel de Fidelidad (Score).
 const NIVEL_CHS_META = {
   alto: { emoji: '🟢', color: 'text-emerald-400', bg: 'bg-emerald-400/10', ring: 'ring-emerald-400/30', label: 'Alto' },
   medio: { emoji: '🟡', color: 'text-amber-400', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30', label: 'Medio' },
@@ -13242,70 +13437,67 @@ const NIVEL_CHS_META = {
 
 const MS_POR_DIA = 1000 * 60 * 60 * 24;
 
-// Motor del Customer Health Score (0-100 pts, 6 indicadores semaforizados).
-// Recibe el "perfil crudo" de un jugador (ya cruzado con Parrilla/POS/Torneos
-// & Retas por `construirPerfilJugadorCRM`, ver `DirectorioJugadoresCRM`) y
-// devuelve el puntaje total + el detalle de cada indicador, para pintar el
-// medidor y decidir la insignia "En Riesgo de Abandono".
+// Motor del Nivel de Fidelidad / Score (0-100 pts, 5 indicadores
+// semaforizados, regla transparente basada en hábitos simples). Recibe el
+// "perfil crudo" de un jugador (ya cruzado con Parrilla/POS/Torneos & Retas
+// por `construirPerfilJugadorCRM`, ver `DirectorioJugadoresCRM`) y devuelve
+// el puntaje total + el detalle de cada indicador, para pintar el medidor y
+// decidir la insignia "En Riesgo de Abandono".
 function calcularCHS(perfil) {
   const hoy = new Date(`${perfil.hoyISO}T12:00:00`);
   const indicadores = [];
 
-  // 1) Recencia (25 pts): días desde el último partido real (Parrilla + Retas
-  // asistidas + partidos de Torneo jugados) vs. el intervalo promedio entre
-  // sus propias visitas — un jugador que juega cada 20 días y no viene hace
-  // 15 sigue "al corriente"; uno que juega cada 5 días y no viene hace 15 ya
-  // se alejó del todo, aunque sean los mismos 15 días para los dos.
+  // 1) Frecuencia de Juego (30 pts): promedio de partidos/mes en los últimos
+  // 3 meses. 4+ partidos/mes = 30 pts | 2-3 partidos/mes = 20 pts | 1
+  // partido/mes = 10 pts | menos de 1/mes = 0 pts.
+  {
+    const partidosMes = perfil.eventosUltimos90Dias / 3;
+    let puntos = 0;
+    let nivel = 'bajo';
+    if (partidosMes >= 4) {
+      puntos = 30;
+      nivel = 'alto';
+    } else if (partidosMes >= 2) {
+      puntos = 20;
+      nivel = 'medio';
+    } else if (partidosMes >= 1) {
+      puntos = 10;
+      nivel = 'bajo';
+    }
+    indicadores.push({
+      key: 'frecuencia',
+      label: 'Frecuencia de Juego',
+      puntos,
+      max: 30,
+      nivel,
+      detalle: `${partidosMes.toFixed(1)} partidos/mes (últimos 90 días)`,
+    });
+  }
+
+  // 2) Antigüedad/Constancia (20 pts): regla binaria — 20 pts si registró
+  // actividad (Parrilla + Retas asistidas + partidos de Torneo jugados) en
+  // los últimos 30 días; 0 pts si lleva más de 30 días inactivo.
   {
     let puntos = 0;
     let nivel = 'bajo';
     let detalle = 'Sin partidos registrados todavía.';
     if (perfil.fechaUltimoPartido) {
       const dias = Math.max(0, Math.round((hoy - perfil.fechaUltimoPartido) / MS_POR_DIA));
-      const intervalo = perfil.intervaloPromedioDias || 30;
-      const ratio = dias / Math.max(intervalo, 7);
-      if (ratio <= 1.2) {
-        puntos = 25;
+      if (dias <= 30) {
+        puntos = 20;
         nivel = 'alto';
-      } else if (ratio <= 2.5) {
-        puntos = 14;
-        nivel = 'medio';
+        detalle = `Actividad hace ${dias} día${dias === 1 ? '' : 's'} · dentro de los últimos 30 días`;
       } else {
-        puntos = 4;
+        puntos = 0;
         nivel = 'bajo';
+        detalle = `Hace ${dias} días sin actividad · más de 30 días inactivo`;
       }
-      detalle = `Hace ${dias} día${dias === 1 ? '' : 's'} · su ritmo habitual es cada ${Math.round(intervalo)} días`;
     }
-    indicadores.push({ key: 'recencia', label: 'Recencia', puntos, max: 25, nivel, detalle });
+    indicadores.push({ key: 'antiguedad', label: 'Antigüedad/Constancia', puntos, max: 20, nivel, detalle });
   }
 
-  // 2) Frecuencia (20 pts): promedio de partidos/mes en los últimos 3 meses.
-  {
-    const partidosMes = perfil.eventosUltimos90Dias / 3;
-    let puntos = 0;
-    let nivel = 'bajo';
-    if (partidosMes >= 4) {
-      puntos = 20;
-      nivel = 'alto';
-    } else if (partidosMes >= 2) {
-      puntos = 12;
-      nivel = 'medio';
-    } else if (partidosMes > 0) {
-      puntos = 5;
-      nivel = 'bajo';
-    }
-    indicadores.push({
-      key: 'frecuencia',
-      label: 'Frecuencia',
-      puntos,
-      max: 20,
-      nivel,
-      detalle: `${partidosMes.toFixed(1)} partidos/mes (últimos 90 días)`,
-    });
-  }
-
-  // 3) Gasto Directo (20 pts): ticket promedio por visita, cruzando Canchas +
-  // Smart POS de sus propias reservas.
+  // 3) Gasto Promedio por Visita (20 pts): ticket promedio global, cruzando
+  // Canchas + Smart POS de sus propias visitas.
   {
     const ticket = perfil.visitasPropias > 0 ? (perfil.gastoCanchas + perfil.gastoBar + perfil.gastoProShop) / perfil.visitasPropias : 0;
     let puntos = 0;
@@ -13324,8 +13516,8 @@ function calcularCHS(perfil) {
       nivel = 'bajo';
     }
     indicadores.push({
-      key: 'gasto_directo',
-      label: 'Gasto Directo',
+      key: 'gasto_promedio',
+      label: 'Gasto Promedio por Visita',
       puntos,
       max: 20,
       nivel,
@@ -13333,7 +13525,35 @@ function calcularCHS(perfil) {
     });
   }
 
-  // 4) Torneos/Retas (15 pts): participación pagada en los últimos 6 meses.
+  // 4) Consumo Secundario (15 pts): gasto en Bar/Cafetería/Pro-Shop de los
+  // últimos 90 días.
+  {
+    const gasto = perfil.gastoBarReciente + perfil.gastoProShopReciente;
+    let puntos = 0;
+    let nivel = 'bajo';
+    if (gasto >= 300) {
+      puntos = 15;
+      nivel = 'alto';
+    } else if (gasto >= 100) {
+      puntos = 9;
+      nivel = 'medio';
+    } else if (gasto > 0) {
+      puntos = 3;
+      nivel = 'bajo';
+    }
+    indicadores.push({
+      key: 'consumo_secundario',
+      label: 'Consumo Secundario',
+      puntos,
+      max: 15,
+      nivel,
+      detalle: `${formatoMoneda(gasto)} en Bar/Cafetería/Pro-Shop (últimos 90 días)`,
+    });
+  }
+
+  // 5) Participación en Comunidad (15 pts): inscripciones activas a
+  // Torneos/Retas en los últimos 6 meses (Clases se sumará automáticamente
+  // en cuanto exista su propio módulo — hoy no genera datos propios).
   {
     const eventos = perfil.eventosTorneoRetaUltimos6Meses;
     let puntos = 0;
@@ -13346,90 +13566,42 @@ function calcularCHS(perfil) {
       nivel = 'medio';
     }
     indicadores.push({
-      key: 'torneos_retas',
-      label: 'Torneos/Retas',
+      key: 'comunidad',
+      label: 'Participación en Comunidad',
       puntos,
       max: 15,
       nivel,
-      detalle: `${eventos} inscripción${eventos === 1 ? '' : 'es'} pagada${eventos === 1 ? '' : 's'} en 6 meses`,
+      detalle: `${eventos} inscripción${eventos === 1 ? '' : 'es'} a Torneo/Reta en 6 meses`,
     });
-  }
-
-  // 5) Consumo Bar/Tienda (10 pts): gasto en Smart POS de los últimos 90 días.
-  {
-    const gasto = perfil.gastoBarReciente + perfil.gastoProShopReciente;
-    let puntos = 0;
-    let nivel = 'bajo';
-    if (gasto >= 300) {
-      puntos = 10;
-      nivel = 'alto';
-    } else if (gasto >= 100) {
-      puntos = 6;
-      nivel = 'medio';
-    } else if (gasto > 0) {
-      puntos = 2;
-      nivel = 'bajo';
-    }
-    indicadores.push({
-      key: 'consumo_bar',
-      label: 'Consumo Bar/Tienda',
-      puntos,
-      max: 10,
-      nivel,
-      detalle: `${formatoMoneda(gasto)} en Smart POS (últimos 90 días)`,
-    });
-  }
-
-  // 6) Confiabilidad (10 pts): % de asistencia exitosa (Parrilla + Retas).
-  {
-    let puntos = 8;
-    let nivel = 'medio';
-    let detalle = 'Sin historial suficiente para medir asistencia.';
-    if (perfil.totalEventosConfiabilidad > 0) {
-      const tasa = 1 - perfil.totalCancelaciones / perfil.totalEventosConfiabilidad;
-      if (tasa >= 0.9) {
-        puntos = 10;
-        nivel = 'alto';
-      } else if (tasa >= 0.75) {
-        puntos = 6;
-        nivel = 'medio';
-      } else {
-        puntos = 2;
-        nivel = 'bajo';
-      }
-      detalle = `${Math.round(tasa * 100)}% de asistencia (${perfil.totalCancelaciones} cancelación${perfil.totalCancelaciones === 1 ? '' : 'es'} de ${perfil.totalEventosConfiabilidad})`;
-    }
-    indicadores.push({ key: 'confiabilidad', label: 'Confiabilidad', puntos, max: 10, nivel, detalle });
   }
 
   const puntaje = indicadores.reduce((acc, i) => acc + i.puntos, 0);
-  const recenciaIndicador = indicadores.find((i) => i.key === 'recencia');
-  const enRiesgo = puntaje < 60 || recenciaIndicador.nivel !== 'alto';
+  const antiguedadIndicador = indicadores.find((i) => i.key === 'antiguedad');
+  const enRiesgo = puntaje < 60 || antiguedadIndicador.nivel !== 'alto';
 
   return { puntaje, indicadores, enRiesgo };
 }
 
 // Plantillas dinámicas de WhatsApp para el Motor Anti-Churn: elige el
 // indicador MÁS débil (relativo a su propio máximo, no en puntos absolutos —
-// así "Confiabilidad" de 10 pts compite en igualdad de condiciones con
-// "Recencia" de 25) y arma un mensaje que lo menciona directamente, tal como
-// pediste (bebida favorita si el consumo de bar está bajo, descuento de
-// cancha si la recencia bajó).
+// así "Consumo Secundario" de 15 pts compite en igualdad de condiciones con
+// "Frecuencia de Juego" de 30) y arma un mensaje que lo menciona
+// directamente, tal como pediste (bebida favorita si el consumo secundario
+// está bajo, descuento de cancha si la actividad reciente bajó).
 function plantillaWhatsAppAntiChurn(perfil) {
   const nombreCorto = (perfil.nombre || 'Jugador').split(' ')[0];
   const porRelativo = [...perfil.chs.indicadores].sort((a, b) => a.puntos / a.max - b.puntos / b.max);
   const debil = porRelativo[0];
 
   const mensajesPorIndicador = {
-    recencia: `¡Hola ${nombreCorto}! Te extrañamos en Smash Pádel Club 🎾 Hace tiempo no te vemos en cancha — tenemos un descuento especial en tu próxima reserva si regresas esta semana. ¿Te apartamos un horario?`,
+    antiguedad: `¡Hola ${nombreCorto}! Te extrañamos en Smash Pádel Club 🎾 Hace tiempo no te vemos en cancha — tenemos un descuento especial en tu próxima reserva si regresas esta semana. ¿Te apartamos un horario?`,
     frecuencia: `¡Hola ${nombreCorto}! Vimos que ya casi no has podido venir a jugar. Si quieres retomar el ritmo, tenemos horarios disponibles entre semana con mejor precio — avísanos y te apartamos cancha.`,
-    gasto_directo: `¡Hola ${nombreCorto}! Como jugador de Smash Pádel Club tenemos una promo especial para tu próxima visita (cancha + algo de la barra). ¿Te gustaría reservar esta semana?`,
-    torneos_retas: `¡Hola ${nombreCorto}! Viene un Torneo/Reta nuevo en el club y nos encantaría contar contigo — ¿te apunto un lugar antes de que se llenen los cupos?`,
-    consumo_bar: `¡Hola ${nombreCorto}! La próxima vez que juegues, tu bebida favorita va por cuenta de la casa 🥤 Solo menciónalo en la barra. ¡Nos vemos en cancha!`,
-    confiabilidad: `¡Hola ${nombreCorto}! Notamos algunas reservas canceladas últimamente — si tienes algún problema de horario avísanos, con gusto te ayudamos a encontrar uno que sí te funcione.`,
+    gasto_promedio: `¡Hola ${nombreCorto}! Como jugador de Smash Pádel Club tenemos una promo especial para tu próxima visita (cancha + algo de la barra). ¿Te gustaría reservar esta semana?`,
+    comunidad: `¡Hola ${nombreCorto}! Viene un Torneo/Reta nuevo en el club y nos encantaría contar contigo — ¿te apunto un lugar antes de que se llenen los cupos?`,
+    consumo_secundario: `¡Hola ${nombreCorto}! La próxima vez que juegues, tu bebida favorita va por cuenta de la casa 🥤 Solo menciónalo en la barra. ¡Nos vemos en cancha!`,
   };
 
-  return mensajesPorIndicador[debil.key] || mensajesPorIndicador.recencia;
+  return mensajesPorIndicador[debil.key] || mensajesPorIndicador.antiguedad;
 }
 
 /* ---------------- Ranking del Club (Motor de Torneos, Fase 1) ---------------- */
@@ -18160,8 +18332,9 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
 }
 
 /* ============================================================================
- * DIRECTORIO & CRM DE JUGADORES — LTV + Customer Health Score (CHS) +
- * Motor Anti-Churn. Ver el comentario "CRM DE JUGADORES" (junto a
+ * DIRECTORIO & CRM DE JUGADORES — Gasto Total Histórico + Nivel de
+ * Fidelidad (Score, internamente sigue como `chs`/`calcularCHS`) + Motor
+ * Anti-Churn. Ver el comentario "CRM DE JUGADORES" (junto a
  * `claveTelefono`/`claveNombre`/`calcularCHS`) para el criterio de cruce.
  * ==========================================================================*/
 
@@ -18178,6 +18351,8 @@ function DirectorioJugadoresCRM({
   participantesTorneo,
   partidosTorneo,
   bloqueosMaestroTorneoIds,
+  jugadorAAbrirId,
+  onJugadorAAbrirConsumido,
 }) {
   /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
    * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
@@ -18448,6 +18623,25 @@ function DirectorioJugadoresCRM({
           return entradas.length > 0 ? { nombre: entradas[0][0], cantidad: entradas[0][1] } : null;
         })();
 
+        // 1.b) Motor de Cortesías: progreso hacia la próxima cortesía en
+        // Bar/Cafetería (meta: 5 consumos en visitas distintas) y en
+        // Pro-Shop (meta: $1,500 MXN acumulados). Sin tabla de canjes propia
+        // todavía, el progreso se modela como un ciclo recurrente (módulo de
+        // la meta) sobre el propio historial — ver comentario maestro.
+        const visitasBarUnicas = new Set(
+          comprasPOS.filter((c) => c.categoria === 'Cafetería/Bar').map((c) => c.ventaId)
+        ).size;
+        const cortesiaBar = (() => {
+          const resto = visitasBarUnicas % META_CORTESIA_BAR_CONSUMOS;
+          const lista = visitasBarUnicas > 0 && resto === 0;
+          return { progreso: lista ? META_CORTESIA_BAR_CONSUMOS : resto, meta: META_CORTESIA_BAR_CONSUMOS, lista };
+        })();
+        const cortesiaProShop = (() => {
+          const resto = gastoProShop % META_CORTESIA_PROSHOP_MONTO;
+          const lista = gastoProShop > 0 && resto === 0;
+          return { progreso: lista ? META_CORTESIA_PROSHOP_MONTO : resto, meta: META_CORTESIA_PROSHOP_MONTO, lista };
+        })();
+
         // 2) Torneos/Retas: eventos combinados (inscripción o participación).
         const eventosTorneoRetas = [
           ...inscripcionesValidas.map((i) => {
@@ -18562,6 +18756,8 @@ function DirectorioJugadoresCRM({
           hoyISO: hoyISOStr,
           comprasPOS,
           productoFavorito,
+          cortesiaBar,
+          cortesiaProShop,
           eventosTorneoRetas,
           historialCanchas,
           canchaPreferida,
@@ -18637,25 +18833,36 @@ function DirectorioJugadoresCRM({
 
   const jugadorSeleccionado = jugadorSeleccionadoId ? perfiles.find((p) => p.id === jugadorSeleccionadoId) || null : null;
 
+  // Interconexión total con el Centro de Alertas del Club: en cuanto llega
+  // un `jugadorAAbrirId` (clic en una alerta del Portal Web), abre su Vista
+  // 360° directo, sin que el operador tenga que buscarlo — y se "consume"
+  // de inmediato (`onJugadorAAbrirConsumido`) para no reabrirse solo en
+  // cada re-render mientras siga siendo el mismo id.
+  useEffect(() => {
+    if (!jugadorAAbrirId) return;
+    setJugadorSeleccionadoId(jugadorAAbrirId);
+    onJugadorAAbrirConsumido?.();
+  }, [jugadorAAbrirId, onJugadorAAbrirConsumido]);
+
   return (
     <div className="space-y-4">
       {errorVentas && <ErrorBanner mensaje={`Smart POS: ${errorVentas}`} onReintentar={cargarVentasHistoricas} />}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MetricCard icon={Users} etiqueta="Jugadores en el Directorio" valor={String(resumen.totalJugadores)} tono="sky" />
-        <MetricCard icon={DollarSign} etiqueta="LTV Acumulado del Club" valor={formatoMoneda(resumen.ltvClubTotal)} tono="lime" />
+        <MetricCard icon={DollarSign} etiqueta="Gasto Total Histórico del Club" valor={formatoMoneda(resumen.ltvClubTotal)} tono="lime" />
         <MetricCard
           icon={Crown}
           etiqueta="Jugadores VIP"
           valor={String(resumen.vip)}
-          sub={`LTV ≥ ${formatoMoneda(UMBRAL_LTV_VIP)}`}
+          sub={`Gasto Total ≥ ${formatoMoneda(UMBRAL_LTV_VIP)}`}
           tono="amber"
         />
         <MetricCard
           icon={ShieldAlert}
           etiqueta="En Riesgo de Abandono"
           valor={String(resumen.enRiesgo)}
-          sub="CHS < 60 pts o Recencia en alerta"
+          sub="Score < 60 pts o Actividad Reciente en alerta"
           tono={resumen.enRiesgo > 0 ? 'rose' : 'emerald'}
         />
       </div>
@@ -18765,11 +18972,11 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle }) {
 
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">LTV Total</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Gasto Total</p>
           <p className="text-lg font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
         </div>
         <div className="text-right">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">CHS</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Fidelidad</p>
           <p className={`text-lg font-black ${colorTexto}`}>
             {perfil.chs.puntaje}
             <span className="text-xs font-semibold text-slate-500">/100</span>
@@ -18793,8 +19000,38 @@ function EstadoVacioHistorial({ mensaje }) {
   return <p className="px-1 py-2 text-xs text-slate-500">{mensaje}</p>;
 }
 
+// Barra de progreso del Motor de Cortesías — una por categoría (Bar/
+// Cafetería en consumos, Pro-Shop en monto acumulado). Cuando la meta se
+// cumple exactamente (`lista`), despliega la insignia de canje.
+function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, formatoUnidad }) {
+  const pct = meta > 0 ? Math.min(100, Math.round((progreso / meta) * 100)) : 0;
+  return (
+    <div className="space-y-1 rounded-lg bg-slate-900 px-2.5 py-2">
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span className="flex items-center gap-1.5 font-semibold text-slate-300">
+          <Gift size={12} className={lista ? 'text-amber-300' : 'text-slate-500'} /> {etiqueta}
+        </span>
+        <span className="font-bold text-slate-400">
+          {formatoUnidad(progreso)}/{formatoUnidad(meta)}
+        </span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+        <div className={`h-full rounded-full ${lista ? 'bg-amber-400' : 'bg-lime-400'}`} style={{ width: `${pct}%` }} />
+      </div>
+      {lista && (
+        <span className="mt-1 inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/30">
+          <Gift size={11} /> ¡Cortesía Lista para Canjear!
+        </span>
+      )}
+    </div>
+  );
+}
+
 function DetalleConsumoPOS({ perfil }) {
   const compras = perfil.comprasPOS || [];
+  const cortesiaBar = perfil.cortesiaBar;
+  const cortesiaProShop = perfil.cortesiaProShop;
+  const nombreFavorito = perfil.productoFavorito?.nombre || 'tu producto favorito';
   if (compras.length === 0) return <EstadoVacioHistorial mensaje="Sin compras registradas en Smart POS todavía." />;
   return (
     <div className="space-y-2">
@@ -18802,6 +19039,24 @@ function DetalleConsumoPOS({ perfil }) {
         <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/30">
           <Star size={11} /> Favorito: {perfil.productoFavorito.nombre} ({perfil.productoFavorito.cantidad}x)
         </span>
+      )}
+      {cortesiaBar && compras.some((c) => c.categoria === 'Cafetería/Bar') && (
+        <BarraProgresoCortesia
+          etiqueta={`Progreso de Cortesía: consumos para 1x ${nombreFavorito} Gratis`}
+          progreso={cortesiaBar.progreso}
+          meta={cortesiaBar.meta}
+          lista={cortesiaBar.lista}
+          formatoUnidad={(n) => String(n)}
+        />
+      )}
+      {cortesiaProShop && compras.some((c) => c.categoria === 'Pro-Shop') && (
+        <BarraProgresoCortesia
+          etiqueta="Progreso de Cortesía: Pro-Shop"
+          progreso={cortesiaProShop.progreso}
+          meta={cortesiaProShop.meta}
+          lista={cortesiaProShop.lista}
+          formatoUnidad={(n) => formatoMoneda(n)}
+        />
       )}
       <div className={listaHistorialClase}>
         {compras.map((c, idx) => (
@@ -18907,46 +19162,21 @@ function DetalleTicketsCanchas({ perfil }) {
   );
 }
 
-function DetalleConfiabilidad({ perfil }) {
-  const historial = perfil.historialConfiabilidad || [];
-  if (historial.length === 0) return <EstadoVacioHistorial mensaje="Sin reservas o inscripciones registradas todavía." />;
-  return (
-    <div className={listaHistorialClase}>
-      {historial.map((h, idx) => (
-        <div key={idx} className={filaHistorialClase}>
-          <div className="min-w-0">
-            <p className="truncate font-semibold text-slate-200">{h.tipo}</p>
-            <p className="text-[10px] text-slate-500">{h.fecha ? formatoFechaLarga(h.fecha) : 'Fecha por confirmar'} · {h.detalle}</p>
-          </div>
-          <span
-            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-              h.resultado === 'Asistida' ? 'bg-emerald-400/10 text-emerald-400' : 'bg-rose-400/10 text-rose-400'
-            }`}
-          >
-            {h.resultado}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// Despacha, según la llave del indicador de CHS que se expandió, el
-// desglose analítico correspondiente — Recencia y Frecuencia comparten el
-// mismo historial (reservas de cancha + Horario Favorito + Cancha Preferida).
+// Despacha, según la llave del indicador del Nivel de Fidelidad que se
+// expandió, el desglose analítico correspondiente — Antigüedad/Constancia y
+// Frecuencia de Juego comparten el mismo historial (reservas de cancha +
+// Horario Favorito + Cancha Preferida).
 function DetalleIndicadorCHS({ indKey, perfil }) {
   switch (indKey) {
-    case 'consumo_bar':
+    case 'consumo_secundario':
       return <DetalleConsumoPOS perfil={perfil} />;
-    case 'torneos_retas':
+    case 'comunidad':
       return <DetalleTorneosRetas perfil={perfil} />;
-    case 'recencia':
+    case 'antiguedad':
     case 'frecuencia':
       return <DetalleHistorialCanchas perfil={perfil} />;
-    case 'gasto_directo':
+    case 'gasto_promedio':
       return <DetalleTicketsCanchas perfil={perfil} />;
-    case 'confiabilidad':
-      return <DetalleConfiabilidad perfil={perfil} />;
     default:
       return null;
   }
@@ -18979,7 +19209,7 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono }) {
   const linkWhatsApp = useMemo(() => construirEnlaceWhatsApp({ telefono: perfil.telefono, mensaje: mensajeWhatsApp }), [perfil.telefono, mensajeWhatsApp]);
 
   return (
-    <ModalShell titulo={perfil.nombre} subtitulo="Vista 360° · LTV & Customer Health Score" onClose={onClose} ancho="max-w-2xl" icon={HeartPulse}>
+    <ModalShell titulo={perfil.nombre} subtitulo="Vista 360° · Gasto Total Histórico & Nivel de Fidelidad" onClose={onClose} ancho="max-w-2xl" icon={HeartPulse}>
       <div className="space-y-5">
         <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5">
           {editandoTelefono ? (
@@ -19046,7 +19276,7 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono }) {
 
         <div>
           <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
-            <DollarSign size={15} className="text-lime-400" /> Customer Lifetime Value
+            <DollarSign size={15} className="text-lime-400" /> Gasto Total Histórico
           </h3>
           <p className="text-2xl font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
           <div className="mt-3 space-y-2">
@@ -19069,7 +19299,7 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono }) {
 
         <div>
           <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
-            <Gauge size={15} className="text-lime-400" /> Customer Health Score — {perfil.chs.puntaje}/100 pts
+            <Gauge size={15} className="text-lime-400" /> Nivel de Fidelidad (Score) — {perfil.chs.puntaje}/100 pts
           </h3>
           <p className="mb-2 text-[11px] text-slate-500">Da clic en cualquier indicador para ver su historial exacto.</p>
           <div className="space-y-2">
@@ -19154,12 +19384,20 @@ function ModuloJugadores({
   participantesTorneo,
   partidosTorneo,
   bloqueosMaestroTorneoIds,
+  jugadorAAbrirId,
+  onJugadorAAbrirConsumido,
 }) {
   const [subvista, setSubvista] = useState('crm');
   const subvistas = [
     { value: 'crm', label: 'Directorio & CRM', icon: HeartPulse },
     { value: 'ranking', label: 'Ranking del Club', icon: Award },
   ];
+
+  // El Centro de Alertas del Club siempre navega a "Directorio & CRM" — es
+  // la única subvista con Vista 360°/Ficha del jugador.
+  useEffect(() => {
+    if (jugadorAAbrirId) setSubvista('crm');
+  }, [jugadorAAbrirId]);
 
   return (
     <div className="space-y-4">
@@ -19194,6 +19432,8 @@ function ModuloJugadores({
           participantesTorneo={participantesTorneo}
           partidosTorneo={partidosTorneo}
           bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+          jugadorAAbrirId={jugadorAAbrirId}
+          onJugadorAAbrirConsumido={onJugadorAAbrirConsumido}
         />
       )}
 
@@ -20250,6 +20490,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       estado_pago: pagado ? 'pagado' : 'pendiente',
       estatus_pago: pagado ? 'pagado' : 'pendiente',
       estado: 'confirmado',
+      canal_origen: ORIGEN_VENTA_WEB,
     });
     try {
       const { data, error } = await insertarConColumnasOpcionales('reta_inscripciones', payloadInscripcion, [
@@ -20258,6 +20499,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         'estatus_pago',
         'estado',
         'telefono',
+        'canal_origen',
       ]);
       if (error) throw error;
       if (montoWallet > 0) {
@@ -20386,6 +20628,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       'pareja_jugador_id',
       'busca_pareja',
       'pareja_grupo_id',
+      'canal_origen',
     ];
     const payloadParticipante = withClubId({
       torneo_id: torneo.id,
@@ -20404,6 +20647,10 @@ function PortalPublicoJugadores({ clubSlug }) {
       pareja_jugador_id: parejaJugadorId,
       busca_pareja: pareja?.modo === 'ninguna',
       pareja_grupo_id: grupoParejaId,
+      // Solo la fila del titular lleva `canal_origen` — la segunda fila
+      // (pareja, más abajo) es la MISMA acción/envío del portal, así que no
+      // se marca de nuevo: evita un alerta duplicada por la misma inscripción.
+      canal_origen: ORIGEN_VENTA_WEB,
     });
     try {
       const { data, error } = await insertarConColumnasOpcionales('torneo_participantes', payloadParticipante, columnasOpcionalesParticipante);
@@ -20545,6 +20792,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       'pareja_jugador_id',
       'busca_pareja',
       'pareja_grupo_id',
+      'canal_origen',
     ];
 
     const payloadNuevaFila = withClubId({
@@ -20563,6 +20811,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       pareja_jugador_id: participanteExistente.jugador_id || null,
       busca_pareja: false,
       pareja_grupo_id: grupoParejaId,
+      canal_origen: ORIGEN_VENTA_WEB,
     });
 
     try {
@@ -20942,6 +21191,10 @@ function PortalPublicoJugadores({ clubSlug }) {
         saldo_wallet_aplicado: montoWallet,
         saldo_pendiente: montoRestante,
         addons_detalle: addonsDetalle,
+        // `canal_origen` (Arquitectura Flexible, columna nueva y propia —
+        // NO reutiliza `reservas.origen`, que ya es texto descriptivo): ver
+        // `esCanalPortalWeb`/Centro de Alertas del Club.
+        canal_origen: ORIGEN_VENTA_WEB,
       });
       let { data: reservaCreada, error: errReserva } = await supabase.from('reservas').insert(payloadReserva).select().single();
       if (errReserva && esErrorColumnaInexistente(errReserva)) {
@@ -20949,6 +21202,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         delete payloadReserva.saldo_wallet_aplicado;
         delete payloadReserva.saldo_pendiente;
         delete payloadReserva.addons_detalle;
+        delete payloadReserva.canal_origen;
         ({ data: reservaCreada, error: errReserva } = await supabase.from('reservas').insert(payloadReserva).select().single());
       }
       if (errReserva) throw errReserva;
@@ -23512,6 +23766,139 @@ function AppInterno() {
     };
   }, [cargarConfigClubSupabase]);
 
+  /* ---------------- Centro de Alertas del Club (Portal Web -> Club) ----------------
+   * Canal Realtime DEDICADO (`centro-alertas-club`, solo INSERT — nunca
+   * UPDATE/DELETE) que escucha exclusivamente las filas que YA vienen
+   * marcadas como creadas desde el Portal Público de Jugadores
+   * (`canal_origen`/`origen` = 'PORTAL_WEB', ver `esCanalPortalWeb`/
+   * `esOrigenPortalWeb` y los 4 puntos de escritura en
+   * `PortalPublicoJugadores`: `confirmarReservaConAddons`, `inscribirseAReta`,
+   * `inscribirseATorneo`/`confirmarUnionTorneo`, `confirmarCheckoutTienda`).
+   * Este canal NO toca `reservas`/`inscripciones`/`participantesTorneo` —
+   * esos ya se mantienen al día con los canales `parrilla-operativa` y
+   * `torneos-retas`/`torneos-gestion` de arriba; aquí solo se arma la
+   * notificación (toast inmediato + entrada persistente en la campana) y se
+   * guarda el `jugadorId` para poder saltar directo a su Vista 360°. Las
+   * ventas ligadas a una reserva (`reserva_id`/`es_reserva: true`) se
+   * excluyen de la alerta de "Compra en Tienda Web" — ya generaron su
+   * propia alerta de "Reserva de Cancha Web".
+   * ------------------------------------------------------------------ */
+  const [alertasClub, setAlertasClub] = useState([]);
+
+  const agregarAlertaClub = useCallback(
+    ({ tipo, titulo, jugadorId }) => {
+      const id = `${tipo}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setAlertasClub((prev) => [{ id, tipo, titulo, jugadorId: jugadorId || null, leida: false, creadaEn: Date.now() }, ...prev].slice(0, 40));
+      mostrarToast({ titulo: 'Nueva actividad del Portal Web', detalle: titulo });
+    },
+    [mostrarToast]
+  );
+
+  // Refs (no dependencias del efecto de abajo): así el canal Realtime del
+  // Centro de Alertas se suscribe UNA sola vez y no se destruye/recrea cada
+  // vez que `canchas`/`retas`/`torneos` cambian de referencia (que pasa
+  // seguido, por los propios canales `parrilla-operativa`/`torneos-*` de
+  // arriba) — solo se usan para resolver nombres al momento de armar el
+  // texto de cada alerta, con el valor más reciente disponible.
+  const canchasRef = useRef(canchas);
+  const retasRef = useRef(retas);
+  const torneosRef = useRef(torneos);
+  useEffect(() => {
+    canchasRef.current = canchas;
+  }, [canchas]);
+  useEffect(() => {
+    retasRef.current = retas;
+  }, [retas]);
+  useEffect(() => {
+    torneosRef.current = torneos;
+  }, [torneos]);
+
+  useEffect(() => {
+    const filtroInsert = (table) => {
+      const base = { event: 'INSERT', schema: 'public', table };
+      return CLUB_ACTIVO_ID ? { ...base, filter: `club_id=eq.${CLUB_ACTIVO_ID}` } : base;
+    };
+
+    const canal = supabase
+      .channel('centro-alertas-club')
+      .on('postgres_changes', filtroInsert('reservas'), (payload) => {
+        const fila = payload.new || {};
+        if (!esCanalPortalWeb(fila.canal_origen)) return;
+        const canchaNombre = canchasRef.current.find((c) => c.id === fila.cancha_id)?.nombre || 'una cancha';
+        agregarAlertaClub({
+          tipo: 'reserva',
+          titulo: `Nueva reserva de ${fila.jugador_nombre || 'un jugador'} en ${canchaNombre} para el ${
+            fila.fecha ? formatoFechaLarga(fila.fecha) : 'fecha por confirmar'
+          } · ${formatoHora12(fila.hora_inicio)}`,
+          jugadorId: fila.jugador_id,
+        });
+      })
+      .on('postgres_changes', filtroInsert('reta_inscripciones'), (payload) => {
+        const fila = payload.new || {};
+        if (!esCanalPortalWeb(fila.canal_origen)) return;
+        const reta = retasRef.current.find((r) => r.id === fila.reta_id);
+        const nombreReta = reta ? `Reta${reta.nivel ? ` · ${reta.nivel}` : ''}${reta.rama ? ` (${reta.rama})` : ''}` : 'una Reta';
+        agregarAlertaClub({
+          tipo: 'torneo_reta',
+          titulo: `${fila.nombre || 'Un jugador'} se inscribió a ${nombreReta}`,
+          jugadorId: fila.jugador_id,
+        });
+      })
+      .on('postgres_changes', filtroInsert('torneo_participantes'), (payload) => {
+        const fila = payload.new || {};
+        if (!esCanalPortalWeb(fila.canal_origen)) return;
+        const torneo = torneosRef.current.find((t) => t.id === fila.torneo_id);
+        agregarAlertaClub({
+          tipo: 'torneo_reta',
+          titulo: `${fila.nombre || 'Un jugador'} se inscribió al torneo ${torneo?.nombre || ''}`.trim(),
+          jugadorId: fila.jugador_id,
+        });
+      })
+      .on('postgres_changes', filtroInsert('ventas'), (payload) => {
+        const fila = payload.new || {};
+        if (fila.reserva_id || fila.es_reserva === true) return; // ya cubierta por la alerta de "reserva"
+        if (!esOrigenPortalWeb(fila.origen)) return;
+        const detalles = fila.detalles || {};
+        agregarAlertaClub({
+          tipo: 'compra',
+          titulo: `${detalles.jugador_nombre || 'Un jugador'} realizó una compra web por ${formatoMoneda(Number(fila.total) || 0)}`,
+          jugadorId: detalles.jugador_id,
+        });
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [agregarAlertaClub]);
+
+  const marcarAlertaLeida = useCallback((id) => {
+    setAlertasClub((prev) => prev.map((a) => (a.id === id ? { ...a, leida: true } : a)));
+  }, []);
+
+  const marcarTodasAlertasLeidas = useCallback(() => {
+    setAlertasClub((prev) => prev.map((a) => ({ ...a, leida: true })));
+  }, []);
+
+  // Interconexión total: al hacer clic en una alerta, salta directo al
+  // módulo Jugadores (CRM) y le pide a `DirectorioJugadoresCRM` que abra la
+  // Vista 360° de ese jugador — `jugadorAAbrirId` se consume una sola vez
+  // (ver `onJugadorAAbrirConsumido`) para que no se reabra sola en cada
+  // re-render.
+  const [jugadorAAbrirId, setJugadorAAbrirId] = useState(null);
+  const irAJugadorDesdeAlerta = useCallback((alerta) => {
+    if (!alerta.jugadorId) {
+      mostrarToast({
+        titulo: 'Jugador sin vincular',
+        detalle: 'Esta alerta no trae un jugador identificado del Directorio todavía.',
+        tono: 'aviso',
+      });
+      return;
+    }
+    setModuloActivo('jugadores');
+    setJugadorAAbrirId(alerta.jugadorId);
+  }, [mostrarToast]);
+
   // Reloj vivo: se usa como dependencia de `metrics` (dentro de la Parrilla)
   // para que Ocupación Actual / Ingresos del Día se recalculen solos cada
   // minuto, incluso si no llega ningún cambio nuevo de Supabase.
@@ -23659,6 +24046,10 @@ function AppInterno() {
             onAbrirOperador={() => setModalOperador(true)}
             onRefrescar={() => cargarDatos()}
             refrescando={refrescando}
+            alertasClub={alertasClub}
+            onMarcarAlertaLeida={marcarAlertaLeida}
+            onMarcarTodasLeidas={marcarTodasAlertasLeidas}
+            onIrAJugadorDesdeAlerta={irAJugadorDesdeAlerta}
           />
 
           <main className="min-w-0 flex-1 space-y-5 px-4 py-5 sm:px-6">
@@ -23762,6 +24153,8 @@ function AppInterno() {
                 participantesTorneo={participantesTorneo}
                 partidosTorneo={partidosTorneo}
                 bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+                jugadorAAbrirId={jugadorAAbrirId}
+                onJugadorAAbrirConsumido={() => setJugadorAAbrirId(null)}
               />
             ) : moduloActivo === 'torneos' ? (
               <ModuloTorneosRetas
