@@ -2269,17 +2269,18 @@ function Sidebar({
               iniciales(configClubActual.nombre) || 'SP'
             )}
           </div>
-          {/* Limpieza de UI: el nombre del club (`configClubActual.nombre`,
-              texto libre y sin límite de longitud desde `ModalConfigClub`)
-              se quitó de aquí — en una franja tan angosta terminaba
-              recortado por `truncate` a un fragmento ilegible tipo "R…".
-              El logo/iniciales de la izquierda y el engrane de "Editar
-              nombre y logo del club" ya bastan para identificar/editar el
-              club desde el sidebar; el nombre completo se sigue viendo
-              siempre en el título del módulo activo (`TopHeader`) y en el
-              propio `ModalConfigClub`. */}
+          {/* Nombre del Club (dinámico): antes se ponía un texto fijo
+              "Panel operativo" aquí — a petición del club, ahora se muestra
+              `configClubActual.nombre` (mismo dato editable desde el
+              engrane de al lado / `ModalConfigClub`, persistido en
+              Supabase vía `configClub`). Se usa `truncate` + `title` con el
+              nombre completo para que un nombre largo no rompa el layout
+              de la franja angosta del sidebar, en vez de quitar el texto
+              como se hacía antes. */}
           <div className={`min-w-0 flex-1 ${colapsado ? 'lg:hidden' : ''}`}>
-            <p className="text-[11px] font-medium text-slate-500">Panel operativo</p>
+            <p className="truncate text-[11px] font-medium text-slate-500" title={configClubActual.nombre}>
+              {configClubActual.nombre || 'Panel operativo'}
+            </p>
           </div>
           <button
             type="button"
@@ -2378,8 +2379,6 @@ function TopHeader({
   onCambiarModulo,
   onAbrirSidebar,
   onAbrirOperador,
-  onRefrescar,
-  refrescando,
   alertasClub,
   onMarcarAlertaLeida,
   onMarcarTodasLeidas,
@@ -2524,13 +2523,6 @@ function TopHeader({
             </button>
           )}
         </div>
-        <button
-          onClick={onRefrescar}
-          title="Actualizar"
-          className="shrink-0 rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
-        >
-          <RefreshCw size={17} className={refrescando ? 'animate-spin' : ''} />
-        </button>
         {alertasClub && (
           <CentroAlertasClub
             alertas={alertasClub}
@@ -2540,16 +2532,27 @@ function TopHeader({
           />
         )}
         <Reloj />
+        {/* Contenedor de Perfil/Operador: con un nombre de operador largo,
+            el bloque de texto (sin límite de ancho ni `truncate`) podía
+            crecer más de la cuenta y, al ser el último elemento
+            `shrink-0` de la esquina superior derecha dentro del layout raíz
+            (`overflow-x-hidden` en `AppInterno`), terminaba recortado por
+            el borde de la pantalla en vez de mostrar un elipsis prolijo.
+            `min-w-0` en el bloque de texto + `truncate` con un ancho
+            máximo responsivo en cada línea acotan el botón a un tamaño
+            predecible (con margen real respecto al borde) sin tocar el
+            resto del layout ni el criterio de "nunca se comprime" del
+            avatar/chevron. */}
         <button
           onClick={onAbrirOperador}
-          className="flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-1.5 pr-3 transition hover:border-lime-400/40 hover:bg-slate-800"
+          className="flex shrink-0 items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-1.5 pr-3 transition hover:border-lime-400/40 hover:bg-slate-800"
         >
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime-400 text-xs font-black text-slate-950">
             {iniciales(operador.nombre)}
           </div>
-          <div className="hidden text-left sm:block">
-            <p className="text-xs font-bold leading-tight text-slate-100">{operador.nombre}</p>
-            <p className="text-[11px] text-slate-500">
+          <div className="hidden min-w-0 max-w-[9rem] text-left sm:block md:max-w-[13rem]">
+            <p className="truncate text-xs font-bold leading-tight text-slate-100">{operador.nombre}</p>
+            <p className="truncate text-[11px] text-slate-500">
               {rolMeta?.label || 'Rol'} · {turno.label}
             </p>
           </div>
@@ -2569,6 +2572,8 @@ const TIPO_ALERTA_META = {
   torneo_reta: { icon: Award, color: 'text-violet-400', bg: 'bg-violet-400/10' },
   compra: { icon: ShoppingCart, color: 'text-amber-400', bg: 'bg-amber-400/10' },
   academia: { icon: GraduationCap, color: 'text-teal-400', bg: 'bg-teal-400/10' },
+  cancelacion: { icon: Ban, color: 'text-rose-400', bg: 'bg-rose-400/10' },
+  solicitud: { icon: ClipboardList, color: 'text-fuchsia-400', bg: 'bg-fuchsia-400/10' },
 };
 
 // Centro de Alertas del Club: campana con contador de no leídas + dropdown,
@@ -10915,9 +10920,18 @@ function TopProductosTabla({ filas, cargando }) {
 
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+      {/* `filas` (`analisis.topProductos`, en `ModuloAnalyticsBI`) ya suma
+          unidades/ingreso de CUALQUIER venta pagada en `ventas.detalles.
+          items` sin distinguir canal — un producto comprado tanto en Smart
+          POS como en la Tienda en Línea del Portal (`confirmarCheckoutTienda`,
+          `origen: ORIGEN_VENTA_WEB`) llega a la MISMA fila ya sumado. El
+          subtítulo de abajo es solo para que quede explícito en la UI —
+          antes no había ninguna aclaración visible de que la Tienda en
+          Línea sí cuenta aquí. */}
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-100">
         <Trophy size={16} className="text-amber-400" /> Top 5 Productos Más Vendidos
       </h3>
+      <p className="mb-3 text-[11px] text-slate-500">Incluye ventas de mostrador (Smart POS) y de la Tienda en Línea del Portal.</p>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
           Sin ventas de productos en este rango.
@@ -11046,9 +11060,17 @@ function IngresosCruzadosTabla({ filas, cargando }) {
 function RendimientoPorCanchaTabla({ filas }) {
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+      {/* Rentabilidad por Cancha Unificada: `f.ingresos` (desde
+          `rendimientoPorCancha`, en `ModuloAnalyticsBI`) ya suma Reservas
+          normales + Clases de Academia + Torneos + Retas — estas 3 últimas
+          por tarifa oficial de renta de la cancha (ver
+          `imputacionEventosCancha`), nunca por el dinero de inscripciones/
+          mensualidad. El subtítulo deja explícito en la UI qué cubre la
+          cifra. */}
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-100">
         <MapPin size={16} className="text-sky-400" /> Rendimiento por Cancha
       </h3>
+      <p className="mb-3 text-[11px] text-slate-500">Ingresos unificados: Reservas + Clases + Torneos + Retas.</p>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
           No hay canchas activas para mostrar.
@@ -12581,25 +12603,30 @@ function ModuloAnalyticsBI({
     return mapa;
   }, [canchas]);
 
-  // Imputación de Ingresos de Torneos/Retas a Rendimiento por Cancha — por
-  // TARIFA OFICIAL (Devengo de Pista), no por reparto del pozo de
-  // inscripciones: los bloqueos que ocupan cancha en `reservas` para
-  // Torneos/Retas SIEMPRE se crean con `monto_total: 0` (ver
-  // `crearBloqueoParrilla`) — el dinero real vive en `reta_inscripciones` /
-  // `torneo_participantes`, nunca en la reserva. Pero ese dinero NO es
-  // "ingreso de la cancha": una cancha con tarifa $300/hr que aloja 5h de
-  // partidos de un torneo que recaudó $10,000 en inscripciones NO produjo
-  // $2,000/hr — produjo exactamente lo que su tarifa dice, $300/hr = $1,500.
-  // Por eso el Ingreso/Margen de Contribución de cada reserva de Torneo/Reta
-  // es SIEMPRE `Horas de Partido × Precio de Renta Oficial de la Cancha`
-  // (`precioPorHoraDeCancha`) — nunca una fracción proporcional del pozo.
+  // Imputación de Ingresos de Torneos/Retas/Clases a Rendimiento por Cancha
+  // — por TARIFA OFICIAL (Devengo de Pista), no por reparto del pozo de
+  // inscripciones ni por la mensualidad cobrada: los bloqueos que ocupan
+  // cancha en `reservas` para Torneos/Retas/Clases SIEMPRE se crean con
+  // `monto_total: 0` (ver `crearBloqueoParrilla`) — el dinero real vive en
+  // `reta_inscripciones`/`torneo_participantes`/`academia_alumnos`, nunca
+  // en la reserva. Pero ese dinero NO es "ingreso de la cancha": una cancha
+  // con tarifa $300/hr que aloja 5h de partidos de un torneo que recaudó
+  // $10,000 en inscripciones NO produjo $2,000/hr — produjo exactamente lo
+  // que su tarifa dice, $300/hr = $1,500. Por eso el Ingreso/Margen de
+  // Contribución de cada reserva de Torneo/Reta/Clase es SIEMPRE `Horas de
+  // Partido/Sesión × Precio de Renta Oficial de la Cancha`
+  // (`precioPorHoraDeCancha`) — nunca una fracción proporcional del pozo ni
+  // la mensualidad del alumno.
   //
   // "Ingresos Brutos por Torneos/Retas": suma DIRECTA de lo recaudado en
   // inscripciones (Retas + Torneos), sin restar el valor de renta de las
   // canchas consumidas — a diferencia del `ingresoPorReservaId` de arriba
   // (que SÍ sigue usando la tarifa oficial para no inflar el Rendimiento
   // por Cancha / Ingresos Cruzados), esta métrica es deliberadamente bruta:
-  // el dinero real que entró por organizar el evento, sin ninguna resta.
+  // el dinero real que entró por organizar el evento, sin ninguna resta. Ya
+  // no tiene tarjeta de KPI propia en el tablero (se quitó a pedido del
+  // club), pero se conserva aquí porque el Reporte CSV exportable sí sigue
+  // desglosándola.
   //
   // Retas: 1 reta = 1 sola reserva de bloqueo, en su propia cancha/horario —
   // ya vive en la fecha exacta en que se juega (criterio de devengo
@@ -12608,6 +12635,20 @@ function ModuloAnalyticsBI({
   // real (ver `idsMaestroTorneo`/`reservasActivasPagadas` arriba); solo los
   // sub-bloqueos de partido (`torneo_partidos`, la ocupación física real)
   // reciben su tarifa oficial dentro de `ingresoPorReservaId`.
+  //
+  // RENTABILIDAD POR CANCHA UNIFICADA (Reservas + Clases + Torneos +
+  // Retas): las Clases de Academia & Clínicas YA ocupaban horas de cancha
+  // en "Horas Reservadas"/"Ocupación" — sus bloqueos en `reservas` traen
+  // `estado: 'Clase'` (mismo mecanismo que Torneos/Retas, ver
+  // `generarSesionesClase`) y por eso ya pasaban el filtro de
+  // `reservasActivasPagadas` — pero su `monto_total` es siempre $0 y, a
+  // diferencia de Torneos/Retas, no tenían ninguna entrada en
+  // `ingresoPorReservaId`, así que aportaban $0 a "Ingresos" aunque sí
+  // sumaban horas/ocupación. Se corrige abajo con el mismo criterio de
+  // tarifa oficial que Torneos/Retas — un bloqueo de Clase cancelado ya no
+  // trae `estado: 'Clase'` (pasa a `'Cancelada'`, ver la cancelación de
+  // sesión en `ModuloAcademiaClinicas`), así que el filtro por `estado`
+  // ya excluye clases canceladas sin necesidad de revisar nada más.
   const imputacionEventosCancha = useMemo(() => {
     const ingresoPorReservaId = {};
     let ingresosBrutosTorneosRetas = 0;
@@ -12642,8 +12683,15 @@ function ModuloAnalyticsBI({
       ingresosBrutosTorneosRetas += totalTorneo;
     });
 
+    (reservas || []).forEach((r) => {
+      if (r.estado !== 'Clase') return; // no-Clase, o Clase cancelada (pasa a 'Cancelada')
+      const horas = duracionHorasBloque(r.hora_inicio, r.hora_fin);
+      if (horas <= 0) return;
+      ingresoPorReservaId[r.id] = (ingresoPorReservaId[r.id] || 0) + horas * precioPorHoraDeCancha(canchasPorId[r.cancha_id]);
+    });
+
     return { ingresoPorReservaId, ingresosBrutosTorneosRetas };
-  }, [retas, inscripciones, torneos, participantesTorneo, partidosTorneo, canchasPorId]);
+  }, [retas, inscripciones, torneos, participantesTorneo, partidosTorneo, reservas, canchasPorId]);
 
   const ingresoEfectivoPorReservaId = imputacionEventosCancha.ingresoPorReservaId;
 
@@ -13172,11 +13220,14 @@ function ModuloAnalyticsBI({
           Compras → P&L / Estado de Resultados. "Ocupación de Canchas (%)"
           reemplaza a "Margen Total del Periodo" con una métrica puramente
           operativa (horas reservadas ÷ capacidad total), sin depender de
-          ningún cálculo financiero. "Ingresos Brutos por Torneos/Retas" es
-          la suma directa de inscripciones recaudadas, sin restar nada — la
-          versión neta (Margen de Eventos) se eliminó junto con el resto de
-          las métricas financieras. */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          ningún cálculo financiero. La tarjeta "Ingresos Brutos por
+          Torneos/Retas" se quitó de aquí a pedido del club (quedaba
+          redundante ahora que "Rendimiento por Cancha", más abajo, ya suma
+          Reservas + Clases + Torneos + Retas en una sola cifra por cancha) —
+          el dato (`analisis.ingresosBrutosTorneosRetas`) se conserva
+          internamente porque el Reporte CSV exportable sí lo sigue
+          desglosando. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <MetricCard
           icon={Receipt}
           etiqueta="Ticket Promedio por Venta"
@@ -13211,13 +13262,6 @@ function ModuloAnalyticsBI({
           valor={`${analisis.ratioCrossSelling.toFixed(1)}%`}
           sub="Pro-Shop + Cafetería sobre ingresos totales"
           tono="lime"
-        />
-        <MetricCard
-          icon={Trophy}
-          etiqueta="Ingresos Brutos por Torneos/Retas"
-          valor={formatoMoneda(analisis.ingresosBrutosTorneosRetas)}
-          sub="Suma de inscripciones recaudadas (Retas + Torneos)"
-          tono="amber"
         />
       </div>
 
@@ -13934,23 +13978,18 @@ function calcularCHS(perfil) {
     });
   }
 
-  // 5) Participación en Comunidad (15 pts): inscripciones activas a
-  // Torneos/Retas EN LOS ÚLTIMOS 6 MESES + dos señales de Academia &
-  // Clínicas en la misma ventana — asistencias reales a clase
-  // (`asistenciasClaseUltimos6Meses`) e inscripciones YA PAGADAS
-  // (`inscripcionesClasePagadasUltimos6Meses`, ver `DirectorioJugadoresCRM`):
-  // esta última es la que hace que completar el pago de una inscripción en
-  // Smart POS (`cobrarInscripcionEvento`, tabla `academia_alumnos`) sume de
-  // inmediato a este indicador, igual que ya pasa con una inscripción
-  // pagada a Torneo/Reta — sin depender de que el alumno ya haya tomado
-  // clase. Cada señal cuenta como un "evento" más; el máximo del indicador
-  // SIGUE siendo 15 (Academia no suma puntos extra por fuera de los 100
-  // totales).
+  // 5) Participación en Comunidad (15 pts): ÚNICAMENTE inscripciones
+  // activas a Torneos/Retas EN LOS ÚLTIMOS 6 MESES (`eventosTorneoReta
+  // Ultimos6Meses`). Las señales de Academia & Clínicas
+  // (`asistenciasClaseUltimos6Meses`/`inscripcionesClasePagadasUltimos6Meses`)
+  // se sacaron de este indicador a pedido del club — Academia ahora tiene
+  // su PROPIO desglose dedicado en la Vista 360° ("Academia & Clínicas":
+  // gasto total + clases tomadas, ver `ModalPerfilJugadorCRM`), así que ya no hace
+  // falta que también infle este puntaje de comunidad. Los dos campos de
+  // `perfil` siguen viviendo en `DirectorioJugadoresCRM` sin cambios — solo
+  // dejaron de sumarse AQUÍ.
   {
-    const eventos =
-      perfil.eventosTorneoRetaUltimos6Meses +
-      (perfil.asistenciasClaseUltimos6Meses || 0) +
-      (perfil.inscripcionesClasePagadasUltimos6Meses || 0);
+    const eventos = perfil.eventosTorneoRetaUltimos6Meses;
     let puntos = 0;
     let nivel = 'bajo';
     if (eventos >= 2) {
@@ -13960,16 +13999,13 @@ function calcularCHS(perfil) {
       puntos = 8;
       nivel = 'medio';
     }
-    const partesDetalle = [`${perfil.eventosTorneoRetaUltimos6Meses} a Torneo/Reta`];
-    if (perfil.inscripcionesClasePagadasUltimos6Meses > 0) partesDetalle.push(`${perfil.inscripcionesClasePagadasUltimos6Meses} inscripción(es) pagada(s) a Academia`);
-    if (perfil.asistenciasClaseUltimos6Meses > 0) partesDetalle.push(`${perfil.asistenciasClaseUltimos6Meses} asistencia(s) a clase`);
     indicadores.push({
       key: 'comunidad',
-      label: 'Participación en Comunidad',
+      label: 'Participación en Comunidad (Torneos y Retas)',
       puntos,
       max: 15,
       nivel,
-      detalle: `${eventos} evento${eventos === 1 ? '' : 's'} en 6 meses (${partesDetalle.join(' + ')})`,
+      detalle: `${eventos} inscripción${eventos === 1 ? '' : 'es'} a Torneo/Reta en los últimos 6 meses`,
     });
   }
 
@@ -20535,7 +20571,7 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
   const dashboards = [
     { value: 'operativo', label: 'Operativo de Clases', icon: Gauge },
     { value: 'membresias', label: 'Membresías y Recurrencia', icon: Crown },
-    { value: 'coaches', label: 'Coaches & Mapa de Calor', icon: Award },
+    { value: 'coaches', label: 'KPIs Coaches', icon: Award },
   ];
 
   return (
@@ -20879,7 +20915,14 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
             )}
           </div>
 
-          <HeatmapAcademia clases={clasesActivasKpi} alumnosPorClase={alumnosPorClase} />
+          {/* Mapa de Calor - Saturación de Cupos: se quitó de esta pestaña
+              (ahora "KPIs Coaches", antes "Coaches & Mapa de Calor") a
+              pedido del club — ya vive de forma dinámica justo debajo del
+              cronograma en "Parrilla de Clases" (ver más abajo,
+              `dashboard` no aplica ahí porque es la vista operativa, no
+              Analytics). El resto del contenido de esta pestaña (tarjetas
+              de nivel, Tabla de Alumnos, Alertas de Riesgo de Deserción,
+              tabla de KPIs por Coach) se queda igual. */}
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
             <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
@@ -21288,14 +21331,12 @@ function ModuloAcademiaClinicas({
             onSlotClick={manejarClicCeldaLibre}
             onReservaClick={manejarClicReservaCronograma}
           />
-          {/* AJUSTE UX: "Mapa de Calor - Saturación de Cupos" también aquí,
-              justo debajo del cronograma de la Parrilla de Clases — no se
-              quitó de Analytics (pestaña "Coaches & Mapa de Calor", cuyo
-              propio nombre lo referencia), solo se agregó esta segunda
-              vista para que el operador la vea sin salir de la parrilla del
-              día. Mismos datos/criterio que la copia de Analytics
-              (`clasesActivas`/`alumnosActivosPorClase`, ya calculados
-              arriba en este mismo componente). */}
+          {/* "Mapa de Calor - Saturación de Cupos": vive AQUÍ, justo debajo
+              del cronograma de la Parrilla de Clases. Se quitó la copia que
+              existía en Analytics → pestaña "KPIs Coaches" (antes "Coaches
+              & Mapa de Calor") a pedido del club, para que esa pestaña se
+              quedara enfocada en la tabla de KPIs por Coach — esta es ahora
+              la ÚNICA vista del Heat Map en todo el módulo. */}
           <HeatmapAcademia clases={clasesActivas} alumnosPorClase={alumnosActivosPorClase} />
         </div>
       )}
@@ -21690,6 +21731,19 @@ function DirectorioJugadoresCRM({
           return f && f >= hace180;
         }).length;
 
+        // Academia & Clínicas — desglose PROPIO de la Vista 360° (gasto total
+        // histórico + clases tomadas), separado de las señales de 6 meses de
+        // arriba (que solo alimentan el CHS). Mismo criterio "histórico
+        // completo, sin ventana de fecha" que `gastoCanchas`/
+        // `gastoTorneosRetas`: `gastoAcademia` suma TODAS las inscripciones
+        // ya pagadas (mensualidad o clase suelta) de este jugador en
+        // `academia_alumnos`, y `clasesAcademiaTomadas` cuenta sus
+        // asistencias reales (`asistio: true`) en `academia_asistencias` —
+        // "tomadas", no "inscritas", para reflejar clases efectivamente
+        // recibidas.
+        const gastoAcademia = alumnosDeJ.filter((a) => a.estado_pago === 'pagado').reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
+        const clasesAcademiaTomadas = (academiaAsistencias || []).filter((a) => alumnoIdsJ.has(a.alumno_id) && a.asistio === true).length;
+
         // Participación pagada en los últimos 6 meses (indicador CHS #4).
         const eventosTorneoRetaUltimos6Meses =
           inscripcionesValidas.filter((i) => {
@@ -21740,7 +21794,7 @@ function DirectorioJugadoresCRM({
         const totalEventosConfiabilidad = propias.length + inscripcionesJ.length;
         const totalCancelaciones = propiasCanceladas.length + retasNoAsistidas;
 
-        const ltvTotal = gastoCanchas + gastoBar + gastoTorneosRetas + gastoProShop;
+        const ltvTotal = gastoCanchas + gastoBar + gastoTorneosRetas + gastoProShop + gastoAcademia;
 
         /* --- Detalle expandible de cada indicador del CHS (ficha del
          * jugador, tarjetas/acordeón de "Vista 360°") — mismas fuentes que
@@ -21895,6 +21949,8 @@ function DirectorioJugadoresCRM({
           gastoBar,
           gastoProShop,
           gastoTorneosRetas,
+          gastoAcademia,
+          clasesAcademiaTomadas,
           gastoBarReciente,
           gastoProShopReciente,
           ltvTotal,
@@ -22358,6 +22414,14 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono }) {
     { label: 'Restaurante/Bar', valor: perfil.gastoBar, color: 'bg-amber-400' },
     { label: 'Torneos/Retas', valor: perfil.gastoTorneosRetas, color: 'bg-violet-400' },
     { label: 'Pro-Shop', valor: perfil.gastoProShop, color: 'bg-fuchsia-400' },
+    // Academia & Clínicas: única fila del desglose con un `detalle` extra
+    // (clases tomadas) además del monto — ver render de `ltvFilas` abajo.
+    {
+      label: 'Academia & Clínicas',
+      valor: perfil.gastoAcademia,
+      color: 'bg-teal-400',
+      detalle: `${perfil.clasesAcademiaTomadas} clase${perfil.clasesAcademiaTomadas === 1 ? '' : 's'} tomada${perfil.clasesAcademiaTomadas === 1 ? '' : 's'}`,
+    },
   ];
   const ltvMax = Math.max(perfil.ltvTotal, 1);
 
@@ -22439,7 +22503,10 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono }) {
             {ltvFilas.map((f) => (
               <div key={f.label}>
                 <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-slate-400">{f.label}</span>
+                  <span className="text-slate-400">
+                    {f.label}
+                    {f.detalle && <span className="ml-1 text-slate-600">· {f.detalle}</span>}
+                  </span>
                   <span className="font-bold text-slate-200">{formatoMoneda(f.valor)}</span>
                 </div>
                 <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
@@ -27838,21 +27905,34 @@ function AppInterno() {
   }, [cargarConfigClubSupabase]);
 
   /* ---------------- Centro de Alertas del Club (Portal Web -> Club) ----------------
-   * Canal Realtime DEDICADO (`centro-alertas-club`, solo INSERT — nunca
-   * UPDATE/DELETE) que escucha exclusivamente las filas que YA vienen
-   * marcadas como creadas desde el Portal Público de Jugadores
-   * (`canal_origen`/`origen` = 'PORTAL_WEB', ver `esCanalPortalWeb`/
-   * `esOrigenPortalWeb` y los 4 puntos de escritura en
-   * `PortalPublicoJugadores`: `confirmarReservaConAddons`, `inscribirseAReta`,
-   * `inscribirseATorneo`/`confirmarUnionTorneo`, `confirmarCheckoutTienda`).
-   * Este canal NO toca `reservas`/`inscripciones`/`participantesTorneo` —
-   * esos ya se mantienen al día con los canales `parrilla-operativa` y
-   * `torneos-retas`/`torneos-gestion` de arriba; aquí solo se arma la
-   * notificación (toast inmediato + entrada persistente en la campana) y se
-   * guarda el `jugadorId` para poder saltar directo a su Vista 360°. Las
-   * ventas ligadas a una reserva (`reserva_id`/`es_reserva: true`) se
-   * excluyen de la alerta de "Compra en Tienda Web" — ya generaron su
-   * propia alerta de "Reserva de Cancha Web".
+   * Canal Realtime DEDICADO (`centro-alertas-club`) que escucha las filas
+   * que YA vienen marcadas como creadas (o, en la cancelación de clase,
+   * actualizadas) desde el Portal Público de Jugadores (`canal_origen`/
+   * `origen` = 'PORTAL_WEB', ver `esCanalPortalWeb`/`esOrigenPortalWeb`) —
+   * cubre TODAS las acciones del Portal, tal como lo pidió el club:
+   *   - Nueva reserva                → INSERT `reservas`
+   *   - Inscripción a Reta           → INSERT `reta_inscripciones`
+   *   - Inscripción a Torneo         → INSERT `torneo_participantes`
+   *   - Compra en Tienda en Línea    → INSERT `ventas` (sin `reserva_id`)
+   *   - Inscripción a Clase          → INSERT `academia_alumnos`
+   *   - Cancelación de Clase         → UPDATE `academia_alumnos`
+   *     (estado: 'baja', mismo `motivo_baja` que pone
+   *     `cancelarInscripcionClase` — así no se confunde con una edición
+   *     cualquiera del club)
+   *   - Solicitud de Clase Privada / Nuevo Grupo → INSERT
+   *     `academia_solicitudes` (`enviarSolicitudClase`, migracion_v17;
+   *     tabla exclusiva del Portal, no necesita revisar `canal_origen`)
+   * Puntos de escritura en `PortalPublicoJugadores`: `confirmarReservaConAddons`,
+   * `inscribirseAReta`, `inscribirseATorneo`/`confirmarUnionTorneo`,
+   * `confirmarCheckoutTienda`, `cancelarInscripcionClase`, `enviarSolicitudClase`.
+   * Este canal NO toca `reservas`/`inscripciones`/`participantesTorneo` para
+   * mantener sus datos al día — esos ya se refrescan con los canales
+   * `parrilla-operativa` y `torneos-retas`/`torneos-gestion` de arriba; aquí
+   * solo se arma la notificación (toast inmediato + entrada persistente en
+   * la campana) y se guarda el `jugadorId` para poder saltar directo a su
+   * Vista 360°. Las ventas ligadas a una reserva (`reserva_id`/`es_reserva:
+   * true`) se excluyen de la alerta de "Compra en Tienda Web" — ya
+   * generaron su propia alerta de "Reserva de Cancha Web".
    * ------------------------------------------------------------------ */
   const [alertasClub, setAlertasClub] = useState([]);
 
@@ -27889,10 +27969,16 @@ function AppInterno() {
   }, [academiaClases]);
 
   useEffect(() => {
-    const filtroInsert = (table) => {
-      const base = { event: 'INSERT', schema: 'public', table };
+    // `filtroEvento` generaliza el filtro Realtime a cualquier evento (no
+    // solo INSERT) — hace falta desde que la alerta de "Cancelación desde
+    // el Portal" (`academia_alumnos`, más abajo) escucha un UPDATE en vez
+    // de un INSERT. `filtroInsert` se conserva como el caso INSERT, que es
+    // el que usa la mayoría de las alertas.
+    const filtroEvento = (table, event) => {
+      const base = { event, schema: 'public', table };
       return CLUB_ACTIVO_ID ? { ...base, filter: `club_id=eq.${CLUB_ACTIVO_ID}` } : base;
     };
+    const filtroInsert = (table) => filtroEvento(table, 'INSERT');
 
     const canal = supabase
       .channel('centro-alertas-club')
@@ -27947,6 +28033,39 @@ function AppInterno() {
         agregarAlertaClub({
           tipo: 'academia',
           titulo: `${fila.nombre || 'Un jugador'} se inscribió a la clase ${clase?.nombre || 'de Academia & Clínicas'}`,
+          jugadorId: fila.jugador_id,
+        });
+      })
+      // Cancelación desde el Portal: `cancelarInscripcionClase` (dentro de
+      // `PortalPublicoJugadores`) actualiza la MISMA fila de
+      // `academia_alumnos` que generó la alerta de inscripción de arriba —
+      // por eso se filtra por el `motivo_baja` exacto que pone ese flujo,
+      // así una edición cualquiera hecha por el club (cambiar de clase,
+      // corregir datos, etc.) no dispara una alerta falsa de cancelación.
+      .on('postgres_changes', filtroEvento('academia_alumnos', 'UPDATE'), (payload) => {
+        const fila = payload.new || {};
+        if (!esCanalPortalWeb(fila.canal_origen)) return;
+        if (fila.estado !== 'baja' || fila.motivo_baja !== 'Cancelado por el jugador desde el Portal') return;
+        const clase = academiaClasesRef.current.find((c) => c.id === fila.clase_id);
+        agregarAlertaClub({
+          tipo: 'cancelacion',
+          titulo: `${fila.nombre || 'Un jugador'} canceló su inscripción a la clase ${clase?.nombre || 'de Academia & Clínicas'}`,
+          jugadorId: fila.jugador_id,
+        });
+      })
+      // Solicitud de Clase Privada / Nuevo Grupo: `enviarSolicitudClase`
+      // (Portal → banner arriba del catálogo de Clases) inserta en
+      // `academia_solicitudes` (migracion_v17). La tabla es exclusiva del
+      // Portal (el club nunca inserta ahí, solo lee/actualiza el estado de
+      // la solicitud desde Academia & Clínicas → "Solicitudes"), así que
+      // cualquier INSERT ya es, por definición, de un jugador — no hace
+      // falta revisar `canal_origen`.
+      .on('postgres_changes', filtroInsert('academia_solicitudes'), (payload) => {
+        const fila = payload.new || {};
+        const etiquetaTipo = fila.tipo_solicitud === 'privada' ? 'una Clase Privada' : 'un Nuevo Grupo';
+        agregarAlertaClub({
+          tipo: 'solicitud',
+          titulo: `${fila.nombre || 'Un jugador'} solicitó ${etiquetaTipo} en Academia & Clínicas`,
           jugadorId: fila.jugador_id,
         });
       })
@@ -28130,8 +28249,6 @@ function AppInterno() {
             onCambiarModulo={setModuloActivo}
             onAbrirSidebar={() => setSidebarAbierto(true)}
             onAbrirOperador={() => setModalOperador(true)}
-            onRefrescar={() => cargarDatos()}
-            refrescando={refrescando}
             alertasClub={alertasClub}
             onMarcarAlertaLeida={marcarAlertaLeida}
             onMarcarTodasLeidas={marcarTodasAlertasLeidas}
