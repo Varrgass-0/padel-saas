@@ -795,10 +795,11 @@ import {
   HeartPulse,
   Crown,
   Gauge,
+  Send,
+  Inbox,
   Gift,
   Bell,
   CalendarClock,
-  CalendarPlus,
   GripVertical,
   GraduationCap,
   UserX,
@@ -2640,7 +2641,7 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
  * MÉTRICAS
  * ==========================================================================*/
 
-function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime', onClick }) {
+function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime', onClick, activo = false }) {
   const tonos = {
     lime: 'text-lime-400 bg-lime-400/10',
     sky: 'text-sky-400 bg-sky-400/10',
@@ -2650,16 +2651,20 @@ function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime', onClick }
     rose: 'text-rose-400 bg-rose-400/10',
   };
   // `onClick` opcional: cuando se pasa (Modal de Desglose Interactivo en
-  // Contabilidad, por ejemplo), la tarjeta se vuelve clicable/enfocable con
-  // teclado (Enter/Espacio) y gana un aro de foco + hover — sin tocar
-  // ninguno de los demás usos de `MetricCard` en el resto del archivo, que
-  // no pasan esta prop y se quedan exactamente igual que antes.
+  // Contabilidad, Banners Interactivos en Analytics de Academia, etc.), la
+  // tarjeta se vuelve clicable/enfocable con teclado (Enter/Espacio) y gana
+  // un aro de foco + hover — sin tocar ninguno de los demás usos de
+  // `MetricCard` en el resto del archivo, que no pasan esta prop y se
+  // quedan exactamente igual que antes. `activo` (también opcional) marca
+  // visualmente cuál tarjeta es el filtro aplicado ahora mismo — solo tiene
+  // efecto cuando `onClick` también viene, así ningún otro uso de
+  // `MetricCard` se ve afectado por pasar o no este prop.
   const interactiva = typeof onClick === 'function';
   return (
     <div
       className={`rounded-2xl border border-slate-800 bg-slate-900 p-4 ${
         interactiva ? 'cursor-pointer transition hover:border-lime-400/50 hover:bg-slate-800/60' : ''
-      }`}
+      } ${interactiva && activo ? 'border-lime-400/60 ring-1 ring-lime-400/40 bg-slate-800/60' : ''}`}
       onClick={onClick}
       role={interactiva ? 'button' : undefined}
       tabIndex={interactiva ? 0 : undefined}
@@ -19281,7 +19286,6 @@ function ModalDetalleClase({
   onAlumnoAgregado,
   onAlumnoActualizado,
   onAsistenciaGuardada,
-  onGenerarMasSesiones,
   onGuardarEdicion,
   onEliminarClase,
 }) {
@@ -19552,15 +19556,6 @@ function ModalDetalleClase({
     onAsistenciaGuardada(resultado.data);
   }
 
-  const [generando, setGenerando] = useState(false);
-  async function generarMas() {
-    setGenerando(true);
-    await onGenerarMasSesiones(clase);
-    setGenerando(false);
-  }
-
-  const sesionesFuturas = sesionesOrdenadas.filter((s) => s.fecha >= hoyISO).length;
-
   return (
     <ModalShell
       titulo={clase.nombre}
@@ -19733,25 +19728,20 @@ function ModalDetalleClase({
 
         {subvista === 'asistencia' && (
           <div className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <select value={sesionSeleccionadaId || ''} onChange={(e) => setSesionSeleccionadaId(e.target.value)} className={`${inputClase} w-auto`}>
-                {sesionesOrdenadas.length === 0 && <option value="">Sin sesiones programadas</option>}
-                {sesionesOrdenadas.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {formatoFechaLarga(s.fecha)}
-                    {s.fecha === hoyISO ? ' · Hoy' : ''}
-                  </option>
-                ))}
-              </select>
-              <BotonSecundario onClick={generarMas} disabled={generando} className="px-2.5 py-1.5 text-xs">
-                {generando ? <Loader2 size={13} className="animate-spin" /> : <CalendarPlus size={13} />} Generar más sesiones
-              </BotonSecundario>
-            </div>
-            {sesionesFuturas <= 2 && sesionesOrdenadas.length > 0 && (
-              <p className="rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-[11px] font-semibold text-amber-300">
-                Quedan {sesionesFuturas} sesión{sesionesFuturas === 1 ? '' : 'es'} programada{sesionesFuturas === 1 ? '' : 's'} — genera más para no dejar huecos en la Parrilla.
-              </p>
-            )}
+            {/* LIMPIEZA (item 1): se quitó el botón "Generar más sesiones" y
+                el aviso de "quedan pocas sesiones" que lo acompañaba — la
+                generación de sesiones sigue existiendo (`generarSesionesClase`,
+                al crear la clase desde el Cronograma), simplemente ya no se
+                dispara manualmente desde aquí. */}
+            <select value={sesionSeleccionadaId || ''} onChange={(e) => setSesionSeleccionadaId(e.target.value)} className={`${inputClase} w-full sm:w-auto`}>
+              {sesionesOrdenadas.length === 0 && <option value="">Sin sesiones programadas</option>}
+              {sesionesOrdenadas.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {formatoFechaLarga(s.fecha)}
+                  {s.fecha === hoyISO ? ' · Hoy' : ''}
+                </option>
+              ))}
+            </select>
             <div className="max-h-80 space-y-1.5 overflow-y-auto">
               {alumnosActivos.length === 0 && <p className="py-6 text-center text-xs text-slate-500">Sin alumnos inscritos todavía.</p>}
               {sesionSeleccionada &&
@@ -20044,6 +20034,20 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar })
   const [mostrarBaja, setMostrarBaja] = useState(false);
   const [motivo, setMotivo] = useState('');
 
+  // PROTECCIÓN DE COBRO EN POS (refinamiento UX): "Cobrar en POS" arranca
+  // DESHABILITADO por defecto — solo se libera cuando de verdad tiene
+  // sentido volver a cobrarle a este alumno, para evitar que alguien lo
+  // presione por error sobre una membresía que todavía tiene créditos
+  // vigentes (cobrarla de nuevo la duplicaría). Se habilita ÚNICAMENTE si:
+  // (a) le queda 1 crédito o menos (`creditos_restantes`, incluye 0 —
+  // "se le están acabando, hay que renovar"), o (b) su ciclo ya venció
+  // (`semaforo === 'vencida'`, la fecha de renovación ya pasó). Un alumno
+  // sin `creditos_restantes` capturado todavía (columna null/undefined —
+  // proyecto recién migrado, o de antes de v16) se queda protegido por
+  // default salvo que su fecha ya haya vencido.
+  const creditosBajos = typeof alumno.creditos_restantes === 'number' && alumno.creditos_restantes <= 1;
+  const puedeCobrarPOS = creditosBajos || semaforo === 'vencida';
+
   const colorSemaforo =
     semaforo === 'activa'
       ? 'bg-emerald-400/10 text-emerald-400 ring-emerald-400/30'
@@ -20099,8 +20103,14 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar })
         ) : (
           <div className="flex flex-wrap items-center gap-1.5">
             <button
-              onClick={() => onCobrarPOS(alumno)}
-              className="inline-flex items-center gap-1 rounded-md bg-lime-400/10 px-2 py-1 text-[10px] font-bold text-lime-300 ring-1 ring-lime-400/30 hover:bg-lime-400/20"
+              onClick={() => puedeCobrarPOS && onCobrarPOS(alumno)}
+              disabled={!puedeCobrarPOS}
+              title={puedeCobrarPOS ? undefined : 'Se habilita cuando le quede 1 crédito o menos, o su membresía ya haya vencido — evita cobros accidentales.'}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold ring-1 ${
+                puedeCobrarPOS
+                  ? 'bg-lime-400/10 text-lime-300 ring-lime-400/30 hover:bg-lime-400/20'
+                  : 'cursor-not-allowed bg-slate-800/60 text-slate-600 ring-slate-700/50'
+              }`}
             >
               <ShoppingCart size={11} /> Cobrar en POS
             </button>
@@ -20373,6 +20383,18 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
     return { activas, porVencer, vencidas, mrr, bajasEsteMes, churnPct };
   }, [alumnosConMembresia]);
 
+  // BANNERS INTERACTIVOS (refinamiento UX) — filtro de Nivel: mismo patrón
+  // que `filtroMembresia` de abajo, pero para las tarjetas
+  // Principiante/Intermedio/Avanzado del dashboard "Coaches", que ahora
+  // filtran una "Tabla de Alumnos" propia (antes esas 3 tarjetas eran solo
+  // un conteo, sin ninguna tabla debajo que filtrar).
+  const [filtroNivel, setFiltroNivel] = useState('todos'); // 'todos' | 'Principiante' | 'Intermedio' | 'Avanzado'
+  const alumnosPorNivelFiltrados = useMemo(() => {
+    return alumnosActivos
+      .filter((a) => filtroNivel === 'todos' || clasesPorId[a.clase_id]?.nivel === filtroNivel)
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }, [alumnosActivos, clasesPorId, filtroNivel]);
+
   const [filtroMembresia, setFiltroMembresia] = useState('todas'); // 'todas' | 'activa' | 'por_vencer' | 'vencida'
   const filtrosMembresia = [
     { value: 'todas', label: 'Todas' },
@@ -20542,14 +20564,44 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
 
       {dashboard === 'membresias' && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {/* BANNERS INTERACTIVOS (refinamiento UX): Activas/Por Vencer/En
+              Mora son ahora botones — clic aplica de inmediato el mismo
+              filtro que los chips de "Alumnos con Membresía" de abajo
+              (`filtroMembresia`, ya existía; solo faltaba dispararlo desde
+              aquí también). Un segundo clic sobre la tarjeta YA activa
+              regresa a "Todas" — mismo criterio de alternar que usan los
+              chips. MRR y Churn se quedan como informativas (no son un
+              criterio de la tabla, son un cálculo agregado). */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <MetricCard
               icon={Crown}
               etiqueta="Membresías Activas"
               valor={kpisMembresias.activas}
               sub={`${alumnosConMembresia.length} con membresía alguna vez`}
               tono="lime"
+              activo={filtroMembresia === 'activa'}
+              onClick={() => setFiltroMembresia((prev) => (prev === 'activa' ? 'todas' : 'activa'))}
             />
+            <MetricCard
+              icon={Bell}
+              etiqueta="Membresías por Vencer"
+              valor={kpisMembresias.porVencer}
+              sub="Próximos 7 días"
+              tono="amber"
+              activo={filtroMembresia === 'por_vencer'}
+              onClick={() => setFiltroMembresia((prev) => (prev === 'por_vencer' ? 'todas' : 'por_vencer'))}
+            />
+            <MetricCard
+              icon={AlertTriangle}
+              etiqueta="Membresías en Mora"
+              valor={kpisMembresias.vencidas}
+              sub="Ya venció su fecha de renovación"
+              tono="rose"
+              activo={filtroMembresia === 'vencida'}
+              onClick={() => setFiltroMembresia((prev) => (prev === 'vencida' ? 'todas' : 'vencida'))}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
             <MetricCard
               icon={RefreshCw}
               etiqueta="Ingreso Recurrente Estimado"
@@ -20557,7 +20609,6 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
               sub="MRR — ciclos vigentes ya pagados"
               tono="sky"
             />
-            <MetricCard icon={Bell} etiqueta="Membresías por Vencer" valor={kpisMembresias.porVencer} sub="Próximos 7 días" tono="amber" />
             <MetricCard
               icon={TrendingDown}
               etiqueta="Tasa de Churn Mensual"
@@ -20657,14 +20708,91 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
 
       {dashboard === 'coaches' && (
         <div className="space-y-4">
+          {/* BANNERS INTERACTIVOS (refinamiento UX): cada tarjeta de nivel
+              es ahora un botón — clic aplica de inmediato `filtroNivel` a
+              la "Tabla de Alumnos" de abajo. Un segundo clic sobre la
+              tarjeta ya activa regresa a "Todos los niveles". */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {NIVELES_ACADEMIA.map((nivel) => (
-              <div key={nivel} className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+              <button
+                key={nivel}
+                type="button"
+                onClick={() => setFiltroNivel((prev) => (prev === nivel ? 'todos' : nivel))}
+                className={`rounded-2xl border p-4 text-left transition ${
+                  filtroNivel === nivel
+                    ? 'border-lime-400/60 bg-slate-800/60 ring-1 ring-lime-400/40'
+                    : 'border-slate-800 bg-slate-900 hover:border-lime-400/30 hover:bg-slate-800/40'
+                }`}
+              >
                 <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{nivel}</p>
                 <p className="mt-1 text-2xl font-black text-slate-100">{totalesPorNivel[nivel]}</p>
                 <p className="text-[11px] text-slate-500">alumno{totalesPorNivel[nivel] === 1 ? '' : 's'} activo{totalesPorNivel[nivel] === 1 ? '' : 's'}</p>
-              </div>
+              </button>
             ))}
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+                <Users size={16} className="text-lime-400" /> Tabla de Alumnos
+              </h3>
+              <div className="flex items-center gap-2">
+                {filtroNivel !== 'todos' && (
+                  <span className="rounded-full bg-lime-400/10 px-2.5 py-1 text-[10px] font-bold text-lime-300 ring-1 ring-lime-400/30">
+                    Filtro: {filtroNivel}
+                  </span>
+                )}
+                {filtroNivel !== 'todos' && (
+                  <button
+                    onClick={() => setFiltroNivel('todos')}
+                    className="text-[11px] font-bold text-slate-400 hover:text-slate-200"
+                  >
+                    Quitar filtro
+                  </button>
+                )}
+              </div>
+            </div>
+            {alumnosPorNivelFiltrados.length === 0 ? (
+              <p className="py-6 text-center text-xs text-slate-500">Nadie en este filtro por ahora.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      <th className="px-3 pb-2">Nombre</th>
+                      <th className="px-3 pb-2">Clase</th>
+                      <th className="px-3 pb-2">Nivel</th>
+                      <th className="px-3 pb-2">Coach</th>
+                      <th className="px-3 pb-2">Estatus</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {alumnosPorNivelFiltrados.map((a) => {
+                      const clase = clasesPorId[a.clase_id];
+                      return (
+                        <tr key={a.id}>
+                          <td className="px-3 py-2 font-bold text-slate-100">{a.nombre}</td>
+                          <td className="px-3 py-2 text-slate-400">{clase?.nombre || '—'}</td>
+                          <td className="px-3 py-2 text-slate-300">{clase?.nivel || '—'}</td>
+                          <td className="px-3 py-2 text-slate-400">{clase?.coach_nombre || '—'}</td>
+                          <td className="px-3 py-2">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
+                                a.estado_pago === 'pagado'
+                                  ? 'bg-emerald-400/10 text-emerald-400 ring-emerald-400/30'
+                                  : 'bg-amber-400/10 text-amber-400 ring-amber-400/30'
+                              }`}
+                            >
+                              {a.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           <HeatmapAcademia clases={clasesActivasKpi} alumnosPorClase={alumnosPorClase} />
@@ -20822,6 +20950,51 @@ function ModuloAcademiaClinicas({
     };
   }, [cargarAcademiaSesiones]);
 
+  /* ---- `academia_solicitudes` (migracion_v17): Solicitudes de Clase
+   * Privada/Nuevo Grupo mandadas desde el Portal — estado propio de este
+   * módulo, mismo patrón que `academiaSesiones` de arriba (self-contained,
+   * no viaja como prop desde `AppInterno`). ---- */
+  const [academiaSolicitudes, setAcademiaSolicitudes] = useState([]);
+  const [loadingSolicitudes, setLoadingSolicitudes] = useState(true);
+  const [tablaSolicitudesExiste, setTablaSolicitudesExiste] = useState(true);
+
+  const cargarAcademiaSolicitudes = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingSolicitudes(true);
+    const { data, error } = await conClubId(supabase.from('academia_solicitudes').select('*'));
+    if (error) setTablaSolicitudesExiste(!esErrorTablaInexistente(error));
+    setAcademiaSolicitudes(error ? [] : data || []);
+    setLoadingSolicitudes(false);
+  }, []);
+
+  useEffect(() => {
+    cargarAcademiaSolicitudes();
+  }, [cargarAcademiaSolicitudes]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('academia-solicitudes')
+      .on('postgres_changes', canalClubFiltro('academia_solicitudes'), () => cargarAcademiaSolicitudes({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarAcademiaSolicitudes]);
+
+  const solicitudesPendientes = useMemo(
+    () => academiaSolicitudes.filter((s) => (s.estado || 'pendiente') === 'pendiente'),
+    [academiaSolicitudes]
+  );
+  const solicitudesOrdenadas = useMemo(
+    () => [...academiaSolicitudes].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')),
+    [academiaSolicitudes]
+  );
+
+  async function actualizarEstadoSolicitud(solicitud, nuevoEstado) {
+    const { error } = await actualizarConColumnasOpcionales('academia_solicitudes', solicitud.id, { estado: nuevoEstado }, []);
+    if (error) console.warn('[Academia & Clínicas] No se pudo actualizar la solicitud en Supabase, se aplicó solo local.', error);
+    setAcademiaSolicitudes((prev) => prev.map((s) => (s.id === solicitud.id ? { ...s, estado: nuevoEstado } : s)));
+  }
+
   const claseSeleccionada = clasesActivas.find((c) => c.id === claseSeleccionadaId) || null;
   const sesionesDeClaseSeleccionada = useMemo(
     () => (claseSeleccionada ? academiaSesiones.filter((s) => s.clase_id === claseSeleccionada.id) : []),
@@ -20835,16 +21008,6 @@ function ModuloAcademiaClinicas({
     () => (claseSeleccionada ? academiaAsistencias.filter((a) => a.clase_id === claseSeleccionada.id) : []),
     [academiaAsistencias, claseSeleccionada]
   );
-
-  async function generarMasSesiones(clase) {
-    const resultado = await generarSesionesClase({ clase, reservasExistentes: reservas });
-    if (resultado.data?.length > 0) {
-      setAcademiaSesiones((prev) => [...prev, ...resultado.data]);
-      toast({ titulo: 'Sesiones generadas', detalle: `${resultado.data.length} sesión${resultado.data.length === 1 ? '' : 'es'} nueva${resultado.data.length === 1 ? '' : 's'} agregada${resultado.data.length === 1 ? '' : 's'} a la Parrilla.` });
-    } else {
-      toast({ titulo: 'No se generaron sesiones nuevas', detalle: 'Puede que ya estén todas las próximas fechas cubiertas, o haya un choque de horario en la cancha.', tono: 'aviso' });
-    }
-  }
 
   /* ---- Cronograma interactivo: cargar disponibilidad + crear/editar/eliminar ----
    * `sesionPorReservaId` es el enlace inverso que hace posible "dar clic a
@@ -20933,6 +21096,7 @@ function ModuloAcademiaClinicas({
 
   const subvistas = [
     { value: 'operativa', label: 'Parrilla de Clases', icon: GraduationCap },
+    { value: 'solicitudes', label: 'Solicitudes', icon: Inbox, badge: solicitudesPendientes.length || null },
     { value: 'analytics', label: 'Analytics', icon: BarChart3 },
   ];
 
@@ -20951,6 +21115,15 @@ function ModuloAcademiaClinicas({
                 }`}
               >
                 <Icon size={14} /> {v.label}
+                {!!v.badge && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[9px] font-black ${
+                      subvista === v.value ? 'bg-slate-950/20 text-slate-950' : 'bg-rose-500 text-white'
+                    }`}
+                  >
+                    {v.badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -21022,6 +21195,109 @@ function ModuloAcademiaClinicas({
         </div>
       )}
 
+      {/* PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO (refinamiento UX,
+          item 2) — "para revisión del administrador": esta pestaña ES esa
+          revisión. Cada solicitud llegó desde el banner del Portal Público
+          (`academia_solicitudes`, migracion_v17) y se atiende creando la
+          clase desde "Nueva Clase" / contactando al jugador por WhatsApp. */}
+      {subvista === 'solicitudes' && (
+        <div className="space-y-3">
+          {!tablaSolicitudesExiste && <BannerTablaFaltante tabla="academia_solicitudes (corre migracion_v17_academia_solicitudes.sql)" />}
+          {loadingSolicitudes ? (
+            <div className="flex items-center justify-center py-14 text-slate-500">
+              <Loader2 size={20} className="animate-spin" />
+            </div>
+          ) : solicitudesOrdenadas.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center text-slate-500">
+              <Inbox size={26} />
+              <p className="text-sm font-semibold">Todavía no hay solicitudes de clase.</p>
+              <p className="text-xs">Cuando un jugador pida una clase privada o un grupo nuevo desde el Portal, aparecerá aquí.</p>
+            </div>
+          ) : (
+            solicitudesOrdenadas.map((s) => {
+              const diaLabel = DIA_ACADEMIA_POR_VALOR[s.dia_semana]?.label || s.dia_semana || '—';
+              const rangoHora = [s.hora_desde, s.hora_hasta].filter(Boolean).join(' – ');
+              return (
+                <div
+                  key={s.id}
+                  className={`rounded-2xl border p-4 ${
+                    (s.estado || 'pendiente') === 'pendiente'
+                      ? 'border-amber-400/30 bg-amber-400/5'
+                      : s.estado === 'atendida'
+                      ? 'border-emerald-400/20 bg-slate-900'
+                      : 'border-slate-800 bg-slate-900/60 opacity-60'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="flex items-center gap-1.5 font-black text-slate-100">
+                        {s.nombre}
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ring-1 ${
+                            s.tipo_solicitud === 'privada'
+                              ? 'bg-violet-400/10 text-violet-300 ring-violet-400/30'
+                              : 'bg-sky-400/10 text-sky-300 ring-sky-400/30'
+                          }`}
+                        >
+                          {s.tipo_solicitud === 'privada' ? 'Privada 1-a-1' : 'Nuevo grupo'}
+                        </span>
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        {s.nivel || 'Nivel sin indicar'} · Coach {s.coach_deseado || 'sin preferencia'}
+                      </p>
+                      <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
+                        <CalendarClock size={12} /> {diaLabel}
+                        {rangoHora ? ` · ${rangoHora}` : ''}
+                      </p>
+                      {s.telefono && <p className="mt-0.5 text-xs text-slate-500">Tel. {s.telefono}</p>}
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold ${
+                        (s.estado || 'pendiente') === 'pendiente'
+                          ? 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
+                          : s.estado === 'atendida'
+                          ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+                          : 'bg-slate-700/40 text-slate-400'
+                      }`}
+                    >
+                      {(s.estado || 'pendiente') === 'pendiente' ? 'Pendiente' : s.estado === 'atendida' ? 'Atendida' : 'Descartada'}
+                    </span>
+                  </div>
+                  {(s.estado || 'pendiente') === 'pendiente' && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      {s.telefono && (
+                        <a
+                          href={construirEnlaceWhatsApp({
+                            telefono: s.telefono,
+                            mensaje: `Hola ${s.nombre}, somos del club — vimos tu solicitud de clase ${
+                              s.tipo_solicitud === 'privada' ? 'privada' : 'grupal'
+                            } (${s.nivel || 'nivel sin indicar'}, ${diaLabel}${rangoHora ? ` ${rangoHora}` : ''}). ¡Te contactamos para confirmar horario y costo!`,
+                          })}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20"
+                        >
+                          <IconoWhatsApp size={12} /> Contactar
+                        </a>
+                      )}
+                      <BotonPrimario onClick={() => actualizarEstadoSolicitud(s, 'atendida')} className="px-2.5 py-1.5 text-[11px]">
+                        <CheckCircle2 size={12} /> Marcar atendida
+                      </BotonPrimario>
+                      <button
+                        onClick={() => actualizarEstadoSolicitud(s, 'descartada')}
+                        className="rounded-md px-2.5 py-1.5 text-[11px] font-bold text-slate-500 hover:text-rose-400"
+                      >
+                        Descartar
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
       {subvista === 'analytics' && (
         <AnalyticsAcademia
           clases={academiaClases || []}
@@ -21066,7 +21342,6 @@ function ModuloAcademiaClinicas({
           onAlumnoAgregado={onAcademiaAlumnoAgregado}
           onAlumnoActualizado={onAcademiaAlumnoActualizado}
           onAsistenciaGuardada={onAcademiaAsistenciaGuardada}
-          onGenerarMasSesiones={generarMasSesiones}
           onGuardarEdicion={guardarEdicionClase}
           onEliminarClase={eliminarClaseSeleccionada}
         />
@@ -23040,6 +23315,26 @@ function PortalPublicoJugadores({ clubSlug }) {
   // mismo `flujoPago`/`ModalElegirPago` de siempre.
   const [torneoDetalle, setTorneoDetalle] = useState(null); // torneo completo, o null
 
+  // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX) — "Ver Resumen"
+  // de Clase y Reta abre su propio modal independiente (Torneo reutiliza el
+  // `ModalDetalleTorneo` que ya existía, ver más abajo: ahí adentro ya sabe
+  // si el jugador está inscrito, así que el resumen vive como una vista
+  // alterna DENTRO de ese mismo modal en vez de uno nuevo encima).
+  const [resumenClase, setResumenClase] = useState(null); // { clase, alumno } | null
+  const [resumenReta, setResumenReta] = useState(null); // reta completa | null
+
+  // PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO (refinamiento UX) —
+  // banner destacado arriba del catálogo '/Clases'.
+  const [modalSolicitudClase, setModalSolicitudClase] = useState(false);
+
+  // Cuadro de Torneos (`torneo_partidos`) — se carga de solo lectura para
+  // que "Ver Resumen" de una inscripción a Torneo pueda mostrar "Horario de
+  // partido" cuando el club ya armó el cuadro y le asignó cancha/hora a esa
+  // pareja (ver `ModalDetalleTorneo`/`miProximoPartidoTorneo`). El Portal
+  // nunca escribe aquí — es 100% terreno de Mesa de Control/Motor de
+  // Torneos.
+  const [torneoPartidosPortal, setTorneoPartidosPortal] = useState([]);
+
   useEffect(() => {
     let cancelado = false;
     (async () => {
@@ -23067,6 +23362,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       resProductos,
       resAcademiaClases,
       resAcademiaAlumnos,
+      resTorneoPartidos,
     ] = await Promise.all([
       conClubId(supabase.from('canchas').select('*')).order('nombre', { ascending: true }),
       conClubId(supabase.from('reservas').select('*')),
@@ -23077,6 +23373,11 @@ function PortalPublicoJugadores({ clubSlug }) {
       conClubId(supabase.from('productos').select('*')),
       conClubId(supabase.from('academia_clases').select('*')),
       conClubId(supabase.from('academia_alumnos').select('*')),
+      // Solo lectura — "Horario de partido" del resumen de inscripción a
+      // Torneo (ver `ModalDetalleTorneo`). Si la tabla o la migración de
+      // horarios todavía no existen, `data` llega `null` y el resumen
+      // simplemente muestra "Aún sin asignar" en vez de tronar el Portal.
+      conClubId(supabase.from('torneo_partidos').select('*')),
     ]);
     setCanchas(resCanchas.data || []);
     setReservas(resReservas.data || []);
@@ -23084,6 +23385,7 @@ function PortalPublicoJugadores({ clubSlug }) {
     setRetas(resRetas.data || []);
     setInscripciones(resInscripciones.data || []);
     setParticipantes(resParticipantes.data || []);
+    setTorneoPartidosPortal(resTorneoPartidos.data || []);
     // FIX DEFINITIVO de variantes: `productos` ya trae su propio arreglo
     // JSONB `variantes` — no hay una tabla `producto_variantes` aparte que
     // consultar. `variantesPorProductoPortal` (abajo) deriva de esta misma
@@ -23118,6 +23420,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       .on('postgres_changes', canalClubFiltro('productos'), () => cargarDatosPortal())
       .on('postgres_changes', canalClubFiltro('academia_clases'), () => cargarDatosPortal())
       .on('postgres_changes', canalClubFiltro('academia_alumnos'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('torneo_partidos'), () => cargarDatosPortal())
       .subscribe();
     return () => supabase.removeChannel(canal);
   }, [club, cargarDatosPortal]);
@@ -23182,6 +23485,14 @@ function PortalPublicoJugadores({ clubSlug }) {
     canchas.forEach((c) => (mapa[c.id] = c));
     return mapa;
   }, [canchas]);
+
+  // Nombres de coach ya usados en el catálogo público — sugerencias del
+  // campo "Coach deseado" del modal "Solicitar Clase Privada o Nuevo
+  // Grupo" (el Portal no tiene el directorio de empleados del club).
+  const coachesSugeridosPortal = useMemo(
+    () => Array.from(new Set(academiaClasesPortal.map((c) => c.coach_nombre).filter(Boolean))).sort(),
+    [academiaClasesPortal]
+  );
 
   const retasAbiertas = useMemo(
     () => retas.filter((r) => r.archivado !== true && (r.estado || 'abierta') !== 'cancelada'),
@@ -23807,6 +24118,76 @@ function PortalPublicoJugadores({ clubSlug }) {
         detalle: esErrorPermisoRLS(err)
           ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
           : 'Intenta de nuevo o pide ayuda en recepción.',
+        tono: 'error',
+      });
+    }
+  }
+
+  // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX) — coincidencia de
+  // identidad compartida por Clases/Torneos/Retas: mismo criterio que
+  // `esUnoMismo` dentro de `ModalDetalleTorneo` (por `jugador_id` cuando la
+  // columna existe en el proyecto, con respaldo por teléfono normalizado
+  // para proyectos sin la migración v15/`jugador_id`). Un jugador no
+  // identificado (`jugador` null) nunca "ya está inscrito" en nada — el
+  // Portal no tiene forma de saber quién es todavía.
+  function esMiRegistro(fila) {
+    if (!jugador || !fila) return false;
+    return (jugador.id && fila.jugador_id === jugador.id) || (jugador.telefono && claveTelefono(fila.telefono) === claveTelefono(jugador.telefono));
+  }
+
+  // Cancelar mi propia asistencia a una Clase de Academia desde el Portal
+  // (resumen de "Ya estás inscrito") — mismo criterio de Sincronización
+  // Silenciosa que el resto del módulo: intenta guardar en Supabase, pero
+  // si falla el estado local se actualiza igual para que el jugador vea su
+  // cupo liberado de inmediato.
+  async function cancelarInscripcionClase(alumno, clase) {
+    const cambios = { estado: 'baja', motivo_baja: 'Cancelado por el jugador desde el Portal', fecha_baja: hoyISO() };
+    if (!alumno._local) {
+      const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambios, ['motivo_baja', 'fecha_baja']);
+      if (error) console.warn('[Portal] No se pudo registrar la cancelación en Supabase, se aplicó solo local.', error);
+    }
+    setAcademiaAlumnosPortal((prev) => prev.map((a) => (a.id === alumno.id ? { ...a, ...cambios } : a)));
+    mostrarToast({ titulo: 'Asistencia cancelada', detalle: `Ya no estás inscrito en ${clase?.nombre || 'esa clase'}.` });
+    setResumenClase(null);
+  }
+
+  // PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO — guarda la petición
+  // en `academia_solicitudes` (migracion_v17) para que el club la revise
+  // desde Academia & Clínicas → pestaña "Solicitudes". `insertarConColumnasOpcionales`
+  // con columnas opcionales por si el proyecto todavía no corrió esa
+  // migración — la solicitud igual queda visible en Modo Local en vez de
+  // tronar el formulario.
+  async function enviarSolicitudClase(datos) {
+    const payload = withClubId({
+      jugador_id: jugador?.id || null,
+      nombre: jugador?.nombre || datos.nombre || '',
+      telefono: jugador?.telefono || datos.telefono || '',
+      tipo_solicitud: datos.tipo,
+      coach_deseado: datos.coach || null,
+      nivel: datos.nivel || null,
+      dia_semana: datos.dia || null,
+      hora_desde: datos.horaDesde || null,
+      hora_hasta: datos.horaHasta || null,
+      estado: 'pendiente',
+    });
+    try {
+      const { error } = await insertarConColumnasOpcionales('academia_solicitudes', payload, [
+        'jugador_id',
+        'coach_deseado',
+        'nivel',
+        'dia_semana',
+        'hora_desde',
+        'hora_hasta',
+        'estado',
+      ]);
+      if (error) throw error;
+      mostrarToast({ titulo: '¡Solicitud enviada!', detalle: 'El club la revisará y te contactará para confirmar horario y costo.' });
+      setModalSolicitudClase(false);
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (solicitud de clase):', err);
+      mostrarToast({
+        titulo: 'No se pudo enviar tu solicitud',
+        detalle: 'Intenta de nuevo o pide ayuda en recepción.',
         tono: 'error',
       });
     }
@@ -24458,6 +24839,12 @@ function PortalPublicoJugadores({ clubSlug }) {
                   {torneosActivos.map((t) => {
                     const participantesTorneo = participantesPorTorneo[t.id] || [];
                     const buscandoPareja = participantesTorneo.filter((p) => participanteEnBuscaDePareja(p)).length;
+                    // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX)
+                    // — aviso rápido en la tarjeta de la lista; el detalle
+                    // completo (categoría/pareja/horario/pago) vive dentro
+                    // de `ModalDetalleTorneo`, que ya sabe distinguirlo por
+                    // categoría cuando el torneo tiene varias.
+                    const yaInscritoEnTorneo = participantesTorneo.some((p) => esMiRegistro(p));
                     return (
                       <button
                         key={t.id}
@@ -24473,8 +24860,15 @@ function PortalPublicoJugadores({ clubSlug }) {
                               {t.fecha_fin && t.fecha_fin !== t.fecha_inicio ? ` — ${formatoFechaLarga(t.fecha_fin)}` : ''}
                             </p>
                           </div>
-                          <span className="shrink-0 rounded-full bg-violet-400/10 px-2.5 py-1 text-[10px] font-bold text-violet-400 ring-1 ring-violet-400/30">
-                            {participantesTorneo.length} inscritos
+                          <span className="flex shrink-0 flex-col items-end gap-1">
+                            <span className="rounded-full bg-violet-400/10 px-2.5 py-1 text-[10px] font-bold text-violet-400 ring-1 ring-violet-400/30">
+                              {participantesTorneo.length} inscritos
+                            </span>
+                            {yaInscritoEnTorneo && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/10 px-2 py-0.5 text-[9px] font-bold text-emerald-400 ring-1 ring-emerald-400/30">
+                                <CheckCircle2 size={10} /> Ya estás inscrito
+                              </span>
+                            )}
                           </span>
                         </div>
                         {Array.isArray(t.categorias) && t.categorias.length > 0 && (
@@ -24519,6 +24913,8 @@ function PortalPublicoJugadores({ clubSlug }) {
                     const inscritos = (inscripcionesPorReta[r.id] || []).filter((i) => i.estado !== 'cancelado');
                     const lugares = Math.max(0, CUPOS_RETA - inscritos.length);
                     const cancha = canchasPorId[r.cancha_id];
+                    // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX)
+                    const miInscripcionReta = inscritos.find((i) => esMiRegistro(i));
                     return (
                       <div key={r.id} className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 backdrop-blur-sm">
                         <div className="flex items-start justify-between gap-2">
@@ -24556,15 +24952,26 @@ function PortalPublicoJugadores({ clubSlug }) {
                             )}
                           </div>
                         )}
-                        <div className="mt-3 flex items-center justify-between">
+                        <div className="mt-3 flex items-center justify-between gap-2">
                           <p className="text-sm font-bold text-lime-400">{formatoMoneda(precioDeReta(r))}/lugar</p>
-                          <BotonPrimario
-                            onClick={() => alIntentarInscribir('reta', r)}
-                            disabled={lugares === 0}
-                            className="px-3 py-1.5 text-xs"
-                          >
-                            <UserPlus size={13} /> Inscribirme
-                          </BotonPrimario>
+                          {miInscripcionReta ? (
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-400 ring-1 ring-emerald-400/30">
+                                <CheckCircle2 size={13} /> Ya estás inscrito
+                              </span>
+                              <BotonSecundario onClick={() => setResumenReta(r)} className="px-2.5 py-1.5 text-xs">
+                                Ver Resumen
+                              </BotonSecundario>
+                            </div>
+                          ) : (
+                            <BotonPrimario
+                              onClick={() => alIntentarInscribir('reta', r)}
+                              disabled={lugares === 0}
+                              className="px-3 py-1.5 text-xs"
+                            >
+                              <UserPlus size={13} /> Inscribirme
+                            </BotonPrimario>
+                          )}
                         </div>
                       </div>
                     );
@@ -24574,30 +24981,50 @@ function PortalPublicoJugadores({ clubSlug }) {
 
               {vista === 'academia' && (
                 <div className="space-y-3">
-                  {academiaClasesPortal.filter((c) => c.estado !== 'cancelada').length === 0 && (
-                    <p className="py-10 text-center text-sm text-slate-500">Este club todavía no publicó clases/clínicas — vuelve pronto.</p>
+                  {/* PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO
+                      (refinamiento UX) — banner destacado arriba del
+                      catálogo. Las clases Privadas ya NO aparecen en la
+                      lista de abajo (ver el `.filter` de `tipo_clase`), así
+                      que este es el único camino para pedir una clase
+                      individual o armar un grupo nuevo desde el Portal. */}
+                  <button
+                    type="button"
+                    onClick={() => (jugador ? setModalSolicitudClase(true) : setModalIdentificacion(true))}
+                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-violet-400/30 bg-gradient-to-r from-violet-400/10 via-slate-900/50 to-slate-900/50 p-4 text-left backdrop-blur-sm transition hover:border-violet-400/50 hover:bg-violet-400/[0.15]"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-400/15 text-violet-300 ring-1 ring-violet-400/30">
+                        <Sparkles size={16} />
+                      </span>
+                      <span>
+                        <span className="block text-sm font-black text-slate-100">Solicitar Clase Privada o Nuevo Grupo</span>
+                        <span className="block text-[11px] text-slate-400">Elige coach, nivel, día y horario — el club te confirma.</span>
+                      </span>
+                    </span>
+                    <ChevronRight size={16} className="shrink-0 text-violet-300" />
+                  </button>
+
+                  {academiaClasesPortal.filter((c) => c.estado !== 'cancelada' && c.tipo_clase !== 'privada').length === 0 && (
+                    <p className="py-10 text-center text-sm text-slate-500">Este club todavía no publicó clases grupales — usa el botón de arriba para pedir una.</p>
                   )}
                   {academiaClasesPortal
-                    .filter((c) => c.estado !== 'cancelada')
+                    // PORTAL: solo clases Grupales — las Privadas se piden
+                    // por el banner de arriba, nunca aparecen en la lista
+                    // general (refinamiento UX, item 2).
+                    .filter((c) => c.estado !== 'cancelada' && c.tipo_clase !== 'privada')
                     .map((c) => {
                       const inscritosActivos = academiaAlumnosPortal.filter((a) => a.clase_id === c.id && a.estado !== 'baja').length;
                       const cupos = Math.max(0, c.capacidad_maxima - inscritosActivos);
                       const llena = cupos === 0;
                       const cancha = canchasPorId[c.cancha_id];
                       const dia = DIA_ACADEMIA_POR_VALOR[c.dia_semana]?.label || c.dia_semana;
-                      const esPrivada = c.tipo_clase === 'privada';
+                      // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX)
+                      const miInscripcionClase = academiaAlumnosPortal.find((a) => a.clase_id === c.id && a.estado !== 'baja' && esMiRegistro(a));
                       return (
                         <div key={c.id} className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 backdrop-blur-sm">
                           <div className="flex items-start justify-between gap-2">
                             <div>
-                              <p className="flex items-center gap-1.5 font-black text-slate-100">
-                                {c.nombre}
-                                {esPrivada && (
-                                  <span className="rounded-full bg-violet-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300 ring-1 ring-violet-400/30">
-                                    Privada
-                                  </span>
-                                )}
-                              </p>
+                              <p className="font-black text-slate-100">{c.nombre}</p>
                               <p className="mt-0.5 text-xs text-slate-400">
                                 {c.nivel} · Coach {c.coach_nombre || '—'}
                               </p>
@@ -24615,20 +25042,33 @@ function PortalPublicoJugadores({ clubSlug }) {
                             </span>
                           </div>
                           <div className="mt-3 flex flex-wrap items-center gap-2">
-                            <BotonPrimario
-                              onClick={() => alIntentarInscribirClase(c, 'mensualidad')}
-                              disabled={llena || !(Number(c.precio_mensualidad) > 0)}
-                              className="px-3 py-1.5 text-xs"
-                            >
-                              <UserPlus size={13} /> {esPrivada ? 'Individual (mensual)' : 'Mensualidad'} · {formatoMoneda(c.precio_mensualidad)}
-                            </BotonPrimario>
-                            <BotonSecundario
-                              onClick={() => alIntentarInscribirClase(c, 'clase_suelta')}
-                              disabled={llena || !(Number(c.precio_clase_suelta) > 0)}
-                              className="px-3 py-1.5 text-xs"
-                            >
-                              {esPrivada ? 'Clase individual suelta' : 'Clase suelta'} · {formatoMoneda(c.precio_clase_suelta)}
-                            </BotonSecundario>
+                            {miInscripcionClase ? (
+                              <>
+                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-400 ring-1 ring-emerald-400/30">
+                                  <CheckCircle2 size={13} /> Ya estás inscrito
+                                </span>
+                                <BotonSecundario onClick={() => setResumenClase({ clase: c, alumno: miInscripcionClase })} className="px-2.5 py-1.5 text-xs">
+                                  Ver Resumen
+                                </BotonSecundario>
+                              </>
+                            ) : (
+                              <>
+                                <BotonPrimario
+                                  onClick={() => alIntentarInscribirClase(c, 'mensualidad')}
+                                  disabled={llena || !(Number(c.precio_mensualidad) > 0)}
+                                  className="px-3 py-1.5 text-xs"
+                                >
+                                  <UserPlus size={13} /> Mensualidad · {formatoMoneda(c.precio_mensualidad)}
+                                </BotonPrimario>
+                                <BotonSecundario
+                                  onClick={() => alIntentarInscribirClase(c, 'clase_suelta')}
+                                  disabled={llena || !(Number(c.precio_clase_suelta) > 0)}
+                                  className="px-3 py-1.5 text-xs"
+                                >
+                                  Clase suelta · {formatoMoneda(c.precio_clase_suelta)}
+                                </BotonSecundario>
+                              </>
+                            )}
                           </div>
                         </div>
                       );
@@ -24789,6 +25229,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             torneo={torneoDetalle}
             participantes={participantesPorTorneo[torneoDetalle.id] || []}
             jugador={jugador}
+            partidos={torneoPartidosPortal}
             onClose={() => setTorneoDetalle(null)}
             onBuscarJugadores={buscarJugadoresRegistrados}
             onRequerirIdentificacion={() => setModalIdentificacion(true)}
@@ -24823,6 +25264,37 @@ function PortalPublicoJugadores({ clubSlug }) {
               setFlujoPago({ tipo: 'torneo', evento: torneoDetalle, categoria, monto: montoInscripcionTorneo(torneoDetalle, pareja), pareja });
               setTorneoDetalle(null);
             }}
+          />
+        )}
+
+        {/* PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO (refinamiento UX) */}
+        {modalSolicitudClase && (
+          <ModalSolicitarClase
+            onClose={() => setModalSolicitudClase(false)}
+            onEnviar={enviarSolicitudClase}
+            coachesSugeridos={coachesSugeridosPortal}
+          />
+        )}
+
+        {/* FLUJO UNIFICADO "YA ESTÁS INSCRITO" — resúmenes de Clase y Reta
+            (Torneo vive DENTRO de `ModalDetalleTorneo`, ver arriba). */}
+        {resumenClase && (
+          <ModalResumenClase
+            clase={resumenClase.clase}
+            alumno={resumenClase.alumno}
+            cancha={canchasPorId[resumenClase.clase.cancha_id]}
+            onClose={() => setResumenClase(null)}
+            onCancelar={cancelarInscripcionClase}
+          />
+        )}
+
+        {resumenReta && (
+          <ModalResumenReta
+            reta={resumenReta}
+            cancha={canchasPorId[resumenReta.cancha_id]}
+            inscritos={(inscripcionesPorReta[resumenReta.id] || []).filter((i) => i.estado !== 'cancelado')}
+            jugador={jugador}
+            onClose={() => setResumenReta(null)}
           />
         )}
 
@@ -24944,10 +25416,14 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
 // (b) registrar una pareja nueva a mano (nombre + teléfono/correo), o
 // (c) inscribirse sin pareja ("En busca de pareja") — visible aquí mismo
 // para que otro jugador se una desde "Unirme" en la lista de abajo.
-function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme }) {
+function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme }) {
   const tieneCategorias = Array.isArray(torneo.categorias) && torneo.categorias.length > 0;
   const [categoria, setCategoria] = useState(tieneCategorias ? '' : null);
   const [modoPareja, setModoPareja] = useState('ninguna'); // 'registrada' | 'nueva' | 'ninguna' | 'unirme'
+  // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX) — alterna entre
+  // el flujo normal de inscripción/pago y el resumen de "Categoría, pareja
+  // registrada, horario de partido y estatus de pago" que pidió el club.
+  const [verResumen, setVerResumen] = useState(false);
   const [busqueda, setBusqueda] = useState('');
   const [resultados, setResultados] = useState([]);
   const [buscando, setBuscando] = useState(false);
@@ -25030,6 +25506,32 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
   // volver a registrarse "Sin pareja" — el jugador ya tiene un lugar (y, si
   // `parejaYaConfirmada`, ya tiene pareja) en esta categoría.
   const yaInscritoEnEstaCategoria = !!miInscripcion && (!tieneCategorias || (miInscripcion.categoria || '') === categoria);
+
+  // "Horario de partido" del resumen (refinamiento UX) — busca, entre los
+  // partidos YA generados del cuadro (`torneo_partidos`, cargado de solo
+  // lectura en el Portal), aquél cuya `pareja1`/`pareja2` incluya mi nombre.
+  // Esos dos campos se guardan como texto plano ("Fulano / Sutana", ver
+  // `duplasConfirmadasTorneo`), así que la coincidencia es por substring de
+  // nombre — suficiente para "¿ya tengo horario asignado?" sin tener que
+  // duplicar aquí el motor de brackets completo. `null` = el club todavía
+  // no generó el cuadro de esta categoría, o no le ha asignado horario a mi
+  // partido todavía.
+  const miProximoPartido = useMemo(() => {
+    const nombreLower = (jugador?.nombre || miInscripcion?.nombre || '').trim().toLowerCase();
+    if (!nombreLower) return null;
+    return (
+      (partidos || [])
+        .filter((p) => p.torneo_id === torneo.id && (!tieneCategorias || (p.categoria || '') === (miInscripcion?.categoria || '')))
+        .find(
+          (p) =>
+            p.pareja1 &&
+            p.pareja2 &&
+            p.pareja1 !== 'BYE' &&
+            p.pareja2 !== 'BYE' &&
+            ((p.pareja1 || '').toLowerCase().includes(nombreLower) || (p.pareja2 || '').toLowerCase().includes(nombreLower))
+        ) || null
+    );
+  }, [partidos, torneo.id, tieneCategorias, miInscripcion, jugador]);
 
   // "Unirme" ya NO completa la unión al primer clic: fija la UI en el modo
   // "Unirme a pareja seleccionada" (`modoPareja === 'unirme'`, con `p`
@@ -25206,14 +25708,54 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
           })()}
 
         {yaInscritoEnEstaCategoria ? (
-          // Ya tiene un lugar (con o sin pareja confirmada) en ESTA
-          // categoría — el banner de estatus de arriba ya lo dice, así que
-          // aquí abajo ya no se ofrece "Unirme" a alguien más ni volver a
-          // registrarse "Sin pareja": ambas opciones crearían un segundo
-          // registro/unión sin sentido sobre una inscripción que ya existe.
-          <p className="rounded-lg border border-white/5 bg-slate-800/40 p-2.5 text-[11px] leading-relaxed text-slate-400">
-            Ya tienes tu lugar en esta categoría — no puedes volver a inscribirte ni unirte a alguien más aquí.
-          </p>
+          verResumen ? (
+            // FLUJO UNIFICADO "YA ESTÁS INSCRITO" — resumen pedido tal
+            // cual: Categoría, pareja registrada, horario de partido y
+            // estatus de pago.
+            <div className="space-y-2 rounded-xl border border-lime-400/20 bg-lime-400/5 p-3.5">
+              <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-lime-400">
+                <ClipboardList size={13} /> Resumen de tu inscripción
+              </p>
+              <dl className="space-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-slate-500">Categoría</dt>
+                  <dd className="font-bold text-slate-200">{miInscripcion?.categoria || (tieneCategorias ? '—' : 'Sin categorías')}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-slate-500">Pareja registrada</dt>
+                  <dd className="font-bold text-slate-200">{nombreDeMiPareja || 'Sin pareja aún'}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-slate-500">Horario de partido</dt>
+                  <dd className="text-right font-bold text-slate-200">
+                    {miProximoPartido
+                      ? [
+                          miProximoPartido.fecha ? formatoFechaLarga(miProximoPartido.fecha) : null,
+                          miProximoPartido.hora_inicio ? formatoHora12(miProximoPartido.hora_inicio) : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ') || 'Cuadro generado — horario aún sin asignar'
+                      : 'El club aún no genera el cuadro'}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-slate-500">Estatus de pago</dt>
+                  <dd className={`font-bold ${miInscripcion?.estado_pago === 'pagado' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {miInscripcion?.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          ) : (
+            // Ya tiene un lugar (con o sin pareja confirmada) en ESTA
+            // categoría — el banner de estatus de arriba ya lo dice, así que
+            // aquí abajo ya no se ofrece "Unirme" a alguien más ni volver a
+            // registrarse "Sin pareja": ambas opciones crearían un segundo
+            // registro/unión sin sentido sobre una inscripción que ya existe.
+            <p className="rounded-lg border border-white/5 bg-slate-800/40 p-2.5 text-[11px] leading-relaxed text-slate-400">
+              Ya tienes tu lugar en esta categoría — no puedes volver a inscribirte ni unirte a alguien más aquí.
+            </p>
+          )
         ) : modoPareja === 'unirme' && parejaParaUnirme ? (
           // Modo "Unirme a pareja seleccionada": la UI queda fija en ESTA
           // confirmación — nada de tabs, nada de búsqueda — hasta que el
@@ -25367,12 +25909,301 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, onClose, onBuscarJ
 
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
-          {!yaInscritoEnEstaCategoria && (
+          {yaInscritoEnEstaCategoria ? (
+            verResumen ? (
+              <BotonSecundario onClick={() => setVerResumen(false)}>Volver</BotonSecundario>
+            ) : (
+              <BotonPrimario onClick={() => setVerResumen(true)}>
+                <ClipboardList size={15} /> Ver Resumen
+              </BotonPrimario>
+            )
+          ) : (
             <BotonPrimario onClick={confirmarInscripcion}>
               <UserPlus size={15} />
               {modoPareja === 'unirme' ? 'Confirmar unión' : jugador ? 'Continuar a pago' : 'Identificarme e inscribirme'}
             </BotonPrimario>
           )}
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO (refinamiento UX, item 2)
+// — el jugador NO paga aquí ni elige una clase existente: pide que el club
+// abra una. `coachesSugeridos` alimenta el datalist del campo "Coach
+// deseado" con los nombres ya usados en el catálogo público, para que no
+// tenga que escribirlo perfecto a mano (sigue siendo texto libre: el
+// Portal no tiene el directorio de empleados del club).
+function ModalSolicitarClase({ onClose, onEnviar, coachesSugeridos }) {
+  const [tipo, setTipo] = useState('grupal'); // 'privada' | 'grupal'
+  const [coach, setCoach] = useState('');
+  const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
+  const [dia, setDia] = useState(DIAS_SEMANA_ACADEMIA[0].value);
+  const [horaDesde, setHoraDesde] = useState('');
+  const [horaHasta, setHoraHasta] = useState('');
+  const [enviando, setEnviando] = useState(false);
+
+  async function enviar() {
+    setEnviando(true);
+    await onEnviar({ tipo, coach: coach.trim() || null, nivel, dia, horaDesde: horaDesde || null, horaHasta: horaHasta || null });
+    setEnviando(false);
+  }
+
+  return (
+    <ModalShell titulo="Solicitar Clase Privada o Nuevo Grupo" subtitulo="El club revisa tu solicitud y te confirma horario y costo" onClose={onClose} icon={Sparkles} ancho="max-w-md">
+      <div className="space-y-3.5">
+        <div>
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Tipo</p>
+          <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+            {TIPOS_CLASE_ACADEMIA.map((t) => (
+              <button
+                key={t.value}
+                type="button"
+                onClick={() => setTipo(t.value)}
+                className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
+                  tipo === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                {t.value === 'privada' ? 'Privada 1-a-1' : 'Grupal'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Coach deseado (opcional)</p>
+          <input
+            list="coaches-sugeridos-portal"
+            value={coach}
+            onChange={(e) => setCoach(e.target.value)}
+            placeholder="Sin preferencia"
+            className={inputClase}
+          />
+          <datalist id="coaches-sugeridos-portal">
+            {(coachesSugeridos || []).map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
+        </div>
+
+        <div>
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Nivel</p>
+          <div className="flex flex-wrap gap-1.5">
+            {NIVELES_ACADEMIA.map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => setNivel(n)}
+                className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
+                  nivel === n ? 'border-lime-400 bg-lime-400/10 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/50'
+                }`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Día preferido</p>
+          <select value={dia} onChange={(e) => setDia(e.target.value)} className={inputClase}>
+            {DIAS_SEMANA_ACADEMIA.map((d) => (
+              <option key={d.value} value={d.value}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Rango de hora preferido</p>
+          <div className="grid grid-cols-2 gap-2">
+            <input type="time" value={horaDesde} onChange={(e) => setHoraDesde(e.target.value)} className={inputClase} />
+            <input type="time" value={horaHasta} onChange={(e) => setHoraHasta(e.target.value)} className={inputClase} />
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={enviar} disabled={enviando}>
+            {enviando ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+            Enviar solicitud
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX, item 2) — "Ver
+// Resumen" de una Clase de Academia: Fecha, cancha, coach, tipo de pago y
+// botón de cancelar asistencia, tal cual lo pidió el club.
+function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
+  const [confirmandoCancelar, setConfirmandoCancelar] = useState(false);
+  const [cancelando, setCancelando] = useState(false);
+  const proximaFecha = proximasFechasDiaSemana(clase.dia_semana, 1)[0];
+
+  async function cancelar() {
+    setCancelando(true);
+    await onCancelar(alumno, clase);
+    setCancelando(false);
+  }
+
+  return (
+    <ModalShell titulo={clase.nombre} subtitulo="Resumen de tu inscripción" onClose={onClose} icon={GraduationCap} ancho="max-w-md">
+      <div className="space-y-3.5">
+        <dl className="space-y-2 rounded-xl border border-white/5 bg-slate-800/60 p-3.5 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <dt className="flex items-center gap-1.5 text-slate-500">
+              <CalendarIcon size={13} /> Fecha
+            </dt>
+            <dd className="font-bold text-slate-200">
+              {DIA_ACADEMIA_POR_VALOR[clase.dia_semana]?.label || clase.dia_semana}
+              {proximaFecha ? ` · Próxima: ${formatoFechaLarga(proximaFecha)}` : ''}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="flex items-center gap-1.5 text-slate-500">
+              <MapPin size={13} /> Cancha
+            </dt>
+            <dd className="font-bold text-slate-200">{cancha?.nombre || 'Por confirmar'}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="flex items-center gap-1.5 text-slate-500">
+              <User size={13} /> Coach
+            </dt>
+            <dd className="font-bold text-slate-200">{clase.coach_nombre || '—'}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="flex items-center gap-1.5 text-slate-500">
+              <DollarSign size={13} /> Tipo de pago
+            </dt>
+            <dd className="text-right font-bold text-slate-200">
+              {alumno.tipo_pago === 'mensualidad' ? 'Mensualidad' : alumno.pagado_con_creditos ? 'Con crédito de membresía' : 'Clase suelta'}
+              <span className={`ml-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                alumno.estado_pago === 'pagado' ? 'bg-emerald-400/10 text-emerald-400' : 'bg-amber-400/10 text-amber-400'
+              }`}>
+                {alumno.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+              </span>
+            </dd>
+          </div>
+        </dl>
+
+        {confirmandoCancelar ? (
+          <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-3.5">
+            <p className="text-xs font-bold text-rose-300">¿Seguro que quieres cancelar tu asistencia a esta clase?</p>
+            <p className="mt-1 text-[11px] text-slate-400">Liberas tu lugar de inmediato — si cambias de opinión, tendrás que volver a inscribirte.</p>
+            <div className="mt-2.5 flex justify-end gap-2">
+              <BotonSecundario onClick={() => setConfirmandoCancelar(false)} className="px-2.5 py-1.5 text-xs">
+                Ya no
+              </BotonSecundario>
+              <button
+                onClick={cancelar}
+                disabled={cancelando}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-600 disabled:opacity-60"
+              >
+                {cancelando ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+                Sí, cancelar
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setConfirmandoCancelar(true)}
+            className="w-full rounded-lg border border-rose-500/20 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"
+          >
+            Cancelar asistencia
+          </button>
+        )}
+
+        <div className="flex justify-end pt-1">
+          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX, item 2) — "Ver
+// Resumen" de una Reta: Cancha, hora, nivel, lista de los 4 jugadores y
+// estatus de pago, tal cual lo pidió el club.
+function ModalResumenReta({ reta, cancha, inscritos, jugador, onClose }) {
+  const miInscripcion = (inscritos || []).find(
+    (i) => (jugador?.id && i.jugador_id === jugador.id) || (jugador?.telefono && claveTelefono(i.telefono) === claveTelefono(jugador.telefono))
+  );
+  const lugares = Array.from({ length: CUPOS_RETA }, (_, idx) => inscritos[idx] || null);
+
+  return (
+    <ModalShell titulo={reta.nombre} subtitulo="Resumen de tu inscripción" onClose={onClose} icon={Swords} ancho="max-w-md">
+      <div className="space-y-3.5">
+        <dl className="space-y-2 rounded-xl border border-white/5 bg-slate-800/60 p-3.5 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <dt className="flex items-center gap-1.5 text-slate-500">
+              <MapPin size={13} /> Cancha
+            </dt>
+            <dd className="font-bold text-slate-200">{cancha?.nombre || 'Por confirmar'}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="flex items-center gap-1.5 text-slate-500">
+              <Clock size={13} /> Hora
+            </dt>
+            <dd className="font-bold text-slate-200">
+              {formatoFechaLarga(reta.fecha)} · {reta.hora_inicio}–{reta.hora_fin}
+            </dd>
+          </div>
+          {(nivelDeReta(reta) || ramaDeReta(reta)) && (
+            <div className="flex items-center justify-between gap-2">
+              <dt className="flex items-center gap-1.5 text-slate-500">
+                <Gauge size={13} /> Nivel
+              </dt>
+              <dd className="font-bold text-slate-200">{[ramaDeReta(reta), nivelDeReta(reta)].filter(Boolean).join(' · ')}</dd>
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-2">
+            <dt className="flex items-center gap-1.5 text-slate-500">
+              <DollarSign size={13} /> Tu estatus de pago
+            </dt>
+            <dd className={`font-bold ${miInscripcion?.estado_pago === 'pagado' ? 'text-emerald-400' : 'text-amber-400'}`}>
+              {miInscripcion?.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+            </dd>
+          </div>
+        </dl>
+
+        <div>
+          <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+            <Users size={13} /> Jugadores ({inscritos.length}/{CUPOS_RETA})
+          </p>
+          <div className="space-y-1.5">
+            {lugares.map((j, idx) => {
+              const soyYo = j && miInscripcion && j.id === miInscripcion.id;
+              return (
+                <div
+                  key={j?.id || `vacio-${idx}`}
+                  className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
+                    j ? 'border-slate-700 bg-slate-800' : 'border-dashed border-slate-800 bg-slate-900/40'
+                  }`}
+                >
+                  <span className={`text-xs font-bold ${j ? 'text-slate-200' : 'text-slate-600'}`}>
+                    {j ? `${j.nombre}${soyYo ? ' (Tú)' : ''}` : 'Lugar disponible'}
+                  </span>
+                  {j && (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                        j.estado_pago === 'pagado' ? 'bg-emerald-400/10 text-emerald-400' : 'bg-amber-400/10 text-amber-400'
+                      }`}
+                    >
+                      {j.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex justify-end pt-1">
+          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
         </div>
       </div>
     </ModalShell>
