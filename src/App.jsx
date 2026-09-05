@@ -1385,15 +1385,36 @@ function precioPorHoraDeCancha(cancha) {
 const CATEGORIAS_PRODUCTO = [
   { value: 'todos', label: 'Todos', icon: LayoutGrid },
   { value: 'Pro-Shop', label: 'Pro-Shop', icon: ShoppingBag },
-  { value: 'Cafetería/Bar', label: 'Cafetería/Bar', icon: Coffee },
+  // RENOMBRADO DE UX: el `value` sigue siendo 'Cafetería/Bar' — es
+  // EXACTAMENTE lo que ya está guardado en `productos.categoria` en
+  // Supabase (ver el comentario de cabecera de esta sección) y lo que
+  // compara el resto del código (BI, Kardex, filtros). Solo cambia el
+  // `label`, que es lo único que ve el usuario — así ningún producto
+  // existente necesita re-guardarse ni ninguna comparación `=== 'Cafetería/Bar'`
+  // se rompe.
+  { value: 'Cafetería/Bar', label: 'Restaurante/Bar', icon: Coffee },
   { value: 'Rentas', label: 'Rentas', icon: Package },
 ];
 
 const CATEGORIA_META = {
   'Pro-Shop': { label: 'Pro-Shop', badge: 'bg-violet-400/10 text-violet-400 ring-1 ring-violet-400/30' },
-  'Cafetería/Bar': { label: 'Cafetería/Bar', badge: 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30' },
+  // Mismo criterio que `CATEGORIAS_PRODUCTO` de arriba: la LLAVE del mapa
+  // (usada para buscar `CATEGORIA_META[producto.categoria]`) se queda
+  // igual; solo el `label` visible cambia a "Restaurante/Bar".
+  'Cafetería/Bar': { label: 'Restaurante/Bar', badge: 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30' },
   Rentas: { label: 'Rentas', badge: 'bg-sky-400/10 text-sky-400 ring-1 ring-sky-400/30' },
 };
+
+// RENOMBRADO DE UX: en un puñado de lugares el código muestra el valor
+// CRUDO de `producto.categoria` directo en pantalla (tablas de
+// Rentabilidad/Kardex, historial de consumo del CRM, exportes CSV) en vez
+// de pasar por `CATEGORIA_META[...].label` de arriba — ahí ese texto crudo
+// seguiría diciendo "Cafetería/Bar" sin este helper. Traduce SOLO para
+// mostrar; el dato guardado en Supabase (`producto.categoria`) nunca se
+// toca.
+function etiquetaCategoriaProducto(categoria) {
+  return categoria === 'Cafetería/Bar' ? 'Restaurante/Bar' : categoria;
+}
 
 const METODOS_PAGO_POS = [
   { value: 'efectivo', label: 'Efectivo', icon: Banknote },
@@ -4433,10 +4454,82 @@ function ModuloParrillaOperativa({
   const [modalCambiarFoto, setModalCambiarFoto] = useState(null); // cancha
   const [modalNuevaReserva, setModalNuevaReserva] = useState(null); // { cancha, hora }
   const [modalDetalle, setModalDetalle] = useState(null); // { cancha, reserva }
+  // AJUSTE UX: tarjeta de métrica "Próximas Reservas" clickeable — abre este
+  // panel rápido con la lista cronológica completa (antes solo mostraba un
+  // contador, sin forma de ver el detalle sin navegar la parrilla entera).
+  const [modalProximasReservas, setModalProximasReservas] = useState(false);
 
   /* ---------------- Métricas ---------------- */
 
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+
+  const canchasPorId = useMemo(() => {
+    const mapa = {};
+    canchas.forEach((c) => (mapa[c.id] = c));
+    return mapa;
+  }, [canchas]);
+
+  // Lista cronológica completa detrás de la tarjeta "Próximas Reservas"
+  // (nombre, cancha, horario, estatus de pago) — mismo criterio "de ahora
+  // en adelante, cualquier fecha" que ya usaba el contador de `metrics`,
+  // solo que aquí se queda el detalle de cada fila en vez de solo contarlas.
+  const proximasReservasDetalle = useMemo(() => {
+    const hoy = hoyISO();
+    const ahora = minutosAhora();
+    return reservas
+      .filter((r) => {
+        if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
+        if (r.fecha > hoy) return true;
+        if (r.fecha === hoy) {
+          const ini = parseHoraAMinutos(r.hora_inicio);
+          return ini !== null && ini >= ahora;
+        }
+        return false;
+      })
+      .sort((a, b) => (a.fecha + (a.hora_inicio || '')).localeCompare(b.fecha + (b.hora_inicio || '')));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reservas, tick]);
+
+  // AJUSTE UX: Mapa de Calor de Ocupación por día/hora en "Cronograma" —
+  // mismo cálculo/criterio que el heatmap de Contabilidad & Compras/BI
+  // (`minutosSolapadosBI` sobre `HEATMAP_HORAS`, denominador = canchas
+  // activas × 60min × veces que cayó cada día de la semana en la ventana),
+  // pero con su propia ventana fija de datos (últimas 8 semanas hasta hoy)
+  // en vez del selector de rango de fechas de Contabilidad — la Parrilla no
+  // tiene ese filtro y no tiene sentido agregarle uno solo para esto.
+  const heatmapCronograma = useMemo(() => {
+    const numCanchas = canchasActivas.length || 1;
+    const hoyDate = new Date();
+    hoyDate.setHours(0, 0, 0, 0);
+    const desdeDate = new Date(hoyDate);
+    desdeDate.setDate(desdeDate.getDate() - 55); // 8 semanas completas, incluyendo hoy
+    const finExclusivo = new Date(hoyDate);
+    finExclusivo.setDate(finExclusivo.getDate() + 1); // `contarDiasPorDiaSemana` espera un fin EXCLUSIVO
+    const desdeISO = `${desdeDate.getFullYear()}-${pad2(desdeDate.getMonth() + 1)}-${pad2(desdeDate.getDate())}`;
+    const hoyISOStr = hoyISO();
+
+    const ocupado = Array.from({ length: ORDEN_SEMANA_BI.length }, () => HEATMAP_HORAS.map(() => 0));
+    reservas
+      .filter((r) => r.estado !== 'Cancelada' && r.fecha >= desdeISO && r.fecha <= hoyISOStr)
+      .forEach((r) => {
+        const hi = parseHoraAMinutos(r.hora_inicio);
+        const hf = parseHoraAMinutos(r.hora_fin);
+        if (hi === null || hf === null || hf <= hi) return;
+        const [y, m, d] = r.fecha.split('-').map(Number);
+        const dow = new Date(y, m - 1, d).getDay();
+        const filaIdx = ORDEN_SEMANA_BI.indexOf(dow);
+        if (filaIdx === -1) return;
+        HEATMAP_HORAS.forEach((h, colIdx) => {
+          const solapado = minutosSolapadosBI(hi, hf, h * 60, (h + 1) * 60);
+          if (solapado > 0) ocupado[filaIdx][colIdx] += solapado;
+        });
+      });
+
+    const conteos = contarDiasPorDiaSemana(desdeDate, finExclusivo);
+    const denomPorFila = ORDEN_SEMANA_BI.map((dow) => Math.max(1, conteos[dow]) * numCanchas * 60);
+    const celdas = ocupado.map((fila, fIdx) => fila.map((min) => Math.min(100, Math.round((min / denomPorFila[fIdx]) * 100))));
+    return { filas: Array.from({ length: ORDEN_SEMANA_BI.length }), celdas };
+  }, [reservas, canchasActivas]);
 
   const metrics = useMemo(() => {
     const totalCanchas = canchas.length;
@@ -4453,32 +4546,7 @@ function ModuloParrillaOperativa({
     ).length;
     const ocupacion = canchasActivas.length > 0 ? Math.round((ocupadasEnSeleccion / canchasActivas.length) * 100) : 0;
 
-    // Ingresos del Día ($): suma exactamente sobre la fecha seleccionada en
-    // el datepicker de la cabecera (no siempre "hoy").
-    const reservasFechaSeleccionada = reservas.filter((r) => r.fecha === fechaSeleccionada && r.estado !== 'Cancelada');
-
-    const ingresosPagados = reservasFechaSeleccionada
-      .filter((r) => r.estado_pago === 'pagado')
-      .reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
-    const pendienteCobro = reservasFechaSeleccionada
-      .filter((r) => r.estado_pago === 'pendiente')
-      .reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
-
-    // Próximas Reservas: contador global "de ahora en adelante" (no depende
-    // del filtro de fecha), para que el operador siempre vea lo que se
-    // aproxima sin importar qué día esté navegando en la parrilla.
-    const proximasReservas = reservas.filter((r) => {
-      if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
-      if (r.fecha > hoy) return true;
-      if (r.fecha === hoy) {
-        const ini = parseHoraAMinutos(r.hora_inicio);
-        return ini !== null && ini >= ahora;
-      }
-      return false;
-    }).length;
-
-    return { totalCanchas, ocupacion, ingresosPagados, pendienteCobro, proximasReservas, esHoy };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return { totalCanchas, ocupacion, esHoy };
   }, [canchas, canchasActivas, reservas, fechaSeleccionada, tick]);
 
   /* ---------------- Filtros de la grilla ---------------- */
@@ -4498,7 +4566,7 @@ function ModuloParrillaOperativa({
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <MetricCard icon={LayoutGrid} etiqueta="Total Canchas" valor={metrics.totalCanchas} sub={`${canchasActivas.length} activas`} tono="lime" />
         <MetricCard
           icon={TrendingUp}
@@ -4507,20 +4575,16 @@ function ModuloParrillaOperativa({
           sub={metrics.esHoy ? 'Ahora mismo, sobre canchas activas' : `${formatoFechaLarga(fechaSeleccionada)}, misma hora`}
           tono="sky"
         />
+        {/* AJUSTE UX: tarjeta clickeable — abre el panel rápido
+            "Próximas Reservas" con la lista cronológica completa. */}
         <MetricCard
-          icon={DollarSign}
-          etiqueta="Ingresos del Día"
-          valor={formatoMoneda(metrics.ingresosPagados)}
-          sub={
-            metrics.pendienteCobro > 0
-              ? `+ ${formatoMoneda(metrics.pendienteCobro)} pendientes`
-              : metrics.esHoy
-              ? 'Cobrado hoy'
-              : formatoFechaLarga(fechaSeleccionada)
-          }
-          tono="amber"
+          icon={Clock}
+          etiqueta="Próximas Reservas"
+          valor={proximasReservasDetalle.length}
+          sub="Desde ahora, cualquier fecha — clic para ver la lista"
+          tono="violet"
+          onClick={() => setModalProximasReservas(true)}
         />
-        <MetricCard icon={Clock} etiqueta="Próximas Reservas" valor={metrics.proximasReservas} sub="Desde ahora, cualquier fecha" tono="violet" />
       </div>
 
       <Toolbar
@@ -4559,16 +4623,26 @@ function ModuloParrillaOperativa({
           ))}
         </div>
       ) : (
-        <VistaCronograma
-          canchas={canchasFiltradas}
-          reservas={reservas}
-          fechaSeleccionada={fechaSeleccionada}
-          onSlotClick={(cancha, hora) => setModalNuevaReserva({ cancha, hora, fecha: fechaSeleccionada })}
-          onReservaClick={(reserva) =>
-            setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
-          }
-          bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
-        />
+        <div className="space-y-5">
+          <VistaCronograma
+            canchas={canchasFiltradas}
+            reservas={reservas}
+            fechaSeleccionada={fechaSeleccionada}
+            onSlotClick={(cancha, hora) => setModalNuevaReserva({ cancha, hora, fecha: fechaSeleccionada })}
+            onReservaClick={(reserva) =>
+              setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
+            }
+            bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+          />
+          {/* AJUSTE UX: copia visual e interactiva del Mapa de Calor de
+              Ocupación — mismo componente `HeatmapOcupacion` que ya usa
+              Contabilidad & Compras/BI, para que se vea idéntico en ambos
+              lados (mismos colores, mismo tooltip al pasar el mouse por
+              cada celda). Alimentado por `heatmapCronograma` (últimas 8
+              semanas de reservas activas), independiente del filtro de
+              fechas que vive en el módulo de Contabilidad. */}
+          <HeatmapOcupacion modo="semana" filas={heatmapCronograma.filas} celdas={heatmapCronograma.celdas} />
+        </div>
       )}
 
       {modalNuevaCancha && (
@@ -4613,7 +4687,69 @@ function ModuloParrillaOperativa({
           onRegistrarAuditoria={onRegistrarAuditoria}
         />
       )}
+
+      {/* AJUSTE UX: panel rápido de "Próximas Reservas" — abre desde la
+          tarjeta de métrica de arriba. */}
+      {modalProximasReservas && (
+        <ModalProximasReservas
+          reservas={proximasReservasDetalle}
+          canchasPorId={canchasPorId}
+          onClose={() => setModalProximasReservas(false)}
+          onVerDetalle={(reserva) => {
+            setModalProximasReservas(false);
+            setModalDetalle({ cancha: canchasPorId[reserva.cancha_id], reserva });
+          }}
+        />
+      )}
     </>
+  );
+}
+
+// AJUSTE UX: panel rápido "Próximas Reservas" — lista cronológica completa
+// (nombre, cancha, horario, estatus de pago) que antes solo existía como un
+// contador en la tarjeta de métrica. Un clic en cualquier fila abre el mismo
+// `ModalDetalleCancha` que se usa desde la parrilla, para no duplicar la
+// ficha de detalle/cobro/cancelación en un segundo componente.
+function ModalProximasReservas({ reservas, canchasPorId, onClose, onVerDetalle }) {
+  return (
+    <ModalShell titulo="Próximas Reservas" subtitulo={`${reservas.length} de ahora en adelante`} onClose={onClose} icon={Clock} ancho="max-w-lg">
+      {reservas.length === 0 ? (
+        <p className="py-10 text-center text-sm text-slate-500">No hay reservas próximas por ahora.</p>
+      ) : (
+        <div className="max-h-[65vh] space-y-1.5 overflow-y-auto pr-1">
+          {reservas.map((r) => {
+            const cancha = canchasPorId[r.cancha_id];
+            return (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => onVerDetalle(r)}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-left transition hover:border-lime-400/40 hover:bg-slate-800/60"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-bold text-slate-100">{r.jugador_nombre || 'Jugador'}</p>
+                  <p className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-400">
+                    <MapPin size={11} className="shrink-0" /> {cancha?.nombre || 'Cancha'}
+                    <span className="text-slate-600">·</span>
+                    <CalendarClock size={11} className="shrink-0" />
+                    {formatoFechaLarga(r.fecha)} · {formatoHora12(r.hora_inicio)}–{formatoHora12(r.hora_fin)}
+                  </p>
+                </div>
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    r.estado_pago === 'pagado'
+                      ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+                      : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
+                  }`}
+                >
+                  {r.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </ModalShell>
   );
 }
 
@@ -5184,15 +5320,18 @@ function ComandaPanel({
       <div className="space-y-3 border-t border-slate-800 px-4 py-3.5">
         {/* CRM Unificado: asigna esta comanda a un cliente del directorio (o
             da de alta uno nuevo en el momento) sin importar si trae cancha
-            vinculada — permite que ventas de Pro-Shop/Cafetería sin cancha
+            vinculada — permite que ventas de Pro-Shop/Restaurante sin cancha
             igual alimenten su historial/LTV. Cuando ya hay un roster (cuenta
             de cancha con Split Bill) cada jugador se resuelve individualmente
             al cobrar su cuota, así que este campo se oculta para no duplicar
-            la captura. */}
+            la captura. DATOS DEL CLIENTE (OBLIGATORIO, refinamiento UX): ya
+            NO es opcional — `onAccionPrincipal` exige Nombre y Apellido
+            (2+ palabras) antes de dejar procesar la venta cuando no hay
+            roster; ver ese handler para la validación real. */}
         {!hayRoster && (
           <div className="space-y-1.5 rounded-lg border border-slate-800 bg-slate-950/40 p-2.5">
             <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-              <Users size={12} /> Cliente (opcional — CRM)
+              <Users size={12} /> Datos del Cliente (Obligatorio)
             </span>
             <SelectorJugadorRegistrado
               jugadores={directorioJugadores}
@@ -5203,7 +5342,7 @@ function ComandaPanel({
                 onSeleccionarCliente?.(j?.id || null);
                 if (j?.telefono) onCambiarClienteTelefono?.(j.telefono);
               }}
-              placeholder="Buscar cliente o escribir nombre nuevo..."
+              placeholder="Nombre y Apellido del cliente..."
             />
             <input
               value={clienteTelefono}
@@ -6125,90 +6264,6 @@ function ModalNuevoProducto({
               {editando ? 'Guardar Cambios' : 'Crear Producto'}
             </BotonPrimario>
           </div>
-        </div>
-      </div>
-    </ModalShell>
-  );
-}
-
-/* ---------------- Renta Exprés de Canchas (dentro de la categoría "Rentas") ---------------- */
-
-function CanchaRentaCard({ cancha, onRentar }) {
-  return (
-    <button
-      onClick={onRentar}
-      className="group flex flex-col overflow-hidden rounded-2xl border border-emerald-400/30 bg-slate-900 text-left transition hover:border-emerald-400/60"
-    >
-      <div className="relative h-24 w-full overflow-hidden rounded-t-2xl bg-slate-800 sm:h-28">
-        <img
-          src={cancha.imagen_url || fallbackImagen(cancha.id)}
-          onError={(e) => {
-            e.currentTarget.onerror = null;
-            e.currentTarget.src = fallbackImagen(cancha.id);
-          }}
-          alt={cancha.nombre}
-          className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
-        />
-        <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-emerald-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-400 ring-1 ring-emerald-400/30 backdrop-blur">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Disponible
-        </span>
-      </div>
-      <div className="flex flex-1 flex-col gap-1 p-2.5">
-        <p className="line-clamp-2 text-xs font-bold leading-snug text-slate-100">{cancha.nombre}</p>
-        <span className="mt-auto text-sm font-black text-lime-400">{formatoMoneda(precioPorHoraDeCancha(cancha))}/hr</span>
-      </div>
-    </button>
-  );
-}
-
-function ModalRentaCancha({ cancha, onClose, onAgregar }) {
-  const [duracion, setDuracion] = useState(1);
-  // Misma fórmula pedida: duracionEnHoras * Number(precio_por_hora || 0),
-  // aplicada sobre el precio ya resuelto (real o de respaldo por nombre).
-  const costo = Math.round(duracion * Number(precioPorHoraDeCancha(cancha) || 0) * 100) / 100;
-
-  return (
-    <ModalShell titulo="Renta Exprés" subtitulo={cancha.nombre} onClose={onClose} icon={Clock} ancho="max-w-sm">
-      <div className="space-y-4">
-        <div>
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Duración</span>
-          <div className="grid grid-cols-3 gap-2">
-            {DURACIONES_RENTA.map((d) => (
-              <button
-                key={d.horas}
-                onClick={() => setDuracion(d.horas)}
-                className={`rounded-lg border px-2 py-2.5 text-xs font-bold transition ${
-                  duracion === d.horas
-                    ? 'border-lime-400 bg-lime-400/10 text-lime-400'
-                    : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
-                }`}
-              >
-                {d.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between rounded-xl bg-slate-950 px-4 py-3">
-          <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Costo</span>
-          <span className="text-xl font-black text-slate-100">{formatoMoneda(costo)}</span>
-        </div>
-
-        <p className="flex items-start gap-1.5 text-[11px] text-slate-500">
-          <Info size={12} className="mt-0.5 shrink-0" /> Al cobrarse, la cancha quedará "En Juego" en la Parrilla de inmediato, a partir de
-          ahora.
-        </p>
-
-        <div className="flex justify-end gap-2">
-          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario
-            onClick={() => {
-              onAgregar(duracion, costo);
-              onClose();
-            }}
-          >
-            <Plus size={15} /> Agregar a Comanda
-          </BotonPrimario>
         </div>
       </div>
     </ModalShell>
@@ -7180,7 +7235,6 @@ function ModuloSmartPOS({
   const [modalDevolucion, setModalDevolucion] = useState(false);
   const [modalNuevoProducto, setModalNuevoProducto] = useState(false);
   const [productoEditar, setProductoEditar] = useState(null);
-  const [canchaParaRentar, setCanchaParaRentar] = useState(null);
   const [ventaFinalizada, setVentaFinalizada] = useState(null);
   const [registrandoVenta, setRegistrandoVenta] = useState(false);
   // `productos`/`loadingProductos`/`errorProductos`/`cargarProductos` llegan
@@ -7875,12 +7929,6 @@ function ModuloSmartPOS({
     });
   }, [productos, categoriaActiva, busquedaProducto]);
 
-  // Canchas disponibles AHORA MISMO, para la Renta Exprés dentro del filtro "Rentas".
-  const canchasDisponiblesAhora = useMemo(
-    () => canchas.filter((c) => c.activa !== false && estadoActualCancha(c, reservas) === 'disponible'),
-    [canchas, reservas]
-  );
-
   const total = useMemo(() => comanda.reduce((acc, item) => acc + item.precio * item.cantidad, 0), [comanda]);
 
   const canchaVinculada = canchas.find((c) => c.id === canchaVinculadaId) || null;
@@ -7982,25 +8030,6 @@ function ModuloSmartPOS({
     } else {
       agregarProducto(producto);
     }
-  }
-
-  // Renta Exprés: agrega el costo de una cancha (por duración) a la comanda
-  // como un artículo más — se cobra junto con lo demás en el mismo ticket.
-  function agregarCanchaComanda(cancha, duracionHoras, costo) {
-    const id = `cancha-${cancha.id}-${comanda.length}-${Math.round(duracionHoras * 60)}`;
-    setComanda((prev) => [
-      ...prev,
-      {
-        id,
-        tipo: 'cancha',
-        cancha_id: cancha.id,
-        nombre: `Renta ${cancha.nombre} (${duracionHoras}h)`,
-        precio: costo,
-        cantidad: 1,
-        duracionHoras,
-      },
-    ]);
-    mostrarToast({ titulo: 'Renta agregada a la comanda', detalle: `${cancha.nombre} · ${duracionHoras}h · ${formatoMoneda(costo)}` });
   }
 
   function cambiarCantidad(itemId, delta) {
@@ -8362,8 +8391,27 @@ function ModuloSmartPOS({
 
   // Botón principal de la comanda: con cancha vinculada es "cuenta abierta"
   // (sin pedir método, se cobra después); sin cancha, abre el selector de cobro.
+  //
+  // DATOS DEL CLIENTE (OBLIGATORIO, refinamiento UX): el campo "Cliente" del
+  // panel derecho de la Comanda (`ComandaPanel`) dejó de ser opcional — sin
+  // un roster activo (Split Bill de cancha, donde cada jugador YA se
+  // identifica por su cuenta), no se deja procesar la venta sin capturar
+  // Nombre y Apellido. Se valida aquí, en el ÚNICO botón que dispara
+  // cualquiera de los dos caminos de cobro (cuenta abierta o selector de
+  // método), en vez de duplicar el chequeo en cada uno.
   function onAccionPrincipal() {
     if (comanda.length === 0) return;
+    if (roster.length === 0) {
+      const partesNombreCliente = clienteNombre.trim().split(/\s+/).filter(Boolean);
+      if (partesNombreCliente.length < 2) {
+        mostrarToast({
+          titulo: 'Faltan los datos del cliente',
+          detalle: 'Captura Nombre y Apellido antes de procesar la venta.',
+          tono: 'aviso',
+        });
+        return;
+      }
+    }
     if (canchaVinculadaId) {
       registrarVenta({ metodoPago: null, estadoPago: 'pendiente' });
     } else {
@@ -8646,34 +8694,22 @@ function ModuloSmartPOS({
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_380px] lg:items-start">
             <div className="space-y-5">
-              {categoriaActiva === 'Rentas' && canchasDisponiblesAhora.length > 0 && (
-            <div>
-              <h3 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-emerald-400">
-                <Clock size={13} /> Canchas Disponibles Ahora — Renta Exprés
-              </h3>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
-                {canchasDisponiblesAhora.map((c) => (
-                  <CanchaRentaCard key={c.id} cancha={c} onRentar={() => setCanchaParaRentar(c)} />
-                ))}
-              </div>
-            </div>
-          )}
-
+              {/* AJUSTE UX: la pestaña "Rentas" ya NO ofrece Renta Exprés de
+                  canchas (tarjetas "Canchas Disponibles Ahora" + modal de
+                  duración) — queda dedicada exclusivamente a Renta de Palas
+                  y Accesorios, igual que cualquier otra categoría de
+                  producto. La cuota de cancha vinculada (roster/Split Bill)
+                  sigue viviendo aparte, en el panel de Comanda — no se tocó. */}
           {loadingProductos ? (
             <SkeletonProductos />
           ) : productos.length === 0 ? (
             <EmptyStateProductos />
           ) : productosFiltrados.length === 0 ? (
-            categoriaActiva !== 'Rentas' || canchasDisponiblesAhora.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-800 py-12 text-center text-sm text-slate-500">
                 Ningún producto coincide con el filtro.
               </div>
-            ) : null
           ) : (
             <div>
-              {categoriaActiva === 'Rentas' && (
-                <h3 className="mb-2 text-xs font-black uppercase tracking-wide text-slate-400">Otros artículos de Renta</h3>
-              )}
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
                 {productosFiltrados.map((p) => (
                   <ProductoCard
@@ -8787,14 +8823,6 @@ function ModuloSmartPOS({
             agregarProducto(productoParaVariante, variante);
             setProductoParaVariante(null);
           }}
-        />
-      )}
-
-      {canchaParaRentar && (
-        <ModalRentaCancha
-          cancha={canchaParaRentar}
-          onClose={() => setCanchaParaRentar(null)}
-          onAgregar={(duracion, costo) => agregarCanchaComanda(canchaParaRentar, duracion, costo)}
         />
       )}
 
@@ -10861,7 +10889,7 @@ function RentabilidadPorCategoria({ filas, cargando }) {
               return (
                 <tr key={f.categoria} className="border-b border-slate-800/70 last:border-0">
                   <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-200'}`}>
-                    {f.categoria}
+                    {etiquetaCategoriaProducto(f.categoria)}
                     <span className="ml-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">({tipoMargen})</span>
                   </td>
                   <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingreso)}</td>
@@ -11173,7 +11201,7 @@ function generarCSVReporte({
   filas.push(['Top Productos Más Vendidos']);
   filas.push(['Producto', 'Categoría', 'Unidades Vendidas', 'Ingreso Total', 'Margen Bruto']);
   analisis.topProductos.forEach((f) => {
-    filas.push([f.nombre, f.categoria || '', f.unidades, f.ingreso.toFixed(2), f.ganancia.toFixed(2)]);
+    filas.push([f.nombre, etiquetaCategoriaProducto(f.categoria) || '', f.unidades, f.ingreso.toFixed(2), f.ganancia.toFixed(2)]);
   });
   filas.push([]);
 
@@ -11208,7 +11236,7 @@ function generarCSVReporte({
       const cobertura = calcularCoberturaStock(p, ventasPorProductoSemana?.[p.id] || 0);
       filas.push([
         p.nombre,
-        p.categoria || '',
+        etiquetaCategoriaProducto(p.categoria) || '',
         manejaStock ? (Number.isFinite(stock) ? stock : '') : 'Sin control de stock',
         manejaStock ? p.stock_minimo ?? '' : '',
         Number.isFinite(costo) ? costo.toFixed(2) : '',
@@ -11235,7 +11263,7 @@ function generarCSVReporte({
           const vCobertura = calcularCoberturaStock(vNormalizada, ventasPorVarianteSemana?.[v.id] || 0);
           filas.push([
             `↳ ${p.nombre} — ${v.nombre}`,
-            p.categoria || '',
+            etiquetaCategoriaProducto(p.categoria) || '',
             vNormalizada.maneja_stock ? (Number.isFinite(vStock) ? vStock : '') : 'Sin control de stock',
             vNormalizada.maneja_stock ? vNormalizada.stock_minimo ?? '' : '',
             Number.isFinite(vCosto) ? vCosto.toFixed(2) : '',
@@ -20198,31 +20226,85 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
       .sort((a, b) => b.racha - a.racha);
   }, [alumnosActivos, asistencias, clasesPorId]);
 
-  // KPIs Operativos de Coaches (item 5) — ÚNICAMENTE estos 3 indicadores por
-  // entrenador, pedidos tal cual:
-  //   1) Tasa de Llenado de Grupos: alumnos activos / capacidad máxima,
-  //      sumado sobre TODAS las clases activas del coach (no promedio simple
-  //      de porcentajes por clase — así una clase grande pesa más que una
-  //      chica, igual criterio que una ocupación agregada).
-  //   2) Índice de Retención de Alumnos: % de continuidad mes a mes — para
-  //      cada par de meses consecutivos con asistencia registrada, qué
-  //      fracción de los alumnos que asistieron en el mes N TAMBIÉN
-  //      asistieron en el mes N+1 (`asistio: true`, agrupado por
-  //      `fecha.slice(0,7)`); se promedia entre todos los pares de meses
-  //      disponibles. `null` (se muestra "Sin datos suficientes") si el
-  //      coach todavía no acumula 2 meses de asistencia registrada.
-  //   3) Total de Alumnos Activos: alumnos (`estado !== 'baja'`) inscritos
-  //      en cualquiera de sus clases activas.
+  // Matriz de KPIs Operativos por Coach — por cada entrenador con al menos
+  // una clase activa:
+  //   1) Clases Impartidas (Día / Mes): usa `asistencias` (pase de lista) ya
+  //      recibido por prop como comprobante de que la clase SÍ se dio —
+  //      cuenta pares únicos (clase_id, fecha) por coach, separados en "hoy"
+  //      (`hoyISO()`) y "este mes calendario" (`fecha.slice(0,7)` === mes
+  //      actual). No se agregó un prop `sesiones` nuevo porque
+  //      `academia_sesiones` es estado exclusivo de `ModuloAcademiaClinicas`
+  //      y no llega hasta este componente — ver comentario en el
+  //      componente raíz, más abajo.
+  //   2) Desglose de Clases (Privadas vs Grupales): conteo de clases activas
+  //      del coach por `tipo_clase` ('privada' vs cualquier otro valor, que
+  //      se trata como grupal — mismo criterio que el resto del archivo,
+  //      ver línea ~20315).
+  //   3) Promedio de Alumnos por Clase Grupal: alumnos activos entre número
+  //      de clases grupales del coach (0 clases grupales → `null`, se
+  //      muestra "—").
+  //   4) Alumnos Activos e Inactivos asignados: activos = `estado !==
+  //      'baja'` (igual que `alumnosActivos` arriba); inactivos = `estado
+  //      === 'baja'`, ambos inscritos en cualquiera de las clases del
+  //      coach — para inactivos se usa el prop `alumnos` completo (no
+  //      `alumnosActivos`, que ya los excluye por definición).
+  //   5) Índice de Retención (%): SIN CAMBIOS — misma lógica de continuidad
+  //      mes a mes ya validada (ver docstring previo, conservado tal cual).
   const kpisPorCoach = useMemo(() => {
     const mapa = {};
     clases
       .filter((c) => c.estado !== 'cancelada')
       .forEach((c) => {
         const nombre = c.coach_nombre || 'Sin asignar';
-        if (!mapa[nombre]) mapa[nombre] = { nombre, capacidadTotal: 0, alumnosActivos: 0 };
-        mapa[nombre].capacidadTotal += Number(c.capacidad_maxima) || 0;
-        mapa[nombre].alumnosActivos += (alumnosPorClase[c.id] || []).length;
+        if (!mapa[nombre]) {
+          mapa[nombre] = {
+            nombre,
+            claseIds: new Set(),
+            clasesPrivadas: 0,
+            clasesGrupales: 0,
+            alumnosActivos: 0,
+            alumnosInactivos: 0,
+          };
+        }
+        const c2 = mapa[nombre];
+        c2.claseIds.add(c.id);
+        const esPrivada = c.tipo_clase === 'privada';
+        if (esPrivada) c2.clasesPrivadas += 1;
+        else c2.clasesGrupales += 1;
+        c2.alumnosActivos += (alumnosPorClase[c.id] || []).length;
       });
+
+    // Alumnos inactivos (`estado === 'baja'`) por coach — a partir del
+    // prop `alumnos` completo, ya que `alumnosPorClase` solo indexa
+    // activos.
+    alumnos.forEach((a) => {
+      if (a.estado !== 'baja') return;
+      const clase = clasesPorId[a.clase_id];
+      if (!clase || clase.estado === 'cancelada') return;
+      const nombre = clase.coach_nombre || 'Sin asignar';
+      if (!mapa[nombre]) return; // coach sin clases activas — no aporta KPI vigente
+      mapa[nombre].alumnosInactivos += 1;
+    });
+
+    // Clases Impartidas: pares únicos (clase_id, fecha) por coach, tomados
+    // de `asistencias` como comprobante de que hubo pase de lista ese día.
+    const hoy = hoyISO();
+    const mesActual = hoy.slice(0, 7);
+    const impartidasDiaSet = {};
+    const impartidasMesSet = {};
+    asistencias.forEach((a) => {
+      if (!a.fecha || !a.clase_id) return;
+      const clase = clasesPorId[a.clase_id];
+      const nombre = clase?.coach_nombre || 'Sin asignar';
+      if (!mapa[nombre]) return;
+      const llave = `${a.clase_id}|${a.fecha}`;
+      if (a.fecha.slice(0, 7) === mesActual) {
+        (impartidasMesSet[nombre] = impartidasMesSet[nombre] || new Set()).add(llave);
+      }
+      if (a.fecha === hoy) {
+        (impartidasDiaSet[nombre] = impartidasDiaSet[nombre] || new Set()).add(llave);
+      }
+    });
 
     // { coachNombre: { 'YYYY-MM': Set<alumno_id> } } — solo asistencias
     // reales (`asistio: true`) con fecha, agrupadas por mes calendario.
@@ -20239,7 +20321,9 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
 
     Object.keys(mapa).forEach((nombre) => {
       const c = mapa[nombre];
-      c.tasaLlenado = c.capacidadTotal > 0 ? Math.round((c.alumnosActivos / c.capacidadTotal) * 100) : null;
+      c.clasesImpartidasDia = impartidasDiaSet[nombre]?.size || 0;
+      c.clasesImpartidasMes = impartidasMesSet[nombre]?.size || 0;
+      c.promedioAlumnosGrupal = c.clasesGrupales > 0 ? Math.round((c.alumnosActivos / c.clasesGrupales) * 10) / 10 : null;
 
       const mesesOrdenados = Object.keys(presentesPorCoachMes[nombre] || {}).sort();
       let sumaPct = 0;
@@ -20259,7 +20343,7 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
     });
 
     return Object.values(mapa).sort((a, b) => b.alumnosActivos - a.alumnosActivos);
-  }, [clases, alumnosPorClase, asistencias, clasesPorId]);
+  }, [clases, alumnosPorClase, asistencias, clasesPorId, alumnos]);
 
   /* ---- Dashboard A: Operativo de Clases ----
    * Ingreso Promedio por Hora/Clase ($/hr): ingreso total (alumnos activos
@@ -20593,7 +20677,7 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
             />
             <MetricCard
               icon={AlertTriangle}
-              etiqueta="Membresías en Mora"
+              etiqueta="Membresías Vencidas"
               valor={kpisMembresias.vencidas}
               sub="Ya venció su fecha de renovación"
               tono="rose"
@@ -20671,7 +20755,7 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
             <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
-              <UserX size={16} className="text-rose-400" /> Panel de Churn / Bajas
+              <UserX size={16} className="text-rose-400" /> Historial de Alumnos Cancelados / Inactivos
             </h3>
             {alumnosChurn.length === 0 ? (
               <p className="py-4 text-center text-xs text-slate-500">Sin bajas de membresía registradas.</p>
@@ -20841,18 +20925,30 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
                   <thead>
                     <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       <th className="pb-2 pr-3">Coach</th>
-                      <th className="pb-2 pr-3">Tasa de Llenado de Grupos</th>
-                      <th className="pb-2 pr-3">Índice de Retención de Alumnos</th>
-                      <th className="pb-2">Total de Alumnos Activos</th>
+                      <th className="pb-2 pr-3">Clases Impartidas (Día / Mes)</th>
+                      <th className="pb-2 pr-3">Desglose (Privadas / Grupales)</th>
+                      <th className="pb-2 pr-3">Prom. Alumnos por Clase Grupal</th>
+                      <th className="pb-2 pr-3">Alumnos Activos / Inactivos</th>
+                      <th className="pb-2">Índice de Retención</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
                     {kpisPorCoach.map((c) => (
                       <tr key={c.nombre}>
                         <td className="py-2 pr-3 font-bold text-slate-100">{c.nombre}</td>
-                        <td className="py-2 pr-3 text-slate-300">{c.tasaLlenado === null ? '—' : `${c.tasaLlenado}%`}</td>
-                        <td className="py-2 pr-3 text-slate-300">{c.retencionPct === null ? 'Sin datos suficientes' : `${c.retencionPct}%`}</td>
-                        <td className="py-2 text-slate-300">{c.alumnosActivos}</td>
+                        <td className="py-2 pr-3 text-slate-300">
+                          {c.clasesImpartidasDia} / {c.clasesImpartidasMes}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-300">
+                          {c.clasesPrivadas} privadas / {c.clasesGrupales} grupales
+                        </td>
+                        <td className="py-2 pr-3 text-slate-300">{c.promedioAlumnosGrupal === null ? '—' : c.promedioAlumnosGrupal}</td>
+                        <td className="py-2 pr-3 text-slate-300">
+                          <span className="text-emerald-400">{c.alumnosActivos}</span>
+                          {' / '}
+                          <span className="text-slate-500">{c.alumnosInactivos}</span>
+                        </td>
+                        <td className="py-2 text-slate-300">{c.retencionPct === null ? 'Sin datos suficientes' : `${c.retencionPct}%`}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -21178,12 +21274,12 @@ function ModuloAcademiaClinicas({
             <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
               <CalendarClock size={13} /> Cronograma — disponibilidad de canchas
             </p>
-            <input
-              type="date"
-              value={fechaCronograma}
-              onChange={(e) => setFechaCronograma(e.target.value)}
-              className={`${inputClase} w-auto`}
-            />
+            {/* AJUSTE UX: selector de fecha manual → calendario desplegable
+                interactivo (mismo componente `SelectorFechaCompacto` que ya
+                usan ERP/Egresos/P&L: clic en cualquier parte del chip abre
+                el calendario nativo — `showPicker()` — en vez de forzar a
+                teclear los dígitos de la fecha a mano). */}
+            <SelectorFechaCompacto value={fechaCronograma} onChange={setFechaCronograma} tamano="amplio" />
           </div>
           <VistaCronograma
             canchas={canchas}
@@ -21192,6 +21288,15 @@ function ModuloAcademiaClinicas({
             onSlotClick={manejarClicCeldaLibre}
             onReservaClick={manejarClicReservaCronograma}
           />
+          {/* AJUSTE UX: "Mapa de Calor - Saturación de Cupos" también aquí,
+              justo debajo del cronograma de la Parrilla de Clases — no se
+              quitó de Analytics (pestaña "Coaches & Mapa de Calor", cuyo
+              propio nombre lo referencia), solo se agregó esta segunda
+              vista para que el operador la vea sin salir de la parrilla del
+              día. Mismos datos/criterio que la copia de Analytics
+              (`clasesActivas`/`alumnosActivosPorClase`, ya calculados
+              arriba en este mismo componente). */}
+          <HeatmapAcademia clases={clasesActivas} alumnosPorClase={alumnosActivosPorClase} />
         </div>
       )}
 
@@ -22117,7 +22222,7 @@ function DetalleConsumoPOS({ perfil }) {
                 {c.cantidad}x {c.nombre}
               </p>
               <p className="text-[10px] text-slate-500">
-                {c.fecha ? formatoFechaLarga(c.fecha) : 'Fecha desconocida'} · {c.categoria}
+                {c.fecha ? formatoFechaLarga(c.fecha) : 'Fecha desconocida'} · {etiquetaCategoriaProducto(c.categoria)}
               </p>
             </div>
             <span className="shrink-0 font-bold text-slate-300">{formatoMoneda(c.subtotal)}</span>
@@ -22250,7 +22355,7 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono }) {
 
   const ltvFilas = [
     { label: 'Canchas (Parrilla)', valor: perfil.gastoCanchas, color: 'bg-sky-400' },
-    { label: 'Cafetería/Bar', valor: perfil.gastoBar, color: 'bg-amber-400' },
+    { label: 'Restaurante/Bar', valor: perfil.gastoBar, color: 'bg-amber-400' },
     { label: 'Torneos/Retas', valor: perfil.gastoTorneosRetas, color: 'bg-violet-400' },
     { label: 'Pro-Shop', valor: perfil.gastoProShop, color: 'bg-fuchsia-400' },
   ];
