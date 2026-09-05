@@ -915,6 +915,20 @@ function canalClubFiltro(table) {
 // que el operador reintente en vez de degradar silenciosamente.
 const BUCKET_MEDIA = 'app-media';
 
+// Formatos permitidos para CUALQUIER subida de imagen del sistema (logo del
+// club, fotos de cancha, fotos de producto): únicamente archivo real del
+// dispositivo, en uno de estos 4 formatos — a propósito, SIN opción de
+// pegar una URL/link de texto ni HTML embebido (ver `SelectorArchivoImagen`,
+// que ya no admite otra vía de entrada). `EXTENSIONES_IMAGEN_PERMITIDAS` es
+// la lista "amigable" que se usa tanto para el `accept` del `<input
+// type=file>` (filtra lo que el selector del sistema operativo ofrece)
+// como para el mensaje de error; `MIME_IMAGEN_PERMITIDOS` es la validación
+// real (el `accept` del input es solo una sugerencia de UI — un archivo
+// renombrado a mano podría saltárselo, así que `uploadMedia` vuelve a
+// revisar el MIME real antes de subir).
+const EXTENSIONES_IMAGEN_PERMITIDAS = ['jpg', 'jpeg', 'png', 'webp'];
+const MIME_IMAGEN_PERMITIDOS = ['image/jpeg', 'image/png', 'image/webp'];
+
 function extensionArchivo(file) {
   const porNombre = (file?.name || '').split('.').pop();
   if (porNombre && /^[a-z0-9]{1,8}$/i.test(porNombre)) return porNombre.toLowerCase();
@@ -924,8 +938,8 @@ function extensionArchivo(file) {
 
 async function uploadMedia(file, carpeta = 'general') {
   if (!file) return null;
-  if (!file.type?.startsWith?.('image/')) {
-    throw new Error('Selecciona un archivo de imagen válido.');
+  if (!MIME_IMAGEN_PERMITIDOS.includes(file.type)) {
+    throw new Error('Formato no admitido — solo se aceptan imágenes .jpg, .jpeg, .png o .webp.');
   }
   const nombreUnico = `${carpeta}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${extensionArchivo(file)}`;
   const { error } = await supabase.storage.from(BUCKET_MEDIA).upload(nombreUnico, file, {
@@ -948,7 +962,10 @@ async function uploadMedia(file, carpeta = 'general') {
 // necesite "Subir archivo": maneja el estado de `subiendo`/`error` y entrega
 // la URL pública final vía `onSubida(url)`. Mismo componente para logo del
 // club, foto de cancha, foto de producto, etc. — una sola implementación,
-// cero copias de `FileReader`/base64 dispersas por el archivo.
+// cero copias de `FileReader`/base64 dispersas por el archivo. ÚNICA vía de
+// entrada de imagen en todo el sistema — no existe (ni debe volver a
+// agregarse) un campo alterno de URL/link de texto ni de HTML embebido en
+// ningún formulario que use este componente.
 function SelectorArchivoImagen({ onSubida, carpeta, disabled }) {
   const [subiendo, setSubiendo] = useState(false);
   const [error, setError] = useState('');
@@ -977,8 +994,14 @@ function SelectorArchivoImagen({ onSubida, carpeta, disabled }) {
         }`}
       >
         {subiendo ? <Loader2 size={14} className="animate-spin" /> : <ImagePlus size={14} />}
-        {subiendo ? 'Subiendo…' : 'Subir archivo'}
-        <input type="file" accept="image/*" onChange={onSeleccionarArchivo} disabled={disabled || subiendo} className="hidden" />
+        {subiendo ? 'Subiendo…' : 'Subir archivo (.jpg, .jpeg, .png, .webp)'}
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+          onChange={onSeleccionarArchivo}
+          disabled={disabled || subiendo}
+          className="hidden"
+        />
       </label>
       {error && <p className="mt-1.5 text-xs font-semibold text-rose-400">{error}</p>}
     </div>
@@ -2140,7 +2163,10 @@ function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
 
         <div className="space-y-2">
           <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Logo</span>
-          <input value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} className={inputClase} placeholder="https://..." />
+          {/* Subida limpia por archivo, ÚNICAMENTE: se quitó el campo de
+              pegar una URL/link de texto — la única forma de poner logo es
+              subir un archivo real del dispositivo (.jpg/.jpeg/.png/.webp,
+              ver `SelectorArchivoImagen`/`uploadMedia`). */}
           <SelectorArchivoImagen carpeta="club" onSubida={onLogoSubido} />
         </div>
 
@@ -2278,7 +2304,12 @@ function Sidebar({
               de la franja angosta del sidebar, en vez de quitar el texto
               como se hacía antes. */}
           <div className={`min-w-0 flex-1 ${colapsado ? 'lg:hidden' : ''}`}>
-            <p className="truncate text-[11px] font-medium text-slate-500" title={configClubActual.nombre}>
+            {/* Nombre del Club más prominente a pedido del club: de un
+                caption gris apenas visible a un título en negritas y
+                blanco puro — el logo/iniciales de la izquierda y el
+                engrane de al lado siguen siendo el ancla visual, esto solo
+                sube la jerarquía tipográfica del texto. */}
+            <p className="truncate text-base font-bold text-white" style={{ color: '#ffffff' }} title={configClubActual.nombre}>
               {configClubActual.nombre || 'Panel operativo'}
             </p>
           </div>
@@ -2545,8 +2576,13 @@ function TopHeader({
             avatar/chevron. */}
         <button
           onClick={onAbrirOperador}
-          className="flex shrink-0 items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-1.5 pr-3 transition hover:border-lime-400/40 hover:bg-slate-800"
+          className="mr-0.5 flex shrink-0 items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-1.5 pr-3 transition hover:border-lime-400/40 hover:bg-slate-800 sm:mr-1"
         >
+          {/* `shrink-0` (equivalente a `flex-shrink-0`) en el avatar: nunca se
+              aplasta aunque el texto de al lado se acorte por `truncate`. El
+              `mr-*` responsivo del botón (arriba) es el margen real contra
+              el borde de la pantalla, aparte del `px-4 sm:px-6` del propio
+              `<header>`. */}
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime-400 text-xs font-black text-slate-950">
             {iniciales(operador.nombre)}
           </div>
@@ -3503,17 +3539,13 @@ function ModalNuevaCancha({ onClose, onCreada }) {
             placeholder="450"
           />
         </Campo>
-        <Campo label="URL de foto (opcional)" hint="Si la dejas vacía, se usa una imagen de referencia automática.">
-          <input
-            value={imagenUrl}
-            onChange={(e) => setImagenUrl(e.target.value)}
-            className={inputClase}
-            placeholder="https://..."
-          />
-        </Campo>
-        {/* Manejo Universal de Imágenes: sube al bucket `app-media` de
-            Supabase Storage y entrega la URL pública — nunca base64/blob
-            local, para que la foto se vea igual en cualquier dispositivo. */}
+        {/* Foto (opcional): subida limpia por archivo, ÚNICAMENTE — sin
+            campo de URL/link de texto. Si no se sube nada, se usa una
+            imagen de referencia automática (`fallbackImagen`). Sube al
+            bucket `app-media` de Supabase Storage y entrega la URL
+            pública — nunca base64/blob local, para que la foto se vea
+            igual en cualquier dispositivo. */}
+        <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Foto (opcional)</span>
         <SelectorArchivoImagen
           carpeta="canchas"
           onSubida={(nuevaUrl) => {
@@ -3578,12 +3610,11 @@ function ModalCambiarFoto({ cancha, onClose, onActualizada }) {
             className="h-full w-full object-cover"
           />
         </div>
-        <Campo label="URL de la nueva foto">
-          <input value={url} onChange={(e) => setUrl(e.target.value)} className={inputClase} placeholder="https://..." />
-        </Campo>
-        {/* Manejo Universal de Imágenes: sube al bucket `app-media` de Supabase
-            Storage y entrega la URL pública — nunca base64/blob local, para
-            que la foto se vea igual en Mac, iPad o cualquier navegador. */}
+        {/* Subida limpia por archivo, ÚNICAMENTE — sin campo de URL/link de
+            texto. Sube al bucket `app-media` de Supabase Storage y entrega
+            la URL pública — nunca base64/blob local, para que la foto se
+            vea igual en Mac, iPad o cualquier navegador. */}
+        <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Nueva foto</span>
         <SelectorArchivoImagen
           carpeta="canchas"
           onSubida={(nuevaUrl) => {
@@ -6199,7 +6230,8 @@ function ModalNuevoProducto({
           <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
             {editando ? 'Cambiar imagen (opcional)' : 'Imagen del producto'}
           </span>
-          <input value={imagenUrl} onChange={(e) => setImagenUrl(e.target.value)} className={inputClase} placeholder="https://..." />
+          {/* Subida limpia por archivo, ÚNICAMENTE — se quitó el campo de
+              pegar una URL/link de texto. */}
           <SelectorArchivoImagen carpeta="productos" onSubida={onImagenSubida} />
         </div>
 
@@ -23522,6 +23554,32 @@ function PortalPublicoJugadores({ clubSlug }) {
     };
   }, [clubSlug]);
 
+  // Sincronización Universal del Nombre/Logo del Club, también en el Portal:
+  // mismo criterio que el Header Operativo (ver "Sincronización Universal
+  // del Nombre/Logo del Club" en `AppInterno`) — si el club sube un logo
+  // nuevo o cambia el nombre desde el panel interno, un jugador con el
+  // Portal YA ABIERTO en su celular/tablet lo ve reflejado solo, sin
+  // recargar la página. Se reutiliza `resolverClubDelPortal` completo (en
+  // vez de solo releer `configuracion_club`) porque el Portal tolera que el
+  // catálogo del club viva en `configuracion_club` O en `clubes` (ver su
+  // propio comentario de cabecera) — así el refresco funciona sin importar
+  // cuál de las dos tablas resolvió el club la primera vez.
+  useEffect(() => {
+    if (!club) return;
+    const canal = supabase
+      .channel(`portal-configuracion-club-${club.id}`)
+      .on('postgres_changes', canalClubFiltro('configuracion_club'), async () => {
+        const clubActualizado = await resolverClubDelPortal(clubSlug);
+        if (clubActualizado) setClub(clubActualizado);
+      })
+      .on('postgres_changes', canalClubFiltro('clubes'), async () => {
+        const clubActualizado = await resolverClubDelPortal(clubSlug);
+        if (clubActualizado) setClub(clubActualizado);
+      })
+      .subscribe();
+    return () => supabase.removeChannel(canal);
+  }, [club?.id, clubSlug]);
+
   const cargarDatosPortal = useCallback(async () => {
     setCargandoDatos(true);
     const [
@@ -24886,7 +24944,14 @@ function PortalPublicoJugadores({ clubSlug }) {
         </header>
 
         <main className="mx-auto max-w-3xl px-4 py-5 pb-24">
-          <div className="mb-4 flex rounded-lg border border-white/5 bg-slate-900/50 p-1 backdrop-blur-sm">
+          {/* Menú de navegación del Portal: en pantallas angostas (celular
+              en horizontal, iPad chico) 6 pestañas a `flex-1` se aplastaban
+              y deformaban (íconos/texto encimados). Ahora cada pestaña
+              conserva un ancho mínimo natural (`shrink-0`) y el contenedor
+              se desplaza lateralmente (`overflow-x-auto`) en vez de
+              comprimirlas — mismo criterio que el conmutador de módulos del
+              Header Operativo (`TopHeader`). */}
+          <div className="mb-4 flex gap-1 overflow-x-auto rounded-lg border border-white/5 bg-slate-900/50 p-1 backdrop-blur-sm">
             {[
               { value: 'canchas', label: 'Canchas', icon: MapPin },
               { value: 'tienda', label: 'Tienda', icon: ShoppingBag },
@@ -24900,7 +24965,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                 <button
                   key={tab.value}
                   onClick={() => setVista(tab.value)}
-                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-2 text-[11px] font-bold transition ${
+                  className={`flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3.5 py-2 text-[11px] font-bold transition sm:flex-1 ${
                     vista === tab.value ? 'bg-lime-400 text-slate-950 shadow-lg shadow-lime-400/20' : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
