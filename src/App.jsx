@@ -574,15 +574,16 @@
 //      de Supabase — consistente con que todo el resto del proyecto corre
 //      sin backend propio (ver nota en el bloque `PERMISOS_POR_ROL`).
 //
-// 3) Arquitectura Multitenant: `CLUB_ACTIVO_ID` se resuelve solo al arrancar
-//    (ver `resolverClubActivo` en App()) — por el slug de la URL si entraste
-//    por el Portal Público (`/canchas/:clubSlug`), o por tu único club si
-//    entraste al panel normal. Mientras solo tengas un club (tu caso hoy) y
-//    tus tablas de Supabase no tengan la columna `club_id` poblada, queda en
-//    `null` a propósito, y `withClubId`/`conClubId`/`canalClubFiltro` no
-//    agregan ningún filtro — cero riesgo de romper una consulta existente.
-//    El día que tengas más de un club real con `club_id` poblado, empiezan a
-//    filtrar solas, sin tocar código otra vez.
+// 3) Arquitectura Multitenant (ClubOS): `CLUB_ACTIVO_ID` se resuelve por
+//    sesión — `ClubAuthGate` valida el login de Supabase Auth y ubica el
+//    club por `configuracion_club.propietario_user_id` antes de montar
+//    `AppInterno`; el Portal Público (`/canchas/:clubSlug`) lo resuelve por
+//    el slug de la URL. Desde ahí, `withClubId`/`conClubId`/
+//    `canalClubFiltro` filtran TODAS las consultas y canales Realtime con
+//    `.eq('club_id', CLUB_ACTIVO_ID)` estricto — un club JAMÁS ve ni escribe
+//    datos de otro. Datos previos a este cambio (con `club_id` NULL) se
+//    reclaman una sola vez con `reclamarDatosLegacyDelClub` desde "Vincular
+//    mi club existente" en el registro.
 //
 // 4) Estatus en vivo de cada cancha = cruce entre `estatus_manual` (o
 //    `activa`) y la reserva que esté "en curso" ahora mismo en `reservas`.
@@ -817,6 +818,11 @@ import {
   Sparkles,
   Landmark,
   Truck,
+  LogIn,
+  KeyRound,
+  Building2,
+  Eye,
+  LogOut,
 } from 'lucide-react';
 
 /* ============================================================================
@@ -826,11 +832,13 @@ import {
 /* ============================================================================
  * ARQUITECTURA MULTITENANT — Club activo (`club_id`)
  * ==========================================================================*/
-// `CLUB_ACTIVO_ID` reemplaza al viejo `CLUB_ID` fijo en `null`: ahora se
-// resuelve UNA SOLA VEZ al arrancar la app (ver `resolverClubActivo` en
-// App()) — por el slug de la URL si se entró por el Portal Público
-// (`/canchas/:clubSlug`), o por el único club configurado si se entró al
-// panel de operación normal (escenario de hoy: un solo club).
+// `CLUB_ACTIVO_ID` es el `club_id` (bigint) del club dueño de la sesión
+// actual. Se resuelve UNA SOLA VEZ por sesión: `ClubAuthGate` (ver el router
+// raíz, abajo de este bloque) valida la sesión de Supabase Auth, busca la
+// fila de `configuracion_club` cuyo `propietario_user_id` sea ese usuario, y
+// llama `establecerClubActivo(club.id)` ANTES de montar `AppInterno` — o,
+// si se entró por el Portal Público (`/canchas/:clubSlug`), `
+// resolverClubDelPortal` hace lo mismo a partir del slug de la URL.
 //
 // Se guarda en una variable de módulo (no en un estado de React) a
 // propósito, para que `withClubId`/`conClubId`/`canalClubFiltro` — usadas
@@ -840,13 +848,13 @@ import {
 // convertir cada una en un hook ni pasar el club_id como parámetro extra en
 // cada llamada.
 //
-// Diseño "no-op mientras no haya multitenant real": si `CLUB_ACTIVO_ID`
-// termina en null (tu escenario de HOY: un solo club, y tus tablas en
-// Supabase todavía no tienen la columna `club_id` poblada), estas tres
-// funciones se comportan EXACTAMENTE igual que antes — ningún filtro nuevo,
-// cero riesgo de que una consulta existente deje de traer datos porque el
-// club_id no coincide. En cuanto exista más de un club real con `club_id`
-// poblado, empiezan a filtrar solas, sin tocar una sola consulta más.
+// AISLAMIENTO ESTRICTO: con Auth real, `CLUB_ACTIVO_ID` SIEMPRE es un
+// número real dentro de `AppInterno` (nunca `null` — `ClubAuthGate` no
+// monta el panel hasta resolverlo), así que `conClubId`/`canalClubFiltro`
+// filtran con `.eq('club_id', CLUB_ACTIVO_ID)` en cada consulta/canal, sin
+// excepción. Solo queda en `null` durante el breve instante en que
+// `ClubAuthGate` todavía está resolviendo la sesión (se muestra una
+// pantalla de carga, no el panel) — ver más abajo.
 let CLUB_ACTIVO_ID = null;
 
 function establecerClubActivo(id) {
@@ -860,24 +868,28 @@ function withClubId(payload) {
 // Encadena el filtro de `club_id` a cualquier query-builder de Supabase
 // (select/update/delete) — úsalo en TODAS las consultas que devuelven
 // listas de filas (canchas, productos, jugadores, retas, torneos, ventas,
-// etc.), para que un club nunca vea los datos de otro.
+// empleados, notificaciones, etc.), para que un club NUNCA vea los datos de
+// otro.
 //
-// FIX CRÍTICO (retas/torneos "invisibles" en el Portal): un `.eq('club_id',
-// CLUB_ACTIVO_ID)` estricto EXCLUYE en SQL cualquier fila con `club_id`
-// `NULL` — y el panel interno SIEMPRE inserta con `CLUB_ACTIVO_ID = null`
-// (ver `establecerClubActivo(null)` en el router raíz, arriba de `App()`),
-// así que TODA Reta/Torneo/reserva/venta creada desde el panel nace con
-// `club_id` vacío en Supabase. En el escenario de un solo club real (el de
-// hoy) eso es invisible porque el Portal también corre con
-// `CLUB_ACTIVO_ID = null` (sin filtro) — pero en cuanto la tabla de clubes
-// tiene MÁS de una fila, `resolverClubDelPortal` sí llama
-// `establecerClubActivo(club.id)` para el Portal, y desde ese momento CADA
-// consulta del Portal empezaba a excluir todo lo creado por el panel
-// (`club_id IS NULL`) sin que nada lo avisara. Ahora se usa `.or(...)` para
-// traer las filas del club activo O sin club asignado todavía — nunca se
-// pierde nada por una migración a multitenant a medias.
+// AISLAMIENTO ESTRICTO (ClubOS, Auth real): ahora que el panel interno pasa
+// por `ClubAuthGate` y resuelve un `CLUB_ACTIVO_ID` real desde la sesión de
+// Supabase Auth (columna `configuracion_club.propietario_user_id`), el
+// filtro es un `.eq('club_id', CLUB_ACTIVO_ID)` estricto — a propósito
+// EXCLUYE cualquier fila con `club_id` NULL, para que los datos de un club
+// jamás se crucen con los de otro. Antes de este cambio se usaba un `.or(...
+// ,club_id.is.null)` tolerante porque el panel siempre insertaba con
+// `CLUB_ACTIVO_ID = null` (no había Auth todavía) — ese "modo de
+// transición" ya no aplica: cada club autenticado siempre tiene un
+// `CLUB_ACTIVO_ID` numérico real. Los datos viejos que quedaron con
+// `club_id` NULL (de antes de este cambio) se migran una sola vez con
+// `reclamarDatosLegacyDelClub` durante el flujo "Vincular mi club
+// existente" del registro — ver `migracion_v19_multitenant_auth.sql`.
+// Cuando, por lo que sea, `CLUB_ACTIVO_ID` sigue siendo `null` (sesión sin
+// resolver todavía), la función no filtra — pero eso ya no ocurre dentro de
+// `AppInterno`, que solo se monta después de que `ClubAuthGate` resuelve un
+// club real.
 function conClubId(query) {
-  return CLUB_ACTIVO_ID ? query.or(`club_id.eq.${CLUB_ACTIVO_ID},club_id.is.null`) : query;
+  return CLUB_ACTIVO_ID ? query.eq('club_id', CLUB_ACTIVO_ID) : query;
 }
 
 // Igual que `conClubId`, pero para la config `{event, schema, table}` de un
@@ -887,6 +899,158 @@ function conClubId(query) {
 function canalClubFiltro(table) {
   const base = { event: '*', schema: 'public', table };
   return CLUB_ACTIVO_ID ? { ...base, filter: `club_id=eq.${CLUB_ACTIVO_ID}` } : base;
+}
+
+// Todas las tablas de negocio que pueden traer filas "legacy" con `club_id`
+// NULL — de antes de que existiera Auth real (ClubOS) — y que por lo tanto
+// se vuelven invisibles en cuanto `conClubId` empieza a filtrar en modo
+// estricto para una cuenta recién autenticada. Mismo listado que
+// `migracion_v19_multitenant_auth.sql`.
+const TABLAS_CON_CLUB_ID_LEGACY = [
+  'canchas',
+  'productos',
+  'jugadores',
+  'empleados',
+  'retas',
+  'reta_inscripciones',
+  'torneos',
+  'torneo_participantes',
+  'torneo_partidos',
+  'reservas',
+  'ventas',
+  'kardex',
+  'cierres_caja',
+  'log_actividad',
+  'ranking_jugadores',
+  'wallet_movimientos',
+  'proveedores',
+  'compras_gastos',
+  'academia_clases',
+  'academia_sesiones',
+  'academia_alumnos',
+  'academia_asistencias',
+  'academia_solicitudes',
+  'alertas_reabastecimiento',
+];
+
+// "Vincular mi club existente" (pantalla de Registro de ClubOS, ver
+// `ClubAuthScreen`): reclama TODOS los datos que ya tenías en Supabase
+// (creados antes de que existiera Auth real, todos con `club_id` NULL) para
+// el club recién registrado — se corre UNA SOLA VEZ, justo después de crear
+// la fila de `configuracion_club` y su `propietario_user_id`. Es
+// idempotente y segura de reintentar: cada UPDATE usa `.is('club_id',
+// null)`, así que nunca le quita datos a otro club que ya haya reclamado los
+// suyos, y volver a correrla no duplica ni corrompe nada (una fila que ya
+// tiene `club_id` puesto, sea el que sea, jamás se vuelve a tocar). Tolera
+// tablas/columnas que no existan todavía en un proyecto de Supabase que no
+// haya corrido alguna migración — un fallo puntual en una tabla no detiene
+// el resto del reclamo.
+async function reclamarDatosLegacyDelClub(clubId) {
+  if (!clubId) return { ok: false, error: new Error('Falta el club_id a reclamar.') };
+  const resultados = {};
+  for (const tabla of TABLAS_CON_CLUB_ID_LEGACY) {
+    try {
+      const { error, count } = await supabase
+        .from(tabla)
+        .update({ club_id: clubId })
+        .is('club_id', null)
+        .select('id', { count: 'exact', head: true });
+      if (error) {
+        if (!esErrorTablaInexistente(error) && !esErrorColumnaInexistente(error)) {
+          console.warn(`[ClubOS] No se pudo reclamar datos legacy de "${tabla}".`, error);
+        }
+        resultados[tabla] = { ok: false, error: error.message };
+      } else {
+        resultados[tabla] = { ok: true, filas: count ?? null };
+      }
+    } catch (err) {
+      console.warn(`[ClubOS] Error inesperado reclamando datos legacy de "${tabla}".`, err);
+      resultados[tabla] = { ok: false, error: err?.message || String(err) };
+    }
+  }
+  return { ok: true, resultados };
+}
+
+// Punto ÚNICO de escritura de `notificaciones_club`
+// (migracion_v20_notificaciones_club.sql) — el Portal Público llama esto
+// cada vez que un jugador reserva, compra en la Tienda, o se inscribe a un
+// Torneo/Reta/Clase. Hace dos cosas: (1) persiste el evento con su
+// `club_id` (vía `withClubId`, igual que cualquier otro insert de este
+// archivo) para que quede en el historial y sobreviva un refresh de
+// cualquier sesión interna, y (2) Supabase Realtime, al detectar el INSERT,
+// lo emite solo en el canal `notificaciones_club_{club_id}` (ver el
+// `useEffect` dedicado en `AppInterno`) — así el club se entera EN VIVO sin
+// que este helper tenga que manejar el canal él mismo. Tolerante: si la
+// tabla todavía no existe (proyecto sin correr la v20) o el insert falla
+// por cualquier razón, se registra en consola y NUNCA bloquea la reserva/
+// compra/inscripción real que lo disparó — mismo criterio "best effort" que
+// el resto de notificaciones cross-device del proyecto
+// (`insertarMovimientoKardex`, `alertas_reabastecimiento`, etc.).
+async function crearNotificacionClub({ tipo, titulo, jugadorId, jugadorNombre, payload, canalWhatsapp }) {
+  try {
+    const fila = {
+      tipo,
+      titulo,
+      jugador_id: jugadorId || null,
+      jugador_nombre: jugadorNombre || null,
+      payload: payload || {},
+      leida: false,
+      canal_whatsapp: canalWhatsapp || null,
+    };
+    const { data, error } = await insertarConColumnasOpcionales('notificaciones_club', fila, ['jugador_nombre', 'canal_whatsapp']);
+    if (error) {
+      if (!esErrorTablaInexistente(error)) {
+        console.warn('[ClubOS] No se pudo guardar la notificación del club (notificaciones_club).', error);
+      }
+      return { ok: false, error };
+    }
+    return { ok: true, data };
+  } catch (err) {
+    console.warn('[ClubOS] Error inesperado creando la notificación del club.', err);
+    return { ok: false, error: err };
+  }
+}
+
+// Helper/hook centralizado para WhatsApp (requerimiento explícito
+// "triggerWhatsAppNotification"): arma el payload {to, mensaje, tipo,
+// clubId, jugadorId, timestamp} listo para una integración real con la API
+// de WhatsApp Business (Twilio, Meta Cloud API, etc.) y lo journaliza en
+// `notificaciones_club.canal_whatsapp = 'whatsapp_pendiente'` para que quede
+// registrado qué se intentó mandar y a quién. HOY este proyecto es un solo
+// archivo de cliente sin backend propio (ver notas de "sin servidor" en
+// `construirEnlaceWhatsApp`/`IconoWhatsApp`, que son el mecanismo REAL de
+// envío manual por wa.me que ya existe) — enviar de verdad por la API de
+// WhatsApp requiere credenciales privadas (token de Meta/Twilio) que NUNCA
+// deben vivir en código de cliente, así que este helper se detiene
+// deliberadamente en "dejar el payload listo y guardado" — el punto de
+// extensión es reemplazar el bloque `// TODO` de abajo por una llamada a tu
+// función serverless/Edge Function de Supabase (con `service_role`, del
+// lado del servidor) el día que la tengas, sin tener que tocar ningún otro
+// sitio de la app: todo evento de reserva/inscripción ya pasa por aquí.
+async function triggerWhatsAppNotification({ telefono, mensaje, tipo, jugadorId, jugadorNombre, payload }) {
+  const payloadWhatsApp = {
+    to: telefono || null,
+    mensaje,
+    tipo,
+    clubId: CLUB_ACTIVO_ID,
+    jugadorId: jugadorId || null,
+    timestamp: new Date().toISOString(),
+  };
+  // TODO (integración futura): reemplazar por la llamada real a la API de
+  // WhatsApp (Meta Cloud API / Twilio) desde una función serverless propia
+  // — nunca desde el cliente, por las credenciales privadas que exige.
+  // `fetch('/api/whatsapp/enviar', { method: 'POST', body:
+  // JSON.stringify(payloadWhatsApp) })` es el punto de enchufe sugerido.
+  console.info('[WhatsApp] Payload listo para integración futura (no se envía todavía):', payloadWhatsApp);
+  await crearNotificacionClub({
+    tipo,
+    titulo: mensaje,
+    jugadorId,
+    jugadorNombre,
+    payload: { ...payload, whatsapp: payloadWhatsApp },
+    canalWhatsapp: telefono ? 'whatsapp_pendiente' : null,
+  });
+  return payloadWhatsApp;
 }
 
 /* ============================================================================
@@ -1318,17 +1482,17 @@ const PERMISOS_POR_ROL = {
     soloLecturaInventario: false,
   },
   contador: {
-    // Rol de solo lectura/exportación: Contabilidad & Compras + Analytics BI
-    // (reportes, P&L, exportar CSV) y Smart POS (para revisar ventas/cortes
-    // ya cerrados) — SIN Parrilla ni Torneos & Retas, así que no hay forma
-    // de tocar una reserva o una inscripción (el propio filtro de `modulos`
-    // ya es la restricción más fuerte posible). Dentro de POS, este
-    // proyecto no separa las pantallas en "modo lectura" vs "modo
-    // escritura" — así que, igual que los roles ya restringidos, la
-    // lectura-only se logra apagando TODOS los flags de acción sensible: no
-    // cobra, no aplica descuentos, no edita precios, no registra
-    // devoluciones, no cierra ni aprueba cortes de caja.
-    modulos: ['contabilidad', 'analytics', 'pos'],
+    // Rol de solo lectura/exportación: ÚNICAMENTE Contabilidad & Compras,
+    // Inventario (ERP) y Analytics BI (reportes, P&L, exportar CSV) — SIN
+    // Smart POS (no cobra, no ve el flujo operativo de caja del día a día;
+    // para eso ya tiene sus cortes/reportes en Contabilidad & Compras), SIN
+    // Parrilla ni Torneos & Retas, así que no hay forma de tocar una
+    // reserva o una inscripción (el propio filtro de `modulos` ya es la
+    // restricción más fuerte posible). Dentro de Inventario, la
+    // lectura-only se logra con `soloLecturaInventario: true` (mismo
+    // mecanismo que Restaurante/Bar): puede ver existencias/costos para
+    // conciliar compras, pero no editar catálogo ni stock a mano.
+    modulos: ['contabilidad', 'erp', 'analytics'],
     puedeCancelarReservas: false,
     puedeReprogramarReservas: false,
     puedeAplicarDescuentoManual: false,
@@ -1342,7 +1506,7 @@ const PERMISOS_POR_ROL = {
     puedeCambiarEstatusCancha: false,
     puedeVerMontos: true,
     soloLecturaParrilla: false,
-    soloLecturaInventario: false,
+    soloLecturaInventario: true,
   },
 };
 
@@ -3394,7 +3558,7 @@ function EmptyState({ onNuevaCancha }) {
 // rol viaja con el empleado, no se puede inventar); sin empleados todavía
 // (primer arranque del club) cae directo al alta rápida para no dejar el
 // sistema sin nadie con quien operar.
-function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, onClose }) {
+function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, onClose, onCerrarSesion }) {
   const toast = useToast();
   const [turno, setTurno] = useState(operador.turno);
   const [modoAlta, setModoAlta] = useState(empleados.length === 0);
@@ -3486,7 +3650,16 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                 </div>
               )}
             </div>
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex items-center justify-between gap-2 pt-2">
+              {onCerrarSesion && (
+                <button
+                  onClick={onCerrarSesion}
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-bold text-rose-400 transition hover:bg-rose-500/10"
+                  title="Cierra la sesión de ClubOS en este dispositivo (correo/contraseña del club) — distinto de cambiar de operador/turno."
+                >
+                  <LogOut size={14} /> Cerrar sesión
+                </button>
+              )}
               <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
             </div>
           </>
@@ -4955,7 +5128,17 @@ async function conColumnasOpcionales(payloadCompleto, columnasOpcionales, ejecut
 }
 
 async function insertarConColumnasOpcionales(tabla, payloadCompleto, columnasOpcionales) {
-  return conColumnasOpcionales(payloadCompleto, columnasOpcionales, (payload) =>
+  // `withClubId` aquí (una sola vez, centralizado) en vez de en cada uno de
+  // los ~20 sitios que llaman a esta función en todo el archivo: así
+  // CUALQUIER insert que pase por la Arquitectura Flexible nace con
+  // `club_id` (cuando hay un club real, ver `CLUB_ACTIVO_ID`) sin depender
+  // de que cada caller se acuerde de envolver su payload a mano. `club_id`
+  // se agrega también a la lista de columnas opcionales para esta llamada:
+  // si algún proyecto todavía no corrió `migracion_v19_multitenant_auth.sql`
+  // en esta tabla puntual, el insert se reintenta sin `club_id` en vez de
+  // fallar por completo (mismo criterio "Arquitectura Flexible" que el resto
+  // de columnas opcionales de este helper).
+  return conColumnasOpcionales(withClubId(payloadCompleto), [...columnasOpcionales, 'club_id'], (payload) =>
     supabase.from(tabla).insert(payload).select().single()
   );
 }
@@ -4980,9 +5163,14 @@ async function actualizarConColumnasOpcionales(tabla, id, payloadCompleto, colum
 // cuadro entero caía a "Modo local" (nunca llegaba a guardarse de verdad),
 // en vez de guardarse igual sin esas columnas opcionales.
 async function insertarMuchosConColumnasOpcionales(tabla, payloadsCompletos, columnasOpcionales) {
-  let payloads = (payloadsCompletos || []).map((p) => ({ ...p }));
-  let pendientes = new Set(columnasOpcionales);
-  for (let intento = 0; intento <= columnasOpcionales.length; intento++) {
+  // Mismo criterio que `insertarConColumnasOpcionales`: `withClubId` en cada
+  // fila del lote, centralizado aquí en vez de en cada caller, con
+  // `club_id` sumado a las columnas opcionales tolerantes (ver comentario
+  // ahí) por si esta tabla puntual no corrió todavía la migración v19.
+  let payloads = (payloadsCompletos || []).map((p) => withClubId({ ...p }));
+  const columnasOpcionalesExtendidas = [...columnasOpcionales, 'club_id'];
+  let pendientes = new Set(columnasOpcionalesExtendidas);
+  for (let intento = 0; intento <= columnasOpcionalesExtendidas.length; intento++) {
     const { data, error } = await supabase.from(tabla).insert(payloads).select();
     if (!error) return { data, error: null };
     if (!esErrorColumnaInexistente(error) || pendientes.size === 0) return { data: null, error };
@@ -7441,16 +7629,18 @@ function ModuloSmartPOS({
 
     const { data, error } = await supabase
       .from('ventas')
-      .insert({
-        total,
-        metodo_pago: metodo,
-        turno: turno?.valor || null,
-        operador: operador?.nombre || null,
-        reserva_id: reservaVinculadaActual?.id || null,
-        cancha_id: canchaVinculadaId || null,
-        detalles: { items, pagos_divididos: null, split_bill: true, jugador_id: jugadorId, jugador_nombre: roster[indice]?.nombre || null },
-        estado_pago: 'pagado',
-      })
+      .insert(
+        withClubId({
+          total,
+          metodo_pago: metodo,
+          turno: turno?.valor || null,
+          operador: operador?.nombre || null,
+          reserva_id: reservaVinculadaActual?.id || null,
+          cancha_id: canchaVinculadaId || null,
+          detalles: { items, pagos_divididos: null, split_bill: true, jugador_id: jugadorId, jugador_nombre: roster[indice]?.nombre || null },
+          estado_pago: 'pagado',
+        })
+      )
       .select()
       .single();
 
@@ -8219,16 +8409,18 @@ function ModuloSmartPOS({
     try {
       const resultado = await supabase
         .from('ventas')
-        .insert({
-          total: fila.monto,
-          metodo_pago: metodoPago,
-          turno: turno?.valor || null,
-          operador: operador?.nombre || null,
-          reserva_id: null,
-          cancha_id: fila.canchaId,
-          detalles: { items: itemsComprobante, pagos_divididos: null },
-          estado_pago: 'pagado',
-        })
+        .insert(
+          withClubId({
+            total: fila.monto,
+            metodo_pago: metodoPago,
+            turno: turno?.valor || null,
+            operador: operador?.nombre || null,
+            reserva_id: null,
+            cancha_id: fila.canchaId,
+            detalles: { items: itemsComprobante, pagos_divididos: null },
+            estado_pago: 'pagado',
+          })
+        )
         .select()
         .single();
       if (resultado.error) throw resultado.error;
@@ -8546,7 +8738,7 @@ function ModuloSmartPOS({
     // `ORIGEN_VENTA_WEB` del Portal Público (Tienda, reserva con pago
     // inmediato). Contabilidad & Compras usa esta columna para separar
     // "Ventas Mostrador (POS)" de "Ventas Tienda Web" en el P&L.
-    let payloadVenta = {
+    let payloadVenta = withClubId({
       total,
       metodo_pago: metodoPagoParaVenta,
       turno: turno?.valor || null,
@@ -8561,7 +8753,7 @@ function ModuloSmartPOS({
         jugador_nombre: clienteNombre.trim() || null,
       },
       estado_pago: estadoPago,
-    };
+    });
 
     let { data, error } = await supabase.from('ventas').insert(payloadVenta).select().single();
 
@@ -9389,7 +9581,7 @@ async function insertarMovimientoKardex({
     motivo: motivo || null,
     operador: operador || null,
   });
-  const columnasOpcionales = [];
+  const columnasOpcionales = ['club_id'];
   if (variante_id) {
     payload.variante_id = variante_id;
     columnasOpcionales.push('variante_id');
@@ -14715,9 +14907,26 @@ function borrarRosterSplitBillLocal(reservaId) {
   }
 }
 
+// Namespacing de localStorage por club (ClubOS/Multi-tenant): un mismo
+// navegador/terminal puede, con el tiempo, iniciar sesión con MÁS DE UN
+// club (ej. una laptop compartida entre dos clubes distintos que usan el
+// mismo sistema) — sin esto, los respaldos de "Modo local" de un club
+// (`LS_KEY_EMPLEADOS_LOCAL`, `LS_KEY_CIERRES_CAJA_LOCAL`, etc.) se
+// mezclarían con los del otro la próxima vez que Supabase fallara. Se
+// centraliza AQUÍ (una sola función), en vez de tocar cada uno de los
+// ~15 `LS_KEY_*_LOCAL` y sus decenas de call sites: todas las lecturas y
+// escrituras de estos respaldos pasan por `leerRegistrosLocales`/
+// `guardarRegistroLocal`/`quitarRegistroLocal`, así que namespacear ahí
+// alcanza para todos. Mientras no haya un club real (`CLUB_ACTIVO_ID` en
+// null, ej. el Portal Público sin multitenant todavía), la llave se queda
+// igual que siempre — cero cambio de comportamiento.
+function claveLocalPorClub(key) {
+  return CLUB_ACTIVO_ID ? `${key}__club_${CLUB_ACTIVO_ID}` : key;
+}
+
 function leerRegistrosLocales(key) {
   try {
-    const crudo = window.localStorage.getItem(key);
+    const crudo = window.localStorage.getItem(claveLocalPorClub(key));
     if (!crudo) return [];
     const datos = JSON.parse(crudo);
     return Array.isArray(datos) ? datos : [];
@@ -14731,7 +14940,7 @@ function guardarRegistroLocal(key, registro) {
   try {
     const actuales = leerRegistrosLocales(key);
     const sinDuplicado = actuales.filter((r) => r.id !== registro.id);
-    window.localStorage.setItem(key, JSON.stringify([...sinDuplicado, registro]));
+    window.localStorage.setItem(claveLocalPorClub(key), JSON.stringify([...sinDuplicado, registro]));
   } catch (err) {
     // Sin soporte de localStorage: el registro igual queda en memoria (el
     // estado de React ya lo tiene), solo no sobrevive a un F5 completo.
@@ -14743,7 +14952,7 @@ function guardarRegistroLocal(key, registro) {
 function quitarRegistroLocal(key, id) {
   try {
     const actuales = leerRegistrosLocales(key);
-    window.localStorage.setItem(key, JSON.stringify(actuales.filter((r) => r.id !== id)));
+    window.localStorage.setItem(claveLocalPorClub(key), JSON.stringify(actuales.filter((r) => r.id !== id)));
   } catch (err) {
     // Igual que arriba: sin localStorage no hay nada que limpiar ahí.
   }
@@ -14828,7 +15037,12 @@ const LS_KEY_OPERADOR_ACTIVO = 'smashpadel_operador_activo_v1';
 
 function leerOperadorActivoLocal() {
   try {
-    const crudo = window.localStorage.getItem(LS_KEY_OPERADOR_ACTIVO);
+    // Namespaced por club (ver `claveLocalPorClub`): a propósito NO se
+    // comparte entre clubes — es "quién está fichado en ESTA terminal PARA
+    // ESTE club ahora mismo", así que una laptop compartida entre dos
+    // clubes nunca hereda el operador fichado del otro club al cambiar de
+    // sesión.
+    const crudo = window.localStorage.getItem(claveLocalPorClub(LS_KEY_OPERADOR_ACTIVO));
     return crudo ? JSON.parse(crudo) : null;
   } catch (err) {
     return null;
@@ -14837,7 +15051,7 @@ function leerOperadorActivoLocal() {
 
 function guardarOperadorActivoLocal(operador) {
   try {
-    window.localStorage.setItem(LS_KEY_OPERADOR_ACTIVO, JSON.stringify(operador));
+    window.localStorage.setItem(claveLocalPorClub(LS_KEY_OPERADOR_ACTIVO), JSON.stringify(operador));
   } catch (err) {
     // Sin localStorage: la sesión igual funciona, solo no sobrevive a un refresh.
   }
@@ -24000,7 +24214,17 @@ async function resolverClubDelPortal(clubSlug) {
     );
     return null;
   }
-  if (filas.length === 1) return normalizarFilaClub(filas[0], tablaUsada);
+  // FIX ClubOS (aislamiento estricto): antes esto solo llamaba
+  // `establecerClubActivo` cuando había MÁS DE UN club (ver rama de abajo)
+  // — con un solo club, el Portal se quedaba con `CLUB_ACTIVO_ID = null`
+  // para siempre, así que ninguna reserva/venta/inscripción del Portal
+  // nacía con `club_id` real y el nuevo canal `notificaciones_club_{id}`
+  // nunca podría armar su nombre. Ahora se fija SIEMPRE, tengas uno o
+  // varios clubes.
+  if (filas.length === 1) {
+    establecerClubActivo(filas[0].id);
+    return normalizarFilaClub(filas[0], tablaUsada);
+  }
 
   const porSlug = filas.find((c) => {
     const slugFila = (c.slug || '').toLowerCase().trim();
@@ -24435,6 +24659,13 @@ function PortalPublicoJugadores({ clubSlug }) {
             ? `${reta.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
             : `${reta.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
       });
+      crearNotificacionClub({
+        tipo: 'inscripcion_reta',
+        titulo: `${jugador.nombre} se inscribió a la Reta "${reta.nombre}"`,
+        jugadorId: jugador.id,
+        jugadorNombre: jugador.nombre,
+        payload: { reta_id: reta.id, monto, metodo },
+      });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (inscripción a Reta):', err);
       mostrarToast({
@@ -24507,6 +24738,13 @@ function PortalPublicoJugadores({ clubSlug }) {
           titulo: '¡Inscripción confirmada con tus créditos!',
           detalle: `${clase.nombre} · Gratis — te quedan ${nuevosCreditos} crédito${nuevosCreditos === 1 ? '' : 's'} de tu membresía.`,
         });
+        crearNotificacionClub({
+          tipo: 'inscripcion_clase',
+          titulo: `${jugador.nombre} se inscribió a la clase "${clase.nombre}" (con créditos de membresía)`,
+          jugadorId: jugador.id,
+          jugadorNombre: jugador.nombre,
+          payload: { clase_id: clase.id, pagado_con_creditos: true },
+        });
       } catch (err) {
         console.error('[Portal] Error detallado Supabase (inscripción con créditos):', err);
         mostrarToast({
@@ -24570,6 +24808,13 @@ function PortalPublicoJugadores({ clubSlug }) {
           montoRestante > 0
             ? `${clase.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de tu primera clase.`
             : `${clase.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
+      });
+      crearNotificacionClub({
+        tipo: 'inscripcion_clase',
+        titulo: `${jugador.nombre} se inscribió a la clase "${clase.nombre}"`,
+        jugadorId: jugador.id,
+        jugadorNombre: jugador.nombre,
+        payload: { clase_id: clase.id, tipo_pago: tipoPago, monto, metodo },
       });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (inscripción a Clase de Academia):', err);
@@ -24774,6 +25019,13 @@ function PortalPublicoJugadores({ clubSlug }) {
             ? `${torneo.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
             : `${torneo.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`) + detallePareja,
       });
+      crearNotificacionClub({
+        tipo: 'inscripcion_torneo',
+        titulo: `${jugador.nombre} se inscribió al Torneo "${torneo.nombre}"${detallePareja}`,
+        jugadorId: jugador.id,
+        jugadorNombre: jugador.nombre,
+        payload: { torneo_id: torneo.id, categoria: categoria || null, monto, metodo },
+      });
       return { ok: true, data };
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (inscripción a Torneo):', err);
@@ -24910,6 +25162,13 @@ function PortalPublicoJugadores({ clubSlug }) {
             ? `Cubierto ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`
             : 'No había saldo pendiente por cubrir.'),
       });
+      crearNotificacionClub({
+        tipo: 'inscripcion_torneo',
+        titulo: `${jugador.nombre} se unió como pareja de ${participanteExistente.nombre} en el torneo`,
+        jugadorId: jugador.id,
+        jugadorNombre: jugador.nombre,
+        payload: { torneo_id: participanteExistente.torneo_id, categoria: participanteExistente.categoria || null, monto, metodo },
+      });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (unirse como pareja):', err);
       mostrarToast({
@@ -24982,6 +25241,13 @@ function PortalPublicoJugadores({ clubSlug }) {
       if (error) throw error;
       mostrarToast({ titulo: '¡Solicitud enviada!', detalle: 'El club la revisará y te contactará para confirmar horario y costo.' });
       setModalSolicitudClase(false);
+      crearNotificacionClub({
+        tipo: 'solicitud_clase',
+        titulo: `${payload.nombre || 'Un jugador'} solicitó una clase ${datos.tipo === 'privada' ? 'privada' : 'grupal'} nueva`,
+        jugadorId: jugador?.id || null,
+        jugadorNombre: payload.nombre,
+        payload: { tipo_solicitud: datos.tipo, nivel: datos.nivel || null, dia: datos.dia || null },
+      });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (solicitud de clase):', err);
       mostrarToast({
@@ -25249,6 +25515,13 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: '¡Compra confirmada!',
         detalle: montoRestante > 0 ? `Paga ${formatoMoneda(montoRestante)} en recepción al recoger.` : 'Recoge tu pedido en recepción.',
       });
+      crearNotificacionClub({
+        tipo: 'compra_tienda',
+        titulo: `${jugador.nombre} compró en la Tienda (${items.length} artículo${items.length === 1 ? '' : 's'}) · ${formatoMoneda(totalCarritoTienda)}`,
+        jugadorId: jugador.id,
+        jugadorNombre: jugador.nombre,
+        payload: { items, total: totalCarritoTienda, metodo },
+      });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (checkout de Tienda):', err);
       mostrarToast({ titulo: 'No se pudo completar tu compra', detalle: 'Intenta de nuevo o pide ayuda en recepción.', tono: 'error' });
@@ -25340,6 +25613,20 @@ function PortalPublicoJugadores({ clubSlug }) {
       }
       if (errReserva) throw errReserva;
       setReservas((prev) => [...prev, reservaCreada]);
+      // `triggerWhatsAppNotification` (en vez de `crearNotificacionClub` a
+      // secas, como los otros 5 eventos del Portal): la reserva de cancha es
+      // el evento más representativo para journalizar el payload de
+      // WhatsApp — ya trae el teléfono del jugador a la mano — así queda de
+      // ejemplo funcionando de punta a punta para cuando exista la
+      // integración real (ver comentario del helper).
+      triggerWhatsAppNotification({
+        telefono: jugadorActivo.telefono,
+        mensaje: `${jugadorActivo.nombre} reservó ${cancha.nombre} el ${fecha} · ${horaInicio}`,
+        tipo: 'reserva',
+        jugadorId: jugadorActivo.id,
+        jugadorNombre: jugadorActivo.nombre,
+        payload: { cancha_id: cancha.id, fecha, hora_inicio: horaInicio, hora_fin: horaFin, costo_cancha: costoCancha, addons_total: addonsSubtotal, metodo },
+      });
 
       // NO CREAR TICKET EN `ventas` ANTICIPADO cuando la reserva queda con
       // pago pendiente en Recepción ("Recepción" pura o "Wallet +
@@ -28725,6 +29012,36 @@ function AppInterno() {
     };
   }, [agregarAlertaClub]);
 
+  // Canal Realtime DEDICADO por club (`notificaciones_club_{club_id}`,
+  // migracion_v20_notificaciones_club.sql) — ADITIVO al `centro-alertas-club`
+  // de arriba, no lo reemplaza: `centro-alertas-club` sigue escuchando las
+  // tablas de negocio directo (compatibilidad con clubes que no hayan
+  // corrido la v20 todavía), mientras que este nuevo canal escucha la tabla
+  // `notificaciones_club` — el registro central de "algo pasó en el Portal"
+  // que además queda journalizado para el futuro (marcar leída de forma
+  // persistente, historial, integración real de WhatsApp vía
+  // `triggerWhatsAppNotification`). El NOMBRE del canal incluye el
+  // `club_id` literal (no solo un `filter`) porque así lo pide el
+  // requerimiento de ClubOS — dos clubes nunca comparten ni el nombre del
+  // canal ni sus eventos.
+  useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return undefined;
+    const canal = supabase
+      .channel(`notificaciones_club_${CLUB_ACTIVO_ID}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notificaciones_club', filter: `club_id=eq.${CLUB_ACTIVO_ID}` }, (payload) => {
+        const fila = payload.new || {};
+        agregarAlertaClub({
+          tipo: fila.tipo || 'notificacion',
+          titulo: fila.titulo || 'Nueva actividad del Portal Web',
+          jugadorId: fila.jugador_id || null,
+        });
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [agregarAlertaClub]);
+
   const marcarAlertaLeida = useCallback((id) => {
     setAlertasClub((prev) => prev.map((a) => (a.id === id ? { ...a, leida: true } : a)));
   }, []);
@@ -29115,12 +29432,614 @@ function AppInterno() {
             onGuardar={(datos) => setOperador(datos)}
             onCrearEmpleado={crearEmpleado}
             onClose={() => setModalOperador(false)}
+            onCerrarSesion={async () => {
+              setModalOperador(false);
+              // Cierra la cuenta de ClubOS (correo/contraseña del club,
+              // Supabase Auth) — `ClubAuthGate` detecta el cambio de sesión
+              // vía `onAuthStateChange` y vuelve a mostrar el Login solo.
+              // Distinto de "Fichar como" arriba: eso solo cambia quién es
+              // el operador activo EN esta terminal, sin tocar la sesión.
+              await supabase.auth.signOut();
+            }}
           />
         )}
 
         <ToastHost toasts={toasts} />
       </div>
     </ToastContext.Provider>
+  );
+}
+
+/* ============================================================================
+ * CLUBOS — AUTENTICACIÓN Y MULTI-TENANT DE CLUBES
+ * ==========================================================================*/
+// `ClubAuthScreen` (Login / Registro de Nuevo Club / Recuperar Contraseña)
+// + `ClubAuthGate` (resuelve la sesión y el club antes de montar
+// `AppInterno`) — mismo lenguaje visual que el resto de la app (fondo
+// `#0b132b`, tarjetas oscuras `bg-slate-900` con borde sutil
+// `border-slate-800`, `BotonPrimario`/`BotonSecundario`/`Campo`/
+// `inputClase` ya existentes, reutilizados tal cual, sin reinventar
+// estilos nuevos).
+//
+// Cómo se resuelve "mi club" tras iniciar sesión: cada club registrado es
+// una fila de `configuracion_club` con `propietario_user_id` apuntando al
+// usuario de Supabase Auth que lo registró (ver
+// `migracion_v19_multitenant_auth.sql`). `ClubAuthGate` busca esa fila con
+// `.eq('propietario_user_id', session.user.id)` y, en cuanto la encuentra,
+// llama `establecerClubActivo(club.id)` ANTES de montar `AppInterno` — así
+// `CLUB_ACTIVO_ID` es siempre un número real dentro del panel (nunca
+// `null`), y `conClubId`/`withClubId`/`canalClubFiltro` filtran en modo
+// estricto desde el primer render.
+
+function ClubAuthScreen({ onAutenticado }) {
+  const [modo, setModo] = useState('login'); // 'login' | 'registro' | 'recuperar'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [nombreClub, setNombreClub] = useState('');
+  const [vincularExistente, setVincularExistente] = useState(false);
+  const [mostrarPassword, setMostrarPassword] = useState(false);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState('');
+  const [mensaje, setMensaje] = useState(''); // aviso de éxito (confirma tu correo, enlace enviado...)
+
+  function cambiarModo(nuevoModo) {
+    setModo(nuevoModo);
+    setError('');
+    setMensaje('');
+  }
+
+  async function manejarLogin(e) {
+    e.preventDefault();
+    if (!email.trim() || !password) {
+      setError('Captura tu correo y tu contraseña.');
+      return;
+    }
+    setCargando(true);
+    setError('');
+    try {
+      const { data, error: errAuth } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (errAuth) throw errAuth;
+      if (data?.session) onAutenticado(data.session);
+    } catch (err) {
+      setError(
+        err?.message === 'Invalid login credentials'
+          ? 'Correo o contraseña incorrectos.'
+          : err?.message || 'No se pudo iniciar sesión.'
+      );
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  async function manejarRegistro(e) {
+    e.preventDefault();
+    if (!vincularExistente && !nombreClub.trim()) {
+      setError('Ponle un nombre a tu club.');
+      return;
+    }
+    if (!email.trim() || !password) {
+      setError('Captura tu correo y tu contraseña.');
+      return;
+    }
+    if (password.length < 6) {
+      setError('La contraseña debe tener al menos 6 caracteres.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Las contraseñas no coinciden.');
+      return;
+    }
+    setCargando(true);
+    setError('');
+    try {
+      const { data, error: errAuth } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+      });
+      if (errAuth) throw errAuth;
+      const usuario = data?.user;
+      if (!usuario) throw new Error('No se pudo crear la cuenta.');
+
+      // Sin `data.session` (proyecto con confirmación de correo activada):
+      // no hay sesión todavía para crear/vincular el club — se hace hasta
+      // que el usuario confirme su correo e inicie sesión por primera vez
+      // (ver `ClubAuthGate`, que corre este mismo alta de club en cuanto
+      // detecta sesión + sin club todavía).
+      if (!data.session) {
+        setMensaje('Cuenta creada. Revisa tu correo para confirmar tu cuenta y después inicia sesión.');
+        setModo('login');
+        return;
+      }
+
+      const resultado = await crearOVincularClub({ usuarioId: usuario.id, nombreClub: nombreClub.trim(), vincularExistente });
+      if (!resultado.ok) throw new Error(resultado.error || 'No se pudo crear el club.');
+      onAutenticado(data.session, resultado.club);
+    } catch (err) {
+      setError(err?.message || 'No se pudo completar el registro.');
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  async function manejarRecuperar(e) {
+    e.preventDefault();
+    if (!email.trim()) {
+      setError('Captura el correo de tu cuenta.');
+      return;
+    }
+    setCargando(true);
+    setError('');
+    try {
+      const { error: errAuth } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+      });
+      if (errAuth) throw errAuth;
+      setMensaje('Listo — te enviamos un enlace a tu correo para elegir una nueva contraseña.');
+    } catch (err) {
+      setError(err?.message || 'No se pudo enviar el enlace de recuperación.');
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  const titulos = {
+    login: { titulo: 'Inicia sesión en tu club', subtitulo: 'ClubOS · Panel de operación' },
+    registro: { titulo: 'Registra tu club', subtitulo: 'Crea tu cuenta y empieza a operar en minutos' },
+    recuperar: { titulo: 'Recupera tu contraseña', subtitulo: 'Te mandamos un enlace para elegir una nueva' },
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[#0b132b] px-4 py-10">
+      <div className="w-full max-w-md">
+        <div className="mb-6 flex flex-col items-center gap-2 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/30">
+            <LayoutGrid size={24} />
+          </div>
+          <h1 className="text-lg font-bold text-slate-100">ClubOS</h1>
+          <p className="text-xs text-slate-500">Smash Pádel Club</p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+          <div className="mb-5">
+            <h2 className="text-base font-bold text-slate-100">{titulos[modo].titulo}</h2>
+            <p className="mt-0.5 text-xs text-slate-400">{titulos[modo].subtitulo}</p>
+          </div>
+
+          {error && (
+            <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+          {mensaje && (
+            <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+              <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+              <span>{mensaje}</span>
+            </div>
+          )}
+
+          {modo === 'login' && (
+            <form onSubmit={manejarLogin} className="space-y-4">
+              <Campo label="Correo">
+                <div className="relative">
+                  <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    className={`${inputClase} pl-9`}
+                    placeholder="tucorreo@club.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+              </Campo>
+              <Campo label="Contraseña">
+                <div className="relative">
+                  <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <input
+                    type={mostrarPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    className={`${inputClase} px-9`}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setMostrarPassword((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300"
+                  >
+                    {mostrarPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </Campo>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => cambiarModo('recuperar')}
+                  className="text-xs font-semibold text-lime-400 hover:text-lime-300"
+                >
+                  ¿Olvidaste tu contraseña?
+                </button>
+              </div>
+              <BotonPrimario type="submit" disabled={cargando} className="w-full">
+                {cargando ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
+                Iniciar sesión
+              </BotonPrimario>
+              <p className="text-center text-xs text-slate-500">
+                ¿Tu club todavía no tiene cuenta?{' '}
+                <button type="button" onClick={() => cambiarModo('registro')} className="font-semibold text-lime-400 hover:text-lime-300">
+                  Regístralo
+                </button>
+              </p>
+            </form>
+          )}
+
+          {modo === 'registro' && (
+            <form onSubmit={manejarRegistro} className="space-y-4">
+              <label className="flex items-start gap-2 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={vincularExistente}
+                  onChange={(e) => setVincularExistente(e.target.checked)}
+                  className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
+                />
+                <span>
+                  <span className="font-semibold text-slate-200">Vincular mi club existente</span> — ya tengo canchas,
+                  reservas y datos cargados en este sistema y quiero que se muevan a mi cuenta nueva, en vez de crear un club
+                  vacío.
+                </span>
+              </label>
+              {!vincularExistente && (
+                <Campo label="Nombre del club">
+                  <div className="relative">
+                    <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                    <input
+                      type="text"
+                      className={`${inputClase} pl-9`}
+                      placeholder="Smash Pádel Club"
+                      value={nombreClub}
+                      onChange={(e) => setNombreClub(e.target.value)}
+                    />
+                  </div>
+                </Campo>
+              )}
+              <Campo label="Correo">
+                <div className="relative">
+                  <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    className={`${inputClase} pl-9`}
+                    placeholder="tucorreo@club.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+              </Campo>
+              <Campo label="Contraseña" hint="Mínimo 6 caracteres.">
+                <div className="relative">
+                  <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <input
+                    type={mostrarPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    className={`${inputClase} px-9`}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setMostrarPassword((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300"
+                  >
+                    {mostrarPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </Campo>
+              <Campo label="Confirmar contraseña">
+                <input
+                  type={mostrarPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  className={inputClase}
+                  placeholder="••••••••"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
+              </Campo>
+              <BotonPrimario type="submit" disabled={cargando} className="w-full">
+                {cargando ? <Loader2 size={16} className="animate-spin" /> : <Building2 size={16} />}
+                Crear mi club
+              </BotonPrimario>
+              <p className="text-center text-xs text-slate-500">
+                ¿Ya tienes cuenta?{' '}
+                <button type="button" onClick={() => cambiarModo('login')} className="font-semibold text-lime-400 hover:text-lime-300">
+                  Inicia sesión
+                </button>
+              </p>
+            </form>
+          )}
+
+          {modo === 'recuperar' && (
+            <form onSubmit={manejarRecuperar} className="space-y-4">
+              <Campo label="Correo" hint="Te mandamos ahí el enlace para elegir una nueva contraseña.">
+                <div className="relative">
+                  <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    className={`${inputClase} pl-9`}
+                    placeholder="tucorreo@club.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+              </Campo>
+              <BotonPrimario type="submit" disabled={cargando} className="w-full">
+                {cargando ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
+                Enviar enlace de recuperación
+              </BotonPrimario>
+              <p className="text-center text-xs text-slate-500">
+                <button type="button" onClick={() => cambiarModo('login')} className="font-semibold text-lime-400 hover:text-lime-300">
+                  Volver a iniciar sesión
+                </button>
+              </p>
+            </form>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Crea (o vincula) el club para un usuario recién registrado — usado tanto
+// por `manejarRegistro` (cuando `signUp` ya trae sesión de inmediato) como
+// por `ClubAuthGate` (cuando el alta se completa después, tras confirmar el
+// correo e iniciar sesión por primera vez).
+async function crearOVincularClub({ usuarioId, nombreClub, vincularExistente }) {
+  try {
+    if (vincularExistente) {
+      const { data: clubExistente, error: errBuscar } = await supabase
+        .from('configuracion_club')
+        .select('*')
+        .is('propietario_user_id', null)
+        .order('id', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (errBuscar) throw errBuscar;
+      if (!clubExistente) {
+        return { ok: false, error: 'No encontramos un club sin dueño para vincular. Crea uno nuevo en vez de vincular.' };
+      }
+      const { data: clubActualizado, error: errUpdate } = await supabase
+        .from('configuracion_club')
+        .update({ propietario_user_id: usuarioId })
+        .eq('id', clubExistente.id)
+        .select()
+        .single();
+      if (errUpdate) throw errUpdate;
+      await reclamarDatosLegacyDelClub(clubActualizado.id);
+      return { ok: true, club: clubActualizado };
+    }
+
+    const { data: clubNuevo, error: errInsert } = await supabase
+      .from('configuracion_club')
+      .insert({ nombre: nombreClub || 'Mi Club', propietario_user_id: usuarioId })
+      .select()
+      .single();
+    if (errInsert) throw errInsert;
+    return { ok: true, club: clubNuevo };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'No se pudo crear el club.' };
+  }
+}
+
+// Puerta de entrada del panel interno: resuelve la sesión de Supabase Auth
+// y el club que le pertenece ANTES de montar `AppInterno` — mientras no haya
+// ambos, se muestra `ClubAuthScreen` (sin sesión) o una pantalla de carga
+// (sesión válida, club resolviéndose). Se suscribe a
+// `supabase.auth.onAuthStateChange` para reaccionar de inmediato a
+// login/logout/recuperación de contraseña sin tener que recargar la
+// página — incluyendo el "Cerrar sesión" del menú de operador dentro de
+// `AppInterno` (ver `TopHeader`), que dispara `supabase.auth.signOut()` y
+// aquí mismo se detecta el cambio a `session: null` para volver a mostrar el
+// login.
+function ClubAuthGate() {
+  const [estado, setEstado] = useState('cargando'); // 'cargando' | 'sin_sesion' | 'sin_club' | 'listo'
+  const [club, setClub] = useState(null);
+  const [sesion, setSesion] = useState(null);
+  const [errorClub, setErrorClub] = useState('');
+
+  const resolverClubDeSesion = useCallback(async (session) => {
+    setSesion(session || null);
+    if (!session) {
+      establecerClubActivo(null);
+      setClub(null);
+      setEstado('sin_sesion');
+      return;
+    }
+    try {
+      const { data, error } = await supabase
+        .from('configuracion_club')
+        .select('*')
+        .eq('propietario_user_id', session.user.id)
+        .maybeSingle();
+      if (error) throw error;
+      if (data) {
+        establecerClubActivo(data.id);
+        setClub(data);
+        setEstado('listo');
+      } else {
+        // Sesión válida (ej. acaba de confirmar su correo) pero sin club
+        // todavía — pasa cuando `signUp` no trae sesión inmediata (ver
+        // `manejarRegistro`, proyecto con confirmación de correo activada) y
+        // el alta del club quedó pendiente hasta este primer login. Se
+        // completa aquí mismo con `CompletarRegistroClub`, abajo.
+        setEstado('sin_club');
+      }
+    } catch (err) {
+      console.error('[ClubOS] Error resolviendo el club de la sesión.', err);
+      setErrorClub(err?.message || 'No se pudo cargar la información de tu club.');
+      setEstado('sin_club');
+    }
+  }, []);
+
+  useEffect(() => {
+    let activo = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (activo) resolverClubDeSesion(data?.session || null);
+    });
+    const { data: suscripcion } = supabase.auth.onAuthStateChange((_evento, session) => {
+      resolverClubDeSesion(session);
+    });
+    return () => {
+      activo = false;
+      suscripcion?.subscription?.unsubscribe?.();
+    };
+  }, [resolverClubDeSesion]);
+
+  // Le pasa la cuenta directo a `ClubAuthGate` sin esperar al round-trip de
+  // `onAuthStateChange`: cuando `manejarRegistro` YA creó el club (caso
+  // normal, sin confirmación de correo), evita la condición de carrera en
+  // la que el listener resuelve "sin club" un instante antes de que el
+  // INSERT de `configuracion_club` termine.
+  function manejarAutenticado(session, clubDirecto) {
+    setSesion(session || null);
+    if (clubDirecto) {
+      establecerClubActivo(clubDirecto.id);
+      setClub(clubDirecto);
+      setEstado('listo');
+    } else {
+      resolverClubDeSesion(session);
+    }
+  }
+
+  if (estado === 'cargando') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#0b132b]">
+        <Loader2 size={28} className="animate-spin text-lime-400" />
+      </div>
+    );
+  }
+
+  if (estado === 'sin_sesion') {
+    return <ClubAuthScreen onAutenticado={manejarAutenticado} />;
+  }
+
+  if (estado === 'sin_club') {
+    return (
+      <CompletarRegistroClub
+        usuarioId={sesion?.user?.id}
+        errorInicial={errorClub}
+        onListo={(clubCreado) => manejarAutenticado(sesion, clubCreado)}
+      />
+    );
+  }
+
+  return <AppInterno key={club?.id ?? 'sin-club'} />;
+}
+
+// Pantalla de remate del registro para el caso en el que Supabase Auth
+// exige confirmar el correo antes de dar sesión (ajuste por default en
+// proyectos nuevos): el usuario ya existe y ya inició sesión, pero el
+// nombre de club que capturó en `ClubAuthScreen` se perdió junto con ese
+// primer formulario (la confirmación pasa en otra pestaña/momento) — así
+// que se le vuelve a pedir aquí, una sola vez, antes de entrar al panel.
+function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
+  const [nombreClub, setNombreClub] = useState('');
+  const [vincularExistente, setVincularExistente] = useState(false);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState(errorInicial || '');
+
+  async function guardar(e) {
+    e.preventDefault();
+    if (!usuarioId) {
+      setError('Tu sesión no es válida — vuelve a iniciar sesión.');
+      return;
+    }
+    if (!vincularExistente && !nombreClub.trim()) {
+      setError('Ponle un nombre a tu club.');
+      return;
+    }
+    setCargando(true);
+    setError('');
+    const resultado = await crearOVincularClub({ usuarioId, nombreClub: nombreClub.trim(), vincularExistente });
+    setCargando(false);
+    if (!resultado.ok) {
+      setError(resultado.error || 'No se pudo crear el club.');
+      return;
+    }
+    onListo(resultado.club);
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[#0b132b] px-4 py-10">
+      <div className="w-full max-w-md">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+          <div className="mb-5 flex items-start gap-3">
+            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
+              <Building2 size={18} />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-slate-100">Un último paso</h2>
+              <p className="mt-0.5 text-xs text-slate-400">Tu correo ya está confirmado — ponle nombre a tu club para terminar.</p>
+            </div>
+          </div>
+
+          {error && (
+            <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <form onSubmit={guardar} className="space-y-4">
+            <label className="flex items-start gap-2 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={vincularExistente}
+                onChange={(e) => setVincularExistente(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
+              />
+              <span>
+                <span className="font-semibold text-slate-200">Vincular mi club existente</span> — ya tengo datos cargados en
+                este sistema y quiero que se muevan a mi cuenta.
+              </span>
+            </label>
+            {!vincularExistente && (
+              <Campo label="Nombre del club">
+                <div className="relative">
+                  <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <input
+                    type="text"
+                    className={`${inputClase} pl-9`}
+                    placeholder="Smash Pádel Club"
+                    value={nombreClub}
+                    onChange={(e) => setNombreClub(e.target.value)}
+                  />
+                </div>
+              </Campo>
+            )}
+            <BotonPrimario type="submit" disabled={cargando} className="w-full">
+              {cargando ? <Loader2 size={16} className="animate-spin" /> : <Building2 size={16} />}
+              Continuar
+            </BotonPrimario>
+            <BotonSecundario
+              type="button"
+              className="w-full"
+              onClick={async () => {
+                await supabase.auth.signOut();
+              }}
+            >
+              Cerrar sesión
+            </BotonSecundario>
+          </form>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -29162,11 +30081,13 @@ export default function App() {
   const ruta = usarRutaActual();
   const matchPortal = ruta.match(PATRON_RUTA_PORTAL);
   if (matchPortal) return <PortalPublicoJugadores clubSlug={matchPortal[1]} />;
-  // Salvaguarda: si el operador llegó a estar en el Portal Público de otro
-  // club dentro de esta misma pestaña (p. ej. atrás/adelante del navegador)
-  // y vuelve al panel interno, `CLUB_ACTIVO_ID` no debe quedarse pegado al
-  // club del Portal — el panel interno de HOY siempre opera sin filtro de
-  // club_id (ver comentario de cabecera de `CLUB_ACTIVO_ID`).
-  establecerClubActivo(null);
-  return <AppInterno />;
+  // Panel interno (ClubOS): `ClubAuthGate` resuelve Login/Registro/sesión y
+  // el `club_id` real del dueño ANTES de montar `AppInterno` — reemplaza el
+  // viejo `establecerClubActivo(null); return <AppInterno />;` que dejaba el
+  // panel interno operando SIEMPRE sin filtro de tenant. Salvaguarda: si el
+  // operador llegó a estar en el Portal Público de otro club dentro de esta
+  // misma pestaña (p. ej. atrás/adelante del navegador), `ClubAuthGate`
+  // vuelve a fijar `CLUB_ACTIVO_ID` al club de SU sesión (no al del Portal)
+  // en cuanto se monta, así que no hace falta resetear nada aquí.
+  return <ClubAuthGate />;
 }
