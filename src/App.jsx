@@ -2301,7 +2301,13 @@ function ordenarNavModulos(modulos, ordenIds) {
 // corrupto) — siempre regresa algo usable, con el nombre/logo por defecto
 // del club como respaldo.
 const LS_KEY_CLUB_CONFIG = 'smashpadel_club_config_v1';
-const CONFIG_CLUB_DEFAULT = { nombre: 'Smash Pádel', logoUrl: '' };
+// Multi-tenant (ClubOS): SIN nombre de marca por defecto — cada club nuevo
+// arranca con el campo vacío para que el dueño capture el nombre real del
+// SUYO en vez de heredar el club de ejemplo original de este proyecto. La
+// UI ya tiene sus propios respaldos de DISPLAY para cuando todavía no hay
+// nombre capturado (ver `configClubActual.nombre || 'Panel operativo'` en
+// `Sidebar`) — este default solo afecta el valor inicial editable.
+const CONFIG_CLUB_DEFAULT = { nombre: '', logoUrl: '' };
 function leerConfigClubLocal() {
   try {
     const crudo = localStorage.getItem(LS_KEY_CLUB_CONFIG);
@@ -2362,7 +2368,7 @@ function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
     >
       <div className="space-y-4">
         <Campo label="Nombre del club">
-          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Smash Pádel Club" />
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Pádel Club Mexico" />
         </Campo>
 
         <div className="space-y-2">
@@ -2496,7 +2502,7 @@ function Sidebar({
                 }}
               />
             ) : (
-              iniciales(configClubActual.nombre) || 'SP'
+              iniciales(configClubActual.nombre) || 'MC'
             )}
           </div>
           {/* Nombre del Club (dinámico): antes se ponía un texto fijo
@@ -3671,7 +3677,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                 value={nombreNuevo}
                 onChange={(e) => setNombreNuevo(e.target.value)}
                 className={inputClase}
-                placeholder="Ej. Adrián Vargas"
+                placeholder="Ej. Juan Pérez"
                 autoFocus
               />
             </Campo>
@@ -14836,6 +14842,53 @@ function esErrorPermisoRLS(error) {
   return msg.includes('row-level security') || msg.includes('permission denied') || msg.includes('rls');
 }
 
+// Detecta el error de Supabase Auth/PostgREST "JWT issued at future" (y
+// variantes de redacción: "issued in the future", "clock skew") — ocurre
+// cuando el reloj del dispositivo del operador está desfasado (adelantado o
+// atrasado) respecto al servidor por más de la tolerancia que Supabase
+// acepta al validar el claim `iat` del token de sesión. No es un error de
+// credenciales ni de permisos — casi siempre es un desfase MENOR (segundos)
+// que se resuelve solo con un segundo intento un instante después (le da
+// tiempo al reloj/NTP del dispositivo a corregirse, o a que el margen de
+// tolerancia del servidor ya no se exceda). Ver `conToleranciaDeReloj`.
+function esErrorRelojDesfasado(error) {
+  if (!error) return false;
+  const msg = (error.message || '').toLowerCase();
+  return (
+    msg.includes('issued at future') ||
+    msg.includes('issued in the future') ||
+    msg.includes('clock skew') ||
+    (msg.includes('jwt') && msg.includes('future')) ||
+    (msg.includes('iat') && msg.includes('future'))
+  );
+}
+
+// Margen de tolerancia (leeway) ante un desfase MENOR de reloj entre el
+// dispositivo del operador y el servidor de Supabase: en vez de fallar el
+// login/registro/sesión de inmediato con el mensaje críptico "JWT issued at
+// future", reintenta UNA VEZ tras una breve pausa antes de darse por
+// vencido — mismo criterio de tolerancia/reintento que
+// `conColumnasOpcionales` usa para columnas faltantes, aplicado aquí a un
+// problema de reloj en vez de esquema. `ejecutar` es cualquier función
+// async que regrese `{ data, error }` (mismo contrato que el resto de
+// llamadas a Supabase de este archivo) — típicamente
+// `supabase.auth.signInWithPassword(...)`, `supabase.auth.signUp(...)` o
+// cualquier `.select()`/`.insert()` que dependa del token de sesión.
+async function conToleranciaDeReloj(ejecutar) {
+  const intento1 = await ejecutar();
+  if (!intento1.error || !esErrorRelojDesfasado(intento1.error)) return intento1;
+  console.warn('[ClubOS] Desfase de reloj detectado validando la sesión — reintentando en 1.5s.', intento1.error);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  return ejecutar();
+}
+
+// Mensaje amigable para cuando ni el reintento de `conToleranciaDeReloj`
+// resuelve el desfase — le dice al operador la causa real (su dispositivo,
+// no sus credenciales) y qué hacer, en vez de mostrarle el texto crudo del
+// error de PostgREST/GoTrue.
+const MENSAJE_ERROR_RELOJ_DESFASADO =
+  'La fecha/hora de tu dispositivo está desincronizada con el servidor. Actívala en automático (Ajustes → Fecha y hora → Automático) e intenta de nuevo.';
+
 // Id sintético para un registro que se queda solo en memoria local (modo
 // fallback): nunca se confunde con un UUID real de Supabase, así que
 // cualquier intento posterior de `.update()`/`.delete()` contra ese id
@@ -23544,7 +23597,7 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
     >
       <div className="space-y-4">
         <Campo label="Nombre">
-          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Nombre completo" />
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Juan Pérez" />
         </Campo>
         <Campo label="Rol" hint="Define qué módulos y acciones puede usar al ficharse.">
           <div className="grid grid-cols-2 gap-1.5">
@@ -28003,7 +28056,11 @@ function AppInterno() {
   // todavía). `rol` SIEMPRE es uno de `ROLES` — `permisosDeRol` abajo ya
   // blinda contra un valor vacío/corrupto.
   const [operador, setOperador] = useState(
-    () => leerOperadorActivoLocal() || { id: null, nombre: 'Adrián Vargas', turno: 'automatico', rol: 'owner' }
+    // Sin nombre de persona hardcodeado (ClubOS es multi-tenant: este
+    // fallback lo ve CUALQUIER club en su primer arranque, no solo el
+    // original) — "Propietario" es neutro y coincide con el rol `owner` por
+    // defecto.
+    () => leerOperadorActivoLocal() || { id: null, nombre: 'Propietario', turno: 'automatico', rol: 'owner' }
   );
   const [modalOperador, setModalOperador] = useState(false);
 
@@ -29498,15 +29555,20 @@ function ClubAuthScreen({ onAutenticado }) {
     setCargando(true);
     setError('');
     try {
-      const { data, error: errAuth } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
+      // `conToleranciaDeReloj`: si el dispositivo tiene un desfase menor de
+      // reloj respecto al servidor, Supabase puede rechazar el token con
+      // "JWT issued at future" — se reintenta una vez antes de mostrar
+      // cualquier error al operador.
+      const { data, error: errAuth } = await conToleranciaDeReloj(() =>
+        supabase.auth.signInWithPassword({ email: email.trim(), password })
+      );
       if (errAuth) throw errAuth;
       if (data?.session) onAutenticado(data.session);
     } catch (err) {
       setError(
-        err?.message === 'Invalid login credentials'
+        esErrorRelojDesfasado(err)
+          ? MENSAJE_ERROR_RELOJ_DESFASADO
+          : err?.message === 'Invalid login credentials'
           ? 'Correo o contraseña incorrectos.'
           : err?.message || 'No se pudo iniciar sesión.'
       );
@@ -29536,10 +29598,7 @@ function ClubAuthScreen({ onAutenticado }) {
     setCargando(true);
     setError('');
     try {
-      const { data, error: errAuth } = await supabase.auth.signUp({
-        email: email.trim(),
-        password,
-      });
+      const { data, error: errAuth } = await conToleranciaDeReloj(() => supabase.auth.signUp({ email: email.trim(), password }));
       if (errAuth) throw errAuth;
       const usuario = data?.user;
       if (!usuario) throw new Error('No se pudo crear la cuenta.');
@@ -29559,7 +29618,7 @@ function ClubAuthScreen({ onAutenticado }) {
       if (!resultado.ok) throw new Error(resultado.error || 'No se pudo crear el club.');
       onAutenticado(data.session, resultado.club);
     } catch (err) {
-      setError(err?.message || 'No se pudo completar el registro.');
+      setError(esErrorRelojDesfasado(err) ? MENSAJE_ERROR_RELOJ_DESFASADO : err?.message || 'No se pudo completar el registro.');
     } finally {
       setCargando(false);
     }
@@ -29574,20 +29633,26 @@ function ClubAuthScreen({ onAutenticado }) {
     setCargando(true);
     setError('');
     try {
-      const { error: errAuth } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
-      });
+      const { error: errAuth } = await conToleranciaDeReloj(() =>
+        supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+        })
+      );
       if (errAuth) throw errAuth;
       setMensaje('Listo — te enviamos un enlace a tu correo para elegir una nueva contraseña.');
     } catch (err) {
-      setError(err?.message || 'No se pudo enviar el enlace de recuperación.');
+      setError(esErrorRelojDesfasado(err) ? MENSAJE_ERROR_RELOJ_DESFASADO : err?.message || 'No se pudo enviar el enlace de recuperación.');
     } finally {
       setCargando(false);
     }
   }
 
   const titulos = {
-    login: { titulo: 'Inicia sesión en tu club', subtitulo: 'ClubOS · Panel de operación' },
+    // "Run Your Club" (sin subtítulo): a petición del club, la pantalla de
+    // login ya no lleva ninguna marca fija ("ClubOS · Panel de operación",
+    // "Smash Pádel Club" debajo del logo) — el nombre de CADA club vive
+    // solo en `configuracion_club.nombre`, nunca hardcodeado aquí.
+    login: { titulo: 'Run Your Club', subtitulo: '' },
     registro: { titulo: 'Registra tu club', subtitulo: 'Crea tu cuenta y empieza a operar en minutos' },
     recuperar: { titulo: 'Recupera tu contraseña', subtitulo: 'Te mandamos un enlace para elegir una nueva' },
   };
@@ -29600,13 +29665,12 @@ function ClubAuthScreen({ onAutenticado }) {
             <LayoutGrid size={24} />
           </div>
           <h1 className="text-lg font-bold text-slate-100">ClubOS</h1>
-          <p className="text-xs text-slate-500">Smash Pádel Club</p>
         </div>
 
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
           <div className="mb-5">
             <h2 className="text-base font-bold text-slate-100">{titulos[modo].titulo}</h2>
-            <p className="mt-0.5 text-xs text-slate-400">{titulos[modo].subtitulo}</p>
+            {titulos[modo].subtitulo && <p className="mt-0.5 text-xs text-slate-400">{titulos[modo].subtitulo}</p>}
           </div>
 
           {error && (
@@ -29701,7 +29765,7 @@ function ClubAuthScreen({ onAutenticado }) {
                     <input
                       type="text"
                       className={`${inputClase} pl-9`}
-                      placeholder="Smash Pádel Club"
+                      placeholder="Ej. Pádel Club Mexico"
                       value={nombreClub}
                       onChange={(e) => setNombreClub(e.target.value)}
                     />
@@ -29862,11 +29926,14 @@ function ClubAuthGate() {
       return;
     }
     try {
-      const { data, error } = await supabase
-        .from('configuracion_club')
-        .select('*')
-        .eq('propietario_user_id', session.user.id)
-        .maybeSingle();
+      // `conToleranciaDeReloj`: esta consulta viaja con el JWT de la sesión
+      // en el header — si el dispositivo tiene un desfase menor de reloj,
+      // PostgREST puede rechazarlo con "JWT issued at future" en cualquier
+      // request, no solo al iniciar sesión. Se reintenta una vez antes de
+      // darse por vencido.
+      const { data, error } = await conToleranciaDeReloj(() =>
+        supabase.from('configuracion_club').select('*').eq('propietario_user_id', session.user.id).maybeSingle()
+      );
       if (error) throw error;
       if (data) {
         establecerClubActivo(data.id);
@@ -29882,6 +29949,15 @@ function ClubAuthGate() {
       }
     } catch (err) {
       console.error('[ClubOS] Error resolviendo el club de la sesión.', err);
+      if (esErrorRelojDesfasado(err)) {
+        // Estado propio (no "sin_club"): el problema es el reloj del
+        // dispositivo, no la cuenta — mostrarle el flujo de "completar
+        // registro" aquí sería confuso y hasta arriesgado (podría duplicar
+        // el club). Ofrece reintentar en vez de pedir datos de más.
+        setErrorClub(MENSAJE_ERROR_RELOJ_DESFASADO);
+        setEstado('error_reloj');
+        return;
+      }
       setErrorClub(err?.message || 'No se pudo cargar la información de tu club.');
       setEstado('sin_club');
     }
@@ -29936,6 +30012,31 @@ function ClubAuthGate() {
         errorInicial={errorClub}
         onListo={(clubCreado) => manejarAutenticado(sesion, clubCreado)}
       />
+    );
+  }
+
+  if (estado === 'error_reloj') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#0b132b] px-4">
+        <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 text-center shadow-2xl">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30">
+            <AlertTriangle size={22} />
+          </div>
+          <h2 className="text-base font-bold text-slate-100">Reloj del dispositivo desincronizado</h2>
+          <p className="mt-2 text-xs text-slate-400">{errorClub || MENSAJE_ERROR_RELOJ_DESFASADO}</p>
+          <BotonPrimario className="mt-4 w-full" onClick={() => resolverClubDeSesion(sesion)}>
+            <RefreshCw size={16} /> Reintentar
+          </BotonPrimario>
+          <BotonSecundario
+            className="mt-2 w-full"
+            onClick={async () => {
+              await supabase.auth.signOut();
+            }}
+          >
+            Cerrar sesión
+          </BotonSecundario>
+        </div>
+      </div>
     );
   }
 
@@ -30016,7 +30117,7 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
                   <input
                     type="text"
                     className={`${inputClase} pl-9`}
-                    placeholder="Smash Pádel Club"
+                    placeholder="Ej. Pádel Club Mexico"
                     value={nombreClub}
                     onChange={(e) => setNombreClub(e.target.value)}
                   />
