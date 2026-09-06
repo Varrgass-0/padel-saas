@@ -1168,12 +1168,10 @@ const ESTATUS_META = {
 
 const ROLES = [
   { value: 'owner', label: 'Owner', descripcion: 'Acceso total e incondicional.', icon: Crown, color: 'text-amber-300', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30' },
-  { value: 'admin', label: 'Admin', descripcion: 'Gestión operativa, reportes, usuarios y configuración.', icon: ShieldAlert, color: 'text-violet-300', bg: 'bg-violet-400/10', ring: 'ring-violet-400/30' },
   { value: 'manager', label: 'Manager', descripcion: 'Gestión de reservas, aprobación de cortes y supervisión de POS.', icon: UserCog, color: 'text-sky-300', bg: 'bg-sky-400/10', ring: 'ring-sky-400/30' },
-  { value: 'recepcion', label: 'Recepción', descripcion: 'Agendar reservas, check-in, cobro en POS y Split Bill.', icon: Users, color: 'text-lime-300', bg: 'bg-lime-400/10', ring: 'ring-lime-400/30' },
-  { value: 'caja', label: 'Caja', descripcion: 'Únicamente cobrar ventas de mostrador y POS.', icon: DollarSign, color: 'text-emerald-300', bg: 'bg-emerald-400/10', ring: 'ring-emerald-400/30' },
-  { value: 'bar', label: 'Bar', descripcion: 'Gestión de comandas y stock de alimentos/bebidas.', icon: Coffee, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
-  { value: 'coach', label: 'Coach', descripcion: 'Vista de agenda de clases y asistencia de alumnos.', icon: Award, color: 'text-fuchsia-300', bg: 'bg-fuchsia-400/10', ring: 'ring-fuchsia-400/30' },
+  { value: 'recepcion', label: 'Recepción/Caja', descripcion: 'Agendar reservas, check-in, cobro en POS/Split Bill y flujos de inscripción de Torneos y Academia.', icon: Users, color: 'text-lime-300', bg: 'bg-lime-400/10', ring: 'ring-lime-400/30' },
+  { value: 'bar', label: 'Restaurante/Bar', descripcion: 'Comandas y venta en Smart POS; inventario de alimentos/bebidas en solo lectura, sin precios ni costos.', icon: Coffee, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
+  { value: 'coach', label: 'Coach', descripcion: 'Academia & Clínicas, Torneos & Retas y Parrilla Operativa en modo solo lectura.', icon: Award, color: 'text-fuchsia-300', bg: 'bg-fuchsia-400/10', ring: 'ring-fuchsia-400/30' },
   {
     value: 'contador',
     label: 'Contador',
@@ -1187,13 +1185,44 @@ const ROLES = [
 
 const ROLES_POR_VALOR = Object.fromEntries(ROLES.map((r) => [r.value, r]));
 
+// ALIAS RETROCOMPATIBLES — el picker de roles (`ModalOperador`,
+// `ModalGestionEmpleados`) ahora solo ofrece los 6 roles de `ROLES` de
+// arriba (se eliminaron 'admin' y 'caja' como roles independientes, ver
+// mensaje de la mejora de RBAC). Pero empleados YA GUARDADOS en Supabase con
+// `rol: 'admin'` o `rol: 'caja'` deben seguir resolviendo a una ficha válida
+// sin migrar la tabla `empleados` a mano — esto es una asignación de
+// propiedad sobre el objeto (no una reasignación de la `const`, que sí
+// estaría prohibida), perfectamente válida en JS. 'admin' se equipara a
+// 'owner' (mismo nivel de acceso total que ya tenía) y 'caja' se equipara a
+// 'recepcion' (que ya cubre — y amplía — lo que 'caja' podía hacer).
+ROLES_POR_VALOR.admin = ROLES_POR_VALOR.owner;
+ROLES_POR_VALOR.caja = ROLES_POR_VALOR.recepcion;
+
 // Todos los módulos existen bajo estas mismas claves de `moduloActivo` — ver
 // `NAV_MODULOS`/`MODULOS_META` más abajo, donde se agregó 'seguridad' y,
 // después, 'academia' (Academia & Clínicas).
 const TODOS_LOS_MODULOS = ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'];
 
 // Matriz de permisos por rol. `modulos: 'todos'` es azúcar para
-// `TODOS_LOS_MODULOS` (Owner/Admin) en vez de listarlos a mano.
+// `TODOS_LOS_MODULOS` (Owner) en vez de listarlos a mano.
+//
+// `puedeVerMontos`: gatea TODA cifra en pesos ($) que el rol podría llegar a
+// ver — Analytics Operativos, Vista 360° de Jugadores, Inventario
+// (costos/precio/margen), etc. Owner/Manager/Contador conservan acceso
+// total (true, sin cambios de comportamiento); Recepción/Caja,
+// Restaurante/Bar y Coach NUNCA deben ver montos — se deja explícito en
+// `false` (nunca se omite) siguiendo el mismo criterio ya usado en el resto
+// de flags de este objeto, para que ningún gate futuro interprete un valor
+// faltante como "permitido" por accidente.
+//
+// `soloLecturaParrilla`: si es `true`, la Parrilla Operativa se ve completa
+// pero sin NINGÚN control de edición (nueva reserva, cambiar foto/estatus de
+// cancha, cancelar/reprogramar) — hoy solo aplica a Coach.
+//
+// `soloLecturaInventario`: si es `true`, el módulo de Inventario (ERP) se
+// muestra en modo consulta estricta (unidades de stock) sin botones de
+// alta/edición de producto ni cifras de costo/margen — hoy solo aplica a
+// Restaurante/Bar.
 const PERMISOS_POR_ROL = {
   owner: {
     modulos: 'todos',
@@ -1208,20 +1237,9 @@ const PERMISOS_POR_ROL = {
     puedeVerAuditoria: true,
     puedeGestionarProductos: true,
     puedeCambiarEstatusCancha: true,
-  },
-  admin: {
-    modulos: 'todos',
-    puedeCancelarReservas: true,
-    puedeReprogramarReservas: true,
-    puedeAplicarDescuentoManual: true,
-    puedeEditarPrecioPOS: true,
-    puedeRegistrarDevolucionPOS: true,
-    puedeCerrarTurnoCaja: true,
-    puedeAprobarCorteCaja: true,
-    puedeGestionarEmpleados: true,
-    puedeVerAuditoria: true,
-    puedeGestionarProductos: true,
-    puedeCambiarEstatusCancha: true,
+    puedeVerMontos: true,
+    soloLecturaParrilla: false,
+    soloLecturaInventario: false,
   },
   manager: {
     modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'],
@@ -1232,12 +1250,18 @@ const PERMISOS_POR_ROL = {
     puedeRegistrarDevolucionPOS: true,
     puedeCerrarTurnoCaja: true,
     puedeAprobarCorteCaja: true, // "aprobación de cortes" es la pieza distintiva del rol Manager
-    puedeGestionarEmpleados: false, // ve el directorio, pero alta/edición/baja es solo Admin/Owner
+    puedeGestionarEmpleados: false, // ve el directorio, pero alta/edición/baja es solo Owner
     puedeVerAuditoria: true,
     puedeGestionarProductos: true,
     puedeCambiarEstatusCancha: true,
+    puedeVerMontos: true,
+    soloLecturaParrilla: false,
+    soloLecturaInventario: false,
   },
   recepcion: {
+    // "Recepción/Caja": Parrilla Operativa, Smart POS, Jugadores
+    // (Directorio), Torneos y Academia (flujos de inscripción) — SIN
+    // montos en Analytics, SIN Contabilidad, SIN ERP.
     modulos: ['parrilla', 'pos', 'torneos', 'academia', 'jugadores'],
     puedeCancelarReservas: true,
     puedeReprogramarReservas: true,
@@ -1250,26 +1274,15 @@ const PERMISOS_POR_ROL = {
     puedeVerAuditoria: false,
     puedeGestionarProductos: false,
     puedeCambiarEstatusCancha: false,
-  },
-  caja: {
-    // "Únicamente cobrar ventas de mostrador y POS" — Academia se agrega
-    // porque Caja también cobra mensualidad/clase suelta ahí (Vista
-    // Operativa y Control de "Academia & Clínicas" pide acceso de Caja).
-    modulos: ['pos', 'academia'],
-    puedeCancelarReservas: false,
-    puedeReprogramarReservas: false,
-    puedeAplicarDescuentoManual: false,
-    puedeEditarPrecioPOS: false,
-    puedeRegistrarDevolucionPOS: false,
-    puedeCerrarTurnoCaja: true,
-    puedeAprobarCorteCaja: false,
-    puedeGestionarEmpleados: false,
-    puedeVerAuditoria: false,
-    puedeGestionarProductos: false,
-    puedeCambiarEstatusCancha: false,
+    puedeVerMontos: false,
+    soloLecturaParrilla: false,
+    soloLecturaInventario: false,
   },
   bar: {
-    modulos: ['pos', 'erp'], // comandas (POS) + stock de alimentos/bebidas (ERP)
+    // "Restaurante/Bar": Smart POS (filtrado por defecto a la pestaña
+    // Bar/Restaurante) + Comandas Activas, e Inventario en SOLO LECTURA
+    // (unidades de stock, sin costos ni precios $).
+    modulos: ['pos', 'erp'],
     puedeCancelarReservas: false,
     puedeReprogramarReservas: false,
     puedeAplicarDescuentoManual: false,
@@ -1279,15 +1292,16 @@ const PERMISOS_POR_ROL = {
     puedeAprobarCorteCaja: false,
     puedeGestionarEmpleados: false,
     puedeVerAuditoria: false,
-    puedeGestionarProductos: true,
+    puedeGestionarProductos: false, // Inventario es de solo lectura para este rol
     puedeCambiarEstatusCancha: false,
+    puedeVerMontos: false,
+    soloLecturaParrilla: false,
+    soloLecturaInventario: true,
   },
   coach: {
-    // Agenda de clases (Parrilla) + asistencia de alumnos (CRM de
-    // Jugadores) + la operación real de "Academia & Clínicas" (parrilla de
-    // clases propia, pase de lista) que antes solo tenía este comentario
-    // como intención — ahora sí existe el módulo.
-    modulos: ['parrilla', 'academia', 'jugadores'],
+    // Academia & Clínicas (crear/programar clases) + Torneos & Retas
+    // (organizar) + Parrilla Operativa en modo SOLO LECTURA completo.
+    modulos: ['parrilla', 'academia', 'jugadores', 'torneos'],
     puedeCancelarReservas: false,
     puedeReprogramarReservas: false,
     puedeAplicarDescuentoManual: false,
@@ -1299,6 +1313,9 @@ const PERMISOS_POR_ROL = {
     puedeVerAuditoria: false,
     puedeGestionarProductos: false,
     puedeCambiarEstatusCancha: false,
+    puedeVerMontos: false,
+    soloLecturaParrilla: true,
+    soloLecturaInventario: false,
   },
   contador: {
     // Rol de solo lectura/exportación: Contabilidad & Compras + Analytics BI
@@ -1307,10 +1324,10 @@ const PERMISOS_POR_ROL = {
     // de tocar una reserva o una inscripción (el propio filtro de `modulos`
     // ya es la restricción más fuerte posible). Dentro de POS, este
     // proyecto no separa las pantallas en "modo lectura" vs "modo
-    // escritura" — así que, igual que los roles `caja`/`bar` ya
-    // restringidos, la lectura-only se logra apagando TODOS los flags de
-    // acción sensible: no cobra, no aplica descuentos, no edita precios, no
-    // registra devoluciones, no cierra ni aprueba cortes de caja.
+    // escritura" — así que, igual que los roles ya restringidos, la
+    // lectura-only se logra apagando TODOS los flags de acción sensible: no
+    // cobra, no aplica descuentos, no edita precios, no registra
+    // devoluciones, no cierra ni aprueba cortes de caja.
     modulos: ['contabilidad', 'analytics', 'pos'],
     puedeCancelarReservas: false,
     puedeReprogramarReservas: false,
@@ -1323,13 +1340,35 @@ const PERMISOS_POR_ROL = {
     puedeVerAuditoria: false,
     puedeGestionarProductos: false,
     puedeCambiarEstatusCancha: false,
+    puedeVerMontos: true,
+    soloLecturaParrilla: false,
+    soloLecturaInventario: false,
   },
 };
+
+// ALIAS RETROCOMPATIBLES de permisos — mismo criterio que `ROLES_POR_VALOR`
+// arriba: empleados con `rol` legacy (`'admin'`, `'caja'`) siguen resolviendo
+// a una matriz de permisos válida y con sentido, sin migrar datos.
+PERMISOS_POR_ROL.admin = PERMISOS_POR_ROL.owner;
+PERMISOS_POR_ROL.caja = PERMISOS_POR_ROL.recepcion;
 
 // Rol de respaldo si `operador.rol` viniera vacío/desconocido (sesión vieja
 // persistida antes de este módulo, dato corrupto, etc.) — el más
 // restrictivo que sigue dejando trabajar en mostrador, nunca "todos".
 const ROL_RESPALDO = 'recepcion';
+
+// Normaliza un `rol` legacy ('admin', 'caja' — eliminados como roles
+// seleccionables en la mejora de RBAC, ver `ROLES`) a su equivalente
+// canónico entre los 6 actuales. Sin esto, `permisos.rol` de un empleado
+// viejo con `rol: 'caja'` en Supabase se quedaría como el string 'caja'
+// (aunque SÍ heredara los permisos/módulos de 'recepcion' vía el alias de
+// `PERMISOS_POR_ROL`) — y cualquier comparación nueva contra el valor
+// canónico (`permisos?.rol === 'recepcion'`, usada por ejemplo para el
+// filtro por defecto de Smart POS o la Tarjeta de Reorden) fallaría en
+// silencio para esos empleados. Normalizar aquí, en un solo lugar, evita
+// tener que repetir `=== 'caja' || === 'recepcion'` en cada punto del código
+// que le importe el rol EFECTIVO.
+const ROL_LEGACY_A_CANONICO = { admin: 'owner', caja: 'recepcion' };
 
 // Permisos EFECTIVOS de un rol, con `modulos` siempre expandido a un Set
 // (nunca el string 'todos') para que el resto del código solo tenga que
@@ -1337,7 +1376,8 @@ const ROL_RESPALDO = 'recepcion';
 function permisosDeRol(rol) {
   const base = PERMISOS_POR_ROL[rol] || PERMISOS_POR_ROL[ROL_RESPALDO];
   const modulos = base.modulos === 'todos' ? new Set(TODOS_LOS_MODULOS) : new Set(base.modulos);
-  return { ...base, rol: PERMISOS_POR_ROL[rol] ? rol : ROL_RESPALDO, modulos };
+  const rolEfectivo = PERMISOS_POR_ROL[rol] ? rol : ROL_RESPALDO;
+  return { ...base, rol: ROL_LEGACY_A_CANONICO[rolEfectivo] || rolEfectivo, modulos };
 }
 
 const TURNOS = [
@@ -2610,6 +2650,12 @@ const TIPO_ALERTA_META = {
   academia: { icon: GraduationCap, color: 'text-teal-400', bg: 'bg-teal-400/10' },
   cancelacion: { icon: Ban, color: 'text-rose-400', bg: 'bg-rose-400/10' },
   solicitud: { icon: ClipboardList, color: 'text-fuchsia-400', bg: 'bg-fuchsia-400/10' },
+  // Mejora de RBAC — "Notificar Abastecimiento" (Tarjeta de Reorden en Smart
+  // POS, rol Recepción/Caja): a diferencia de las seis de arriba (todas del
+  // Portal Web de Jugadores), esta la genera el propio club internamente —
+  // ver `alertas_reabastecimiento` (migracion_v18) y el handler dedicado en
+  // el canal `centro-alertas-club`.
+  reabastecimiento: { icon: PackagePlus, color: 'text-amber-400', bg: 'bg-amber-400/10' },
 };
 
 // Centro de Alertas del Club: campana con contador de no leídas + dropdown,
@@ -2809,6 +2855,10 @@ function CanchaCard({
   onCambiarFoto,
   onCambiarEstatus,
   onReservaClick,
+  // Mejora de RBAC — Coach (`permisos.soloLecturaParrilla`): la Parrilla se
+  // ve completa, pero SIN ningún control de edición (Nueva Reserva, Foto,
+  // Cambiar Estatus) — "Horarios" se queda porque es de solo consulta.
+  soloLectura = false,
 }) {
   const [menuAbierto, setMenuAbierto] = useState(false);
   const meta = ESTATUS_META[estadoActual];
@@ -2868,43 +2918,51 @@ function CanchaCard({
         </div>
 
         <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={() => onNuevaReserva(cancha)}
-            disabled={bloqueada}
-            className="col-span-2 inline-flex items-center justify-center gap-1.5 rounded-lg bg-lime-400 px-2.5 py-2 text-xs font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Plus size={14} /> Nueva Reserva
-          </button>
+          {!soloLectura && (
+            <button
+              onClick={() => onNuevaReserva(cancha)}
+              disabled={bloqueada}
+              className="col-span-2 inline-flex items-center justify-center gap-1.5 rounded-lg bg-lime-400 px-2.5 py-2 text-xs font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Plus size={14} /> Nueva Reserva
+            </button>
+          )}
           <button
             onClick={() => onVerHorarios(cancha)}
-            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
+            className={`inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700 ${
+              soloLectura ? 'col-span-2' : ''
+            }`}
           >
             <CalendarIcon size={13} /> Horarios
           </button>
-          <button
-            onClick={() => onCambiarFoto(cancha)}
-            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
-          >
-            <ImagePlus size={13} /> Foto
-          </button>
-          <div className="relative col-span-2">
-            <button
-              onClick={() => setMenuAbierto((v) => !v)}
-              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
-            >
-              <Settings2 size={13} /> Cambiar Estatus <ChevronDown size={12} />
-            </button>
-            {menuAbierto && (
-              <MenuEstatus
-                estadoActual={estadoActual}
-                onCerrar={() => setMenuAbierto(false)}
-                onSeleccionar={(valor) => {
-                  setMenuAbierto(false);
-                  onCambiarEstatus(cancha, valor);
-                }}
-              />
-            )}
-          </div>
+          {!soloLectura && (
+            <>
+              <button
+                onClick={() => onCambiarFoto(cancha)}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
+              >
+                <ImagePlus size={13} /> Foto
+              </button>
+              <div className="relative col-span-2">
+                <button
+                  onClick={() => setMenuAbierto((v) => !v)}
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
+                >
+                  <Settings2 size={13} /> Cambiar Estatus <ChevronDown size={12} />
+                </button>
+                {menuAbierto && (
+                  <MenuEstatus
+                    estadoActual={estadoActual}
+                    onCerrar={() => setMenuAbierto(false)}
+                    onSeleccionar={(valor) => {
+                      setMenuAbierto(false);
+                      onCambiarEstatus(cancha, valor);
+                    }}
+                  />
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -3043,7 +3101,7 @@ function FilaCronograma({ cancha, estadoActual, reservasDelDia, onSlotClick, onR
             return (
               <button
                 key={i}
-                onClick={() => !ocupados.has(i) && onSlotClick(cancha, minutosAHora(enHora))}
+                onClick={() => !ocupados.has(i) && onSlotClick?.(cancha, minutosAHora(enHora))}
                 disabled={ocupados.has(i)}
                 style={{ width: SLOT_PX }}
                 className={`h-full shrink-0 border-r transition ${
@@ -3177,6 +3235,7 @@ function Toolbar({
   filtroEstatus,
   onFiltroEstatus,
   onNuevaCancha,
+  soloLectura = false,
 }) {
   return (
     <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -3257,9 +3316,11 @@ function Toolbar({
             <CalendarDays size={14} /> Cronograma
           </button>
         </div>
-        <BotonPrimario onClick={onNuevaCancha} className="whitespace-nowrap">
-          <Plus size={15} /> Nueva Cancha
-        </BotonPrimario>
+        {!soloLectura && (
+          <BotonPrimario onClick={onNuevaCancha} className="whitespace-nowrap">
+            <Plus size={15} /> Nueva Cancha
+          </BotonPrimario>
+        )}
       </div>
     </div>
   );
@@ -4633,6 +4694,7 @@ function ModuloParrillaOperativa({
         filtroEstatus={filtroEstatus}
         onFiltroEstatus={setFiltroEstatus}
         onNuevaCancha={() => setModalNuevaCancha(true)}
+        soloLectura={permisos?.soloLecturaParrilla === true}
       />
 
       {loading ? (
@@ -4655,6 +4717,7 @@ function ModuloParrillaOperativa({
               onReservaClick={(reserva) =>
                 setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
               }
+              soloLectura={permisos?.soloLecturaParrilla === true}
             />
           ))}
         </div>
@@ -4664,7 +4727,11 @@ function ModuloParrillaOperativa({
             canchas={canchasFiltradas}
             reservas={reservas}
             fechaSeleccionada={fechaSeleccionada}
-            onSlotClick={(cancha, hora) => setModalNuevaReserva({ cancha, hora, fecha: fechaSeleccionada })}
+            onSlotClick={
+              permisos?.soloLecturaParrilla === true
+                ? undefined
+                : (cancha, hora) => setModalNuevaReserva({ cancha, hora, fecha: fechaSeleccionada })
+            }
             onReservaClick={(reserva) =>
               setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
             }
@@ -5117,17 +5184,23 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
                 : formatoMoneda(producto.precio)}
             </span>
             {stockValido && (
-              <span className={`text-[10px] font-semibold ${stock > 0 && stock <= 3 ? 'text-amber-400' : 'text-slate-500'}`}>
-                {stock} disp.
+              <span
+                className={`text-[10px] font-semibold ${
+                  stock > 0 && stock <= 3 ? 'animate-pulse rounded-full bg-amber-400/10 px-1.5 py-0.5 text-amber-400 ring-1 ring-amber-400/40' : 'text-slate-500'
+                }`}
+              >
+                {stock > 0 && stock <= 3 ? `¡Quedan ${stock}!` : `${stock} disp.`}
               </span>
             )}
             {tieneVariantes && variantesConControl.length > 0 && (
               <span
                 className={`text-[10px] font-semibold ${
-                  stockAgregadoVariantes > 0 && stockAgregadoVariantes <= 3 ? 'text-amber-400' : 'text-slate-500'
+                  stockAgregadoVariantes > 0 && stockAgregadoVariantes <= 3
+                    ? 'animate-pulse rounded-full bg-amber-400/10 px-1.5 py-0.5 text-amber-400 ring-1 ring-amber-400/40'
+                    : 'text-slate-500'
                 }`}
               >
-                {stockAgregadoVariantes} disp.
+                {stockAgregadoVariantes > 0 && stockAgregadoVariantes <= 3 ? `¡Quedan ${stockAgregadoVariantes}!` : `${stockAgregadoVariantes} disp.`}
               </span>
             )}
           </div>
@@ -5169,8 +5242,16 @@ function ModalSeleccionarVariante({ producto, variantes, onSeleccionar, onClose 
               <span className="flex w-full items-center justify-between">
                 <span className="text-sm font-black text-lime-400">{formatoMoneda(precio)}</span>
                 {controlaStock && (
-                  <span className={`text-[10px] font-semibold ${sinStock ? 'text-rose-400' : Number(v.stock) <= 3 ? 'text-amber-400' : 'text-slate-500'}`}>
-                    {sinStock ? 'Agotado' : `${v.stock} disp.`}
+                  <span
+                    className={`text-[10px] font-semibold ${
+                      sinStock
+                        ? 'text-rose-400'
+                        : Number(v.stock) <= 3
+                        ? 'animate-pulse rounded-full bg-amber-400/10 px-1.5 py-0.5 text-amber-400 ring-1 ring-amber-400/40'
+                        : 'text-slate-500'
+                    }`}
+                  >
+                    {sinStock ? 'Agotado' : Number(v.stock) <= 3 ? `¡Quedan ${v.stock}!` : `${v.stock} disp.`}
                   </span>
                 )}
               </span>
@@ -6820,6 +6901,229 @@ function RosterSplitBillPanel({
   );
 }
 
+// ============================================================================
+// MEJORA DE RBAC — ANALYTICS OPERATIVOS SIN MONTOS ($) Y REORDEN INTERACTIVO
+// ----------------------------------------------------------------------------
+// Los roles Recepción/Caja, Restaurante/Bar y Coach (`permisos.puedeVerMontos
+// === false`, ver `PERMISOS_POR_ROL`) NUNCA deben ver una cifra en pesos,
+// pero sí necesitan datos operativos de venta (qué se mueve, en qué
+// volumen). En vez de tocar `ModuloAnalyticsBI` (dashboard grande, con
+// dinero en casi cada tarjeta — arriesgado sembrarlo de condicionales),
+// estos componentes son AUTÓNOMOS: hacen su propia consulta de SOLO LECTURA
+// reutilizando `consultarVentasEnRango` (la misma función tolerante a
+// variantes de columna que ya usa Analytics BI) y solo calculan/exponen
+// UNIDADES — nunca ingreso ni costo. Se insertan dentro de módulos a los que
+// esos roles YA tienen acceso (Smart POS), así que no hace falta agregar
+// 'analytics' a ningún `modulos` de `PERMISOS_POR_ROL`.
+// ============================================================================
+
+function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroCategoria, titulo }) {
+  const [dias, setDias] = useState(7);
+  const [cargando, setCargando] = useState(true);
+  const [filas, setFilas] = useState([]);
+
+  const productosPorId = useMemo(() => Object.fromEntries((productos || []).map((p) => [p.id, p])), [productos]);
+  const variantesPorId = useMemo(() => {
+    const mapa = {};
+    Object.values(variantesPorProducto || {}).forEach((lista) => (lista || []).forEach((v) => (mapa[v.id] = v)));
+    return mapa;
+  }, [variantesPorProducto]);
+
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      setCargando(true);
+      const fin = new Date();
+      const inicio = new Date();
+      inicio.setDate(inicio.getDate() - dias);
+      const { data } = await consultarVentasEnRango(inicio, fin);
+      if (cancelado) return;
+      const acumulado = {};
+      (data || [])
+        .filter((v) => v.estado_pago === 'pagado')
+        .forEach((v) => {
+          const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
+          items.forEach((item) => {
+            if (item.tipo !== 'producto') return;
+            const variante = item.variante_id ? variantesPorId[item.variante_id] : null;
+            const prod = variante?._productoPadre || productosPorId[item.producto_id] || null;
+            const categoria = prod?.categoria || null;
+            if (filtroCategoria && categoria !== filtroCategoria) return;
+            const clave = item.variante_id ? `v:${item.variante_id}` : `p:${item.producto_id}`;
+            const nombre = variante
+              ? `${prod?.nombre || 'Producto eliminado'} — ${variante?.nombre || item.nombre || 'Variante'}`
+              : prod?.nombre || item.nombre || 'Producto eliminado';
+            if (!acumulado[clave]) acumulado[clave] = { nombre, categoria, unidades: 0 };
+            acumulado[clave].unidades += Number(item.cantidad) || 0;
+          });
+        });
+      setFilas(Object.values(acumulado).sort((a, b) => b.unidades - a.unidades));
+      setCargando(false);
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [dias, productosPorId, variantesPorId, filtroCategoria]);
+
+  const top5 = filas.slice(0, 5);
+  const categoriaEstrella = useMemo(() => {
+    const acc = {};
+    filas.forEach((f) => {
+      const cat = f.categoria || 'Otros';
+      acc[cat] = (acc[cat] || 0) + f.unidades;
+    });
+    const ordenado = Object.entries(acc).sort((a, b) => b[1] - a[1]);
+    return ordenado.length > 0 ? ordenado[0] : null;
+  }, [filas]);
+
+  return (
+    <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-300">
+          <BarChart3 size={14} className="text-lime-400" /> {titulo || 'Analytics Operativos'}
+        </p>
+        <select value={dias} onChange={(e) => setDias(Number(e.target.value))} className={`${inputClase} w-36 !py-1.5 text-[11px]`}>
+          <option value={7}>Últimos 7 días</option>
+          <option value={30}>Últimos 30 días</option>
+        </select>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Top 5 Más Vendidos (unidades)</p>
+          {cargando ? (
+            <p className="mt-3 text-xs text-slate-500">Cargando...</p>
+          ) : top5.length === 0 ? (
+            <p className="mt-3 text-xs text-slate-500">Sin ventas registradas en el periodo.</p>
+          ) : (
+            <ol className="mt-2.5 space-y-1.5">
+              {top5.map((f, i) => (
+                <li key={i} className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="flex min-w-0 items-center gap-2 text-slate-200">
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-lime-400/10 text-[9px] font-black text-lime-400">
+                      {i + 1}
+                    </span>
+                    <span className="truncate">{f.nombre}</span>
+                  </span>
+                  <span className="shrink-0 font-bold text-slate-100">{f.unidades} u.</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+        <MetricCard
+          icon={Star}
+          etiqueta="Categoría Estrella"
+          valor={categoriaEstrella ? etiquetaCategoriaProducto(categoriaEstrella[0]) : '—'}
+          sub={categoriaEstrella ? `${categoriaEstrella[1]} unidades vendidas · ${dias} días` : 'Sin ventas en el periodo'}
+          tono="amber"
+        />
+      </div>
+    </div>
+  );
+}
+
+// Tarjeta Interactiva de Reorden — Recepción/Caja: resume productos en/bajo
+// su stock crítico (mismo umbral que la insignia "¡Quedan N!" del grid del
+// POS) y deja mandar, con un clic, una alerta REALMENTE CRUZADA ENTRE
+// DISPOSITIVOS al Gerente/Contador — inserta una fila en
+// `alertas_reabastecimiento` (migracion_v18) que el canal Realtime
+// `centro-alertas-club` recoge en CUALQUIER sesión abierta del club, no solo
+// en la terminal que la generó (a diferencia de llamar a `agregarAlertaClub`
+// directo, que solo actualizaría la campana del propio dispositivo).
+function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mostrarToast }) {
+  const [enviando, setEnviando] = useState(false);
+  const [enviado, setEnviado] = useState(false);
+
+  const itemsCriticos = useMemo(() => {
+    const lista = [];
+    (productos || [])
+      .filter((p) => p.activo !== false && p.maneja_stock !== false)
+      .forEach((p) => {
+        const variantes = (variantesPorProducto?.[p.id] || []).filter((v) => v.activo !== false && v.stock != null);
+        if (variantes.length > 0) {
+          variantes.forEach((v) => {
+            const stock = Number(v.stock) || 0;
+            const minimo = Number(v.stock_minimo != null ? v.stock_minimo : p.stock_minimo) || 3;
+            if (stock <= minimo) lista.push({ nombre: `${p.nombre} — ${v.nombre}`, stock, sugerido: Math.max(minimo * 2 - stock, minimo) });
+          });
+        } else {
+          const stock = Number(p.stock);
+          if (!Number.isFinite(stock)) return;
+          const minimo = Number(p.stock_minimo) || 3;
+          if (stock <= minimo) lista.push({ nombre: p.nombre, stock, sugerido: Math.max(minimo * 2 - stock, minimo) });
+        }
+      });
+    return lista.sort((a, b) => a.stock - b.stock).slice(0, 20);
+  }, [productos, variantesPorProducto]);
+
+  async function notificarAbastecimiento() {
+    if (itemsCriticos.length === 0) return;
+    setEnviando(true);
+    const resumen = itemsCriticos
+      .slice(0, 10)
+      .map((it) => `${it.nombre} (quedan ${it.stock}, pedir ${it.sugerido})`)
+      .join(' · ');
+    const { error } = await insertarConColumnasOpcionales(
+      'alertas_reabastecimiento',
+      {
+        club_id: CLUB_ACTIVO_ID,
+        operador_nombre: operador?.nombre || 'Recepción/Caja',
+        resumen,
+        items: itemsCriticos,
+        atendida: false,
+      },
+      ['club_id', 'items', 'atendida']
+    );
+    setEnviando(false);
+    if (error) {
+      mostrarToast?.({ titulo: 'No se pudo enviar la notificación', detalle: error.message, tono: 'error' });
+      return;
+    }
+    setEnviado(true);
+    mostrarToast?.({ titulo: 'Notificación enviada', detalle: 'Gerencia/Contador recibirá la alerta de abastecimiento.' });
+    setTimeout(() => setEnviado(false), 4000);
+  }
+
+  if (itemsCriticos.length === 0) {
+    return (
+      <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+        <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-lime-400">
+          <PackagePlus size={14} /> Reorden Sugerido
+        </p>
+        <p className="mt-2 text-xs text-slate-500">Todo el catálogo está por encima de su stock mínimo.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-amber-400/30 bg-amber-400/5 p-4">
+      <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-amber-300">
+        <AlertTriangle size={14} /> Reorden Sugerido · {itemsCriticos.length}
+      </p>
+      <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto pr-1">
+        {itemsCriticos.slice(0, 6).map((it, i) => (
+          <li key={i} className="flex items-center justify-between gap-2 text-[11px] text-slate-300">
+            <span className="truncate">{it.nombre}</span>
+            <span className="shrink-0 font-bold text-amber-300">
+              quedan {it.stock} · pedir {it.sugerido}
+            </span>
+          </li>
+        ))}
+        {itemsCriticos.length > 6 && <li className="text-[10px] text-slate-500">+{itemsCriticos.length - 6} más...</li>}
+      </ul>
+      <button
+        type="button"
+        onClick={notificarAbastecimiento}
+        disabled={enviando || enviado}
+        className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-400 px-3 py-2 text-xs font-black text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {enviando ? <Loader2 size={14} className="animate-spin" /> : enviado ? <CheckCircle2 size={14} /> : <Bell size={14} />}
+        {enviado ? 'Notificado' : 'Notificar Abastecimiento'}
+      </button>
+    </div>
+  );
+}
+
 // `productos` vive levantado en App() (igual que `canchas`/`reservas`) para
 // que el catálogo se comparta en vivo con `ModuloERPInventario` sin depender
 // de que Realtime esté habilitado en Supabase — ver props recibidas abajo.
@@ -6860,7 +7164,10 @@ function ModuloSmartPOS({
 }) {
   const mostrarToast = useToast();
 
-  const [categoriaActiva, setCategoriaActiva] = useState('todos');
+  // Restaurante/Bar (mejora de RBAC): Smart POS arranca YA filtrado en la
+  // pestaña Bar/Restaurante — el operador de barra sigue pudiendo cambiar el
+  // filtro manualmente si lo necesita, esto solo cambia el valor inicial.
+  const [categoriaActiva, setCategoriaActiva] = useState(() => (permisos?.rol === 'bar' ? 'Cafetería/Bar' : 'todos'));
   const [busquedaProducto, setBusquedaProducto] = useState('');
 
   const [comanda, setComanda] = useState([]);
@@ -8729,6 +9036,31 @@ function ModuloSmartPOS({
 
           {errorProductos && <ErrorBanner mensaje={errorProductos} onReintentar={() => cargarProductos()} />}
 
+          {/* Mejora de RBAC — Analytics Operativos SIN MONTOS ($) + Reorden
+              interactivo: solo para roles con `puedeVerMontos: false`
+              (Recepción/Caja, Restaurante/Bar) que ya tienen acceso a Smart
+              POS. Ver `AnalyticsOperativosSinMontos`/`TarjetaReordenSugerido`
+              arriba — ambos son autocontenidos y de solo lectura salvo el
+              INSERT explícito de "Notificar Abastecimiento". */}
+          {permisos?.puedeVerMontos === false && (
+            <div className="space-y-4">
+              <AnalyticsOperativosSinMontos
+                productos={productos}
+                variantesPorProducto={variantesPorProducto}
+                filtroCategoria={permisos?.rol === 'bar' ? 'Cafetería/Bar' : null}
+                titulo={permisos?.rol === 'bar' ? 'Top 5 Alimentos y Bebidas (Analytics Operativos)' : 'Analytics Operativos · Top 5 Productos'}
+              />
+              {permisos?.rol === 'recepcion' && (
+                <TarjetaReordenSugerido
+                  productos={productos}
+                  variantesPorProducto={variantesPorProducto}
+                  operador={operador}
+                  mostrarToast={mostrarToast}
+                />
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_380px] lg:items-start">
             <div className="space-y-5">
               {/* AJUSTE UX: la pestaña "Rentas" ya NO ofrece Renta Exprés de
@@ -8754,7 +9086,7 @@ function ModuloSmartPOS({
                     producto={p}
                     variantes={variantesPorProducto?.[p.id] || []}
                     onAgregar={() => manejarClickProducto(p)}
-                    onEditar={() => setProductoEditar(p)}
+                    onEditar={permisos?.puedeGestionarProductos !== false ? () => setProductoEditar(p) : undefined}
                   />
                 ))}
               </div>
@@ -9580,7 +9912,14 @@ function EstatusStockBadge({ estatus }) {
 // usa un producto — reciben un objeto ya "normalizado" con esos heredados
 // resueltos. Cada edición inline (onBlur) guarda con el mismo criterio de
 // tolerancia de columnas que el producto padre (ver `guardarCamposVariante`).
-function FilaVarianteInventarioCompleta({ variante, productoPadre, unidadesUltimos7Dias, onGuardarCamposVariante, onRegistrarEntrada }) {
+function FilaVarianteInventarioCompleta({
+  variante,
+  productoPadre,
+  unidadesUltimos7Dias,
+  onGuardarCamposVariante,
+  onRegistrarEntrada,
+  soloLectura = false,
+}) {
   const [precio, setPrecio] = useState(variante.precio != null ? String(variante.precio) : '');
   const [costo, setCosto] = useState(variante.costo_unitario != null ? String(variante.costo_unitario) : '');
   const [stock, setStock] = useState(variante.stock != null ? String(variante.stock) : '');
@@ -9634,52 +9973,68 @@ function FilaVarianteInventarioCompleta({ variante, productoPadre, unidadesUltim
       </td>
       <td className="whitespace-nowrap px-3 py-2 text-[10px] text-slate-600">Variante</td>
       <td className="px-3 py-2 text-right">
-        <input
-          type="number"
-          min="0"
-          value={precio}
-          onChange={(e) => setPrecio(e.target.value)}
-          onBlur={() => guardarSiCambio('precio', precio, variante.precio ?? null)}
-          className="w-20 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
-          placeholder={`$${productoPadre.precio || 0}`}
-          title="Vacío = hereda el precio del producto"
-        />
+        {soloLectura ? (
+          <span className="text-slate-600">—</span>
+        ) : (
+          <input
+            type="number"
+            min="0"
+            value={precio}
+            onChange={(e) => setPrecio(e.target.value)}
+            onBlur={() => guardarSiCambio('precio', precio, variante.precio ?? null)}
+            className="w-20 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+            placeholder={`$${productoPadre.precio || 0}`}
+            title="Vacío = hereda el precio del producto"
+          />
+        )}
       </td>
       <td className="px-3 py-2 text-right">
-        <input
-          type="number"
-          min="0"
-          step="0.01"
-          value={costo}
-          onChange={(e) => setCosto(e.target.value)}
-          onBlur={() => guardarSiCambio('costo_unitario', costo, variante.costo_unitario ?? null)}
-          className="w-20 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
-          placeholder="—"
-          title="Vacío = hereda el costo del producto"
-        />
+        {soloLectura ? (
+          <span className="text-slate-600">—</span>
+        ) : (
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={costo}
+            onChange={(e) => setCosto(e.target.value)}
+            onBlur={() => guardarSiCambio('costo_unitario', costo, variante.costo_unitario ?? null)}
+            className="w-20 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+            placeholder="—"
+            title="Vacío = hereda el costo del producto"
+          />
+        )}
       </td>
       <td className="whitespace-nowrap px-3 py-2 text-right text-[11px] font-bold">
-        {margen !== null ? (
+        {soloLectura ? (
+          <span className="text-slate-600">—</span>
+        ) : margen !== null ? (
           <span className={margen < 20 ? 'text-rose-400' : margen < 40 ? 'text-amber-400' : 'text-emerald-400'}>{margen.toFixed(1)}%</span>
         ) : (
           <span className="text-slate-600">—</span>
         )}
       </td>
       <td className="px-3 py-2 text-right">
-        <input
-          type="number"
-          min="0"
-          value={stock}
-          onChange={(e) => setStock(e.target.value)}
-          onBlur={() => guardarSiCambio('stock', stock, variante.stock ?? null)}
-          className="w-16 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
-          placeholder="—"
-          title="Vacío = sin control de inventario propio"
-        />
+        {soloLectura ? (
+          <span className="text-[11px] text-slate-300">{stock || '—'}</span>
+        ) : (
+          <input
+            type="number"
+            min="0"
+            value={stock}
+            onChange={(e) => setStock(e.target.value)}
+            onBlur={() => guardarSiCambio('stock', stock, variante.stock ?? null)}
+            className="w-16 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+            placeholder="—"
+            title="Vacío = sin control de inventario propio"
+          />
+        )}
       </td>
       <td className="px-3 py-2 text-right">
         {sinControlStock ? (
           <span className="text-[11px] text-slate-600">—</span>
+        ) : soloLectura ? (
+          <span className="text-[11px] text-slate-300">{stockMinimo || '—'}</span>
         ) : (
           <input
             type="number"
@@ -9726,7 +10081,7 @@ function FilaVarianteInventarioCompleta({ variante, productoPadre, unidadesUltim
       <td className="whitespace-nowrap px-3 py-2 text-right">
         <div className="flex items-center justify-end gap-1.5">
           {guardando && <Loader2 size={12} className="animate-spin text-slate-500" />}
-          {!sinControlStock && (
+          {!soloLectura && !sinControlStock && (
             <button
               onClick={() =>
                 onRegistrarEntrada({
@@ -9759,6 +10114,7 @@ function FilaProductoInventario({
   onGuardarCamposVariante,
   ventasPorVarianteSemana,
   onRegistrarEntradaVariante,
+  soloLectura = false,
 }) {
   const [costo, setCosto] = useState(producto.costo_unitario != null ? String(producto.costo_unitario) : '');
   const [stockMinimo, setStockMinimo] = useState(producto.stock_minimo != null ? String(producto.stock_minimo) : '');
@@ -9821,21 +10177,29 @@ function FilaProductoInventario({
       <td className="whitespace-nowrap px-3 py-2.5">
         {catMeta && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${catMeta.badge}`}>{catMeta.label}</span>}
       </td>
-      <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-200">{formatoMoneda(producto.precio)}</td>
+      <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-200">
+        {soloLectura ? <span className="text-slate-600">—</span> : formatoMoneda(producto.precio)}
+      </td>
       <td className="px-3 py-2.5 text-right">
-        <input
-          type="number"
-          min="0"
-          step="0.01"
-          value={costo}
-          onChange={(e) => setCosto(e.target.value)}
-          onBlur={() => guardarSiCambio('costo_unitario', costo, producto.costo_unitario ?? null)}
-          className="w-20 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-right text-xs text-slate-100 focus:border-lime-400 focus:outline-none"
-          placeholder="—"
-        />
+        {soloLectura ? (
+          <span className="text-slate-600">—</span>
+        ) : (
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={costo}
+            onChange={(e) => setCosto(e.target.value)}
+            onBlur={() => guardarSiCambio('costo_unitario', costo, producto.costo_unitario ?? null)}
+            className="w-20 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-right text-xs text-slate-100 focus:border-lime-400 focus:outline-none"
+            placeholder="—"
+          />
+        )}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold">
-        {margen !== null ? (
+        {soloLectura ? (
+          <span className="text-slate-600">—</span>
+        ) : margen !== null ? (
           <span className={margen < 20 ? 'text-rose-400' : margen < 40 ? 'text-amber-400' : 'text-emerald-400'}>{margen.toFixed(1)}%</span>
         ) : (
           <span className="text-slate-600">—</span>
@@ -9847,6 +10211,8 @@ function FilaProductoInventario({
       <td className="px-3 py-2.5 text-right">
         {producto.maneja_stock === false ? (
           <span className="text-slate-600">—</span>
+        ) : soloLectura ? (
+          <span className="text-slate-300">{stockMinimo || '—'}</span>
         ) : (
           <input
             type="number"
@@ -9896,7 +10262,7 @@ function FilaProductoInventario({
       <td className="whitespace-nowrap px-3 py-2.5 text-right">
         <div className="flex items-center justify-end gap-1.5">
           {guardando && <Loader2 size={13} className="animate-spin text-slate-500" />}
-          {producto.maneja_stock !== false && (
+          {!soloLectura && producto.maneja_stock !== false && (
             <button
               onClick={() => onRegistrarEntrada(producto)}
               title="Registrar entrada de inventario"
@@ -9918,6 +10284,7 @@ function FilaProductoInventario({
           unidadesUltimos7Dias={ventasPorVarianteSemana?.[v.id] || 0}
           onGuardarCamposVariante={onGuardarCamposVariante}
           onRegistrarEntrada={onRegistrarEntradaVariante}
+          soloLectura={soloLectura}
         />
       ))}
     </>
@@ -9933,6 +10300,7 @@ function TablaCatalogoInventario({
   onRegistrarEntradaVariante,
   variantesPorProducto,
   onGuardarCamposVariante,
+  soloLectura = false,
 }) {
   return (
     <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900">
@@ -9941,9 +10309,9 @@ function TablaCatalogoInventario({
           <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
             <th className="px-3 py-3">Producto</th>
             <th className="px-3 py-3">Categoría</th>
-            <th className="px-3 py-3 text-right">Precio Venta</th>
-            <th className="px-3 py-3 text-right">Costo Unitario</th>
-            <th className="px-3 py-3 text-right">Margen Bruto %</th>
+            <th className="px-3 py-3 text-right">{soloLectura ? '—' : 'Precio Venta'}</th>
+            <th className="px-3 py-3 text-right">{soloLectura ? '—' : 'Costo Unitario'}</th>
+            <th className="px-3 py-3 text-right">{soloLectura ? '—' : 'Margen Bruto %'}</th>
             <th className="px-3 py-3 text-right">Stock Actual</th>
             <th className="px-3 py-3 text-right">Stock Mínimo</th>
             <th className="px-3 py-3 text-right">Días de Cobertura</th>
@@ -9964,6 +10332,7 @@ function TablaCatalogoInventario({
               onGuardarCampos={onGuardarCampos}
               onRegistrarEntrada={onRegistrarEntrada}
               onRegistrarEntradaVariante={onRegistrarEntradaVariante}
+              soloLectura={soloLectura}
             />
           ))}
         </tbody>
@@ -10174,6 +10543,40 @@ function SelectorFechaCompacto({ value, onChange, tamano = 'compacto' }) {
   );
 }
 
+// Tarjeta Interactiva de "Alertas de Reorden" (mejora de RBAC —
+// Restaurante/Bar, aunque disponible para cualquier rol con acceso a ERP):
+// desglose de qué producto/variante falta y su stock actual — SIN costo ni
+// precio, solo unidades (ver `kpis.detalleAlertas` en `ModuloERPInventario`).
+function ModalAlertasReordenDesglose({ items, onClose }) {
+  return (
+    <ModalShell
+      titulo="Alertas de Reorden"
+      subtitulo={`${items.length} producto${items.length === 1 ? '' : 's'} en o bajo su stock mínimo`}
+      onClose={onClose}
+      icon={AlertTriangle}
+      ancho="max-w-lg"
+    >
+      {items.length === 0 ? (
+        <p className="py-6 text-center text-xs text-slate-500">Todo el catálogo está por encima de su stock mínimo.</p>
+      ) : (
+        <div className="max-h-96 space-y-1.5 overflow-y-auto pr-1">
+          {items.map((it, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-xs font-bold text-slate-100">{it.nombre}</p>
+                <p className="text-[10px] text-slate-500">{etiquetaCategoriaProducto(it.categoria) || 'Sin categoría'}</p>
+              </div>
+              <span className="shrink-0 rounded-full bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold text-rose-300 ring-1 ring-rose-500/40">
+                quedan {it.stock} / mín. {it.minimo}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
 function ModuloERPInventario({
   productos,
   loadingProductos,
@@ -10184,11 +10587,19 @@ function ModuloERPInventario({
   variantesPorProducto,
   upsertVarianteProducto,
   quitarVarianteProductoLocal,
+  permisos,
 }) {
   const mostrarToast = useToast();
+  // Mejora de RBAC — Restaurante/Bar (`permisos.soloLecturaInventario`):
+  // Inventario se ve en modo consulta estricta, en unidades, sin costos ni
+  // precios — este flag gatea tanto la visibilidad de $ (MetricCards de
+  // valor/margen, columnas de costo) como los botones de alta/edición
+  // (Nuevo Producto, Registrar Entrada, edición inline de costo/mínimo).
+  const soloLectura = permisos?.soloLecturaInventario === true;
   const [vista, setVista] = useState('catalogo'); // 'catalogo' | 'kardex'
   const [busqueda, setBusqueda] = useState('');
   const [categoriaFiltro, setCategoriaFiltro] = useState('todos');
+  const [modalAlertasReorden, setModalAlertasReorden] = useState(false);
   const [modalEntrada, setModalEntrada] = useState(null); // producto preseleccionado, o {} para elegir libre
 
   const [kardex, setKardex] = useState([]);
@@ -10330,6 +10741,8 @@ function ModuloERPInventario({
       (variantesPorProducto?.[p.id] || []).forEach((v) => {
         if (v.activo === false) return;
         variantesActivas.push({
+          nombre: `${p.nombre} — ${v.nombre}`,
+          categoria: p.categoria,
           precio: v.precio != null ? v.precio : p.precio,
           costo_unitario: v.costo_unitario != null ? v.costo_unitario : p.costo_unitario,
           stock: v.stock,
@@ -10352,14 +10765,22 @@ function ModuloERPInventario({
     const margenes = itemsInventario.map((p) => margenPorcentaje(p)).filter((m) => m !== null);
     const margenPromedio = margenes.length > 0 ? margenes.reduce((acc, m) => acc + m, 0) / margenes.length : null;
 
-    const alertasReorden = itemsInventario.filter((p) => {
-      if (p.maneja_stock === false) return false;
-      const stock = Number(p.stock);
-      const minimo = Number(p.stock_minimo);
-      return Number.isFinite(stock) && Number.isFinite(minimo) && stock <= minimo;
-    }).length;
+    // Mejora de RBAC — Restaurante/Bar: además del CONTEO (`alertasReorden`,
+    // ya existía), ahora se guarda el DETALLE completo (`detalleAlertas`)
+    // para que la tarjeta "Alertas de Reorden" pueda abrir un desglose de
+    // qué falta y cuánto stock queda — sin exponer costo/precio, solo
+    // unidades.
+    const detalleAlertas = itemsInventario
+      .filter((p) => {
+        if (p.maneja_stock === false) return false;
+        const stock = Number(p.stock);
+        const minimo = Number(p.stock_minimo);
+        return Number.isFinite(stock) && Number.isFinite(minimo) && stock <= minimo;
+      })
+      .map((p) => ({ nombre: p.nombre, categoria: p.categoria, stock: Number(p.stock), minimo: Number(p.stock_minimo) }))
+      .sort((a, b) => a.stock - b.stock);
 
-    return { valorInventario, margenPromedio, alertasReorden };
+    return { valorInventario, margenPromedio, alertasReorden: detalleAlertas.length, detalleAlertas };
   }, [productos, variantesPorProducto]);
 
   /* ---------------- Catálogo filtrado ---------------- */
@@ -10510,44 +10931,77 @@ function ModuloERPInventario({
   return (
     <>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <MetricCard
-          icon={Wallet}
-          etiqueta="Valor Total del Inventario"
-          valor={formatoMoneda(kpis.valorInventario)}
-          sub="stock × costo unitario"
-          tono="emerald"
-        />
-        <MetricCard
-          icon={TrendingUp}
-          etiqueta="Margen Bruto Promedio"
-          valor={kpis.margenPromedio !== null ? `${kpis.margenPromedio.toFixed(1)}%` : '—'}
-          sub={kpis.margenPromedio !== null ? 'Sobre productos con costo cargado' : 'Carga el costo unitario'}
-          tono="sky"
-        />
+        {!soloLectura && (
+          <>
+            <MetricCard
+              icon={Wallet}
+              etiqueta="Valor Total del Inventario"
+              valor={formatoMoneda(kpis.valorInventario)}
+              sub="stock × costo unitario"
+              tono="emerald"
+            />
+            <MetricCard
+              icon={TrendingUp}
+              etiqueta="Margen Bruto Promedio"
+              valor={kpis.margenPromedio !== null ? `${kpis.margenPromedio.toFixed(1)}%` : '—'}
+              sub={kpis.margenPromedio !== null ? 'Sobre productos con costo cargado' : 'Carga el costo unitario'}
+              tono="sky"
+            />
+          </>
+        )}
+        {/* Mejora de RBAC — Restaurante/Bar: tarjeta interactiva (clic abre
+            desglose de qué falta y stock actual, ver `ModalAlertasReordenDesglose`
+            abajo) — antes solo era un número. Sigue disponible tal cual para
+            el resto de los roles con acceso a ERP. */}
         <MetricCard
           icon={AlertTriangle}
           etiqueta="Alertas de Reorden"
           valor={kpis.alertasReorden}
-          sub={kpis.alertasReorden > 0 ? 'Productos en o bajo su mínimo' : 'Todo por encima del mínimo'}
+          sub={kpis.alertasReorden > 0 ? 'Productos en o bajo su mínimo · clic para ver desglose' : 'Todo por encima del mínimo'}
           tono={kpis.alertasReorden > 0 ? 'rose' : 'lime'}
+          onClick={kpis.alertasReorden > 0 ? () => setModalAlertasReorden(true) : undefined}
         />
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ventas del Día</span>
             <SelectorFechaCompacto value={fechaVentasDia} onChange={setFechaVentasDia} />
           </div>
-          <p className="mt-2 text-2xl font-black text-slate-100">{formatoMoneda(ventasDia.monto)}</p>
-          <p className="mt-0.5 text-[11px] text-slate-500">{ventasDia.unidades} unidades vendidas</p>
+          {soloLectura ? (
+            <p className="mt-2 text-2xl font-black text-slate-100">{ventasDia.unidades} u.</p>
+          ) : (
+            <>
+              <p className="mt-2 text-2xl font-black text-slate-100">{formatoMoneda(ventasDia.monto)}</p>
+              <p className="mt-0.5 text-[11px] text-slate-500">{ventasDia.unidades} unidades vendidas</p>
+            </>
+          )}
         </div>
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ventas del Mes</span>
             <SelectorFechaCompacto value={fechaVentasMes} onChange={setFechaVentasMes} />
           </div>
-          <p className="mt-2 text-2xl font-black text-slate-100">{formatoMoneda(ventasMes.monto)}</p>
-          <p className="mt-0.5 text-[11px] text-slate-500">{ventasMes.unidades} unidades vendidas · {etiquetaMesDeFecha(fechaVentasMes)}</p>
+          {soloLectura ? (
+            <p className="mt-2 text-2xl font-black text-slate-100">
+              {ventasMes.unidades} u. <span className="text-xs font-semibold text-slate-500">· {etiquetaMesDeFecha(fechaVentasMes)}</span>
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-2xl font-black text-slate-100">{formatoMoneda(ventasMes.monto)}</p>
+              <p className="mt-0.5 text-[11px] text-slate-500">{ventasMes.unidades} unidades vendidas · {etiquetaMesDeFecha(fechaVentasMes)}</p>
+            </>
+          )}
         </div>
       </div>
+
+      {/* Top 5 de Alimentos y Bebidas más vendidos (unidades) — Restaurante/Bar */}
+      {soloLectura && (
+        <AnalyticsOperativosSinMontos
+          productos={productos}
+          variantesPorProducto={variantesPorProducto}
+          filtroCategoria="Cafetería/Bar"
+          titulo="Top 5 Alimentos y Bebidas (Analytics Operativos)"
+        />
+      )}
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
@@ -10590,7 +11044,7 @@ function ModuloERPInventario({
             </>
           )}
         </div>
-        {vista === 'catalogo' && (
+        {vista === 'catalogo' && !soloLectura && (
           <BotonPrimario onClick={() => setModalEntrada({})} className="whitespace-nowrap">
             <PackagePlus size={15} /> Registrar Entrada
           </BotonPrimario>
@@ -10618,19 +11072,24 @@ function ModuloERPInventario({
             onRegistrarEntradaVariante={(variante) => setModalEntrada(variante)}
             variantesPorProducto={variantesPorProducto}
             onGuardarCamposVariante={guardarCamposVariante}
+            soloLectura={soloLectura}
           />
         )
       ) : (
         <TablaKardex kardex={kardex} productos={productos} loading={loadingKardex} error={errorKardex} onReintentar={() => cargarKardex()} />
       )}
 
-      {modalEntrada && (
+      {modalEntrada && !soloLectura && (
         <ModalRegistrarEntrada
           productos={modalEntrada.id ? [modalEntrada] : [...productosConStockRigido, ...variantesConStockRigido]}
           productoInicial={modalEntrada.id ? modalEntrada : null}
           onClose={() => setModalEntrada(null)}
           onRegistrar={registrarEntrada}
         />
+      )}
+
+      {modalAlertasReorden && (
+        <ModalAlertasReordenDesglose items={kpis.detalleAlertas} onClose={() => setModalAlertasReorden(false)} />
       )}
     </>
   );
@@ -20244,9 +20703,46 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar })
 //      tabla interactiva filtrable + Panel de Churn/Bajas.
 //   C) KPIs de Coaches + Mapa de Calor + Alertas de Deserción (el contenido
 //      operativo de siempre, ahora en su propia pestaña).
-function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrAJugador, onAlumnoActualizado, onIrAPOS }) {
+function AnalyticsAcademia({
+  clases,
+  alumnos,
+  asistencias,
+  jugadoresPorId,
+  onIrAJugador,
+  onAlumnoActualizado,
+  onIrAPOS,
+  canchas,
+  reservas,
+  permisos,
+}) {
   const toast = useToast();
-  const [dashboard, setDashboard] = useState('operativo'); // 'operativo' | 'membresias' | 'coaches'
+  // Mejora de RBAC — Coach (`puedeVerMontos: false`): los dashboards
+  // "Operativo de Clases" y "Membresías y Recurrencia" muestran ingreso/MRR
+  // en pesos (ver `kpisOperativos`/`kpisMembresias` abajo) — Coach arranca
+  // directo en "KPIs Coaches" (ya libre de montos, ver auditoría de la
+  // mejora de RBAC) y no puede navegar a los otros dos.
+  const [dashboard, setDashboard] = useState(() => (permisos?.puedeVerMontos === false ? 'coaches' : 'operativo')); // 'operativo' | 'membresias' | 'coaches'
+
+  // Horas Pico de Ocupación de CANCHAS (Parrilla/`reservas`) — distinto de
+  // "Horas Pico" dentro de `kpisOperativos` (esa es de CLASES de Academia
+  // programadas). Cálculo autocontenido y sin montos: cuenta reservas no
+  // canceladas por hora de inicio y toma la de mayor frecuencia — mismo
+  // criterio de "hora con más actividad" que el Heatmap de Analytics BI,
+  // simplificado a un solo dato (sin la cuadrícula completa) para poder
+  // mostrarlo también a roles sin acceso al módulo de Analytics.
+  const horaPicoOcupacion = useMemo(() => {
+    const conteoPorHora = {};
+    (reservas || []).forEach((r) => {
+      if (r.estado === 'Cancelada') return;
+      const hora = Number(String(r.hora_inicio || '').slice(0, 2));
+      if (!Number.isFinite(hora)) return;
+      conteoPorHora[hora] = (conteoPorHora[hora] || 0) + 1;
+    });
+    const entradas = Object.entries(conteoPorHora).sort((a, b) => b[1] - a[1]);
+    if (entradas.length === 0) return null;
+    const [horaTop, conteo] = entradas[0];
+    return { label: `${pad2(Number(horaTop))}:00–${pad2(Number(horaTop) + 1)}:00`, conteo };
+  }, [reservas]);
   const alumnosActivos = useMemo(() => alumnos.filter((a) => a.estado !== 'baja'), [alumnos]);
   const clasesPorId = useMemo(() => {
     const mapa = {};
@@ -20600,11 +21096,14 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
     toast({ titulo: 'Alumno reactivado', detalle: `${alumno.nombre} — pídele renovar su mensualidad para reactivar sus créditos.` });
   }
 
+  // Mejora de RBAC: "Operativo de Clases" y "Membresías y Recurrencia"
+  // muestran cifras en pesos — se ocultan por completo del selector (no solo
+  // sus montos) para roles con `puedeVerMontos: false` (hoy, Coach).
   const dashboards = [
     { value: 'operativo', label: 'Operativo de Clases', icon: Gauge },
     { value: 'membresias', label: 'Membresías y Recurrencia', icon: Crown },
     { value: 'coaches', label: 'KPIs Coaches', icon: Award },
-  ];
+  ].filter((d) => permisos?.puedeVerMontos !== false || d.value === 'coaches');
 
   return (
     <div className="space-y-4">
@@ -20860,6 +21359,15 @@ function AnalyticsAcademia({ clases, alumnos, asistencias, jugadoresPorId, onIrA
 
       {dashboard === 'coaches' && (
         <div className="space-y-4">
+          {/* Horas Pico de Ocupación de Canchas — ver `horaPicoOcupacion`
+              arriba; sin montos, disponible también para Coach. */}
+          <MetricCard
+            icon={Clock}
+            etiqueta="Hora Pico de Ocupación de Canchas"
+            valor={horaPicoOcupacion ? horaPicoOcupacion.label : '—'}
+            sub={horaPicoOcupacion ? `${horaPicoOcupacion.conteo} reservas en esa franja` : 'Sin reservas registradas todavía'}
+            tono="sky"
+          />
           {/* BANNERS INTERACTIVOS (refinamiento UX): cada tarjeta de nivel
               es ahora un botón — clic aplica de inmediato `filtroNivel` a
               la "Tabla de Alumnos" de abajo. Un segundo clic sobre la
@@ -21064,6 +21572,7 @@ function ModuloAcademiaClinicas({
   onAcademiaAsistenciaGuardada,
   onIrAJugador,
   onIrAPOS,
+  permisos,
 }) {
   const toast = useToast();
   const [subvista, setSubvista] = useState('operativa');
@@ -21485,6 +21994,9 @@ function ModuloAcademiaClinicas({
           onIrAJugador={onIrAJugador}
           onAlumnoActualizado={onAcademiaAlumnoActualizado}
           onIrAPOS={onIrAPOS}
+          canchas={canchas}
+          reservas={reservas}
+          permisos={permisos}
         />
       )}
 
@@ -21552,6 +22064,7 @@ function DirectorioJugadoresCRM({
   onJugadorAAbrirConsumido,
   academiaAlumnos,
   academiaAsistencias,
+  permisos,
 }) {
   /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
    * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
@@ -22094,12 +22607,14 @@ function DirectorioJugadoresCRM({
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MetricCard icon={Users} etiqueta="Jugadores en el Directorio" valor={String(resumen.totalJugadores)} tono="sky" />
-        <MetricCard icon={DollarSign} etiqueta="Gasto Total Histórico del Club" valor={formatoMoneda(resumen.ltvClubTotal)} tono="lime" />
+        {permisos?.puedeVerMontos !== false && (
+          <MetricCard icon={DollarSign} etiqueta="Gasto Total Histórico del Club" valor={formatoMoneda(resumen.ltvClubTotal)} tono="lime" />
+        )}
         <MetricCard
           icon={Crown}
           etiqueta="Jugadores VIP"
           valor={String(resumen.vip)}
-          sub={`Gasto Total ≥ ${formatoMoneda(UMBRAL_LTV_VIP)}`}
+          sub={permisos?.puedeVerMontos !== false ? `Gasto Total ≥ ${formatoMoneda(UMBRAL_LTV_VIP)}` : 'Por nivel de gasto histórico'}
           tono="amber"
         />
         <MetricCard
@@ -22166,7 +22681,7 @@ function DirectorioJugadoresCRM({
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {perfilesFiltrados.map((p) => (
-            <TarjetaJugadorCRM key={p.id} perfil={p} onVerDetalle={() => setJugadorSeleccionadoId(p.id)} />
+            <TarjetaJugadorCRM key={p.id} perfil={p} onVerDetalle={() => setJugadorSeleccionadoId(p.id)} permisos={permisos} />
           ))}
         </div>
       )}
@@ -22176,13 +22691,14 @@ function DirectorioJugadoresCRM({
           perfil={jugadorSeleccionado}
           onClose={() => setJugadorSeleccionadoId(null)}
           onActualizarTelefono={onActualizarTelefonoJugador}
+          permisos={permisos}
         />
       )}
     </div>
   );
 }
 
-function TarjetaJugadorCRM({ perfil, onVerDetalle }) {
+function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos }) {
   const metaSeg = SEGMENTO_META[perfil.segmento];
   const SegIcon = metaSeg.icon;
   const colorBarra = perfil.chs.puntaje >= 80 ? 'bg-emerald-400' : perfil.chs.puntaje >= 60 ? 'bg-amber-400' : 'bg-rose-400';
@@ -22215,10 +22731,17 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle }) {
       )}
 
       <div className="flex items-center justify-between">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Gasto Total</p>
-          <p className="text-lg font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
-        </div>
+        {permisos?.puedeVerMontos !== false ? (
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Gasto Total</p>
+            <p className="text-lg font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
+          </div>
+        ) : (
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reservas</p>
+            <p className="text-lg font-black text-lime-400">{perfil.historialCanchas?.length || 0}</p>
+          </div>
+        )}
         <div className="text-right">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Fidelidad</p>
           <p className={`text-lg font-black ${colorTexto}`}>
@@ -22426,7 +22949,7 @@ function DetalleIndicadorCHS({ indKey, perfil }) {
   }
 }
 
-function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono }) {
+function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono, permisos }) {
   const [editandoTelefono, setEditandoTelefono] = useState(false);
   const [telefonoDraft, setTelefonoDraft] = useState(perfil.telefono || '');
   const [guardando, setGuardando] = useState(false);
@@ -22519,81 +23042,125 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono }) {
               <ShieldAlert size={13} /> En Riesgo de Abandono
             </span>
           )}
-          {perfil.saldoAFavor > 0 && (
+          {permisos?.puedeVerMontos !== false && perfil.saldoAFavor > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300">
               <Wallet size={13} /> Saldo a favor: {formatoMoneda(perfil.saldoAFavor)}
             </span>
           )}
         </div>
 
-        <div>
-          <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
-            <DollarSign size={15} className="text-lime-400" /> Gasto Total Histórico
-          </h3>
-          <p className="text-2xl font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
-          <div className="mt-3 space-y-2">
-            {ltvFilas.map((f) => (
-              <div key={f.label}>
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-slate-400">
-                    {f.label}
-                    {f.detalle && <span className="ml-1 text-slate-600">· {f.detalle}</span>}
-                  </span>
-                  <span className="font-bold text-slate-200">{formatoMoneda(f.valor)}</span>
-                </div>
-                <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
-                  <div
-                    className={`h-full rounded-full ${f.color}`}
-                    style={{ width: `${Math.max(0, Math.min(100, (f.valor / ltvMax) * 100))}%` }}
-                  />
-                </div>
+        {permisos?.puedeVerMontos === false ? (
+          // Mejora de RBAC: roles sin `puedeVerMontos` (Recepción/Caja,
+          // Restaurante/Bar, Coach) NUNCA deben ver una cifra en pesos en la
+          // Vista 360° — se reemplazan por completo "Gasto Total Histórico"
+          // y "Nivel de Fidelidad" (cuyos indicadores expandibles sí muestran
+          // montos, ver `DetalleIndicadorCHS`) por un resumen puramente
+          // operativo: reservas, visitas y asistencias a Academia.
+          <div>
+            <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <CalendarClock size={15} className="text-lime-400" /> Actividad del Jugador
+            </h3>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-center">
+                <p className="text-xl font-black text-lime-400">{perfil.historialCanchas?.length || 0}</p>
+                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reservas</p>
               </div>
-            ))}
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-center">
+                <p className="text-xl font-black text-lime-400">{perfil.visitasPropias || 0}</p>
+                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Visitas</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-center">
+                <p className="text-xl font-black text-lime-400">{perfil.clasesAcademiaTomadas || 0}</p>
+                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Asistencias Academia</p>
+              </div>
+            </div>
+            {(perfil.canchaPreferida || perfil.horarioFavorito) && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {perfil.canchaPreferida && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-300 ring-1 ring-sky-400/30">
+                    <MapPin size={11} /> Cancha preferida: {perfil.canchaPreferida.nombre}
+                  </span>
+                )}
+                {perfil.horarioFavorito && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11px] font-bold text-violet-300 ring-1 ring-violet-400/30">
+                    <Clock size={11} /> Horario favorito: {perfil.horarioFavorito.rango}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
-        </div>
+        ) : (
+          <>
+            <div>
+              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+                <DollarSign size={15} className="text-lime-400" /> Gasto Total Histórico
+              </h3>
+              <p className="text-2xl font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
+              <div className="mt-3 space-y-2">
+                {ltvFilas.map((f) => (
+                  <div key={f.label}>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400">
+                        {f.label}
+                        {f.detalle && <span className="ml-1 text-slate-600">· {f.detalle}</span>}
+                      </span>
+                      <span className="font-bold text-slate-200">{formatoMoneda(f.valor)}</span>
+                    </div>
+                    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                      <div
+                        className={`h-full rounded-full ${f.color}`}
+                        style={{ width: `${Math.max(0, Math.min(100, (f.valor / ltvMax) * 100))}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
 
-        <div>
-          <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
-            <Gauge size={15} className="text-lime-400" /> Nivel de Fidelidad (Score) — {perfil.chs.puntaje}/100 pts
-          </h3>
-          <p className="mb-2 text-[11px] text-slate-500">Da clic en cualquier indicador para ver su historial exacto.</p>
-          <div className="space-y-2">
-            {perfil.chs.indicadores.map((ind) => {
-              const meta = NIVEL_CHS_META[ind.nivel];
-              const expandido = indicadorExpandido === ind.key;
-              return (
-                <div key={ind.key} className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
-                  <button
-                    type="button"
-                    onClick={() => setIndicadorExpandido(expandido ? null : ind.key)}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-slate-900/70"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="flex items-center gap-1.5 font-bold text-slate-200">
-                          {meta.emoji} {ind.label}
-                        </span>
-                        <span className={`font-bold ${meta.color}`}>
-                          {ind.puntos}/{ind.max} pts
-                        </span>
-                      </div>
-                      <p className="mt-1 text-[11px] text-slate-500">{ind.detalle}</p>
+            <div>
+              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+                <Gauge size={15} className="text-lime-400" /> Nivel de Fidelidad (Score) — {perfil.chs.puntaje}/100 pts
+              </h3>
+              <p className="mb-2 text-[11px] text-slate-500">Da clic en cualquier indicador para ver su historial exacto.</p>
+              <div className="space-y-2">
+                {perfil.chs.indicadores.map((ind) => {
+                  const meta = NIVEL_CHS_META[ind.nivel];
+                  const expandido = indicadorExpandido === ind.key;
+                  return (
+                    <div key={ind.key} className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+                      <button
+                        type="button"
+                        onClick={() => setIndicadorExpandido(expandido ? null : ind.key)}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-slate-900/70"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="flex items-center gap-1.5 font-bold text-slate-200">
+                              {meta.emoji} {ind.label}
+                            </span>
+                            <span className={`font-bold ${meta.color}`}>
+                              {ind.puntos}/{ind.max} pts
+                            </span>
+                          </div>
+                          <p className="mt-1 text-[11px] text-slate-500">{ind.detalle}</p>
+                        </div>
+                        <ChevronDown
+                          size={15}
+                          className={`shrink-0 text-slate-500 transition-transform ${expandido ? 'rotate-180' : ''}`}
+                        />
+                      </button>
+                      {expandido && (
+                        <div className="border-t border-slate-800 bg-slate-950/60 px-3 py-2.5">
+                          <DetalleIndicadorCHS indKey={ind.key} perfil={perfil} />
+                        </div>
+                      )}
                     </div>
-                    <ChevronDown
-                      size={15}
-                      className={`shrink-0 text-slate-500 transition-transform ${expandido ? 'rotate-180' : ''}`}
-                    />
-                  </button>
-                  {expandido && (
-                    <div className="border-t border-slate-800 bg-slate-950/60 px-3 py-2.5">
-                      <DetalleIndicadorCHS indKey={ind.key} perfil={perfil} />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
 
         <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-3">
           <h3 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-400">
@@ -22643,6 +23210,7 @@ function ModuloJugadores({
   onJugadorAAbrirConsumido,
   academiaAlumnos,
   academiaAsistencias,
+  permisos,
 }) {
   const [subvista, setSubvista] = useState('crm');
   const subvistas = [
@@ -22693,6 +23261,7 @@ function ModuloJugadores({
           onJugadorAAbrirConsumido={onJugadorAAbrirConsumido}
           academiaAlumnos={academiaAlumnos}
           academiaAsistencias={academiaAsistencias}
+          permisos={permisos}
         />
       )}
 
@@ -28134,6 +28703,21 @@ function AppInterno() {
           jugadorId: fila.jugador_id,
         });
       })
+      // Mejora de RBAC — "Notificar Abastecimiento": a diferencia de las seis
+      // alertas de arriba (todas originadas en el Portal Web de Jugadores),
+      // esta la dispara el propio club desde la Tarjeta de Reorden de Smart
+      // POS (rol Recepción/Caja, ver `TarjetaReordenSugerido`) — cualquier
+      // INSERT en `alertas_reabastecimiento` (migracion_v18) es, por
+      // definición, una notificación real para Gerencia/Contador, así que no
+      // hace falta revisar ningún `canal_origen`.
+      .on('postgres_changes', filtroInsert('alertas_reabastecimiento'), (payload) => {
+        const fila = payload.new || {};
+        agregarAlertaClub({
+          tipo: 'reabastecimiento',
+          titulo: `${fila.operador_nombre || 'Recepción/Caja'} pidió reabastecimiento: ${fila.resumen || 'ver detalle'}`,
+          jugadorId: null,
+        });
+      })
       .subscribe();
 
     return () => {
@@ -28388,6 +28972,7 @@ function AppInterno() {
                 variantesPorProducto={variantesPorProducto}
                 upsertVarianteProducto={upsertVarianteProducto}
                 quitarVarianteProductoLocal={quitarVarianteProductoLocal}
+                permisos={permisos}
               />
             ) : moduloActivo === 'contabilidad' ? (
               <ModuloContabilidadCompras
@@ -28409,6 +28994,7 @@ function AppInterno() {
                 torneos={torneos}
                 participantesTorneo={participantesTorneo}
                 partidosTorneo={partidosTorneo}
+                permisos={permisos}
               />
             ) : moduloActivo === 'jugadores' ? (
               <ModuloJugadores
@@ -28432,6 +29018,7 @@ function AppInterno() {
                 onJugadorAAbrirConsumido={() => setJugadorAAbrirId(null)}
                 academiaAlumnos={academiaAlumnos}
                 academiaAsistencias={academiaAsistencias}
+                permisos={permisos}
               />
             ) : moduloActivo === 'torneos' ? (
               <ModuloTorneosRetas
@@ -28495,6 +29082,7 @@ function AppInterno() {
                 }
                 onIrAJugador={(jugadorId) => irAJugadorDesdeAlerta({ jugadorId })}
                 onIrAPOS={() => setModuloActivo('pos')}
+                permisos={permisos}
               />
             ) : moduloActivo === 'seguridad' ? (
               <ModuloControlSeguridad
