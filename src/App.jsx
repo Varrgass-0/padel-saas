@@ -30248,13 +30248,6 @@ function ClubAuthScreen({ onAutenticado }) {
     <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#0b132b] p-4 gap-4">
       <FondoAuthAnimado />
 
-      {/* Tarjeta Superior — Header del Logo: mismo estilo dark/glassmorphism
-          que la tarjeta del formulario de abajo, pero MÁS ANCHA (max-w-lg
-          vs. max-w-md), así el logo sobresale hacia los lados y domina la
-          jerarquía visual de la pantalla. */}
-      <div className="relative z-10 w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900/80 px-8 py-6 shadow-2xl backdrop-blur-xl">
-      </div>
-
       {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
       <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-xl">
