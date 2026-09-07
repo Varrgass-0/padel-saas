@@ -739,6 +739,7 @@ import React, {
   useRef,
 } from 'react';
 import { supabase } from './supabaseClient';
+import { LogoClubOS } from './components/LogoClubOS';
 import {
   LayoutGrid,
   CalendarDays,
@@ -30183,14 +30184,31 @@ function ClubAuthScreen({ onAutenticado }) {
   };
 
   return (
-    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#0b132b] px-4 py-10">
+    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#0b132b] p-4 gap-4">
       <FondoAuthAnimado />
+
+      {/* Tarjeta Superior — Header del Logo: mismo estilo dark/glassmorphism
+          que la tarjeta del formulario de abajo, pero MÁS ANCHA (max-w-lg
+          vs. max-w-md), así el logo sobresale hacia los lados y domina la
+          jerarquía visual de la pantalla. */}
+      <div className="relative z-10 w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900/80 px-8 py-6 shadow-2xl backdrop-blur-xl">
+        <LogoClubOS className="mx-auto h-auto w-64 md:w-80" />
+      </div>
+
+      {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
       <div className="relative z-10 w-full max-w-md">
-        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
-          <div className="mb-5">
-            <h2 className="text-base font-bold text-slate-100">{titulos[modo].titulo}</h2>
-            {titulos[modo].subtitulo && <p className="mt-0.5 text-xs text-slate-400">{titulos[modo].subtitulo}</p>}
-          </div>
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-xl">
+          {/* Encabezado interno removido en 'login': el logo de la tarjeta
+              de arriba ya se lleva todo el protagonismo de marca — repetir
+              "Run Your Club" aquí sería redundante. Se conserva SOLO para
+              'registro'/'recuperar', donde el título no es una marca sino
+              contexto real (le dice al usuario en qué paso del flujo está). */}
+          {modo !== 'login' && (
+            <div className="mb-5">
+              <h2 className="text-base font-bold text-slate-100">{titulos[modo].titulo}</h2>
+              {titulos[modo].subtitulo && <p className="mt-0.5 text-xs text-slate-400">{titulos[modo].subtitulo}</p>}
+            </div>
+          )}
 
           {error && (
             <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
