@@ -30251,9 +30251,9 @@ function ClubAuthScreen({ onAutenticado }) {
       {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
       <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-xl">
-        {/* Logo CLUB OS SVG con O y S en verde */}
-<div className="flex justify-start mb-6 pt-1">
-  <svg width="220" height="50" viewBox="0 0 260 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+        {/* Logo CLUB OS centrado con subtítulo elegante */}
+<div className="flex justify-center mb-6 pt-1">
+  <svg width="240" height="70" viewBox="0 0 260 75" fill="none" xmlns="http://www.w3.org/2000/svg">
     {/* C (Blanco) */}
     <path d="M35 12C20 12 10 22 10 35C10 48 20 58 35 58C46 58 54 51 56 42H44C42 46 39 48 35 48C28 48 22 42 22 35C22 28 28 22 35 22C39 22 42 24 44 28H56C54 19 46 12 35 12Z" fill="#FFFFFF"/>
     {/* L (Blanco) */}
@@ -30268,6 +30268,9 @@ function ClubAuthScreen({ onAutenticado }) {
     <rect x="180" y="32" width="16" height="6" rx="3" fill="#CCFF00"/>
     {/* S (Verde #CCFF00) */}
     <path d="M230 48C230 50 233 51 237 51C242 51 246 49 246 45C246 42 243 40 236 38C227 36 223 32 223 25C223 17 230 12 240 12C250 12 256 17 257 24H245C244 21 242 20 239 20C235 20 232 21 232 24C232 26 235 28 241 30C250 32 256 35 256 43C256 52 248 58 237 58C226 58 219 51 218 43H230V48Z" fill="#CCFF00"/>
+    
+    {/* Slogan fino y elegante abajo centrado */}
+    <text x="130" y="70" textAnchor="middle" fill="#94A3B8" fontSize="9" fontWeight="300" letterSpacing="4">RUN YOUR CLUB</text>
   </svg>
 </div>
           {/* Encabezado interno removido en 'login': el logo de la tarjeta
