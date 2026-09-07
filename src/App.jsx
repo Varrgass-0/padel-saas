@@ -30254,7 +30254,6 @@ function ClubAuthScreen({ onAutenticado }) {
           vs. max-w-md), así el logo sobresale hacia los lados y domina la
           jerarquía visual de la pantalla. */}
       <div className="relative z-10 w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900/80 px-8 py-6 shadow-2xl backdrop-blur-xl">
-        <LogoClubOS className="mx-auto h-auto w-64 md:w-80" />
       </div>
 
       {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
