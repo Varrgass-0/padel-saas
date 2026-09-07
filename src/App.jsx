@@ -29535,7 +29535,12 @@ function AppInterno() {
 // opacidad casi imperceptible sobre el fondo `#0b132b` — marca de agua, no
 // protagonista: el formulario/tarjeta sigue siendo lo único que de verdad
 // se lee.
-const FILAS_FONDO_AUTH = 9;
+// 12 filas fijas (antes 9) en TODOS los tamaños — en vez de solo llenar de
+// texto una pantalla grande y dejar la vista de celular con huecos entre
+// filas, el mismo conteo denso se usa en cualquier viewport; el respiro
+// entre filas se controla aparte con `gap` (más chico en móvil, más grande
+// en desktop) para que en pantallas grandes no se vea apretado.
+const FILAS_FONDO_AUTH = 12;
 // Filas IMPARES (1, 3, 5...): esta frase, hacia la derecha.
 const TEXTO_FONDO_AUTH_IMPAR = 'OPERATE BETTER • SELL MORE • GROW FASTER • ';
 // Filas PARES (2, 4, 6...): la misma terna en orden inverso, hacia la
@@ -29543,43 +29548,47 @@ const TEXTO_FONDO_AUTH_IMPAR = 'OPERATE BETTER • SELL MORE • GROW FASTER •
 // la misma dirección, refuerza la sensación de trama tejida del video de
 // referencia.
 const TEXTO_FONDO_AUTH_PAR = 'GROW FASTER • SELL MORE • OPERATE BETTER • ';
-// Cuántas veces se repite la terna de frases DENTRO de cada uno de los 2
-// bloques del track animado. Con solo 1 repetición, un bloque puede ser
-// más angosto que el viewport en monitores anchos (hasta 4K) — al llegar a
-// translateX(-50%) el segundo bloque ya está completamente visible pero se
-// percibe un "salto" porque el ancho real del track no llega ni al 200% del
-// viewport. Repitiendo la terna 4 veces por bloque, el track total (2
-// bloques × 4 repeticiones) supera por mucho el 200% del ancho de cualquier
-// pantalla, así el corte en -50% queda siempre fuera de la parte visible y
-// el loop es imperceptible.
-const REPETICIONES_BLOQUE_FONDO_AUTH = 4;
+// Cuántas veces se repite la terna DENTRO de cada uno de los 2 bloques
+// `shrink-0` del track (antes 4, ahora 6): un bloque angosto en un monitor
+// ancho (hasta 4K) es lo que provocaba el salto perceptible al llegar a
+// translateX(-50%) — con 6 repeticiones por bloque el ancho real de cada
+// bloque queda muy por encima del 100% del viewport en cualquier pantalla,
+// así el segundo bloque entra siempre fuera del área visible y el corte del
+// loop deja de notarse por completo.
+const REPETICIONES_BLOQUE_FONDO_AUTH = 6;
 
 function FondoAuthAnimado() {
   return (
     <div
-      className="pointer-events-none absolute inset-0 flex h-full w-full select-none flex-col justify-around overflow-hidden"
-      style={{
-        fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-        // Degradado de desvanecimiento arriba/abajo (máscara CSS, no
-        // opacidad — así el texto sigue a opacidad plena hasta que la
-        // máscara lo recorta): suaviza la entrada/salida de las filas en
-        // los extremos de la pantalla en vez de un corte duro. Doble
-        // propiedad por soporte de Safari (`-webkit-mask-image`).
-        WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)',
-        maskImage: 'linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)',
-      }}
+      className="fondo-auth-mask pointer-events-none absolute inset-0 flex h-full w-full select-none flex-col justify-between gap-1 overflow-hidden sm:gap-2 lg:gap-3"
+      style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
     >
       {/* Keyframes propios (no dependen de tailwind.config — este proyecto
           se entrega como un solo App.jsx): cada fila trae 2 bloques
-          IDÉNTICOS de texto uno junto al otro (mismo criterio que el loop
-          vertical de antes, ahora en horizontal) — `translateX` se mueve
-          exactamente la mitad del track (un bloque completo), así el ciclo
-          nunca deja un salto/corte visible. Direcciones opuestas
-          (derecha/izquierda) + una preferencia de movimiento reducido para
-          quien la tenga activada en su SO. */}
+          `shrink-0` IDÉNTICOS uno junto al otro, cada uno con la terna
+          repetida varias veces (`REPETICIONES_BLOQUE_FONDO_AUTH`) — el
+          track (`w-max`, más ancho que el contenedor recortado por
+          `overflow-hidden`) se desplaza exactamente la mitad de su ancho
+          total (un bloque completo), así el ciclo nunca deja un salto/corte
+          visible. Direcciones opuestas (derecha/izquierda) + una
+          preferencia de movimiento reducido para quien la tenga activada en
+          su SO. La máscara de desvanecimiento va aparte, en su propia clase
+          `.fondo-auth-mask`, para poder suavizarla en móvil (donde hay
+          menos alto de pantalla y un recorte agresivo se come más filas) y
+          endurecerla un poco en desktop. */}
       <style>{`
-        @keyframes fondoAuthMarqueeDerecha { from { transform: translateX(-50%); } to { transform: translateX(0%); } }
-        @keyframes fondoAuthMarqueeIzquierda { from { transform: translateX(0%); } to { transform: translateX(-50%); } }
+        @keyframes marqueeLeft { 0% { transform: translateX(0%); } 100% { transform: translateX(-50%); } }
+        @keyframes marqueeRight { 0% { transform: translateX(-50%); } 100% { transform: translateX(0%); } }
+        .fondo-auth-mask {
+          -webkit-mask-image: linear-gradient(to bottom, transparent, black 5%, black 95%, transparent);
+          mask-image: linear-gradient(to bottom, transparent, black 5%, black 95%, transparent);
+        }
+        @media (min-width: 1024px) {
+          .fondo-auth-mask {
+            -webkit-mask-image: linear-gradient(to bottom, transparent, black 15%, black 85%, transparent);
+            mask-image: linear-gradient(to bottom, transparent, black 15%, black 85%, transparent);
+          }
+        }
         @media (prefers-reduced-motion: reduce) {
           .fondo-auth-track { animation: none !important; transform: translateX(0) !important; }
         }
@@ -29588,27 +29597,27 @@ function FondoAuthAnimado() {
         const numeroFila = i + 1; // 1-based, para que "impar/par" sea literal
         const esImpar = numeroFila % 2 === 1;
         const texto = esImpar ? TEXTO_FONDO_AUTH_IMPAR : TEXTO_FONDO_AUTH_PAR;
-        // Cada bloque repite la terna N veces seguidas (no solo 1 copia) —
-        // así el ancho real del bloque garantiza sobrepasar el viewport en
-        // cualquier monitor, sin tocar la matemática del 50% del track.
-        const textoBloque = texto.repeat(REPETICIONES_BLOQUE_FONDO_AUTH);
-        const direccion = esImpar ? 'fondoAuthMarqueeDerecha' : 'fondoAuthMarqueeIzquierda';
+        const direccion = esImpar ? 'marqueeRight' : 'marqueeLeft';
         // Duración 15s-25s: movimiento fluido, filas vecinas nunca quedan
         // perfectamente sincronizadas entre sí.
         const duracionSeg = 15 + (i % 6) * 2;
         return (
           <div key={i} className="overflow-hidden">
             <div
-              className="fondo-auth-track flex whitespace-nowrap"
+              className="fondo-auth-track flex w-max"
               style={{ animation: `${direccion} ${duracionSeg}s linear infinite` }}
             >
               {[0, 1].map((copia) => (
-                <span
-                  key={copia}
-                  className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-[0.11] lg:text-5xl xl:text-6xl"
-                >
-                  {textoBloque}
-                </span>
+                <div key={copia} className="flex shrink-0 gap-4 pr-4">
+                  {Array.from({ length: REPETICIONES_BLOQUE_FONDO_AUTH }).map((_, r) => (
+                    <span
+                      key={r}
+                      className="whitespace-nowrap text-4xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-[0.11] lg:text-5xl xl:text-6xl"
+                    >
+                      {texto}
+                    </span>
+                  ))}
+                </div>
               ))}
             </div>
           </div>
