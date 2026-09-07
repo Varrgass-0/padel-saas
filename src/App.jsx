@@ -739,7 +739,6 @@ import React, {
   useRef,
 } from 'react';
 import { supabase } from './supabaseClient';
-import { LogoClubOS } from './LogoClubOS';
 import {
   LayoutGrid,
   CalendarDays,
