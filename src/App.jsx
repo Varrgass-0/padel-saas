@@ -29529,96 +29529,77 @@ function AppInterno() {
 // estricto desde el primer render.
 
 // Fondo tipográfico animado de las pantallas de Auth — puramente
-// decorativo: pared de columnas con scroll vertical infinito, alternando 3
-// frases del posicionamiento del producto, en verde neón (mismo lime del
-// botón principal) a opacidad casi imperceptible sobre el fondo `#0b132b`
-// — marca de agua, no protagonista: el formulario/tarjeta sigue siendo lo
-// único que de verdad se lee.
-const TEXTOS_FONDO_AUTH = ['OPERATE BETTER', 'SELL MORE', 'GROW FASTER'];
-// Cuántas veces se repite la frase por columna, POR COPIA (el track real
-// dibuja 2 copias IDÉNTICAS seguidas — ver `FondoAuthAnimado`, el truco del
-// loop sin costura por CSS depende de que ambas copias midan exactamente lo
-// mismo). De sobra para que una sola copia ya sea más alta que el viewport
-// más alto realista (monitores 4K incluidos), aun con el texto mucho más
-// grande de esta versión, así el scroll nunca deja ver un hueco a medio
-// ciclo.
-const REPETICIONES_FONDO_AUTH = 10;
-// Máximo 4-5 columnas en pantallas grandes (antes eran hasta 10 — se veía
-// saturado con el texto pequeño; con texto grande, menos columnas leen
-// mejor): 2 en móvil, 3 desde `sm`, 4 desde `lg`, 5 desde `xl`. Cada
-// columna visible sigue siendo `flex-1` (nunca ancho fijo), así que
-// reparten el 100% del contenedor entre sí sin importar cuántas haya —
-// jamás queda un hueco en los bordes, de un celular angosto a un monitor 4K
-// ultra-wide.
-const BREAKPOINTS_COLUMNAS_FONDO_AUTH = [null, null, 'sm', 'lg', 'xl'];
-
-function claseVisibleColumnaFondoAuth(breakpoint) {
-  if (breakpoint === 'sm') return 'hidden sm:flex';
-  if (breakpoint === 'lg') return 'hidden lg:flex';
-  if (breakpoint === 'xl') return 'hidden xl:flex';
-  return 'flex';
-}
+// decorativo: un ticker/marquee de filas horizontales (no columnas
+// verticales), alternando 2 frases del posicionamiento del producto en
+// direcciones opuestas, en verde neón (mismo lime del botón principal) a
+// opacidad casi imperceptible sobre el fondo `#0b132b` — marca de agua, no
+// protagonista: el formulario/tarjeta sigue siendo lo único que de verdad
+// se lee.
+const FILAS_FONDO_AUTH = 9;
+// Filas IMPARES (1, 3, 5...): esta frase, hacia la derecha.
+const TEXTO_FONDO_AUTH_IMPAR = 'OPERATE BETTER • SELL MORE • GROW FASTER • ';
+// Filas PARES (2, 4, 6...): la misma terna en orden inverso, hacia la
+// izquierda — así ninguna fila vecina repite exactamente el mismo texto en
+// la misma dirección, refuerza la sensación de trama tejida del video de
+// referencia.
+const TEXTO_FONDO_AUTH_PAR = 'GROW FASTER • SELL MORE • OPERATE BETTER • ';
 
 function FondoAuthAnimado() {
   return (
     <div
-      className="pointer-events-none absolute inset-0 h-full w-full select-none overflow-hidden"
+      className="pointer-events-none absolute inset-0 flex h-full w-full select-none flex-col justify-around overflow-hidden"
       style={{
+        fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
         // Degradado de desvanecimiento arriba/abajo (máscara CSS, no
         // opacidad — así el texto sigue a opacidad plena hasta que la
-        // máscara lo recorta): suaviza la entrada/salida del texto en los
-        // bordes en vez de un corte duro contra el borde de la pantalla.
-        // Doble propiedad por soporte de Safari (`-webkit-mask-image`).
+        // máscara lo recorta): suaviza la entrada/salida de las filas en
+        // los extremos de la pantalla en vez de un corte duro. Doble
+        // propiedad por soporte de Safari (`-webkit-mask-image`).
         WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)',
         maskImage: 'linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)',
       }}
     >
       {/* Keyframes propios (no dependen de tailwind.config — este proyecto
-          se entrega como un solo App.jsx): dos direcciones opuestas para
-          que columnas vecinas suban y bajen a la vez, cada una de
-          `translateY(0)` a `translateY(-50%)` (o viceversa) — exactamente
-          la mitad del track de 2 copias idénticas, así el loop nunca da un
-          salto/glitch visible. Más una preferencia de movimiento reducido
-          para quien la tenga activada en su SO. */}
+          se entrega como un solo App.jsx): cada fila trae 2 bloques
+          IDÉNTICOS de texto uno junto al otro (mismo criterio que el loop
+          vertical de antes, ahora en horizontal) — `translateX` se mueve
+          exactamente la mitad del track (un bloque completo), así el ciclo
+          nunca deja un salto/corte visible. Direcciones opuestas
+          (derecha/izquierda) + una preferencia de movimiento reducido para
+          quien la tenga activada en su SO. */}
       <style>{`
-        @keyframes fondoAuthScrollUp { from { transform: translateY(0); } to { transform: translateY(-50%); } }
-        @keyframes fondoAuthScrollDown { from { transform: translateY(-50%); } to { transform: translateY(0); } }
+        @keyframes fondoAuthMarqueeDerecha { from { transform: translateX(-50%); } to { transform: translateX(0%); } }
+        @keyframes fondoAuthMarqueeIzquierda { from { transform: translateX(0%); } to { transform: translateX(-50%); } }
         @media (prefers-reduced-motion: reduce) {
-          .fondo-auth-track { animation: none !important; transform: translateY(0) !important; }
+          .fondo-auth-track { animation: none !important; transform: translateX(0) !important; }
         }
       `}</style>
-      <div className="flex h-full w-full" style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}>
-        {BREAKPOINTS_COLUMNAS_FONDO_AUTH.map((breakpoint, i) => {
-          const texto = TEXTOS_FONDO_AUTH[i % TEXTOS_FONDO_AUTH.length];
-          const direccion = i % 2 === 0 ? 'fondoAuthScrollUp' : 'fondoAuthScrollDown';
-          // Duración 12s-20s (antes 22s-46s): movimiento notablemente más
-          // rápido y dinámico, a pedido. Columnas vecinas nunca quedan
-          // perfectamente sincronizadas entre sí.
-          const duracionSeg = 12 + (i % 5) * 2;
-          return (
+      {Array.from({ length: FILAS_FONDO_AUTH }).map((_, i) => {
+        const numeroFila = i + 1; // 1-based, para que "impar/par" sea literal
+        const esImpar = numeroFila % 2 === 1;
+        const texto = esImpar ? TEXTO_FONDO_AUTH_IMPAR : TEXTO_FONDO_AUTH_PAR;
+        const direccion = esImpar ? 'fondoAuthMarqueeDerecha' : 'fondoAuthMarqueeIzquierda';
+        // Duración 15s-25s: movimiento fluido, filas vecinas nunca quedan
+        // perfectamente sincronizadas entre sí.
+        const duracionSeg = 15 + (i % 6) * 2;
+        return (
+          <div key={i} className="overflow-hidden">
             <div
-              key={i}
-              className={`h-full min-w-0 flex-1 overflow-hidden ${claseVisibleColumnaFondoAuth(breakpoint)}`}
+              className="fondo-auth-track flex whitespace-nowrap"
+              style={{ animation: `${direccion} ${duracionSeg}s linear infinite` }}
             >
-              <div
-                className="fondo-auth-track flex flex-col"
-                style={{ animation: `${direccion} ${duracionSeg}s linear infinite` }}
-              >
-                {[0, 1].map((copia) =>
-                  Array.from({ length: REPETICIONES_FONDO_AUTH }).map((_, j) => (
-                    <span
-                      key={`${copia}-${j}`}
-                      className="break-words px-2 py-8 text-center text-4xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-[0.1] lg:text-6xl xl:text-7xl"
-                    >
-                      {texto}
-                    </span>
-                  ))
-                )}
-              </div>
+              {[0, 1].map((copia) => (
+                <span
+                  key={copia}
+                  className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-[0.11] lg:text-5xl xl:text-6xl"
+                >
+                  {texto}
+                </span>
+              ))}
             </div>
-          );
-        })}
-      </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
