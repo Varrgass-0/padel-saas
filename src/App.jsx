@@ -19587,11 +19587,17 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
  *                            cancha_id, reserva_bloqueo_id (uuid → reservas,
  *                            igual criterio que `retas.reserva_bloqueo_id`),
  *                            estado ('programada'|'cancelada'), club_id,
- *                            created_at. Se generan en bloque (próximas
- *                            `CANTIDAD_SESIONES_GENERADAS` fechas) al crear
- *                            la clase vía `generarSesionesClase` — "Generar
- *                            más sesiones" en el detalle de la clase extiende
- *                            la ventana cuando se van agotando.
+ *                            created_at. Se generan vía `generarSesionesClase`,
+ *                            al crear la clase desde `ModalNuevaClase` — por
+ *                            default SOLO la sesión de la fecha elegida
+ *                            (`cantidad: 1`); la casilla "Repetir
+ *                            semanalmente (Serie Recurrente)" del formulario
+ *                            es la única forma de pedir de una vez las
+ *                            próximas `CANTIDAD_SESIONES_GENERADAS` fechas.
+ *                            No hay reagendado automático en ninguna otra
+ *                            acción (pase de lista, reprogramar/cancelar
+ *                            reserva) — crear sesiones nuevas es SIEMPRE una
+ *                            decisión explícita del operador.
  *   - academia_alumnos:     id, clase_id, jugador_id (resuelto vía
  *                            `resolverJugadorId`, igual que Retas/Torneos),
  *                            nombre, telefono, tipo_pago
@@ -19852,6 +19858,14 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
   const [capacidad, setCapacidad] = useState('6');
   const [precioMensualidad, setPrecioMensualidad] = useState('1200');
   const [precioClaseSuelta, setPrecioClaseSuelta] = useState('180');
+  // FIX (Serie Recurrente opcional): antes, crear una clase SIEMPRE
+  // generaba y bloqueaba de una vez las próximas `CANTIDAD_SESIONES_GENERADAS`
+  // (6) fechas semanales — sorprendía al operador que solo quería agendar
+  // UNA sesión puntual y se encontraba con 6 bloqueos en la Parrilla. Ahora
+  // por default se crea solo 1 sesión (la fecha elegida arriba); el
+  // operador tiene que marcar esta casilla explícitamente para pedir la
+  // serie recurrente completa.
+  const [generarSerieSemanal, setGenerarSerieSemanal] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
@@ -19933,7 +19947,16 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
       // que "buscar" el próximo lunes/martes/etc.: `dia_semana` viene
       // derivado de esta misma fecha, así que coincide desde la primera
       // iteración).
-      const resultado = await generarSesionesClase({ clase: claseCreada, reservasExistentes: reservas, desdeISO: fecha });
+      // FIX (Serie Recurrente opcional): `cantidad` ya NO es siempre
+      // `CANTIDAD_SESIONES_GENERADAS` (6 semanas) — por default se genera
+      // UNA sola sesión (la fecha elegida) y solo se piden las 6 semanas si
+      // el operador marcó explícitamente "Repetir semanalmente" arriba.
+      const resultado = await generarSesionesClase({
+        clase: claseCreada,
+        cantidad: generarSerieSemanal ? CANTIDAD_SESIONES_GENERADAS : 1,
+        reservasExistentes: reservas,
+        desdeISO: fecha,
+      });
       sesionesCreadas = resultado.data || [];
       if (resultado.error) {
         console.warn('[Academia & Clínicas] Clase creada, pero no se pudieron generar sus sesiones/bloqueos.', resultado.error);
@@ -20067,9 +20090,33 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
           </Campo>
         </div>
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
-        <p className="text-[11px] text-slate-500">
-          Al guardar se generan y bloquean automáticamente las próximas {CANTIDAD_SESIONES_GENERADAS} sesiones ({diaSemanaMeta.label}, empezando {formatoFechaLarga(fecha)}) en la Parrilla Operativa.
-        </p>
+        {/* FIX (Serie Recurrente opcional): antes esto era un texto fijo
+            avisando que SIEMPRE se generaban 6 semanas de una vez — ahora es
+            una casilla explícita, apagada por default (una sola sesión, la
+            fecha de arriba); el operador decide si de verdad quiere la
+            serie recurrente completa. */}
+        <label className="flex items-start gap-2.5 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+          <input
+            type="checkbox"
+            checked={generarSerieSemanal}
+            onChange={(e) => setGenerarSerieSemanal(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-lime-400"
+          />
+          <span className="text-xs text-slate-300">
+            <span className="block font-bold text-slate-100">Repetir semanalmente (Serie Recurrente)</span>
+            {generarSerieSemanal ? (
+              <span className="mt-0.5 block text-slate-500">
+                Se generarán y bloquearán las próximas {CANTIDAD_SESIONES_GENERADAS} sesiones ({diaSemanaMeta.label}, empezando{' '}
+                {formatoFechaLarga(fecha)}) en la Parrilla Operativa.
+              </span>
+            ) : (
+              <span className="mt-0.5 block text-slate-500">
+                Sin marcar, se crea solo esta sesión ({diaSemanaMeta.label} {formatoFechaLarga(fecha)}). Puedes volver a "Nueva
+                Clase" cuando quieras agendar la siguiente.
+              </span>
+            )}
+          </span>
+        </label>
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={guardar} disabled={guardando}>
