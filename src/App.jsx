@@ -30251,14 +30251,23 @@ function ClubAuthScreen({ onAutenticado }) {
       {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
       <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-xl">
-        {/* Logo RUN YOUR CLUB direct SVG */}
-<div className="flex justify-center mb-6 pt-2">
-  <svg width="200" height="45" viewBox="0 0 220 50" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M15 10H30C35.5 10 39 13.5 39 18C39 21.5 37 24.5 33.5 25.5L40 38H32L26 26.5H22V38H15V10ZM22 21H29C31.5 21 33 19.8 33 18C33 16.2 31.5 15H22V21Z" fill="#CCFF00"/>
-    <path d="M44 23V10H51V23C51 28.5 54 31.5 59 31.5C64 31.5 67 28.5 67 23V10H74V23C74 33 68 38 59 38C50 38 44 33 44 23Z" fill="#CCFF00"/>
-    <path d="M80 10H87L97 27V10H104V38H97L87 21V38H80V10Z" fill="#CCFF00"/>
-    <text x="115" y="24" fill="#FFFFFF" fontSize="12" fontWeight="bold" letterSpacing="1">YOUR CLUB</text>
-    <text x="115" y="36" fill="#888888" fontSize="9" fontWeight="600" letterSpacing="2">OPERATING SYSTEM</text>
+        {/* Logo CLUB OS SVG con O y S en verde */}
+<div className="flex justify-start mb-6 pt-1">
+  <svg width="220" height="50" viewBox="0 0 260 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+    {/* C (Blanco) */}
+    <path d="M35 12C20 12 10 22 10 35C10 48 20 58 35 58C46 58 54 51 56 42H44C42 46 39 48 35 48C28 48 22 42 22 35C22 28 28 22 35 22C39 22 42 24 44 28H56C54 19 46 12 35 12Z" fill="#FFFFFF"/>
+    {/* L (Blanco) */}
+    <path d="M62 14H74V48H92V58H62V14Z" fill="#FFFFFF"/>
+    {/* U (Blanco) */}
+    <path d="M98 14H110V42C110 46 113 48 117 48C121 48 124 46 124 42V14H136V42C136 52 128 58 117 58C106 58 98 52 98 42V14Z" fill="#FFFFFF"/>
+    {/* B (Blanco) */}
+    <path d="M142 14H162C170 14 175 18 175 23C175 27 172 30 167 32C173 34 177 38 177 44C177 52 170 58 160 58H142V14ZM154 22V31H160C163 31 165 29 165 26.5C165 24 163 22 160 22H154ZM154 39V50H161C164 50 167 48 167 44.5C167 41 164 39 161 39H154Z" fill="#FFFFFF"/>
+    {/* O (Verde #CCFF00) */}
+    <path d="M198 12C184 12 174 22 174 35C174 48 184 58 198 58C212 58 222 48 222 35C222 22 212 12 198 12ZM198 48C191 48 185 42 185 35C185 28 191 22 198 22C205 22 211 28 211 35C211 42 205 48 198 48Z" fill="#CCFF00"/>
+    <rect x="194" y="32" width="16" height="6" rx="3" fill="#1E293B"/>
+    <rect x="180" y="32" width="16" height="6" rx="3" fill="#CCFF00"/>
+    {/* S (Verde #CCFF00) */}
+    <path d="M230 48C230 50 233 51 237 51C242 51 246 49 246 45C246 42 243 40 236 38C227 36 223 32 223 25C223 17 230 12 240 12C250 12 256 17 257 24H245C244 21 242 20 239 20C235 20 232 21 232 24C232 26 235 28 241 30C250 32 256 35 256 43C256 52 248 58 237 58C226 58 219 51 218 43H230V48Z" fill="#CCFF00"/>
   </svg>
 </div>
           {/* Encabezado interno removido en 'login': el logo de la tarjeta
