@@ -6286,9 +6286,20 @@ function ModalNuevoProducto({
     // MISMA columna `productos.variantes` del MISMO insert/update de abajo:
     // ya no hay una tabla aparte ni un paso posterior que pueda fallar a
     // medias.
+    // FIX (id estable de variante): antes este arreglo se armaba SIN `id` —
+    // cada `guardar()` (alta o edición) borraba el id que la variante ya
+    // traía y dejaba que `idEstableVarianteJSONB` lo re-derivara del nombre
+    // al vuelo en cada lectura. Funciona mientras el nombre nunca cambie,
+    // pero renombrar una variante ("Wilson" → "Wilson Pro") le cambiaba el
+    // id de un guardado a otro, y cualquier referencia guardada con el id
+    // viejo (un carrito ya armado, un ticket de POS a medio cobrar) dejaba
+    // de encontrarla. Ahora el `id` de cada fila (`v.id`, puesto por
+    // `agregarFilaVariante`/el estado inicial de edición) se conserva tal
+    // cual en el JSONB — estable para siempre, sin importar renombres.
     const variantesJSONB = variantes
       .filter((v) => (v.nombre || '').trim())
       .map((v) => ({
+        id: v.id,
         nombre: v.nombre.trim(),
         precio: v.precio === '' ? null : Number(v.precio),
         stock: v.stock === '' ? null : Number(v.stock),
@@ -7710,11 +7721,17 @@ function ModuloSmartPOS({
           }
         } else {
           // Producto simple: stock fresco de Supabase, nunca el valor
-          // potencialmente desactualizado del carrito.
+          // potencialmente desactualizado del carrito. `varianteNombreSugerida`
+          // es la red de seguridad de `descontarStockProductoSimple`: si el
+          // producto en Supabase resulta SÍ tener variantes (esta línea del
+          // carrito no venía marcada como variante), igual intenta resolverla
+          // por nombre en vez de desincronizar `productos.stock` de sus
+          // `variantes`.
           const resultado = await descontarStockProductoSimple({
             productoId,
             cantidad: item.cantidad,
             upsertProducto,
+            varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
           });
           if (!resultado.ok) errStock = resultado.error;
           else {
@@ -8871,10 +8888,15 @@ function ModuloSmartPOS({
           // traiga el carrito, que puede estar desactualizado si otro
           // dispositivo vendió el mismo producto hace un segundo (misma
           // filosofía de "BD como única fuente de verdad" del resto de la app).
+          // `varianteNombreSugerida`: red de seguridad si el producto SÍ
+          // tiene variantes en Supabase aunque esta línea no llegara marcada
+          // como variante — ver comentario de cabecera de
+          // `descontarStockProductoSimple`.
           const resultado = await descontarStockProductoSimple({
             productoId,
             cantidad: item.cantidad,
             upsertProducto,
+            varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
           });
           if (!resultado.ok) {
             errStock = resultado.error;
@@ -9776,9 +9798,31 @@ function resolverCostoUnitarioVenta(productoId, varianteId, productos, variantes
 // tiene control de stock propio (`stock` es `null` en la fila), no es un
 // error: regresa `nuevoStock: null` para que el llamador sepa que no hay
 // nada que descontar ni que registrar en el kardex para este artículo.
-async function descontarStockProductoSimple({ productoId, cantidad, upsertProducto }) {
+//
+// GUARDA DE SEGURIDAD (variantes vs. producto simple) — FIX CRÍTICO: antes,
+// esta función SIEMPRE restaba directo sobre `productos.stock` sin mirar
+// `productos.variantes` — así que si por CUALQUIER motivo el carrito llegaba
+// aquí sin `esVariante`/`varianteId` (carrito del Portal con datos
+// desactualizados, un caller nuevo que se le olvide marcarlo, etc.) para un
+// producto que en Supabase SÍ tiene variantes, el resultado era exactamente
+// el bug reportado: el total del padre bajaba (`stock_actual` 48→47) pero
+// `productos.variantes` se quedaba intacto — el Catálogo mostraba la
+// variante "Wilson" sin descontar porque, literalmente, nadie tocó ese
+// arreglo. Ahora esta función lee `variantes` en la misma consulta y, si el
+// producto SÍ tiene variantes registradas, jamás toca `stock` de forma
+// aislada — delega a `descontarStockVariante` (mismo camino JSONB que ya
+// mantiene sincronizados `variantes` y el total del padre en un solo
+// `UPDATE`), intentando resolver la variante por nombre con
+// `varianteNombreSugerida` si el llamador lo tiene a la mano. Si no hay
+// forma de saber cuál variante se vendió, regresa un error explícito en vez
+// de adivinar — nunca vuelve a desincronizar el Catálogo en silencio.
+async function descontarStockProductoSimple({ productoId, cantidad, upsertProducto, varianteNombreSugerida }) {
   try {
-    const { data: fila, error: errLeer } = await supabase.from('productos').select('id, stock').eq('id', productoId).maybeSingle();
+    const { data: fila, error: errLeer } = await supabase
+      .from('productos')
+      .select('id, stock, variantes')
+      .eq('id', productoId)
+      .maybeSingle();
     if (errLeer) {
       console.error('[Inventario] Error detallado Supabase (leer stock del producto):', errLeer);
       return { ok: false, error: errLeer };
@@ -9787,6 +9831,18 @@ async function descontarStockProductoSimple({ productoId, cantidad, upsertProduc
       const error = new Error(`No se encontró el producto ${productoId} en Supabase al intentar descontar su stock.`);
       console.error('[Inventario] Error detallado Supabase:', error);
       return { ok: false, error };
+    }
+    if (Array.isArray(fila.variantes) && fila.variantes.length > 0) {
+      console.warn(
+        `[Inventario] El producto ${productoId} tiene variantes en Supabase pero se intentó descontar su stock como producto simple — resolviendo por nombre ("${varianteNombreSugerida || 'sin nombre'}") vía el camino JSONB en vez de tocar el total directo.`
+      );
+      return await descontarStockVariante({
+        productoId,
+        varianteId: null,
+        varianteNombre: varianteNombreSugerida || null,
+        cantidad,
+        upsertProducto,
+      });
     }
     if (fila.stock == null) {
       // Producto sin control de inventario (p. ej. platillo de cocina) —
@@ -9889,18 +9945,40 @@ async function descontarStockVariante({ productoId, varianteId, varianteNombre, 
     const variantesActualizadas = listaVariantes.map((v, i) => (i === indiceCoincide ? { ...v, [claveStock]: nuevoStockVariante } : v));
 
     // Sincronización Automática Padre-Variantes: el stock total del padre se
-    // recalcula sumando el arreglo YA actualizado, en el mismo update.
-    const stockTotalPadre = variantesActualizadas.reduce((acc, v) => acc + (stockDeVarianteJSONB(v) || 0), 0);
-    const { error: errUpdatePadre } = await supabase
+    // recalcula sumando el arreglo YA actualizado, en el mismo update. El
+    // payload SIEMPRE incluye `variantes: variantesActualizadas` — nunca solo
+    // `stock` — para que el arreglo JSONB completo (con la variante vendida
+    // ya descontada) quede guardado en Supabase junto con el total.
+    //
+    // VERIFICACIÓN OBLIGATORIA (FIX CRÍTICO): antes este `UPDATE` no pedía
+    // `.select()` de vuelta, así que un caso silencioso — RLS bloqueando la
+    // fila (0 filas afectadas, sin `error`, ver la nota de
+    // `migracion_v9_rls_productos.sql`) o cualquier otro motivo por el que
+    // Postgres aceptara la sentencia sin tocar el renglón — se reportaba como
+    // éxito aunque `productos.variantes` jamás cambiara en Supabase. Ahora se
+    // pide `.select('id, variantes, stock').single()`: si el `UPDATE` de
+    // verdad afectó cero filas, `.single()` regresa un error explícito en vez
+    // de un éxito fantasma, y se compara el `stock` que Supabase confirma
+    // haber guardado contra el esperado como control adicional.
+    const { data: filaActualizada, error: errUpdatePadre } = await supabase
       .from('productos')
       .update({ variantes: variantesActualizadas, stock: stockTotalPadre })
-      .eq('id', productoId);
+      .eq('id', productoId)
+      .select('id, variantes, stock')
+      .single();
     if (errUpdatePadre) {
       console.error('[Inventario] Error detallado Supabase (actualizar productos.variantes + stock):', errUpdatePadre);
       return { ok: false, via: 'jsonb', error: errUpdatePadre };
     }
+    if (!filaActualizada || Number(filaActualizada.stock) !== stockTotalPadre) {
+      const error = new Error(
+        `El UPDATE de productos.variantes no se confirmó como esperado para el producto ${productoId} (Supabase regresó stock=${filaActualizada?.stock ?? 'null'}, se esperaba ${stockTotalPadre}) — probablemente RLS bloqueó la escritura en silencio.`
+      );
+      console.error('[Inventario] Error detallado Supabase (verificación post-UPDATE de variante):', error);
+      return { ok: false, via: 'jsonb', error };
+    }
 
-    upsertProducto?.({ id: productoId, stock: stockTotalPadre, variantes: variantesActualizadas });
+    upsertProducto?.({ id: productoId, stock: filaActualizada.stock, variantes: filaActualizada.variantes });
     return { ok: true, via: 'jsonb', stockAnterior: stockAnteriorVariante, nuevoStock: nuevoStockVariante, error: null };
   } catch (e) {
     console.error('[Inventario] Error detallado Supabase (excepción al descontar productos.variantes):', e);
@@ -9953,6 +10031,7 @@ async function descontarStockKardexAddonsReserva(
             productoId,
             cantidad: item.cantidad,
             upsertProducto: upsertProducto || (() => {}),
+            varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
           });
           if (!resultado.ok) errStock = resultado.error;
           else {
@@ -25548,7 +25627,12 @@ function PortalPublicoJugadores({ clubSlug }) {
               nuevoStock = resultado.nuevoStock;
             }
           } else {
-            const resultado = await descontarStockProductoSimple({ productoId, cantidad: item.cantidad, upsertProducto });
+            const resultado = await descontarStockProductoSimple({
+              productoId,
+              cantidad: item.cantidad,
+              upsertProducto,
+              varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
+            });
             if (!resultado.ok) errStock = resultado.error;
             else {
               stockAnterior = resultado.stockAnterior;
