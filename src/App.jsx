@@ -29529,17 +29529,18 @@ function AppInterno() {
 // estricto desde el primer render.
 
 // Fondo tipográfico animado de las pantallas de Auth — puramente
-// decorativo: un ticker/marquee de filas horizontales (no columnas
-// verticales), alternando 2 frases del posicionamiento del producto en
-// direcciones opuestas, en verde neón (mismo lime del botón principal) a
-// opacidad casi imperceptible sobre el fondo `#0b132b` — marca de agua, no
-// protagonista: el formulario/tarjeta sigue siendo lo único que de verdad
-// se lee.
-// 12 filas fijas en TODOS los tamaños — el mismo conteo denso se usa en
-// cualquier viewport; el respiro entre filas se controla con márgenes
-// negativos (`-space-y-1 sm:-space-y-2` en el contenedor) para que queden
-// pegadas una debajo de la otra, sin huecos, tanto en celular como en PC.
-const FILAS_FONDO_AUTH = 12;
+// decorativo: un ticker/marquee de filas horizontales en grilla CSS,
+// alternando 2 frases del posicionamiento del producto en direcciones
+// opuestas, en verde neón (mismo lime del botón principal) a opacidad casi
+// imperceptible sobre el fondo `#0b132b` — marca de agua, no protagonista:
+// el formulario/tarjeta sigue siendo lo único que de verdad se lee.
+// Reescrito desde cero sobre una base de CSS Grid: `auto-rows-[minmax(0,1fr)]`
+// reparte el alto disponible en partes EXACTAMENTE iguales entre
+// `FILAS_FONDO_AUTH` filas, sin importar el alto real del viewport — así no
+// quedan huecos ni encimes arriba/abajo en ningún tamaño de pantalla
+// (celular muy alto incluido) y no hace falta ni gap ni space-y ni máscara
+// de degradado.
+const FILAS_FONDO_AUTH = 18;
 // Filas IMPARES (1, 3, 5...): esta frase, hacia la derecha.
 const TEXTO_FONDO_AUTH_IMPAR = 'OPERATE BETTER • SELL MORE • GROW FASTER • ';
 // Filas PARES (2, 4, 6...): la misma terna en orden inverso, hacia la
@@ -29548,70 +29549,73 @@ const TEXTO_FONDO_AUTH_IMPAR = 'OPERATE BETTER • SELL MORE • GROW FASTER •
 // referencia.
 const TEXTO_FONDO_AUTH_PAR = 'GROW FASTER • SELL MORE • OPERATE BETTER • ';
 // Cuántas veces se repite la terna DENTRO de cada uno de los 2 bloques
-// `shrink-0` del track (antes 4, ahora 6): un bloque angosto en un monitor
-// ancho (hasta 4K) es lo que provocaba el salto perceptible al llegar a
-// translateX(-50%) — con 6 repeticiones por bloque el ancho real de cada
-// bloque queda muy por encima del 100% del viewport en cualquier pantalla,
-// así el segundo bloque entra siempre fuera del área visible y el corte del
-// loop deja de notarse por completo.
-const REPETICIONES_BLOQUE_FONDO_AUTH = 6;
+// `shrink-0` del track: un bloque angosto en un monitor ancho (hasta 4K) es
+// lo que provoca el salto perceptible al llegar a translateX(-50%) — con 5
+// repeticiones por bloque el ancho real de cada bloque queda muy por
+// encima del 100% del viewport en cualquier pantalla, así el segundo
+// bloque entra siempre fuera del área visible y el corte del loop deja de
+// notarse por completo.
+const REPETICIONES_BLOQUE_FONDO_AUTH = 5;
 
 function FondoAuthAnimado() {
   return (
-    <div
-      className="pointer-events-none absolute inset-0 flex h-full w-full select-none flex-col items-center justify-center overflow-hidden -space-y-1 sm:-space-y-2"
-      style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
-    >
-      {/* Keyframes propios (no dependen de tailwind.config — este proyecto
-          se entrega como un solo App.jsx): cada fila trae 2 bloques
-          `shrink-0` IDÉNTICOS uno junto al otro, cada uno con la terna
-          repetida varias veces (`REPETICIONES_BLOQUE_FONDO_AUTH`) — el
-          track (`w-max`, más ancho que el contenedor recortado por
-          `overflow-hidden`) se desplaza exactamente la mitad de su ancho
-          total (un bloque completo), así el ciclo nunca deja un salto/corte
-          visible. Direcciones opuestas (derecha/izquierda) + una
-          preferencia de movimiento reducido para quien la tenga activada en
-          su SO. Sin máscara de degradado: el fondo va a opacidad plena de
-          borde a borde, sin zonas desvanecidas arriba/abajo. */}
+    <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden bg-[#0b132b]">
+      {/* Keyframes + clases de animación propias (no dependen de
+          tailwind.config — este proyecto se entrega como un solo App.jsx):
+          cada fila trae un track `w-max flex` con 2 bloques `shrink-0`
+          IDÉNTICOS uno junto al otro, cada uno con la terna repetida varias
+          veces (`REPETICIONES_BLOQUE_FONDO_AUTH`) para garantizar que un
+          solo bloque ya cubra de sobra el ancho de cualquier pantalla — el
+          track se desplaza exactamente la mitad de su ancho total (un
+          bloque completo), así el ciclo nunca deja un salto/corte visible.
+          Filas pares hacia la izquierda, impares hacia la derecha,
+          duración media (25s-35s) + una preferencia de movimiento reducido
+          para quien la tenga activada en su SO. */}
       <style>{`
-        @keyframes marqueeLeft { 0% { transform: translateX(0%); } 100% { transform: translateX(-50%); } }
-        @keyframes marqueeRight { 0% { transform: translateX(-50%); } 100% { transform: translateX(0%); } }
+        @keyframes marquee-left { 0% { transform: translateX(0%); } 100% { transform: translateX(-50%); } }
+        @keyframes marquee-right { 0% { transform: translateX(-50%); } 100% { transform: translateX(0%); } }
+        .animate-marquee-left { animation-name: marquee-left; animation-timing-function: linear; animation-iteration-count: infinite; }
+        .animate-marquee-right { animation-name: marquee-right; animation-timing-function: linear; animation-iteration-count: infinite; }
         @media (prefers-reduced-motion: reduce) {
-          .fondo-auth-track { animation: none !important; transform: translateX(0) !important; }
+          .animate-marquee-left, .animate-marquee-right { animation: none !important; transform: translateX(0) !important; }
         }
       `}</style>
-      {Array.from({ length: FILAS_FONDO_AUTH }).map((_, i) => {
-        const numeroFila = i + 1; // 1-based, para que "impar/par" sea literal
-        const esImpar = numeroFila % 2 === 1;
-        const texto = esImpar ? TEXTO_FONDO_AUTH_IMPAR : TEXTO_FONDO_AUTH_PAR;
-        const direccion = esImpar ? 'marqueeRight' : 'marqueeLeft';
-        // Duración 35s-50s: desplazamiento lento, suave y elegante (antes
-        // 15s-25s, se sentía demasiado rápido/agresivo para un fondo
-        // decorativo) — filas vecinas nunca quedan perfectamente
-        // sincronizadas entre sí.
-        const duracionSeg = 35 + (i % 6) * 3;
-        return (
-          <div key={i} className="w-full overflow-hidden">
-            <div
-              className="fondo-auth-track flex w-max"
-              style={{ animation: `${direccion} ${duracionSeg}s linear infinite` }}
-            >
-              {[0, 1].map((copia) => (
-                <div key={copia} className="flex shrink-0 gap-4 pr-4">
-                  {Array.from({ length: REPETICIONES_BLOQUE_FONDO_AUTH }).map((_, r) => (
-                    <span
-                      key={r}
-                      className="whitespace-nowrap text-2xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-[0.11] sm:text-4xl lg:text-5xl"
-                    >
-                      {texto}
-                    </span>
-                  ))}
+      <div className="grid h-full w-full grid-cols-1 auto-rows-[minmax(0,1fr)]">
+        {Array.from({ length: FILAS_FONDO_AUTH }).map((_, i) => {
+          const numeroFila = i + 1; // 1-based, para que "impar/par" sea literal
+          const esPar = numeroFila % 2 === 0;
+          const texto = esPar ? TEXTO_FONDO_AUTH_PAR : TEXTO_FONDO_AUTH_IMPAR;
+          const textoRepetido = texto.repeat(REPETICIONES_BLOQUE_FONDO_AUTH);
+          // Duración 25s-35s: ritmo medio y fluido — filas vecinas nunca
+          // quedan perfectamente sincronizadas entre sí.
+          const duracionSeg = 25 + (i % 6) * 2;
+          return (
+            <div key={i} className="flex h-full w-full items-center overflow-hidden">
+              <div
+                className={`flex w-max ${esPar ? 'animate-marquee-left' : 'animate-marquee-right'}`}
+                style={{ animationDuration: `${duracionSeg}s` }}
+              >
+                <div className="flex shrink-0 pr-4">
+                  <span
+                    className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-10 sm:text-4xl lg:text-5xl"
+                    style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
+                  >
+                    {textoRepetido}
+                  </span>
                 </div>
-              ))}
+                <div className="flex shrink-0 pr-4">
+                  <span
+                    className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-10 sm:text-4xl lg:text-5xl"
+                    style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
+                  >
+                    {textoRepetido}
+                  </span>
+                </div>
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
