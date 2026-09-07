@@ -30258,6 +30258,16 @@ function ClubAuthScreen({ onAutenticado }) {
       {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
       <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-xl">
+        {/* Logo RUN YOUR CLUB direct SVG */}
+<div className="flex justify-center mb-6 pt-2">
+  <svg width="200" height="45" viewBox="0 0 220 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M15 10H30C35.5 10 39 13.5 39 18C39 21.5 37 24.5 33.5 25.5L40 38H32L26 26.5H22V38H15V10ZM22 21H29C31.5 21 33 19.8 33 18C33 16.2 31.5 15H22V21Z" fill="#CCFF00"/>
+    <path d="M44 23V10H51V23C51 28.5 54 31.5 59 31.5C64 31.5 67 28.5 67 23V10H74V23C74 33 68 38 59 38C50 38 44 33 44 23Z" fill="#CCFF00"/>
+    <path d="M80 10H87L97 27V10H104V38H97L87 21V38H80V10Z" fill="#CCFF00"/>
+    <text x="115" y="24" fill="#FFFFFF" fontSize="12" fontWeight="bold" letterSpacing="1">YOUR CLUB</text>
+    <text x="115" y="36" fill="#888888" fontSize="9" fontWeight="600" letterSpacing="2">OPERATING SYSTEM</text>
+  </svg>
+</div>
           {/* Encabezado interno removido en 'login': el logo de la tarjeta
               de arriba ya se lleva todo el protagonismo de marca — repetir
               "Run Your Club" aquí sería redundante. Se conserva SOLO para
