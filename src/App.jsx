@@ -29528,6 +29528,84 @@ function AppInterno() {
 // `null`), y `conClubId`/`withClubId`/`canalClubFiltro` filtran en modo
 // estricto desde el primer render.
 
+// Fondo tipográfico animado de las pantallas de Auth — puramente
+// decorativo: pared de columnas con scroll vertical infinito, alternando 3
+// frases del posicionamiento del producto en verde neón (mismo lime del
+// botón principal) a opacidad baja sobre el fondo `#0b132b`, para que el
+// texto real (formulario, tarjeta) siga leyéndose perfecto encima.
+const TEXTOS_FONDO_AUTH = ['OPERATE BETTER', 'SELL MORE', 'GROW FASTER'];
+// Cuántas veces se repite la frase por columna, POR COPIA (el track real
+// dibuja 2 copias seguidas — ver `FondoAuthAnimado` — para el truco del loop
+// sin costura por CSS): de sobra para que una sola copia ya sea más alta
+// que el viewport más alto realista (monitores 4K incluidos) y el scroll
+// nunca deje ver un hueco en blanco a medio ciclo.
+const REPETICIONES_FONDO_AUTH = 18;
+// Un arreglo fijo de "slots" de columna — cada uno se activa a partir de un
+// breakpoint de Tailwind (`null` = siempre visible). Con este arreglo: 4
+// columnas en móvil, 6 desde `sm`, 8 desde `lg`, 10 desde `2xl` — la
+// densidad crece con el viewport, pero como CADA columna visible es
+// `flex-1` (nunca ancho fijo), las que estén activas siempre reparten el
+// 100% del contenedor entre sí sin importar cuántas sean: jamás queda un
+// hueco en los bordes, de un celular angosto a un monitor 4K ultra-wide.
+const BREAKPOINTS_COLUMNAS_FONDO_AUTH = [null, null, null, null, 'sm', 'sm', 'lg', 'lg', '2xl', '2xl'];
+
+function claseVisibleColumnaFondoAuth(breakpoint) {
+  if (breakpoint === 'sm') return 'hidden sm:flex';
+  if (breakpoint === 'lg') return 'hidden lg:flex';
+  if (breakpoint === '2xl') return 'hidden 2xl:flex';
+  return 'flex';
+}
+
+function FondoAuthAnimado() {
+  return (
+    <div className="pointer-events-none absolute inset-0 h-full w-full select-none overflow-hidden">
+      {/* Keyframes propios (no dependen de tailwind.config — este proyecto
+          se entrega como un solo App.jsx): dos direcciones opuestas para
+          que columnas vecinas suban y bajen a la vez, y una preferencia de
+          movimiento reducido para quien la tenga activada en su SO. */}
+      <style>{`
+        @keyframes fondoAuthScrollUp { from { transform: translateY(0); } to { transform: translateY(-50%); } }
+        @keyframes fondoAuthScrollDown { from { transform: translateY(-50%); } to { transform: translateY(0); } }
+        @media (prefers-reduced-motion: reduce) {
+          .fondo-auth-track { animation: none !important; transform: translateY(0) !important; }
+        }
+      `}</style>
+      <div className="flex h-full w-full">
+        {BREAKPOINTS_COLUMNAS_FONDO_AUTH.map((breakpoint, i) => {
+          const texto = TEXTOS_FONDO_AUTH[i % TEXTOS_FONDO_AUTH.length];
+          const direccion = i % 2 === 0 ? 'fondoAuthScrollUp' : 'fondoAuthScrollDown';
+          // Duración distinta por columna (22s a 46s): columnas vecinas
+          // nunca se ven perfectamente sincronizadas, refuerza la sensación
+          // de movimiento continuo del video de referencia.
+          const duracionSeg = 22 + (i % 5) * 6;
+          return (
+            <div
+              key={i}
+              className={`h-full min-w-0 flex-1 overflow-hidden ${claseVisibleColumnaFondoAuth(breakpoint)}`}
+            >
+              <div
+                className="fondo-auth-track flex flex-col"
+                style={{ animation: `${direccion} ${duracionSeg}s linear infinite` }}
+              >
+                {[0, 1].map((copia) =>
+                  Array.from({ length: REPETICIONES_FONDO_AUTH }).map((_, j) => (
+                    <span
+                      key={`${copia}-${j}`}
+                      className="break-words px-2 py-6 text-center text-2xl font-black uppercase leading-tight tracking-tight text-lime-400/20 sm:text-3xl lg:text-4xl"
+                    >
+                      {texto}
+                    </span>
+                  ))
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ClubAuthScreen({ onAutenticado }) {
   const [modo, setModo] = useState('login'); // 'login' | 'registro' | 'recuperar'
   const [email, setEmail] = useState('');
@@ -29658,15 +29736,9 @@ function ClubAuthScreen({ onAutenticado }) {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#0b132b] px-4 py-10">
-      <div className="w-full max-w-md">
-        <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/30">
-            <LayoutGrid size={24} />
-          </div>
-          <h1 className="text-lg font-bold text-slate-100">ClubOS</h1>
-        </div>
-
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b132b] px-4 py-10">
+      <FondoAuthAnimado />
+      <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
           <div className="mb-5">
             <h2 className="text-base font-bold text-slate-100">{titulos[modo].titulo}</h2>
@@ -29995,8 +30067,9 @@ function ClubAuthGate() {
 
   if (estado === 'cargando') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#0b132b]">
-        <Loader2 size={28} className="animate-spin text-lime-400" />
+      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b132b]">
+        <FondoAuthAnimado />
+        <Loader2 size={28} className="relative z-10 animate-spin text-lime-400" />
       </div>
     );
   }
@@ -30017,8 +30090,9 @@ function ClubAuthGate() {
 
   if (estado === 'error_reloj') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#0b132b] px-4">
-        <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 text-center shadow-2xl">
+      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b132b] px-4">
+        <FondoAuthAnimado />
+        <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 text-center shadow-2xl">
           <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30">
             <AlertTriangle size={22} />
           </div>
@@ -30077,8 +30151,9 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#0b132b] px-4 py-10">
-      <div className="w-full max-w-md">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b132b] px-4 py-10">
+      <FondoAuthAnimado />
+      <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
           <div className="mb-5 flex items-start gap-3">
             <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
