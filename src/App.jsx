@@ -739,6 +739,7 @@ import React, {
   useRef,
 } from 'react';
 import { supabase } from './supabaseClient';
+import { LogoClubOS } from './LogoClubOS';
 import {
   LayoutGrid,
   CalendarDays,
@@ -2461,6 +2462,8 @@ function Sidebar({
   onGuardarConfigClub,
   guardandoConfigClub,
   modulosOrdenados,
+  onReordenarModulos,
+  onCerrarSesion,
 }) {
   const itemBase = 'flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-bold transition';
   const itemActivo = 'bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20';
@@ -2476,6 +2479,46 @@ function Sidebar({
   // `AppInterno`) es la fuente compartida con TopHeader; el filtro sin
   // ordenar queda como respaldo si algún día se usa `Sidebar` sin pasarla.
   const modulosVisibles = modulosOrdenados || NAV_MODULOS.filter((m) => permisos.modulos.has(m.id));
+
+  // Reordenar módulos ("Menú de Hamburguesa mejorado"): esto antes vivía en
+  // la barra horizontal de pestañas del TopHeader, eliminada en el
+  // rediseño del Header (ver `TopHeader` — ahora solo reloj/logo/operador).
+  // El Sidebar es la única navegación de módulos que queda, así que el
+  // reordenamiento (mismo mecanismo de antes: drag & drop nativo + botones
+  // para touch/teclado, aquí verticales en vez de horizontales) se mudó
+  // aquí completo. `onReordenarModulos` sigue siendo el mismo callback
+  // (`reordenarNavModulos` en `AppInterno`) que ya persiste el orden en
+  // `localStorage` y lo comparte entre Sidebar/TopHeader vía
+  // `navModulosOrdenados` — no se duplicó ningún estado.
+  const [modoReordenar, setModoReordenar] = useState(false);
+  const [arrastrandoId, setArrastrandoId] = useState(null);
+
+  function moverModulo(id, direccion) {
+    const idx = modulosVisibles.findIndex((m) => m.id === id);
+    if (idx === -1) return;
+    const nuevoIdx = idx + direccion;
+    if (nuevoIdx < 0 || nuevoIdx >= modulosVisibles.length) return;
+    const nuevoOrden = modulosVisibles.map((m) => m.id);
+    const [movidoId] = nuevoOrden.splice(idx, 1);
+    nuevoOrden.splice(nuevoIdx, 0, movidoId);
+    onReordenarModulos?.(nuevoOrden);
+  }
+
+  function soltarModulo(idDestino) {
+    if (!arrastrandoId || arrastrandoId === idDestino) {
+      setArrastrandoId(null);
+      return;
+    }
+    const nuevoOrden = modulosVisibles.map((m) => m.id);
+    const origenIdx = nuevoOrden.indexOf(arrastrandoId);
+    const destinoIdx = nuevoOrden.indexOf(idDestino);
+    if (origenIdx !== -1 && destinoIdx !== -1) {
+      nuevoOrden.splice(origenIdx, 1);
+      nuevoOrden.splice(destinoIdx, 0, arrastrandoId);
+      onReordenarModulos?.(nuevoOrden);
+    }
+    setArrastrandoId(null);
+  }
 
   // Nombre y Logo del Club Editable: la tarjeta de usuario (nombre, rol,
   // turno) YA vive arriba a la derecha en `TopHeader`, junto al reloj — este
@@ -2566,9 +2609,67 @@ function Sidebar({
           {!colapsado && 'Colapsar menú'}
         </button>
 
-        <nav className="flex-1 space-y-1 px-3 py-4">
-          {modulosVisibles.map((m) => {
+        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
+          {/* Botón de reordenar: oculto cuando el sidebar está colapsado
+              (arrastrar/soltar con solo íconos visibles sería confuso) —
+              en ese caso el operador primero expande el menú. */}
+          {onReordenarModulos && !colapsado && (
+            <button
+              type="button"
+              onClick={() => setModoReordenar((v) => !v)}
+              title={modoReordenar ? 'Listo — salir de reordenar' : 'Reordenar módulos'}
+              className={`mb-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-bold transition ${
+                modoReordenar
+                  ? 'border-lime-400/40 bg-lime-400/10 text-lime-400'
+                  : 'border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              {modoReordenar ? <CheckCircle2 size={13} /> : <GripVertical size={13} />}
+              {modoReordenar ? 'Listo' : 'Reordenar módulos'}
+            </button>
+          )}
+          {modulosVisibles.map((m, idx) => {
             const Icon = m.icon;
+            if (modoReordenar) {
+              return (
+                <div
+                  key={m.id}
+                  draggable
+                  onDragStart={() => setArrastrandoId(m.id)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => soltarModulo(m.id)}
+                  onDragEnd={() => setArrastrandoId(null)}
+                  title="Arrastra para reordenar"
+                  className={`flex items-center gap-2 rounded-lg border border-dashed border-slate-700 bg-slate-950 px-3 py-2 text-sm font-bold text-slate-300 transition ${
+                    arrastrandoId === m.id ? 'opacity-40' : ''
+                  }`}
+                >
+                  <GripVertical size={14} className="shrink-0 cursor-grab text-slate-600 active:cursor-grabbing" />
+                  <Icon size={16} className="shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{m.label}</span>
+                  <div className="flex shrink-0 flex-col">
+                    <button
+                      type="button"
+                      onClick={() => moverModulo(m.id, -1)}
+                      disabled={idx === 0}
+                      title="Mover arriba"
+                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
+                    >
+                      <ChevronUp size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moverModulo(m.id, 1)}
+                      disabled={idx === modulosVisibles.length - 1}
+                      title="Mover abajo"
+                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
+                    >
+                      <ChevronDown size={13} />
+                    </button>
+                  </div>
+                </div>
+              );
+            }
             return (
               <button
                 key={m.id}
@@ -2582,6 +2683,30 @@ function Sidebar({
             );
           })}
         </nav>
+
+        {/* Cerrar sesión — fijo en la parte inferior del Sidebar (fuera del
+            <nav> con scroll propio de arriba, así siempre queda visible sin
+            tener que bajar por la lista de módulos). Mismo criterio/acción
+            que el botón "Cerrar sesión" que ya existía dentro de
+            `ModalOperador` (cierra la cuenta de ClubOS completa — Supabase
+            Auth — no confundir con "Fichar como", que solo cambia de
+            operador en esta terminal); ambos usan el mismo callback
+            (`cerrarSesionClub` en `AppInterno`), no hay lógica duplicada. */}
+        {onCerrarSesion && (
+          <div className="shrink-0 border-t border-slate-800 p-3">
+            <button
+              type="button"
+              onClick={onCerrarSesion}
+              title="Cierra la sesión de ClubOS en este dispositivo (correo/contraseña del club)."
+              className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-bold text-rose-400 transition hover:bg-rose-500/10 ${
+                colapsado ? 'lg:justify-center lg:px-2' : ''
+              }`}
+            >
+              <LogOut size={17} className="shrink-0" />
+              <span className={colapsado ? 'lg:hidden' : ''}>Cerrar sesión</span>
+            </button>
+          </div>
+        )}
       </aside>
 
       {modalConfigClub && (
@@ -2604,10 +2729,13 @@ function Reloj() {
   }, []);
   const hora = ahora.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
   const fecha = ahora.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' });
+  // Visible en TODOS los tamaños (antes `hidden sm:flex` — se ocultaba en
+  // celular). El rediseño del Header lo pide visible en Desktop, iPad y
+  // Mobile por igual, ahora como la sección "Izquierda" fija del header.
   return (
-    <div className="hidden shrink-0 flex-col items-end whitespace-nowrap sm:flex">
-      <span className="font-mono text-sm font-bold text-slate-200">{hora}</span>
-      <span className="text-[11px] capitalize text-slate-500">{fecha}</span>
+    <div className="flex min-w-0 shrink-0 flex-col items-start whitespace-nowrap leading-tight">
+      <span className="font-mono text-xs font-bold text-slate-200 sm:text-sm">{hora}</span>
+      <span className="text-[10px] capitalize text-slate-500 sm:text-[11px]">{fecha}</span>
     </div>
   );
 }
@@ -2628,158 +2756,100 @@ const MODULOS_META = {
   seguridad: { titulo: 'Control & Seguridad', subtitulo: 'Empleados, roles, arqueos y Log de Actividad' },
 };
 
-function TopHeader({
-  operador,
-  turno,
-  permisos,
-  moduloActivo,
-  onCambiarModulo,
-  onAbrirSidebar,
-  onAbrirOperador,
-  alertasClub,
-  onMarcarAlertaLeida,
-  onMarcarTodasLeidas,
-  onIrAJugadorDesdeAlerta,
-  modulosOrdenados,
-  onReordenarModulos,
-}) {
-  const meta = MODULOS_META[moduloActivo] || MODULOS_META.parrilla;
+// Rediseño de Header (a petición del club, para resolver el problema de
+// espacio en iPad): antes esta barra tenía título/subtítulo del módulo a la
+// izquierda y, a la derecha, un conmutador horizontal de TODAS las pestañas
+// de módulos + reloj + selector de operador compitiendo por el mismo
+// espacio — en el rango de iPad (768–1024px) ese conmutador terminaba
+// recortado o empujando el reloj/operador fuera de pantalla. Ahora el
+// Header es 3 secciones fijas y siempre visibles (Desktop/iPad/Mobile):
+// Izquierda = Reloj en tiempo real, Centro = logo oficial de ClubOS,
+// Derecha = Centro de Alertas + selector de operador. El conmutador
+// horizontal de módulos se ELIMINÓ por completo — la navegación (y su
+// reordenamiento, que antes vivía aquí) es ahora 100% responsabilidad del
+// Sidebar/menú de hamburguesa (ver `Sidebar`), que ya era la navegación
+// principal en mobile. El botón de hamburguesa que abre ese Sidebar como
+// drawer en mobile/iPad se conserva (es la única forma de navegar ahí),
+// integrado dentro de la sección Izquierda junto al reloj.
+function TopHeader({ operador, turno, onAbrirSidebar, onAbrirOperador, alertasClub, onMarcarAlertaLeida, onMarcarTodasLeidas, onIrAJugadorDesdeAlerta }) {
   const rolMeta = ROLES_POR_VALOR[operador.rol];
-  // Mismo criterio que `Sidebar`: `modulosOrdenados` (prop, RBAC + orden del
-  // operador, ver `ordenarNavModulos` en `AppInterno`) es la fuente
-  // compartida; el filtro sin ordenar queda como respaldo.
-  const modulosVisibles = modulosOrdenados || NAV_MODULOS.filter((m) => permisos.modulos.has(m.id));
-
-  // Navegación Reordenable: "modo de reordenar" evita que un tap accidental
-  // sobre una pestaña navegue mientras el operador está arrastrando o usando
-  // los botones ‹ › — se sale solo al volver a pulsar el icono de asas, o al
-  // cambiar de módulo. Drag & Drop nativo (sin librería) para mouse/trackpad
-  // + botones ‹ › siempre visibles en este modo, para touch/teclado.
-  const [modoReordenar, setModoReordenar] = useState(false);
-  const [arrastrandoId, setArrastrandoId] = useState(null);
-
-  function moverModulo(id, direccion) {
-    const idx = modulosVisibles.findIndex((m) => m.id === id);
-    if (idx === -1) return;
-    const nuevoIdx = idx + direccion;
-    if (nuevoIdx < 0 || nuevoIdx >= modulosVisibles.length) return;
-    const nuevoOrden = modulosVisibles.map((m) => m.id);
-    const [movidoId] = nuevoOrden.splice(idx, 1);
-    nuevoOrden.splice(nuevoIdx, 0, movidoId);
-    onReordenarModulos?.(nuevoOrden);
-  }
-
-  function soltarModulo(idDestino) {
-    if (!arrastrandoId || arrastrandoId === idDestino) {
-      setArrastrandoId(null);
-      return;
-    }
-    const nuevoOrden = modulosVisibles.map((m) => m.id);
-    const origenIdx = nuevoOrden.indexOf(arrastrandoId);
-    const destinoIdx = nuevoOrden.indexOf(idDestino);
-    if (origenIdx !== -1 && destinoIdx !== -1) {
-      nuevoOrden.splice(origenIdx, 1);
-      nuevoOrden.splice(destinoIdx, 0, arrastrandoId);
-      onReordenarModulos?.(nuevoOrden);
-    }
-    setArrastrandoId(null);
-  }
 
   return (
-    <header className="sticky top-0 z-20 flex min-w-0 items-center justify-between gap-2 border-b border-slate-800 bg-slate-950/95 px-4 py-3.5 backdrop-blur sm:gap-3 sm:px-6">
-      <div className="flex min-w-0 shrink items-center gap-3">
+    <header className="sticky top-0 z-20 grid grid-cols-3 items-center gap-2 border-b border-slate-800 bg-slate-950/95 px-3 py-2 backdrop-blur sm:px-6">
+      {/* Izquierda: botón de menú (solo mobile/iPad — abre el Sidebar como
+          drawer; en desktop el Sidebar ya está fijo/visible y este botón se
+          oculta) + Reloj en tiempo real. */}
+      <div className="flex min-w-0 items-center justify-self-start gap-1.5 sm:gap-2">
         <button
           onClick={onAbrirSidebar}
+          title="Abrir menú"
           className="shrink-0 rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100 lg:hidden"
         >
           <Menu size={20} />
         </button>
-        <div className="min-w-0">
-          <h1 className="truncate text-lg font-black text-slate-100 sm:text-xl">{meta.titulo}</h1>
-          <p className="hidden truncate text-xs text-slate-500 sm:block">{meta.subtitulo}</p>
-        </div>
+        <Reloj />
       </div>
 
-      {/* Ajuste de Responsividad (iPad/pantallas medianas): Reloj y "Cambiar
-          Operador" llevan `shrink-0` — nunca se comprimen ni se cortan — y el
-          conmutador de pestañas (el único elemento no crítico aquí, ya
-          redundante con el Sidebar/hamburguesa) es el que cede espacio
-          primero, con scroll horizontal propio en vez de empujar al resto
-          fuera de la pantalla. */}
-      <div className="flex min-w-0 shrink-0 items-center gap-2 sm:gap-3">
-        <div
-          className={`hidden min-w-0 items-center gap-1 overflow-x-auto rounded-lg border p-1 md:flex ${
-            modoReordenar ? 'border-lime-400/40 bg-lime-400/5' : 'border-slate-800 bg-slate-900'
-          }`}
+      {/* Centro: logo oficial de ClubOS — SVG inline transparente (fidelidad
+          exacta al branding pedido: sin fondo, sin depender de un archivo
+          externo; `LogoClubOS.jsx` sigue siendo el que se usa tal cual en
+          el Login/`ClubAuthScreen`, este es independiente). */}
+      <div className="flex justify-center py-1">
+        <svg
+          width="220"
+          height="60"
+          viewBox="0 0 320 85"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          className="h-8 w-auto sm:h-10"
+          role="img"
+          aria-label="ClubOS — Run your club."
         >
-          {modulosVisibles.map((m) => {
-            const Icon = m.icon;
-            const idx = modulosVisibles.findIndex((x) => x.id === m.id);
-            if (modoReordenar) {
-              return (
-                <div
-                  key={m.id}
-                  draggable
-                  onDragStart={() => setArrastrandoId(m.id)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => soltarModulo(m.id)}
-                  onDragEnd={() => setArrastrandoId(null)}
-                  className={`inline-flex shrink-0 cursor-grab items-center gap-1 rounded-md border border-dashed border-slate-700 bg-slate-950 px-1.5 py-1 text-xs font-bold text-slate-300 transition active:cursor-grabbing ${
-                    arrastrandoId === m.id ? 'opacity-40' : ''
-                  }`}
-                  title="Arrastra para reordenar"
-                >
-                  <GripVertical size={13} className="shrink-0 text-slate-600" />
-                  <Icon size={14} className="shrink-0" />
-                  <span className="whitespace-nowrap">{m.labelCorto}</span>
-                  <div className="flex shrink-0 flex-col">
-                    <button
-                      type="button"
-                      onClick={() => moverModulo(m.id, -1)}
-                      disabled={idx === 0}
-                      title="Mover a la izquierda"
-                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
-                    >
-                      <ChevronLeft size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => moverModulo(m.id, 1)}
-                      disabled={idx === modulosVisibles.length - 1}
-                      title="Mover a la derecha"
-                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
-                    >
-                      <ChevronRight size={12} />
-                    </button>
-                  </div>
-                </div>
-              );
-            }
-            return (
-              <button
-                key={m.id}
-                onClick={() => onCambiarModulo(m.id)}
-                className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                  moduloActivo === m.id ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-100'
-                }`}
-              >
-                <Icon size={14} /> {m.labelCorto}
-              </button>
-            );
-          })}
-          {onReordenarModulos && (
-            <button
-              type="button"
-              onClick={() => setModoReordenar((v) => !v)}
-              title={modoReordenar ? 'Listo — salir de reordenar' : 'Reordenar pestañas'}
-              className={`ml-0.5 inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-xs font-bold transition ${
-                modoReordenar ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:bg-slate-800 hover:text-slate-200'
-              }`}
-            >
-              {modoReordenar ? <CheckCircle2 size={14} /> : <GripVertical size={14} />}
-            </button>
-          )}
-        </div>
+          {/* C */}
+          <path
+            d="M40 10C22 10 10 22 10 40C10 58 22 70 40 70C53 70 63 62 66 50H50C48 55 45 57 40 57C30 57 24 50 24 40C24 30 30 23 40 23C45 23 48 25 50 30H66C63 18 53 10 40 10Z"
+            fill="#FFFFFF"
+          />
+          {/* L */}
+          <path d="M72 12H86V57H106V70H72V12Z" fill="#FFFFFF" />
+          {/* U */}
+          <path
+            d="M112 12H126V48C126 53 130 57 135 57C140 57 144 53 144 48V12H158V48C158 61 148 70 135 70C122 70 112 61 112 48V12Z"
+            fill="#FFFFFF"
+          />
+          {/* B */}
+          <path
+            d="M164 12H188C197 12 204 17 204 25C204 30 200 34 194 36C202 38 206 43 206 51C206 62 197 70 185 70H164V12ZM178 23V34H187C191 34 194 32 194 28.5C194 25 191 23 187 23H178ZM178 44V59H188C192 59 196 56 196 51.5C196 47 192 44 188 44H178Z"
+            fill="#FFFFFF"
+          />
+          {/* O (Power Symbol Integrado) */}
+          <path
+            fillRule="evenodd"
+            clipRule="evenodd"
+            d="M242 10C224 10 210 23 210 40C210 57 224 70 242 70C260 70 274 57 274 40C274 23 260 10 242 10ZM242 23C232 23 224 30 224 40C224 43.5 225 46.5 227 49H216V31H248V49H237C239 46.5 240 43.5 240 40C240 30 232 23 242 23Z"
+            fill="#A3E635"
+          />
+          <rect x="212" y="36" width="30" height="8" rx="4" fill="#A3E635" />
+          {/* S */}
+          <path
+            d="M288 56C288 58 291 60 296 60C302 60 307 57 307 52C307 47 302 44 293 42C281 39 276 34 276 25C276 15 285 10 298 10C311 10 318 16 319 25H304C303 21 300 20 297 20C292 20 289 22 289 25C289 28 292 30 300 32C311 35 320 39 320 51C320 62 310 70 296 70C282 70 274 61 273 51H288V56Z"
+            fill="#A3E635"
+          />
+          {/* Subtítulo RUN YOUR CLUB. con punto final */}
+          <text x="165" y="82" textAnchor="middle" fill="#FFFFFF" fontSize="10" fontWeight="700" letterSpacing="5">
+            RUN YOUR CLUB.
+          </text>
+        </svg>
+      </div>
+
+      {/* Derecha: Centro de Alertas + tarjeta/selector de operador. Ambos
+          `shrink-0` — nunca se comprimen — y el ancho máximo del nombre del
+          operador se recorta un poco respecto a antes (`max-w-[7rem]` /
+          `md:max-w-[10rem]` en vez de `9rem`/`13rem`) porque ahora comparte
+          la fila con el logo centrado — así en iPad (768–1024px) la tarjeta
+          de operador se mantiene siempre visible y completa, sin cortarse
+          contra el borde ni encimarse con el logo. */}
+      <div className="flex min-w-0 items-center justify-self-end gap-1.5 sm:gap-3">
         {alertasClub && (
           <CentroAlertasClub
             alertas={alertasClub}
@@ -2788,31 +2858,14 @@ function TopHeader({
             onIrAJugador={onIrAJugadorDesdeAlerta}
           />
         )}
-        <Reloj />
-        {/* Contenedor de Perfil/Operador: con un nombre de operador largo,
-            el bloque de texto (sin límite de ancho ni `truncate`) podía
-            crecer más de la cuenta y, al ser el último elemento
-            `shrink-0` de la esquina superior derecha dentro del layout raíz
-            (`overflow-x-hidden` en `AppInterno`), terminaba recortado por
-            el borde de la pantalla en vez de mostrar un elipsis prolijo.
-            `min-w-0` en el bloque de texto + `truncate` con un ancho
-            máximo responsivo en cada línea acotan el botón a un tamaño
-            predecible (con margen real respecto al borde) sin tocar el
-            resto del layout ni el criterio de "nunca se comprime" del
-            avatar/chevron. */}
         <button
           onClick={onAbrirOperador}
-          className="mr-0.5 flex shrink-0 items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-1.5 pr-3 transition hover:border-lime-400/40 hover:bg-slate-800 sm:mr-1"
+          className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-2 py-1.5 pr-2.5 transition hover:border-lime-400/40 hover:bg-slate-800 sm:gap-2.5 sm:px-2.5 sm:pr-3"
         >
-          {/* `shrink-0` (equivalente a `flex-shrink-0`) en el avatar: nunca se
-              aplasta aunque el texto de al lado se acorte por `truncate`. El
-              `mr-*` responsivo del botón (arriba) es el margen real contra
-              el borde de la pantalla, aparte del `px-4 sm:px-6` del propio
-              `<header>`. */}
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime-400 text-xs font-black text-slate-950">
             {iniciales(operador.nombre)}
           </div>
-          <div className="hidden min-w-0 max-w-[9rem] text-left sm:block md:max-w-[13rem]">
+          <div className="hidden min-w-0 max-w-[7rem] text-left sm:block md:max-w-[10rem]">
             <p className="truncate text-xs font-bold leading-tight text-slate-100">{operador.nombre}</p>
             <p className="truncate text-[11px] text-slate-500">
               {rolMeta?.label || 'Rol'} · {turno.label}
@@ -28371,6 +28424,19 @@ function AppInterno() {
   );
   const [modalOperador, setModalOperador] = useState(false);
 
+  // Cerrar sesión de ClubOS (correo/contraseña del club, Supabase Auth) —
+  // `ClubAuthGate` detecta el cambio de sesión vía `onAuthStateChange` y
+  // vuelve a mostrar el Login solo. Distinto de "Fichar como": eso solo
+  // cambia quién es el operador activo EN esta terminal, sin tocar la
+  // sesión. Un único callback compartido por los dos lugares donde ahora
+  // vive el botón "Cerrar sesión" — `ModalOperador` (ya existía) y el nuevo
+  // botón fijo/sticky en la parte inferior del `Sidebar` (menú de
+  // hamburguesa mejorado) — para no duplicar la lógica.
+  const cerrarSesionClub = useCallback(async () => {
+    setModalOperador(false);
+    await supabase.auth.signOut();
+  }, []);
+
   useEffect(() => {
     guardarOperadorActivoLocal(operador);
   }, [operador]);
@@ -29740,23 +29806,20 @@ function AppInterno() {
           onGuardarConfigClub={guardarConfigClub}
           guardandoConfigClub={guardandoConfigClub}
           modulosOrdenados={navModulosOrdenados}
+          onReordenarModulos={reordenarNavModulos}
+          onCerrarSesion={cerrarSesionClub}
         />
 
         <div className="flex min-h-screen min-w-0 flex-1 flex-col lg:pl-0">
           <TopHeader
             operador={operador}
             turno={turno}
-            permisos={permisos}
-            moduloActivo={moduloActivo}
-            onCambiarModulo={setModuloActivo}
             onAbrirSidebar={() => setSidebarAbierto(true)}
             onAbrirOperador={() => setModalOperador(true)}
             alertasClub={alertasClub}
             onMarcarAlertaLeida={marcarAlertaLeida}
             onMarcarTodasLeidas={marcarTodasAlertasLeidas}
             onIrAJugadorDesdeAlerta={irAJugadorDesdeAlerta}
-            modulosOrdenados={navModulosOrdenados}
-            onReordenarModulos={reordenarNavModulos}
           />
 
           <main className="min-w-0 flex-1 space-y-5 px-4 py-5 sm:px-6">
@@ -29968,15 +30031,7 @@ function AppInterno() {
             onGuardar={(datos) => setOperador(datos)}
             onCrearEmpleado={crearEmpleado}
             onClose={() => setModalOperador(false)}
-            onCerrarSesion={async () => {
-              setModalOperador(false);
-              // Cierra la cuenta de ClubOS (correo/contraseña del club,
-              // Supabase Auth) — `ClubAuthGate` detecta el cambio de sesión
-              // vía `onAuthStateChange` y vuelve a mostrar el Login solo.
-              // Distinto de "Fichar como" arriba: eso solo cambia quién es
-              // el operador activo EN esta terminal, sin tocar la sesión.
-              await supabase.auth.signOut();
-            }}
+            onCerrarSesion={cerrarSesionClub}
           />
         )}
 
@@ -30248,31 +30303,17 @@ function ClubAuthScreen({ onAutenticado }) {
     <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#0b132b] p-4 gap-4">
       <FondoAuthAnimado />
 
+      {/* Tarjeta Superior — Header del Logo: mismo estilo dark/glassmorphism
+          que la tarjeta del formulario de abajo, pero MÁS ANCHA (max-w-lg
+          vs. max-w-md), así el logo sobresale hacia los lados y domina la
+          jerarquía visual de la pantalla. */}
+      <div className="relative z-10 w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900/80 px-8 py-6 shadow-2xl backdrop-blur-xl">
+        <LogoClubOS className="mx-auto h-auto w-64 md:w-80" />
+      </div>
+
       {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
       <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-xl">
-        {/* Logo CLUB OS centrado con subtítulo elegante */}
-<div className="flex justify-center mb-6 pt-1">
-  <svg width="240" height="70" viewBox="0 0 260 75" fill="none" xmlns="http://www.w3.org/2000/svg">
-    {/* C (Blanco) */}
-    <path d="M35 12C20 12 10 22 10 35C10 48 20 58 35 58C46 58 54 51 56 42H44C42 46 39 48 35 48C28 48 22 42 22 35C22 28 28 22 35 22C39 22 42 24 44 28H56C54 19 46 12 35 12Z" fill="#FFFFFF"/>
-    {/* L (Blanco) */}
-    <path d="M62 14H74V48H92V58H62V14Z" fill="#FFFFFF"/>
-    {/* U (Blanco) */}
-    <path d="M98 14H110V42C110 46 113 48 117 48C121 48 124 46 124 42V14H136V42C136 52 128 58 117 58C106 58 98 52 98 42V14Z" fill="#FFFFFF"/>
-    {/* B (Blanco) */}
-    <path d="M142 14H162C170 14 175 18 175 23C175 27 172 30 167 32C173 34 177 38 177 44C177 52 170 58 160 58H142V14ZM154 22V31H160C163 31 165 29 165 26.5C165 24 163 22 160 22H154ZM154 39V50H161C164 50 167 48 167 44.5C167 41 164 39 161 39H154Z" fill="#FFFFFF"/>
-    {/* O (Verde #CCFF00) */}
-    <path d="M198 12C184 12 174 22 174 35C174 48 184 58 198 58C212 58 222 48 222 35C222 22 212 12 198 12ZM198 48C191 48 185 42 185 35C185 28 191 22 198 22C205 22 211 28 211 35C211 42 205 48 198 48Z" fill="#CCFF00"/>
-    <rect x="194" y="32" width="16" height="6" rx="3" fill="#1E293B"/>
-    <rect x="180" y="32" width="16" height="6" rx="3" fill="#CCFF00"/>
-    {/* S (Verde #CCFF00) */}
-    <path d="M230 48C230 50 233 51 237 51C242 51 246 49 246 45C246 42 243 40 236 38C227 36 223 32 223 25C223 17 230 12 240 12C250 12 256 17 257 24H245C244 21 242 20 239 20C235 20 232 21 232 24C232 26 235 28 241 30C250 32 256 35 256 43C256 52 248 58 237 58C226 58 219 51 218 43H230V48Z" fill="#CCFF00"/>
-    
-    {/* Slogan fino y elegante abajo centrado */}
-    <text x="130" y="70" textAnchor="middle" fill="#94A3B8" fontSize="9" fontWeight="300" letterSpacing="4">RUN YOUR CLUB</text>
-  </svg>
-</div>
           {/* Encabezado interno removido en 'login': el logo de la tarjeta
               de arriba ya se lleva todo el protagonismo de marca — repetir
               "Run Your Club" aquí sería redundante. Se conserva SOLO para
