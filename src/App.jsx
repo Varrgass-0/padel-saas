@@ -153,19 +153,26 @@
 //                    Club, editable desde el botón de ajustes del Sidebar),
 //                    logo_url (text, nullable — URL pública del bucket
 //                    `app-media` de Supabase Storage, NUNCA base64/blob
-//                    local — ver `uploadMedia`), updated_at, club_id, slug
-//                    (text, único — identifica al club en la URL del Portal
-//                    Público `/canchas/:clubSlug`).
-//                    Se trata como fila única por club (se hace `select`
-//                    + `update`/`insert` según exista, nunca `upsert` por
-//                    `club_id` porque `CLUB_ACTIVO_ID` puede ser `null` en
-//                    modo mono-club). Alimenta la Persistencia Centralizada
-//                    del nombre/logo del club: Mac, iPad y celular leen y
-//                    escriben la MISMA fila, con Realtime (`postgres_changes`
-//                    en `configuracion_club`) propagando cualquier edición al
-//                    resto de dispositivos sin recargar (ver `guardarConfigClub`
-//                    en App()). Si `nombre`/`logo_url` todavía no existen en
-//                    un proyecto viejo, el nombre/logo se queda en modo local
+//                    local — ver `uploadMedia`), updated_at, slug (text,
+//                    único — identifica al club en la URL del Portal
+//                    Público `/canchas/:clubSlug`, ver `migracion_v3.sql`),
+//                    propietario_user_id (uuid, referencia `auth.users(id)`,
+//                    único por usuario — ver `migracion_v19_multitenant_auth.sql`).
+//                    CORRECCIÓN: esta tabla NO tiene columna `club_id`
+//                    propia — su propio `id` ES el `club_id` que usa el
+//                    resto de la app (`CLUB_ACTIVO_ID`), así que se filtra
+//                    con `.eq('id', CLUB_ACTIVO_ID)`, nunca con `conClubId`.
+//                    Se trata como fila única por club (siempre `update` por
+//                    `id`, nunca `insert` desde `AppInterno` — la fila ya la
+//                    crea/vincula `crearOVincularClub` durante el registro).
+//                    Alimenta la Persistencia Centralizada del nombre/logo
+//                    del club: Mac, iPad y celular leen y escriben la MISMA
+//                    fila, con Realtime (`postgres_changes` en
+//                    `configuracion_club`, filtrado por `id`) propagando
+//                    cualquier edición al resto de dispositivos sin recargar
+//                    (ver `guardarConfigClub` en `AppInterno`). Si
+//                    `nombre`/`logo_url` todavía no existen en un proyecto
+//                    viejo, el nombre/logo se queda en modo local
 //                    (`localStorage`, este navegador) sin bloquear nada.
 //                    NOTA: el parámetro "Costo Operativo Asignado por
 //                    Hora/Cancha" que antes vivía aquí (columna
@@ -2308,9 +2315,18 @@ const LS_KEY_CLUB_CONFIG = 'smashpadel_club_config_v1';
 // nombre capturado (ver `configClubActual.nombre || 'Panel operativo'` en
 // `Sidebar`) — este default solo afecta el valor inicial editable.
 const CONFIG_CLUB_DEFAULT = { nombre: '', logoUrl: '' };
+// FIX ClubOS (Filtrado Estricto): `claveLocalPorClub` (definida más abajo,
+// pero una `function` con hoisting — se puede llamar aquí sin problema)
+// mete el `club_id` activo en la llave de `localStorage`. Sin esto, un
+// navegador donde ya se inició sesión con OTRO club antes (dos cuentas de
+// prueba en la misma máquina, por ejemplo) mostraba brevemente el
+// nombre/logo cacheado de ESE otro club en el primer render — mientras
+// `cargarConfigClubSupabase` todavía no respondía con el dato correcto del
+// club activo — mismo bug de fondo que el filtrado sin `club_id` en
+// Supabase, solo que en la caché local.
 function leerConfigClubLocal() {
   try {
-    const crudo = localStorage.getItem(LS_KEY_CLUB_CONFIG);
+    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_CLUB_CONFIG));
     if (!crudo) return { ...CONFIG_CLUB_DEFAULT };
     const parsed = JSON.parse(crudo);
     return { nombre: (parsed.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre, logoUrl: parsed.logoUrl || '' };
@@ -2320,7 +2336,7 @@ function leerConfigClubLocal() {
 }
 function guardarConfigClubLocal(config) {
   try {
-    localStorage.setItem(LS_KEY_CLUB_CONFIG, JSON.stringify(config));
+    localStorage.setItem(claveLocalPorClub(LS_KEY_CLUB_CONFIG), JSON.stringify(config));
   } catch (_e) {
     /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
   }
@@ -14863,6 +14879,22 @@ function esErrorRelojDesfasado(error) {
   );
 }
 
+// Detecta una violación del índice único `configuracion_club_slug_unique`
+// (ver `migracion_v3.sql`) — ocurre cuando dos clubes distintos terminan con
+// el mismo `slug` derivado de su nombre (p. ej. dos clubes que se llaman
+// "Pádel Club"). Código `23505` de Postgres = `unique_violation`; se
+// confirma además que el mensaje mencione la columna/índice de `slug` para
+// no confundirlo con otra violación única de la misma tabla (como la de
+// `propietario_user_id`, que es un error legítimo distinto: "ya tienes un
+// club"). Ver su uso en `crearOVincularClub`, que reintenta con un sufijo
+// corto en vez de tronar el registro.
+function esErrorSlugDuplicado(error) {
+  if (!error) return false;
+  if (error.code !== '23505') return false;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('slug');
+}
+
 // Margen de tolerancia (leeway) ante un desfase MENOR de reloj entre el
 // dispositivo del operador y el servidor de Supabase: en vez de fallar el
 // login/registro/sesión de inmediato con el mensaje críptico "JWT issued at
@@ -24410,18 +24442,32 @@ function PortalPublicoJugadores({ clubSlug }) {
   // catálogo del club viva en `configuracion_club` O en `clubes` (ver su
   // propio comentario de cabecera) — así el refresco funciona sin importar
   // cuál de las dos tablas resolvió el club la primera vez.
+  // FIX ClubOS (filtro roto): igual que en `AppInterno`, `canalClubFiltro`
+  // filtra por una columna `club_id` que ni `configuracion_club` ni `clubes`
+  // tienen — el tenant en estas dos tablas de catálogo es su propio `id`
+  // (`club.id`, ya resuelto arriba). Con el filtro viejo el canal nunca
+  // disparaba de verdad, así que un logo/nombre editado en otro dispositivo
+  // no llegaba al Portal ya abierto hasta recargar la página.
   useEffect(() => {
     if (!club) return;
     const canal = supabase
       .channel(`portal-configuracion-club-${club.id}`)
-      .on('postgres_changes', canalClubFiltro('configuracion_club'), async () => {
-        const clubActualizado = await resolverClubDelPortal(clubSlug);
-        if (clubActualizado) setClub(clubActualizado);
-      })
-      .on('postgres_changes', canalClubFiltro('clubes'), async () => {
-        const clubActualizado = await resolverClubDelPortal(clubSlug);
-        if (clubActualizado) setClub(clubActualizado);
-      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'configuracion_club', filter: `id=eq.${club.id}` },
+        async () => {
+          const clubActualizado = await resolverClubDelPortal(clubSlug);
+          if (clubActualizado) setClub(clubActualizado);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'clubes', filter: `id=eq.${club.id}` },
+        async () => {
+          const clubActualizado = await resolverClubDelPortal(clubSlug);
+          if (clubActualizado) setClub(clubActualizado);
+        }
+      )
       .subscribe();
     return () => supabase.removeChannel(canal);
   }, [club?.id, clubSlug]);
@@ -28662,17 +28708,31 @@ function AppInterno() {
   }, []);
 
   // Personalización del Club (Nombre/Logo) — vive en la tabla
-  // `configuracion_club` (id, nombre, logo_url, club_id). Si la tabla no
-  // existe todavía (o cualquier otro error de Supabase), se queda en
-  // silencio con lo que ya haya en `localStorage` (`configClub` ya arrancó
-  // con eso).
+  // `configuracion_club` (id, nombre, logo_url, slug, propietario_user_id).
+  // Si la tabla no existe todavía (o cualquier otro error de Supabase), se
+  // queda en silencio con lo que ya haya en `localStorage` (`configClub` ya
+  // arrancó con eso).
+  //
+  // FIX ClubOS (Filtrado Estricto): antes esto era
+  // `.select('*').limit(1).maybeSingle()` SIN ningún filtro — traía SIEMPRE
+  // la primera fila de TODA la tabla (según el orden que Postgres decidiera
+  // devolver, ni siquiera garantizado estable), sin importar qué club
+  // tuviera la sesión activa. Con más de un club registrado, cualquier
+  // cuenta nueva terminaba viendo el nombre/logo del PRIMER club creado en
+  // el Sidebar, el header y la vista de perfil — un cruce real de datos
+  // entre tenants. Aquí `configuracion_club.id` ES el `club_id` (no una
+  // columna aparte: es la misma fila que `CLUB_ACTIVO_ID` identifica, ver
+  // `ClubAuthGate`/`crearOVincularClub`), así que el filtro correcto es
+  // `.eq('id', CLUB_ACTIVO_ID)`, no `conClubId` (que filtraría por una
+  // columna `club_id` que esta tabla no tiene).
   const cargarConfigClubSupabase = useCallback(async (opts = {}) => {
+    if (!CLUB_ACTIVO_ID) return;
     try {
       // `select('*')` a propósito (no se enumeran columnas a mano): así, si
       // `nombre`/`logo_url` todavía no existen en un proyecto viejo, la
       // consulta no truena — simplemente esos campos vienen `undefined` y el
       // bloque de abajo los ignora, dejando el nombre/logo por defecto.
-      const { data, error } = await supabase.from('configuracion_club').select('*').limit(1).maybeSingle();
+      const { data, error } = await supabase.from('configuracion_club').select('*').eq('id', CLUB_ACTIVO_ID).maybeSingle();
       if (error) throw error;
       if (data) {
         setConfiguracionClubId(data.id);
@@ -28695,10 +28755,22 @@ function AppInterno() {
   // Guarda Nombre/Logo del Club: SIEMPRE actualiza el estado en vivo y el
   // respaldo en `localStorage` de inmediato (nunca deja al operador viendo
   // el spinner ni el nombre viejo mientras Supabase responde), y trata de
-  // persistirlo best effort en la misma fila de `configuracion_club` — update
-  // si ya había fila, insert si es la primera vez. Si la columna
-  // `nombre`/`logo_url` todavía no existe en el proyecto, el cambio se
-  // queda en modo local (este navegador) sin bloquear nada.
+  // persistirlo best effort en la misma fila de `configuracion_club`. Si la
+  // columna `nombre`/`logo_url` todavía no existe en el proyecto, el cambio
+  // se queda en modo local (este navegador) sin bloquear nada.
+  //
+  // FIX ClubOS (blindaje contra clubes duplicados/huérfanos): antes, si
+  // `configuracionClubId` todavía no se había resuelto (p. ej. por el bug de
+  // `cargarConfigClubSupabase` de arriba, o simplemente por una carrera de
+  // timing), esta función hacía un `insert(withClubId(campos))` A CIEGAS —
+  // creaba una fila NUEVA en `configuracion_club` sin `propietario_user_id`,
+  // exactamente el tipo de fila "fantasma"/de prueba sin dueño que puede
+  // terminar ganándole el `select` sin filtro de otro usuario. Esta pantalla
+  // SOLO existe dentro de `AppInterno`, y `ClubAuthGate` jamás lo monta sin
+  // antes garantizar una fila real en `configuracion_club` para
+  // `CLUB_ACTIVO_ID` (creada/vinculada en `crearOVincularClub`, siempre con
+  // su `propietario_user_id`) — así que aquí SIEMPRE debe ser un `UPDATE`
+  // por `id = CLUB_ACTIVO_ID`, nunca un `INSERT`.
   const guardarConfigClub = useCallback(
     async (nuevaConfig) => {
       const limpia = { nombre: (nuevaConfig.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre, logoUrl: nuevaConfig.logoUrl || '' };
@@ -28706,15 +28778,11 @@ function AppInterno() {
       setConfigClub(limpia);
       guardarConfigClubLocal(limpia);
       try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión — no se puede guardar en Supabase todavía.');
         const campos = { nombre: limpia.nombre, logo_url: limpia.logoUrl || null };
-        if (configuracionClubId) {
-          const { error } = await supabase.from('configuracion_club').update(campos).eq('id', configuracionClubId);
-          if (error) throw error;
-        } else {
-          const { data, error } = await supabase.from('configuracion_club').insert(withClubId(campos)).select().maybeSingle();
-          if (error) throw error;
-          if (data?.id) setConfiguracionClubId(data.id);
-        }
+        const { error } = await supabase.from('configuracion_club').update(campos).eq('id', CLUB_ACTIVO_ID);
+        if (error) throw error;
+        setConfiguracionClubId(CLUB_ACTIVO_ID);
       } catch (err) {
         // Sincronización Silenciosa: el nombre/logo ya se aplicó de forma
         // optimista arriba — si Supabase no lo acepta todavía (columnas sin
@@ -28725,7 +28793,7 @@ function AppInterno() {
       mostrarToast({ titulo: 'Club actualizado', detalle: `${limpia.nombre} — ya se ve igual en todos los dispositivos.` });
       setGuardandoConfigClub(false);
     },
-    [configuracionClubId, mostrarToast]
+    [mostrarToast]
   );
 
   useEffect(() => {
@@ -28870,11 +28938,23 @@ function AppInterno() {
 
   // Sincronización Universal del Nombre/Logo del Club: si se edita desde la
   // Mac, el iPad y el celular lo reflejan solos, sin recargar la página.
+  //
+  // FIX ClubOS (filtro roto): `canalClubFiltro` arma su filtro sobre una
+  // columna `club_id`, que `configuracion_club` NO tiene — en esta tabla el
+  // identificador del tenant es su propio `id` (la misma fila que
+  // `CLUB_ACTIVO_ID` referencia, ver `cargarConfigClubSupabase`). Con el
+  // filtro viejo (`club_id=eq.<id>` sobre una columna inexistente) el canal
+  // de Realtime nunca disparaba de verdad — el nombre/logo editado en otro
+  // dispositivo no se reflejaba hasta recargar la página. Filtro correcto:
+  // `id=eq.<CLUB_ACTIVO_ID>`.
   useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return undefined;
     const canal = supabase
       .channel('configuracion-club')
-      .on('postgres_changes', canalClubFiltro('configuracion_club'), () =>
-        cargarConfigClubSupabase({ silencioso: true })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'configuracion_club', filter: `id=eq.${CLUB_ACTIVO_ID}` },
+        () => cargarConfigClubSupabase({ silencioso: true })
       )
       .subscribe();
     return () => {
@@ -29966,7 +30046,28 @@ function ClubAuthScreen({ onAutenticado }) {
 // por `manejarRegistro` (cuando `signUp` ya trae sesión de inmediato) como
 // por `ClubAuthGate` (cuando el alta se completa después, tras confirmar el
 // correo e iniciar sesión por primera vez).
+//
+// AUDITORÍA (Filtrado Estricto por Usuario/Club Activo):
+//   - Rama "vincular existente": el `SELECT` va estrictamente acotado con
+//     `.is('propietario_user_id', null)` — NUNCA agarra un club al azar, solo
+//     uno de verdad sin dueño. El `UPDATE` que sigue es un `INSERT` lógico de
+//     dueño (pasa de NULL a `usuarioId`), no un update "accidental" sobre
+//     cualquier fila.
+//   - Rama "club nuevo": es un `INSERT` limpio — jamás un `UPDATE` sobre la
+//     primera fila existente de la tabla — y ahora manda el trío completo que
+//     pide la auditoría: `nombre` (el valor exacto capturado en el input),
+//     `slug` (sanitizado del nombre, vía `slugificarClub` — mismo
+//     normalizador ya usado por el Portal Público, que además de aplicar
+//     `toLowerCase().trim().replace(/[^a-z0-9]+/g, '-')` le quita acentos
+//     con NFD antes de sanear, así "Pádel" da "padel" y no "p-del") y
+//     `propietario_user_id` (el usuario de la sesión). El índice único
+//     `configuracion_club_slug_unique` (`migracion_v3.sql`) puede rechazar un
+//     slug repetido si dos clubes eligen el mismo nombre — se reintenta unas
+//     pocas veces con un sufijo corto en vez de tronar el registro.
 async function crearOVincularClub({ usuarioId, nombreClub, vincularExistente }) {
+  if (!usuarioId) {
+    return { ok: false, error: 'Tu sesión no es válida — vuelve a iniciar sesión.' };
+  }
   try {
     if (vincularExistente) {
       const { data: clubExistente, error: errBuscar } = await supabase
@@ -29984,6 +30085,7 @@ async function crearOVincularClub({ usuarioId, nombreClub, vincularExistente }) 
         .from('configuracion_club')
         .update({ propietario_user_id: usuarioId })
         .eq('id', clubExistente.id)
+        .is('propietario_user_id', null)
         .select()
         .single();
       if (errUpdate) throw errUpdate;
@@ -29991,12 +30093,33 @@ async function crearOVincularClub({ usuarioId, nombreClub, vincularExistente }) 
       return { ok: true, club: clubActualizado };
     }
 
-    const { data: clubNuevo, error: errInsert } = await supabase
-      .from('configuracion_club')
-      .insert({ nombre: nombreClub || 'Mi Club', propietario_user_id: usuarioId })
-      .select()
-      .single();
-    if (errInsert) throw errInsert;
+    const nombreLimpio = (nombreClub || '').trim() || 'Mi Club';
+    const slugBase = slugificarClub(nombreLimpio);
+    let clubNuevo = null;
+    let errInsert = null;
+    // Hasta 5 intentos: el primero con el slug base, los siguientes con un
+    // sufijo corto aleatorio — solo se reintenta cuando el error es
+    // específicamente una colisión de `slug` (`esErrorSlugDuplicado`),
+    // cualquier otro error (RLS, columna faltante, red) se propaga tal cual
+    // en el primer intento.
+    for (let intento = 0; intento < 5; intento++) {
+      const slugIntento = intento === 0 ? slugBase : `${slugBase}-${Math.random().toString(36).slice(2, 6)}`;
+      const resultado = await supabase
+        .from('configuracion_club')
+        .insert({ nombre: nombreLimpio, slug: slugIntento, propietario_user_id: usuarioId })
+        .select()
+        .single();
+      if (!resultado.error) {
+        clubNuevo = resultado.data;
+        break;
+      }
+      if (!esErrorSlugDuplicado(resultado.error)) {
+        errInsert = resultado.error;
+        break;
+      }
+      errInsert = resultado.error;
+    }
+    if (!clubNuevo) throw errInsert || new Error('No se pudo crear el club.');
     return { ok: true, club: clubNuevo };
   } catch (err) {
     return { ok: false, error: err?.message || 'No se pudo crear el club.' };
