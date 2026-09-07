@@ -29539,8 +29539,11 @@ function AppInterno() {
 // `FILAS_FONDO_AUTH` filas, sin importar el alto real del viewport — así no
 // quedan huecos ni encimes arriba/abajo en ningún tamaño de pantalla
 // (celular muy alto incluido) y no hace falta ni gap ni space-y ni máscara
-// de degradado.
-const FILAS_FONDO_AUTH = 18;
+// de degradado. 20 filas (antes 18) para compensar el "desborde" extra de
+// `-inset-y-12` del contenedor (ver más abajo, fix de Safari/iOS): al
+// estirarse 3rem hacia arriba y abajo, un poco más de filas evita que se
+// note el reparto más ancho del grid.
+const FILAS_FONDO_AUTH = 20;
 // Filas IMPARES (1, 3, 5...): esta frase, hacia la derecha.
 const TEXTO_FONDO_AUTH_IMPAR = 'OPERATE BETTER • SELL MORE • GROW FASTER • ';
 // Filas PARES (2, 4, 6...): la misma terna en orden inverso, hacia la
@@ -29559,7 +29562,7 @@ const REPETICIONES_BLOQUE_FONDO_AUTH = 5;
 
 function FondoAuthAnimado() {
   return (
-    <div className="pointer-events-none absolute inset-0 z-0 h-full min-h-screen min-h-dvh w-full overflow-hidden bg-[#0b132b]">
+    <div className="pointer-events-none fixed -inset-x-0 -inset-y-12 z-0 h-[calc(100vh+6rem)] h-[calc(100dvh+6rem)] w-full overflow-hidden bg-[#0b132b]">
       {/* Keyframes + clases de animación propias (no dependen de
           tailwind.config — este proyecto se entrega como un solo App.jsx):
           cada fila trae un track `w-max flex` con 2 bloques `shrink-0`
@@ -29571,7 +29574,15 @@ function FondoAuthAnimado() {
           Filas pares hacia la izquierda, impares hacia la derecha,
           duración lenta y elegante (65s-90s) + una preferencia de
           movimiento reducido para quien la tenga activada en su SO.
-          `min-h-screen`/`min-h-dvh` + `bg-[#0b132b]` también en el
+          `fixed` (no `absolute`) + `-inset-y-12` estira el fondo 3rem hacia
+          arriba y hacia abajo del viewport real — así cubre el notch, la
+          barra de estado y la barra de navegación de Safari en iPhone/iPad
+          sin dejar franjas blancas, incluso cuando esas barras aparecen o
+          desaparecen al hacer scroll. `h-[calc(100dvh+6rem)]` va DESPUÉS de
+          `h-[calc(100vh+6rem)]` a propósito: los navegadores que no
+          entienden `dvh` ignoran esa línea y se quedan con `100vh`; los que
+          sí lo entienden (Safari iOS moderno) la usan porque es la última
+          declaración — mismo criterio que `min-h-screen`/`min-h-dvh` en el
           contenedor padre de la pantalla de Auth (ver `ClubAuthScreen` /
           `ClubAuthGate`) evitan que se asome el blanco del body/html en
           los bordes durante el rebote de scroll (bounce scroll) de iOS. */}
@@ -30275,14 +30286,33 @@ const PATRON_RUTA_PORTAL = /^\/canchas\/([a-z0-9-]+)\/?$/i;
 export default function App() {
   const ruta = usarRutaActual();
   const matchPortal = ruta.match(PATRON_RUTA_PORTAL);
-  if (matchPortal) return <PortalPublicoJugadores clubSlug={matchPortal[1]} />;
-  // Panel interno (ClubOS): `ClubAuthGate` resuelve Login/Registro/sesión y
-  // el `club_id` real del dueño ANTES de montar `AppInterno` — reemplaza el
-  // viejo `establecerClubActivo(null); return <AppInterno />;` que dejaba el
-  // panel interno operando SIEMPRE sin filtro de tenant. Salvaguarda: si el
-  // operador llegó a estar en el Portal Público de otro club dentro de esta
-  // misma pestaña (p. ej. atrás/adelante del navegador), `ClubAuthGate`
-  // vuelve a fijar `CLUB_ACTIVO_ID` al club de SU sesión (no al del Portal)
-  // en cuanto se monta, así que no hace falta resetear nada aquí.
-  return <ClubAuthGate />;
+  return (
+    <>
+      {/* Fondo global de html/body/#root — mismo azul oscuro que usa toda
+          la app (`#0b132b`) + `overscroll-behavior: none`: sin esto, el
+          blanco por defecto de html/body se alcanza a asomar en los bordes
+          durante el rebote de scroll (bounce scroll) de iOS, sobre todo en
+          las pantallas de Auth donde `FondoAuthAnimado` ya se estira con
+          `-inset-y-12` para cubrir notch/barra de estado/barra de Safari.
+          Va aquí (no en un index.css aparte) porque este proyecto se
+          entrega como un solo App.jsx; se aplica una sola vez para TODO el
+          árbol (Portal Público y panel interno / Auth por igual). */}
+      <style>{`html, body, #root { background-color: #0b132b; overscroll-behavior: none; }`}</style>
+      {matchPortal ? (
+        <PortalPublicoJugadores clubSlug={matchPortal[1]} />
+      ) : (
+        // Panel interno (ClubOS): `ClubAuthGate` resuelve Login/Registro/
+        // sesión y el `club_id` real del dueño ANTES de montar
+        // `AppInterno` — reemplaza el viejo
+        // `establecerClubActivo(null); return <AppInterno />;` que dejaba
+        // el panel interno operando SIEMPRE sin filtro de tenant.
+        // Salvaguarda: si el operador llegó a estar en el Portal Público
+        // de otro club dentro de esta misma pestaña (p. ej. atrás/
+        // adelante del navegador), `ClubAuthGate` vuelve a fijar
+        // `CLUB_ACTIVO_ID` al club de SU sesión (no al del Portal) en
+        // cuanto se monta, así que no hace falta resetear nada aquí.
+        <ClubAuthGate />
+      )}
+    </>
+  );
 }
