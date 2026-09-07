@@ -7692,80 +7692,92 @@ function ModuloSmartPOS({
     const itemsConStock = fila.items.filter(
       (it) => it.tipo === 'producto' && (it.productoPadreId || it.producto_id) && it.manejaStock !== false
     );
-    await Promise.all(
-      itemsConStock.map(async (item) => {
-        const productoId = item.productoPadreId || item.producto_id;
-        const varianteId = item.varianteId || item.variante_id;
-        const esVariante = item.esVariante === true || !!varianteId;
-        const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
-        let stockAnterior = item.stock;
-        let nuevoStock = null;
-        let errStock = null;
+    // SECUENCIAL, no `Promise.all` — FIX CRÍTICO (condición de carrera entre
+    // variantes del MISMO producto): `descontarStockVariante`/
+    // `descontarStockProductoSimple` hacen "leer productos.variantes fresco
+    // → recalcular el arreglo completo → UPDATE" — un read-modify-write que
+    // NO es atómico en el cliente. Si dos artículos de esta cuenta comparten
+    // el mismo `productoId` (dos variantes distintas del mismo producto,
+    // p. ej. "Wilson" y "Head") y se procesan en PARALELO, ambos leen el
+    // MISMO `productos.variantes` original antes de que el otro termine de
+    // escribir — el segundo `UPDATE` sobreescribe al primero con un arreglo
+    // que nunca vio el descuento ya aplicado, y una de las dos variantes se
+    // queda sin descontar (o "se revierte"). Recorrer `itemsConStock` con un
+    // `for...of` + `await` uno por uno obliga a que cada descuento lea el
+    // arreglo YA actualizado por el anterior, así que nunca compiten por la
+    // misma fila.
+    for (const item of itemsConStock) {
+      const productoId = item.productoPadreId || item.producto_id;
+      const varianteId = item.varianteId || item.variante_id;
+      const esVariante = item.esVariante === true || !!varianteId;
+      const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
+      let stockAnterior = item.stock;
+      let nuevoStock = null;
+      let errStock = null;
 
-        if (esVariante) {
-          // Descuento Real al Vender una variante — FIX DEFINITIVO, JSONB
-          // puro: ver `descontarStockVariante` (lee/escribe directo el
-          // arreglo `productos.variantes` de la fila del producto padre).
-          const resultado = await descontarStockVariante({
-            productoId,
-            varianteId,
-            varianteNombre: varianteNombreEtiqueta,
-            cantidad: item.cantidad,
-            upsertProducto,
-            upsertVarianteProducto,
-          });
-          if (!resultado.ok) errStock = resultado.error;
-          else {
-            stockAnterior = resultado.stockAnterior;
-            nuevoStock = resultado.nuevoStock;
-          }
-        } else {
-          // Producto simple: stock fresco de Supabase, nunca el valor
-          // potencialmente desactualizado del carrito. `varianteNombreSugerida`
-          // es la red de seguridad de `descontarStockProductoSimple`: si el
-          // producto en Supabase resulta SÍ tener variantes (esta línea del
-          // carrito no venía marcada como variante), igual intenta resolverla
-          // por nombre en vez de desincronizar `productos.stock` de sus
-          // `variantes`.
-          const resultado = await descontarStockProductoSimple({
-            productoId,
-            cantidad: item.cantidad,
-            upsertProducto,
-            varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
-          });
-          if (!resultado.ok) errStock = resultado.error;
-          else {
-            stockAnterior = resultado.stockAnterior;
-            nuevoStock = resultado.nuevoStock;
-          }
-        }
-
-        if (errStock) {
-          console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}" (Split Bill):`, errStock);
-          return;
-        }
-
-        if (nuevoStock == null) return; // sin control de stock propio: nada que registrar en kardex
-
-        const resultadoKardex = await insertarMovimientoKardex({
-          producto_id: productoId,
-          variante_id: varianteId || undefined,
-          producto_nombre: item.nombre,
-          tipo_movimiento: 'salida_venta',
+      if (esVariante) {
+        // Descuento Real al Vender una variante — FIX DEFINITIVO, JSONB
+        // puro: ver `descontarStockVariante` (lee/escribe directo el
+        // arreglo `productos.variantes` de la fila del producto padre).
+        const resultado = await descontarStockVariante({
+          productoId,
+          varianteId,
+          varianteNombre: varianteNombreEtiqueta,
           cantidad: item.cantidad,
-          stock_anterior: stockAnterior,
-          stock_nuevo: nuevoStock,
-          costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-          motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`})${
-            esVariante ? ` · ${varianteNombreEtiqueta}` : ''
-          }`,
-          operador: operador?.nombre,
+          upsertProducto,
+          upsertVarianteProducto,
         });
-        if (!resultadoKardex.ok) {
-          console.error(`[Smart POS] Error detallado Supabase: el stock de "${item.nombre}" (Split Bill) se descontó, pero el Kardex no se pudo registrar:`, resultadoKardex.error);
+        if (!resultado.ok) errStock = resultado.error;
+        else {
+          stockAnterior = resultado.stockAnterior;
+          nuevoStock = resultado.nuevoStock;
         }
-      })
-    );
+      } else {
+        // Producto simple: stock fresco de Supabase, nunca el valor
+        // potencialmente desactualizado del carrito. `varianteNombreSugerida`
+        // es la red de seguridad de `descontarStockProductoSimple`: si el
+        // producto en Supabase resulta SÍ tener variantes (esta línea del
+        // carrito no venía marcada como variante), igual intenta resolverla
+        // por nombre en vez de desincronizar `productos.stock` de sus
+        // `variantes`.
+        const resultado = await descontarStockProductoSimple({
+          productoId,
+          cantidad: item.cantidad,
+          upsertProducto,
+          varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
+        });
+        if (!resultado.ok) errStock = resultado.error;
+        else {
+          stockAnterior = resultado.stockAnterior;
+          nuevoStock = resultado.nuevoStock;
+        }
+      }
+
+      if (errStock) {
+        console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}" (Split Bill):`, errStock);
+        continue;
+      }
+
+      if (nuevoStock == null) continue; // sin control de stock propio: nada que registrar en kardex
+
+      const resultadoKardex = await insertarMovimientoKardex({
+        producto_id: productoId,
+        variante_id: varianteId || undefined,
+        producto_nombre: item.nombre,
+        tipo_movimiento: 'salida_venta',
+        cantidad: item.cantidad,
+        stock_anterior: stockAnterior,
+        stock_nuevo: nuevoStock,
+        costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
+        motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`})${
+          esVariante ? ` · ${varianteNombreEtiqueta}` : ''
+        }`,
+        operador: operador?.nombre,
+      });
+      if (!resultadoKardex.ok) {
+        console.error(`[Smart POS] Error detallado Supabase: el stock de "${item.nombre}" (Split Bill) se descontó, pero el Kardex no se pudo registrar:`, resultadoKardex.error);
+      }
+    }
 
     const idsAsignados = new Set(fila.items.map((it) => it.id));
     setComanda((prev) => prev.filter((item) => !idsAsignados.has(item.id)));
@@ -8848,97 +8860,108 @@ function ModuloSmartPOS({
     // Supabase para todo artículo que sí controla inventario, y cualquier
     // fallo real queda visible con `console.error`.
     const itemsConStock = comanda.filter((item) => item.tipo === 'producto' && (item.productoPadreId || item.producto_id) && item.manejaStock !== false);
-    const resultadosStock = await Promise.all(
-      itemsConStock.map(async (item) => {
-        // Fix definitivo de variantes: se lee `productoPadreId`/`varianteId`
-        // (los nombres explícitos que ahora guarda `agregarProducto`)
-        // primero, con `producto_id`/`variante_id` como respaldo — así
-        // funciona igual sin importar cuál de los dos nombres traiga el
-        // artículo del carrito.
-        const productoId = item.productoPadreId || item.producto_id;
-        const varianteId = item.varianteId || item.variante_id;
-        const esVariante = item.esVariante === true || !!varianteId;
-        const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
-        let stockAnterior = item.stock;
-        let nuevoStock = null;
-        let errStock = null;
+    // SECUENCIAL, no `Promise.all` — FIX CRÍTICO (condición de carrera entre
+    // variantes del MISMO producto): ver el comentario completo en el
+    // Split Bill de arriba. Aquí es donde más importa — un solo ticket de
+    // Smart POS puede perfectamente llevar dos variantes distintas del
+    // mismo producto ("Wilson" y "Head" en la misma comanda) — así que se
+    // recorre `itemsConStock` uno por uno con `for...of` + `await`, para
+    // que cada `UPDATE` lea el arreglo `productos.variantes` YA actualizado
+    // por el artículo anterior en vez de una copia desactualizada.
+    const resultadosStock = [];
+    for (const item of itemsConStock) {
+      // Fix definitivo de variantes: se lee `productoPadreId`/`varianteId`
+      // (los nombres explícitos que ahora guarda `agregarProducto`)
+      // primero, con `producto_id`/`variante_id` como respaldo — así
+      // funciona igual sin importar cuál de los dos nombres traiga el
+      // artículo del carrito.
+      const productoId = item.productoPadreId || item.producto_id;
+      const varianteId = item.varianteId || item.variante_id;
+      const esVariante = item.esVariante === true || !!varianteId;
+      const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
+      let stockAnterior = item.stock;
+      let nuevoStock = null;
+      let errStock = null;
 
-        if (esVariante) {
-          // Descuento Real al Vender una variante — FIX DEFINITIVO, JSONB
-          // puro: `descontarStockVariante` lee/escribe directo el arreglo
-          // `productos.variantes` de la fila del producto padre. Ver su
-          // comentario de cabecera para el detalle completo.
-          const resultado = await descontarStockVariante({
-            productoId,
-            varianteId,
-            varianteNombre: varianteNombreEtiqueta,
-            cantidad: item.cantidad,
-            upsertProducto,
-            upsertVarianteProducto,
-          });
-          if (!resultado.ok) {
-            errStock = resultado.error;
-          } else {
-            stockAnterior = resultado.stockAnterior;
-            nuevoStock = resultado.nuevoStock;
-          }
-        } else {
-          // Producto simple (sin variante): SIEMPRE se lee el stock fresco
-          // de Supabase antes de restar — nunca se confía en el valor que
-          // traiga el carrito, que puede estar desactualizado si otro
-          // dispositivo vendió el mismo producto hace un segundo (misma
-          // filosofía de "BD como única fuente de verdad" del resto de la app).
-          // `varianteNombreSugerida`: red de seguridad si el producto SÍ
-          // tiene variantes en Supabase aunque esta línea no llegara marcada
-          // como variante — ver comentario de cabecera de
-          // `descontarStockProductoSimple`.
-          const resultado = await descontarStockProductoSimple({
-            productoId,
-            cantidad: item.cantidad,
-            upsertProducto,
-            varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
-          });
-          if (!resultado.ok) {
-            errStock = resultado.error;
-          } else {
-            stockAnterior = resultado.stockAnterior;
-            nuevoStock = resultado.nuevoStock;
-          }
-        }
-
-        if (errStock) {
-          // A diferencia de otras fricciones "silenciosas" de esta app, un
-          // descuento de stock que falla SÍ se registra con su error real —
-          // es inventario/dinero, no solo un desfase cosmético.
-          console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}":`, errStock);
-          return { ok: false, nombre: item.nombre, error: errStock };
-        }
-
-        // `nuevoStock == null` = el producto/variante existe pero no tiene
-        // control de stock propio en Supabase (columna `stock` en null) —
-        // la venta se cobró igual, simplemente no hay inventario que
-        // descontar ni kardex de salida que registrar para este artículo.
-        if (nuevoStock == null) return { ok: true, nombre: item.nombre };
-
-        const resultadoKardex = await insertarMovimientoKardex({
-          producto_id: productoId,
-          variante_id: varianteId || undefined,
-          producto_nombre: item.nombre,
-          tipo_movimiento: 'salida_venta',
+      if (esVariante) {
+        // Descuento Real al Vender una variante — FIX DEFINITIVO, JSONB
+        // puro: `descontarStockVariante` lee/escribe directo el arreglo
+        // `productos.variantes` de la fila del producto padre. Ver su
+        // comentario de cabecera para el detalle completo.
+        const resultado = await descontarStockVariante({
+          productoId,
+          varianteId,
+          varianteNombre: varianteNombreEtiqueta,
           cantidad: item.cantidad,
-          stock_anterior: stockAnterior,
-          stock_nuevo: nuevoStock,
-          costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-          motivo: esVariante ? `Venta en Smart POS · ${varianteNombreEtiqueta}` : 'Venta en Smart POS',
-          operador: operador?.nombre,
+          upsertProducto,
+          upsertVarianteProducto,
         });
-        if (!resultadoKardex.ok) {
-          console.error(`[Smart POS] Error detallado Supabase: el stock de "${item.nombre}" se descontó, pero el Kardex no se pudo registrar:`, resultadoKardex.error);
+        if (!resultado.ok) {
+          errStock = resultado.error;
+        } else {
+          stockAnterior = resultado.stockAnterior;
+          nuevoStock = resultado.nuevoStock;
         }
+      } else {
+        // Producto simple (sin variante): SIEMPRE se lee el stock fresco
+        // de Supabase antes de restar — nunca se confía en el valor que
+        // traiga el carrito, que puede estar desactualizado si otro
+        // dispositivo vendió el mismo producto hace un segundo (misma
+        // filosofía de "BD como única fuente de verdad" del resto de la app).
+        // `varianteNombreSugerida`: red de seguridad si el producto SÍ
+        // tiene variantes en Supabase aunque esta línea no llegara marcada
+        // como variante — ver comentario de cabecera de
+        // `descontarStockProductoSimple`.
+        const resultado = await descontarStockProductoSimple({
+          productoId,
+          cantidad: item.cantidad,
+          upsertProducto,
+          varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
+        });
+        if (!resultado.ok) {
+          errStock = resultado.error;
+        } else {
+          stockAnterior = resultado.stockAnterior;
+          nuevoStock = resultado.nuevoStock;
+        }
+      }
 
-        return { ok: true, nombre: item.nombre };
-      })
-    );
+      if (errStock) {
+        // A diferencia de otras fricciones "silenciosas" de esta app, un
+        // descuento de stock que falla SÍ se registra con su error real —
+        // es inventario/dinero, no solo un desfase cosmético.
+        console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}":`, errStock);
+        resultadosStock.push({ ok: false, nombre: item.nombre, error: errStock });
+        continue;
+      }
+
+      // `nuevoStock == null` = el producto/variante existe pero no tiene
+      // control de stock propio en Supabase (columna `stock` en null) —
+      // la venta se cobró igual, simplemente no hay inventario que
+      // descontar ni kardex de salida que registrar para este artículo.
+      if (nuevoStock == null) {
+        resultadosStock.push({ ok: true, nombre: item.nombre });
+        continue;
+      }
+
+      const resultadoKardex = await insertarMovimientoKardex({
+        producto_id: productoId,
+        variante_id: varianteId || undefined,
+        producto_nombre: item.nombre,
+        tipo_movimiento: 'salida_venta',
+        cantidad: item.cantidad,
+        stock_anterior: stockAnterior,
+        stock_nuevo: nuevoStock,
+        costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
+        motivo: esVariante ? `Venta en Smart POS · ${varianteNombreEtiqueta}` : 'Venta en Smart POS',
+        operador: operador?.nombre,
+      });
+      if (!resultadoKardex.ok) {
+        console.error(`[Smart POS] Error detallado Supabase: el stock de "${item.nombre}" se descontó, pero el Kardex no se pudo registrar:`, resultadoKardex.error);
+      }
+
+      resultadosStock.push({ ok: true, nombre: item.nombre });
+    }
     const fallosStock = resultadosStock.filter((r) => !r.ok);
     if (fallosStock.length > 0) {
       console.error('[Smart POS] Venta registrada, pero el stock no se descontó solo para:', fallosStock.map((f) => f.nombre).join(', '));
@@ -10048,70 +10071,78 @@ async function descontarStockKardexAddonsReserva(
   itemsAddons,
   { motivoBase, operador, upsertProducto, upsertVarianteProducto, productos, variantesPorProducto }
 ) {
-  const resultados = await Promise.all(
-    (itemsAddons || [])
-      .filter((it) => it && (it.producto_id || it.productoPadreId))
-      .map(async (item) => {
-        const productoId = item.productoPadreId || item.producto_id;
-        const varianteId = item.varianteId || item.variante_id;
-        const esVariante = item.esVariante === true || !!varianteId;
-        const varianteNombreEtiqueta = item.varianteNombre || item.variante_nombre || item.nombre;
-        let stockAnterior = null;
-        let nuevoStock = null;
-        let errStock = null;
-        if (esVariante) {
-          const resultado = await descontarStockVariante({
-            productoId,
-            varianteId,
-            varianteNombre: varianteNombreEtiqueta,
-            cantidad: item.cantidad,
-            upsertProducto: upsertProducto || (() => {}),
-            upsertVarianteProducto: upsertVarianteProducto || (() => {}),
-          });
-          if (!resultado.ok) errStock = resultado.error;
-          else {
-            stockAnterior = resultado.stockAnterior;
-            nuevoStock = resultado.nuevoStock;
-          }
-        } else {
-          const resultado = await descontarStockProductoSimple({
-            productoId,
-            cantidad: item.cantidad,
-            upsertProducto: upsertProducto || (() => {}),
-            varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
-          });
-          if (!resultado.ok) errStock = resultado.error;
-          else {
-            stockAnterior = resultado.stockAnterior;
-            nuevoStock = resultado.nuevoStock;
-          }
-        }
-        if (errStock) {
-          console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}" (add-on de reserva):`, errStock);
-          return { ok: false, nombre: item.nombre, error: errStock };
-        }
-        if (nuevoStock == null) return { ok: true, nombre: item.nombre };
-        const resultadoKardex = await insertarMovimientoKardex({
-          producto_id: productoId,
-          variante_id: varianteId || undefined,
-          producto_nombre: item.nombre,
-          tipo_movimiento: 'salida_venta',
-          cantidad: item.cantidad,
-          stock_anterior: stockAnterior,
-          stock_nuevo: nuevoStock,
-          costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-          motivo: `${motivoBase}${esVariante ? ` · ${varianteNombreEtiqueta}` : ''}`,
-          operador: operador || 'Recepción',
-        });
-        if (!resultadoKardex.ok) {
-          console.error(
-            `[Smart POS] Error detallado Supabase: stock descontado pero el Kardex no se pudo registrar para "${item.nombre}" (add-on de reserva):`,
-            resultadoKardex.error
-          );
-        }
-        return { ok: true, nombre: item.nombre };
-      })
-  );
+  // SECUENCIAL, no `Promise.all` — FIX CRÍTICO (condición de carrera entre
+  // variantes del MISMO producto): ver el comentario completo en
+  // `registrarVenta`/Split Bill (Smart POS). Un mismo grupo de add-ons de
+  // reserva puede traer dos variantes del mismo producto (dos overgrips de
+  // marcas distintas, por ejemplo) — se recorre uno por uno con `for...of`
+  // + `await` para que cada `UPDATE` parta del arreglo ya actualizado por
+  // el anterior.
+  const resultados = [];
+  for (const item of (itemsAddons || []).filter((it) => it && (it.producto_id || it.productoPadreId))) {
+    const productoId = item.productoPadreId || item.producto_id;
+    const varianteId = item.varianteId || item.variante_id;
+    const esVariante = item.esVariante === true || !!varianteId;
+    const varianteNombreEtiqueta = item.varianteNombre || item.variante_nombre || item.nombre;
+    let stockAnterior = null;
+    let nuevoStock = null;
+    let errStock = null;
+    if (esVariante) {
+      const resultado = await descontarStockVariante({
+        productoId,
+        varianteId,
+        varianteNombre: varianteNombreEtiqueta,
+        cantidad: item.cantidad,
+        upsertProducto: upsertProducto || (() => {}),
+        upsertVarianteProducto: upsertVarianteProducto || (() => {}),
+      });
+      if (!resultado.ok) errStock = resultado.error;
+      else {
+        stockAnterior = resultado.stockAnterior;
+        nuevoStock = resultado.nuevoStock;
+      }
+    } else {
+      const resultado = await descontarStockProductoSimple({
+        productoId,
+        cantidad: item.cantidad,
+        upsertProducto: upsertProducto || (() => {}),
+        varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
+      });
+      if (!resultado.ok) errStock = resultado.error;
+      else {
+        stockAnterior = resultado.stockAnterior;
+        nuevoStock = resultado.nuevoStock;
+      }
+    }
+    if (errStock) {
+      console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}" (add-on de reserva):`, errStock);
+      resultados.push({ ok: false, nombre: item.nombre, error: errStock });
+      continue;
+    }
+    if (nuevoStock == null) {
+      resultados.push({ ok: true, nombre: item.nombre });
+      continue;
+    }
+    const resultadoKardex = await insertarMovimientoKardex({
+      producto_id: productoId,
+      variante_id: varianteId || undefined,
+      producto_nombre: item.nombre,
+      tipo_movimiento: 'salida_venta',
+      cantidad: item.cantidad,
+      stock_anterior: stockAnterior,
+      stock_nuevo: nuevoStock,
+      costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
+      motivo: `${motivoBase}${esVariante ? ` · ${varianteNombreEtiqueta}` : ''}`,
+      operador: operador || 'Recepción',
+    });
+    if (!resultadoKardex.ok) {
+      console.error(
+        `[Smart POS] Error detallado Supabase: stock descontado pero el Kardex no se pudo registrar para "${item.nombre}" (add-on de reserva):`,
+        resultadoKardex.error
+      );
+    }
+    resultados.push({ ok: true, nombre: item.nombre });
+  }
   return resultados;
 }
 
@@ -25651,64 +25682,79 @@ function PortalPublicoJugadores({ clubSlug }) {
   // visible en vez de fallar en silencio.
   async function descontarStockYKardexItems(items, motivoBase) {
     const fallos = [];
-    await Promise.all(
-      items
-        .filter((it) => it.tipo === 'producto' && (it.productoPadreId || it.producto_id) && it.manejaStock !== false)
-        .map(async (item) => {
-          const productoId = item.productoPadreId || item.producto_id;
-          const varianteId = item.varianteId || item.variante_id;
-          let stockAnterior = item.stock;
-          let nuevoStock = null;
-          let errStock = null;
-          if (item.esVariante || varianteId) {
-            const resultado = await descontarStockVariante({
-              productoId,
-              varianteId,
-              varianteNombre: item.varianteNombre || item.nombre,
-              cantidad: item.cantidad,
-              upsertProducto,
-            });
-            if (!resultado.ok) errStock = resultado.error;
-            else {
-              stockAnterior = resultado.stockAnterior;
-              nuevoStock = resultado.nuevoStock;
-            }
-          } else {
-            const resultado = await descontarStockProductoSimple({
-              productoId,
-              cantidad: item.cantidad,
-              upsertProducto,
-              varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
-            });
-            if (!resultado.ok) errStock = resultado.error;
-            else {
-              stockAnterior = resultado.stockAnterior;
-              nuevoStock = resultado.nuevoStock;
-            }
-          }
-          if (errStock) {
-            console.error(`[Portal] Error detallado Supabase al descontar el stock de "${item.nombre}":`, errStock);
-            fallos.push({ nombre: item.nombre, error: errStock, esRLS: esErrorPermisoRLS(errStock) });
-            return;
-          }
-          if (nuevoStock == null) return;
-          const resultadoKardex = await insertarMovimientoKardex({
-            producto_id: productoId,
-            variante_id: varianteId || undefined,
-            producto_nombre: item.nombre,
-            tipo_movimiento: 'salida_venta',
-            cantidad: item.cantidad,
-            stock_anterior: stockAnterior,
-            stock_nuevo: nuevoStock,
-            costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProductoPortal),
-            motivo: `${motivoBase}${item.esVariante || varianteId ? ` · ${item.varianteNombre || item.nombre}` : ''}`,
-            operador: 'Portal Público',
-          });
-          if (!resultadoKardex.ok) {
-            console.error(`[Portal] Error detallado Supabase: stock descontado pero el Kardex no se pudo registrar para "${item.nombre}":`, resultadoKardex.error);
-          }
-        })
-    );
+    // SECUENCIAL, no `Promise.all` — FIX CRÍTICO (condición de carrera
+    // confirmada por prueba real): el checkout del carrito de la Tienda del
+    // Portal es EXACTAMENTE donde más aparece este caso — un jugador compra
+    // dos variantes distintas del mismo producto en el mismo pedido (p. ej.
+    // "Wilson" y "Head" del mismo overgrip). `descontarStockVariante` hace
+    // "leer productos.variantes fresco → recalcular el arreglo completo →
+    // UPDATE", un read-modify-write que NO es atómico en el cliente. Si las
+    // dos variantes se procesaban en paralelo (como aquí, con
+    // `Promise.all`), ambas leían el MISMO `productos.variantes` original
+    // ANTES de que la otra terminara de escribir — el segundo `UPDATE`
+    // sobreescribía al primero con un arreglo que nunca vio el descuento ya
+    // aplicado, y una de las dos variantes se quedaba sin descontar (se
+    // "revertía"). Ahora se recorre `items` con un `for...of` + `await`
+    // estrictamente uno por uno: cada iteración espera a que la anterior
+    // termine su `UPDATE` antes de leer, así que siempre parte del arreglo
+    // YA actualizado por la mutación previa — el acumulado real de la
+    // transacción, no una copia obsoleta.
+    for (const item of items.filter(
+      (it) => it.tipo === 'producto' && (it.productoPadreId || it.producto_id) && it.manejaStock !== false
+    )) {
+      const productoId = item.productoPadreId || item.producto_id;
+      const varianteId = item.varianteId || item.variante_id;
+      let stockAnterior = item.stock;
+      let nuevoStock = null;
+      let errStock = null;
+      if (item.esVariante || varianteId) {
+        const resultado = await descontarStockVariante({
+          productoId,
+          varianteId,
+          varianteNombre: item.varianteNombre || item.nombre,
+          cantidad: item.cantidad,
+          upsertProducto,
+        });
+        if (!resultado.ok) errStock = resultado.error;
+        else {
+          stockAnterior = resultado.stockAnterior;
+          nuevoStock = resultado.nuevoStock;
+        }
+      } else {
+        const resultado = await descontarStockProductoSimple({
+          productoId,
+          cantidad: item.cantidad,
+          upsertProducto,
+          varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
+        });
+        if (!resultado.ok) errStock = resultado.error;
+        else {
+          stockAnterior = resultado.stockAnterior;
+          nuevoStock = resultado.nuevoStock;
+        }
+      }
+      if (errStock) {
+        console.error(`[Portal] Error detallado Supabase al descontar el stock de "${item.nombre}":`, errStock);
+        fallos.push({ nombre: item.nombre, error: errStock, esRLS: esErrorPermisoRLS(errStock) });
+        continue;
+      }
+      if (nuevoStock == null) continue;
+      const resultadoKardex = await insertarMovimientoKardex({
+        producto_id: productoId,
+        variante_id: varianteId || undefined,
+        producto_nombre: item.nombre,
+        tipo_movimiento: 'salida_venta',
+        cantidad: item.cantidad,
+        stock_anterior: stockAnterior,
+        stock_nuevo: nuevoStock,
+        costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProductoPortal),
+        motivo: `${motivoBase}${item.esVariante || varianteId ? ` · ${item.varianteNombre || item.nombre}` : ''}`,
+        operador: 'Portal Público',
+      });
+      if (!resultadoKardex.ok) {
+        console.error(`[Portal] Error detallado Supabase: stock descontado pero el Kardex no se pudo registrar para "${item.nombre}":`, resultadoKardex.error);
+      }
+    }
     if (fallos.length > 0) {
       // Mismatch de variante (punto 3 pedido: alerta visible, no solo en
       // consola): si el fallo NO es RLS, se asume mismatch de
