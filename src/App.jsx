@@ -833,6 +833,56 @@ import {
 } from 'lucide-react';
 
 /* ============================================================================
+ * LOGO OFICIAL DE CLUBOS — COMPONENTE LOCAL PERMANENTE
+ * ==========================================================================*/
+// Antes se importaba desde un archivo aparte (`./LogoClubOS` /
+// `./components/LogoClubOS`) y esa importación fue la causa raíz de DOS
+// fallas de build/runtime distintas en Vercel (case-sensitivity del path en
+// Linux, y luego la carpeta `src/components/` que no existía en el
+// proyecto real) — la más reciente terminó en un `Uncaught ReferenceError:
+// LogoClubOS is not defined` en producción porque el archivo importado no
+// se resolvía. Para eliminar esa clase de error por completo, el logo vive
+// declarado AQUÍ, directo en `App.jsx`, fuera de `App`/`AppInterno`
+// (componente de módulo, no anidado) — así nunca depende de que un archivo
+// externo exista con el path/mayúsculas exactos en el repo desplegado.
+// Todo uso de `<LogoClubOS />` en el Header, Login/`ClubAuthScreen`,
+// Sidebar o cualquier modal debe usar ESTA definición — no se debe volver a
+// importar desde un archivo aparte.
+const LogoClubOS = ({ className = 'w-auto h-8' }) => (
+  <div className={`flex items-center justify-center ${className}`}>
+    <svg width="220" height="60" viewBox="0 0 320 85" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-full w-full">
+      <path
+        d="M40 10C22 10 10 22 10 40C10 58 22 70 40 70C53 70 63 62 66 50H50C48 55 45 57 40 57C30 57 24 50 24 40C24 30 30 23 40 23C45 23 48 25 50 30H66C63 18 53 10 40 10Z"
+        fill="#FFFFFF"
+      />
+      <path d="M72 12H86V57H106V70H72V12Z" fill="#FFFFFF" />
+      <path
+        d="M112 12H126V48C126 53 130 57 135 57C140 57 144 53 144 48V12H158V48C158 61 148 70 135 70C122 70 112 61 112 48V12Z"
+        fill="#FFFFFF"
+      />
+      <path
+        d="M164 12H188C197 12 204 17 204 25C204 30 200 34 194 36C202 38 206 43 206 51C206 62 197 70 185 70H164V12ZM178 23V34H187C191 34 194 32 194 28.5C194 25 191 23 187 23H178ZM178 44V59H188C192 59 196 56 196 51.5C196 47 192 44 188 44H178Z"
+        fill="#FFFFFF"
+      />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M242 10C224 10 210 23 210 40C210 57 224 70 242 70C260 70 274 57 274 40C274 23 260 10 242 10ZM242 23C232 23 224 30 224 40C224 43.5 225 46.5 227 49H216V31H248V49H237C239 46.5 240 43.5 240 40C240 30 232 23 242 23Z"
+        fill="#A3E635"
+      />
+      <rect x="212" y="36" width="30" height="8" rx="4" fill="#A3E635" />
+      <path
+        d="M288 56C288 58 291 60 296 60C302 60 307 57 307 52C307 47 302 44 293 42C281 39 276 34 276 25C276 15 285 10 298 10C311 10 318 16 319 25H304C303 21 300 20 297 20C292 20 289 22 289 25C289 28 292 30 300 32C311 35 320 39 320 51C320 62 310 70 296 70C282 70 274 61 273 51H288V56Z"
+        fill="#A3E635"
+      />
+      <text x="165" y="82" textAnchor="middle" fill="#FFFFFF" fontSize="10" fontWeight="700" letterSpacing="5">
+        RUN YOUR CLUB.
+      </text>
+    </svg>
+  </div>
+);
+
+/* ============================================================================
  * CONSTANTES DE NEGOCIO
  * ==========================================================================*/
 
@@ -2790,9 +2840,14 @@ function TopHeader({ operador, turno, onAbrirSidebar, onAbrirOperador, alertasCl
       </div>
 
       {/* Centro: logo oficial de ClubOS — SVG inline transparente (fidelidad
-          exacta al branding pedido: sin fondo, sin depender de un archivo
-          externo; `LogoClubOS.jsx` sigue siendo el que se usa tal cual en
-          el Login/`ClubAuthScreen`, este es independiente). */}
+          exacta al branding pedido: sin fondo, sin depender de ningún
+          archivo externo). Copia independiente de la misma marca que el
+          componente local `LogoClubOS` (declarado arriba, junto a los
+          imports, y usado tal cual en el Login/`ClubAuthScreen`) — aquí se
+          mantiene el `<svg>` inline en vez de usar `<LogoClubOS />` porque
+          este necesita una altura fija con ancho automático (`h-8
+          sm:h-10`) directamente sobre el propio `<svg>`, distinto del
+          patrón de `LogoClubOS` (ancho fijo en un `<div>` envolvente). */}
       <div className="flex justify-center py-1">
         <svg
           width="220"
