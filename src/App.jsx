@@ -29543,6 +29543,16 @@ const TEXTO_FONDO_AUTH_IMPAR = 'OPERATE BETTER • SELL MORE • GROW FASTER •
 // la misma dirección, refuerza la sensación de trama tejida del video de
 // referencia.
 const TEXTO_FONDO_AUTH_PAR = 'GROW FASTER • SELL MORE • OPERATE BETTER • ';
+// Cuántas veces se repite la terna de frases DENTRO de cada uno de los 2
+// bloques del track animado. Con solo 1 repetición, un bloque puede ser
+// más angosto que el viewport en monitores anchos (hasta 4K) — al llegar a
+// translateX(-50%) el segundo bloque ya está completamente visible pero se
+// percibe un "salto" porque el ancho real del track no llega ni al 200% del
+// viewport. Repitiendo la terna 4 veces por bloque, el track total (2
+// bloques × 4 repeticiones) supera por mucho el 200% del ancho de cualquier
+// pantalla, así el corte en -50% queda siempre fuera de la parte visible y
+// el loop es imperceptible.
+const REPETICIONES_BLOQUE_FONDO_AUTH = 4;
 
 function FondoAuthAnimado() {
   return (
@@ -29578,6 +29588,10 @@ function FondoAuthAnimado() {
         const numeroFila = i + 1; // 1-based, para que "impar/par" sea literal
         const esImpar = numeroFila % 2 === 1;
         const texto = esImpar ? TEXTO_FONDO_AUTH_IMPAR : TEXTO_FONDO_AUTH_PAR;
+        // Cada bloque repite la terna N veces seguidas (no solo 1 copia) —
+        // así el ancho real del bloque garantiza sobrepasar el viewport en
+        // cualquier monitor, sin tocar la matemática del 50% del track.
+        const textoBloque = texto.repeat(REPETICIONES_BLOQUE_FONDO_AUTH);
         const direccion = esImpar ? 'fondoAuthMarqueeDerecha' : 'fondoAuthMarqueeIzquierda';
         // Duración 15s-25s: movimiento fluido, filas vecinas nunca quedan
         // perfectamente sincronizadas entre sí.
@@ -29593,7 +29607,7 @@ function FondoAuthAnimado() {
                   key={copia}
                   className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-[0.11] lg:text-5xl xl:text-6xl"
                 >
-                  {texto}
+                  {textoBloque}
                 </span>
               ))}
             </div>
