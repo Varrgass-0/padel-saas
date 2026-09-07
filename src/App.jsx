@@ -20104,15 +20104,19 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
           />
           <span className="text-xs text-slate-300">
             <span className="block font-bold text-slate-100">Repetir semanalmente (Serie Recurrente)</span>
+            {/* FIX (fecha duplicada): `formatoFechaLarga` YA incluye el
+                nombre del día (`weekday: 'long'`, ver su definición) — antes
+                este texto anteponía también `diaSemanaMeta.label`, dejando
+                "Domingo Domingo, 6 de septiembre". Ya no se repite. */}
             {generarSerieSemanal ? (
               <span className="mt-0.5 block text-slate-500">
-                Se generarán y bloquearán las próximas {CANTIDAD_SESIONES_GENERADAS} sesiones ({diaSemanaMeta.label}, empezando{' '}
-                {formatoFechaLarga(fecha)}) en la Parrilla Operativa.
+                Se generarán y bloquearán las próximas {CANTIDAD_SESIONES_GENERADAS} sesiones (empezando {formatoFechaLarga(fecha)},
+                cada {diaSemanaMeta.label}) en la Parrilla Operativa.
               </span>
             ) : (
               <span className="mt-0.5 block text-slate-500">
-                Sin marcar, se crea solo esta sesión ({diaSemanaMeta.label} {formatoFechaLarga(fecha)}). Puedes volver a "Nueva
-                Clase" cuando quieras agendar la siguiente.
+                Sin marcar, se crea solo esta sesión ({formatoFechaLarga(fecha)}). Puedes volver a "Nueva Clase" cuando quieras
+                agendar la siguiente.
               </span>
             )}
           </span>
@@ -28537,6 +28541,26 @@ function AppInterno() {
     };
   }, [cargarProductos]);
 
+  // FIX (Catálogo con stock "congelado" — respaldo independiente de
+  // Realtime): una venta desde el Portal o desde OTRA terminal de Smart POS
+  // solo llega a este Catálogo por el canal Realtime de arriba — si la
+  // tabla `productos` no está agregada a la publicación `supabase_realtime`
+  // de Supabase (un ajuste de proyecto/dashboard, ver
+  // `migracion_v24_realtime_productos_notificaciones.sql`) o el WebSocket se
+  // desconecta un momento, el stock que se ve en el Catálogo se queda
+  // fijo con el valor viejo indefinidamente — el Kardex, que se lee bajo
+  // demanda al abrir esa pestaña, sí muestra el movimiento real porque no
+  // depende de Realtime. Este poll de bajo costo (cada 20s, silencioso, sin
+  // spinner) "fuerza la re-evaluación" del stock sin importar si Realtime
+  // funcionó o no — el Catálogo nunca queda desactualizado por más de ese
+  // margen, sea cual sea la causa de que Realtime no haya disparado.
+  useEffect(() => {
+    const intervalo = setInterval(() => {
+      cargarProductos({ silencioso: true });
+    }, 20000);
+    return () => clearInterval(intervalo);
+  }, [cargarProductos]);
+
   function upsertProducto(producto) {
     setProductos((prev) => {
       const existe = prev.some((p) => p.id === producto.id);
@@ -29226,12 +29250,94 @@ function AppInterno() {
     };
   }, [agregarAlertaClub]);
 
+  // FIX (Campanita — "reacciona en tiempo real"): antes `alertasClub`
+  // arrancaba SIEMPRE en `[]` y SOLO se llenaba con eventos de Realtime que
+  // llegaran DESPUÉS de que el panel ya estuviera abierto — nunca había un
+  // `select` que trajera lo que ya existiera en `notificaciones_club`. Eso
+  // significa que recargar la página, o simplemente abrir el panel después
+  // de que un jugador ya compró/reservó desde el Portal, dejaba la campana
+  // vacía aunque la notificación sí estuviera guardada (persistente desde
+  // `migracion_v20_notificaciones_club.sql`). Además, Realtime depende de
+  // que la tabla esté agregada a la publicación `supabase_realtime` de
+  // Supabase — si ese ajuste de proyecto llegara a faltar o el WebSocket se
+  // cae un momento, un evento se pierde para siempre sin este respaldo (ver
+  // `migracion_v24_realtime_productos_notificaciones.sql`). Esta carga
+  // inicial trae las notificaciones NO LEÍDAS más recientes del club al
+  // montar el panel; el canal Realtime de arriba sigue encargándose de lo
+  // que llegue mientras el panel está abierto.
+  useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return;
+    let cancelado = false;
+    (async () => {
+      const { data, error } = await conClubId(supabase.from('notificaciones_club').select('*'))
+        .eq('leida', false)
+        .order('created_at', { ascending: false })
+        .limit(40);
+      if (cancelado) return;
+      if (error) {
+        if (!esErrorTablaInexistente(error)) console.warn('[ClubOS] No se pudo cargar el respaldo inicial de notificaciones del club.', error);
+        return;
+      }
+      const filas = data || [];
+      if (filas.length === 0) return;
+      setAlertasClub((prev) => {
+        const idsExistentes = new Set(prev.map((a) => a.id));
+        const nuevas = filas
+          .filter((fila) => !idsExistentes.has(`db-${fila.id}`))
+          .map((fila) => ({
+            id: `db-${fila.id}`,
+            tipo: fila.tipo || 'notificacion',
+            titulo: fila.titulo || 'Nueva actividad del Portal Web',
+            jugadorId: fila.jugador_id || null,
+            leida: false,
+            creadaEn: fila.created_at ? new Date(fila.created_at).getTime() : Date.now(),
+          }));
+        if (nuevas.length === 0) return prev;
+        return [...nuevas, ...prev].sort((a, b) => b.creadaEn - a.creadaEn).slice(0, 40);
+      });
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  // FIX (persistencia de "leída"): las alertas que vienen del respaldo
+  // inicial de `notificaciones_club` (id con prefijo `db-`, ver el `useEffect`
+  // de arriba) tienen que marcarse `leida = true` TAMBIÉN en Supabase —si no,
+  // reaparecen en la campana la próxima vez que se recargue el panel, porque
+  // ese `select` inicial solo trae `leida = false`. Las alertas "clásicas"
+  // (armadas al vuelo por los canales de `centro-alertas-club`, id con
+  // prefijo `tipo-timestamp-random`) no tienen fila propia que actualizar —
+  // se quedan igual que siempre, solo estado local de esta sesión.
   const marcarAlertaLeida = useCallback((id) => {
     setAlertasClub((prev) => prev.map((a) => (a.id === id ? { ...a, leida: true } : a)));
+    if (typeof id === 'string' && id.startsWith('db-')) {
+      const idReal = id.slice(3);
+      supabase
+        .from('notificaciones_club')
+        .update({ leida: true })
+        .eq('id', idReal)
+        .then(({ error }) => {
+          if (error) console.warn('[ClubOS] No se pudo marcar como leída la notificación en Supabase.', error);
+        });
+    }
   }, []);
 
   const marcarTodasAlertasLeidas = useCallback(() => {
-    setAlertasClub((prev) => prev.map((a) => ({ ...a, leida: true })));
+    let idsDb = [];
+    setAlertasClub((prev) => {
+      idsDb = prev.filter((a) => typeof a.id === 'string' && a.id.startsWith('db-') && !a.leida).map((a) => a.id.slice(3));
+      return prev.map((a) => ({ ...a, leida: true }));
+    });
+    if (idsDb.length > 0) {
+      supabase
+        .from('notificaciones_club')
+        .update({ leida: true })
+        .in('id', idsDb)
+        .then(({ error }) => {
+          if (error) console.warn('[ClubOS] No se pudieron marcar todas las notificaciones como leídas en Supabase.', error);
+        });
+    }
   }, []);
 
   // Interconexión total: al hacer clic en una alerta, salta directo al
