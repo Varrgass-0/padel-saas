@@ -9906,28 +9906,63 @@ async function descontarStockVariante({ productoId, varianteId, varianteNombre, 
       return { ok: false, via: 'ninguno', error };
     }
 
+    // Matching en DOS PASADAS, no entrelazado — FIX (mismatch Wilson/Head):
+    // la versión anterior recorría el arreglo UNA sola vez comprobando id Y
+    // nombre en el mismo `for`, y se quedaba con el PRIMER índice que
+    // cumpliera cualquiera de los dos — si el `varianteId` que mandó el
+    // carrito no correspondía a ninguna entrada real (id viejo, variante
+    // creada antes de que el guardado empezara a persistir un `id` estable),
+    // el chequeo de id fallaba en TODAS las vueltas sin que eso se notara, y
+    // aun así el de nombre podía fallar también para una sola variante
+    // específica del producto (p. ej. "Wilson") sin ninguna pista de por
+    // qué — mientras que otra variante del mismo producto ("Head") sí
+    // coincidía por pura casualidad de datos. Ahora la búsqueda es
+    // explícita y en orden: (1) id estricto primero, recorriendo TODO el
+    // arreglo; (2) si no hay id o no hubo coincidencia, se fuerza de
+    // inmediato la búsqueda secundaria por nombre limpio
+    // (trim + lowercase), también sobre TODO el arreglo; (3) si ninguna de
+    // las dos encuentra nada, se registra un mismatch explícito con la
+    // lista real de nombres disponibles en Supabase en ese momento — para
+    // poder ver en consola/toast exactamente qué se buscó contra qué había.
     const listaVariantes = productoPadre.variantes;
     const idBuscado = varianteId != null ? String(varianteId).trim().toLowerCase() : '';
     const nombreBuscado = varianteNombre != null ? String(varianteNombre).trim().toLowerCase() : '';
+
     let indiceCoincide = -1;
-    for (let i = 0; i < listaVariantes.length; i++) {
-      const v = listaVariantes[i];
-      const idCalculado = idEstableVarianteJSONB(v, i).trim().toLowerCase();
-      const idCrudo = v?.id != null ? String(v.id).trim().toLowerCase() : '';
-      const nombreV = nombreDeVarianteJSONB(v).trim().toLowerCase();
-      const coincidePorId = idBuscado && (idBuscado === idCalculado || idBuscado === idCrudo);
-      const coincidePorNombre = nombreBuscado && nombreBuscado === nombreV;
-      if (coincidePorId || coincidePorNombre) {
-        indiceCoincide = i;
-        break;
+
+    // Pasada 1 — id estricto (id crudo de Supabase o el id estable derivado
+    // del nombre, ambos limpiados con trim + lowercase).
+    if (idBuscado) {
+      for (let i = 0; i < listaVariantes.length; i++) {
+        const v = listaVariantes[i];
+        const idCalculado = idEstableVarianteJSONB(v, i).trim().toLowerCase();
+        const idCrudo = v?.id != null ? String(v.id).trim().toLowerCase() : '';
+        if (idBuscado === idCalculado || idBuscado === idCrudo) {
+          indiceCoincide = i;
+          break;
+        }
+      }
+    }
+
+    // Pasada 2 — fallback de búsqueda flexible por nombre: se dispara de
+    // inmediato si la pasada 1 no encontró nada (o no había id que buscar).
+    if (indiceCoincide === -1 && nombreBuscado) {
+      for (let i = 0; i < listaVariantes.length; i++) {
+        const nombreV = nombreDeVarianteJSONB(listaVariantes[i]).trim().toLowerCase();
+        if (nombreBuscado === nombreV) {
+          indiceCoincide = i;
+          break;
+        }
       }
     }
 
     if (indiceCoincide === -1) {
+      const nombresDisponibles = listaVariantes.map((v) => nombreDeVarianteJSONB(v) || '(sin nombre)');
+      const etiquetaBuscada = varianteNombre || varianteId || '(sin id ni nombre)';
       const error = new Error(
-        `La variante "${varianteNombre || varianteId}" no se encontró en productos.variantes del producto ${productoId}.`
+        `No se encontró la variante "${etiquetaBuscada}" dentro de los nombres disponibles: [${nombresDisponibles.join(', ')}] (producto ${productoId}).`
       );
-      console.error('[Inventario] Error detallado Supabase:', error);
+      console.error('[Inventario] Mismatch de variante al descontar stock — id buscado:', varianteId, '| nombre buscado:', varianteNombre, '| variantes en Supabase:', listaVariantes, error);
       return { ok: false, via: 'ninguno', error };
     }
 
@@ -9936,7 +9971,17 @@ async function descontarStockVariante({ productoId, varianteId, varianteNombre, 
     if (!claveStock) {
       // Variante sin control de stock propio (ninguna de stock/cantidad/
       // existencias presente en esa entrada) — no es una falla, simplemente
-      // no hay nada que descontar ni que registrar en el kardex.
+      // no hay nada que descontar ni que registrar en el kardex. Se
+      // encontró la variante correcta (este `console.warn`, a diferencia
+      // del mismatch de arriba, confirma que SÍ hubo match) — pero si en la
+      // práctica se esperaba que esta variante SÍ controlara stock, la
+      // fila cruda que se imprime aquí muestra exactamente qué claves trae
+      // de verdad en Supabase (útil si el campo se llama distinto a
+      // `stock`/`cantidad`/`existencias` por un typo manual en el JSONB).
+      console.warn(
+        `[Inventario] La variante "${nombreDeVarianteJSONB(varianteEncontrada)}" del producto ${productoId} coincidió, pero no tiene ninguna clave de stock reconocida (stock/cantidad/existencias) — no se descontó nada. Fila cruda:`,
+        varianteEncontrada
+      );
       return { ok: true, via: 'jsonb', stockAnterior: null, nuevoStock: null, error: null };
     }
 
@@ -25665,11 +25710,18 @@ function PortalPublicoJugadores({ clubSlug }) {
         })
     );
     if (fallos.length > 0) {
+      // Mismatch de variante (punto 3 pedido: alerta visible, no solo en
+      // consola): si el fallo NO es RLS, se asume mismatch de
+      // id/nombre dentro de `productos.variantes` — se muestra el mensaje
+      // real de `descontarStockVariante` (ya trae el detalle "No se
+      // encontró la variante X dentro de los nombres disponibles: [...]")
+      // en vez de un genérico "avisa a recepción", para que el mismatch se
+      // vea de inmediato sin tener que abrir la consola del navegador.
       mostrarToast({
         titulo: 'Compra registrada, pero sin descontar inventario',
         detalle: fallos.some((f) => f.esRLS)
           ? `Falta correr migracion_v9_rls_productos.sql en Supabase. Avisa a recepción para ajustar "${fallos.map((f) => f.nombre).join(', ')}" manualmente.`
-          : `No se pudo actualizar el stock de: ${fallos.map((f) => f.nombre).join(', ')}. Avisa a recepción.`,
+          : fallos.map((f) => f.error?.message || f.nombre).join(' · '),
         tono: 'error',
       });
     }
