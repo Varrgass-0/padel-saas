@@ -9945,10 +9945,12 @@ async function descontarStockVariante({ productoId, varianteId, varianteNombre, 
     const variantesActualizadas = listaVariantes.map((v, i) => (i === indiceCoincide ? { ...v, [claveStock]: nuevoStockVariante } : v));
 
     // Sincronización Automática Padre-Variantes: el stock total del padre se
-    // recalcula sumando el arreglo YA actualizado, en el mismo update. El
-    // payload SIEMPRE incluye `variantes: variantesActualizadas` — nunca solo
-    // `stock` — para que el arreglo JSONB completo (con la variante vendida
-    // ya descontada) quede guardado en Supabase junto con el total.
+    // recalcula sumando el arreglo YA actualizado, en el mismo update.
+    const stockTotalPadre = variantesActualizadas.reduce((acc, v) => acc + (stockDeVarianteJSONB(v) || 0), 0);
+
+    // El payload SIEMPRE incluye `variantes: variantesActualizadas` — nunca
+    // solo `stock` — para que el arreglo JSONB completo (con la variante
+    // vendida ya descontada) quede guardado en Supabase junto con el total.
     //
     // VERIFICACIÓN OBLIGATORIA (FIX CRÍTICO): antes este `UPDATE` no pedía
     // `.select()` de vuelta, así que un caso silencioso — RLS bloqueando la
