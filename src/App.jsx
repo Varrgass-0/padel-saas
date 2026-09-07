@@ -29559,7 +29559,7 @@ const REPETICIONES_BLOQUE_FONDO_AUTH = 5;
 
 function FondoAuthAnimado() {
   return (
-    <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden bg-[#0b132b]">
+    <div className="pointer-events-none absolute inset-0 z-0 h-full min-h-screen min-h-dvh w-full overflow-hidden bg-[#0b132b]">
       {/* Keyframes + clases de animación propias (no dependen de
           tailwind.config — este proyecto se entrega como un solo App.jsx):
           cada fila trae un track `w-max flex` con 2 bloques `shrink-0`
@@ -29569,8 +29569,12 @@ function FondoAuthAnimado() {
           track se desplaza exactamente la mitad de su ancho total (un
           bloque completo), así el ciclo nunca deja un salto/corte visible.
           Filas pares hacia la izquierda, impares hacia la derecha,
-          duración media (25s-35s) + una preferencia de movimiento reducido
-          para quien la tenga activada en su SO. */}
+          duración lenta y elegante (65s-90s) + una preferencia de
+          movimiento reducido para quien la tenga activada en su SO.
+          `min-h-screen`/`min-h-dvh` + `bg-[#0b132b]` también en el
+          contenedor padre de la pantalla de Auth (ver `ClubAuthScreen` /
+          `ClubAuthGate`) evitan que se asome el blanco del body/html en
+          los bordes durante el rebote de scroll (bounce scroll) de iOS. */}
       <style>{`
         @keyframes marquee-left { 0% { transform: translateX(0%); } 100% { transform: translateX(-50%); } }
         @keyframes marquee-right { 0% { transform: translateX(-50%); } 100% { transform: translateX(0%); } }
@@ -29586,9 +29590,10 @@ function FondoAuthAnimado() {
           const esPar = numeroFila % 2 === 0;
           const texto = esPar ? TEXTO_FONDO_AUTH_PAR : TEXTO_FONDO_AUTH_IMPAR;
           const textoRepetido = texto.repeat(REPETICIONES_BLOQUE_FONDO_AUTH);
-          // Duración 25s-35s: ritmo medio y fluido — filas vecinas nunca
-          // quedan perfectamente sincronizadas entre sí.
-          const duracionSeg = 25 + (i % 6) * 2;
+          // Duración 65s-90s: movimiento lento y elegante (antes 25s-35s,
+          // se sentía todavía rápido para un fondo puramente decorativo) —
+          // filas vecinas nunca quedan perfectamente sincronizadas entre sí.
+          const duracionSeg = 65 + (i % 6) * 5;
           return (
             <div key={i} className="flex h-full w-full items-center overflow-hidden">
               <div
@@ -29750,7 +29755,7 @@ function ClubAuthScreen({ onAutenticado }) {
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b132b] px-4 py-10">
+    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#0b132b] px-4 py-10">
       <FondoAuthAnimado />
       <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
@@ -30081,7 +30086,7 @@ function ClubAuthGate() {
 
   if (estado === 'cargando') {
     return (
-      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b132b]">
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#0b132b]">
         <FondoAuthAnimado />
         <Loader2 size={28} className="relative z-10 animate-spin text-lime-400" />
       </div>
@@ -30104,7 +30109,7 @@ function ClubAuthGate() {
 
   if (estado === 'error_reloj') {
     return (
-      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b132b] px-4">
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#0b132b] px-4">
         <FondoAuthAnimado />
         <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 text-center shadow-2xl">
           <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30">
@@ -30165,7 +30170,7 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b132b] px-4 py-10">
+    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#0b132b] px-4 py-10">
       <FondoAuthAnimado />
       <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
