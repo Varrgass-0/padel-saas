@@ -739,6 +739,7 @@ import React, {
   useRef,
 } from 'react';
 import { supabase } from './supabaseClient';
+import { LogoClubOS } from './LogoClubOS';
 import {
   LayoutGrid,
   CalendarDays,
@@ -15001,6 +15002,32 @@ function esErrorTablaInexistente(error) {
   return /relation .* does not exist/i.test(msg) || /could not find the table/i.test(msg) || /schema cache/i.test(msg);
 }
 
+// Detecta "invalid input syntax for type uuid: ..." (Postgres 22P02) — pasa
+// cuando `club_id` (o `empleado_id`/`operador_id`) de una tabla está tipado
+// `uuid` pero se le manda un valor que no tiene esa forma, típicamente un
+// entero corto como `CLUB_ACTIVO_ID` cuando `configuracion_club.id` NO es
+// uuid en este proyecto (desajuste de esquema entre tablas — ver
+// `migracion_v25_diagnostico_tipo_club_id.sql`). Encontrado en `empleados`/
+// `log_actividad`: su columna `club_id` quedó como `uuid` mientras que en el
+// resto de las tablas del proyecto es del mismo tipo que
+// `configuracion_club.id` — así que SOLO esas dos tablas fallan, con el
+// mismo valor (`CLUB_ACTIVO_ID`) que en cualquier otra tabla filtra bien.
+function esErrorTipoUUIDInvalido(error) {
+  if (!error) return false;
+  if (error.code === '22P02') return true;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('invalid input syntax for type uuid');
+}
+
+// Extrae el valor literal entre comillas del mensaje de Postgres
+// ('invalid input syntax for type uuid: "14"' → "14") — solo para mostrar
+// un mensaje de diagnóstico más útil; regresa `null` si el mensaje no trae
+// ese formato exacto.
+function valorUUIDInvalidoDelError(error) {
+  const match = /invalid input syntax for type uuid:\s*"([^"]*)"/i.exec(error?.message || '');
+  return match ? match[1] : null;
+}
+
 // Detecta un bloqueo de RLS/permisos de Postgres — incluye el caso clásico
 // de PostgREST cuando un `INSERT` SÍ se guardó (la política de escritura
 // para `anon` lo permite) pero no hay política de SELECT que deje leer la
@@ -28377,7 +28404,19 @@ function AppInterno() {
     if (error) {
       // Igual criterio que Retas/Torneos: tabla ausente = fallback silencioso
       // en modo local, nunca un banner que bloquee el módulo.
-      if (!esErrorTablaInexistente(error)) setErrorEmpleados(error.message || 'No se pudieron cargar los empleados.');
+      if (esErrorTipoUUIDInvalido(error)) {
+        // Diagnóstico específico (ver `esErrorTipoUUIDInvalido`): la
+        // columna `empleados.club_id` no coincide en tipo con
+        // `configuracion_club.id` — mensaje accionable en vez del error
+        // críptico de Postgres tal cual.
+        setErrorEmpleados(
+          `La columna club_id de "empleados" no coincide en tipo con configuracion_club.id (Supabase rechazó el valor "${
+            valorUUIDInvalidoDelError(error) || CLUB_ACTIVO_ID
+          }" por no ser un uuid). Corre migracion_v26_fix_tipo_club_id_empleados.sql en Supabase para corregirlo.`
+        );
+      } else if (!esErrorTablaInexistente(error)) {
+        setErrorEmpleados(error.message || 'No se pudieron cargar los empleados.');
+      }
       setEmpleados(fusionarConRegistrosLocales([], LS_KEY_EMPLEADOS_LOCAL));
     } else {
       setEmpleados(fusionarConRegistrosLocales(data || [], LS_KEY_EMPLEADOS_LOCAL));
@@ -28408,7 +28447,15 @@ function AppInterno() {
     setErrorLogActividad('');
     const { data, error } = await conClubId(supabase.from('log_actividad').select('*')).order('created_at', { ascending: false }).limit(500);
     if (error) {
-      if (!esErrorTablaInexistente(error)) setErrorLogActividad(error.message || 'No se pudo cargar el Log de Actividad.');
+      if (esErrorTipoUUIDInvalido(error)) {
+        setErrorLogActividad(
+          `La columna club_id de "log_actividad" no coincide en tipo con configuracion_club.id (Supabase rechazó el valor "${
+            valorUUIDInvalidoDelError(error) || CLUB_ACTIVO_ID
+          }" por no ser un uuid). Corre migracion_v26_fix_tipo_club_id_empleados.sql en Supabase para corregirlo.`
+        );
+      } else if (!esErrorTablaInexistente(error)) {
+        setErrorLogActividad(error.message || 'No se pudo cargar el Log de Actividad.');
+      }
       setLogActividad(fusionarConRegistrosLocales([], LS_KEY_LOG_ACTIVIDAD_LOCAL));
     } else {
       setLogActividad(fusionarConRegistrosLocales(data || [], LS_KEY_LOG_ACTIVIDAD_LOCAL));
@@ -28508,6 +28555,22 @@ function AppInterno() {
       empleadoCreado = data;
     } catch (err) {
       console.warn('[Empleados] No se pudo guardar en Supabase — se usa modo local.', err);
+      // FIX (alta rápida "desaparece"): antes esta falla quedaba solo en
+      // `console.warn` — el operador veía "Empleado creado" igual (el modo
+      // local es indistinguible en la UI) y nunca se enteraba de que en
+      // realidad NO se guardó en Supabase, solo en localStorage de ESE
+      // navegador — así que en otro dispositivo/sesión el empleado
+      // simplemente no existía. Ahora, específicamente para el desajuste de
+      // tipo de `club_id` (la causa raíz encontrada — ver
+      // `esErrorTipoUUIDInvalido`), se avisa con un toast visible y
+      // accionable en vez de fallar en silencio.
+      if (esErrorTipoUUIDInvalido(err)) {
+        mostrarToast({
+          titulo: 'Empleado guardado solo en este dispositivo',
+          detalle: 'La columna club_id de "empleados" no es del mismo tipo que configuracion_club.id en Supabase — corre migracion_v26_fix_tipo_club_id_empleados.sql para que se guarde en la base de datos real.',
+          tono: 'error',
+        });
+      }
       empleadoCreado = { ...payload, id: idLocal('empleado'), _local: true };
       guardarRegistroLocal(LS_KEY_EMPLEADOS_LOCAL, empleadoCreado);
     }
@@ -30183,14 +30246,31 @@ function ClubAuthScreen({ onAutenticado }) {
   };
 
   return (
-    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#0b132b] px-4 py-10">
+    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#0b132b] p-4 gap-4">
       <FondoAuthAnimado />
+
+      {/* Tarjeta Superior — Header del Logo: mismo estilo dark/glassmorphism
+          que la tarjeta del formulario de abajo, pero MÁS ANCHA (max-w-lg
+          vs. max-w-md), así el logo sobresale hacia los lados y domina la
+          jerarquía visual de la pantalla. */}
+      <div className="relative z-10 w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900/80 px-8 py-6 shadow-2xl backdrop-blur-xl">
+        <LogoClubOS className="mx-auto h-auto w-64 md:w-80" />
+      </div>
+
+      {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
       <div className="relative z-10 w-full max-w-md">
-        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
-          <div className="mb-5">
-            <h2 className="text-base font-bold text-slate-100">{titulos[modo].titulo}</h2>
-            {titulos[modo].subtitulo && <p className="mt-0.5 text-xs text-slate-400">{titulos[modo].subtitulo}</p>}
-          </div>
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-xl">
+          {/* Encabezado interno removido en 'login': el logo de la tarjeta
+              de arriba ya se lleva todo el protagonismo de marca — repetir
+              "Run Your Club" aquí sería redundante. Se conserva SOLO para
+              'registro'/'recuperar', donde el título no es una marca sino
+              contexto real (le dice al usuario en qué paso del flujo está). */}
+          {modo !== 'login' && (
+            <div className="mb-5">
+              <h2 className="text-base font-bold text-slate-100">{titulos[modo].titulo}</h2>
+              {titulos[modo].subtitulo && <p className="mt-0.5 text-xs text-slate-400">{titulos[modo].subtitulo}</p>}
+            </div>
+          )}
 
           {error && (
             <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
