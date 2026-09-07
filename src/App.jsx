@@ -29535,11 +29535,10 @@ function AppInterno() {
 // opacidad casi imperceptible sobre el fondo `#0b132b` — marca de agua, no
 // protagonista: el formulario/tarjeta sigue siendo lo único que de verdad
 // se lee.
-// 12 filas fijas (antes 9) en TODOS los tamaños — en vez de solo llenar de
-// texto una pantalla grande y dejar la vista de celular con huecos entre
-// filas, el mismo conteo denso se usa en cualquier viewport; el respiro
-// entre filas se controla aparte con `gap` (más chico en móvil, más grande
-// en desktop) para que en pantallas grandes no se vea apretado.
+// 12 filas fijas en TODOS los tamaños — el mismo conteo denso se usa en
+// cualquier viewport; el respiro entre filas se controla con márgenes
+// negativos (`-space-y-1 sm:-space-y-2` en el contenedor) para que queden
+// pegadas una debajo de la otra, sin huecos, tanto en celular como en PC.
 const FILAS_FONDO_AUTH = 12;
 // Filas IMPARES (1, 3, 5...): esta frase, hacia la derecha.
 const TEXTO_FONDO_AUTH_IMPAR = 'OPERATE BETTER • SELL MORE • GROW FASTER • ';
@@ -29560,7 +29559,7 @@ const REPETICIONES_BLOQUE_FONDO_AUTH = 6;
 function FondoAuthAnimado() {
   return (
     <div
-      className="fondo-auth-mask pointer-events-none absolute inset-0 flex h-full w-full select-none flex-col justify-between gap-1 overflow-hidden sm:gap-2 lg:gap-3"
+      className="pointer-events-none absolute inset-0 flex h-full w-full select-none flex-col items-center justify-center overflow-hidden -space-y-1 sm:-space-y-2"
       style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
     >
       {/* Keyframes propios (no dependen de tailwind.config — este proyecto
@@ -29572,23 +29571,11 @@ function FondoAuthAnimado() {
           total (un bloque completo), así el ciclo nunca deja un salto/corte
           visible. Direcciones opuestas (derecha/izquierda) + una
           preferencia de movimiento reducido para quien la tenga activada en
-          su SO. La máscara de desvanecimiento va aparte, en su propia clase
-          `.fondo-auth-mask`, para poder suavizarla en móvil (donde hay
-          menos alto de pantalla y un recorte agresivo se come más filas) y
-          endurecerla un poco en desktop. */}
+          su SO. Sin máscara de degradado: el fondo va a opacidad plena de
+          borde a borde, sin zonas desvanecidas arriba/abajo. */}
       <style>{`
         @keyframes marqueeLeft { 0% { transform: translateX(0%); } 100% { transform: translateX(-50%); } }
         @keyframes marqueeRight { 0% { transform: translateX(-50%); } 100% { transform: translateX(0%); } }
-        .fondo-auth-mask {
-          -webkit-mask-image: linear-gradient(to bottom, transparent, black 5%, black 95%, transparent);
-          mask-image: linear-gradient(to bottom, transparent, black 5%, black 95%, transparent);
-        }
-        @media (min-width: 1024px) {
-          .fondo-auth-mask {
-            -webkit-mask-image: linear-gradient(to bottom, transparent, black 15%, black 85%, transparent);
-            mask-image: linear-gradient(to bottom, transparent, black 15%, black 85%, transparent);
-          }
-        }
         @media (prefers-reduced-motion: reduce) {
           .fondo-auth-track { animation: none !important; transform: translateX(0) !important; }
         }
@@ -29598,11 +29585,13 @@ function FondoAuthAnimado() {
         const esImpar = numeroFila % 2 === 1;
         const texto = esImpar ? TEXTO_FONDO_AUTH_IMPAR : TEXTO_FONDO_AUTH_PAR;
         const direccion = esImpar ? 'marqueeRight' : 'marqueeLeft';
-        // Duración 15s-25s: movimiento fluido, filas vecinas nunca quedan
-        // perfectamente sincronizadas entre sí.
-        const duracionSeg = 15 + (i % 6) * 2;
+        // Duración 35s-50s: desplazamiento lento, suave y elegante (antes
+        // 15s-25s, se sentía demasiado rápido/agresivo para un fondo
+        // decorativo) — filas vecinas nunca quedan perfectamente
+        // sincronizadas entre sí.
+        const duracionSeg = 35 + (i % 6) * 3;
         return (
-          <div key={i} className="overflow-hidden">
+          <div key={i} className="w-full overflow-hidden">
             <div
               className="fondo-auth-track flex w-max"
               style={{ animation: `${direccion} ${duracionSeg}s linear infinite` }}
@@ -29612,7 +29601,7 @@ function FondoAuthAnimado() {
                   {Array.from({ length: REPETICIONES_BLOQUE_FONDO_AUTH }).map((_, r) => (
                     <span
                       key={r}
-                      className="whitespace-nowrap text-4xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-[0.11] lg:text-5xl xl:text-6xl"
+                      className="whitespace-nowrap text-2xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-[0.11] sm:text-4xl lg:text-5xl"
                     >
                       {texto}
                     </span>
