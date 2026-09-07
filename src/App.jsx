@@ -29530,39 +29530,56 @@ function AppInterno() {
 
 // Fondo tipográfico animado de las pantallas de Auth — puramente
 // decorativo: pared de columnas con scroll vertical infinito, alternando 3
-// frases del posicionamiento del producto en verde neón (mismo lime del
-// botón principal) a opacidad baja sobre el fondo `#0b132b`, para que el
-// texto real (formulario, tarjeta) siga leyéndose perfecto encima.
+// frases del posicionamiento del producto, en verde neón (mismo lime del
+// botón principal) a opacidad casi imperceptible sobre el fondo `#0b132b`
+// — marca de agua, no protagonista: el formulario/tarjeta sigue siendo lo
+// único que de verdad se lee.
 const TEXTOS_FONDO_AUTH = ['OPERATE BETTER', 'SELL MORE', 'GROW FASTER'];
 // Cuántas veces se repite la frase por columna, POR COPIA (el track real
-// dibuja 2 copias seguidas — ver `FondoAuthAnimado` — para el truco del loop
-// sin costura por CSS): de sobra para que una sola copia ya sea más alta
-// que el viewport más alto realista (monitores 4K incluidos) y el scroll
-// nunca deje ver un hueco en blanco a medio ciclo.
-const REPETICIONES_FONDO_AUTH = 18;
-// Un arreglo fijo de "slots" de columna — cada uno se activa a partir de un
-// breakpoint de Tailwind (`null` = siempre visible). Con este arreglo: 4
-// columnas en móvil, 6 desde `sm`, 8 desde `lg`, 10 desde `2xl` — la
-// densidad crece con el viewport, pero como CADA columna visible es
-// `flex-1` (nunca ancho fijo), las que estén activas siempre reparten el
-// 100% del contenedor entre sí sin importar cuántas sean: jamás queda un
-// hueco en los bordes, de un celular angosto a un monitor 4K ultra-wide.
-const BREAKPOINTS_COLUMNAS_FONDO_AUTH = [null, null, null, null, 'sm', 'sm', 'lg', 'lg', '2xl', '2xl'];
+// dibuja 2 copias IDÉNTICAS seguidas — ver `FondoAuthAnimado`, el truco del
+// loop sin costura por CSS depende de que ambas copias midan exactamente lo
+// mismo). De sobra para que una sola copia ya sea más alta que el viewport
+// más alto realista (monitores 4K incluidos), aun con el texto mucho más
+// grande de esta versión, así el scroll nunca deja ver un hueco a medio
+// ciclo.
+const REPETICIONES_FONDO_AUTH = 10;
+// Máximo 4-5 columnas en pantallas grandes (antes eran hasta 10 — se veía
+// saturado con el texto pequeño; con texto grande, menos columnas leen
+// mejor): 2 en móvil, 3 desde `sm`, 4 desde `lg`, 5 desde `xl`. Cada
+// columna visible sigue siendo `flex-1` (nunca ancho fijo), así que
+// reparten el 100% del contenedor entre sí sin importar cuántas haya —
+// jamás queda un hueco en los bordes, de un celular angosto a un monitor 4K
+// ultra-wide.
+const BREAKPOINTS_COLUMNAS_FONDO_AUTH = [null, null, 'sm', 'lg', 'xl'];
 
 function claseVisibleColumnaFondoAuth(breakpoint) {
   if (breakpoint === 'sm') return 'hidden sm:flex';
   if (breakpoint === 'lg') return 'hidden lg:flex';
-  if (breakpoint === '2xl') return 'hidden 2xl:flex';
+  if (breakpoint === 'xl') return 'hidden xl:flex';
   return 'flex';
 }
 
 function FondoAuthAnimado() {
   return (
-    <div className="pointer-events-none absolute inset-0 h-full w-full select-none overflow-hidden">
+    <div
+      className="pointer-events-none absolute inset-0 h-full w-full select-none overflow-hidden"
+      style={{
+        // Degradado de desvanecimiento arriba/abajo (máscara CSS, no
+        // opacidad — así el texto sigue a opacidad plena hasta que la
+        // máscara lo recorta): suaviza la entrada/salida del texto en los
+        // bordes en vez de un corte duro contra el borde de la pantalla.
+        // Doble propiedad por soporte de Safari (`-webkit-mask-image`).
+        WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)',
+        maskImage: 'linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)',
+      }}
+    >
       {/* Keyframes propios (no dependen de tailwind.config — este proyecto
           se entrega como un solo App.jsx): dos direcciones opuestas para
-          que columnas vecinas suban y bajen a la vez, y una preferencia de
-          movimiento reducido para quien la tenga activada en su SO. */}
+          que columnas vecinas suban y bajen a la vez, cada una de
+          `translateY(0)` a `translateY(-50%)` (o viceversa) — exactamente
+          la mitad del track de 2 copias idénticas, así el loop nunca da un
+          salto/glitch visible. Más una preferencia de movimiento reducido
+          para quien la tenga activada en su SO. */}
       <style>{`
         @keyframes fondoAuthScrollUp { from { transform: translateY(0); } to { transform: translateY(-50%); } }
         @keyframes fondoAuthScrollDown { from { transform: translateY(-50%); } to { transform: translateY(0); } }
@@ -29570,14 +29587,14 @@ function FondoAuthAnimado() {
           .fondo-auth-track { animation: none !important; transform: translateY(0) !important; }
         }
       `}</style>
-      <div className="flex h-full w-full">
+      <div className="flex h-full w-full" style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}>
         {BREAKPOINTS_COLUMNAS_FONDO_AUTH.map((breakpoint, i) => {
           const texto = TEXTOS_FONDO_AUTH[i % TEXTOS_FONDO_AUTH.length];
           const direccion = i % 2 === 0 ? 'fondoAuthScrollUp' : 'fondoAuthScrollDown';
-          // Duración distinta por columna (22s a 46s): columnas vecinas
-          // nunca se ven perfectamente sincronizadas, refuerza la sensación
-          // de movimiento continuo del video de referencia.
-          const duracionSeg = 22 + (i % 5) * 6;
+          // Duración 12s-20s (antes 22s-46s): movimiento notablemente más
+          // rápido y dinámico, a pedido. Columnas vecinas nunca quedan
+          // perfectamente sincronizadas entre sí.
+          const duracionSeg = 12 + (i % 5) * 2;
           return (
             <div
               key={i}
@@ -29591,7 +29608,7 @@ function FondoAuthAnimado() {
                   Array.from({ length: REPETICIONES_FONDO_AUTH }).map((_, j) => (
                     <span
                       key={`${copia}-${j}`}
-                      className="break-words px-2 py-6 text-center text-2xl font-black uppercase leading-tight tracking-tight text-lime-400/20 sm:text-3xl lg:text-4xl"
+                      className="break-words px-2 py-8 text-center text-4xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-[0.1] lg:text-6xl xl:text-7xl"
                     >
                       {texto}
                     </span>
