@@ -833,31 +833,48 @@ import {
 } from 'lucide-react';
 
 /* ============================================================================
- * LOGO OFICIAL DE CLUBOS — COMPONENTE LOCAL PERMANENTE
+ * LOGO OFICIAL DE QLUB OS — COMPONENTE LOCAL PERMANENTE
  * ==========================================================================*/
-// Antes se importaba desde un archivo aparte (`./LogoClubOS` /
-// `./components/LogoClubOS`) y esa importación fue la causa raíz de DOS
-// fallas de build/runtime distintas en Vercel (case-sensitivity del path en
-// Linux, y luego la carpeta `src/components/` que no existía en el
-// proyecto real) — la más reciente terminó en un `Uncaught ReferenceError:
-// LogoClubOS is not defined` en producción porque el archivo importado no
-// se resolvía. Para eliminar esa clase de error por completo, el logo vive
-// declarado AQUÍ, directo en `App.jsx`, fuera de `App`/`AppInterno`
-// (componente de módulo, no anidado) — así nunca depende de que un archivo
-// externo exista con el path/mayúsculas exactos en el repo desplegado.
-// Todo uso de `<LogoClubOS />` en el Header, Login/`ClubAuthScreen`,
-// Sidebar o cualquier modal debe usar ESTA definición — no se debe volver a
-// importar desde un archivo aparte.
-const LogoClubOS = ({ className = 'w-auto h-8' }) => (
+// Rebranding: "CLUB OS" → "QLUB OS" — ÚNICAMENTE la letra C se reemplazó por
+// una Q con cola diagonal exterior (mismo trazo pesado que las demás
+// letras). L, U, B, la "O" verde neón (anillo con hueco central + su
+// cápsula/power horizontal saliendo por la izquierda) y la S verde son
+// EXACTAMENTE los mismos `<path>`/coordenadas que ya existían — un intento
+// anterior de este rebranding reconstruyó el logo entero con un SVG
+// distinto (viewBox distinto, letras como `<text>` en vez de `<path>`, la O
+// convertida en una cápsula con un símbolo de "+") y rompió el diseño; esta
+// versión revierte todo eso y solo toca el nodo de la Q.
+//
+// Tagline "RUN YOUR CLUB." SIN <text>: antes usaba un `<text fontFamily=
+// "system-ui">` — se ve distinto según la fuente que tenga instalada cada
+// dispositivo/navegador (Windows/Mac/Linux/iOS/Android no comparten la
+// misma "system-ui"), lo que puede "deformar" el logo. Se reemplazó por
+// TRAZOS VECTORIALES reales — un `<path>` cerrado por letra, extraído
+// directamente de los contornos de la fuente Poppins Bold (la misma familia
+// ya usada en el resto de ClubOS) con fontTools/SVGPathPen, NO dibujado a
+// mano — así el resultado es geométricamente idéntico al de la fuente real
+// pero ya no depende de que esa fuente esté instalada: es curva vectorial
+// pura, se ve IGUAL en cualquier dispositivo/navegador, para siempre.
+// Regenerar (por ejemplo si cambia el texto del tagline): correr un script
+// con fontTools contra Poppins-Bold.ttf, uno por letra, y pegar los `<path>`
+// resultantes aquí — nunca reemplazar por un `<text>`.
+//
+// Componente 100% local, declarado AQUÍ, directo en `App.jsx`, fuera de
+// `App`/`AppInterno` (componente de módulo, no anidado) — NUNCA se importa
+// desde un archivo aparte, para no repetir el `Uncaught ReferenceError:
+// LogoClubOS is not defined` de producción que causaba depender de un
+// archivo externo (case-sensitivity/ruta inexistente en el repo
+// desplegado). Todo uso del logo en el Header, Login/`ClubAuthScreen`,
+// Sidebar o cualquier modal debe usar `<LogoQlubOS />` — no se debe volver
+// a importar desde un archivo aparte.
+const LogoQlubOS = ({ className = 'w-auto h-8' }) => (
   <div className={`flex items-center justify-center ${className}`}>
-    {/* Trazo corregido de la "O" verde (ver comentario detallado en
-        `TopHeader`, misma versión exacta en ambos lugares): anillo con
-        hueco central real (regla evenodd) + cápsula de encendido separada,
-        sin artefactos en el centro. */}
     <svg width="240" height="65" viewBox="0 0 320 85" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
-      {/* C */}
+      {/* Q - Mantiene la tipografía pesada original con cierre limpio y pata diagonal exterior */}
       <path
-        d="M40 12C22 12 10 24 10 42C10 60 22 72 40 72C53 72 63 64 66 52H50C48 57 45 59 40 59C29 59 23 51 23 42C23 33 29 25 40 25C45 25 48 27 50 32H66C63 20 53 12 40 12Z"
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M40 12C22 12 10 24 10 42C10 60 22 72 40 72C46.5 72 52.5 69.5 57 65.5L64 72.5L71 65.5L63.5 58C68 53.5 70 48 70 42C70 24 58 12 40 12ZM40 25C49 25 57 32 57 42C57 46.5 55 50.5 51.5 53.5L44 46L37 53L45 60.5C43.5 60.8 41.8 61 40 61C29 61 21 52 21 42C21 32 29 25 40 25Z"
         fill="#FFFFFF"
       />
       {/* L */}
@@ -888,10 +905,58 @@ const LogoClubOS = ({ className = 'w-auto h-8' }) => (
         fill="#CCFF00"
       />
 
-      {/* RUN YOUR CLUB. */}
-      <text x="165" y="84" textAnchor="middle" fill="#FFFFFF" fontSize="10" fontWeight="700" letterSpacing="5">
-        RUN YOUR CLUB.
-      </text>
+      {/* RUN YOUR CLUB. — 12 <path> cerrados (R,U,N,Y,O,U,R,C,L,U,B,.), uno
+          por letra, contornos reales de Poppins Bold vía fontTools. */}
+      <g fill="#FFFFFF">
+        <path
+          transform="translate(85.92 84) scale(0.011 -0.011)"
+          d="M420 0 274 265H233V0H62V702H349Q432 702 490.5 673.0Q549 644 578.0 593.5Q607 543 607 481Q607 411 567.5 356.0Q528 301 451 278L613 0ZM233 386H339Q386 386 409.5 409.0Q433 432 433 474Q433 514 409.5 537.0Q386 560 339 560H233Z"
+        />
+        <path
+          transform="translate(98.30 84) scale(0.011 -0.011)"
+          d="M230 702V282Q230 219 261.0 185.0Q292 151 352 151Q412 151 444.0 185.0Q476 219 476 282V702H647V283Q647 189 607.0 124.0Q567 59 499.5 26.0Q432 -7 349 -7Q266 -7 200.5 25.5Q135 58 97.0 123.5Q59 189 59 283V702Z"
+        />
+        <path
+          transform="translate(111.25 84) scale(0.011 -0.011)"
+          d="M690 0H519L233 433V0H62V702H233L519 267V702H690Z"
+        />
+        <path
+          transform="translate(132.26 84) scale(0.011 -0.011)"
+          d="M664 702 421 232V0H250V232L7 702H201L337 408L472 702Z"
+        />
+        <path
+          transform="translate(144.84 84) scale(0.011 -0.011)"
+          d="M33 353Q33 456 81.5 538.0Q130 620 212.5 666.0Q295 712 394 712Q493 712 575.5 666.0Q658 620 705.5 538.0Q753 456 753 353Q753 250 705.0 167.5Q657 85 575.0 39.0Q493 -7 394 -7Q295 -7 212.5 39.0Q130 85 81.5 167.5Q33 250 33 353ZM579 353Q579 446 528.5 501.5Q478 557 394 557Q309 557 258.5 502.0Q208 447 208 353Q208 260 258.5 204.5Q309 149 394 149Q478 149 528.5 205.0Q579 261 579 353Z"
+        />
+        <path
+          transform="translate(158.68 84) scale(0.011 -0.011)"
+          d="M230 702V282Q230 219 261.0 185.0Q292 151 352 151Q412 151 444.0 185.0Q476 219 476 282V702H647V283Q647 189 607.0 124.0Q567 59 499.5 26.0Q432 -7 349 -7Q266 -7 200.5 25.5Q135 58 97.0 123.5Q59 189 59 283V702Z"
+        />
+        <path
+          transform="translate(171.64 84) scale(0.011 -0.011)"
+          d="M420 0 274 265H233V0H62V702H349Q432 702 490.5 673.0Q549 644 578.0 593.5Q607 543 607 481Q607 411 567.5 356.0Q528 301 451 278L613 0ZM233 386H339Q386 386 409.5 409.0Q433 432 433 474Q433 514 409.5 537.0Q386 560 339 560H233Z"
+        />
+        <path
+          transform="translate(191.54 84) scale(0.011 -0.011)"
+          d="M386 710Q511 710 600.0 644.0Q689 578 719 464H531Q510 508 471.5 531.0Q433 554 384 554Q305 554 256.0 499.0Q207 444 207 352Q207 260 256.0 205.0Q305 150 384 150Q433 150 471.5 173.0Q510 196 531 240H719Q689 126 600.0 60.5Q511 -5 386 -5Q284 -5 203.5 40.5Q123 86 78.0 167.0Q33 248 33 352Q33 456 78.0 537.5Q123 619 203.5 664.5Q284 710 386 710Z"
+        />
+        <path
+          transform="translate(205.12 84) scale(0.011 -0.011)"
+          d="M233 132H457V0H62V702H233Z"
+        />
+        <path
+          transform="translate(215.57 84) scale(0.011 -0.011)"
+          d="M230 702V282Q230 219 261.0 185.0Q292 151 352 151Q412 151 444.0 185.0Q476 219 476 282V702H647V283Q647 189 607.0 124.0Q567 59 499.5 26.0Q432 -7 349 -7Q266 -7 200.5 25.5Q135 58 97.0 123.5Q59 189 59 283V702Z"
+        />
+        <path
+          transform="translate(228.53 84) scale(0.011 -0.011)"
+          d="M622 191Q622 103 560.5 51.5Q499 0 389 0H62V702H378Q485 702 545.5 653.0Q606 604 606 520Q606 458 573.5 417.0Q541 376 487 360Q548 347 585.0 299.5Q622 252 622 191ZM233 418H345Q387 418 409.5 436.5Q432 455 432 491Q432 527 409.5 546.0Q387 565 345 565H233ZM449 214Q449 251 424.5 272.0Q400 293 357 293H233V138H359Q402 138 425.5 157.5Q449 177 449 214Z"
+        />
+        <path
+          transform="translate(240.97 84) scale(0.011 -0.011)"
+          d="M40 84Q40 124 68.5 151.0Q97 178 142 178Q186 178 214.5 151.0Q243 124 243 84Q243 45 214.5 18.5Q186 -8 142 -8Q97 -8 68.5 18.5Q40 45 40 84Z"
+        />
+      </g>
     </svg>
   </div>
 );
@@ -2853,65 +2918,13 @@ function TopHeader({ operador, turno, onAbrirSidebar, onAbrirOperador, alertasCl
         <Reloj />
       </div>
 
-      {/* Centro: logo oficial de ClubOS — SVG inline transparente (fidelidad
-          exacta al branding pedido: sin fondo, sin depender de ningún
-          archivo externo). Copia independiente de la misma marca que el
-          componente local `LogoClubOS` (declarado arriba, junto a los
-          imports, y usado tal cual en el Login/`ClubAuthScreen`) — aquí se
-          mantiene el `<svg>` inline en vez de usar `<LogoClubOS />` porque
-          este necesita una altura fija con ancho automático (`h-8
-          sm:h-10`) directamente sobre el propio `<svg>`, distinto del
-          patrón de `LogoClubOS` (ancho fijo en un `<div>` envolvente). */}
+      {/* Centro: logo oficial de QLUB OS — mismo componente local
+          `LogoQlubOS` (declarado arriba, junto a los imports) que usa el
+          Login/`ClubAuthScreen`, sin fondo, sin depender de ningún archivo
+          externo. Altura fija/ancho automático (`h-8 sm:h-10`) sobre el
+          propio `<svg>` interno del componente, vía `className`. */}
       <div className="flex justify-center py-1">
-        <svg
-          width="220"
-          height="60"
-          viewBox="0 0 320 85"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-8 w-auto sm:h-10"
-          role="img"
-          aria-label="ClubOS — Run your club."
-        >
-          {/* C */}
-          <path
-            d="M40 12C22 12 10 24 10 42C10 60 22 72 40 72C53 72 63 64 66 52H50C48 57 45 59 40 59C29 59 23 51 23 42C23 33 29 25 40 25C45 25 48 27 50 32H66C63 20 53 12 40 12Z"
-            fill="#FFFFFF"
-          />
-          {/* L */}
-          <path d="M72 14H86V59H106V72H72V14Z" fill="#FFFFFF" />
-          {/* U */}
-          <path
-            d="M112 14H126V50C126 55 130 59 135 59C140 59 144 55 144 50V14H158V50C158 63 148 72 135 72C122 72 112 63 112 50V14Z"
-            fill="#FFFFFF"
-          />
-          {/* B */}
-          <path
-            d="M164 14H188C197 14 204 19 204 27C204 32 200 36 194 38C202 40 206 45 206 53C206 64 197 72 185 72H164V14ZM178 25V36H187C191 36 194 34 194 30.5C194 27 191 25 187 25H178ZM178 46V61H188C192 61 196 58 196 53.5C196 49 192 46 188 46H178Z"
-            fill="#FFFFFF"
-          />
-          {/* O VERDE CON POWER HORIZONTAL — anillo exterior con hueco central
-              (regla evenodd) + cápsula de encendido separada. Trazo
-              corregido: la versión anterior dejaba artefactos/trazos
-              extraños en el centro del hueco. */}
-          <path
-            fillRule="evenodd"
-            clipRule="evenodd"
-            d="M242 12C223 12 208 25 208 42C208 59 223 72 242 72C261 72 276 59 276 42C276 25 261 12 242 12ZM242 27C232 27 224 34 224 42C224 50 232 57 242 57C252 57 260 50 260 42C260 34 252 27 242 27Z"
-            fill="#CCFF00"
-          />
-          {/* Pestaña/Cápsula horizontal de encendido saliendo de la izquierda */}
-          <rect x="208" y="38" width="30" height="8" rx="4" fill="#CCFF00" />
-          {/* S VERDE */}
-          <path
-            d="M288 58C288 60 291 62 296 62C302 62 307 59 307 54C307 49 302 46 293 44C281 41 276 36 276 27C276 17 285 12 298 12C311 12 318 18 319 27H304C303 23 300 22 297 22C292 22 289 24 289 27C289 30 292 32 300 34C311 37 320 41 320 53C320 64 310 72 296 72C282 72 274 63 273 53H288V58Z"
-            fill="#CCFF00"
-          />
-          {/* Subtítulo RUN YOUR CLUB. con punto final */}
-          <text x="165" y="84" textAnchor="middle" fill="#FFFFFF" fontSize="10" fontWeight="700" letterSpacing="5">
-            RUN YOUR CLUB.
-          </text>
-        </svg>
+        <LogoQlubOS className="h-8 w-auto sm:h-10" />
       </div>
 
       {/* Derecha: Centro de Alertas + tarjeta/selector de operador. Ambos
@@ -12142,9 +12155,13 @@ function generarCSVReporte({
   ventasPorProductoSemana,
   variantesPorProducto,
   ventasPorVarianteSemana,
+  // Nombre real del club activo (ver `ModuloAnalyticsBI.exportarReporte`,
+  // que ya resuelve el fallback a 'ClubOS') — antes decía "Smash Pádel Club"
+  // fijo, roto para cualquier OTRO club que use ClubOS.
+  nombreClub,
 }) {
   const filas = [];
-  filas.push(['Smash Pádel Club — Reporte Analytics BI']);
+  filas.push([`${nombreClub || 'ClubOS'} — Reporte Analytics BI`]);
   filas.push([etiquetaReporteExport(modo, rango)]);
   filas.push(['Generado', new Date().toLocaleString('es-MX')]);
   filas.push([]);
@@ -12419,8 +12436,14 @@ function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
   );
 }
 
-function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones, participantesTorneo, academiaAlumnos }) {
+function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones, participantesTorneo, academiaAlumnos, configClub }) {
   const mostrarToast = useToast();
+  // Nombre real del club activo para los encabezados de los reportes
+  // exportados (antes decían "Smash Pádel Club" fijo — roto para cualquier
+  // OTRO club que use ClubOS). Fallback a "ClubOS" (no a "Smash Pádel Club")
+  // cuando el club todavía no capturó su nombre (`configuracion_club.nombre`
+  // vacío) — mismo criterio que `Sidebar`/`ModalConfigClub`.
+  const nombreClubExport = (configClub?.nombre || '').trim() || 'ClubOS';
   const [vista, setVista] = useState('egresos'); // 'egresos' | 'proveedores' | 'pnl'
   const [modalDesglose, setModalDesglose] = useState(null); // { titulo, subtitulo, filas } | null
 
@@ -12886,7 +12909,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
   // propio en esta sub-pestaña — el filtro Día/Mes/Año vive en P&L).
   function exportarEgresosCSV() {
     const filas = [
-      ['Smash Pádel Club — Historial de Compras & Gastos'],
+      [`${nombreClubExport} — Historial de Compras & Gastos`],
       ['Generado', new Date().toLocaleString('es-MX')],
       [],
       ['Fecha', 'Concepto', 'Categoría', 'Proveedor', 'Método de Pago', 'Operador', 'Monto'],
@@ -12913,7 +12936,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
   // acotado al periodo activo (`rangoPnl`).
   function exportarPnlCSV() {
     const filas = [
-      ['Smash Pádel Club — P&L / Estado de Resultados'],
+      [`${nombreClubExport} — P&L / Estado de Resultados`],
       [rangoPnl.etiqueta],
       ['Generado', new Date().toLocaleString('es-MX')],
       [],
@@ -13449,6 +13472,7 @@ function ModuloAnalyticsBI({
   torneos,
   participantesTorneo,
   partidosTorneo,
+  configClub,
 }) {
   const mostrarToast = useToast();
 
@@ -14169,6 +14193,7 @@ function ModuloAnalyticsBI({
       ventasPorProductoSemana,
       variantesPorProducto,
       ventasPorVarianteSemana,
+      nombreClub: (configClub?.nombre || '').trim() || 'ClubOS',
     });
     const nombreArchivo = `analytics-bi_${rango.inicioFechaISO}_a_${rango.finFechaISO}.csv`;
     descargarArchivoTexto(nombreArchivo, csv, 'text/csv;charset=utf-8;');
@@ -15009,15 +15034,24 @@ function calcularCHS(perfil) {
 // "Frecuencia de Juego" de 30) y arma un mensaje que lo menciona
 // directamente, tal como pediste (bebida favorita si el consumo secundario
 // está bajo, descuento de cancha si la actividad reciente bajó).
-function plantillaWhatsAppAntiChurn(perfil) {
+function plantillaWhatsAppAntiChurn(perfil, nombreClub) {
   const nombreCorto = (perfil.nombre || 'Jugador').split(' ')[0];
   const porRelativo = [...perfil.chs.indicadores].sort((a, b) => a.puntos / a.max - b.puntos / b.max);
   const debil = porRelativo[0];
 
+  // Nombre real del club activo, con frase gramaticalmente correcta cuando
+  // el club todavía no capturó su nombre en `configuracion_club.nombre`
+  // (antes decía "Smash Pádel Club" fijo, roto para cualquier OTRO club que
+  // use ClubOS) — "en {club}"/"de {club}" necesitan un fallback distinto
+  // cada uno para no leerse raro ("de el club").
+  const club = (nombreClub || '').trim();
+  const enElClub = club ? `en ${club}` : 'en el club';
+  const deElClub = club ? `de ${club}` : 'del club';
+
   const mensajesPorIndicador = {
-    antiguedad: `¡Hola ${nombreCorto}! Te extrañamos en Smash Pádel Club 🎾 Hace tiempo no te vemos en cancha — tenemos un descuento especial en tu próxima reserva si regresas esta semana. ¿Te apartamos un horario?`,
+    antiguedad: `¡Hola ${nombreCorto}! Te extrañamos ${enElClub} 🎾 Hace tiempo no te vemos en cancha — tenemos un descuento especial en tu próxima reserva si regresas esta semana. ¿Te apartamos un horario?`,
     frecuencia: `¡Hola ${nombreCorto}! Vimos que ya casi no has podido venir a jugar. Si quieres retomar el ritmo, tenemos horarios disponibles entre semana con mejor precio — avísanos y te apartamos cancha.`,
-    gasto_promedio: `¡Hola ${nombreCorto}! Como jugador de Smash Pádel Club tenemos una promo especial para tu próxima visita (cancha + algo de la barra). ¿Te gustaría reservar esta semana?`,
+    gasto_promedio: `¡Hola ${nombreCorto}! Como jugador ${deElClub} tenemos una promo especial para tu próxima visita (cancha + algo de la barra). ¿Te gustaría reservar esta semana?`,
     comunidad: `¡Hola ${nombreCorto}! Viene un Torneo/Reta nuevo en el club y nos encantaría contar contigo — ¿te apunto un lugar antes de que se llenen los cupos?`,
     consumo_secundario: `¡Hola ${nombreCorto}! La próxima vez que juegues, tu bebida favorita va por cuenta de la casa 🥤 Solo menciónalo en la barra. ¡Nos vemos en cancha!`,
   };
@@ -21229,19 +21263,25 @@ function HeatmapAcademia({ clases, alumnosPorClase }) {
 // Mensaje de WhatsApp para el botón "Recordatorio" del Dashboard de
 // Membresías y Recurrencia — distingue "por vencer" (todavía a tiempo) de
 // "vencida" (ya se pasó del ciclo) para que el tono del mensaje encaje.
-function construirMensajeWhatsAppMembresia(alumno, clase, semaforo) {
+function construirMensajeWhatsAppMembresia(alumno, clase, semaforo, nombreClub) {
   const nombreClase = clase?.nombre || 'tu clase en la Academia';
+  // Nombre real del club activo (antes decía "Smash Pádel Club" fijo, roto
+  // para cualquier OTRO club que use ClubOS) — mismo fallback gramatical
+  // ("en el club") que `plantillaWhatsAppAntiChurn` cuando el club todavía
+  // no capturó su nombre en `configuracion_club.nombre`.
+  const club = (nombreClub || '').trim();
+  const enElClub = club ? `en ${club}` : 'en el club';
   if (semaforo === 'vencida') {
-    return `¡Hola ${alumno.nombre}! Vimos que tu membresía de ${nombreClase} en Smash Pádel Club ya venció. ¿Renovamos tu mensualidad para que sigas tomando tus clases? Contáctanos o pasa a recepción cuando puedas.`;
+    return `¡Hola ${alumno.nombre}! Vimos que tu membresía de ${nombreClase} ${enElClub} ya venció. ¿Renovamos tu mensualidad para que sigas tomando tus clases? Contáctanos o pasa a recepción cuando puedas.`;
   }
-  return `¡Hola ${alumno.nombre}! Tu membresía de ${nombreClase} en Smash Pádel Club está por vencer el ${formatoFechaLarga(alumno.fecha_renovacion)}. ¿Renovamos tu mensualidad para que no pierdas tu lugar?`;
+  return `¡Hola ${alumno.nombre}! Tu membresía de ${nombreClase} ${enElClub} está por vencer el ${formatoFechaLarga(alumno.fecha_renovacion)}. ¿Renovamos tu mensualidad para que no pierdas tu lugar?`;
 }
 
 // Fila de la Tabla Interactiva de Alumnos con Membresía (Dashboard B) — vive
 // como su propio componente para que el estado local del formulario "Dar de
 // baja + motivo" (`mostrarBaja`/`motivo`) no le pegue un re-render a la
 // tabla completa en cada tecla.
-function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar }) {
+function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar, nombreClub }) {
   const toast = useToast();
   const semaforo = estadoSemaforoMembresia(alumno);
   const [mostrarBaja, setMostrarBaja] = useState(false);
@@ -21274,7 +21314,7 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar })
       toast({ titulo: 'Falta el teléfono', detalle: `Captura el teléfono de ${alumno.nombre} para poder enviarle el recordatorio.`, tono: 'aviso' });
       return;
     }
-    const url = construirEnlaceWhatsApp({ telefono: alumno.telefono, mensaje: construirMensajeWhatsAppMembresia(alumno, clase, semaforo) });
+    const url = construirEnlaceWhatsApp({ telefono: alumno.telefono, mensaje: construirMensajeWhatsAppMembresia(alumno, clase, semaforo, nombreClub) });
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
@@ -21372,6 +21412,7 @@ function AnalyticsAcademia({
   canchas,
   reservas,
   permisos,
+  configClub,
 }) {
   const toast = useToast();
   // Mejora de RBAC — Coach (`puedeVerMontos: false`): los dashboards
@@ -21970,6 +22011,7 @@ function AnalyticsAcademia({
                         onCobrarPOS={cobrarMembresiaEnPOS}
                         onDarDeBaja={darDeBajaMembresia}
                         onReactivar={reactivarMembresia}
+                        nombreClub={configClub?.nombre}
                       />
                     ))}
                   </tbody>
@@ -22231,6 +22273,7 @@ function ModuloAcademiaClinicas({
   onIrAJugador,
   onIrAPOS,
   permisos,
+  configClub,
 }) {
   const toast = useToast();
   const [subvista, setSubvista] = useState('operativa');
@@ -22655,6 +22698,7 @@ function ModuloAcademiaClinicas({
           canchas={canchas}
           reservas={reservas}
           permisos={permisos}
+          configClub={configClub}
         />
       )}
 
@@ -22723,6 +22767,7 @@ function DirectorioJugadoresCRM({
   academiaAlumnos,
   academiaAsistencias,
   permisos,
+  configClub,
 }) {
   /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
    * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
@@ -23350,6 +23395,7 @@ function DirectorioJugadoresCRM({
           onClose={() => setJugadorSeleccionadoId(null)}
           onActualizarTelefono={onActualizarTelefonoJugador}
           permisos={permisos}
+          nombreClub={configClub?.nombre}
         />
       )}
     </div>
@@ -23607,7 +23653,7 @@ function DetalleIndicadorCHS({ indKey, perfil }) {
   }
 }
 
-function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono, permisos }) {
+function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono, permisos, nombreClub }) {
   const [editandoTelefono, setEditandoTelefono] = useState(false);
   const [telefonoDraft, setTelefonoDraft] = useState(perfil.telefono || '');
   const [guardando, setGuardando] = useState(false);
@@ -23638,7 +23684,7 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono, permisos
   ];
   const ltvMax = Math.max(perfil.ltvTotal, 1);
 
-  const mensajeWhatsApp = useMemo(() => plantillaWhatsAppAntiChurn(perfil), [perfil]);
+  const mensajeWhatsApp = useMemo(() => plantillaWhatsAppAntiChurn(perfil, nombreClub), [perfil, nombreClub]);
   const linkWhatsApp = useMemo(() => construirEnlaceWhatsApp({ telefono: perfil.telefono, mensaje: mensajeWhatsApp }), [perfil.telefono, mensajeWhatsApp]);
 
   return (
@@ -23869,6 +23915,7 @@ function ModuloJugadores({
   academiaAlumnos,
   academiaAsistencias,
   permisos,
+  configClub,
 }) {
   const [subvista, setSubvista] = useState('crm');
   const subvistas = [
@@ -23920,6 +23967,7 @@ function ModuloJugadores({
           academiaAlumnos={academiaAlumnos}
           academiaAsistencias={academiaAsistencias}
           permisos={permisos}
+          configClub={configClub}
         />
       )}
 
@@ -28817,6 +28865,18 @@ function AppInterno() {
   const [configClub, setConfigClub] = useState(() => leerConfigClubLocal());
   const [guardandoConfigClub, setGuardandoConfigClub] = useState(false);
 
+  // Título de la pestaña del navegador: antes quedaba fijo en "Smash Pádel
+  // Club" (ver `index.html`), roto para cualquier OTRO club que use ClubOS.
+  // `index.html` ahora trae un genérico "ClubOS" como valor inicial (antes
+  // de que React monte, milisegundos), y en cuanto se resuelve el nombre
+  // real del club activo (`configClub.nombre`, Supabase vía
+  // `configuracion_club`) se sobreescribe aquí. Mismo fallback a "ClubOS"
+  // que el resto de los lugares corregidos cuando el club todavía no
+  // capturó su nombre.
+  useEffect(() => {
+    document.title = (configClub?.nombre || '').trim() || 'ClubOS';
+  }, [configClub?.nombre]);
+
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
 
@@ -29970,6 +30030,7 @@ function AppInterno() {
                 inscripciones={inscripciones}
                 participantesTorneo={participantesTorneo}
                 academiaAlumnos={academiaAlumnos}
+                configClub={configClub}
               />
             ) : moduloActivo === 'analytics' ? (
               <ModuloAnalyticsBI
@@ -29983,6 +30044,7 @@ function AppInterno() {
                 participantesTorneo={participantesTorneo}
                 partidosTorneo={partidosTorneo}
                 permisos={permisos}
+                configClub={configClub}
               />
             ) : moduloActivo === 'jugadores' ? (
               <ModuloJugadores
@@ -30007,6 +30069,7 @@ function AppInterno() {
                 academiaAlumnos={academiaAlumnos}
                 academiaAsistencias={academiaAsistencias}
                 permisos={permisos}
+                configClub={configClub}
               />
             ) : moduloActivo === 'torneos' ? (
               <ModuloTorneosRetas
@@ -30071,6 +30134,7 @@ function AppInterno() {
                 onIrAJugador={(jugadorId) => irAJugadorDesdeAlerta({ jugadorId })}
                 onIrAPOS={() => setModuloActivo('pos')}
                 permisos={permisos}
+                configClub={configClub}
               />
             ) : moduloActivo === 'seguridad' ? (
               <ModuloControlSeguridad
@@ -30380,7 +30444,7 @@ function ClubAuthScreen({ onAutenticado }) {
           vs. max-w-md), así el logo sobresale hacia los lados y domina la
           jerarquía visual de la pantalla. */}
       <div className="relative z-10 w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900/80 px-8 py-6 shadow-2xl backdrop-blur-xl">
-        <LogoClubOS className="mx-auto h-auto w-64 md:w-80" />
+        <LogoQlubOS className="mx-auto h-auto w-64 md:w-80" />
       </div>
 
       {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
