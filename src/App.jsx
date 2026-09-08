@@ -850,32 +850,46 @@ import {
 // importar desde un archivo aparte.
 const LogoClubOS = ({ className = 'w-auto h-8' }) => (
   <div className={`flex items-center justify-center ${className}`}>
-    <svg width="220" height="60" viewBox="0 0 320 85" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-full w-full">
+    {/* Trazo corregido de la "O" verde (ver comentario detallado en
+        `TopHeader`, misma versión exacta en ambos lugares): anillo con
+        hueco central real (regla evenodd) + cápsula de encendido separada,
+        sin artefactos en el centro. */}
+    <svg width="240" height="65" viewBox="0 0 320 85" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
+      {/* C */}
       <path
-        d="M40 10C22 10 10 22 10 40C10 58 22 70 40 70C53 70 63 62 66 50H50C48 55 45 57 40 57C30 57 24 50 24 40C24 30 30 23 40 23C45 23 48 25 50 30H66C63 18 53 10 40 10Z"
+        d="M40 12C22 12 10 24 10 42C10 60 22 72 40 72C53 72 63 64 66 52H50C48 57 45 59 40 59C29 59 23 51 23 42C23 33 29 25 40 25C45 25 48 27 50 32H66C63 20 53 12 40 12Z"
         fill="#FFFFFF"
       />
-      <path d="M72 12H86V57H106V70H72V12Z" fill="#FFFFFF" />
+      {/* L */}
+      <path d="M72 14H86V59H106V72H72V14Z" fill="#FFFFFF" />
+      {/* U */}
       <path
-        d="M112 12H126V48C126 53 130 57 135 57C140 57 144 53 144 48V12H158V48C158 61 148 70 135 70C122 70 112 61 112 48V12Z"
+        d="M112 14H126V50C126 55 130 59 135 59C140 59 144 55 144 50V14H158V50C158 63 148 72 135 72C122 72 112 63 112 50V14Z"
         fill="#FFFFFF"
       />
+      {/* B */}
       <path
-        d="M164 12H188C197 12 204 17 204 25C204 30 200 34 194 36C202 38 206 43 206 51C206 62 197 70 185 70H164V12ZM178 23V34H187C191 34 194 32 194 28.5C194 25 191 23 187 23H178ZM178 44V59H188C192 59 196 56 196 51.5C196 47 192 44 188 44H178Z"
+        d="M164 14H188C197 14 204 19 204 27C204 32 200 36 194 38C202 40 206 45 206 53C206 64 197 72 185 72H164V14ZM178 25V36H187C191 36 194 34 194 30.5C194 27 191 25 187 25H178ZM178 46V61H188C192 61 196 58 196 53.5C196 49 192 46 188 46H178Z"
         fill="#FFFFFF"
       />
+
+      {/* O VERDE CON POWER HORIZONTAL — anillo exterior con hueco central */}
       <path
         fillRule="evenodd"
         clipRule="evenodd"
-        d="M242 10C224 10 210 23 210 40C210 57 224 70 242 70C260 70 274 57 274 40C274 23 260 10 242 10ZM242 23C232 23 224 30 224 40C224 43.5 225 46.5 227 49H216V31H248V49H237C239 46.5 240 43.5 240 40C240 30 232 23 242 23Z"
-        fill="#A3E635"
+        d="M242 12C223 12 208 25 208 42C208 59 223 72 242 72C261 72 276 59 276 42C276 25 261 12 242 12ZM242 27C232 27 224 34 224 42C224 50 232 57 242 57C252 57 260 50 260 42C260 34 252 27 242 27Z"
+        fill="#CCFF00"
       />
-      <rect x="212" y="36" width="30" height="8" rx="4" fill="#A3E635" />
+      {/* Pestaña/Cápsula horizontal de encendido saliendo de la izquierda */}
+      <rect x="208" y="38" width="30" height="8" rx="4" fill="#CCFF00" />
+      {/* S VERDE */}
       <path
-        d="M288 56C288 58 291 60 296 60C302 60 307 57 307 52C307 47 302 44 293 42C281 39 276 34 276 25C276 15 285 10 298 10C311 10 318 16 319 25H304C303 21 300 20 297 20C292 20 289 22 289 25C289 28 292 30 300 32C311 35 320 39 320 51C320 62 310 70 296 70C282 70 274 61 273 51H288V56Z"
-        fill="#A3E635"
+        d="M288 58C288 60 291 62 296 62C302 62 307 59 307 54C307 49 302 46 293 44C281 41 276 36 276 27C276 17 285 12 298 12C311 12 318 18 319 27H304C303 23 300 22 297 22C292 22 289 24 289 27C289 30 292 32 300 34C311 37 320 41 320 53C320 64 310 72 296 72C282 72 274 63 273 53H288V58Z"
+        fill="#CCFF00"
       />
-      <text x="165" y="82" textAnchor="middle" fill="#FFFFFF" fontSize="10" fontWeight="700" letterSpacing="5">
+
+      {/* RUN YOUR CLUB. */}
+      <text x="165" y="84" textAnchor="middle" fill="#FFFFFF" fontSize="10" fontWeight="700" letterSpacing="5">
         RUN YOUR CLUB.
       </text>
     </svg>
@@ -2861,36 +2875,40 @@ function TopHeader({ operador, turno, onAbrirSidebar, onAbrirOperador, alertasCl
         >
           {/* C */}
           <path
-            d="M40 10C22 10 10 22 10 40C10 58 22 70 40 70C53 70 63 62 66 50H50C48 55 45 57 40 57C30 57 24 50 24 40C24 30 30 23 40 23C45 23 48 25 50 30H66C63 18 53 10 40 10Z"
+            d="M40 12C22 12 10 24 10 42C10 60 22 72 40 72C53 72 63 64 66 52H50C48 57 45 59 40 59C29 59 23 51 23 42C23 33 29 25 40 25C45 25 48 27 50 32H66C63 20 53 12 40 12Z"
             fill="#FFFFFF"
           />
           {/* L */}
-          <path d="M72 12H86V57H106V70H72V12Z" fill="#FFFFFF" />
+          <path d="M72 14H86V59H106V72H72V14Z" fill="#FFFFFF" />
           {/* U */}
           <path
-            d="M112 12H126V48C126 53 130 57 135 57C140 57 144 53 144 48V12H158V48C158 61 148 70 135 70C122 70 112 61 112 48V12Z"
+            d="M112 14H126V50C126 55 130 59 135 59C140 59 144 55 144 50V14H158V50C158 63 148 72 135 72C122 72 112 63 112 50V14Z"
             fill="#FFFFFF"
           />
           {/* B */}
           <path
-            d="M164 12H188C197 12 204 17 204 25C204 30 200 34 194 36C202 38 206 43 206 51C206 62 197 70 185 70H164V12ZM178 23V34H187C191 34 194 32 194 28.5C194 25 191 23 187 23H178ZM178 44V59H188C192 59 196 56 196 51.5C196 47 192 44 188 44H178Z"
+            d="M164 14H188C197 14 204 19 204 27C204 32 200 36 194 38C202 40 206 45 206 53C206 64 197 72 185 72H164V14ZM178 25V36H187C191 36 194 34 194 30.5C194 27 191 25 187 25H178ZM178 46V61H188C192 61 196 58 196 53.5C196 49 192 46 188 46H178Z"
             fill="#FFFFFF"
           />
-          {/* O (Power Symbol Integrado) */}
+          {/* O VERDE CON POWER HORIZONTAL — anillo exterior con hueco central
+              (regla evenodd) + cápsula de encendido separada. Trazo
+              corregido: la versión anterior dejaba artefactos/trazos
+              extraños en el centro del hueco. */}
           <path
             fillRule="evenodd"
             clipRule="evenodd"
-            d="M242 10C224 10 210 23 210 40C210 57 224 70 242 70C260 70 274 57 274 40C274 23 260 10 242 10ZM242 23C232 23 224 30 224 40C224 43.5 225 46.5 227 49H216V31H248V49H237C239 46.5 240 43.5 240 40C240 30 232 23 242 23Z"
-            fill="#A3E635"
+            d="M242 12C223 12 208 25 208 42C208 59 223 72 242 72C261 72 276 59 276 42C276 25 261 12 242 12ZM242 27C232 27 224 34 224 42C224 50 232 57 242 57C252 57 260 50 260 42C260 34 252 27 242 27Z"
+            fill="#CCFF00"
           />
-          <rect x="212" y="36" width="30" height="8" rx="4" fill="#A3E635" />
-          {/* S */}
+          {/* Pestaña/Cápsula horizontal de encendido saliendo de la izquierda */}
+          <rect x="208" y="38" width="30" height="8" rx="4" fill="#CCFF00" />
+          {/* S VERDE */}
           <path
-            d="M288 56C288 58 291 60 296 60C302 60 307 57 307 52C307 47 302 44 293 42C281 39 276 34 276 25C276 15 285 10 298 10C311 10 318 16 319 25H304C303 21 300 20 297 20C292 20 289 22 289 25C289 28 292 30 300 32C311 35 320 39 320 51C320 62 310 70 296 70C282 70 274 61 273 51H288V56Z"
-            fill="#A3E635"
+            d="M288 58C288 60 291 62 296 62C302 62 307 59 307 54C307 49 302 46 293 44C281 41 276 36 276 27C276 17 285 12 298 12C311 12 318 18 319 27H304C303 23 300 22 297 22C292 22 289 24 289 27C289 30 292 32 300 34C311 37 320 41 320 53C320 64 310 72 296 72C282 72 274 63 273 53H288V58Z"
+            fill="#CCFF00"
           />
           {/* Subtítulo RUN YOUR CLUB. con punto final */}
-          <text x="165" y="82" textAnchor="middle" fill="#FFFFFF" fontSize="10" fontWeight="700" letterSpacing="5">
+          <text x="165" y="84" textAnchor="middle" fill="#FFFFFF" fontSize="10" fontWeight="700" letterSpacing="5">
             RUN YOUR CLUB.
           </text>
         </svg>
