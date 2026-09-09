@@ -1853,6 +1853,32 @@ function duracionHorasBloque(horaInicio, horaFin) {
   return (fin - ini) / 60;
 }
 
+// Combina fecha ISO ('YYYY-MM-DD') + hora ('HH:MM') en un timestamp real
+// (ms desde época, en la zona horaria local del navegador) — `null` si
+// cualquiera de los dos falta o es inválido. Usado por `eventoYaInicio`
+// (Bloqueo Automático por Horario de Retas — ver `TarjetaReta` — y el
+// filtro del Portal Público) para comparar fecha+hora completas contra el
+// reloj real, en vez de solo la hora suelta (que confundiría un evento de
+// AYER a esa misma hora con uno "en curso" hoy).
+function timestampEvento(fechaISO, horaStr) {
+  if (!fechaISO) return null;
+  const partes = String(fechaISO).split('-').map(Number);
+  if (partes.length !== 3 || partes.some((p) => Number.isNaN(p))) return null;
+  const [y, m, d] = partes;
+  const min = parseHoraAMinutos(horaStr);
+  if (min === null) return null;
+  return new Date(y, m - 1, d, Math.floor(min / 60), min % 60).getTime();
+}
+
+// true si `fechaISO`+`horaStr` ya llegó o ya pasó respecto a `ahoraMs`
+// (por defecto el reloj real, `Date.now()`) — Bloqueo Automático de Retas
+// (badge "En curso / Bloqueada", ver `TarjetaReta`) y el filtro del Portal
+// Público que las oculta apenas arrancan (ver `PortalPublicoJugadores`).
+function eventoYaInicio(fechaISO, horaStr, ahoraMs = Date.now()) {
+  const t = timestampEvento(fechaISO, horaStr);
+  return t !== null && t <= ahoraMs;
+}
+
 // Ids de reservas que son el "Bloqueo Maestro" de un Torneo: el apartado
 // general de cancha (ej. 7:00–15:00) que se crea al dar de alta el torneo
 // (`torneo.bloqueos`), ANTES de programar partidos individuales desde
@@ -15743,11 +15769,17 @@ function TarjetaReta({
   onEliminarDefinitivo,
   eliminando,
   onCargarMarcador,
+  ahoraMs,
 }) {
   const confirmados = inscritos.filter(inscripcionOcupaLugar);
   const lugaresDisponibles = Math.max(0, CUPOS_RETA - confirmados.length);
   const completa = lugaresDisponibles === 0;
   const archivado = reta.archivado === true;
+  // Bloqueo Automático por Horario: en cuanto el reloj real alcanza/supera
+  // `hora_inicio` de la reta, se deja de poder inscribir jugadores nuevos
+  // (badge "En curso / Bloqueada") — una reta archivada no necesita este
+  // badge aparte, ya trae el suyo propio.
+  const iniciada = !archivado && eventoYaInicio(reta.fecha, reta.hora_inicio, ahoraMs);
   const tieneMarcador = Boolean(reta.ganador && (reta.sets || []).length > 0);
   const ganadorTexto = reta.ganador === 'pareja1' ? reta.pareja1 : reta.ganador === 'pareja2' ? reta.pareja2 : '';
   // Eliminación Definitiva: solo se ofrece si la reta no tiene inscritos que
@@ -15833,6 +15865,11 @@ function TarjetaReta({
               <Archive size={9} /> Archivada
             </span>
           )}
+          {iniciada && (
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-400 ring-1 ring-amber-400/30">
+              <Lock size={9} /> En curso / Bloqueada
+            </span>
+          )}
           {reta._local && (
             <button
               type="button"
@@ -15906,6 +15943,14 @@ function TarjetaReta({
         <BotonPrimario onClick={() => onCargarMarcador?.(reta)} className="mt-3 w-full">
           <ClipboardList size={15} /> {tieneMarcador ? 'Editar Marcador' : 'Cargar Marcador'}
         </BotonPrimario>
+      ) : iniciada ? (
+        <button
+          type="button"
+          disabled
+          className="mt-3 flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded-xl border border-amber-400/30 bg-amber-400/5 px-3 py-2.5 text-sm font-bold text-amber-400"
+        >
+          <Lock size={15} /> En curso / Bloqueada
+        </button>
       ) : (
         <BotonPrimario onClick={() => onInscribir(reta)} className="mt-3 w-full">
           <UserPlus size={15} /> Unirse / Inscribir Jugador
@@ -18477,6 +18522,17 @@ function ModuloTorneosRetas({
   // columna `archivado` (undefined) siempre cuenta como Activa.
   const [filtroReta, setFiltroReta] = useState('activas'); // 'activas' | 'archivadas'
 
+  // Reloj vivo del módulo — recalcula el Bloqueo Automático por Horario
+  // (badge "En curso / Bloqueada" de `TarjetaReta`, ver `eventoYaInicio`)
+  // cada 30s, sin esperar ninguna acción del operador ni un evento de
+  // Realtime que en principio no tiene por qué llegar solo porque el reloj
+  // avanzó.
+  const [ahoraMsRetas, setAhoraMsRetas] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setAhoraMsRetas(Date.now()), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
   /* ---- Retas ---- */
   const [modalNuevaReta, setModalNuevaReta] = useState(false);
   const [retaParaInscribir, setRetaParaInscribir] = useState(null);
@@ -19566,6 +19622,7 @@ function ModuloTorneosRetas({
                   onEliminarDefinitivo={eliminarRetaDefinitivo}
                   eliminando={eliminandoRetaId === reta.id}
                   onCargarMarcador={setRetaMarcador}
+                  ahoraMs={ahoraMsRetas}
                 />
               ))}
             </div>
@@ -19997,6 +20054,24 @@ const DIAS_SEMANA_ACADEMIA = [
   { value: 'domingo', label: 'Domingo', indice: 0 },
 ];
 const DIA_ACADEMIA_POR_VALOR = Object.fromEntries(DIAS_SEMANA_ACADEMIA.map((d) => [d.value, d]));
+
+// Bloqueo Automático de Clases/Clínicas (Academia): a diferencia de Retas
+// (evento de una sola fecha real, ver `eventoYaInicio`), una clase de
+// Academia es RECURRENTE por día de la semana (`dia_semana`+`hora_inicio`,
+// sin una `fecha` propia) — así que "ya inició" se evalúa contra la
+// ocurrencia de ESTA semana: true solo cuando HOY es su `dia_semana` Y la
+// hora actual ya alcanzó/superó su `hora_inicio`. Se "resetea" solo al
+// pasar la medianoche (cuando HOY deja de coincidir con `dia_semana`), sin
+// tocar ninguna columna — 100% derivado en cada render a partir del reloj
+// real, igual criterio de recálculo en vivo que `ahora`/`tick` del resto de
+// la app.
+function claseYaInicioHoy(clase, ahoraDate = new Date()) {
+  const diaInfo = DIA_ACADEMIA_POR_VALOR[clase?.dia_semana];
+  if (!diaInfo || diaInfo.indice !== ahoraDate.getDay()) return false;
+  const minAhora = ahoraDate.getHours() * 60 + ahoraDate.getMinutes();
+  const minInicio = parseHoraAMinutos(clase.hora_inicio);
+  return minInicio !== null && minInicio <= minAhora;
+}
 
 // Reverso de `DIA_ACADEMIA_POR_VALOR`: dado un ISO de fecha, regresa la
 // entrada de `DIAS_SEMANA_ACADEMIA` cuyo `indice` coincide con
@@ -20475,42 +20550,81 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
 }
 
 // Tarjeta compacta de una clase en la "Parrilla de Clases" (subvista
-// operativa) — cupos en vivo (`alumnosActivos.length`/`capacidad_maxima`).
-function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle }) {
+// operativa) — cupos en vivo (`alumnosActivos.length`/`capacidad_maxima`),
+// badge "Clase Iniciada" cuando `claseYaInicioHoy` (Bloqueo Automático,
+// evaluado contra la ocurrencia de HOY) y acción de Archivar/Restaurar
+// (mismo criterio de Limpieza Visual que Retas/Torneos — ver `archivarClase`
+// en `ModuloAcademiaClinicas`). Ya no es un solo `<button>` completo (como
+// antes de este cambio) porque ahora convive con el botón de Archivar: solo
+// el bloque superior (nombre/cupos/horario/barra) abre el detalle.
+function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, iniciadaHoy, archivado, onArchivar, actualizandoArchivo }) {
   const cupos = alumnosActivos.length;
   const lleno = cupos >= clase.capacidad_maxima;
   const dia = DIA_ACADEMIA_POR_VALOR[clase.dia_semana]?.label || clase.dia_semana;
   return (
-    <button
-      type="button"
-      onClick={onVerDetalle}
-      className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-4 text-left transition hover:border-teal-400/40 hover:bg-slate-800/60"
+    <div
+      className={`flex flex-col gap-3 rounded-2xl border p-4 transition ${
+        archivado ? 'border-slate-800/60 bg-slate-900/50 opacity-80' : 'border-slate-800 bg-slate-900'
+      }`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-black text-slate-100">{clase.nombre}</p>
-          <p className="mt-0.5 text-[11px] text-slate-500">{clase.nivel} · Coach {clase.coach_nombre || '—'}</p>
+      <button
+        type="button"
+        onClick={onVerDetalle}
+        className="flex flex-col gap-3 text-left transition hover:opacity-90"
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-black text-slate-100">{clase.nombre}</p>
+            <p className="mt-0.5 text-[11px] text-slate-500">{clase.nivel} · Coach {clase.coach_nombre || '—'}</p>
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <span
+              className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
+                lleno ? 'bg-rose-400/10 text-rose-400 ring-rose-400/30' : 'bg-teal-400/10 text-teal-400 ring-teal-400/30'
+              }`}
+            >
+              {cupos}/{clase.capacidad_maxima} cupos
+            </span>
+            {archivado && (
+              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-400">
+                <Archive size={9} /> Archivada
+              </span>
+            )}
+            {!archivado && iniciadaHoy && (
+              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-400 ring-1 ring-amber-400/30">
+                <Lock size={9} /> Clase Iniciada
+              </span>
+            )}
+          </div>
         </div>
-        <span
-          className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
-            lleno ? 'bg-rose-400/10 text-rose-400 ring-rose-400/30' : 'bg-teal-400/10 text-teal-400 ring-teal-400/30'
-          }`}
-        >
-          {cupos}/{clase.capacidad_maxima} cupos
-        </span>
-      </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
-        <span className="flex items-center gap-1">
-          <CalendarClock size={12} /> {dia} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
-        </span>
-        <span className="flex items-center gap-1">
-          <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
-        </span>
-      </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
-        <div className={`h-full rounded-full ${lleno ? 'bg-rose-400' : 'bg-teal-400'}`} style={{ width: `${Math.min(100, (cupos / Math.max(clase.capacidad_maxima, 1)) * 100)}%` }} />
-      </div>
-    </button>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+          <span className="flex items-center gap-1">
+            <CalendarClock size={12} /> {dia} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
+          </span>
+          <span className="flex items-center gap-1">
+            <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
+          </span>
+        </div>
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+          <div className={`h-full rounded-full ${lleno ? 'bg-rose-400' : 'bg-teal-400'}`} style={{ width: `${Math.min(100, (cupos / Math.max(clase.capacidad_maxima, 1)) * 100)}%` }} />
+        </div>
+      </button>
+      <button
+        type="button"
+        onClick={() => onArchivar?.(clase, !archivado)}
+        disabled={actualizandoArchivo}
+        className="inline-flex items-center gap-1.5 self-start rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {actualizandoArchivo ? (
+          <Loader2 size={12} className="animate-spin" />
+        ) : archivado ? (
+          <ArchiveRestore size={12} />
+        ) : (
+          <Archive size={12} />
+        )}
+        {archivado ? 'Restaurar' : 'Archivar'}
+      </button>
+    </div>
   );
 }
 
@@ -20560,6 +20674,11 @@ function ModalDetalleClase({
 
   const cuposDisponibles = Math.max(0, clase.capacidad_maxima - alumnosActivos.length);
   const claseLlena = cuposDisponibles === 0;
+  // Bloqueo Automático por Horario (Academia): ya no se puede inscribir a
+  // nadie más una vez que la ocurrencia de HOY de esta clase recurrente ya
+  // arrancó (ver `claseYaInicioHoy`) — se vuelve a poder inscribir solo
+  // hasta que HOY deje de coincidir con `dia_semana` (la próxima semana).
+  const claseIniciada = claseYaInicioHoy(clase);
 
   // Aviso en vivo (sin esperar al submit): solo cuando el alumno viene del
   // directorio (`jugadorSeleccionadoId`, ver `SelectorJugadorRegistrado`) —
@@ -20572,6 +20691,9 @@ function ModalDetalleClase({
   async function altaAlumno() {
     if (!nombreAlumno.trim()) return toast({ titulo: 'Ponle un nombre al alumno.', tono: 'aviso' });
     if (claseLlena) return toast({ titulo: 'La clase ya está llena.', tono: 'aviso' });
+    if (claseIniciada) {
+      return toast({ titulo: 'Esta clase ya inició', detalle: 'Ya no se pueden agregar alumnos hasta la próxima sesión.', tono: 'aviso' });
+    }
     setGuardandoAlta(true);
     const jugadorId = jugadorSeleccionadoId || (await resolverJugadorId(nombreAlumno, { telefono: telefonoAlumno, directorio: directorioJugadores }));
 
@@ -20847,13 +20969,24 @@ function ModalDetalleClase({
 
         {subvista === 'alumnos' && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-bold text-slate-400">
                 {alumnosActivos.length} alumno{alumnosActivos.length === 1 ? '' : 's'} inscrito{alumnosActivos.length === 1 ? '' : 's'}
               </p>
-              <BotonSecundario onClick={() => setMostrarAlta((v) => !v)} disabled={claseLlena && !mostrarAlta} className="px-2.5 py-1.5 text-xs">
-                <UserPlus size={13} /> Agregar alumno
-              </BotonSecundario>
+              <div className="flex items-center gap-2">
+                {claseIniciada && (
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-400 ring-1 ring-amber-400/30">
+                    <Lock size={10} /> Clase Iniciada
+                  </span>
+                )}
+                <BotonSecundario
+                  onClick={() => setMostrarAlta((v) => !v)}
+                  disabled={(claseLlena && !mostrarAlta) || claseIniciada}
+                  className="px-2.5 py-1.5 text-xs"
+                >
+                  <UserPlus size={13} /> Agregar alumno
+                </BotonSecundario>
+              </div>
             </div>
 
             {mostrarAlta && (
@@ -22292,6 +22425,29 @@ function ModuloAcademiaClinicas({
 
   const clasesActivas = useMemo(() => (academiaClases || []).filter((c) => c.estado !== 'cancelada'), [academiaClases]);
 
+  // Archivado de Clases/Clínicas: mismo criterio exacto que Retas/Torneos
+  // (ver `archivarReta`/`archivarTorneo`) — filtro Activas/Archivadas
+  // dentro de la propia "Parrilla de Clases", una clase sin la columna
+  // `archivado` (undefined) siempre cuenta como Activa. `estado: 'cancelada'`
+  // sigue siendo la eliminación "dura" existente (libera cancha y bloqueos,
+  // ver `eliminarClaseSeleccionada`) — Archivar es la Limpieza Visual
+  // reversible nueva, ortogonal a esa.
+  const [filtroClase, setFiltroClase] = useState('activas'); // 'activas' | 'archivadas'
+  const clasesArchivadas = useMemo(() => clasesActivas.filter((c) => c.archivado === true), [clasesActivas]);
+  const clasesVisibles = useMemo(
+    () => clasesActivas.filter((c) => (filtroClase === 'archivadas' ? c.archivado === true : c.archivado !== true)),
+    [clasesActivas, filtroClase]
+  );
+
+  // Reloj vivo del módulo — recalcula el Bloqueo Automático por Horario
+  // (badge "Clase Iniciada" de `TarjetaClaseAcademia`, ver
+  // `claseYaInicioHoy`) cada 30s, sin esperar ninguna acción del operador.
+  const [tickAcademia, setTickAcademia] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setTickAcademia(Date.now()), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const alumnosActivosPorClase = useMemo(() => {
     const mapa = {};
     (academiaAlumnos || [])
@@ -22475,6 +22631,38 @@ function ModuloAcademiaClinicas({
     return { error: null };
   }
 
+  // Archivado de Clases/Clínicas (Limpieza Visual): oculta la clase de la
+  // vista activa sin tocar ningún otro registro — alumnos, pagos y
+  // asistencia siguen intactos, `archivado` es la única columna que
+  // cambia. Tolerancia total y aislada, igual criterio que
+  // `archivarReta`/`archivarTorneo`: si la columna todavía no existe en
+  // `academia_clases`, el `update` falla solo, se avisa una vez en consola,
+  // y el archivado queda aplicado igual en el estado local (+
+  // `localStorage` si la clase ya vivía ahí) hasta que agregues la columna.
+  const [actualizandoArchivoClaseId, setActualizandoArchivoClaseId] = useState(null);
+  async function archivarClase(clase, archivar) {
+    setActualizandoArchivoClaseId(clase.id);
+    onAcademiaClaseActualizada({ ...clase, archivado: archivar });
+    if (clase._local) {
+      guardarRegistroLocal(LS_KEY_ACADEMIA_CLASES_LOCAL, { ...clase, archivado: archivar });
+    } else {
+      try {
+        const { error } = await supabase.from('academia_clases').update({ archivado: archivar }).eq('id', clase.id);
+        if (error) throw error;
+      } catch (err) {
+        // Sincronización Silenciosa: la tarjeta ya se actualizó de forma
+        // optimista arriba — el operador ve el archivado aplicado al
+        // instante sin importar si Supabase lo aceptó o no.
+        console.warn('[Academia & Clínicas] No se pudo guardar "archivado" en Supabase — se aplica solo en esta sesión.', err);
+      }
+    }
+    setActualizandoArchivoClaseId(null);
+    toast({
+      titulo: archivar ? 'Clase archivada' : 'Clase restaurada',
+      detalle: archivar ? `${clase.nombre} ya no aparece en Activas.` : `${clase.nombre} vuelve a Activas.`,
+    });
+  }
+
   const subvistas = [
     { value: 'operativa', label: 'Parrilla de Clases', icon: GraduationCap },
     { value: 'solicitudes', label: 'Solicitudes', icon: Inbox, badge: solicitudesPendientes.length || null },
@@ -22519,31 +22707,69 @@ function ModuloAcademiaClinicas({
       {subvista === 'operativa' && (
         <div className="space-y-4">
           {!tablaAcademiaExiste && <BannerTablaFaltante tabla="academia_clases (corre migracion_v16_academia_creditos.sql)" />}
-          {loadingSesiones && clasesActivas.length === 0 ? (
+          {clasesActivas.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 p-1">
+              <button
+                type="button"
+                onClick={() => setFiltroClase('activas')}
+                className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
+                  filtroClase === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Activas
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltroClase('archivadas')}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
+                  filtroClase === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Archive size={11} /> Archivadas
+                {clasesArchivadas.length > 0 && (
+                  <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] font-black text-slate-300">
+                    {clasesArchivadas.length}
+                  </span>
+                )}
+              </button>
+            </div>
+          )}
+          {loadingSesiones && clasesVisibles.length === 0 ? (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {[0, 1, 2].map((i) => (
                 <div key={i} className="h-32 animate-pulse rounded-2xl bg-slate-900" />
               ))}
             </div>
-          ) : clasesActivas.length === 0 ? (
+          ) : clasesVisibles.length === 0 ? (
             <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center text-slate-500">
               <GraduationCap size={26} />
-              <p className="text-sm font-semibold">Todavía no hay clases creadas.</p>
-              <p className="text-xs">Da clic en una celda libre del Cronograma de abajo (o "Nueva Clase") para armar su parrilla y bloquear la cancha automáticamente.</p>
+              <p className="text-sm font-semibold">
+                {filtroClase === 'archivadas' ? 'No hay clases archivadas.' : 'Todavía no hay clases creadas.'}
+              </p>
+              <p className="text-xs">
+                {filtroClase === 'archivadas'
+                  ? 'Las clases que archives aparecerán aquí, sin perder alumnos, pagos ni asistencia.'
+                  : 'Da clic en una celda libre del Cronograma de abajo (o "Nueva Clase") para armar su parrilla y bloquear la cancha automáticamente.'}
+              </p>
             </div>
           ) : (
-            // Acceso rápido: todas las clases activas, sin importar el día
-            // que se esté viendo en el Cronograma de abajo — clic abre la
-            // misma ficha (roster/asistencia/ajustes) que un clic sobre su
-            // bloqueo en el Cronograma.
+            // Acceso rápido: todas las clases visibles según el filtro de
+            // arriba, sin importar el día que se esté viendo en el
+            // Cronograma de abajo — clic abre la misma ficha
+            // (roster/asistencia/ajustes) que un clic sobre su bloqueo en
+            // el Cronograma.
             <div className="flex gap-3 overflow-x-auto pb-1">
-              {clasesActivas.map((c) => (
+              {clasesVisibles.map((c) => (
                 <div key={c.id} className="w-64 shrink-0">
                   <TarjetaClaseAcademia
                     clase={c}
                     cancha={canchasPorId[c.cancha_id]}
                     alumnosActivos={alumnosActivosPorClase[c.id] || []}
                     onVerDetalle={() => setClaseSeleccionadaId(c.id)}
+                    iniciadaHoy={claseYaInicioHoy(c, new Date(tickAcademia))}
+                    archivado={c.archivado === true}
+                    onArchivar={archivarClase}
+                    actualizandoArchivo={actualizandoArchivoClaseId === c.id}
                   />
                 </div>
               ))}
@@ -24776,6 +25002,17 @@ function PortalPublicoJugadores({ clubSlug }) {
   const [modalIdentificacion, setModalIdentificacion] = useState(false);
   const [eventoParaInscribir, setEventoParaInscribir] = useState(null); // { tipo: 'reta'|'torneo', evento }
 
+  // Reloj vivo del Portal — Bloqueo por Hora (retas/clases que ya
+  // arrancaron desaparecen solas de `retasAbiertas`/`academiaClasesPortal`
+  // filtrados abajo, sin que el visitante tenga que recargar la página ni
+  // esperar a que llegue un evento de Realtime, que en principio no tiene
+  // por qué disparar solo porque el reloj avanzó).
+  const [tickPortal, setTickPortal] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setTickPortal(Date.now()), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
   // Wallet — Módulo de Wallet/Monedero Digital: saldo leído fresco de
   // Supabase (nunca del objeto de sesión, que puede quedar desactualizado
   // entre pestañas/dispositivos) + historial best-effort.
@@ -25023,12 +25260,29 @@ function PortalPublicoJugadores({ clubSlug }) {
     [academiaClasesPortal]
   );
 
+  // Filtro por Hora y Archivado (Portal Público): una reta desaparece de la
+  // vista pública en cuanto `archivado === true` O su fecha+`hora_inicio`
+  // ya llegó/pasó — así, apenas arranca, los jugadores dejan de verla y de
+  // poder intentar anotarse (ver `eventoYaInicio`; `tickPortal` fuerza el
+  // recálculo cada 30s aunque no llegue ningún evento de Realtime nuevo).
   const retasAbiertas = useMemo(
-    () => retas.filter((r) => r.archivado !== true && (r.estado || 'abierta') !== 'cancelada'),
-    [retas]
+    () =>
+      retas.filter(
+        (r) => r.archivado !== true && (r.estado || 'abierta') !== 'cancelada' && !eventoYaInicio(r.fecha, r.hora_inicio, tickPortal)
+      ),
+    [retas, tickPortal]
   );
   const torneosActivos = useMemo(() => torneos.filter((t) => t.archivado !== true && t.estado !== 'finalizado'), [torneos]);
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
+  // Mismo Filtro por Hora y Archivado que las retas, adaptado a la
+  // recurrencia semanal de Academia (ver `claseYaInicioHoy`): una clase
+  // desaparece del catálogo público en cuanto `archivado === true` O su
+  // ocurrencia de HOY ya arrancó — vuelve a aparecer sola la próxima semana,
+  // cuando HOY deje de coincidir con su `dia_semana`.
+  const academiaClasesPortalVisibles = useMemo(
+    () => academiaClasesPortal.filter((c) => c.archivado !== true && !claseYaInicioHoy(c, new Date(tickPortal))),
+    [academiaClasesPortal, tickPortal]
+  );
 
   const inscripcionesPorReta = useMemo(() => {
     const mapa = {};
@@ -26630,13 +26884,15 @@ function PortalPublicoJugadores({ clubSlug }) {
                     <ChevronRight size={16} className="shrink-0 text-violet-300" />
                   </button>
 
-                  {academiaClasesPortal.filter((c) => c.estado !== 'cancelada' && c.tipo_clase !== 'privada').length === 0 && (
+                  {academiaClasesPortalVisibles.filter((c) => c.estado !== 'cancelada' && c.tipo_clase !== 'privada').length === 0 && (
                     <p className="py-10 text-center text-sm text-slate-500">Este club todavía no publicó clases grupales — usa el botón de arriba para pedir una.</p>
                   )}
-                  {academiaClasesPortal
+                  {academiaClasesPortalVisibles
                     // PORTAL: solo clases Grupales — las Privadas se piden
                     // por el banner de arriba, nunca aparecen en la lista
-                    // general (refinamiento UX, item 2).
+                    // general (refinamiento UX, item 2). El Filtro por Hora
+                    // y Archivado (`archivado`/`claseYaInicioHoy`) ya se
+                    // aplicó al armar `academiaClasesPortalVisibles`.
                     .filter((c) => c.estado !== 'cancelada' && c.tipo_clase !== 'privada')
                     .map((c) => {
                       const inscritosActivos = academiaAlumnosPortal.filter((a) => a.clase_id === c.id && a.estado !== 'baja').length;
