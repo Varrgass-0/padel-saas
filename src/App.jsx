@@ -18031,13 +18031,31 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
   );
 }
 
-function ModalAsignarHorarioPartido({ partido, canchas, reservas, onClose, onAsignar, asignando }) {
+function ModalAsignarHorarioPartido({ partido, canchas, reservas, torneos, onClose, onAsignar, asignando }) {
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   const [canchaId, setCanchaId] = useState(partido.cancha_id || canchasActivas[0]?.id || '');
   const [fecha, setFecha] = useState(partido.fecha || hoyISO());
   const [horaInicio, setHoraInicio] = useState(partido.hora_inicio || '08:00');
   const [horaFin, setHoraFin] = useState(partido.hora_fin || '09:00');
   const [error, setError] = useState('');
+
+  // FIX DE BUG: el Bloqueo Maestro del PROPIO torneo de este partido (el
+  // apartado general de cancha — ej. 7:00–15:00 — que se crea al dar de
+  // alta el torneo, ANTES de programar ningún partido individual, ver
+  // `torneo.bloqueos` / `idsBloqueosMaestroTorneo`) vive en `reservas` con
+  // el mismo `estado: 'Torneo'` que cualquier sub-bloqueo de partido — así
+  // que, sin excluirlo aquí, CUALQUIER horario que cayera dentro de esa
+  // franja general se marcaba como "ocupado" contra el bloqueo del propio
+  // torneo, sin importar que ese bloqueo no representa un partido real. Se
+  // excluye SOLO el Bloqueo Maestro de ESTE torneo (`partido.torneo_id`) —
+  // el de cualquier OTRO torneo, cualquier reserva normal, y los
+  // sub-bloqueos de LOS DEMÁS partidos de este mismo torneo (dos partidos
+  // no se pueden jugar a la vez en la misma cancha) siguen contando como
+  // conflicto real.
+  const idsBloqueoMaestroDelTorneo = useMemo(
+    () => idsBloqueosMaestroTorneo((torneos || []).filter((t) => t.id === partido.torneo_id)),
+    [torneos, partido.torneo_id]
+  );
 
   function guardar() {
     if (!canchaId) return setError('Selecciona una cancha.');
@@ -18047,10 +18065,15 @@ function ModalAsignarHorarioPartido({ partido, canchas, reservas, onClose, onAsi
       setError('La hora de fin debe ser posterior a la de inicio.');
       return;
     }
-    // Si este partido ya tenía un bloqueo propio en la Parrilla (se está
-    // reasignando de horario), no debe contar como "ocupado" contra sí mismo.
-    const reservasSinEstePartido = reservas.filter((r) => r.id !== partido.reserva_bloqueo_id);
-    const solape = buscarSolapeEnCancha(reservasSinEstePartido, canchaId, fecha, horaInicio, horaFin);
+    // Excluye del chequeo de solape: (1) el bloqueo propio de ESTE partido
+    // (si ya tenía uno y se está reasignando, no debe contar como "ocupado"
+    // contra sí mismo) y (2) el Bloqueo Maestro de su propio torneo (ver
+    // comentario arriba). Todo lo demás — otros partidos del mismo torneo,
+    // reservas normales, bloqueos de otros torneos — sí se valida.
+    const reservasParaValidar = reservas.filter(
+      (r) => r.id !== partido.reserva_bloqueo_id && !idsBloqueoMaestroDelTorneo.has(r.id)
+    );
+    const solape = buscarSolapeEnCancha(reservasParaValidar, canchaId, fecha, horaInicio, horaFin);
     if (solape) {
       const cancha = canchas.find((c) => c.id === canchaId);
       setError(`${cancha?.nombre || 'Esa cancha'} ya está ocupada el ${fecha} en ese horario.`);
@@ -19216,6 +19239,31 @@ function ModuloTorneosRetas({
   // para que la Parrilla muestre el partido específico, no un genérico
   // "TORNEO: <nombre>".
   async function asignarHorarioPartidoHandler({ partido, canchaId, fecha, horaInicio, horaFin }) {
+    // Defensa a fondo: re-valida aquí, no solo en `ModalAsignarHorarioPartido`
+    // — mismo criterio EXACTO de exclusión (nunca cuenta como conflicto el
+    // Bloqueo Maestro del PROPIO torneo del partido, ni el bloqueo que el
+    // propio partido ya traía si se está reasignando), pero SÍ valida contra
+    // cualquier otro partido/reserva real. Cubre el caso de que `reservas`
+    // haya cambiado entre que se abrió el modal y se le dio "Asignar" (otra
+    // pestaña/operador reservó ese hueco mientras tanto) — sin esto, el
+    // "backend" de esta función confiaba ciegamente en que el modal ya
+    // había validado, y podía dejar dos partidos pisándose en la misma
+    // cancha/horario.
+    const idsBloqueoMaestroDelTorneo = idsBloqueosMaestroTorneo(torneos.filter((t) => t.id === partido.torneo_id));
+    const reservasParaValidar = reservas.filter(
+      (r) => r.id !== partido.reserva_bloqueo_id && !idsBloqueoMaestroDelTorneo.has(r.id)
+    );
+    const solapeReal = buscarSolapeEnCancha(reservasParaValidar, canchaId, fecha, horaInicio, horaFin);
+    if (solapeReal) {
+      const canchaConflicto = canchas.find((c) => c.id === canchaId);
+      mostrarToast({
+        titulo: 'Esa cancha ya está ocupada',
+        detalle: `${canchaConflicto?.nombre || 'La cancha'} ya tiene algo agendado el ${fecha} en ese horario — elige otro horario o cancha.`,
+        tono: 'error',
+      });
+      return;
+    }
+
     setAsignandoHorarioPartido(true);
     const cancha = canchas.find((c) => c.id === canchaId);
     const etiqueta = `${partido.ronda}: ${partido.pareja1} vs ${partido.pareja2}`;
@@ -19821,6 +19869,7 @@ function ModuloTorneosRetas({
           partido={partidoAsignarHorario}
           canchas={canchas}
           reservas={reservas}
+          torneos={torneos}
           onClose={() => setPartidoAsignarHorario(null)}
           onAsignar={asignarHorarioPartidoHandler}
           asignando={asignandoHorarioPartido}
