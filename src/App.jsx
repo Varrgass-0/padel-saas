@@ -27300,12 +27300,47 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
 // para que otro jugador se una desde "Unirme" en la lista de abajo.
 function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme }) {
   const tieneCategorias = Array.isArray(torneo.categorias) && torneo.categorias.length > 0;
-  const [categoria, setCategoria] = useState(tieneCategorias ? '' : null);
+
+  // Mi propia inscripción a este Torneo (si ya existe) — se calcula ANTES
+  // de los `useState` de abajo A PROPÓSITO. FIX DE BUG UX: antes, `categoria`
+  // nacía SIEMPRE en '' aunque el jugador ya estuviera inscrito, así que
+  // `yaInscritoEnEstaCategoria` (más abajo) comparaba "mi categoría real"
+  // contra "" y daba `false` en el primerísimo render — el banner de
+  // estatus sí se alcanzaba a ver (no depende de `categoria`), pero el
+  // formulario completo (tabs "Sin pareja"/"Pareja nueva"/"Pareja
+  // registrada" + botón "Continuar a pago") se seguía mostrando debajo,
+  // dejando duplicar la inscripción. Con `categoria` inicializada a la
+  // categoría real de `miInscripcion`, ambos coinciden desde el primer
+  // render y el formulario queda oculto de inmediato — sin este fix, un
+  // torneo CON categorías nunca ocultaba el formulario al reabrir el modal.
+  //
+  // Válido tanto como titular (`esUnoMismo`) como si soy la pareja de
+  // alguien más que ya se inscribió y luego se unió conmigo
+  // (`pareja_jugador_id`/`pareja_telefono`, con respaldo de alias vía
+  // `parejaTelefonoDeParticipante`) — mismo criterio tolerante a un
+  // `jugador_id` ausente (columna opcional, ver
+  // `migracion_v15_jugador_id_torneos_retas.sql`) que el resto del módulo.
+  const esUnoMismo = (p) =>
+    (jugador?.id && p.jugador_id === jugador.id) || (jugador?.telefono && claveTelefono(p.telefono) === claveTelefono(jugador.telefono));
+  const miInscripcion = (participantes || []).find(
+    (p) =>
+      esUnoMismo(p) ||
+      (jugador?.id && p.pareja_jugador_id === jugador.id) ||
+      (jugador?.telefono && claveTelefono(parejaTelefonoDeParticipante(p)) === claveTelefono(jugador.telefono))
+  );
+  const soyTitularDeMiInscripcion = miInscripcion ? esUnoMismo(miInscripcion) : false;
+  // Lectura tolerante a alias (`parejaConfirmadaDeParticipante`/
+  // `parejaNombreDeParticipante`): responde igual sin importar cuál alias de
+  // columna sobrevivió en este proyecto de Supabase. Alimenta la tarjeta de
+  // Resumen de Inscripción de más abajo — "Buscando pareja" mientras siga
+  // sin confirmarse, o "Inscripción Confirmada" en cuanto
+  // `confirmarUnionTorneo` la complete — visible tanto para quien abrió la
+  // inscripción como para quien se unió después.
+  const parejaYaConfirmada = miInscripcion ? parejaConfirmadaDeParticipante(miInscripcion) : false;
+  const nombreDeMiPareja = miInscripcion ? (soyTitularDeMiInscripcion ? parejaNombreDeParticipante(miInscripcion) : miInscripcion.nombre) : null;
+
+  const [categoria, setCategoria] = useState(() => (tieneCategorias ? miInscripcion?.categoria || '' : null));
   const [modoPareja, setModoPareja] = useState('ninguna'); // 'registrada' | 'nueva' | 'ninguna' | 'unirme'
-  // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX) — alterna entre
-  // el flujo normal de inscripción/pago y el resumen de "Categoría, pareja
-  // registrada, horario de partido y estatus de pago" que pidió el club.
-  const [verResumen, setVerResumen] = useState(false);
   const [busqueda, setBusqueda] = useState('');
   const [resultados, setResultados] = useState([]);
   const [buscando, setBuscando] = useState(false);
@@ -27350,37 +27385,17 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
   // registro viejo/sin migrar puede traer `jugador_id: undefined` en TODAS
   // sus filas — contra esa comparación sola, un jugador podía verse a sí
   // mismo en esta lista y darle "Unirme" a su propia inscripción.
-  const esUnoMismo = (p) =>
-    (jugador?.id && p.jugador_id === jugador.id) || (jugador?.telefono && claveTelefono(p.telefono) === claveTelefono(jugador.telefono));
   // `participanteEnBuscaDePareja` (tolerante a alias — ver su comentario) es
   // el filtro ESTRICTO que pidió el club: solo entra aquí quien de verdad
   // sigue sin pareja, sin importar cuál de los dos alias de
   // `pareja_nombre`/`nombre_pareja` sobrevivió en este proyecto de Supabase
   // — así la lista se limpia sola en cuanto la unión se guarda, para TODOS
   // los usuarios del Portal (el próximo refresh/Realtime ya no la muestra).
+  // (`esUnoMismo`/`miInscripcion`/`parejaYaConfirmada`/`nombreDeMiPareja` ya
+  // se calcularon arriba, ANTES del `useState` de `categoria` — ver el
+  // comentario ahí sobre por qué.)
   const enBuscaDePareja = (participantes || []).filter((p) => participanteEnBuscaDePareja(p) && !esUnoMismo(p));
 
-  // Mi propia inscripción a este Torneo (si ya existe) — como titular
-  // (`esUnoMismo`) o como la pareja de alguien más que ya se inscribió y
-  // luego se unió conmigo (`pareja_jugador_id`/`pareja_telefono`, con
-  // respaldo de alias vía `parejaTelefonoDeParticipante`). Alimenta el aviso
-  // de estatus de abajo: "En busca de pareja" mientras siga sin confirmarse,
-  // o "Pareja confirmada" en cuanto `confirmarUnionTorneo` la complete (ver
-  // su comentario) — visible tanto para quien abrió la inscripción como para
-  // quien se unió después.
-  const miInscripcion = (participantes || []).find(
-    (p) =>
-      esUnoMismo(p) ||
-      (jugador?.id && p.pareja_jugador_id === jugador.id) ||
-      (jugador?.telefono && claveTelefono(parejaTelefonoDeParticipante(p)) === claveTelefono(jugador.telefono))
-  );
-  const soyTitularDeMiInscripcion = miInscripcion ? esUnoMismo(miInscripcion) : false;
-  // Lectura tolerante a alias (`parejaConfirmadaDeParticipante`/
-  // `parejaNombreDeParticipante`) — mismo criterio que `enBuscaDePareja` de
-  // arriba, para que el banner de estatus y el bloqueo de abajo respondan
-  // igual sin importar cuál alias de columna sobrevivió en este proyecto.
-  const parejaYaConfirmada = miInscripcion ? parejaConfirmadaDeParticipante(miInscripcion) : false;
-  const nombreDeMiPareja = miInscripcion ? (soyTitularDeMiInscripcion ? parejaNombreDeParticipante(miInscripcion) : miInscripcion.nombre) : null;
   // "Ya tengo lugar en ESTA categoría" — si el torneo tiene categorías, solo
   // cuenta cuando la categoría activa es la misma en la que ya está inscrito
   // (`miInscripcion.categoria`); un torneo sin categorías siempre aplica. Con
@@ -27564,80 +27579,99 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
           </div>
         )}
 
-        {miInscripcion &&
-          (() => {
-            return (
-              <div
-                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${
-                  parejaYaConfirmada
-                    ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-400'
-                    : 'border-amber-400/30 bg-amber-400/10 text-amber-400'
-                }`}
-              >
-                {parejaYaConfirmada ? (
-                  <>
-                    <CheckCircle2 size={13} className="shrink-0" />
-                    Pareja confirmada{nombreDeMiPareja ? ` · ${nombreDeMiPareja}` : ''}
-                  </>
-                ) : (
-                  <>
-                    <Users size={13} className="shrink-0" />
-                    Ya estás inscrito · En busca de pareja
-                  </>
-                )}
-              </div>
-            );
-          })()}
+        {/* Este banner corto SOLO informa de una inscripción en OTRA
+            categoría del mismo torneo (`miInscripcion` existe pero
+            `!yaInscritoEnEstaCategoria` — el jugador está viendo una
+            categoría distinta a la suya) — cuando ya está inscrito en la
+            categoría que se está viendo, la tarjeta de Resumen de
+            Inscripción de abajo (con su propio badge) ya cubre este aviso,
+            así que aquí se omite para no duplicarlo. */}
+        {miInscripcion && !yaInscritoEnEstaCategoria && (
+          <div
+            className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${
+              parejaYaConfirmada
+                ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-400'
+                : 'border-amber-400/30 bg-amber-400/10 text-amber-400'
+            }`}
+          >
+            {parejaYaConfirmada ? (
+              <>
+                <CheckCircle2 size={13} className="shrink-0" />
+                Ya inscrito en {miInscripcion.categoria || 'otra categoría'} · Pareja confirmada{nombreDeMiPareja ? ` · ${nombreDeMiPareja}` : ''}
+              </>
+            ) : (
+              <>
+                <Users size={13} className="shrink-0" />
+                Ya inscrito en {miInscripcion.categoria || 'otra categoría'} · En busca de pareja
+              </>
+            )}
+          </div>
+        )}
 
         {yaInscritoEnEstaCategoria ? (
-          verResumen ? (
-            // FLUJO UNIFICADO "YA ESTÁS INSCRITO" — resumen pedido tal
-            // cual: Categoría, pareja registrada, horario de partido y
-            // estatus de pago.
-            <div className="space-y-2 rounded-xl border border-lime-400/20 bg-lime-400/5 p-3.5">
-              <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-lime-400">
-                <ClipboardList size={13} /> Resumen de tu inscripción
-              </p>
-              <dl className="space-y-1.5 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <dt className="text-slate-500">Categoría</dt>
-                  <dd className="font-bold text-slate-200">{miInscripcion?.categoria || (tieneCategorias ? '—' : 'Sin categorías')}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <dt className="text-slate-500">Pareja registrada</dt>
-                  <dd className="font-bold text-slate-200">{nombreDeMiPareja || 'Sin pareja aún'}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <dt className="text-slate-500">Horario de partido</dt>
-                  <dd className="text-right font-bold text-slate-200">
-                    {miProximoPartido
-                      ? [
-                          miProximoPartido.fecha ? formatoFechaLarga(miProximoPartido.fecha) : null,
-                          miProximoPartido.hora_inicio ? formatoHora12(miProximoPartido.hora_inicio) : null,
-                        ]
-                          .filter(Boolean)
-                          .join(' · ') || 'Cuadro generado — horario aún sin asignar'
-                      : 'El club aún no genera el cuadro'}
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <dt className="text-slate-500">Estatus de pago</dt>
-                  <dd className={`font-bold ${miInscripcion?.estado_pago === 'pagado' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                    {miInscripcion?.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
-                  </dd>
-                </div>
-              </dl>
-            </div>
-          ) : (
-            // Ya tiene un lugar (con o sin pareja confirmada) en ESTA
-            // categoría — el banner de estatus de arriba ya lo dice, así que
-            // aquí abajo ya no se ofrece "Unirme" a alguien más ni volver a
-            // registrarse "Sin pareja": ambas opciones crearían un segundo
-            // registro/unión sin sentido sobre una inscripción que ya existe.
-            <p className="rounded-lg border border-white/5 bg-slate-800/40 p-2.5 text-[11px] leading-relaxed text-slate-400">
-              Ya tienes tu lugar en esta categoría — no puedes volver a inscribirte ni unirte a alguien más aquí.
+          // Resumen de Inscripción — reemplaza POR COMPLETO el formulario de
+          // abajo (tabs "Sin pareja"/"Pareja nueva"/"Pareja registrada" +
+          // botón de pago) en cuanto el jugador ya tiene un registro en
+          // `torneo_participantes` para este torneo/categoría, evitando que
+          // pueda duplicar su inscripción o intentar pagar dos veces. Se
+          // muestra siempre — sin un clic extra de por medio — y se
+          // actualiza sola en cuanto `parejaYaConfirmada` cambie (p. ej.
+          // alguien se unió a mi inscripción "en busca de pareja" mientras
+          // este modal seguía abierto, vía Realtime).
+          <div
+            className={`space-y-2.5 rounded-xl border p-3.5 ${
+              parejaYaConfirmada ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-amber-400/30 bg-amber-400/5'
+            }`}
+          >
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                parejaYaConfirmada
+                  ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+                  : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
+              }`}
+            >
+              {parejaYaConfirmada ? <CheckCircle2 size={13} /> : <Users size={13} />}
+              {parejaYaConfirmada ? 'Inscripción Confirmada' : 'Buscando pareja'}
+            </span>
+
+            <p className="text-xs leading-relaxed text-slate-300">
+              {parejaYaConfirmada
+                ? `¡Ya tienes pareja! Tu compañero es: ${nombreDeMiPareja || 'pareja confirmada'}.`
+                : 'Te encuentras inscrito en busca de pareja. Otros jugadores podrán ver tu perfil disponible para unirse a ti.'}
             </p>
-          )
+
+            <dl className="space-y-1.5 border-t border-white/5 pt-2.5 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-slate-500">Categoría</dt>
+                <dd className="font-bold text-slate-200">{miInscripcion?.categoria || (tieneCategorias ? '—' : 'Sin categorías')}</dd>
+              </div>
+              {parejaYaConfirmada && (
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-slate-500">Compañero</dt>
+                  <dd className="font-bold text-slate-200">{nombreDeMiPareja || '—'}</dd>
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-slate-500">Horario de partido</dt>
+                <dd className="text-right font-bold text-slate-200">
+                  {miProximoPartido
+                    ? [
+                        miProximoPartido.fecha ? formatoFechaLarga(miProximoPartido.fecha) : null,
+                        miProximoPartido.hora_inicio ? formatoHora12(miProximoPartido.hora_inicio) : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || 'Cuadro generado — horario aún sin asignar'
+                    : 'El club aún no genera el cuadro'}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-slate-500">Estatus de pago</dt>
+                <dd className={`font-bold ${miInscripcion?.estado_pago === 'pagado' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {miInscripcion?.estado_pago === 'pagado' ? 'Pagado en línea' : 'Pago pendiente en recepción'}
+                </dd>
+              </div>
+            </dl>
+          </div>
         ) : modoPareja === 'unirme' && parejaParaUnirme ? (
           // Modo "Unirme a pareja seleccionada": la UI queda fija en ESTA
           // confirmación — nada de tabs, nada de búsqueda — hasta que el
@@ -27791,15 +27825,11 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
 
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
-          {yaInscritoEnEstaCategoria ? (
-            verResumen ? (
-              <BotonSecundario onClick={() => setVerResumen(false)}>Volver</BotonSecundario>
-            ) : (
-              <BotonPrimario onClick={() => setVerResumen(true)}>
-                <ClipboardList size={15} /> Ver Resumen
-              </BotonPrimario>
-            )
-          ) : (
+          {/* Ya inscrito en esta categoría: la tarjeta de Resumen de arriba
+              ya cubre todo lo que hay que saber — "Cerrar" es el único botón
+              que se ofrece, nunca "Continuar a pago" (evita un segundo
+              cobro/inscripción sobre un lugar que ya existe). */}
+          {!yaInscritoEnEstaCategoria && (
             <BotonPrimario onClick={confirmarInscripcion}>
               <UserPlus size={15} />
               {modoPareja === 'unirme' ? 'Confirmar unión' : jugador ? 'Continuar a pago' : 'Identificarme e inscribirme'}
