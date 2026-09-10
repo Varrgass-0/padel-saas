@@ -12406,7 +12406,7 @@ function descargarArchivoTexto(nombreArchivo, contenido, tipoMime) {
 // producto ni recepción de por medio.
 const CATEGORIAS_GASTO = [
   { value: 'Insumos', label: 'Insumos', esInventario: true },
-  { value: 'Pro-Shop / Equipamiento', label: 'Pro-Shop / Equipamiento', esInventario: true },
+  { value: 'Pro-Shop', label: 'Pro-Shop', esInventario: true },
   { value: 'Alimentos & Bebidas', label: 'Alimentos & Bebidas', esInventario: true },
   { value: 'Accesorios', label: 'Accesorios', esInventario: true },
   { value: 'Servicios', label: 'Servicios (luz, agua, internet...)' },
@@ -12423,12 +12423,12 @@ const CATEGORIAS_GASTO = [
 // queda dentro del catálogo YA EXISTENTE de categorías POS (Pro-Shop/
 // Cafetería-Bar/Rentas) a propósito, en vez de inventar una categoría POS
 // nueva por cada categoría de Gasto: así un producto de "Accesorios" o
-// "Pro-Shop / Equipamiento" nace ya integrado con todo lo que YA filtra por
-// categoría POS (grid del POS, Tienda del Portal, Analytics BI) sin tener
-// que tocar ninguno de esos filtros.
+// "Pro-Shop" nace ya integrado con todo lo que YA filtra por categoría POS
+// (grid del POS, Tienda del Portal, Analytics BI) sin tener que tocar
+// ninguno de esos filtros.
 const CATEGORIA_POS_SUGERIDA_POR_GASTO = {
   Insumos: 'Pro-Shop',
-  'Pro-Shop / Equipamiento': 'Pro-Shop',
+  'Pro-Shop': 'Pro-Shop',
   Accesorios: 'Pro-Shop',
   'Alimentos & Bebidas': 'Cafetería/Bar',
 };
@@ -12916,6 +12916,19 @@ function ModuloContabilidadCompras({
     productoExistenteId: '',
     varianteExistenteId: '',
     cantidadUnidades: '',
+    // Costo Unitario de ESTA compra puntual (no el costo histórico del
+    // catálogo) — se precarga con el costo actual del producto/variante en
+    // cuanto se selecciona (ver los `onChange` del Producto/Variante más
+    // abajo) pero siempre queda editable: el costo de un proveedor puede
+    // variar compra a compra. Junto con `cantidadUnidades` arma el Monto
+    // Total automático de esta compra (ver `montoCalculadoProducto`).
+    costoUnitarioCompra: '',
+    // Si está activo, además de registrar el gasto, `registrarEgreso()`
+    // sobreescribe `productos.costo_unitario` (o el de la variante en el
+    // JSONB) con `costoUnitarioCompra` — así el costo "de catálogo" que usa
+    // Analytics BI/Margen Bruto queda al día con el precio real del último
+    // proveedor.
+    actualizarCostoCatalogo: false,
     estatusRecepcion: 'recibido', // 'pendiente' 🟡 | 'recibido' 🟢 — obligatorio en modo 'producto'
   };
   function estadoInicialNuevoProductoForm(categoriaGasto) {
@@ -12954,6 +12967,8 @@ function ModuloContabilidadCompras({
       productoExistenteId: '',
       varianteExistenteId: '',
       cantidadUnidades: '',
+      costoUnitarioCompra: '',
+      actualizarCostoCatalogo: false,
       estatusRecepcion: 'recibido',
     }));
     setNuevoProductoForm(estadoInicialNuevoProductoForm(nuevaCategoria));
@@ -12990,29 +13005,113 @@ function ModuloContabilidadCompras({
     return filtrada.slice(0, 30);
   }, [productos, formEgreso.busquedaProducto]);
 
+  const modoNuevoProducto = esModoCompraProducto && formEgreso.subModoProducto === 'nuevo';
+  const modoExistenteProducto = esModoCompraProducto && formEgreso.subModoProducto === 'existente';
+
+  const variantesNuevoProductoConDatos = useMemo(
+    () => nuevoProductoForm.variantes.filter((v) => (v.nombre || '').trim()),
+    [nuevoProductoForm.variantes]
+  );
+
+  // Fix "rebote con stock 0": el Stock Inicial del producto padre YA NO se
+  // teclea a mano en cuanto hay variantes — se calcula solo, sumando el
+  // stock de cada variante en pantalla (mismo criterio que
+  // `stockCalculadoDeVariantes` en `ModalNuevoProducto`), así "60 + 60"
+  // siempre da "120" sin que el operador tenga que sumarlo ni volver a
+  // capturarlo en un campo aparte.
+  const stockCalculadoNuevoProducto = useMemo(() => {
+    if (variantesNuevoProductoConDatos.length > 0) {
+      return variantesNuevoProductoConDatos.reduce((acc, v) => acc + (Number(v.stock) || 0), 0);
+    }
+    return Number(nuevoProductoForm.stockInicial) || 0;
+  }, [variantesNuevoProductoConDatos, nuevoProductoForm.stockInicial]);
+
+  // Monto Total automático de la compra — reemplaza el campo "Monto"
+  // manual del top bar en AMBOS submodos de "Compra de Producto/Stock":
+  //  · 'existente': Cantidad × Costo Unitario de esta compra.
+  //  · 'nuevo': Σ (Stock × Costo) de cada variante, o Stock inicial × Costo
+  //    del producto base cuando no hay variantes.
+  // Esto es justo lo que evita que el gasto se rechace por "$0" cuando el
+  // operador arma la compra desde el costo/stock del producto en vez de
+  // teclear un monto aparte a mano.
+  const montoCalculadoProducto = useMemo(() => {
+    if (!esModoCompraProducto) return 0;
+    if (formEgreso.subModoProducto === 'existente') {
+      const cant = Number(formEgreso.cantidadUnidades) || 0;
+      const costo = Number(formEgreso.costoUnitarioCompra) || 0;
+      return cant * costo;
+    }
+    if (variantesNuevoProductoConDatos.length > 0) {
+      return variantesNuevoProductoConDatos.reduce((acc, v) => acc + (Number(v.stock) || 0) * (Number(v.costoUnitario) || 0), 0);
+    }
+    return (Number(nuevoProductoForm.stockInicial) || 0) * (Number(nuevoProductoForm.costo) || 0);
+  }, [
+    esModoCompraProducto,
+    formEgreso.subModoProducto,
+    formEgreso.cantidadUnidades,
+    formEgreso.costoUnitarioCompra,
+    variantesNuevoProductoConDatos,
+    nuevoProductoForm.stockInicial,
+    nuevoProductoForm.costo,
+  ]);
+
   async function registrarEgreso() {
     setErrorFormEgreso('');
-    if (!formEgreso.concepto.trim()) {
+
+    // El Concepto solo es obligatorio a mano en "Gasto General/Servicio" y
+    // en "Sumar a producto existente" — en "+ Crear Nuevo Producto desde
+    // Compra" el top bar (con el campo Concepto) se oculta por completo
+    // (ver JSX) y el concepto se autogenera del nombre del producto más
+    // abajo, así que aquí no hay nada que validar todavía.
+    if (!modoNuevoProducto && !formEgreso.concepto.trim()) {
       setErrorFormEgreso('El concepto es obligatorio.');
       return;
     }
-    const monto = Number(formEgreso.monto);
-    if (!monto || monto <= 0) {
-      setErrorFormEgreso('Captura un monto válido, mayor a $0.');
+    if (modoNuevoProducto && !nuevoProductoForm.nombre.trim()) {
+      setErrorFormEgreso('El nombre del nuevo producto es obligatorio.');
       return;
     }
 
+    // Cuántas unidades trae la compra SOLO se pregunta explícitamente en
+    // "Sumar a producto existente" — en "+ Crear Nuevo Producto desde
+    // Compra" las unidades salen del Stock Inicial/las variantes del
+    // producto (ver `stockCalculadoNuevoProducto`), nunca de este campo.
+    // FIX del "rebote con stock 0": antes esta validación se exigía para
+    // CUALQUIER submodo de "Compra de Producto/Stock", así que crear un
+    // producto nuevo (que nunca llena `cantidadUnidades`) siempre tronaba
+    // aquí aunque el stock de sus variantes fuera correcto.
     let cantidad = 0;
-    if (esModoCompraProducto) {
+    if (modoExistenteProducto) {
       cantidad = Number(formEgreso.cantidadUnidades);
       if (!cantidad || cantidad <= 0) {
         setErrorFormEgreso('Captura cuántas unidades incluye esta compra.');
         return;
       }
-      if (!formEgreso.estatusRecepcion) {
-        setErrorFormEgreso('Selecciona el Estatus de Recepción de la compra.');
+      const costoUnitarioValido = Number(formEgreso.costoUnitarioCompra);
+      if (!costoUnitarioValido || costoUnitarioValido <= 0) {
+        setErrorFormEgreso('Captura el costo unitario de esta compra.');
         return;
       }
+    }
+    if (esModoCompraProducto && !formEgreso.estatusRecepcion) {
+      setErrorFormEgreso('Selecciona el Estatus de Recepción de la compra.');
+      return;
+    }
+
+    // Monto Total: manual solo en "Gasto General/Servicio" — en
+    // "Compra de Producto/Stock" (los DOS submodos) se calcula solo, así
+    // el operador nunca tiene que capturar dos veces la misma cifra (ver
+    // `montoCalculadoProducto`).
+    const monto = esModoCompraProducto ? montoCalculadoProducto : Number(formEgreso.monto);
+    if (!monto || monto <= 0) {
+      if (modoNuevoProducto) {
+        setErrorFormEgreso('Captura el costo y el stock (o el de las variantes) del producto para calcular el monto de esta compra.');
+      } else if (modoExistenteProducto) {
+        setErrorFormEgreso('El monto de la compra debe ser mayor a $0 — revisa la cantidad y el costo unitario.');
+      } else {
+        setErrorFormEgreso('Captura un monto válido, mayor a $0.');
+      }
+      return;
     }
 
     setGuardandoEgreso(true);
@@ -13023,7 +13122,7 @@ function ModuloContabilidadCompras({
       // siendo exactamente el de siempre, sin producto de por medio.
       let vinculo = {};
 
-      if (esModoCompraProducto && formEgreso.subModoProducto === 'existente') {
+      if (modoExistenteProducto) {
         if (!productoExistenteSeleccionado) {
           throw new Error('Busca y selecciona el producto al que le vas a sumar unidades.');
         }
@@ -13038,6 +13137,16 @@ function ModuloContabilidadCompras({
           ? `${productoExistenteSeleccionado.nombre} — ${varianteSel?.nombre || ''}`
           : productoExistenteSeleccionado.nombre;
 
+        // Actualización de Costo: el Costo Unitario de ESTA compra (ver
+        // `formEgreso.costoUnitarioCompra`) es independiente de si la
+        // mercancía ya llegó o no — si el checkbox "Actualizar costo
+        // unitario en el catálogo de productos" está activo, el costo de
+        // catálogo (el que usa Analytics BI para Margen Bruto) se
+        // actualiza SIEMPRE al registrar la compra, sin esperar a
+        // "Confirmar Recepción".
+        const costoUnitarioCompra = Number(formEgreso.costoUnitarioCompra) || 0;
+        const actualizarCosto = formEgreso.actualizarCostoCatalogo && costoUnitarioCompra > 0;
+
         if (formEgreso.estatusRecepcion === 'recibido') {
           // 🟢 Ya llegó al club: sumamos el stock EN ESTE MOMENTO (misma
           // lógica que "Registrar Entrada" en Inventario) y forzamos
@@ -13050,7 +13159,7 @@ function ModuloContabilidadCompras({
               productoId: productoExistenteSeleccionado.id,
               varianteId: formEgreso.varianteExistenteId,
               varianteNombre: varianteSel?.nombre,
-              cambios: {},
+              cambios: actualizarCosto ? { costo_unitario: costoUnitarioCompra } : {},
               nuevoStock: stockNuevo,
               upsertProducto,
             });
@@ -13067,18 +13176,21 @@ function ModuloContabilidadCompras({
               stock_nuevo: stockNuevo,
               motivo: `Compra: ${formEgreso.concepto.trim()}`,
               operador: operador?.nombre,
+              costo_unitario: costoUnitarioCompra || null,
             });
           } else {
             const stockAnterior = Number(productoExistenteSeleccionado.stock) || 0;
             const stockNuevo = stockAnterior + cantidad;
+            const cambiosProducto = { stock: stockNuevo, recibido: true };
+            if (actualizarCosto) cambiosProducto.costo_unitario = costoUnitarioCompra;
             const { error: errStock } = await actualizarConColumnasOpcionales(
               'productos',
               productoExistenteSeleccionado.id,
-              { stock: stockNuevo, recibido: true },
+              cambiosProducto,
               ['recibido']
             );
             if (errStock) throw errStock;
-            upsertProducto({ id: productoExistenteSeleccionado.id, stock: stockNuevo, recibido: true });
+            upsertProducto({ id: productoExistenteSeleccionado.id, ...cambiosProducto });
             await insertarMovimientoKardex({
               producto_id: productoExistenteSeleccionado.id,
               producto_nombre: nombreParaKardex,
@@ -13088,7 +13200,32 @@ function ModuloContabilidadCompras({
               stock_nuevo: stockNuevo,
               motivo: `Compra: ${formEgreso.concepto.trim()}`,
               operador: operador?.nombre,
+              costo_unitario: costoUnitarioCompra || null,
             });
+          }
+        } else if (actualizarCosto) {
+          // 🟡 Pendiente de Recepción: el stock se queda intacto hasta
+          // "Confirmar Recepción" (ver comentario de abajo), pero el costo
+          // de catálogo SÍ se puede actualizar de una vez si el operador
+          // marcó el checkbox — ya se sabe cuánto costó, aunque la
+          // mercancía todavía no llegue físicamente al club.
+          if (esVariante) {
+            await actualizarVarianteEnJSONB({
+              productoId: productoExistenteSeleccionado.id,
+              varianteId: formEgreso.varianteExistenteId,
+              varianteNombre: varianteSel?.nombre,
+              cambios: { costo_unitario: costoUnitarioCompra },
+              nuevoStock: null,
+              upsertProducto,
+            });
+          } else {
+            const { error: errCosto } = await actualizarConColumnasOpcionales(
+              'productos',
+              productoExistenteSeleccionado.id,
+              { costo_unitario: costoUnitarioCompra },
+              []
+            );
+            if (!errCosto) upsertProducto({ id: productoExistenteSeleccionado.id, costo_unitario: costoUnitarioCompra });
           }
         }
         // `estatusRecepcion === 'pendiente'`: a propósito NO se toca el
@@ -13111,28 +13248,28 @@ function ModuloContabilidadCompras({
           // rama `nuevo` abajo).
           requiere_suma_stock: formEgreso.estatusRecepcion === 'pendiente',
         };
-      } else if (esModoCompraProducto && formEgreso.subModoProducto === 'nuevo') {
-        if (!nuevoProductoForm.nombre.trim()) {
-          throw new Error('El nombre del nuevo producto es obligatorio.');
-        }
+      } else if (modoNuevoProducto) {
+        // El nombre ya se validó arriba (antes de ocultar el top bar no
+        // había forma de llegar aquí sin él); solo falta el precio de
+        // venta, que sí sigue siendo un campo propio de este sub-formulario.
         if (nuevoProductoForm.precio === '' || Number(nuevoProductoForm.precio) < 0) {
           throw new Error('Indica un precio de venta válido para el nuevo producto.');
         }
 
-        const variantesJSONB = nuevoProductoForm.variantes
-          .filter((v) => (v.nombre || '').trim())
-          .map((v) => ({
-            id: v.id,
-            nombre: v.nombre.trim(),
-            precio: v.precio === '' ? null : Number(v.precio),
-            costo_unitario: v.costoUnitario === '' ? null : Number(v.costoUnitario),
-            stock: v.stock === '' ? 0 : Number(v.stock) || 0,
-            activo: true,
-          }));
-        const tieneVariantes = variantesJSONB.length > 0;
-        const stockTotal = tieneVariantes
-          ? variantesJSONB.reduce((acc, v) => acc + (Number(v.stock) || 0), 0)
-          : Number(nuevoProductoForm.stockInicial) || 0;
+        // Mismas listas ya calculadas para el Stock Inicial automático y el
+        // Monto Total automático (`stockCalculadoNuevoProducto`/
+        // `montoCalculadoProducto`) — se reutilizan aquí tal cual para que
+        // lo que el operador vio en pantalla sea EXACTAMENTE lo que se
+        // guarda, sin recalcular por separado.
+        const variantesJSONB = variantesNuevoProductoConDatos.map((v) => ({
+          id: v.id,
+          nombre: v.nombre.trim(),
+          precio: v.precio === '' ? null : Number(v.precio),
+          costo_unitario: v.costoUnitario === '' ? null : Number(v.costoUnitario),
+          stock: v.stock === '' ? 0 : Number(v.stock) || 0,
+          activo: true,
+        }));
+        const stockTotal = stockCalculadoNuevoProducto;
 
         // El stock (del producto o de cada variante) se guarda YA con su
         // cantidad real desde el alta, sea 🟡 Pendiente o 🟢 Recibido — la
@@ -13171,10 +13308,19 @@ function ModuloContabilidadCompras({
         };
       }
 
+      // Concepto autogenerado SOLO en "+ Crear Nuevo Producto desde Compra"
+      // (top bar oculto, ver JSX) — usa el nombre del producto recién dado
+      // de alta (`vinculo.producto_nombre`) para que el Historial de
+      // Compras siga siendo legible sin pedirle al operador que lo teclee
+      // dos veces.
+      const conceptoFinal = modoNuevoProducto
+        ? formEgreso.concepto.trim() || `Alta de producto: ${vinculo.producto_nombre}`
+        : formEgreso.concepto.trim();
+
       const proveedor = formEgreso.proveedorId ? proveedores.find((p) => String(p.id) === String(formEgreso.proveedorId)) : null;
       await crearEgreso({
         fecha: formEgreso.fecha || hoyISO(),
-        concepto: formEgreso.concepto.trim(),
+        concepto: conceptoFinal,
         categoria: formEgreso.categoria,
         monto,
         proveedor_id: proveedor?.id || null,
@@ -13183,7 +13329,7 @@ function ModuloContabilidadCompras({
         operador: operador?.nombre || null,
         ...vinculo,
       });
-      mostrarToast({ titulo: 'Egreso registrado', detalle: `${formEgreso.concepto.trim()} — ${formatoMoneda(monto)}` });
+      mostrarToast({ titulo: 'Egreso registrado', detalle: `${conceptoFinal} — ${formatoMoneda(monto)}` });
       setFormEgreso(ESTADO_INICIAL_FORM_EGRESO);
       setNuevoProductoForm(estadoInicialNuevoProductoForm(ESTADO_INICIAL_FORM_EGRESO.categoria));
     } catch (err) {
@@ -13431,60 +13577,71 @@ function ModuloContabilidadCompras({
             <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
               <PackagePlus size={16} className="text-lime-400" /> Registrar Compra / Gasto
             </h3>
-            <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-6">
-              <Campo label="Fecha">
-                <SelectorFechaCompacto
-                  value={formEgreso.fecha}
-                  onChange={(v) => setFormEgreso((f) => ({ ...f, fecha: v }))}
-                  tamano="amplio"
-                />
-              </Campo>
-              <div className="sm:col-span-2 lg:col-span-2">
-                <Campo label="Concepto">
-                  <input
-                    type="text"
-                    placeholder="Ej. Pelotas Head, recibo de luz..."
-                    value={formEgreso.concepto}
-                    onChange={(e) => setFormEgreso((f) => ({ ...f, concepto: e.target.value }))}
-                    className={inputClase}
+            {/* Limpieza de Layout: en "+ Crear Nuevo Producto desde Compra" esta
+                barra general (Fecha/Concepto/Categoría/Monto/Proveedor) se oculta
+                por completo — Fecha/Proveedor/Método de Pago/Monto Total viven
+                integrados dentro del sub-formulario del nuevo producto (ver más
+                abajo), y Concepto/Categoría se resuelven solos (Concepto se
+                autogenera del nombre del producto, Categoría ya quedó fija desde
+                que se entró a este modo). Evita capturar la misma transacción dos
+                veces en dos lugares distintos de la pantalla. */}
+            {!modoNuevoProducto && (
+              <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                <Campo label="Fecha">
+                  <SelectorFechaCompacto
+                    value={formEgreso.fecha}
+                    onChange={(v) => setFormEgreso((f) => ({ ...f, fecha: v }))}
+                    tamano="amplio"
                   />
                 </Campo>
+                <div className="sm:col-span-2 lg:col-span-2">
+                  <Campo label="Concepto">
+                    <input
+                      type="text"
+                      placeholder="Ej. Pelotas Head, recibo de luz..."
+                      value={formEgreso.concepto}
+                      onChange={(e) => setFormEgreso((f) => ({ ...f, concepto: e.target.value }))}
+                      className={inputClase}
+                    />
+                  </Campo>
+                </div>
+                <Campo label="Categoría">
+                  <select value={formEgreso.categoria} onChange={(e) => cambiarCategoriaEgreso(e.target.value)} className={inputClase}>
+                    {CATEGORIAS_GASTO.map((c) => (
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </Campo>
+                <Campo label={modoExistenteProducto ? 'Monto (automático)' : 'Monto'}>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="0.00"
+                    readOnly={modoExistenteProducto}
+                    value={modoExistenteProducto ? montoCalculadoProducto.toFixed(2) : formEgreso.monto}
+                    onChange={(e) => setFormEgreso((f) => ({ ...f, monto: e.target.value }))}
+                    className={`${inputClase} ${modoExistenteProducto ? 'cursor-not-allowed opacity-80' : ''}`}
+                  />
+                </Campo>
+                <Campo label="Proveedor (opcional)">
+                  <select
+                    value={formEgreso.proveedorId}
+                    onChange={(e) => setFormEgreso((f) => ({ ...f, proveedorId: e.target.value }))}
+                    className={inputClase}
+                  >
+                    <option value="">— Sin proveedor —</option>
+                    {proveedores.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.nombre}
+                      </option>
+                    ))}
+                  </select>
+                </Campo>
               </div>
-              <Campo label="Categoría">
-                <select value={formEgreso.categoria} onChange={(e) => cambiarCategoriaEgreso(e.target.value)} className={inputClase}>
-                  {CATEGORIAS_GASTO.map((c) => (
-                    <option key={c.value} value={c.value}>
-                      {c.label}
-                    </option>
-                  ))}
-                </select>
-              </Campo>
-              <Campo label="Monto">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="0.00"
-                  value={formEgreso.monto}
-                  onChange={(e) => setFormEgreso((f) => ({ ...f, monto: e.target.value }))}
-                  className={inputClase}
-                />
-              </Campo>
-              <Campo label="Proveedor (opcional)">
-                <select
-                  value={formEgreso.proveedorId}
-                  onChange={(e) => setFormEgreso((f) => ({ ...f, proveedorId: e.target.value }))}
-                  className={inputClase}
-                >
-                  <option value="">— Sin proveedor —</option>
-                  {proveedores.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.nombre}
-                    </option>
-                  ))}
-                </select>
-              </Campo>
-            </div>
+            )}
 
             {esCategoriaInventario && (
               <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
@@ -13551,7 +13708,22 @@ function ModuloContabilidadCompras({
                         <Campo label="Producto">
                           <select
                             value={formEgreso.productoExistenteId}
-                            onChange={(e) => setFormEgreso((f) => ({ ...f, productoExistenteId: e.target.value, varianteExistenteId: '' }))}
+                            onChange={(e) => {
+                              const nuevoId = e.target.value;
+                              const prod = productosBusquedaCompra.find((p) => String(p.id) === String(nuevoId));
+                              const variantesDeEse = prod ? variantesDeProductoJSONB(prod) : [];
+                              // Precarga el Costo Unitario con el costo actual del
+                              // catálogo — SOLO cuando el producto no tiene
+                              // variantes (si las tiene, el costo depende de CUÁL
+                              // variante se elija, ver el `onChange` de abajo).
+                              setFormEgreso((f) => ({
+                                ...f,
+                                productoExistenteId: nuevoId,
+                                varianteExistenteId: '',
+                                costoUnitarioCompra:
+                                  variantesDeEse.length === 0 && prod?.costo_unitario != null ? String(prod.costo_unitario) : '',
+                              }));
+                            }}
                             className={inputClase}
                           >
                             <option value="">— Selecciona —</option>
@@ -13567,7 +13739,15 @@ function ModuloContabilidadCompras({
                           <Campo label="Variante">
                             <select
                               value={formEgreso.varianteExistenteId}
-                              onChange={(e) => setFormEgreso((f) => ({ ...f, varianteExistenteId: e.target.value }))}
+                              onChange={(e) => {
+                                const nuevaVarianteId = e.target.value;
+                                const variante = variantesDelProductoExistente.find((v) => String(v.id) === String(nuevaVarianteId));
+                                setFormEgreso((f) => ({
+                                  ...f,
+                                  varianteExistenteId: nuevaVarianteId,
+                                  costoUnitarioCompra: variante?.costo_unitario != null ? String(variante.costo_unitario) : '',
+                                }));
+                              }}
                               className={inputClase}
                             >
                               <option value="">— Selecciona —</option>
@@ -13590,9 +13770,85 @@ function ModuloContabilidadCompras({
                             className={inputClase}
                           />
                         </Campo>
+                        <Campo label="Costo Unitario de esta compra">
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder="0.00"
+                            value={formEgreso.costoUnitarioCompra}
+                            onChange={(e) => setFormEgreso((f) => ({ ...f, costoUnitarioCompra: e.target.value }))}
+                            className={inputClase}
+                          />
+                        </Campo>
+                        <div className="sm:col-span-2 lg:col-span-4">
+                          <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={formEgreso.actualizarCostoCatalogo}
+                              onChange={(e) => setFormEgreso((f) => ({ ...f, actualizarCostoCatalogo: e.target.checked }))}
+                              className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 accent-lime-400"
+                            />
+                            Actualizar costo unitario en el catálogo de productos
+                          </label>
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            Monto de esta compra: <span className="font-bold text-slate-300">{formatoMoneda(montoCalculadoProducto)}</span>{' '}
+                            (Cantidad × Costo Unitario)
+                          </p>
+                        </div>
                       </div>
                     ) : (
                       <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                        {/* Limpieza de Layout: Fecha/Proveedor/Método de Pago/Monto
+                            Total viven AQUÍ (con la barra general de arriba oculta)
+                            en vez de duplicarse en dos lugares de la pantalla. El
+                            Monto Total se calcula solo — Σ (Stock × Costo) de las
+                            variantes, o Stock inicial × Costo del producto base. */}
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                          <Campo label="Fecha">
+                            <SelectorFechaCompacto
+                              value={formEgreso.fecha}
+                              onChange={(v) => setFormEgreso((f) => ({ ...f, fecha: v }))}
+                              tamano="amplio"
+                            />
+                          </Campo>
+                          <Campo label="Proveedor (opcional)">
+                            <select
+                              value={formEgreso.proveedorId}
+                              onChange={(e) => setFormEgreso((f) => ({ ...f, proveedorId: e.target.value }))}
+                              className={inputClase}
+                            >
+                              <option value="">— Sin proveedor —</option>
+                              {proveedores.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.nombre}
+                                </option>
+                              ))}
+                            </select>
+                          </Campo>
+                          <Campo label="Método de pago">
+                            <select
+                              value={formEgreso.metodoPago}
+                              onChange={(e) => setFormEgreso((f) => ({ ...f, metodoPago: e.target.value }))}
+                              className={inputClase}
+                            >
+                              {METODOS_PAGO.filter((m) => m.value !== 'pos').map((m) => (
+                                <option key={m.value} value={m.value}>
+                                  {m.label}
+                                </option>
+                              ))}
+                            </select>
+                          </Campo>
+                          <Campo label="Monto Total (automático)">
+                            <input
+                              type="text"
+                              readOnly
+                              value={formatoMoneda(montoCalculadoProducto)}
+                              className={`${inputClase} cursor-not-allowed opacity-80`}
+                            />
+                          </Campo>
+                        </div>
+
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                           <div className="sm:col-span-2">
                             <Campo label="Nombre del producto">
@@ -13640,16 +13896,26 @@ function ModuloContabilidadCompras({
                               className={inputClase}
                             />
                           </Campo>
-                          <Campo label={nuevoProductoForm.variantes.length > 0 ? 'Stock inicial (usa las variantes)' : 'Stock inicial'}>
+                          <Campo
+                            label={
+                              variantesNuevoProductoConDatos.length > 0 ? 'Stock inicial (suma automática de variantes)' : 'Stock inicial'
+                            }
+                          >
                             <input
                               type="number"
                               min="0"
                               step="1"
                               placeholder="0"
-                              disabled={nuevoProductoForm.variantes.length > 0}
-                              value={nuevoProductoForm.variantes.length > 0 ? '' : nuevoProductoForm.stockInicial}
+                              disabled={variantesNuevoProductoConDatos.length > 0}
+                              // Fix "rebote con stock 0": con variantes en
+                              // pantalla, este campo YA NO se teclea a mano
+                              // — muestra en vivo la suma de su stock (ej.
+                              // 60 + 60 = 120), igual que
+                              // `stockCalculadoNuevoProducto` que de verdad
+                              // se guarda al Registrar.
+                              value={variantesNuevoProductoConDatos.length > 0 ? stockCalculadoNuevoProducto : nuevoProductoForm.stockInicial}
                               onChange={(e) => setNuevoProductoForm((f) => ({ ...f, stockInicial: e.target.value }))}
-                              className={`${inputClase} ${nuevoProductoForm.variantes.length > 0 ? 'opacity-50' : ''}`}
+                              className={`${inputClase} ${variantesNuevoProductoConDatos.length > 0 ? 'opacity-80' : ''}`}
                             />
                           </Campo>
                           <div className="sm:col-span-2 lg:col-span-4">
@@ -13768,19 +14034,28 @@ function ModuloContabilidadCompras({
             )}
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              {/* En modoNuevoProducto, Método de Pago ya vive dentro del
+                  sub-formulario del nuevo producto (ver arriba) — este div
+                  se deja vacío (en vez de quitarlo del todo) para que el
+                  botón "Registrar" de la derecha se mantenga alineado con
+                  `justify-between`. */}
               <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Método de pago:</span>
-                <select
-                  value={formEgreso.metodoPago}
-                  onChange={(e) => setFormEgreso((f) => ({ ...f, metodoPago: e.target.value }))}
-                  className={`${inputClase} w-auto`}
-                >
-                  {METODOS_PAGO.filter((m) => m.value !== 'pos').map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
+                {!modoNuevoProducto && (
+                  <>
+                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Método de pago:</span>
+                    <select
+                      value={formEgreso.metodoPago}
+                      onChange={(e) => setFormEgreso((f) => ({ ...f, metodoPago: e.target.value }))}
+                      className={`${inputClase} w-auto`}
+                    >
+                      {METODOS_PAGO.filter((m) => m.value !== 'pos').map((m) => (
+                        <option key={m.value} value={m.value}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
               </div>
               <div className="flex items-center gap-3">
                 {errorFormEgreso && <p className="text-xs font-semibold text-rose-400">{errorFormEgreso}</p>}
