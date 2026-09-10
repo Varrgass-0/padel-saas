@@ -6956,16 +6956,148 @@ function CuentasAbiertasPanel({
   );
 }
 
+// EDICIÓN DE TICKETS/COMANDAS PENDIENTES ANTES DE COBRAR: arma la lista
+// EDITABLE (no la agregada por nombre de `grupo.items`, que es solo para la
+// tarjeta/UI) que `ModalLiquidarCuenta` va a mostrar con controles de
+// disminuir/eliminar. Dos formas de origen posibles, igual que el resto de
+// este módulo:
+// - `grupo.ventas.length > 0` (Cuentas Abiertas de mostrador y Tienda Web
+//   Pendientes): se aplanan los `detalles.items` de TODAS las ventas del
+//   grupo — cada renglón queda editable salvo que sea `tipo !== 'producto'`
+//   (una línea de cancha jamás debe poder borrarse desde aquí).
+// - `grupo.reserva` sin ticket todavía (Reservas Pendientes de Recepción
+//   sin `ventas` ligada): la línea de "Renta <cancha>" es fija/no editable
+//   y cada add-on de `grupo.addonsDetalle` es un renglón editable — mismo
+//   criterio que ya usaba `liquidarCuenta` para armar `filasItems`. El
+//   "Wallet aplicado (ya pagado)" que sí aparece en `grupo.items` (solo
+//   informativo) NO es un artículo real, así que aquí se guarda aparte como
+//   `ajuste` (un descuento fijo al total, nunca editable ni removible).
+function itemsEditablesDeGrupo(grupo) {
+  if (grupo.ventas && grupo.ventas.length > 0) {
+    const items = [];
+    grupo.ventas.forEach((v, vi) => {
+      const arr = v?.detalles?.items;
+      if (Array.isArray(arr)) {
+        arr.forEach((it, ii) => {
+          const tipo = it.tipo || 'producto';
+          items.push({
+            _key: `${v.id || vi}-${ii}`,
+            tipo,
+            editable: tipo === 'producto',
+            nombre: it.nombre || 'Artículo',
+            precio: it.precio != null ? Number(it.precio) : it.cantidad ? (Number(it.subtotal) || 0) / Number(it.cantidad) : 0,
+            cantidad: Number(it.cantidad) || 0,
+            producto_id: it.producto_id || it.productoPadreId || null,
+            variante_id: it.variante_id || it.varianteId || null,
+            es_variante: it.esVariante === true || !!(it.variante_id || it.varianteId),
+            variante_nombre: it.varianteNombre || it.variante_nombre || null,
+            cancha_id: it.cancha_id || null,
+          });
+        });
+      }
+    });
+    return { items, ajuste: 0 };
+  }
+  if (grupo.reserva) {
+    const montoCancha = Number(grupo.reserva.monto_total) || 0;
+    const walletAplicado = Number(grupo.reserva.saldo_wallet_aplicado) || 0;
+    const items = [
+      {
+        _key: 'cancha',
+        tipo: 'cancha',
+        editable: false,
+        nombre: `Renta ${grupo.cancha?.nombre || 'cancha'}`,
+        precio: montoCancha,
+        cantidad: 1,
+        producto_id: null,
+        variante_id: null,
+        es_variante: false,
+        variante_nombre: null,
+        cancha_id: grupo.reserva.cancha_id || null,
+      },
+      ...(grupo.addonsDetalle || []).map((a, i) => ({
+        _key: `addon-${i}`,
+        tipo: 'producto',
+        editable: true,
+        nombre: a.nombre || `Add-on ${i + 1}`,
+        precio: Number(a.precio) || 0,
+        cantidad: Number(a.cantidad) || 0,
+        producto_id: a.producto_id || null,
+        variante_id: a.variante_id || null,
+        es_variante: !!a.es_variante,
+        variante_nombre: a.variante_nombre || null,
+        cancha_id: null,
+      })),
+    ];
+    return { items, ajuste: -walletAplicado };
+  }
+  return { items: [], ajuste: 0 };
+}
+
 function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando }) {
+  // `useState(() => ...)` — se calcula solo UNA vez, al montar (cada apertura
+  // del modal es un montaje nuevo, ver el `{grupoALiquidar && (...)}` que lo
+  // renderiza condicionalmente), para no perder las ediciones locales del
+  // cajero si `grupo` llegara a recalcularse por Realtime mientras el modal
+  // sigue abierto.
+  const [base] = useState(() => itemsEditablesDeGrupo(grupo));
+  const [items, setItems] = useState(base.items);
+
+  function disminuirCantidad(key) {
+    setItems((prev) => prev.map((it) => (it._key === key && it.editable && it.cantidad > 1 ? { ...it, cantidad: it.cantidad - 1 } : it)));
+  }
+  function eliminarItem(key) {
+    setItems((prev) => prev.filter((it) => !(it._key === key && it.editable)));
+  }
+
+  const total = Math.max(0, items.reduce((acc, it) => acc + it.precio * it.cantidad, 0) + base.ajuste);
+
   return (
     <ModalShell
       titulo="Liquidar / Cobrar"
-      subtitulo={`${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(grupo.total)}`}
+      subtitulo={`${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(total)}`}
       onClose={onClose}
       icon={DollarSign}
-      ancho="max-w-sm"
+      ancho="max-w-md"
     >
-      <PasosDeCobro monto={grupo.total} deshabilitado={liquidando} onConfirmar={({ metodo, cambio }) => onLiquidar(metodo, cambio)} />
+      <div className="mb-4 space-y-1.5 rounded-xl bg-slate-950 px-3 py-2.5">
+        {items.length === 0 ? (
+          <p className="text-[11px] text-slate-500">Sin artículos en esta cuenta.</p>
+        ) : (
+          items.map((it) => (
+            <div key={it._key} className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="min-w-0 flex-1 truncate text-slate-300">
+                {it.cantidad}× {it.nombre}
+                {it.variante_nombre ? ` (${it.variante_nombre})` : ''}
+              </span>
+              <span className="shrink-0 font-semibold text-slate-400">{formatoMoneda(it.precio * it.cantidad)}</span>
+              {it.editable && (
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => disminuirCantidad(it._key)}
+                    disabled={liquidando || it.cantidad <= 1}
+                    className="rounded-md bg-slate-800 p-1 text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-30"
+                    title="Disminuir cantidad"
+                  >
+                    <Minus size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => eliminarItem(it._key)}
+                    disabled={liquidando}
+                    className="rounded-md bg-rose-500/10 p-1 text-rose-400 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-30"
+                    title="Quitar artículo"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+      <PasosDeCobro monto={total} deshabilitado={liquidando} onConfirmar={({ metodo, cambio }) => onLiquidar(metodo, cambio, items)} />
     </ModalShell>
   );
 }
@@ -8269,38 +8401,109 @@ function ModuloSmartPOS({
   // `gruposReservasPendientes` arriba): en ese caso, en vez de actualizar
   // filas que no existen, INSERTA el ticket en `ventas` ya `pagado`, para
   // que el cobro quede registrado en la tabla de ingresos/ventas.
-  async function liquidarCuenta(grupo, metodoPago, cambio) {
+  async function liquidarCuenta(grupo, metodoPago, cambio, itemsFinales) {
     setLiquidandoClave(grupo.clave);
     let error = null;
+    let totalCobrado = grupo.total;
     if (grupo.ventas.length > 0) {
-      const idsVentas = grupo.ventas.map((v) => v.id);
+      // EDICIÓN ANTES DE COBRAR: `itemsFinales` (si `ModalLiquidarCuenta` lo
+      // mandó) trae la lista YA editada por el cajero — con cantidades
+      // disminuidas y/o artículos eliminados — en el mismo formato que arma
+      // `itemsEditablesDeGrupo`. Sin editor (llamada directa/de respaldo),
+      // se reconstruye la misma lista sin editar a partir de los tickets
+      // originales, para no cambiar el comportamiento de nadie que no pase
+      // por el modal.
+      const finalItems = Array.isArray(itemsFinales) ? itemsFinales : itemsEditablesDeGrupo(grupo).items;
+      const itemsParaGuardar = finalItems.map((it) => ({
+        tipo: it.tipo || 'producto',
+        producto_id: it.producto_id || null,
+        productoPadreId: it.producto_id || null,
+        variante_id: it.variante_id || null,
+        varianteId: it.variante_id || null,
+        esVariante: !!it.es_variante,
+        varianteNombre: it.variante_nombre || null,
+        cancha_id: it.cancha_id || null,
+        nombre: it.nombre,
+        precio: it.precio,
+        cantidad: it.cantidad,
+        subtotal: Math.round((Number(it.precio) || 0) * (Number(it.cantidad) || 0) * 100) / 100,
+      }));
+      totalCobrado = Math.max(
+        0,
+        itemsParaGuardar.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0)
+      );
+      // CONSOLIDACIÓN: un grupo puede traer varias filas en `ventas` (una
+      // por cada "Agregar a la Cuenta" separado) — la lista editada ya no
+      // corresponde 1-a-1 a esos renglones originales, así que se
+      // consolidan en el PRIMER ticket (con el desglose/total finales) y el
+      // resto se elimina — best effort, nunca bloquea el cobro si el
+      // DELETE de los sobrantes falla (el cobro ya quedó guardado en el
+      // primero, que es la fuente de verdad de ingresos).
+      const ventaPrincipal = grupo.ventas[0];
+      const detallesActualizados = { ...(ventaPrincipal?.detalles || {}), items: itemsParaGuardar };
       ({ error } = await supabase
         .from('ventas')
-        .update({ estado_pago: 'pagado', metodo_pago: metodoPago })
-        .in('id', idsVentas));
+        .update({ estado_pago: 'pagado', metodo_pago: metodoPago, total: totalCobrado, detalles: detallesActualizados })
+        .eq('id', ventaPrincipal.id));
+      if (!error && grupo.ventas.length > 1) {
+        const idsSobrantes = grupo.ventas.slice(1).map((v) => v.id);
+        const { error: errDelete } = await supabase.from('ventas').delete().in('id', idsSobrantes);
+        if (errDelete) {
+          console.warn('[Smart POS] La cuenta se consolidó y cobró, pero no se pudieron eliminar los tickets duplicados:', errDelete);
+        }
+      }
+      // POSTERGACIÓN DEL DESCUENTO DE INVENTARIO: este es el momento en que
+      // el stock/Kardex de estos artículos se descuenta de verdad — nunca
+      // antes (ni cuando se agregó el consumo a la cuenta desde
+      // `registrarVenta` con `estadoPago: 'pendiente'`, ni cuando el pedido
+      // llegó del Portal con "Pagar en Recepción"). Se descuentan
+      // ÚNICAMENTE los artículos finales que hayan quedado tras la edición
+      // — lo que el cajero quitó o disminuyó aquí nunca sale del inventario.
+      if (!error) {
+        const itemsConStockFinal = itemsParaGuardar.filter((it) => it.tipo === 'producto' && it.producto_id && it.cantidad > 0);
+        if (itemsConStockFinal.length > 0) {
+          await descontarStockKardexAddonsReserva(itemsConStockFinal, {
+            motivoBase: `Cobro en Recepción · Cuenta ${grupo.cancha?.nombre || 'Venta General'}`,
+            operador: operador?.nombre,
+            upsertProducto,
+            upsertVarianteProducto,
+            productos,
+            variantesPorProducto,
+          });
+        }
+      }
     } else if (grupo.reserva) {
       // Ticket nuevo (nunca existió uno ligado a esta reserva): se arma con
-      // el desglose REAL — la línea de la cancha + un renglón por cada
-      // add-on individual de `grupo.addonsDetalle` (nombre, variante,
-      // precio, cantidad, producto_id) — en vez de a partir de `grupo.items`
-      // (ese mapa es solo para la TARJETA/UI y trae también el renglón
-      // informativo negativo "Wallet aplicado (ya pagado)", que NO es un
-      // artículo real y no debe insertarse como línea de venta).
-      const montoCanchaLinea = Number(grupo.reserva.monto_total) || 0;
-      const itemsAddons = (grupo.addonsDetalle || []).map((a) => ({
-        tipo: 'producto',
-        producto_id: a.producto_id || null,
-        productoPadreId: a.producto_id || null,
-        variante_id: a.variante_id || null,
-        varianteId: a.variante_id || null,
-        esVariante: !!a.es_variante,
-        varianteNombre: a.variante_nombre || null,
-        cancha_id: null,
-        nombre: a.nombre,
-        precio: a.precio,
-        cantidad: a.cantidad,
-        subtotal: a.subtotal,
-      }));
+      // el desglose REAL — la línea de la cancha (fija, nunca editable) +
+      // un renglón por cada add-on individual, ya con las ediciones del
+      // cajero aplicadas si `itemsFinales` llegó desde `ModalLiquidarCuenta`
+      // (cantidades disminuidas y/o artículos eliminados) — en vez de a
+      // partir de `grupo.items` (ese mapa es solo para la TARJETA/UI y trae
+      // también el renglón informativo negativo "Wallet aplicado (ya
+      // pagado)", que NO es un artículo real y no debe insertarse como
+      // línea de venta).
+      const baseline = itemsEditablesDeGrupo(grupo);
+      const itemsFuente = Array.isArray(itemsFinales) ? itemsFinales : baseline.items;
+      const filaCancha = itemsFuente.find((it) => it.tipo === 'cancha') || baseline.items.find((it) => it.tipo === 'cancha');
+      const montoCanchaLinea = Number(filaCancha?.precio) || 0;
+      const itemsAddons = itemsFuente
+        .filter((it) => it.tipo !== 'cancha' && it.cantidad > 0)
+        .map((a) => ({
+          tipo: 'producto',
+          producto_id: a.producto_id || null,
+          productoPadreId: a.producto_id || null,
+          variante_id: a.variante_id || null,
+          varianteId: a.variante_id || null,
+          esVariante: !!a.es_variante,
+          varianteNombre: a.variante_nombre || null,
+          cancha_id: null,
+          nombre: a.nombre,
+          precio: a.precio,
+          cantidad: a.cantidad,
+          subtotal: Math.round((Number(a.precio) || 0) * (Number(a.cantidad) || 0) * 100) / 100,
+        }));
+      const montoAddonsFinal = itemsAddons.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0);
+      totalCobrado = Math.max(0, montoCanchaLinea + montoAddonsFinal + baseline.ajuste);
       const filasItems = [
         {
           tipo: 'cancha',
@@ -8314,7 +8517,7 @@ function ModuloSmartPOS({
         ...itemsAddons,
       ];
       const payloadVentaLiquidacion = withClubId({
-        total: grupo.total,
+        total: totalCobrado,
         metodo_pago: metodoPago,
         turno: null,
         operador: 'Recepción (Cuentas Pendientes)',
@@ -8328,7 +8531,7 @@ function ModuloSmartPOS({
           jugador_id: grupo.reserva.jugador_id || null,
           jugador_nombre: grupo.reserva.jugador_nombre || grupo.clienteNombre || '',
           monto_cancha: montoCanchaLinea,
-          monto_addons: Number(grupo.reserva.monto_addons) || 0,
+          monto_addons: montoAddonsFinal,
           wallet_aplicado: Number(grupo.reserva.saldo_wallet_aplicado) || 0,
         },
         estado_pago: 'pagado',
@@ -8343,7 +8546,8 @@ function ModuloSmartPOS({
       // ticket se está creando apenas ahora). Si ya existía un ticket
       // ligado (la otra rama, arriba), su stock/Kardex ya se descontaron
       // cuando ese ticket se creó en `confirmarReservaConAddons` —
-      // repetirlo aquí duplicaría la salida de inventario.
+      // repetirlo aquí duplicaría la salida de inventario. Se descuentan
+      // solo los add-ons que hayan quedado tras la edición del ticket.
       if (!error && itemsAddons.length > 0) {
         await descontarStockKardexAddonsReserva(itemsAddons, {
           motivoBase: `Cobro en Recepción · Reserva ${grupo.cancha?.nombre || 'cancha'} ${grupo.reserva.fecha || ''} ${grupo.reserva.hora_inicio || ''}`.trim(),
@@ -8402,7 +8606,7 @@ function ModuloSmartPOS({
     setCuentasAbiertas((prev) => prev.filter((v) => !idsVentasLiquidadas.includes(v.id)));
     mostrarToast({
       titulo: 'Cuenta liquidada',
-      detalle: `${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(grupo.total)}${cambio > 0 ? ` · Cambio: ${formatoMoneda(cambio)}` : ''}`,
+      detalle: `${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(totalCobrado)}${cambio > 0 ? ` · Cambio: ${formatoMoneda(cambio)}` : ''}`,
     });
     setGrupoALiquidar(null);
     cargarCuentasAbiertas({ silencioso: true });
@@ -9037,112 +9241,124 @@ function ModuloSmartPOS({
     // ningún error, sin ningún aviso. Ahora se intenta el descuento en
     // Supabase para todo artículo que sí controla inventario, y cualquier
     // fallo real queda visible con `console.error`.
-    const itemsConStock = comanda.filter((item) => item.tipo === 'producto' && (item.productoPadreId || item.producto_id) && item.manejaStock !== false);
-    // SECUENCIAL, no `Promise.all` — FIX CRÍTICO (condición de carrera entre
-    // variantes del MISMO producto): ver el comentario completo en el
-    // Split Bill de arriba. Aquí es donde más importa — un solo ticket de
-    // Smart POS puede perfectamente llevar dos variantes distintas del
-    // mismo producto ("Wilson" y "Head" en la misma comanda) — así que se
-    // recorre `itemsConStock` uno por uno con `for...of` + `await`, para
-    // que cada `UPDATE` lea el arreglo `productos.variantes` YA actualizado
-    // por el artículo anterior en vez de una copia desactualizada.
-    const resultadosStock = [];
-    for (const item of itemsConStock) {
-      // Fix definitivo de variantes: se lee `productoPadreId`/`varianteId`
-      // (los nombres explícitos que ahora guarda `agregarProducto`)
-      // primero, con `producto_id`/`variante_id` como respaldo — así
-      // funciona igual sin importar cuál de los dos nombres traiga el
-      // artículo del carrito.
-      const productoId = item.productoPadreId || item.producto_id;
-      const varianteId = item.varianteId || item.variante_id;
-      const esVariante = item.esVariante === true || !!varianteId;
-      const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
-      let stockAnterior = item.stock;
-      let nuevoStock = null;
-      let errStock = null;
+    // POSTERGACIÓN DEL DESCUENTO DE INVENTARIO: el descuento de stock/kardex
+    // de abajo SOLO se ejecuta cuando la venta queda cobrada de inmediato
+    // (`estadoPago === 'pagado'` — mostrador con pago confirmado, tarjeta,
+    // o Split Bill ya liquidado). Cuando `estadoPago === 'pendiente'`
+    // ("Agregar a la Cuenta"/comanda vinculada a una cancha sin cobrar
+    // todavía), el ticket se registra igual pero el inventario NO se toca
+    // aquí — se descuenta hasta que recepción realmente cobre esa cuenta
+    // desde `liquidarCuenta`, con los artículos finales que hayan quedado
+    // tras la edición del ticket. Mismo criterio ya usado por el Portal en
+    // `confirmarReservaConAddons`/`confirmarCheckoutTienda`.
+    if (estadoPago === 'pagado') {
+      const itemsConStock = comanda.filter((item) => item.tipo === 'producto' && (item.productoPadreId || item.producto_id) && item.manejaStock !== false);
+      // SECUENCIAL, no `Promise.all` — FIX CRÍTICO (condición de carrera entre
+      // variantes del MISMO producto): ver el comentario completo en el
+      // Split Bill de arriba. Aquí es donde más importa — un solo ticket de
+      // Smart POS puede perfectamente llevar dos variantes distintas del
+      // mismo producto ("Wilson" y "Head" en la misma comanda) — así que se
+      // recorre `itemsConStock` uno por uno con `for...of` + `await`, para
+      // que cada `UPDATE` lea el arreglo `productos.variantes` YA actualizado
+      // por el artículo anterior en vez de una copia desactualizada.
+      const resultadosStock = [];
+      for (const item of itemsConStock) {
+        // Fix definitivo de variantes: se lee `productoPadreId`/`varianteId`
+        // (los nombres explícitos que ahora guarda `agregarProducto`)
+        // primero, con `producto_id`/`variante_id` como respaldo — así
+        // funciona igual sin importar cuál de los dos nombres traiga el
+        // artículo del carrito.
+        const productoId = item.productoPadreId || item.producto_id;
+        const varianteId = item.varianteId || item.variante_id;
+        const esVariante = item.esVariante === true || !!varianteId;
+        const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
+        let stockAnterior = item.stock;
+        let nuevoStock = null;
+        let errStock = null;
 
-      if (esVariante) {
-        // Descuento Real al Vender una variante — FIX DEFINITIVO, JSONB
-        // puro: `descontarStockVariante` lee/escribe directo el arreglo
-        // `productos.variantes` de la fila del producto padre. Ver su
-        // comentario de cabecera para el detalle completo.
-        const resultado = await descontarStockVariante({
-          productoId,
-          varianteId,
-          varianteNombre: varianteNombreEtiqueta,
-          cantidad: item.cantidad,
-          upsertProducto,
-          upsertVarianteProducto,
-        });
-        if (!resultado.ok) {
-          errStock = resultado.error;
+        if (esVariante) {
+          // Descuento Real al Vender una variante — FIX DEFINITIVO, JSONB
+          // puro: `descontarStockVariante` lee/escribe directo el arreglo
+          // `productos.variantes` de la fila del producto padre. Ver su
+          // comentario de cabecera para el detalle completo.
+          const resultado = await descontarStockVariante({
+            productoId,
+            varianteId,
+            varianteNombre: varianteNombreEtiqueta,
+            cantidad: item.cantidad,
+            upsertProducto,
+            upsertVarianteProducto,
+          });
+          if (!resultado.ok) {
+            errStock = resultado.error;
+          } else {
+            stockAnterior = resultado.stockAnterior;
+            nuevoStock = resultado.nuevoStock;
+          }
         } else {
-          stockAnterior = resultado.stockAnterior;
-          nuevoStock = resultado.nuevoStock;
+          // Producto simple (sin variante): SIEMPRE se lee el stock fresco
+          // de Supabase antes de restar — nunca se confía en el valor que
+          // traiga el carrito, que puede estar desactualizado si otro
+          // dispositivo vendió el mismo producto hace un segundo (misma
+          // filosofía de "BD como única fuente de verdad" del resto de la app).
+          // `varianteNombreSugerida`: red de seguridad si el producto SÍ
+          // tiene variantes en Supabase aunque esta línea no llegara marcada
+          // como variante — ver comentario de cabecera de
+          // `descontarStockProductoSimple`.
+          const resultado = await descontarStockProductoSimple({
+            productoId,
+            cantidad: item.cantidad,
+            upsertProducto,
+            varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
+          });
+          if (!resultado.ok) {
+            errStock = resultado.error;
+          } else {
+            stockAnterior = resultado.stockAnterior;
+            nuevoStock = resultado.nuevoStock;
+          }
         }
-      } else {
-        // Producto simple (sin variante): SIEMPRE se lee el stock fresco
-        // de Supabase antes de restar — nunca se confía en el valor que
-        // traiga el carrito, que puede estar desactualizado si otro
-        // dispositivo vendió el mismo producto hace un segundo (misma
-        // filosofía de "BD como única fuente de verdad" del resto de la app).
-        // `varianteNombreSugerida`: red de seguridad si el producto SÍ
-        // tiene variantes en Supabase aunque esta línea no llegara marcada
-        // como variante — ver comentario de cabecera de
-        // `descontarStockProductoSimple`.
-        const resultado = await descontarStockProductoSimple({
-          productoId,
+
+        if (errStock) {
+          // A diferencia de otras fricciones "silenciosas" de esta app, un
+          // descuento de stock que falla SÍ se registra con su error real —
+          // es inventario/dinero, no solo un desfase cosmético.
+          console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}":`, errStock);
+          resultadosStock.push({ ok: false, nombre: item.nombre, error: errStock });
+          continue;
+        }
+
+        // `nuevoStock == null` = el producto/variante existe pero no tiene
+        // control de stock propio en Supabase (columna `stock` en null) —
+        // la venta se cobró igual, simplemente no hay inventario que
+        // descontar ni kardex de salida que registrar para este artículo.
+        if (nuevoStock == null) {
+          resultadosStock.push({ ok: true, nombre: item.nombre });
+          continue;
+        }
+
+        const resultadoKardex = await insertarMovimientoKardex({
+          producto_id: productoId,
+          variante_id: varianteId || undefined,
+          producto_nombre: item.nombre,
+          tipo_movimiento: 'salida_venta',
           cantidad: item.cantidad,
-          upsertProducto,
-          varianteNombreSugerida: item.varianteNombre || item.variante_nombre || null,
+          stock_anterior: stockAnterior,
+          stock_nuevo: nuevoStock,
+          costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
+          motivo: esVariante ? `Venta en Smart POS · ${varianteNombreEtiqueta}` : 'Venta en Smart POS',
+          operador: operador?.nombre,
         });
-        if (!resultado.ok) {
-          errStock = resultado.error;
-        } else {
-          stockAnterior = resultado.stockAnterior;
-          nuevoStock = resultado.nuevoStock;
+        if (!resultadoKardex.ok) {
+          console.error(`[Smart POS] Error detallado Supabase: el stock de "${item.nombre}" se descontó, pero el Kardex no se pudo registrar:`, resultadoKardex.error);
         }
-      }
 
-      if (errStock) {
-        // A diferencia de otras fricciones "silenciosas" de esta app, un
-        // descuento de stock que falla SÍ se registra con su error real —
-        // es inventario/dinero, no solo un desfase cosmético.
-        console.error(`[Smart POS] Error detallado Supabase al descontar el stock de "${item.nombre}":`, errStock);
-        resultadosStock.push({ ok: false, nombre: item.nombre, error: errStock });
-        continue;
-      }
-
-      // `nuevoStock == null` = el producto/variante existe pero no tiene
-      // control de stock propio en Supabase (columna `stock` en null) —
-      // la venta se cobró igual, simplemente no hay inventario que
-      // descontar ni kardex de salida que registrar para este artículo.
-      if (nuevoStock == null) {
         resultadosStock.push({ ok: true, nombre: item.nombre });
-        continue;
       }
-
-      const resultadoKardex = await insertarMovimientoKardex({
-        producto_id: productoId,
-        variante_id: varianteId || undefined,
-        producto_nombre: item.nombre,
-        tipo_movimiento: 'salida_venta',
-        cantidad: item.cantidad,
-        stock_anterior: stockAnterior,
-        stock_nuevo: nuevoStock,
-        costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-        motivo: esVariante ? `Venta en Smart POS · ${varianteNombreEtiqueta}` : 'Venta en Smart POS',
-        operador: operador?.nombre,
-      });
-      if (!resultadoKardex.ok) {
-        console.error(`[Smart POS] Error detallado Supabase: el stock de "${item.nombre}" se descontó, pero el Kardex no se pudo registrar:`, resultadoKardex.error);
+      const fallosStock = resultadosStock.filter((r) => !r.ok);
+      if (fallosStock.length > 0) {
+        console.error('[Smart POS] Venta registrada, pero el stock no se descontó solo para:', fallosStock.map((f) => f.nombre).join(', '));
       }
-
-      resultadosStock.push({ ok: true, nombre: item.nombre });
-    }
-    const fallosStock = resultadosStock.filter((r) => !r.ok);
-    if (fallosStock.length > 0) {
-      console.error('[Smart POS] Venta registrada, pero el stock no se descontó solo para:', fallosStock.map((f) => f.nombre).join(', '));
     }
 
     setRegistrandoVenta(false);
@@ -9639,7 +9855,7 @@ function ModuloSmartPOS({
           grupo={grupoALiquidar}
           liquidando={liquidandoClave === grupoALiquidar.clave}
           onClose={() => setGrupoALiquidar(null)}
-          onLiquidar={(metodo, cambio) => liquidarCuenta(grupoALiquidar, metodo, cambio)}
+          onLiquidar={(metodo, cambio, items) => liquidarCuenta(grupoALiquidar, metodo, cambio, items)}
         />
       )}
 
@@ -10012,6 +10228,22 @@ function productoEstaAgotado(producto, variantesNormalizadas) {
   if (producto?.maneja_stock === false) return false;
   const stock = Number(producto?.stock);
   return Number.isFinite(stock) && stock <= 0;
+}
+
+// TEXTO "DESDE $X" — CRITERIO ÚNICO DE PRECIO EN TARJETA DE PRODUCTO,
+// compartido por `ProductoCard` (Smart POS) y las tarjetas de producto del
+// Portal de Jugadores (pestaña Tienda y adicionales de "Para ti"). Cuando el
+// producto tiene variantes con precios distintos entre sí, se muestra el
+// precio MÍNIMO precedido de "Desde" en vez de un precio fijo/arbitrario
+// (antes el Portal siempre mostraba `formatoMoneda(p.precio)`, ignorando por
+// completo el precio real de las variantes).
+function textoPrecioConVariantes(producto, variantes) {
+  const listaVariantes = variantes || [];
+  if (listaVariantes.length === 0) return formatoMoneda(producto?.precio);
+  const precios = listaVariantes.map((v) => (v.precio != null ? Number(v.precio) : Number(producto?.precio) || 0));
+  const precioMin = Math.min(...precios);
+  const precioMax = Math.max(...precios);
+  return precioMin !== precioMax ? `Desde ${formatoMoneda(precioMin)}` : formatoMoneda(precioMin);
 }
 
 // COSTO REAL VINCULADO A CADA VENTA: resuelve el `costo_unitario` (producto
@@ -27510,7 +27742,18 @@ function PortalPublicoJugadores({ clubSlug }) {
         ({ data, error } = await supabase.from('ventas').insert(payloadVenta).select().single());
       }
       if (error) throw error;
-      await descontarStockYKardexItems(carritoTienda, 'Compra en Tienda (Portal)');
+      // POSTERGACIÓN DEL DESCUENTO DE INVENTARIO: si el jugador eligió
+      // "Pagar en Mostrador/Recepción" (`estadoPago === 'pendiente'`), el
+      // pedido queda registrado como Cuenta Pendiente de Pago en el POS
+      // (ticket ya insertado arriba con `estado_pago: 'pendiente'`), pero el
+      // stock NO se descuenta todavía — se descuenta hasta que recepción
+      // realmente cobre esa cuenta desde `liquidarCuenta`, ya con los
+      // artículos finales que hayan quedado tras la edición del ticket. El
+      // pago con tarjeta/Wallet-que-cubre-todo (`estadoPago === 'pagado'`)
+      // SIGUE descontando de inmediato, sin cambios.
+      if (estadoPago === 'pagado') {
+        await descontarStockYKardexItems(carritoTienda, 'Compra en Tienda (Portal)');
+      }
       if (montoWallet > 0) {
         await aplicarCargoWallet({
           jugadorId: jugador.id,
@@ -27925,7 +28168,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                           </div>
                           <div className="p-2.5">
                             <p className="truncate text-xs font-bold text-slate-100">{p.nombre}</p>
-                            <p className="mt-0.5 text-sm font-black text-violet-400">{formatoMoneda(p.precio)}</p>
+                            <p className="mt-0.5 text-sm font-black text-violet-400">{textoPrecioConVariantes(p, variantes)}</p>
                             {sinStock && <p className="mt-0.5 text-[10px] font-bold text-rose-400">Agotado</p>}
                             {tieneVariantes && <p className="mt-0.5 text-[10px] font-semibold text-slate-500">{variantes.length} opciones</p>}
                           </div>
@@ -29893,7 +30136,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, productosAddOns,
                   className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-left hover:border-lime-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-700"
                 >
                   <span className="text-[11px] font-bold text-slate-200">{p.nombre}</span>
-                  <span className="text-[11px] font-semibold text-lime-400">{formatoMoneda(p.precio)}</span>
+                  <span className="text-[11px] font-semibold text-lime-400">{textoPrecioConVariantes(p, variantes)}</span>
                   {sinStock && <span className="text-[10px] font-bold text-rose-400">Agotado</span>}
                 </button>
               );
