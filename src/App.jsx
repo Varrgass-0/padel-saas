@@ -8674,6 +8674,16 @@ function ModuloSmartPOS({
   const productosFiltrados = useMemo(() => {
     return productos.filter((p) => {
       if (p.activo === false) return false;
+      // Filtro Doble (Compras & Inventario en Tránsito): un producto/
+      // variante creado desde una Compra "🟡 Pendiente de Recepción" nace
+      // con `recibido: false` — NUNCA debe poder venderse en el POS
+      // mientras el club no confirme que ya llegó físicamente (ver
+      // "Confirmar Recepción" en Contabilidad & Compras). Un producto sin
+      // esta columna (`undefined`/`null` — proyectos sin la migración, o
+      // cualquier producto creado por el flujo normal de "+ Nuevo
+      // Producto") cuenta como recibido, igual criterio de tolerancia que
+      // `archivado`/`disponible`.
+      if (p.recibido === false) return false;
       if (categoriaActiva !== 'todos' && p.categoria !== categoriaActiva) return false;
       if (busquedaProducto.trim() && !p.nombre?.toLowerCase().includes(busquedaProducto.trim().toLowerCase())) return false;
       return true;
@@ -12387,8 +12397,18 @@ function descargarArchivoTexto(nombreArchivo, contenido, tipoMime) {
  * `AppInterno`), así que la tarjeta se refresca sola sin recargar la página.
  * ==========================================================================*/
 
+// `esInventario: true` marca las categorías de Compras/Gastos que
+// representan mercancía física (no un servicio/gasto fijo) — son las que
+// activan el Formulario de Compra Híbrido en `ModuloContabilidadCompras`
+// (elegir "Gasto General/Servicio" vs "Compra de Producto/Stock" + Estatus
+// de Recepción). Las demás (Servicios, Nómina, Mantenimiento...) siguen
+// exactamente el comportamiento de siempre: un renglón de gasto plano, sin
+// producto ni recepción de por medio.
 const CATEGORIAS_GASTO = [
-  { value: 'Insumos', label: 'Insumos' },
+  { value: 'Insumos', label: 'Insumos', esInventario: true },
+  { value: 'Pro-Shop / Equipamiento', label: 'Pro-Shop / Equipamiento', esInventario: true },
+  { value: 'Alimentos & Bebidas', label: 'Alimentos & Bebidas', esInventario: true },
+  { value: 'Accesorios', label: 'Accesorios', esInventario: true },
   { value: 'Servicios', label: 'Servicios (luz, agua, internet...)' },
   { value: 'Nómina', label: 'Nómina' },
   { value: 'Mantenimiento', label: 'Mantenimiento' },
@@ -12396,6 +12416,22 @@ const CATEGORIAS_GASTO = [
   { value: 'Marketing', label: 'Marketing' },
   { value: 'Otro', label: 'Otro' },
 ];
+
+// Sugerencia de "Categoría POS" (`productos.categoria`, ver
+// `CATEGORIAS_PRODUCTO`) al crear un producto nuevo desde una Compra —
+// SOLO precarga el selector, el operador puede cambiarlo libremente. Se
+// queda dentro del catálogo YA EXISTENTE de categorías POS (Pro-Shop/
+// Cafetería-Bar/Rentas) a propósito, en vez de inventar una categoría POS
+// nueva por cada categoría de Gasto: así un producto de "Accesorios" o
+// "Pro-Shop / Equipamiento" nace ya integrado con todo lo que YA filtra por
+// categoría POS (grid del POS, Tienda del Portal, Analytics BI) sin tener
+// que tocar ninguno de esos filtros.
+const CATEGORIA_POS_SUGERIDA_POR_GASTO = {
+  Insumos: 'Pro-Shop',
+  'Pro-Shop / Equipamiento': 'Pro-Shop',
+  Accesorios: 'Pro-Shop',
+  'Alimentos & Bebidas': 'Cafetería/Bar',
+};
 
 function BannerTablaFaltante({ tabla }) {
   return (
@@ -12462,7 +12498,17 @@ function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
   );
 }
 
-function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones, participantesTorneo, academiaAlumnos, configClub }) {
+function ModuloContabilidadCompras({
+  reservas,
+  operador,
+  canchas,
+  inscripciones,
+  participantesTorneo,
+  academiaAlumnos,
+  configClub,
+  productos,
+  upsertProducto,
+}) {
   const mostrarToast = useToast();
   // Nombre real del club activo para los encabezados de los reportes
   // exportados (antes decían "Smash Pádel Club" fijo — roto para cualquier
@@ -12560,7 +12606,22 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
   }, [cargarEgresos]);
 
   async function crearEgreso(payload) {
-    const { data, error } = await supabase.from('compras_gastos').insert(withClubId(payload)).select().single();
+    // Arquitectura Flexible: `estatus_recepcion`/`producto_id`/`variante_id`/
+    // `variante_nombre`/`cantidad_unidades`/`producto_nombre`/
+    // `requiere_suma_stock` son columnas NUEVAS (Formulario de Compra
+    // Híbrido) — si el proyecto de Supabase todavía no corrió la migración
+    // que las agrega, `insertarConColumnasOpcionales` reintenta
+    // automáticamente sin la(s) columna(s) faltante(s) en vez de tronar el
+    // registro completo del gasto.
+    const { data, error } = await insertarConColumnasOpcionales('compras_gastos', payload, [
+      'estatus_recepcion',
+      'producto_id',
+      'variante_id',
+      'variante_nombre',
+      'cantidad_unidades',
+      'producto_nombre',
+      'requiere_suma_stock',
+    ]);
     if (error) throw error;
     setEgresos((prev) => [data, ...prev]);
     return data;
@@ -12840,16 +12901,94 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
   }, [pnl, canchas]);
 
   /* ---- Formulario de Egresos & Compras ---- */
-  const [formEgreso, setFormEgreso] = useState({
+  const ESTADO_INICIAL_FORM_EGRESO = {
     fecha: hoyISO(),
     concepto: '',
     categoria: CATEGORIAS_GASTO[0].value,
     monto: '',
     proveedorId: '',
     metodoPago: 'efectivo',
-  });
+    // Formulario de Compra Híbrido (Egresos ↔ Inventario en Tránsito) — ver
+    // `CATEGORIAS_GASTO` (`esInventario`) y `registrarEgreso()` más abajo.
+    modoCompra: 'gasto', // 'gasto' (Gasto General/Servicio) | 'producto' (Compra de Producto/Stock)
+    subModoProducto: 'existente', // 'existente' (sumar unidades) | 'nuevo' (+ Crear Nuevo Producto desde Compra)
+    busquedaProducto: '',
+    productoExistenteId: '',
+    varianteExistenteId: '',
+    cantidadUnidades: '',
+    estatusRecepcion: 'recibido', // 'pendiente' 🟡 | 'recibido' 🟢 — obligatorio en modo 'producto'
+  };
+  function estadoInicialNuevoProductoForm(categoriaGasto) {
+    return {
+      nombre: '',
+      categoriaPOS:
+        CATEGORIA_POS_SUGERIDA_POR_GASTO[categoriaGasto] || CATEGORIAS_PRODUCTO.find((c) => c.value !== 'todos')?.value || 'Pro-Shop',
+      precio: '',
+      costo: '',
+      stockInicial: '',
+      imagenUrl: '',
+      variantes: [],
+    };
+  }
+  const [formEgreso, setFormEgreso] = useState(ESTADO_INICIAL_FORM_EGRESO);
+  const [nuevoProductoForm, setNuevoProductoForm] = useState(() => estadoInicialNuevoProductoForm(ESTADO_INICIAL_FORM_EGRESO.categoria));
   const [guardandoEgreso, setGuardandoEgreso] = useState(false);
   const [errorFormEgreso, setErrorFormEgreso] = useState('');
+  const [confirmandoRecepcionId, setConfirmandoRecepcionId] = useState(null);
+
+  const categoriaGastoSeleccionada = CATEGORIAS_GASTO.find((c) => c.value === formEgreso.categoria);
+  const esCategoriaInventario = Boolean(categoriaGastoSeleccionada?.esInventario);
+  const esModoCompraProducto = esCategoriaInventario && formEgreso.modoCompra === 'producto';
+
+  // Cambiar de Categoría reinicia el sub-formulario de producto: evita
+  // arrastrar una selección/creación de producto que ya no tiene sentido
+  // con la categoría nueva (p. ej. venías armando un producto de
+  // "Alimentos & Bebidas" y cambias a "Servicios").
+  function cambiarCategoriaEgreso(nuevaCategoria) {
+    setFormEgreso((prev) => ({
+      ...prev,
+      categoria: nuevaCategoria,
+      modoCompra: 'gasto',
+      subModoProducto: 'existente',
+      busquedaProducto: '',
+      productoExistenteId: '',
+      varianteExistenteId: '',
+      cantidadUnidades: '',
+      estatusRecepcion: 'recibido',
+    }));
+    setNuevoProductoForm(estadoInicialNuevoProductoForm(nuevaCategoria));
+  }
+
+  function agregarFilaVarianteNuevoProducto() {
+    setNuevoProductoForm((prev) => ({
+      ...prev,
+      variantes: [...prev.variantes, { id: idLocal('variante'), nombre: '', precio: '', costoUnitario: '', stock: '' }],
+    }));
+  }
+  function actualizarFilaVarianteNuevoProducto(id, campo, valor) {
+    setNuevoProductoForm((prev) => ({
+      ...prev,
+      variantes: prev.variantes.map((v) => (v.id === id ? { ...v, [campo]: valor } : v)),
+    }));
+  }
+  function eliminarFilaVarianteNuevoProducto(id) {
+    setNuevoProductoForm((prev) => ({ ...prev, variantes: prev.variantes.filter((v) => v.id !== id) }));
+  }
+
+  const productoExistenteSeleccionado = useMemo(
+    () => (productos || []).find((p) => String(p.id) === String(formEgreso.productoExistenteId)) || null,
+    [productos, formEgreso.productoExistenteId]
+  );
+  const variantesDelProductoExistente = useMemo(
+    () => (productoExistenteSeleccionado ? variantesDeProductoJSONB(productoExistenteSeleccionado) : []),
+    [productoExistenteSeleccionado]
+  );
+  const productosBusquedaCompra = useMemo(() => {
+    const q = formEgreso.busquedaProducto.trim().toLowerCase();
+    const lista = (productos || []).filter((p) => p.activo !== false);
+    const filtrada = q ? lista.filter((p) => (p.nombre || '').toLowerCase().includes(q)) : lista;
+    return filtrada.slice(0, 30);
+  }, [productos, formEgreso.busquedaProducto]);
 
   async function registrarEgreso() {
     setErrorFormEgreso('');
@@ -12862,8 +13001,176 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
       setErrorFormEgreso('Captura un monto válido, mayor a $0.');
       return;
     }
+
+    let cantidad = 0;
+    if (esModoCompraProducto) {
+      cantidad = Number(formEgreso.cantidadUnidades);
+      if (!cantidad || cantidad <= 0) {
+        setErrorFormEgreso('Captura cuántas unidades incluye esta compra.');
+        return;
+      }
+      if (!formEgreso.estatusRecepcion) {
+        setErrorFormEgreso('Selecciona el Estatus de Recepción de la compra.');
+        return;
+      }
+    }
+
     setGuardandoEgreso(true);
     try {
+      // Datos de vínculo con Inventario (Filtro Doble) — SOLO se llenan en
+      // modo "Compra de Producto/Stock"; en "Gasto General/Servicio" (o
+      // cualquier categoría que no es de inventario) el registro sigue
+      // siendo exactamente el de siempre, sin producto de por medio.
+      let vinculo = {};
+
+      if (esModoCompraProducto && formEgreso.subModoProducto === 'existente') {
+        if (!productoExistenteSeleccionado) {
+          throw new Error('Busca y selecciona el producto al que le vas a sumar unidades.');
+        }
+        const esVariante = variantesDelProductoExistente.length > 0;
+        if (esVariante && !formEgreso.varianteExistenteId) {
+          throw new Error('Este producto tiene variantes — selecciona a cuál le suma la compra.');
+        }
+        const varianteSel = esVariante
+          ? variantesDelProductoExistente.find((v) => String(v.id) === String(formEgreso.varianteExistenteId))
+          : null;
+        const nombreParaKardex = esVariante
+          ? `${productoExistenteSeleccionado.nombre} — ${varianteSel?.nombre || ''}`
+          : productoExistenteSeleccionado.nombre;
+
+        if (formEgreso.estatusRecepcion === 'recibido') {
+          // 🟢 Ya llegó al club: sumamos el stock EN ESTE MOMENTO (misma
+          // lógica que "Registrar Entrada" en Inventario) y forzamos
+          // `recibido: true` por si el producto venía oculto de una
+          // recepción pendiente anterior todavía sin confirmar.
+          if (esVariante) {
+            const stockAnterior = Number(varianteSel?.stock) || 0;
+            const stockNuevo = stockAnterior + cantidad;
+            const resultado = await actualizarVarianteEnJSONB({
+              productoId: productoExistenteSeleccionado.id,
+              varianteId: formEgreso.varianteExistenteId,
+              varianteNombre: varianteSel?.nombre,
+              cambios: {},
+              nuevoStock: stockNuevo,
+              upsertProducto,
+            });
+            if (!resultado.ok) throw resultado.error || new Error('No se pudo sumar el stock de la variante.');
+            await actualizarConColumnasOpcionales('productos', productoExistenteSeleccionado.id, { recibido: true }, ['recibido']);
+            upsertProducto({ id: productoExistenteSeleccionado.id, recibido: true });
+            await insertarMovimientoKardex({
+              producto_id: productoExistenteSeleccionado.id,
+              variante_id: formEgreso.varianteExistenteId,
+              producto_nombre: nombreParaKardex,
+              tipo_movimiento: 'entrada',
+              cantidad,
+              stock_anterior: stockAnterior,
+              stock_nuevo: stockNuevo,
+              motivo: `Compra: ${formEgreso.concepto.trim()}`,
+              operador: operador?.nombre,
+            });
+          } else {
+            const stockAnterior = Number(productoExistenteSeleccionado.stock) || 0;
+            const stockNuevo = stockAnterior + cantidad;
+            const { error: errStock } = await actualizarConColumnasOpcionales(
+              'productos',
+              productoExistenteSeleccionado.id,
+              { stock: stockNuevo, recibido: true },
+              ['recibido']
+            );
+            if (errStock) throw errStock;
+            upsertProducto({ id: productoExistenteSeleccionado.id, stock: stockNuevo, recibido: true });
+            await insertarMovimientoKardex({
+              producto_id: productoExistenteSeleccionado.id,
+              producto_nombre: nombreParaKardex,
+              tipo_movimiento: 'entrada',
+              cantidad,
+              stock_anterior: stockAnterior,
+              stock_nuevo: stockNuevo,
+              motivo: `Compra: ${formEgreso.concepto.trim()}`,
+              operador: operador?.nombre,
+            });
+          }
+        }
+        // `estatusRecepcion === 'pendiente'`: a propósito NO se toca el
+        // stock ni `recibido` del producto todavía — sigue exactamente
+        // igual (visible o no) hasta "Confirmar Recepción" (ver
+        // `confirmarRecepcionCompra`), para no ocultar un producto que ya
+        // se vende por culpa de un restock pendiente sin relación.
+
+        vinculo = {
+          estatus_recepcion: formEgreso.estatusRecepcion,
+          producto_id: productoExistenteSeleccionado.id,
+          variante_id: esVariante ? formEgreso.varianteExistenteId : null,
+          variante_nombre: esVariante ? varianteSel?.nombre || null : null,
+          cantidad_unidades: cantidad,
+          producto_nombre: nombreParaKardex,
+          // Le dice a `confirmarRecepcionCompra` que, al confirmar, debe
+          // SUMAR `cantidad_unidades` al stock actual (restock de un
+          // producto que ya existía) — a diferencia de un producto NUEVO
+          // creado por esta misma compra, cuyo stock ya nace correcto (ver
+          // rama `nuevo` abajo).
+          requiere_suma_stock: formEgreso.estatusRecepcion === 'pendiente',
+        };
+      } else if (esModoCompraProducto && formEgreso.subModoProducto === 'nuevo') {
+        if (!nuevoProductoForm.nombre.trim()) {
+          throw new Error('El nombre del nuevo producto es obligatorio.');
+        }
+        if (nuevoProductoForm.precio === '' || Number(nuevoProductoForm.precio) < 0) {
+          throw new Error('Indica un precio de venta válido para el nuevo producto.');
+        }
+
+        const variantesJSONB = nuevoProductoForm.variantes
+          .filter((v) => (v.nombre || '').trim())
+          .map((v) => ({
+            id: v.id,
+            nombre: v.nombre.trim(),
+            precio: v.precio === '' ? null : Number(v.precio),
+            costo_unitario: v.costoUnitario === '' ? null : Number(v.costoUnitario),
+            stock: v.stock === '' ? 0 : Number(v.stock) || 0,
+            activo: true,
+          }));
+        const tieneVariantes = variantesJSONB.length > 0;
+        const stockTotal = tieneVariantes
+          ? variantesJSONB.reduce((acc, v) => acc + (Number(v.stock) || 0), 0)
+          : Number(nuevoProductoForm.stockInicial) || 0;
+
+        // El stock (del producto o de cada variante) se guarda YA con su
+        // cantidad real desde el alta, sea 🟡 Pendiente o 🟢 Recibido — la
+        // visibilidad la controla ÚNICAMENTE `recibido` (Filtro Doble en
+        // POS/Portal, ver `ModuloSmartPOS`/`PortalPublicoJugadores`). Así,
+        // confirmar la recepción de un producto NUEVO es solo "abrirle la
+        // cortina" (recibido: false → true) — nunca hay que volver a sumar
+        // ningún stock.
+        const nuevoProductoPayload = {
+          nombre: nuevoProductoForm.nombre.trim(),
+          categoria: nuevoProductoForm.categoriaPOS,
+          precio: Number(nuevoProductoForm.precio),
+          costo_unitario: nuevoProductoForm.costo === '' ? null : Number(nuevoProductoForm.costo),
+          maneja_stock: true,
+          stock: stockTotal,
+          disponible: true,
+          activo: true,
+          variantes: variantesJSONB,
+          imagen_url: nuevoProductoForm.imagenUrl.trim() || null,
+          recibido: formEgreso.estatusRecepcion === 'recibido',
+        };
+        const { data: productoCreado, error: errProducto } = await insertarConColumnasOpcionales('productos', nuevoProductoPayload, [
+          'recibido',
+        ]);
+        if (errProducto) throw errProducto;
+        upsertProducto(productoCreado);
+
+        vinculo = {
+          estatus_recepcion: formEgreso.estatusRecepcion,
+          producto_id: productoCreado.id,
+          variante_id: null,
+          variante_nombre: null,
+          cantidad_unidades: stockTotal,
+          producto_nombre: productoCreado.nombre,
+          requiere_suma_stock: false,
+        };
+      }
+
       const proveedor = formEgreso.proveedorId ? proveedores.find((p) => String(p.id) === String(formEgreso.proveedorId)) : null;
       await crearEgreso({
         fecha: formEgreso.fecha || hoyISO(),
@@ -12874,16 +13181,11 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
         proveedor_nombre: proveedor?.nombre || null,
         metodo_pago: formEgreso.metodoPago || null,
         operador: operador?.nombre || null,
+        ...vinculo,
       });
       mostrarToast({ titulo: 'Egreso registrado', detalle: `${formEgreso.concepto.trim()} — ${formatoMoneda(monto)}` });
-      setFormEgreso({
-        fecha: hoyISO(),
-        concepto: '',
-        categoria: CATEGORIAS_GASTO[0].value,
-        monto: '',
-        proveedorId: '',
-        metodoPago: 'efectivo',
-      });
+      setFormEgreso(ESTADO_INICIAL_FORM_EGRESO);
+      setNuevoProductoForm(estadoInicialNuevoProductoForm(ESTADO_INICIAL_FORM_EGRESO.categoria));
     } catch (err) {
       if (esErrorTablaInexistente(err)) {
         setErrorFormEgreso('La tabla "compras_gastos" todavía no existe en Supabase — corre la migración para activar este módulo.');
@@ -12892,6 +13194,96 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
       }
     }
     setGuardandoEgreso(false);
+  }
+
+  // Confirmar Recepción (Filtro Doble): "abre la cortina" de un producto o
+  // variante que nació oculto por venir de una compra 🟡 Pendiente de
+  // Recepción — ver `ModuloSmartPOS`/`PortalPublicoJugadores` (excluyen
+  // `recibido === false`) y el botón del Historial más abajo. Cubre los DOS
+  // orígenes posibles de una compra pendiente (`requiere_suma_stock` decide
+  // cuál aplica, ver `registrarEgreso`):
+  //  · Restock de un producto YA EXISTENTE (`requiere_suma_stock: true`): su
+  //    stock nunca se tocó al registrar la compra — aquí es donde de verdad
+  //    se suman las `cantidad_unidades` (mismo cálculo que "Registrar
+  //    Entrada" en Inventario).
+  //  · Alta de un producto NUEVO creado desde la compra
+  //    (`requiere_suma_stock: false`): su stock ya nació correcto — aquí
+  //    solo falta poner `recibido: true`.
+  async function confirmarRecepcionCompra(compra) {
+    if (compra.estatus_recepcion !== 'pendiente') return;
+    setConfirmandoRecepcionId(compra.id);
+    try {
+      if (compra.producto_id) {
+        const producto = (productos || []).find((p) => String(p.id) === String(compra.producto_id));
+        if (!producto) {
+          console.warn('[Compras] El producto vinculado a esta compra ya no existe en el catálogo — solo se actualiza el estatus del gasto.');
+        } else if (compra.requiere_suma_stock) {
+          const cantidad = Number(compra.cantidad_unidades) || 0;
+          if (compra.variante_id) {
+            const varianteActual = variantesDeProductoJSONB(producto).find(
+              (v) => String(v.id) === String(compra.variante_id) || v.nombre === compra.variante_nombre
+            );
+            const stockAnterior = Number(varianteActual?.stock) || 0;
+            const stockNuevo = stockAnterior + cantidad;
+            const resultado = await actualizarVarianteEnJSONB({
+              productoId: producto.id,
+              varianteId: compra.variante_id,
+              varianteNombre: compra.variante_nombre,
+              cambios: {},
+              nuevoStock: stockNuevo,
+              upsertProducto,
+            });
+            if (!resultado.ok) throw resultado.error || new Error('No se pudo sumar el stock de la variante.');
+            await actualizarConColumnasOpcionales('productos', producto.id, { recibido: true }, ['recibido']);
+            upsertProducto({ id: producto.id, recibido: true });
+            await insertarMovimientoKardex({
+              producto_id: producto.id,
+              variante_id: compra.variante_id,
+              producto_nombre: compra.producto_nombre || `${producto.nombre} — ${compra.variante_nombre || ''}`,
+              tipo_movimiento: 'entrada',
+              cantidad,
+              stock_anterior: stockAnterior,
+              stock_nuevo: stockNuevo,
+              motivo: `Confirmación de recepción — ${compra.concepto || 'Compra'}`,
+              operador: operador?.nombre,
+            });
+          } else {
+            const stockAnterior = Number(producto.stock) || 0;
+            const stockNuevo = stockAnterior + cantidad;
+            const { error: errStock } = await actualizarConColumnasOpcionales(
+              'productos',
+              producto.id,
+              { stock: stockNuevo, recibido: true },
+              ['recibido']
+            );
+            if (errStock) throw errStock;
+            upsertProducto({ id: producto.id, stock: stockNuevo, recibido: true });
+            await insertarMovimientoKardex({
+              producto_id: producto.id,
+              producto_nombre: compra.producto_nombre || producto.nombre,
+              tipo_movimiento: 'entrada',
+              cantidad,
+              stock_anterior: stockAnterior,
+              stock_nuevo: stockNuevo,
+              motivo: `Confirmación de recepción — ${compra.concepto || 'Compra'}`,
+              operador: operador?.nombre,
+            });
+          }
+        } else {
+          const { error: errRecibido } = await actualizarConColumnasOpcionales('productos', producto.id, { recibido: true }, ['recibido']);
+          if (errRecibido) throw errRecibido;
+          upsertProducto({ id: producto.id, recibido: true });
+        }
+      }
+
+      const { error } = await actualizarConColumnasOpcionales('compras_gastos', compra.id, { estatus_recepcion: 'recibido' }, []);
+      if (error) throw error;
+      setEgresos((prev) => prev.map((g) => (g.id === compra.id ? { ...g, estatus_recepcion: 'recibido' } : g)));
+      mostrarToast({ titulo: 'Recepción confirmada', detalle: `${compra.concepto || 'Compra'} ya está disponible en POS y en el Portal.` });
+    } catch (err) {
+      mostrarToast({ titulo: 'No se pudo confirmar la recepción', detalle: err.message || 'Error desconocido', tono: 'error' });
+    }
+    setConfirmandoRecepcionId(null);
   }
 
   /* ---- Formulario de Proveedores ---- */
@@ -13059,11 +13451,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
                 </Campo>
               </div>
               <Campo label="Categoría">
-                <select
-                  value={formEgreso.categoria}
-                  onChange={(e) => setFormEgreso((f) => ({ ...f, categoria: e.target.value }))}
-                  className={inputClase}
-                >
+                <select value={formEgreso.categoria} onChange={(e) => cambiarCategoriaEgreso(e.target.value)} className={inputClase}>
                   {CATEGORIAS_GASTO.map((c) => (
                     <option key={c.value} value={c.value}>
                       {c.label}
@@ -13097,6 +13485,288 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
                 </select>
               </Campo>
             </div>
+
+            {esCategoriaInventario && (
+              <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                <div className="mb-3 inline-flex rounded-lg bg-slate-800 p-1 text-xs font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setFormEgreso((f) => ({ ...f, modoCompra: 'gasto' }))}
+                    className={`rounded-md px-3 py-1.5 transition ${
+                      formEgreso.modoCompra === 'gasto' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                    }`}
+                  >
+                    Gasto General / Servicio
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormEgreso((f) => ({ ...f, modoCompra: 'producto' }))}
+                    className={`rounded-md px-3 py-1.5 transition ${
+                      formEgreso.modoCompra === 'producto' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                    }`}
+                  >
+                    Compra de Producto / Stock
+                  </button>
+                </div>
+
+                {esModoCompraProducto && (
+                  <div className="space-y-3">
+                    <div className="inline-flex rounded-lg bg-slate-800/70 p-1 text-[11px] font-bold">
+                      <button
+                        type="button"
+                        onClick={() => setFormEgreso((f) => ({ ...f, subModoProducto: 'existente' }))}
+                        className={`rounded-md px-2.5 py-1 transition ${
+                          formEgreso.subModoProducto === 'existente' ? 'bg-slate-100 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Sumar a producto existente
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormEgreso((f) => ({ ...f, subModoProducto: 'nuevo' }))}
+                        className={`rounded-md px-2.5 py-1 transition ${
+                          formEgreso.subModoProducto === 'nuevo' ? 'bg-slate-100 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        + Crear Nuevo Producto desde Compra
+                      </button>
+                    </div>
+
+                    {formEgreso.subModoProducto === 'existente' ? (
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="sm:col-span-2">
+                          <Campo label="Buscar producto">
+                            <div className="relative">
+                              <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                              <input
+                                type="text"
+                                placeholder="Nombre del producto..."
+                                value={formEgreso.busquedaProducto}
+                                onChange={(e) => setFormEgreso((f) => ({ ...f, busquedaProducto: e.target.value }))}
+                                className={`${inputClase} pl-7`}
+                              />
+                            </div>
+                          </Campo>
+                        </div>
+                        <Campo label="Producto">
+                          <select
+                            value={formEgreso.productoExistenteId}
+                            onChange={(e) => setFormEgreso((f) => ({ ...f, productoExistenteId: e.target.value, varianteExistenteId: '' }))}
+                            className={inputClase}
+                          >
+                            <option value="">— Selecciona —</option>
+                            {productosBusquedaCompra.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.nombre}
+                                {p.recibido === false ? ' (🟡 pendiente)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </Campo>
+                        {variantesDelProductoExistente.length > 0 && (
+                          <Campo label="Variante">
+                            <select
+                              value={formEgreso.varianteExistenteId}
+                              onChange={(e) => setFormEgreso((f) => ({ ...f, varianteExistenteId: e.target.value }))}
+                              className={inputClase}
+                            >
+                              <option value="">— Selecciona —</option>
+                              {variantesDelProductoExistente.map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.nombre} (stock: {v.stock ?? 0})
+                                </option>
+                              ))}
+                            </select>
+                          </Campo>
+                        )}
+                        <Campo label="Cantidad de unidades">
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            placeholder="0"
+                            value={formEgreso.cantidadUnidades}
+                            onChange={(e) => setFormEgreso((f) => ({ ...f, cantidadUnidades: e.target.value }))}
+                            className={inputClase}
+                          />
+                        </Campo>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                          <div className="sm:col-span-2">
+                            <Campo label="Nombre del producto">
+                              <input
+                                type="text"
+                                placeholder="Ej. Overgrips Tourna"
+                                value={nuevoProductoForm.nombre}
+                                onChange={(e) => setNuevoProductoForm((f) => ({ ...f, nombre: e.target.value }))}
+                                className={inputClase}
+                              />
+                            </Campo>
+                          </div>
+                          <Campo label="Categoría POS">
+                            <select
+                              value={nuevoProductoForm.categoriaPOS}
+                              onChange={(e) => setNuevoProductoForm((f) => ({ ...f, categoriaPOS: e.target.value }))}
+                              className={inputClase}
+                            >
+                              {CATEGORIAS_PRODUCTO.filter((c) => c.value !== 'todos').map((c) => (
+                                <option key={c.value} value={c.value}>
+                                  {c.label}
+                                </option>
+                              ))}
+                            </select>
+                          </Campo>
+                          <Campo label="Precio de venta">
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="0.00"
+                              value={nuevoProductoForm.precio}
+                              onChange={(e) => setNuevoProductoForm((f) => ({ ...f, precio: e.target.value }))}
+                              className={inputClase}
+                            />
+                          </Campo>
+                          <Campo label="Costo">
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="0.00"
+                              value={nuevoProductoForm.costo}
+                              onChange={(e) => setNuevoProductoForm((f) => ({ ...f, costo: e.target.value }))}
+                              className={inputClase}
+                            />
+                          </Campo>
+                          <Campo label={nuevoProductoForm.variantes.length > 0 ? 'Stock inicial (usa las variantes)' : 'Stock inicial'}>
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              placeholder="0"
+                              disabled={nuevoProductoForm.variantes.length > 0}
+                              value={nuevoProductoForm.variantes.length > 0 ? '' : nuevoProductoForm.stockInicial}
+                              onChange={(e) => setNuevoProductoForm((f) => ({ ...f, stockInicial: e.target.value }))}
+                              className={`${inputClase} ${nuevoProductoForm.variantes.length > 0 ? 'opacity-50' : ''}`}
+                            />
+                          </Campo>
+                          <div className="sm:col-span-2 lg:col-span-4">
+                            <Campo label="Imagen (opcional)">
+                              <SelectorArchivoImagen
+                                carpeta="productos"
+                                onSubida={(url) => setNuevoProductoForm((f) => ({ ...f, imagenUrl: url }))}
+                              />
+                              {nuevoProductoForm.imagenUrl && (
+                                <p className="mt-1 truncate text-[11px] text-slate-500">{nuevoProductoForm.imagenUrl}</p>
+                              )}
+                            </Campo>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Variantes (opcional)</span>
+                            <button
+                              type="button"
+                              onClick={agregarFilaVarianteNuevoProducto}
+                              className="inline-flex items-center gap-1 text-xs font-bold text-lime-400 hover:text-lime-300"
+                            >
+                              <Plus size={13} /> Agregar variante
+                            </button>
+                          </div>
+                          {nuevoProductoForm.variantes.length > 0 && (
+                            <div className="space-y-2">
+                              {nuevoProductoForm.variantes.map((v) => (
+                                <div key={v.id} className="grid grid-cols-5 items-center gap-2">
+                                  <input
+                                    type="text"
+                                    placeholder="Nombre (ej. Victoria)"
+                                    value={v.nombre}
+                                    onChange={(e) => actualizarFilaVarianteNuevoProducto(v.id, 'nombre', e.target.value)}
+                                    className={`${inputClase} col-span-2`}
+                                  />
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    placeholder="Precio"
+                                    value={v.precio}
+                                    onChange={(e) => actualizarFilaVarianteNuevoProducto(v.id, 'precio', e.target.value)}
+                                    className={inputClase}
+                                  />
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    placeholder="Costo"
+                                    value={v.costoUnitario}
+                                    onChange={(e) => actualizarFilaVarianteNuevoProducto(v.id, 'costoUnitario', e.target.value)}
+                                    className={inputClase}
+                                  />
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="1"
+                                      placeholder="Stock"
+                                      value={v.stock}
+                                      onChange={(e) => actualizarFilaVarianteNuevoProducto(v.id, 'stock', e.target.value)}
+                                      className={inputClase}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => eliminarFilaVarianteNuevoProducto(v.id)}
+                                      className="shrink-0 text-slate-500 hover:text-rose-400"
+                                    >
+                                      <X size={14} />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+                        Estatus de Recepción
+                      </span>
+                      <div className="inline-flex rounded-lg bg-slate-800 p-1 text-xs font-bold">
+                        <button
+                          type="button"
+                          onClick={() => setFormEgreso((f) => ({ ...f, estatusRecepcion: 'pendiente' }))}
+                          className={`rounded-md px-3 py-1.5 transition ${
+                            formEgreso.estatusRecepcion === 'pendiente' ? 'bg-amber-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                          }`}
+                        >
+                          🟡 Pendiente de Recepción
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFormEgreso((f) => ({ ...f, estatusRecepcion: 'recibido' }))}
+                          className={`rounded-md px-3 py-1.5 transition ${
+                            formEgreso.estatusRecepcion === 'recibido' ? 'bg-emerald-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                          }`}
+                        >
+                          🟢 Recibido en Club
+                        </button>
+                      </div>
+                      {formEgreso.estatusRecepcion === 'pendiente' && (
+                        <p className="mt-1.5 text-[11px] text-amber-400">
+                          El producto se guarda oculto en el POS y en el Portal de Jugadores hasta que confirmes su recepción desde el
+                          Historial de abajo.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Método de pago:</span>
@@ -13149,6 +13819,7 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
                       <th className="px-3 py-2.5">Categoría</th>
                       <th className="px-3 py-2.5">Proveedor</th>
                       <th className="px-3 py-2.5">Operador</th>
+                      <th className="px-3 py-2.5">Recepción</th>
                       <th className="px-3 py-2.5 text-right">Monto</th>
                     </tr>
                   </thead>
@@ -13160,6 +13831,34 @@ function ModuloContabilidadCompras({ reservas, operador, canchas, inscripciones,
                         <td className="px-3 py-2.5 text-slate-400">{g.categoria || '—'}</td>
                         <td className="px-3 py-2.5 text-slate-400">{g.proveedor_nombre || '—'}</td>
                         <td className="px-3 py-2.5 text-slate-500">{g.operador || '—'}</td>
+                        <td className="px-3 py-2.5">
+                          {g.estatus_recepcion === 'pendiente' ? (
+                            <div className="flex flex-col items-start gap-1.5">
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-400 ring-1 ring-amber-400/30">
+                                🟡 Pendiente de Recepción
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => confirmarRecepcionCompra(g)}
+                                disabled={confirmandoRecepcionId === g.id}
+                                className="inline-flex items-center gap-1 rounded-md bg-emerald-400/10 px-2 py-1 text-[10px] font-bold text-emerald-400 ring-1 ring-emerald-400/30 transition hover:bg-emerald-400/20 disabled:opacity-50"
+                              >
+                                {confirmandoRecepcionId === g.id ? (
+                                  <Loader2 size={11} className="animate-spin" />
+                                ) : (
+                                  <CheckCircle2 size={11} />
+                                )}
+                                Confirmar Recepción
+                              </button>
+                            </div>
+                          ) : g.estatus_recepcion === 'recibido' ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold text-emerald-400 ring-1 ring-emerald-400/30">
+                              🟢 Recibido
+                            </span>
+                          ) : (
+                            <span className="text-slate-600">—</span>
+                          )}
+                        </td>
                         <td className="px-3 py-2.5 text-right font-bold text-rose-400">{formatoMoneda(Number(g.monto) || 0)}</td>
                       </tr>
                     ))}
@@ -25286,12 +25985,21 @@ function PortalPublicoJugadores({ clubSlug }) {
     return mapa;
   }, [productos]);
 
+  // Filtro Doble (Compras & Inventario en Tránsito): igual criterio que
+  // `ModuloSmartPOS` — un producto/variante "🟡 Pendiente de Recepción"
+  // (`recibido === false`) nunca debe poder comprarse desde el Portal
+  // Público mientras el club no confirme que ya llegó (ver "Confirmar
+  // Recepción" en Contabilidad & Compras). `undefined`/`null` cuenta como
+  // recibido — mismo criterio de tolerancia que `disponible`.
   const productosTienda = useMemo(
-    () => productos.filter((p) => p.categoria === 'Pro-Shop' && p.disponible !== false),
+    () => productos.filter((p) => p.categoria === 'Pro-Shop' && p.disponible !== false && p.recibido !== false),
     [productos]
   );
   const productosAddOns = useMemo(
-    () => productos.filter((p) => (p.categoria === 'Pro-Shop' || p.categoria === 'Cafetería/Bar') && p.disponible !== false),
+    () =>
+      productos.filter(
+        (p) => (p.categoria === 'Pro-Shop' || p.categoria === 'Cafetería/Bar') && p.disponible !== false && p.recibido !== false
+      ),
     [productos]
   );
 
@@ -30366,6 +31074,8 @@ function AppInterno() {
                 participantesTorneo={participantesTorneo}
                 academiaAlumnos={academiaAlumnos}
                 configClub={configClub}
+                productos={productos}
+                upsertProducto={upsertProducto}
               />
             ) : moduloActivo === 'analytics' ? (
               <ModuloAnalyticsBI
