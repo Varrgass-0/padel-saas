@@ -8785,7 +8785,11 @@ function ModuloSmartPOS({
   // antes de esta actualización.
   const [productoParaVariante, setProductoParaVariante] = useState(null);
   function manejarClickProducto(producto) {
-    const variantesDelProducto = variantesPorProducto?.[producto.id] || [];
+    // Filtro Doble a nivel variante: una variante 🟡 Pendiente de Recepción
+    // (nacida de "+ Crear Nueva Variante para este Producto" en Compras) no
+    // cuenta aquí — si esa era la ÚNICA variante del producto, se agrega
+    // directo (sin selector) igual que un producto sin variantes.
+    const variantesDelProducto = variantesVisiblesParaVenta(variantesPorProducto?.[producto.id]);
     if (variantesDelProducto.length > 0) {
       setProductoParaVariante(producto);
     } else {
@@ -9517,7 +9521,7 @@ function ModuloSmartPOS({
                   <ProductoCard
                     key={p.id}
                     producto={p}
-                    variantes={variantesPorProducto?.[p.id] || []}
+                    variantes={variantesVisiblesParaVenta(variantesPorProducto?.[p.id])}
                     onAgregar={() => manejarClickProducto(p)}
                     onEditar={permisos?.puedeGestionarProductos !== false ? () => setProductoEditar(p) : undefined}
                   />
@@ -9619,7 +9623,7 @@ function ModuloSmartPOS({
       {productoParaVariante && (
         <ModalSeleccionarVariante
           producto={productoParaVariante}
-          variantes={variantesPorProducto?.[productoParaVariante.id] || []}
+          variantes={variantesVisiblesParaVenta(variantesPorProducto?.[productoParaVariante.id])}
           onClose={() => setProductoParaVariante(null)}
           onSeleccionar={(variante) => {
             agregarProducto(productoParaVariante, variante);
@@ -9922,7 +9926,11 @@ function idEstableVarianteJSONB(v, indice) {
 // carrito del POS y el Portal — MISMOS nombres de campo que ya usaba la
 // antigua fila de la tabla `producto_variantes` (`costo_unitario`,
 // `stock_minimo`, snake_case) para no tener que tocar ningún consumidor:
-// `{ id, nombre, precio, stock, costo_unitario, stock_minimo, activo }`.
+// `{ id, nombre, precio, stock, costo_unitario, stock_minimo, activo, recibido }`.
+// `recibido` (nuevo) es el Filtro Doble A NIVEL VARIANTE — ver
+// `agregarVarianteNuevaEnJSONB`/`variantesVisiblesParaVenta` más abajo —
+// `undefined`/`null` cuenta como recibido, mismo criterio de tolerancia
+// que `producto.recibido`.
 function normalizarVarianteJSONB(v, indice) {
   return {
     id: idEstableVarianteJSONB(v, indice),
@@ -9932,14 +9940,37 @@ function normalizarVarianteJSONB(v, indice) {
     costo_unitario: v?.costo_unitario != null ? Number(v.costo_unitario) : null,
     stock_minimo: v?.stock_minimo != null ? Number(v.stock_minimo) : null,
     activo: v?.activo !== false,
+    recibido: v?.recibido !== false,
   };
 }
 
 // Lista de variantes de UN producto, ya normalizada — lo que usan todos los
-// componentes que hoy reciben `variantesPorProducto[producto.id]`.
+// componentes que hoy reciben `variantesPorProducto[producto.id]`. A
+// PROPÓSITO no filtra por `recibido` (a diferencia de
+// `variantesVisiblesParaVenta` de abajo): Catálogo/Inventario y el editor
+// de producto del POS necesitan seguir viendo/editando una variante 🟡
+// Pendiente de Recepción igual que ya pasa con un producto pendiente
+// completo — solo el PUNTO DE VENTA (grid del Smart POS y Tienda/Para-ti
+// del Portal) debe ocultarla.
 function variantesDeProductoJSONB(producto) {
   if (!Array.isArray(producto?.variantes)) return [];
   return producto.variantes.map(normalizarVarianteJSONB).filter((v) => v.activo !== false);
+}
+
+// Filtro Doble a nivel VARIANTE (Compras & Inventario en Tránsito): una
+// variante nueva creada desde "+ Crear Nueva Variante para este Producto"
+// (Compras → Sumar a producto existente) puede nacer 🟡 Pendiente de
+// Recepción (`recibido: false` en su propia entrada del JSONB) SIN afectar
+// al producto padre ni a sus demás variantes, que siguen 100% visibles y
+// vendibles como siempre — ver `agregarVarianteNuevaEnJSONB` y
+// `registrarEgreso`/`confirmarRecepcionCompra` en `ModuloContabilidadCompras`.
+// Este es el único filtro extra que se le aplica a la lista de
+// `variantesDeProductoJSONB` justo antes de mostrarla como opción DE VENTA
+// en el grid del Smart POS y la Tienda/Para-ti del Portal — NO se usa en
+// Catálogo/Inventario ni en el editor de producto, para que el staff pueda
+// seguir viéndola y editándola mientras está pendiente.
+function variantesVisiblesParaVenta(variantes) {
+  return (variantes || []).filter((v) => v.recibido !== false);
 }
 
 // Control de Stock 0 = No Disponible — CRITERIO ÚNICO, compartido por
@@ -10396,6 +10427,69 @@ async function actualizarVarianteEnJSONB({ productoId, varianteId, varianteNombr
     return { ok: true, error: null, producto: productoActualizado, variante: variantesActualizadas[indiceCoincide] };
   } catch (e) {
     console.error('[Inventario] Error detallado Supabase (excepción al actualizar productos.variantes):', e);
+    return { ok: false, error: e };
+  }
+}
+
+// Read-modify-write GEMELO de `actualizarVarianteEnJSONB` de arriba, pero
+// para AÑADIR una variante que no existía — usado por "+ Crear Nueva
+// Variante para este Producto" en Compras → Sumar a producto existente
+// (ej.: anidar "Wilson Pro" dentro del producto padre "Overgrip" ya
+// existente). Relee `productos.variantes` justo antes de escribir (misma
+// "BD como única fuente de verdad" que el resto del archivo) para nunca
+// pisar una variante que otro operador haya agregado un instante antes,
+// agrega la entrada nueva al final del arreglo (mismo formato/llaves que
+// cualquier otra variante — MISMA `producto_id` de siempre: el producto
+// padre, no hay tabla `variantes` aparte) y recalcula `stockTotalPadre`
+// como la suma de TODAS las variantes, incluida la nueva. `recibido` en la
+// entrada nueva respeta el Estatus de Recepción elegido en el formulario
+// (🟡/🟢) — SOLO afecta la visibilidad de ESTA variante puntual en POS/
+// Portal (ver `variantesVisiblesParaVenta`); el producto padre y sus demás
+// variantes existentes no se tocan para nada. REGLA DE ORO: esto NO toca
+// `descontarStockVariante` ni ninguna lógica de salida/venta — solo agrega
+// una entrada nueva al JSONB, exactamente como cualquier variante normal.
+async function agregarVarianteNuevaEnJSONB({ productoId, nombre, precio, costoUnitario, stockInicial, imagenUrl, recibido, upsertProducto }) {
+  try {
+    const { data: productoPadre, error: errPadre } = await supabase
+      .from('productos')
+      .select('id, variantes, stock')
+      .eq('id', productoId)
+      .maybeSingle();
+    if (errPadre) console.error('[Inventario] Error detallado Supabase (leer productos.variantes):', errPadre);
+    if (errPadre || !productoPadre) {
+      const error = errPadre || new Error(`El producto ${productoId} no existe.`);
+      console.error('[Inventario] Error detallado Supabase (agregar variante nueva):', error);
+      return { ok: false, error };
+    }
+
+    const listaVariantes = Array.isArray(productoPadre.variantes) ? productoPadre.variantes : [];
+    const nuevaVariante = {
+      id: idLocal('variante'),
+      nombre: (nombre || '').trim(),
+      precio: precio != null && precio !== '' ? Number(precio) : null,
+      stock: stockInicial != null && stockInicial !== '' ? Number(stockInicial) || 0 : 0,
+      costo_unitario: costoUnitario != null && costoUnitario !== '' ? Number(costoUnitario) : null,
+      imagen_url: imagenUrl || null,
+      activo: true,
+      recibido: recibido !== false,
+    };
+    const variantesActualizadas = [...listaVariantes, nuevaVariante];
+    const stockTotalPadre = variantesActualizadas.reduce((acc, v) => acc + (stockDeVarianteJSONB(v) || 0), 0);
+    const { data: productoActualizado, error: errUpdate } = await supabase
+      .from('productos')
+      .update({ variantes: variantesActualizadas, stock: stockTotalPadre })
+      .eq('id', productoId)
+      .select()
+      .single();
+    if (errUpdate) {
+      console.error('[Inventario] Error detallado Supabase (agregar productos.variantes):', errUpdate);
+      return { ok: false, error: errUpdate };
+    }
+
+    upsertProducto?.(productoActualizado);
+    return { ok: true, error: null, producto: productoActualizado, variante: nuevaVariante };
+  } catch (e) {
+    console.error('[Inventario] Error detallado Supabase (excepción al agregar productos.variantes):', e);
     return { ok: false, error: e };
   }
 }
@@ -12744,6 +12838,9 @@ function ModuloContabilidadCompras({
     subModoProducto: 'existente', // 'existente' (sumar unidades) | 'nuevo' (+ Crear Nuevo Producto desde Compra)
     busquedaProducto: '',
     productoExistenteId: '',
+    // '' = sin variante (producto simple) | '__nueva__' = "+ Crear Nueva
+    // Variante para este Producto" (ver `modoNuevaVarianteExistente` más
+    // abajo) | cualquier otro valor = id de una variante YA existente.
     varianteExistenteId: '',
     cantidadUnidades: '',
     // Costo Unitario de ESTA compra puntual (no el costo histórico del
@@ -12751,14 +12848,21 @@ function ModuloContabilidadCompras({
     // cuanto se selecciona (ver los `onChange` del Producto/Variante más
     // abajo) pero siempre queda editable: el costo de un proveedor puede
     // variar compra a compra. Junto con `cantidadUnidades` arma el Monto
-    // Total automático de esta compra (ver `montoCalculadoProducto`).
+    // Total automático de esta compra (ver `montoCalculadoProducto`) — se
+    // reutiliza tal cual como el costo inicial de una variante nueva.
     costoUnitarioCompra: '',
     // Si está activo, además de registrar el gasto, `registrarEgreso()`
     // sobreescribe `productos.costo_unitario` (o el de la variante en el
     // JSONB) con `costoUnitarioCompra` — así el costo "de catálogo" que usa
     // Analytics BI/Margen Bruto queda al día con el precio real del último
-    // proveedor.
+    // proveedor. No aplica cuando `varianteExistenteId === '__nueva__'`
+    // (una variante nueva no tiene costo de catálogo previo que actualizar).
     actualizarCostoCatalogo: false,
+    // "+ Crear Nueva Variante para este Producto" — solo se usan cuando
+    // `varianteExistenteId === '__nueva__'` (ver JSX y `registrarEgreso`).
+    nuevaVarianteNombre: '',
+    nuevaVariantePrecio: '',
+    nuevaVarianteImagenUrl: '',
     estatusRecepcion: 'recibido', // 'pendiente' 🟡 | 'recibido' 🟢 — obligatorio en modo 'producto'
   };
   function estadoInicialNuevoProductoForm(categoriaGasto) {
@@ -12812,6 +12916,9 @@ function ModuloContabilidadCompras({
       cantidadUnidades: '',
       costoUnitarioCompra: '',
       actualizarCostoCatalogo: false,
+      nuevaVarianteNombre: '',
+      nuevaVariantePrecio: '',
+      nuevaVarianteImagenUrl: '',
       estatusRecepcion: 'recibido',
     }));
     setNuevoProductoForm(estadoInicialNuevoProductoForm(nuevaCategoria));
@@ -12850,6 +12957,13 @@ function ModuloContabilidadCompras({
 
   const modoNuevoProducto = esModoCompraProducto && formEgreso.subModoProducto === 'nuevo';
   const modoExistenteProducto = esModoCompraProducto && formEgreso.subModoProducto === 'existente';
+  // "+ Crear Nueva Variante para este Producto" — dentro de "Sumar a
+  // producto existente", anida una variante NUEVA en un producto padre que
+  // ya existe (ej. "Wilson Pro" dentro de "Overgrip") en vez de sumarle
+  // stock a una variante ya existente o al producto simple. Ver el
+  // `<select>` de Variante en el JSX y la rama correspondiente de
+  // `registrarEgreso()` más abajo.
+  const modoNuevaVarianteExistente = modoExistenteProducto && formEgreso.varianteExistenteId === '__nueva__';
 
   const variantesNuevoProductoConDatos = useMemo(
     () => nuevoProductoForm.variantes.filter((v) => (v.nombre || '').trim()),
@@ -12940,6 +13054,19 @@ function ModuloContabilidadCompras({
         setErrorFormEgreso('Captura el costo unitario de esta compra.');
         return;
       }
+      // "+ Crear Nueva Variante para este Producto": además de
+      // Cantidad/Costo (ya validados arriba, se reutilizan tal cual),
+      // exige Nombre y Precio de Venta de la variante nueva.
+      if (modoNuevaVarianteExistente) {
+        if (!formEgreso.nuevaVarianteNombre.trim()) {
+          setErrorFormEgreso('Captura el nombre de la nueva variante.');
+          return;
+        }
+        if (formEgreso.nuevaVariantePrecio === '' || Number(formEgreso.nuevaVariantePrecio) < 0) {
+          setErrorFormEgreso('Captura un precio de venta válido para la nueva variante.');
+          return;
+        }
+      }
     }
     if (esModoCompraProducto && !formEgreso.estatusRecepcion) {
       setErrorFormEgreso('Selecciona el Estatus de Recepción de la compra.');
@@ -12975,6 +13102,77 @@ function ModuloContabilidadCompras({
         if (!productoExistenteSeleccionado) {
           throw new Error('Busca y selecciona el producto al que le vas a sumar unidades.');
         }
+
+        if (modoNuevaVarianteExistente) {
+          // + Crear Nueva Variante para este Producto: anida una variante
+          // NUEVA dentro del producto padre YA EXISTENTE (ej. "Wilson Pro"
+          // dentro de "Overgrip") — misma estructura de campos que
+          // cualquier otra variante del JSONB, y la MISMA `producto_id` de
+          // siempre (el producto padre: no hay una tabla `variantes`
+          // aparte, ver `agregarVarianteNuevaEnJSONB`). REGLA DE ORO: esto
+          // NO toca `descontarStockVariante` ni ninguna lógica de salida/
+          // venta — solo agrega una entrada nueva al arreglo, el producto
+          // padre y sus demás variantes existentes quedan intactos.
+          const costoUnitarioCompra = Number(formEgreso.costoUnitarioCompra) || 0;
+          const precioVenta = Number(formEgreso.nuevaVariantePrecio) || 0;
+          const nombreNuevaVariante = formEgreso.nuevaVarianteNombre.trim();
+          const recibidoNuevaVariante = formEgreso.estatusRecepcion === 'recibido';
+          const nombreParaKardex = `${productoExistenteSeleccionado.nombre} — ${nombreNuevaVariante}`;
+
+          const resultado = await agregarVarianteNuevaEnJSONB({
+            productoId: productoExistenteSeleccionado.id,
+            nombre: nombreNuevaVariante,
+            precio: precioVenta,
+            costoUnitario: costoUnitarioCompra,
+            stockInicial: cantidad,
+            imagenUrl: formEgreso.nuevaVarianteImagenUrl,
+            recibido: recibidoNuevaVariante,
+            upsertProducto,
+          });
+          if (!resultado.ok) throw resultado.error || new Error('No se pudo crear la nueva variante.');
+
+          // Si el producto padre venía oculto (`recibido: false` de una
+          // compra pendiente anterior todavía sin confirmar), agregarle
+          // una variante nueva no debe dejarlo oculto para siempre — mismo
+          // criterio de "abrir la cortina" que el resto del módulo. Esto
+          // NUNCA afecta a las demás variantes, que ya vivían fuera de
+          // este flag.
+          if (productoExistenteSeleccionado.recibido === false) {
+            await actualizarConColumnasOpcionales('productos', productoExistenteSeleccionado.id, { recibido: true }, ['recibido']);
+            upsertProducto({ id: productoExistenteSeleccionado.id, recibido: true });
+          }
+
+          await insertarMovimientoKardex({
+            producto_id: productoExistenteSeleccionado.id,
+            variante_id: resultado.variante?.id || null,
+            producto_nombre: nombreParaKardex,
+            tipo_movimiento: 'entrada',
+            cantidad,
+            stock_anterior: 0,
+            stock_nuevo: cantidad,
+            motivo: `Compra: ${formEgreso.concepto.trim()}`,
+            operador: operador?.nombre,
+            costo_unitario: costoUnitarioCompra || null,
+          });
+
+          vinculo = {
+            estatus_recepcion: formEgreso.estatusRecepcion,
+            producto_id: productoExistenteSeleccionado.id,
+            variante_id: resultado.variante?.id || null,
+            variante_nombre: nombreNuevaVariante,
+            cantidad_unidades: cantidad,
+            producto_nombre: nombreParaKardex,
+            // La variante nueva YA nace con su stock real (`cantidad`) sin
+            // importar el estatus — igual que "+ Crear Nuevo Producto
+            // desde Compra" (ver rama `modoNuevoProducto` más abajo):
+            // confirmar la recepción de una variante NUEVA solo "abre la
+            // cortina" (`recibido: false → true` DENTRO de su propia
+            // entrada en `productos.variantes`, ver
+            // `confirmarRecepcionCompra`), nunca hay que volver a sumar
+            // stock.
+            requiere_suma_stock: false,
+          };
+        } else {
         const esVariante = variantesDelProductoExistente.length > 0;
         if (esVariante && !formEgreso.varianteExistenteId) {
           throw new Error('Este producto tiene variantes — selecciona a cuál le suma la compra.');
@@ -13097,6 +13295,7 @@ function ModuloContabilidadCompras({
           // rama `nuevo` abajo).
           requiere_suma_stock: formEgreso.estatusRecepcion === 'pendiente',
         };
+        }
       } else if (modoNuevoProducto) {
         // El nombre ya se validó arriba (antes de ocultar el top bar no
         // había forma de llegar aquí sin él); solo falta el precio de
@@ -13197,16 +13396,24 @@ function ModuloContabilidadCompras({
   // Confirmar Recepción (Filtro Doble): "abre la cortina" de un producto o
   // variante que nació oculto por venir de una compra 🟡 Pendiente de
   // Recepción — ver `ModuloSmartPOS`/`PortalPublicoJugadores` (excluyen
-  // `recibido === false`) y el botón del Historial más abajo. Cubre los DOS
-  // orígenes posibles de una compra pendiente (`requiere_suma_stock` decide
+  // `recibido === false`, `variantesVisiblesParaVenta` a nivel variante) y
+  // el botón del Historial más abajo. Cubre los TRES orígenes posibles de
+  // una compra pendiente (`requiere_suma_stock` + `variante_id` deciden
   // cuál aplica, ver `registrarEgreso`):
   //  · Restock de un producto YA EXISTENTE (`requiere_suma_stock: true`): su
   //    stock nunca se tocó al registrar la compra — aquí es donde de verdad
   //    se suman las `cantidad_unidades` (mismo cálculo que "Registrar
   //    Entrada" en Inventario).
   //  · Alta de un producto NUEVO creado desde la compra
-  //    (`requiere_suma_stock: false`): su stock ya nació correcto — aquí
-  //    solo falta poner `recibido: true`.
+  //    (`requiere_suma_stock: false`, `variante_id: null`): su stock ya
+  //    nació correcto — aquí solo falta poner `recibido: true` en el
+  //    PRODUCTO.
+  //  · Alta de una VARIANTE NUEVA dentro de un producto YA EXISTENTE
+  //    (`requiere_suma_stock: false`, `variante_id` presente — "+ Crear
+  //    Nueva Variante para este Producto"): su stock también ya nació
+  //    correcto — aquí solo falta poner `recibido: true` DENTRO de esa
+  //    variante en `productos.variantes`, sin tocar el producto padre ni
+  //    sus demás variantes.
   async function confirmarRecepcionCompra(compra) {
     if (compra.estatus_recepcion !== 'pendiente') return;
     setConfirmandoRecepcionId(compra.id);
@@ -13267,6 +13474,23 @@ function ModuloContabilidadCompras({
               operador: operador?.nombre,
             });
           }
+        } else if (compra.variante_id) {
+          // Alta de una VARIANTE NUEVA dentro de un producto YA EXISTENTE
+          // ("+ Crear Nueva Variante para este Producto"): su stock ya
+          // nació correcto (ver `agregarVarianteNuevaEnJSONB`) — aquí solo
+          // hay que "abrir la cortina" de ESA variante puntual
+          // (`recibido: false → true` DENTRO de su propia entrada en
+          // `productos.variantes`), sin tocar el producto padre ni sus
+          // demás variantes, que nunca estuvieron ocultos.
+          const resultado = await actualizarVarianteEnJSONB({
+            productoId: producto.id,
+            varianteId: compra.variante_id,
+            varianteNombre: compra.variante_nombre,
+            cambios: { recibido: true },
+            nuevoStock: null,
+            upsertProducto,
+          });
+          if (!resultado.ok) throw resultado.error || new Error('No se pudo confirmar la recepción de la variante.');
         } else {
           const { error: errRecibido } = await actualizarConColumnasOpcionales('productos', producto.id, { recibido: true }, ['recibido']);
           if (errRecibido) throw errRecibido;
@@ -13574,6 +13798,9 @@ function ModuloContabilidadCompras({
                                 varianteExistenteId: '',
                                 costoUnitarioCompra:
                                   variantesDeEse.length === 0 && prod?.costo_unitario != null ? String(prod.costo_unitario) : '',
+                                nuevaVarianteNombre: '',
+                                nuevaVariantePrecio: '',
+                                nuevaVarianteImagenUrl: '',
                               }));
                             }}
                             className={inputClase}
@@ -13587,12 +13814,26 @@ function ModuloContabilidadCompras({
                             ))}
                           </select>
                         </Campo>
-                        {variantesDelProductoExistente.length > 0 && (
+                        {productoExistenteSeleccionado && (
                           <Campo label="Variante">
                             <select
                               value={formEgreso.varianteExistenteId}
                               onChange={(e) => {
                                 const nuevaVarianteId = e.target.value;
+                                // + Crear Nueva Variante para este Producto:
+                                // limpia el costo/variante previos, el
+                                // sub-formulario de abajo arranca en blanco.
+                                if (nuevaVarianteId === '__nueva__') {
+                                  setFormEgreso((f) => ({
+                                    ...f,
+                                    varianteExistenteId: '__nueva__',
+                                    costoUnitarioCompra: '',
+                                    nuevaVarianteNombre: '',
+                                    nuevaVariantePrecio: '',
+                                    nuevaVarianteImagenUrl: '',
+                                  }));
+                                  return;
+                                }
                                 const variante = variantesDelProductoExistente.find((v) => String(v.id) === String(nuevaVarianteId));
                                 setFormEgreso((f) => ({
                                   ...f,
@@ -13602,10 +13843,14 @@ function ModuloContabilidadCompras({
                               }}
                               className={inputClase}
                             >
-                              <option value="">— Selecciona —</option>
+                              <option value="">
+                                {variantesDelProductoExistente.length > 0 ? '— Selecciona —' : '— Sin variante (sumar directo al producto) —'}
+                              </option>
+                              <option value="__nueva__">+ Crear Nueva Variante para este Producto</option>
                               {variantesDelProductoExistente.map((v) => (
                                 <option key={v.id} value={v.id}>
                                   {v.nombre} (stock: {v.stock ?? 0})
+                                  {v.recibido === false ? ' (🟡 pendiente)' : ''}
                                 </option>
                               ))}
                             </select>
@@ -13633,21 +13878,64 @@ function ModuloContabilidadCompras({
                             className={inputClase}
                           />
                         </Campo>
-                        <div className="sm:col-span-2 lg:col-span-4">
-                          <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
-                            <input
-                              type="checkbox"
-                              checked={formEgreso.actualizarCostoCatalogo}
-                              onChange={(e) => setFormEgreso((f) => ({ ...f, actualizarCostoCatalogo: e.target.checked }))}
-                              className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 accent-lime-400"
-                            />
-                            Actualizar costo unitario en el catálogo de productos
-                          </label>
-                          <p className="mt-1 text-[11px] text-slate-500">
-                            Monto de esta compra: <span className="font-bold text-slate-300">{formatoMoneda(montoCalculadoProducto)}</span>{' '}
-                            (Cantidad × Costo Unitario)
-                          </p>
-                        </div>
+                        {modoNuevaVarianteExistente ? (
+                          <div className="sm:col-span-2 lg:col-span-4 space-y-3 rounded-lg border border-lime-400/20 bg-lime-400/5 p-3">
+                            <p className="text-xs font-bold text-lime-400">+ Crear Nueva Variante para este Producto</p>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                              <div className="sm:col-span-2">
+                                <Campo label="Nombre de la variante">
+                                  <input
+                                    type="text"
+                                    placeholder="Ej. Wilson Pro"
+                                    value={formEgreso.nuevaVarianteNombre}
+                                    onChange={(e) => setFormEgreso((f) => ({ ...f, nuevaVarianteNombre: e.target.value }))}
+                                    className={inputClase}
+                                  />
+                                </Campo>
+                              </div>
+                              <Campo label="Precio de Venta">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="0.00"
+                                  value={formEgreso.nuevaVariantePrecio}
+                                  onChange={(e) => setFormEgreso((f) => ({ ...f, nuevaVariantePrecio: e.target.value }))}
+                                  className={inputClase}
+                                />
+                              </Campo>
+                            </div>
+                            <Campo label="Imagen de la variante (opcional)">
+                              <SelectorArchivoImagen
+                                carpeta="productos"
+                                onSubida={(url) => setFormEgreso((f) => ({ ...f, nuevaVarianteImagenUrl: url }))}
+                              />
+                              {formEgreso.nuevaVarianteImagenUrl && (
+                                <p className="mt-1 truncate text-[11px] text-slate-500">{formEgreso.nuevaVarianteImagenUrl}</p>
+                              )}
+                            </Campo>
+                            <p className="text-[11px] text-slate-500">
+                              Monto de esta compra: <span className="font-bold text-slate-300">{formatoMoneda(montoCalculadoProducto)}</span>{' '}
+                              (Cantidad × Costo Unitario)
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="sm:col-span-2 lg:col-span-4">
+                            <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                              <input
+                                type="checkbox"
+                                checked={formEgreso.actualizarCostoCatalogo}
+                                onChange={(e) => setFormEgreso((f) => ({ ...f, actualizarCostoCatalogo: e.target.checked }))}
+                                className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 accent-lime-400"
+                              />
+                              Actualizar costo unitario en el catálogo de productos
+                            </label>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              Monto de esta compra: <span className="font-bold text-slate-300">{formatoMoneda(montoCalculadoProducto)}</span>{' '}
+                              (Cantidad × Costo Unitario)
+                            </p>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
@@ -26103,11 +26391,16 @@ function PortalPublicoJugadores({ clubSlug }) {
   // su fetch, ni su canal de Realtime aparte) — el mapa de variantes por
   // producto se deriva directo de `productos`, exactamente igual que en
   // `AppInterno` (ver `variantesDeProductoJSONB`), así el Portal y el
-  // mostrador nunca pueden desincronizarse.
+  // mostrador nunca pueden desincronizarse. Filtro Doble a nivel variante
+  // (`variantesVisiblesParaVenta`): el Portal es 100% de cara al jugador —
+  // a diferencia de `variantesPorProducto` en `AppInterno` (que también
+  // alimenta Catálogo/Inventario y por eso se queda SIN filtrar), aquí SÍ
+  // se excluye de una vez cualquier variante 🟡 Pendiente de Recepción,
+  // porque este mapa nunca se usa para editar/mostrar al staff.
   const variantesPorProductoPortal = useMemo(() => {
     const mapa = {};
     productos.forEach((p) => {
-      mapa[p.id] = variantesDeProductoJSONB(p);
+      mapa[p.id] = variantesVisiblesParaVenta(variantesDeProductoJSONB(p));
     });
     return mapa;
   }, [productos]);
