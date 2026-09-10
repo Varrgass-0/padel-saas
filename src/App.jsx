@@ -9731,24 +9731,40 @@ const TEXTO_COBERTURA_CRITICA = '⚠️ Cobertura Crítica';
 const TEXTO_REORDENAR_YA = '❌ Reordenar Ya';
 
 // Logística de cadena de suministro: Días de Cobertura = Stock Actual ÷
-// ritmo de venta diario (unidades vendidas en los últimos 7 días ÷ 7).
+// Venta Promedio Diaria (unidades vendidas en los ÚLTIMOS 30 DÍAS ÷ 30) —
+// antes se calculaba sobre una ventana de 7 días, que con pocas unidades
+// vendidas (ej. 1 en la semana) daba un ritmo diario casi cero y por lo
+// tanto un número de días INFLADO y engañoso (ej. "413d"). 30 días suaviza
+// ese ruido de semanas puntuales.
+// RITMO_MINIMO_DIARIO_COBERTURA (protección anti-inflado): si el ritmo
+// diario da por debajo de este piso, el producto se trata igual que "sin
+// ventas" en vez de mostrar un número de días gigante y poco útil — un
+// ritmo así de bajo (ej. 1 unidad cada 20+ días) no es una señal confiable
+// para proyectar cobertura.
 // * estatus 'sin_control' → el producto no maneja stock rígido.
 // * estatus 'sin_dato'    → maneja stock pero no tiene stock cargado.
-// * estatus 'sin_ventas'  → no se vendió nada en los últimos 7 días, así que
-//   no hay ritmo con qué dividir (cobertura indefinida, sin alertas).
+// * estatus 'sin_ventas'  → 0 unidades vendidas en los últimos 30 días, O
+//   un ritmo diario por debajo de `RITMO_MINIMO_DIARIO_COBERTURA` — no hay
+//   ritmo confiable con qué dividir (cobertura indefinida, sin alertas).
 // * estatus 'reordenar'   → Días de Cobertura <= Tiempo de Entrega del
 //   proveedor: badge ❌ Reordenar Ya.
 // * estatus 'critica'     → Días de Cobertura < 5 (pero por encima del
 //   tiempo de entrega): badge ⚠️ Cobertura Crítica.
-// * estatus 'normal'      → cobertura sana.
-function calcularCoberturaStock(producto, unidadesUltimos7Dias) {
+// * estatus 'normal'      → cobertura sana. En cuanto vuelve a haber ritmo
+//   de venta continuo, este cálculo se recalcula solo (Stock Actual ÷
+//   Venta Diaria Promedio 30d) — no hay nada que "reactivar" a mano.
+const RITMO_MINIMO_DIARIO_COBERTURA = 0.05;
+function calcularCoberturaStock(producto, unidadesUltimos30Dias) {
   if (producto?.maneja_stock === false) return { dias: null, ritmoDiario: 0, tiempoEntrega: null, estatus: 'sin_control' };
   const stock = Number(producto?.stock);
   if (!Number.isFinite(stock)) return { dias: null, ritmoDiario: 0, tiempoEntrega: null, estatus: 'sin_dato' };
   const tiempoEntregaCrudo = Number(producto?.tiempo_entrega_dias);
   const tiempoEntrega = Number.isFinite(tiempoEntregaCrudo) ? tiempoEntregaCrudo : TIEMPO_ENTREGA_DEFAULT_DIAS;
-  const ritmoDiario = (Number(unidadesUltimos7Dias) || 0) / 7;
-  if (ritmoDiario <= 0) return { dias: null, ritmoDiario: 0, tiempoEntrega, estatus: 'sin_ventas' };
+  const unidades30d = Number(unidadesUltimos30Dias) || 0;
+  const ritmoDiario = unidades30d / 30;
+  if (unidades30d <= 0 || ritmoDiario < RITMO_MINIMO_DIARIO_COBERTURA) {
+    return { dias: null, ritmoDiario: 0, tiempoEntrega, estatus: 'sin_ventas' };
+  }
   const dias = stock / ritmoDiario;
   let estatus = 'normal';
   if (dias <= tiempoEntrega) estatus = 'reordenar';
@@ -9758,10 +9774,12 @@ function calcularCoberturaStock(producto, unidadesUltimos7Dias) {
 
 // Texto plano de "Días de Cobertura" — reutilizado tanto por la tabla del
 // Catálogo (ERP) como por el CSV exportable, para que ambos digan exactamente
-// lo mismo.
+// lo mismo. 'sin_ventas' cubre TANTO 0 ventas en 30 días COMO un ritmo por
+// debajo del piso de `RITMO_MINIMO_DIARIO_COBERTURA` — en ambos casos se
+// avisa explícitamente en vez de mostrar un número de días inflado.
 function etiquetaDiasCobertura(cobertura) {
   if (cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato') return '—';
-  if (cobertura.estatus === 'sin_ventas') return 'Sin ventas recientes';
+  if (cobertura.estatus === 'sin_ventas') return 'Sin ventas (7d/30d)';
   return `${cobertura.dias.toFixed(1)} días${cobertura.dias < 5 ? ` (${TEXTO_COBERTURA_CRITICA})` : ''}`;
 }
 
@@ -10554,7 +10572,7 @@ function EstatusStockBadge({ estatus }) {
 function FilaVarianteInventarioCompleta({
   variante,
   productoPadre,
-  unidadesUltimos7Dias,
+  unidadesUltimos30Dias,
   onGuardarCamposVariante,
   soloLectura = false,
 }) {
@@ -10598,7 +10616,7 @@ function FilaVarianteInventarioCompleta({
   };
   const margen = margenPorcentaje(varianteNormalizada);
   const estatus = estatusStockProducto(varianteNormalizada);
-  const cobertura = calcularCoberturaStock(varianteNormalizada, unidadesUltimos7Dias);
+  const cobertura = calcularCoberturaStock(varianteNormalizada, unidadesUltimos30Dias);
   const sinControlStock = variante.stock == null;
 
   return (
@@ -10689,7 +10707,7 @@ function FilaVarianteInventarioCompleta({
         {cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato' ? (
           <span className="text-[11px] text-slate-600">—</span>
         ) : cobertura.estatus === 'sin_ventas' ? (
-          <span className="whitespace-nowrap text-[10px] text-slate-500">Sin ventas (7d)</span>
+          <span className="whitespace-nowrap text-[10px] text-slate-500">Sin ventas (7d/30d)</span>
         ) : (
           <span
             className={`text-[11px] font-bold ${
@@ -10727,7 +10745,7 @@ function FilaVarianteInventarioCompleta({
 
 function FilaProductoInventario({
   producto,
-  unidadesUltimos7Dias,
+  unidadesUltimos30Dias,
   onGuardarCampos,
   variantes = [],
   onGuardarCamposVariante,
@@ -10764,7 +10782,7 @@ function FilaProductoInventario({
   const margen = margenPorcentaje(producto);
   const estatus = estatusStockProducto(producto);
   const catMeta = CATEGORIA_META[producto.categoria];
-  const cobertura = calcularCoberturaStock(producto, unidadesUltimos7Dias);
+  const cobertura = calcularCoberturaStock(producto, unidadesUltimos30Dias);
 
   async function guardarSiCambio(campo, valorStr, valorOriginal) {
     const num = valorStr === '' ? null : Number(valorStr);
@@ -10869,7 +10887,7 @@ function FilaProductoInventario({
         ) : cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato' ? (
           <span className="text-slate-600">—</span>
         ) : cobertura.estatus === 'sin_ventas' ? (
-          <span className="whitespace-nowrap text-[10px] text-slate-500">Sin ventas (7d)</span>
+          <span className="whitespace-nowrap text-[10px] text-slate-500">Sin ventas (7d/30d)</span>
         ) : (
           <div className="flex flex-col items-end gap-0.5">
             <span
@@ -10914,7 +10932,7 @@ function FilaProductoInventario({
           key={v.id}
           variante={v}
           productoPadre={producto}
-          unidadesUltimos7Dias={ventasPorVarianteSemana?.[v.id] || 0}
+          unidadesUltimos30Dias={ventasPorVarianteSemana?.[v.id] || 0}
           onGuardarCamposVariante={onGuardarCamposVariante}
           soloLectura={soloLectura}
         />
@@ -10957,7 +10975,7 @@ function TablaCatalogoInventario({
               producto={p}
               variantes={variantesPorProducto?.[p.id] || []}
               onGuardarCamposVariante={onGuardarCamposVariante}
-              unidadesUltimos7Dias={ventasPorProductoSemana?.[p.id] || 0}
+              unidadesUltimos30Dias={ventasPorProductoSemana?.[p.id] || 0}
               ventasPorVarianteSemana={ventasPorVarianteSemana}
               onGuardarCampos={onGuardarCampos}
               soloLectura={soloLectura}
@@ -11173,9 +11191,14 @@ function ModuloERPInventario({
   const [ventasDia, setVentasDia] = useState({ unidades: 0, monto: 0 });
   const [ventasMes, setVentasMes] = useState({ unidades: 0, monto: 0 });
 
-  // Ritmo de venta de los últimos 7 días, por producto — alimenta la columna
-  // "Días de Cobertura de Stock" y la Alerta de Reabastecimiento del
-  // catálogo. Se recalcula junto con el resto de KPIs de ventas.
+  // Ritmo de venta de los ÚLTIMOS 30 DÍAS, por producto — alimenta la
+  // columna "Días de Cobertura de Stock" y la Alerta de Reabastecimiento
+  // del catálogo (ver `calcularCoberturaStock`: Stock Actual ÷ Venta
+  // Promedio Diaria 30d). El nombre de estas variables/estado se quedó
+  // como "Semana" por compatibilidad con el resto del archivo, pero la
+  // ventana real que se consulta abajo es de 30 días, no 7 — una semana
+  // con pocas ventas puntuales inflaba el número de días de cobertura.
+  // Se recalcula junto con el resto de KPIs de ventas.
   const [ventasPorProductoSemana, setVentasPorProductoSemana] = useState({});
   const [ventasPorVarianteSemana, setVentasPorVarianteSemana] = useState({});
 
@@ -11227,7 +11250,10 @@ function ModuloERPInventario({
 
   const cargarVentasPorProductoSemana = useCallback(async () => {
     const fin = new Date();
-    const inicio = new Date(fin.getTime() - 7 * 86400000);
+    // Corrección de "Días de Cobertura": ventana de 30 días (antes 7) para
+    // que `calcularCoberturaStock` divida entre una Venta Promedio Diaria
+    // más estable — ver el comentario de arriba.
+    const inicio = new Date(fin.getTime() - 30 * 86400000);
     const { porProducto, porVariante } = await unidadesVendidasPorProductoRango(inicio, fin);
     setVentasPorProductoSemana(porProducto);
     setVentasPorVarianteSemana(porVariante);
@@ -12379,12 +12405,25 @@ function BannerTablaFaltante({ tabla }) {
 function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
   const total = filas.reduce((acc, f) => acc + f.monto, 0);
   return (
-    <ModalShell titulo={titulo} subtitulo={subtitulo} onClose={onClose} ancho="max-w-3xl" icon={Receipt}>
+    // Despliegue de Texto Completo: modal más ancho (antes max-w-3xl) para
+    // que la columna Concepto tenga espacio real — junto con `conceptoVenta`
+    // (arriba, ya lista TODOS los artículos en vez de solo el primero + "...")
+    // y el wrap explícito de la celda de abajo, el desglose de una venta con
+    // varios productos ya no se recorta.
+    <ModalShell titulo={titulo} subtitulo={subtitulo} onClose={onClose} ancho="max-w-5xl" icon={Receipt}>
       {filas.length === 0 ? (
         <p className="py-8 text-center text-xs text-slate-500">Sin movimientos en este periodo.</p>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-800">
-          <table className="w-full min-w-[620px] text-left text-xs">
+          <table className="w-full min-w-[620px] table-fixed text-left text-xs">
+            <colgroup>
+              <col className="w-20" />
+              <col className="w-16" />
+              <col />
+              <col className="w-28" />
+              <col className="w-28" />
+              <col className="w-28" />
+            </colgroup>
             <thead>
               <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 <th className="px-3 py-2.5">ID</th>
@@ -12400,7 +12439,7 @@ function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
                 <tr key={`${f.id ?? idx}-${idx}`} className="border-b border-slate-800/70 last:border-0">
                   <td className="px-3 py-2.5 font-mono text-slate-500">{f.idCorto}</td>
                   <td className="px-3 py-2.5 text-slate-400">{f.hora}</td>
-                  <td className="px-3 py-2.5 font-semibold text-slate-200">{f.concepto}</td>
+                  <td className="whitespace-normal break-words px-3 py-2.5 font-semibold text-slate-200">{f.concepto}</td>
                   <td className="px-3 py-2.5 text-slate-400">{f.canal}</td>
                   <td className="px-3 py-2.5 text-slate-400">{f.metodoPago || '—'}</td>
                   <td className="px-3 py-2.5 text-right font-bold text-slate-100">{formatoMoneda(f.monto)}</td>
@@ -12728,7 +12767,13 @@ function ModuloContabilidadCompras({
       const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
       if (items.length === 0) return 'Venta';
       if (items.length === 1) return items[0].nombre || 'Artículo';
-      return `${items.length} artículos (${items[0]?.nombre || ''}${items.length > 1 ? '...' : ''})`;
+      // Desglose completo: antes solo se mostraba el primer artículo + "..."
+      // (ej. "3 artículos (Overgrips — Bombarder Tacky...)"), escondiendo el
+      // resto de lo comprado. Ahora se listan TODOS los artículos, con su
+      // cantidad cuando es más de 1 — el Modal de Desglose (`ModalDesglosePnl`)
+      // ya permite que esta celda haga wrap en vez de recortar con "...".
+      const detalle = items.map((it) => `${it.nombre || 'Artículo'}${Number(it.cantidad) > 1 ? ` ×${it.cantidad}` : ''}`).join(', ');
+      return `${items.length} artículos (${detalle})`;
     };
     const filasVenta = (lista, canal) =>
       lista.map((v) => ({
@@ -14690,17 +14735,21 @@ function ModuloAnalyticsBI({
     cargarKardexRango();
   }, [cargarKardexRango]);
 
-  // Ritmo de venta de los últimos 7 días por producto — para la Auditoría
+  // Ritmo de venta de los ÚLTIMOS 30 DÍAS por producto — para la Auditoría
   // ERP & Inventario Logístico del reporte exportable (Días de Cobertura de
-  // Stock y Estatus de Reabastecimiento). Es SIEMPRE relativo a "hoy", sin
-  // importar el filtro Día/Mes/Año activo: es una foto del inventario en
-  // vivo, igual que en el panel de ERP & Inventario.
+  // Stock y Estatus de Reabastecimiento, ver `calcularCoberturaStock`). Es
+  // SIEMPRE relativo a "hoy", sin importar el filtro Día/Mes/Año activo: es
+  // una foto del inventario en vivo, igual que en el panel de ERP &
+  // Inventario.
   const [ventasPorProductoSemana, setVentasPorProductoSemana] = useState({});
   const [ventasPorVarianteSemana, setVentasPorVarianteSemana] = useState({});
 
   const cargarVentasPorProductoSemana = useCallback(async () => {
     const fin = new Date();
-    const inicio = new Date(fin.getTime() - 7 * 86400000);
+    // Corrección de "Días de Cobertura": ventana de 30 días (antes 7) para
+    // que `calcularCoberturaStock` divida entre una Venta Promedio Diaria
+    // más estable — ver el comentario de arriba.
+    const inicio = new Date(fin.getTime() - 30 * 86400000);
     const { porProducto, porVariante } = await unidadesVendidasPorProductoRango(inicio, fin);
     setVentasPorProductoSemana(porProducto);
     setVentasPorVarianteSemana(porVariante);
