@@ -12948,12 +12948,19 @@ function ModuloContabilidadCompras({
     () => (productoExistenteSeleccionado ? variantesDeProductoJSONB(productoExistenteSeleccionado) : []),
     [productoExistenteSeleccionado]
   );
+  // Eliminación de Barra de Búsqueda Redundante: el `<select>` de Producto
+  // ahora es el único selector (sin input de búsqueda aparte) — a
+  // diferencia de antes, ya NO se recorta a los primeros 30 resultados
+  // (ese límite existía para no saturar la lista mientras se buscaba; sin
+  // buscador, recortar dejaría productos del catálogo inalcanzables desde
+  // este dropdown). Se ordena alfabéticamente para que siga siendo fácil
+  // de escanear sin un campo de texto que filtre.
   const productosBusquedaCompra = useMemo(() => {
-    const q = formEgreso.busquedaProducto.trim().toLowerCase();
-    const lista = (productos || []).filter((p) => p.activo !== false);
-    const filtrada = q ? lista.filter((p) => (p.nombre || '').toLowerCase().includes(q)) : lista;
-    return filtrada.slice(0, 30);
-  }, [productos, formEgreso.busquedaProducto]);
+    return (productos || [])
+      .filter((p) => p.activo !== false)
+      .slice()
+      .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+  }, [productos]);
 
   const modoNuevoProducto = esModoCompraProducto && formEgreso.subModoProducto === 'nuevo';
   const modoExistenteProducto = esModoCompraProducto && formEgreso.subModoProducto === 'existente';
@@ -13691,16 +13698,28 @@ function ModuloContabilidadCompras({
                   </select>
                 </Campo>
                 <Campo label={modoExistenteProducto ? 'Monto (automático)' : 'Monto'}>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    placeholder="0.00"
-                    readOnly={modoExistenteProducto}
-                    value={modoExistenteProducto ? montoCalculadoProducto.toFixed(2) : formEgreso.monto}
-                    onChange={(e) => setFormEgreso((f) => ({ ...f, monto: e.target.value }))}
-                    className={`${inputClase} ${modoExistenteProducto ? 'cursor-not-allowed opacity-80' : ''}`}
-                  />
+                  {modoExistenteProducto ? (
+                    // Formato de Moneda Estándar: en automático se muestra
+                    // como texto de solo lectura con `formatoMoneda` (ej.
+                    // "$2,400.00") — un <input type="number"> no puede
+                    // mostrar el símbolo "$" ni las comas de miles.
+                    <input
+                      type="text"
+                      readOnly
+                      value={formatoMoneda(montoCalculadoProducto)}
+                      className={`${inputClase} cursor-not-allowed opacity-80`}
+                    />
+                  ) : (
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={formEgreso.monto}
+                      onChange={(e) => setFormEgreso((f) => ({ ...f, monto: e.target.value }))}
+                      className={inputClase}
+                    />
+                  )}
                 </Campo>
                 <Campo label="Proveedor (opcional)">
                   <select
@@ -13768,20 +13787,7 @@ function ModuloContabilidadCompras({
                     {formEgreso.subModoProducto === 'existente' ? (
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                         <div className="sm:col-span-2">
-                          <Campo label="Buscar producto">
-                            <div className="relative">
-                              <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                              <input
-                                type="text"
-                                placeholder="Nombre del producto..."
-                                value={formEgreso.busquedaProducto}
-                                onChange={(e) => setFormEgreso((f) => ({ ...f, busquedaProducto: e.target.value }))}
-                                className={`${inputClase} pl-7`}
-                              />
-                            </div>
-                          </Campo>
-                        </div>
-                        <Campo label="Producto">
+                          <Campo label="Producto">
                           <select
                             value={formEgreso.productoExistenteId}
                             onChange={(e) => {
@@ -13813,7 +13819,8 @@ function ModuloContabilidadCompras({
                               </option>
                             ))}
                           </select>
-                        </Campo>
+                          </Campo>
+                        </div>
                         {productoExistenteSeleccionado && (
                           <Campo label="Variante">
                             <select
@@ -13856,7 +13863,7 @@ function ModuloContabilidadCompras({
                             </select>
                           </Campo>
                         )}
-                        <Campo label="Cantidad de unidades">
+                        <Campo label="Stock">
                           <input
                             type="number"
                             min="1"
@@ -13867,7 +13874,7 @@ function ModuloContabilidadCompras({
                             className={inputClase}
                           />
                         </Campo>
-                        <Campo label="Costo Unitario de esta compra">
+                        <Campo label="Costo">
                           <input
                             type="number"
                             min="0"
@@ -13914,10 +13921,6 @@ function ModuloContabilidadCompras({
                                 <p className="mt-1 truncate text-[11px] text-slate-500">{formEgreso.nuevaVarianteImagenUrl}</p>
                               )}
                             </Campo>
-                            <p className="text-[11px] text-slate-500">
-                              Monto de esta compra: <span className="font-bold text-slate-300">{formatoMoneda(montoCalculadoProducto)}</span>{' '}
-                              (Cantidad × Costo Unitario)
-                            </p>
                           </div>
                         ) : (
                           <div className="sm:col-span-2 lg:col-span-4">
@@ -13930,10 +13933,6 @@ function ModuloContabilidadCompras({
                               />
                               Actualizar costo unitario en el catálogo de productos
                             </label>
-                            <p className="mt-1 text-[11px] text-slate-500">
-                              Monto de esta compra: <span className="font-bold text-slate-300">{formatoMoneda(montoCalculadoProducto)}</span>{' '}
-                              (Cantidad × Costo Unitario)
-                            </p>
                           </div>
                         )}
                       </div>
