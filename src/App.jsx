@@ -10462,7 +10462,6 @@ function FilaVarianteInventarioCompleta({
   productoPadre,
   unidadesUltimos7Dias,
   onGuardarCamposVariante,
-  onRegistrarEntrada,
   soloLectura = false,
 }) {
   const [precio, setPrecio] = useState(variante.precio != null ? String(variante.precio) : '');
@@ -10626,24 +10625,6 @@ function FilaVarianteInventarioCompleta({
       <td className="whitespace-nowrap px-3 py-2 text-right">
         <div className="flex items-center justify-end gap-1.5">
           {guardando && <Loader2 size={12} className="animate-spin text-slate-500" />}
-          {!soloLectura && !sinControlStock && (
-            <button
-              onClick={() =>
-                onRegistrarEntrada({
-                  id: variante.id,
-                  nombre: variante.nombre,
-                  stock: variante.stock,
-                  _esVariante: true,
-                  _productoPadreId: productoPadre.id,
-                  _productoPadreNombre: productoPadre.nombre,
-                })
-              }
-              title="Registrar entrada de inventario para esta variante"
-              className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold text-slate-200 transition hover:border-lime-400/40 hover:text-lime-400"
-            >
-              <PackagePlus size={11} /> Entrada
-            </button>
-          )}
         </div>
       </td>
     </tr>
@@ -10654,11 +10635,9 @@ function FilaProductoInventario({
   producto,
   unidadesUltimos7Dias,
   onGuardarCampos,
-  onRegistrarEntrada,
   variantes = [],
   onGuardarCamposVariante,
   ventasPorVarianteSemana,
-  onRegistrarEntradaVariante,
   soloLectura = false,
 }) {
   const [costo, setCosto] = useState(producto.costo_unitario != null ? String(producto.costo_unitario) : '');
@@ -10666,6 +10645,16 @@ function FilaProductoInventario({
   const [guardando, setGuardando] = useState(false);
   const [variantesAbiertas, setVariantesAbiertas] = useState(false);
   const tieneVariantes = variantes.length > 0;
+  // Limpieza de Fila Padre: con variantes, Precio/Costo/Margen/Stock
+  // Mínimo/Cobertura/Reabastecimiento/Estatus de la fila padre YA NO
+  // significan nada por sí solos (cada variante tiene los suyos, distintos
+  // entre sí) — mostrarlos aquí es información falsa o engañosa. La fila
+  // padre con variantes muestra ÚNICAMENTE Nombre, Categoría, Stock Actual
+  // Total (suma en vivo de sus variantes, ver `stockTotalVariantes` abajo)
+  // y el indicador de variantes desglosable — el resto vive exclusivamente
+  // en las filas hijas (`FilaVarianteInventarioCompleta`).
+  const mostrarDetallePropio = !tieneVariantes;
+  const stockTotalVariantes = tieneVariantes ? variantes.reduce((acc, v) => acc + (Number(v.stock) || 0), 0) : 0;
 
   // Si el valor cambia desde afuera (otra pestaña, Realtime), refleja el dato
   // fresco — el campo no tiene un "modo edición" separado, así que esto es
@@ -10723,10 +10712,10 @@ function FilaProductoInventario({
         {catMeta && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${catMeta.badge}`}>{catMeta.label}</span>}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-200">
-        {soloLectura ? <span className="text-slate-600">—</span> : formatoMoneda(producto.precio)}
+        {soloLectura || !mostrarDetallePropio ? <span className="text-slate-600">—</span> : formatoMoneda(producto.precio)}
       </td>
       <td className="px-3 py-2.5 text-right">
-        {soloLectura ? (
+        {soloLectura || !mostrarDetallePropio ? (
           <span className="text-slate-600">—</span>
         ) : (
           <input
@@ -10742,7 +10731,7 @@ function FilaProductoInventario({
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold">
-        {soloLectura ? (
+        {soloLectura || !mostrarDetallePropio ? (
           <span className="text-slate-600">—</span>
         ) : margen !== null ? (
           <span className={margen < 20 ? 'text-rose-400' : margen < 40 ? 'text-amber-400' : 'text-emerald-400'}>{margen.toFixed(1)}%</span>
@@ -10751,10 +10740,20 @@ function FilaProductoInventario({
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5 text-right text-slate-200">
-        {producto.maneja_stock === false ? <span className="text-slate-600">—</span> : Number(producto.stock) || 0}
+        {tieneVariantes ? (
+          // Stock Actual Total: suma en tiempo real de todas las variantes
+          // (no el `producto.stock` guardado, aunque en la práctica ya
+          // debería coincidir — esto lo garantiza sin depender de que ese
+          // campo esté sincronizado).
+          <span className="font-bold text-slate-100">{stockTotalVariantes}</span>
+        ) : producto.maneja_stock === false ? (
+          <span className="text-slate-600">—</span>
+        ) : (
+          Number(producto.stock) || 0
+        )}
       </td>
       <td className="px-3 py-2.5 text-right">
-        {producto.maneja_stock === false ? (
+        {!mostrarDetallePropio || producto.maneja_stock === false ? (
           <span className="text-slate-600">—</span>
         ) : soloLectura ? (
           <span className="text-slate-300">{stockMinimo || '—'}</span>
@@ -10771,7 +10770,9 @@ function FilaProductoInventario({
         )}
       </td>
       <td className="px-3 py-2.5 text-right">
-        {cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato' ? (
+        {!mostrarDetallePropio ? (
+          <span className="text-slate-600">—</span>
+        ) : cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato' ? (
           <span className="text-slate-600">—</span>
         ) : cobertura.estatus === 'sin_ventas' ? (
           <span className="whitespace-nowrap text-[10px] text-slate-500">Sin ventas (7d)</span>
@@ -10789,7 +10790,9 @@ function FilaProductoInventario({
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5">
-        {cobertura.estatus === 'reordenar' ? (
+        {!mostrarDetallePropio ? (
+          <span className="text-slate-600">—</span>
+        ) : cobertura.estatus === 'reordenar' ? (
           <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300 ring-1 ring-rose-500/40">
             {TEXTO_REORDENAR_YA}
           </span>
@@ -10802,20 +10805,11 @@ function FilaProductoInventario({
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5">
-        <EstatusStockBadge estatus={estatus} />
+        {mostrarDetallePropio ? <EstatusStockBadge estatus={estatus} /> : <span className="text-slate-600">—</span>}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5 text-right">
         <div className="flex items-center justify-end gap-1.5">
           {guardando && <Loader2 size={13} className="animate-spin text-slate-500" />}
-          {!soloLectura && producto.maneja_stock !== false && (
-            <button
-              onClick={() => onRegistrarEntrada(producto)}
-              title="Registrar entrada de inventario"
-              className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] font-bold text-slate-200 transition hover:border-lime-400/40 hover:text-lime-400"
-            >
-              <PackagePlus size={12} /> Entrada
-            </button>
-          )}
         </div>
       </td>
     </tr>
@@ -10828,7 +10822,6 @@ function FilaProductoInventario({
           productoPadre={producto}
           unidadesUltimos7Dias={ventasPorVarianteSemana?.[v.id] || 0}
           onGuardarCamposVariante={onGuardarCamposVariante}
-          onRegistrarEntrada={onRegistrarEntradaVariante}
           soloLectura={soloLectura}
         />
       ))}
@@ -10841,8 +10834,6 @@ function TablaCatalogoInventario({
   ventasPorProductoSemana,
   ventasPorVarianteSemana,
   onGuardarCampos,
-  onRegistrarEntrada,
-  onRegistrarEntradaVariante,
   variantesPorProducto,
   onGuardarCamposVariante,
   soloLectura = false,
@@ -10875,8 +10866,6 @@ function TablaCatalogoInventario({
               unidadesUltimos7Dias={ventasPorProductoSemana?.[p.id] || 0}
               ventasPorVarianteSemana={ventasPorVarianteSemana}
               onGuardarCampos={onGuardarCampos}
-              onRegistrarEntrada={onRegistrarEntrada}
-              onRegistrarEntradaVariante={onRegistrarEntradaVariante}
               soloLectura={soloLectura}
             />
           ))}
@@ -10963,81 +10952,12 @@ function TablaKardex({ kardex, productos, loading, error, onReintentar }) {
   );
 }
 
-function ModalRegistrarEntrada({ productos, productoInicial, onClose, onRegistrar }) {
-  const [productoId, setProductoId] = useState(productoInicial?.id || productos[0]?.id || '');
-  const [cantidad, setCantidad] = useState('');
-  const [motivo, setMotivo] = useState('');
-  const [guardando, setGuardando] = useState(false);
-  const [error, setError] = useState('');
-
-  const producto = productos.find((p) => p.id === productoId) || null;
-
-  async function guardar() {
-    if (!productoId || !producto) {
-      setError('Selecciona un producto.');
-      return;
-    }
-    if (cantidad === '' || Number(cantidad) <= 0) {
-      setError('Indica una cantidad mayor a 0.');
-      return;
-    }
-    setGuardando(true);
-    setError('');
-    const ok = await onRegistrar(producto, Math.round(Number(cantidad)), motivo.trim());
-    setGuardando(false);
-    if (ok) onClose();
-  }
-
-  return (
-    <ModalShell titulo="Registrar Entrada" subtitulo="Reabastecimiento de inventario" onClose={onClose} icon={PackagePlus} ancho="max-w-md">
-      <div className="space-y-4">
-        <Campo label="Producto">
-          <select
-            value={productoId}
-            onChange={(e) => setProductoId(e.target.value)}
-            className={inputClase}
-            disabled={Boolean(productoInicial)}
-          >
-            {productos.length === 0 && <option value="">Sin productos con stock rígido</option>}
-            {productos.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p._esVariante ? `${p._productoPadreNombre} — ${p.nombre}` : p.nombre} (stock: {Number(p.stock) || 0})
-              </option>
-            ))}
-          </select>
-        </Campo>
-        <Campo label="Cantidad a sumar">
-          <input
-            type="number"
-            min="1"
-            value={cantidad}
-            onChange={(e) => setCantidad(e.target.value)}
-            className={inputClase}
-            placeholder="0"
-            autoFocus
-          />
-        </Campo>
-        <Campo label="Motivo (opcional)" hint="Ej. Compra a proveedor, devolución, recuento físico...">
-          <input value={motivo} onChange={(e) => setMotivo(e.target.value)} className={inputClase} placeholder="Motivo del reabastecimiento" />
-        </Campo>
-        {producto && cantidad !== '' && Number(cantidad) > 0 && (
-          <p className="rounded-lg bg-slate-950 px-3 py-2 text-xs text-slate-400">
-            Stock: <span className="font-bold text-slate-200">{Number(producto.stock) || 0}</span> →{' '}
-            <span className="font-bold text-emerald-400">{(Number(producto.stock) || 0) + Math.round(Number(cantidad))}</span>
-          </p>
-        )}
-        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
-        <div className="flex justify-end gap-2 pt-2">
-          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar} disabled={guardando || productos.length === 0}>
-            {guardando ? <Loader2 size={15} className="animate-spin" /> : <PackagePlus size={15} />}
-            Registrar Entrada
-          </BotonPrimario>
-        </div>
-      </div>
-    </ModalShell>
-  );
-}
+// `ModalRegistrarEntrada` (alta manual de stock desde Inventario) se quitó
+// junto con sus botones "Registrar Entrada" (global y por fila/variante) —
+// ver el comentario de cabecera de `ModuloERPInventario` para el porqué.
+// OJO: esto NO tocó la lógica de SALIDA/descuento de stock (ventas en
+// Smart POS, Comandas, etc.) — sigue exactamente igual, ver
+// `descontarStockVariante` y sus llamadas.
 
 // Selector de fecha compacto para las tarjetas KPI de ERP & Inventario:
 // envuelve el `<input type="date">` en un contenedor clickeable que abre el
@@ -11139,13 +11059,12 @@ function ModuloERPInventario({
   // Inventario se ve en modo consulta estricta, en unidades, sin costos ni
   // precios — este flag gatea tanto la visibilidad de $ (MetricCards de
   // valor/margen, columnas de costo) como los botones de alta/edición
-  // (Nuevo Producto, Registrar Entrada, edición inline de costo/mínimo).
+  // (Nuevo Producto, edición inline de costo/mínimo).
   const soloLectura = permisos?.soloLecturaInventario === true;
   const [vista, setVista] = useState('catalogo'); // 'catalogo' | 'kardex'
   const [busqueda, setBusqueda] = useState('');
   const [categoriaFiltro, setCategoriaFiltro] = useState('todos');
   const [modalAlertasReorden, setModalAlertasReorden] = useState(false);
-  const [modalEntrada, setModalEntrada] = useState(null); // producto preseleccionado, o {} para elegir libre
 
   const [kardex, setKardex] = useState([]);
   const [loadingKardex, setLoadingKardex] = useState(true);
@@ -11337,33 +11256,6 @@ function ModuloERPInventario({
       .filter((p) => (busqueda.trim() ? p.nombre?.toLowerCase().includes(busqueda.trim().toLowerCase()) : true));
   }, [productos, categoriaFiltro, busqueda]);
 
-  const productosConStockRigido = useMemo(() => productos.filter((p) => p.activo !== false && p.maneja_stock !== false), [productos]);
-
-  // Variantes como Productos Completos: cada variante con control de stock
-  // propio (stock != null) puede recibir su propia "Entrada de Inventario",
-  // igual que cualquier producto del catálogo — se ofrecen juntas en el
-  // mismo selector de "+ Registrar Entrada" (ver `ModalRegistrarEntrada`),
-  // agrupadas bajo su producto padre.
-  const variantesConStockRigido = useMemo(() => {
-    const filas = [];
-    productos
-      .filter((p) => p.activo !== false)
-      .forEach((p) => {
-        (variantesPorProducto?.[p.id] || []).forEach((v) => {
-          if (v.stock == null) return; // sin control de inventario propio: no aplica "Entrada"
-          filas.push({
-            id: v.id,
-            nombre: v.nombre,
-            stock: v.stock,
-            _esVariante: true,
-            _productoPadreId: p.id,
-            _productoPadreNombre: p.nombre,
-          });
-        });
-      });
-    return filas;
-  }, [productos, variantesPorProducto]);
-
   /* ---------------- Mutaciones ---------------- */
 
   // Editar Costo / Stock Mínimo directo desde la tabla.
@@ -11419,59 +11311,13 @@ function ModuloERPInventario({
     return true;
   }
 
-  // Entrada de Inventario: suma stock en `productos` (directo, para un
-  // producto sin variantes) o dentro de `productos.variantes` (cuando
-  // `item._esVariante` — Variantes como Productos Completos, el operador
-  // puede reabastecer una variante específica igual que a cualquier
-  // producto) y escribe en `kardex` con tipo_movimiento='entrada'. El stock
-  // ya queda sumado aunque el kardex falle (best effort, igual que el
-  // descuento por venta en Smart POS).
-  async function registrarEntrada(item, cantidad, motivo) {
-    const stockAnterior = Number(item.stock) || 0;
-    const stockNuevo = stockAnterior + cantidad;
-
-    if (item._esVariante) {
-      const resultado = await actualizarVarianteEnJSONB({
-        productoId: item._productoPadreId,
-        varianteId: item.id,
-        varianteNombre: item.nombre,
-        cambios: {},
-        nuevoStock: stockNuevo,
-        upsertProducto,
-      });
-      if (!resultado.ok) {
-        mostrarToast({ titulo: 'No se pudo registrar la entrada', detalle: resultado.error?.message || 'Error desconocido', tono: 'error' });
-        return false;
-      }
-    } else {
-      const { error: errStock } = await supabase.from('productos').update({ stock: stockNuevo }).eq('id', item.id);
-      if (errStock) {
-        mostrarToast({ titulo: 'No se pudo registrar la entrada', detalle: errStock.message, tono: 'error' });
-        return false;
-      }
-      upsertProducto({ id: item.id, stock: stockNuevo });
-    }
-
-    const nombreCompleto = item._esVariante ? `${item._productoPadreNombre} — ${item.nombre}` : item.nombre;
-    const resultadoKardex = await insertarMovimientoKardex({
-      producto_id: item._esVariante ? item._productoPadreId : item.id,
-      producto_nombre: nombreCompleto,
-      tipo_movimiento: 'entrada',
-      cantidad,
-      stock_anterior: stockAnterior,
-      stock_nuevo: stockNuevo,
-      motivo: item._esVariante ? `${motivo ? `${motivo} · ` : ''}${item.nombre}` : motivo,
-      operador: operador?.nombre,
-    });
-    if (!resultadoKardex.ok) {
-      console.warn('[ERP] Stock actualizado, pero no se pudo registrar en el Kardex.', resultadoKardex.error);
-    } else {
-      cargarKardex({ silencioso: true });
-    }
-
-    mostrarToast({ titulo: 'Entrada registrada', detalle: `${nombreCompleto}: ${stockAnterior} → ${stockNuevo}` });
-    return true;
-  }
+  // "Registrar Entrada" (alta manual de stock, global y por fila/variante)
+  // se quitó de la UI de Inventario a propósito — el alta de stock ahora
+  // pasa por Egresos & Compras (Formulario de Compra Híbrido:
+  // "Sumar a producto existente"/"+ Crear Nuevo Producto desde Compra"),
+  // que además deja el gasto contable ligado al movimiento. Esto NO tocó
+  // ninguna lógica de SALIDA/descuento de stock (ventas de Smart POS,
+  // Comandas, etc.) — esa sigue intacta, ver `descontarStockVariante`.
 
   return (
     <>
@@ -11589,11 +11435,6 @@ function ModuloERPInventario({
             </>
           )}
         </div>
-        {vista === 'catalogo' && !soloLectura && (
-          <BotonPrimario onClick={() => setModalEntrada({})} className="whitespace-nowrap">
-            <PackagePlus size={15} /> Registrar Entrada
-          </BotonPrimario>
-        )}
       </div>
 
       {errorProductos && <ErrorBanner mensaje={errorProductos} onReintentar={() => cargarProductos()} />}
@@ -11613,8 +11454,6 @@ function ModuloERPInventario({
             ventasPorProductoSemana={ventasPorProductoSemana}
             ventasPorVarianteSemana={ventasPorVarianteSemana}
             onGuardarCampos={guardarCampos}
-            onRegistrarEntrada={(producto) => setModalEntrada(producto)}
-            onRegistrarEntradaVariante={(variante) => setModalEntrada(variante)}
             variantesPorProducto={variantesPorProducto}
             onGuardarCamposVariante={guardarCamposVariante}
             soloLectura={soloLectura}
@@ -11622,15 +11461,6 @@ function ModuloERPInventario({
         )
       ) : (
         <TablaKardex kardex={kardex} productos={productos} loading={loadingKardex} error={errorKardex} onReintentar={() => cargarKardex()} />
-      )}
-
-      {modalEntrada && !soloLectura && (
-        <ModalRegistrarEntrada
-          productos={modalEntrada.id ? [modalEntrada] : [...productosConStockRigido, ...variantesConStockRigido]}
-          productoInicial={modalEntrada.id ? modalEntrada : null}
-          onClose={() => setModalEntrada(null)}
-          onRegistrar={registrarEntrada}
-        />
       )}
 
       {modalAlertasReorden && (
@@ -12948,6 +12778,19 @@ function ModuloContabilidadCompras({
   const [guardandoEgreso, setGuardandoEgreso] = useState(false);
   const [errorFormEgreso, setErrorFormEgreso] = useState('');
   const [confirmandoRecepcionId, setConfirmandoRecepcionId] = useState(null);
+  // Fix de Duplicación de Egresos: `guardandoEgreso` (state de React) NO
+  // alcanza por sí solo para bloquear un doble clic — se actualiza de forma
+  // asíncrona, así que dos clics casi simultáneos pueden leer AMBOS
+  // `guardandoEgreso === false` antes de que el primer render con
+  // `disabled` surta efecto, y cada uno dispara su propio
+  // `registrarEgreso()` completo (insert de producto + insert de
+  // compras_gastos cada uno) — la ventana es más ancha justo en
+  // "+ Crear Nuevo Producto desde Compra" porque esa rama hace varios
+  // `await` de más (alta de producto, costo, kardex) antes de llegar al
+  // insert del gasto. Este ref se actualiza EN EL ACTO (a diferencia del
+  // state) y corta cualquier segunda ejecución concurrente desde la primera
+  // línea de la función.
+  const registrandoEgresoRef = useRef(false);
 
   const categoriaGastoSeleccionada = CATEGORIAS_GASTO.find((c) => c.value === formEgreso.categoria);
   const esCategoriaInventario = Boolean(categoriaGastoSeleccionada?.esInventario);
@@ -13056,6 +12899,11 @@ function ModuloContabilidadCompras({
   ]);
 
   async function registrarEgreso() {
+    // Guard de re-entrada SÍNCRONO (ver comentario de `registrandoEgresoRef`
+    // arriba) — un doble clic en "Registrar" mientras la primera llamada
+    // sigue en vuelo se ignora aquí mismo, antes de tocar nada.
+    if (registrandoEgresoRef.current) return;
+
     setErrorFormEgreso('');
 
     // El Concepto solo es obligatorio a mano en "Gasto General/Servicio" y
@@ -13114,6 +12962,7 @@ function ModuloContabilidadCompras({
       return;
     }
 
+    registrandoEgresoRef.current = true;
     setGuardandoEgreso(true);
     try {
       // Datos de vínculo con Inventario (Filtro Doble) — SOLO se llenan en
@@ -13339,6 +13188,9 @@ function ModuloContabilidadCompras({
         setErrorFormEgreso(err.message || 'No se pudo registrar el egreso.');
       }
     }
+    // Libera el guard SIEMPRE (éxito o error) para que un reintento
+    // legítimo después de un error no se quede bloqueado.
+    registrandoEgresoRef.current = false;
     setGuardandoEgreso(false);
   }
 
