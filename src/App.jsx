@@ -21552,14 +21552,24 @@ function claseYaInicioHoy(clase, ahoraDate = new Date()) {
 // aparecer sola en cuanto HOY vuelve a coincidir con su día de la semana.
 function claseYaConcluyoHoy(clase, ahoraDate = new Date()) {
   const diaInfo = DIA_ACADEMIA_POR_VALOR[clase?.dia_semana];
-  if (!diaInfo || diaInfo.indice !== ahoraDate.getDay()) return false;
+  if (!diaInfo) return false;
   const minFin = parseHoraAMinutos(clase?.hora_fin);
   if (minFin === null) return false;
-  // Fecha/hora exacta de finalización (YYYY-MM-DD HH:mm) contra el momento
-  // actual, tal como lo pide la Purga Rigurosa por Fecha de Calendario: se
-  // construye un Date real con el año/mes/día de HOY (la clase recurrente ya
-  // fue confirmada arriba como la ocurrencia de ESTA semana) y la hora_fin
-  // de la clase, en vez de comparar solo minutos sueltos.
+  // REGLA ESTRICTA DE EXPIRACIÓN (absoluta, sin importar cupos): antes esta
+  // función solo evaluaba la ocurrencia de HOY (`diaInfo.indice !==
+  // ahoraDate.getDay()` cortaba en `false` de inmediato cualquier otro día),
+  // así que una clase de "Miércoles" se veía Activa TODO el resto de la
+  // semana (jueves, viernes...) en cuanto dejaba de ser miércoles — el
+  // sistema nunca llegaba a comparar su fecha/hora de fin real contra
+  // "ahora" fuera de su propio día. Aquí se calcula la fecha de la
+  // ocurrencia MÁS RECIENTE de `dia_semana` (hoy mismo si coincide, o hasta
+  // 6 días atrás) y se compara esa fecha+hora_fin contra el momento actual
+  // sin importar cupos disponibles — si ya quedó en el pasado, la clase se
+  // considera Concluida/Finalizada hasta que su día vuelva a coincidir con
+  // "hoy" la próxima semana (entonces esta misma cuenta vuelve a dar 0 días
+  // de diferencia y se re-evalúa como una ocurrencia nueva).
+  const diasDesdeUltimaOcurrencia = (ahoraDate.getDay() - diaInfo.indice + 7) % 7;
+  if (diasDesdeUltimaOcurrencia > 0) return true;
   const fechaFin = new Date(
     ahoraDate.getFullYear(),
     ahoraDate.getMonth(),
@@ -23922,11 +23932,15 @@ function ModalRangosHorarioClases({ rangos, onClose, onGuardar, guardando }) {
       const ini = parseHoraAMinutos(r.desde);
       const fin = parseHoraAMinutos(r.hasta);
       if (ini === null || fin === null || fin <= ini) {
-        return setError(`El bloque "${r.etiqueta || 'sin nombre'}" necesita una hora de inicio anterior a la de fin.`);
+        return setError(`El bloque "${r.desde || '—'}–${r.hasta || '—'}" necesita una hora de inicio anterior a la de fin.`);
       }
     }
+    // Etiqueta auto-generada a partir del propio rango de horas — ya no se
+    // captura texto libre en la fila (ver fix del "cuadro fantasma" arriba),
+    // así que cada bloque se sigue viendo con un nombre legible (ej.
+    // "07:00–10:00") en el resto de la app (Portal, resumen, etc.).
     const limpios = lista.map(({ _key, ...r }) => ({
-      etiqueta: (r.etiqueta || '').trim() || 'Bloque de horario',
+      etiqueta: `${r.desde}–${r.hasta}`,
       desde: r.desde,
       hasta: r.hasta,
     }));
@@ -23951,16 +23965,18 @@ function ModalRangosHorarioClases({ rangos, onClose, onGuardar, guardando }) {
           <div className="space-y-2.5">
             {lista.map((r) => (
               <div key={r._key} className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 p-2.5">
-                <input
-                  value={r.etiqueta}
-                  onChange={(e) => actualizarBloque(r._key, 'etiqueta', e.target.value)}
-                  placeholder="Bloque Mañana"
-                  className={`${inputClase} flex-1`}
-                />
-                {/* FIX DE UI (item 2): `<select>` en vez de `<input type="time">`
-                    — el control nativo de hora dejaba un recuadro claro
-                    "fantasma" a la izquierda sobre el tema oscuro que no se
-                    podía re-estilizar por completo con CSS. Opciones en
+                {/* FIX DE UI: el renglón ya NO empieza con el `<input>` de
+                    texto libre para "etiqueta" — ese recuadro (vacío la
+                    mayoría de las veces) era el "cuadro fantasma" que
+                    aparecía a la izquierda de cada fila. El bloque ahora
+                    inicia directo con el `<select>` de hora de Inicio; la
+                    etiqueta se genera sola a partir del rango de horas al
+                    guardar (ver `guardar()`), así el bloque sigue teniendo
+                    un nombre legible en el resto de la app sin pedirlo aquí. */}
+                {/* FIX DE UI (item 2, turno anterior): `<select>` en vez de
+                    `<input type="time">` — el control nativo de hora dejaba
+                    un recuadro claro "fantasma" sobre el tema oscuro que no
+                    se podía re-estilizar por completo con CSS. Opciones en
                     horas completas (`OPCIONES_HORA_COMPLETA_ACADEMIA`). */}
                 <select
                   value={r.desde}
@@ -29914,7 +29930,17 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                   onClick={() => setHoraInicio(s.horaInicio)}
                   title={`${formatoHora12(s.horaInicio)} – ${formatoHora12(s.horaFin)} · ${etiqueta}`}
                   className={`flex flex-col items-center gap-0.5 rounded-lg border px-1.5 py-2 text-center transition ${
-                    bloqueado
+                    // FIX DE ESTILO (Pasado): antes, una hora YA TRANSCURRIDA
+                    // de HOY que seguía siendo `tipo: 'disponible'` (cancha
+                    // libre) heredaba las clases Verdes de `estilo.clases`
+                    // con solo `opacity-60` encima — se veía Verde apagado en
+                    // vez de Gris. El Verde ahora es EXCLUSIVO de horarios
+                    // futuros y disponibles: cualquier slot `pasado` fuerza
+                    // el mismo estilo Gris/Deshabilitado que "Fuera de
+                    // Horario", sin importar su `tipo` real.
+                    s.pasado
+                      ? 'cursor-not-allowed border-slate-800 bg-slate-800 text-slate-500'
+                      : bloqueado
                       ? `cursor-not-allowed opacity-60 ${estilo.clases}`
                       : seleccionado
                       ? 'border-lime-400 bg-lime-400/25 text-lime-300'
