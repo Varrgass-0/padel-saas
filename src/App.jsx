@@ -8048,7 +8048,16 @@ function ModuloSmartPOS({
         }
         return { ...prev, [clienteSeleccionadoId]: siguiente };
       });
-      mostrarToast({ titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' });
+      mostrarToast(
+        resultado.registro
+          ? { titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' }
+          : {
+              titulo: 'Cortesía entregada con aviso',
+              detalle:
+                'Ticket en $0.00 generado y stock descontado — el registro de canje no se pudo guardar en la base de datos (revisa la consola y corre migracion_v36_fix_tipo_jugador_id_cortesias.sql). La insignia se apagó solo en esta pantalla; podría reaparecer hasta que se corrija.',
+              tono: 'aviso',
+            }
+      );
     } else {
       mostrarToast({ titulo: 'No se pudo otorgar la cortesía', detalle: resultado.error?.message || 'Intenta de nuevo.', tono: 'error' });
     }
@@ -11098,10 +11107,28 @@ async function otorgarCortesiaCRM({
     ['variante_id', 'venta_id', 'monto_meta_aplicado', 'operador']
   );
   if (errorRegistro) {
-    console.error(
-      '[CRM] Cortesía entregada (ticket + inventario ya se aplicaron), pero no se pudo guardar el registro en cortesias_otorgadas — el progreso podría no reiniciarse solo hasta que la tabla exista.',
-      errorRegistro
-    );
+    // Diagnóstico específico (bug real encontrado y corregido en
+    // `migracion_v36_fix_tipo_jugador_id_cortesias.sql`): si el error es de
+    // TIPO incompatible (`esErrorTipoUUIDInvalido`, Postgres 22P02) —
+    // típicamente `cortesias_otorgadas.jugador_id` quedó como `uuid` cuando
+    // `jugadores.id` en este proyecto en realidad es `bigint` — el registro
+    // del canje falla SIEMPRE, no solo esta vez, y el progreso NUNCA se
+    // reinicia de verdad en la base de datos (solo de forma optimista y
+    // temporal en la sesión que hizo el canje, hasta el próximo reload). Se
+    // deja un mensaje de consola accionable en vez del genérico de "tabla
+    // sin migrar", porque la tabla SÍ existe — lo que falla es su tipo de
+    // columna.
+    if (esErrorTipoUUIDInvalido(errorRegistro)) {
+      console.error(
+        '[CRM] Cortesía entregada (ticket + inventario ya se aplicaron), pero cortesias_otorgadas.jugador_id tiene un tipo de dato incompatible con jugadores.id — corre migracion_v36_fix_tipo_jugador_id_cortesias.sql en Supabase. Hasta entonces, el progreso de esta categoría SOLO se reinicia de forma temporal en esta sesión (vuelve al gasto histórico completo si recargas la página).',
+        errorRegistro
+      );
+    } else {
+      console.error(
+        '[CRM] Cortesía entregada (ticket + inventario ya se aplicaron), pero no se pudo guardar el registro en cortesias_otorgadas — el progreso podría no reiniciarse solo hasta que la tabla exista.',
+        errorRegistro
+      );
+    }
     return { ok: true, error: errorRegistro, venta, registro: null };
   }
 
@@ -16900,6 +16927,37 @@ const UMBRAL_LTV_FRECUENTE = 5000;
 // `DirectorioJugadoresCRM`.
 const META_CORTESIA_PROSHOP_DEFAULT = 1500;
 const META_CORTESIA_BAR_DEFAULT = 1000;
+
+// CORRECCIÓN ESTRUCTURAL (Motor de Cortesías): función PURA y AISLADA que
+// calcula el "Gasto para Cortesías" de UNA categoría — completamente
+// separada del "Gasto Total Histórico" (`gastoBar`/`gastoProShop` en
+// `perfiles`, que se sigue sumando SIN filtrar por fecha de canje, para la
+// tarjeta de LTV de la Vista 360°). Consulta en 2 pasos, tal cual se pidió:
+//   1) `desdeMs` (recibido ya resuelto por el llamador, ver
+//      `ultimaCortesiaPorJugadorCategoria` en `perfiles`) es la fecha/hora
+//      EXACTA del canje más reciente de esta categoría para este jugador en
+//      `cortesias_otorgadas` — o `0` si nunca hubo uno (equivalente a "toma
+//      la suma histórica completa", porque cualquier fecha real de venta es
+//      mayor a `0`).
+//   2) Se suman ÚNICAMENTE las líneas de `comprasPOS` con
+//      `fecha > fecha_ultimo_canje` (`c.ts > desdeMs`) — al canjear, el
+//      canje nuevo queda con `created_at = now()`, así que en el instante
+//      siguiente NINGUNA compra es posterior a ese timestamp todavía y el
+//      resultado es exactamente `$0.00` (ver el Reset Inmediato/optimista en
+//      `DirectorioJugadoresCRM`/`ModuloSmartPOS`, que actualiza
+//      `cortesiasOtorgadas`/`cortesiasDisponiblesPorJugador` de inmediato
+//      sin esperar a un refresh de página).
+function calcularProgresoCortesia(comprasPOS, categoriaCompras, desdeMs, meta) {
+  const gastoDesdeUltimoCanje = comprasPOS
+    .filter((c) => c.categoria === categoriaCompras && c.ts > desdeMs)
+    .reduce((acc, c) => acc + c.subtotal, 0);
+  return {
+    progreso: Math.min(gastoDesdeUltimoCanje, meta),
+    gastoActual: gastoDesdeUltimoCanje,
+    meta,
+    lista: meta > 0 && gastoDesdeUltimoCanje >= meta,
+  };
+}
 
 function segmentoPorLTV(ltvTotal) {
   if (ltvTotal >= UMBRAL_LTV_VIP) return 'VIP';
@@ -25813,30 +25871,8 @@ function DirectorioJugadoresCRM({
         // completo. `lista` (100%+) habilita el candado de canje — ver
         // `BarraProgresoCortesia`/`ModalCanjearCortesia`.
         const cortesPorCategoria = ultimaCortesiaPorJugadorCategoria.get(j.id) || new Map();
-        const cortesiaBar = (() => {
-          const desdeMs = cortesPorCategoria.get('bar') || 0;
-          const gastoDesdeUltimoCanje = comprasPOS
-            .filter((c) => c.categoria === 'Cafetería/Bar' && c.ts > desdeMs)
-            .reduce((acc, c) => acc + c.subtotal, 0);
-          return {
-            progreso: Math.min(gastoDesdeUltimoCanje, metaBarEfectiva),
-            gastoActual: gastoDesdeUltimoCanje,
-            meta: metaBarEfectiva,
-            lista: metaBarEfectiva > 0 && gastoDesdeUltimoCanje >= metaBarEfectiva,
-          };
-        })();
-        const cortesiaProShop = (() => {
-          const desdeMs = cortesPorCategoria.get('proshop') || 0;
-          const gastoDesdeUltimoCanje = comprasPOS
-            .filter((c) => c.categoria === 'Pro-Shop' && c.ts > desdeMs)
-            .reduce((acc, c) => acc + c.subtotal, 0);
-          return {
-            progreso: Math.min(gastoDesdeUltimoCanje, metaProShopEfectiva),
-            gastoActual: gastoDesdeUltimoCanje,
-            meta: metaProShopEfectiva,
-            lista: metaProShopEfectiva > 0 && gastoDesdeUltimoCanje >= metaProShopEfectiva,
-          };
-        })();
+        const cortesiaBar = calcularProgresoCortesia(comprasPOS, 'Cafetería/Bar', cortesPorCategoria.get('bar') || 0, metaBarEfectiva);
+        const cortesiaProShop = calcularProgresoCortesia(comprasPOS, 'Pro-Shop', cortesPorCategoria.get('proshop') || 0, metaProShopEfectiva);
 
         // 2) Torneos/Retas: eventos combinados (inscripción o participación).
         const eventosTorneoRetas = [
@@ -26268,7 +26304,8 @@ function DirectorioJugadoresCRM({
                 ? { titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' }
                 : {
                     titulo: 'Cortesía entregada con aviso',
-                    detalle: 'Ticket en $0.00 generado y stock descontado — el registro de canje no se pudo guardar (revisa la migración v35).',
+                    detalle:
+                      'Ticket en $0.00 generado y stock descontado — el registro de canje no se pudo guardar en la base de datos (revisa la consola y corre migracion_v36_fix_tipo_jugador_id_cortesias.sql). El progreso de este jugador solo se reinició en esta sesión; volverá a su gasto histórico si recargas la página.',
                     tono: 'aviso',
                   }
             );
