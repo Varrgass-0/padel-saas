@@ -21788,15 +21788,28 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
 /* ============================================================================
  * MÓDULO: ACADEMIA & CLÍNICAS
  * ----------------------------------------------------------------------------
- * Clases recurrentes (Iniciación, Clínicas, etc.) con Coach/Cancha/Día-Hora/
- * Capacidad fijos. Sigue el MISMO patrón de "Bloqueo Inteligente" que Torneos
- * & Retas (ver `crearBloqueoParrilla`, arriba): cada OCURRENCIA concreta de
- * una clase (`academia_sesiones`, una fila por fecha real) nace con su propio
- * bloqueo sintético en `reservas` (`estado: 'Clase'`) — así la Parrilla
- * Operativa NUNCA necesitó tocarse: ya trata cualquier fila de `reservas` de
- * forma uniforme para ocupación (`estadoActualCancha`/`FilaCronograma`), solo
- * se le agregó su propio color (`ESTATUS_META.clase`) para no confundirla con
- * una reserva normal.
+ * Clases de Fecha Única Específica (Iniciación, Clínicas, etc.) con
+ * Coach/Cancha/Fecha-Hora/Capacidad fijos. Sigue el MISMO patrón de "Bloqueo
+ * Inteligente" que Torneos & Retas (ver `crearBloqueoParrilla`, arriba): la
+ * ÚNICA ocurrencia concreta de una clase (`academia_sesiones`, una fila por
+ * clase) nace con su propio bloqueo sintético en `reservas` (`estado:
+ * 'Clase'`) — así la Parrilla Operativa NUNCA necesitó tocarse: ya trata
+ * cualquier fila de `reservas` de forma uniforme para ocupación
+ * (`estadoActualCancha`/`FilaCronograma`), solo se le agregó su propio color
+ * (`ESTATUS_META.clase`) para no confundirla con una reserva normal.
+ *
+ * SIMPLIFICACIÓN DEFINITIVA (Arquitectura de Fecha Única): la app YA NO
+ * soporta clases recurrentes/"repetir semanalmente" — cada `academia_clases`
+ * es una sesión de UNA sola fecha concreta (`fecha`, columna obligatoria en
+ * el formulario), igual que una Reta. La recurrencia por día de la semana
+ * (`dia_semana`) causaba inconsistencias graves entre "Clases Activas", el
+ * Cronograma de disponibilidad y el Portal — cada uno evaluaba "¿hoy es su
+ * día?" con matices ligeramente distintos, y una clase podía verse Activa en
+ * un lado y Concluida en otro. Con fecha única, la regla es una sola
+ * comparación directa (`fecha + hora_fin` vs. `ahora`) que TODOS los
+ * consumidores (Activas, Cronograma, Portal) comparten sin ambigüedad — ver
+ * `claseYaConcluyoHoy` más abajo. Si quieres una clase que se repita cada
+ * semana, créala varias veces (una por fecha) desde el Cronograma.
  *
  * Esquema (4 tablas, todas con `club_id`) — creadas por
  * `migracion_v16_academia_creditos.sql` (ver `BannerTablaFaltante` en la
@@ -21808,26 +21821,28 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
  *   - academia_clases:      id, nombre, nivel ('Principiante'|'Intermedio'|
  *                            'Avanzado'), tipo_clase ('grupal'|'privada' —
  *                            NUEVO, ver `TIPOS_CLASE_ACADEMIA`), coach_empleado_id,
- *                            coach_nombre, cancha_id, dia_semana
- *                            ('lunes'..'domingo'), hora_inicio, hora_fin,
+ *                            coach_nombre, cancha_id, fecha (fecha única de
+ *                            la sesión, ver migracion_v33/v34 — REQUERIDA
+ *                            para toda clase nueva), hora_inicio, hora_fin,
  *                            capacidad_maxima, precio_mensualidad,
  *                            precio_clase_suelta, estado ('activa'|'cancelada'),
- *                            club_id, created_at.
+ *                            club_id, created_at. `dia_semana`/
+ *                            `serie_recurrente` son columnas LEGACY de la
+ *                            época recurrente — ya no se escriben ni se leen
+ *                            para ninguna lógica (ver migracion_v34); una
+ *                            fila vieja sin `fecha` propia simplemente nunca
+ *                            aparece como Activa (ver `claseYaConcluyoHoy`).
  *   - academia_sesiones:    id, clase_id, fecha, hora_inicio, hora_fin,
  *                            cancha_id, reserva_bloqueo_id (uuid → reservas,
  *                            igual criterio que `retas.reserva_bloqueo_id`),
  *                            estado ('programada'|'cancelada'), club_id,
- *                            created_at. Se generan vía `generarSesionesClase`,
- *                            al crear la clase desde `ModalNuevaClase` — por
- *                            default SOLO la sesión de la fecha elegida
- *                            (`cantidad: 1`); la casilla "Repetir
- *                            semanalmente (Serie Recurrente)" del formulario
- *                            es la única forma de pedir de una vez las
- *                            próximas `CANTIDAD_SESIONES_GENERADAS` fechas.
- *                            No hay reagendado automático en ninguna otra
- *                            acción (pase de lista, reprogramar/cancelar
- *                            reserva) — crear sesiones nuevas es SIEMPRE una
- *                            decisión explícita del operador.
+ *                            created_at. Se genera UNA sola fila (la sesión
+ *                            de la fecha elegida) vía `generarSesionesClase`
+ *                            al crear la clase desde `ModalNuevaClase` — sin
+ *                            reagendado automático en ninguna otra acción
+ *                            (pase de lista, reprogramar/cancelar reserva):
+ *                            crear una clase nueva es SIEMPRE una decisión
+ *                            explícita del operador, una fecha a la vez.
  *   - academia_alumnos:     id, clase_id, jugador_id (resuelto vía
  *                            `resolverJugadorId`, igual que Retas/Torneos),
  *                            nombre, telefono, tipo_pago
@@ -21872,9 +21887,11 @@ const TIPOS_CLASE_ACADEMIA = [
   { value: 'privada', label: 'Privada / Personalizada' },
 ];
 
-// `indice` = el mismo valor que regresa `Date.prototype.getDay()` (0 =
-// domingo) — así `proximasFechasDiaSemana` no necesita su propia tabla de
-// conversión.
+// Tabla PURAMENTE DE PRESENTACIÓN: dado un `fecha` real de una clase, sirve
+// para mostrar su nombre de día ("Miércoles") en tarjetas/badges — ya NO se
+// usa para ninguna lógica de agenda/recurrencia (eliminada por completo, ver
+// el bloque de arriba). `indice` = el mismo valor que regresa
+// `Date.prototype.getDay()` (0 = domingo).
 const DIAS_SEMANA_ACADEMIA = [
   { value: 'lunes', label: 'Lunes', indice: 1 },
   { value: 'martes', label: 'Martes', indice: 2 },
@@ -21885,103 +21902,79 @@ const DIAS_SEMANA_ACADEMIA = [
   { value: 'domingo', label: 'Domingo', indice: 0 },
 ];
 const DIA_ACADEMIA_POR_VALOR = Object.fromEntries(DIAS_SEMANA_ACADEMIA.map((d) => [d.value, d]));
-
-// Bloqueo Automático de Clases/Clínicas (Academia): a diferencia de Retas
-// (evento de una sola fecha real, ver `eventoYaInicio`), una clase de
-// Academia es RECURRENTE por día de la semana (`dia_semana`+`hora_inicio`,
-// sin una `fecha` propia) — así que "ya inició" se evalúa contra la
-// ocurrencia de ESTA semana: true solo cuando HOY es su `dia_semana` Y la
-// hora actual ya alcanzó/superó su `hora_inicio`. Se "resetea" solo al
-// pasar la medianoche (cuando HOY deja de coincidir con `dia_semana`), sin
-// tocar ninguna columna — 100% derivado en cada render a partir del reloj
-// real, igual criterio de recálculo en vivo que `ahora`/`tick` del resto de
-// la app.
-function claseYaInicioHoy(clase, ahoraDate = new Date()) {
-  const diaInfo = DIA_ACADEMIA_POR_VALOR[clase?.dia_semana];
-  if (!diaInfo || diaInfo.indice !== ahoraDate.getDay()) return false;
-  const minAhora = ahoraDate.getHours() * 60 + ahoraDate.getMinutes();
-  const minInicio = parseHoraAMinutos(clase.hora_inicio);
-  return minInicio !== null && minInicio <= minAhora;
-}
-
-// Purga y Ocultamiento de Clases Pasadas — Regla de "Clases Activas". A
-// diferencia de `claseYaInicioHoy` (usada solo para el badge informativo
-// "Clase Iniciada" y para bloquear NUEVAS inscripciones una vez arrancada),
-// esta variante decide si la clase debe DESAPARECER por completo de la
-// lista de "Clases Activas" — Portal y Parrilla de Academia. Regla pedida
-// explícitamente: activa = HOY O EN EL FUTURO; solo se oculta cuando su
-// fecha/hora de fin YA TRANSCURRIÓ en el pasado.
-//
-// `academia_clases` puede representar 2 cosas distintas (ver `ModalNuevaClase`
-// / migracion_v33, columna `serie_recurrente` + `fecha`):
-//   (a) Serie Recurrente real (`serie_recurrente: true`, la casilla "Repetir
-//       semanalmente" marcada al crearla, o cualquier clase creada ANTES de
-//       migracion_v33 — default `true` para no cambiarles el comportamiento
-//       de siempre): es RECURRENTE por día de la semana, SIN fecha límite
-//       propia — su "próxima ocurrencia" SIEMPRE está hoy o por delante,
-//       salvo el único caso concreto de HOY: si HOY es justo su
-//       `dia_semana` y la hora actual ya rebasó su `hora_fin`, HOY ya
-//       transcurrió — pero la próxima semana vuelve a estar en el futuro,
-//       así que NO debe ocultarse el resto de la semana por eso.
-//   (b) Sesión de Fecha Única (`serie_recurrente: false` + `fecha` real —
-//       el default al crear una clase SIN marcar "Repetir semanalmente"):
-//       es un evento de una sola vez, como una Reta — concluye en definitiva
-//       en cuanto esa fecha+hora_fin exacta ya quedó en el pasado, sin
-//       importar qué día de la semana sea "hoy" después. Este es el caso
-//       corregido en esta versión: antes, una clase de una sola sesión (ej.
-//       "Miércoles 9 de Septiembre 7:00–8:00am") se trataba SIEMPRE como
-//       recurrente por `dia_semana` — seguía apareciendo "Activa" el resto
-//       de la semana e indefinidamente las siguientes, como si volviera a
-//       ocurrir cada miércoles, aunque esa sesión puntual ya hubiera pasado
-//       y jamás se fuera a repetir.
-//
-// BUG CORREGIDO EN UNA VERSIÓN ANTERIOR (para referencia): la función
-// llegó a regresar `true` (concluida) para CUALQUIER día que no fuera
-// exactamente el `dia_semana` de la clase — ocultaba una clase recurrente
-// de "Miércoles" los otros 6 días de la semana, incluso el día en que se
-// acababa de crear si hoy no era miércoles (una clase nueva para una fecha
-// futura desaparecía de inmediato). Ambos bugs ya quedan cubiertos: (a)
-// nunca oculta una serie recurrente fuera de su propio día, y (b) sí oculta
-// en definitiva una sesión de fecha única una vez que esa fecha concreta
-// concluyó.
-function claseYaConcluyoHoy(clase, ahoraDate = new Date()) {
-  const minFin = parseHoraAMinutos(clase?.hora_fin);
-  if (minFin === null) return false;
-
-  // (b) Sesión de Fecha Única: compara la fecha real exacta + hora_fin
-  // contra "ahora" — sin volver a mirar `dia_semana` para nada.
-  if (clase?.serie_recurrente === false && clase?.fecha) {
-    const fechaFin = new Date(`${clase.fecha}T00:00:00`);
-    if (Number.isNaN(fechaFin.getTime())) return false;
-    fechaFin.setHours(Math.floor(minFin / 60), minFin % 60, 0, 0);
-    return fechaFin < ahoraDate;
-  }
-
-  // (a) Serie Recurrente (o clase legacy sin `serie_recurrente`/`fecha`,
-  // que se sigue tratando como recurrente por compatibilidad).
-  const diaInfo = DIA_ACADEMIA_POR_VALOR[clase?.dia_semana];
-  if (!diaInfo) return false;
-  // Hoy no es su día → su próxima ocurrencia sigue por delante (esta semana
-  // o la que sigue) — NUNCA cuenta como "ya concluida" solo por eso.
-  if (diaInfo.indice !== ahoraDate.getDay()) return false;
-  const minAhora = ahoraDate.getHours() * 60 + ahoraDate.getMinutes();
-  return minFin <= minAhora;
-}
-
-// Reverso de `DIA_ACADEMIA_POR_VALOR`: dado un ISO de fecha, regresa la
-// entrada de `DIAS_SEMANA_ACADEMIA` cuyo `indice` coincide con
-// `Date.prototype.getDay()` de esa fecha. `ModalNuevaClase` ya no le pide al
-// operador elegir el día de la semana como texto suelto — captura una fecha
-// real (selector de calendario, prellenable al crear desde un clic en el
-// Cronograma interactivo) y este helper deriva el patrón semanal a partir de
-// ella, así `academia_clases.dia_semana` sigue guardándose igual que antes.
+// Reverso: dado un ISO de fecha, regresa la entrada de `DIAS_SEMANA_ACADEMIA`
+// cuyo `indice` coincide con `Date.prototype.getDay()` de esa fecha — se usa
+// SOLO para mostrar el nombre del día junto a la fecha de una clase (ej.
+// "Miércoles · 23/09/2026"), nunca para decidir si la clase está activa.
 function diaSemanaDeFecha(fechaISO) {
   if (!fechaISO) return DIAS_SEMANA_ACADEMIA[0];
   const dow = new Date(`${fechaISO}T12:00:00`).getDay();
   return DIAS_SEMANA_ACADEMIA.find((d) => d.indice === dow) || DIAS_SEMANA_ACADEMIA[0];
 }
 
-const CANTIDAD_SESIONES_GENERADAS = 6;
+// Arquitectura de Fecha Única Específica (Academia): a diferencia de la
+// versión recurrente anterior (`dia_semana`, ya eliminada — causaba
+// inconsistencias graves entre "Clases Activas", el Cronograma y el Portal,
+// cada uno evaluando "¿hoy es su día?" con matices ligeramente distintos),
+// cada `academia_clases` es ahora una sesión de UNA sola fecha concreta
+// (`fecha`, obligatoria en `ModalNuevaClase`) — exactamente el mismo
+// criterio que una Reta/Torneo (ver `eventoYaInicio`). Con esto, "ya inició"
+// y "ya concluyó" son UNA SOLA comparación de fecha+hora real contra
+// `ahora`, sin ramas ni casos especiales — y Activas/Cronograma/Portal
+// comparten la MISMA función, así que nunca vuelven a discrepar entre sí.
+//
+// Una fila LEGACY sin `fecha` propia (creada antes de esta simplificación,
+// bajo el modelo recurrente por `dia_semana`) no tiene forma confiable de
+// saber si su próxima ocurrencia real ya pasó o no — se trata como YA
+// CONCLUIDA de forma segura (nunca vuelve a aparecer como Activa ni bloquea
+// el Cronograma), en vez de arriesgarse a mostrarla mal en algún lado. Basta
+// recrearla con una fecha concreta si todavía se necesita.
+function claseFechaHoraInicio(clase) {
+  if (!clase?.fecha) return null;
+  const minInicio = parseHoraAMinutos(clase?.hora_inicio);
+  if (minInicio === null) return null;
+  const fechaInicio = new Date(`${clase.fecha}T00:00:00`);
+  if (Number.isNaN(fechaInicio.getTime())) return null;
+  fechaInicio.setHours(Math.floor(minInicio / 60), minInicio % 60, 0, 0);
+  return fechaInicio;
+}
+function claseFechaHoraFin(clase) {
+  if (!clase?.fecha) return null;
+  const minFin = parseHoraAMinutos(clase?.hora_fin);
+  if (minFin === null) return null;
+  const fechaFin = new Date(`${clase.fecha}T00:00:00`);
+  if (Number.isNaN(fechaFin.getTime())) return null;
+  fechaFin.setHours(Math.floor(minFin / 60), minFin % 60, 0, 0);
+  return fechaFin;
+}
+
+// "Ya inició" — usado solo para el badge informativo "Clase Iniciada" y para
+// bloquear NUEVAS inscripciones una vez arrancada la sesión: `ahora >=
+// fecha+hora_inicio` Y todavía no `ahora >= fecha+hora_fin` (una clase ya
+// CONCLUIDA no debe seguir marcándose como "Iniciada", debe desaparecer del
+// todo — ver `claseYaConcluyoHoy`).
+function claseYaInicioHoy(clase, ahoraDate = new Date()) {
+  const inicio = claseFechaHoraInicio(clase);
+  if (!inicio) return false;
+  const fin = claseFechaHoraFin(clase);
+  if (fin && fin <= ahoraDate) return false;
+  return inicio <= ahoraDate;
+}
+
+// Purga y Ocultamiento ESTRICTO de Clases Pasadas — Regla única de "Clases
+// Activas" que comparten la Parrilla de Academia, el Cronograma de
+// disponibilidad de canchas y el Portal de Jugadores: una clase deja de
+// estar Activa en el INSTANTE en que `ahora >= fecha + hora_fin` — ni antes
+// (mientras sigue vigente, hoy o en una fecha futura) ni con demora (nunca
+// "reaparece" la próxima semana: al ser fecha única, no hay próxima
+// ocurrencia). Sin `fecha` (fila legacy del modelo recurrente anterior) se
+// considera concluida de forma segura — ver comentario arriba.
+function claseYaConcluyoHoy(clase, ahoraDate = new Date()) {
+  const fin = claseFechaHoraFin(clase);
+  if (!fin) return true;
+  return fin <= ahoraDate;
+}
+
 // "2+ inasistencias consecutivas" — umbral pedido tal cual para la Alerta de
 // Riesgo de Deserción (ver `alumnosEnRiesgoDesercion`, dentro de
 // `ModuloAcademiaClinicas`).
@@ -22062,73 +22055,48 @@ function estadoSemaforoMembresia(alumno, hoyISOref) {
   return 'activa';
 }
 
-// Próximas `cantidad` fechas (ISO) que caen en `diaSemana`, empezando HOY (si
-// hoy mismo es ese día de la semana) o el próximo que le siga.
-function proximasFechasDiaSemana(diaSemana, cantidad, desdeISO) {
-  const meta = DIA_ACADEMIA_POR_VALOR[diaSemana];
-  if (!meta) return [];
-  const cursor = desdeISO ? new Date(`${desdeISO}T12:00:00`) : new Date();
-  cursor.setHours(12, 0, 0, 0);
-  let guardia = 0;
-  while (cursor.getDay() !== meta.indice && guardia < 8) {
-    cursor.setDate(cursor.getDate() + 1);
-    guardia += 1;
-  }
-  const fechas = [];
-  for (let i = 0; i < cantidad; i++) {
-    fechas.push(`${cursor.getFullYear()}-${pad2(cursor.getMonth() + 1)}-${pad2(cursor.getDate())}`);
-    cursor.setDate(cursor.getDate() + 7);
-  }
-  return fechas;
-}
-
 const LS_KEY_ACADEMIA_CLASES_LOCAL = 'smashpadel_academia_clases_local_v1';
 const LS_KEY_ACADEMIA_SESIONES_LOCAL = 'smashpadel_academia_sesiones_local_v1';
 const LS_KEY_ACADEMIA_ALUMNOS_LOCAL = 'smashpadel_academia_alumnos_local_v1';
 const LS_KEY_ACADEMIA_ASISTENCIAS_LOCAL = 'smashpadel_academia_asistencias_local_v1';
 
-// Genera (o extiende) las próximas sesiones concretas de una clase: por cada
-// fecha libre, crea el bloqueo sintético en `reservas` (`crearBloqueoParrilla`,
-// `estado: 'Clase'` — mismo mecanismo que Torneos & Retas) y luego inserta en
-// bloque las filas de `academia_sesiones` ya enlazadas a su bloqueo
-// (`insertarMuchosConColumnasOpcionales`, la misma variante masiva que ya usa
-// la generación de cuadros de Torneos). Una fecha que se solapa con otra
-// reserva existente en esa cancha simplemente se omite — las demás sí se
-// generan; el operador puede volver a pedir más sesiones cuando quiera.
-async function generarSesionesClase({ clase, cantidad = CANTIDAD_SESIONES_GENERADAS, reservasExistentes = [], desdeISO }) {
-  const fechas = proximasFechasDiaSemana(clase.dia_semana, cantidad, desdeISO);
-  const bloqueosCreados = [];
-  for (const fecha of fechas) {
-    if (haySolapeEnCancha(reservasExistentes, clase.cancha_id, fecha, clase.hora_inicio, clase.hora_fin)) continue;
-    const { data: bloqueo, error } = await crearBloqueoParrilla({
-      canchaId: clase.cancha_id,
-      fecha,
-      horaInicio: clase.hora_inicio,
-      horaFin: clase.hora_fin,
-      estado: 'Clase',
-      // Formato pedido explícitamente: "Clase - [Nombre]" — así se
-      // distingue de un vistazo en la Parrilla Operativa principal de
-      // cualquier reserva normal o bloqueo de Torneo/Reta.
-      etiqueta: `Clase - ${clase.nombre}`,
-    });
-    if (error || !bloqueo) continue;
-    bloqueosCreados.push({ fecha, bloqueo });
+// Genera la sesión concreta (ÚNICA, fecha específica — ver "Arquitectura de
+// Fecha Única Específica" arriba) de una clase recién creada: crea el
+// bloqueo sintético en `reservas` (`crearBloqueoParrilla`, `estado: 'Clase'`
+// — mismo mecanismo que Torneos & Retas) y luego inserta la fila de
+// `academia_sesiones` ya enlazada a ese bloqueo. Si la fecha/hora elegida se
+// solapa con otra reserva existente en esa cancha, no se crea nada (el
+// candado anti-encimado ya lo valida antes en `ModalNuevaClase.guardar()`,
+// esto es un segundo respaldo).
+async function generarSesionesClase({ clase, reservasExistentes = [] }) {
+  if (!clase?.fecha) return { data: [], error: null, bloqueos: [] };
+  if (haySolapeEnCancha(reservasExistentes, clase.cancha_id, clase.fecha, clase.hora_inicio, clase.hora_fin)) {
+    return { data: [], error: null, bloqueos: [] };
   }
-  if (bloqueosCreados.length === 0) return { data: [], error: null, bloqueos: [] };
-  const payloadsSesiones = bloqueosCreados.map(({ fecha, bloqueo }) =>
-    withClubId({
-      clase_id: clase.id,
-      fecha,
-      hora_inicio: clase.hora_inicio,
-      hora_fin: clase.hora_fin,
-      cancha_id: clase.cancha_id,
-      reserva_bloqueo_id: bloqueo.id,
-      estado: 'programada',
-    })
-  );
-  const { data, error } = await insertarMuchosConColumnasOpcionales('academia_sesiones', payloadsSesiones, ['reserva_bloqueo_id']);
-  const sesiones = data || payloadsSesiones.map((s) => ({ ...s, id: idLocal('academia_sesion'), _local: true }));
-  return { data: sesiones, error: data ? null : error, bloqueos: bloqueosCreados.map((b) => b.bloqueo) };
+  const { data: bloqueo, error } = await crearBloqueoParrilla({
+    canchaId: clase.cancha_id,
+    fecha: clase.fecha,
+    horaInicio: clase.hora_inicio,
+    horaFin: clase.hora_fin,
+    estado: 'Clase',
+    // Formato pedido explícitamente: "Clase - [Nombre]" — así se distingue
+    // de un vistazo en la Parrilla Operativa principal de cualquier reserva
+    // normal o bloqueo de Torneo/Reta.
+    etiqueta: `Clase - ${clase.nombre}`,
+  });
+  if (error || !bloqueo) return { data: [], error: error || null, bloqueos: [] };
+  const payloadSesion = withClubId({
+    clase_id: clase.id,
+    fecha: clase.fecha,
+    hora_inicio: clase.hora_inicio,
+    hora_fin: clase.hora_fin,
+    cancha_id: clase.cancha_id,
+    reserva_bloqueo_id: bloqueo.id,
+    estado: 'programada',
+  });
+  const { data, error: errSesion } = await insertarMuchosConColumnasOpcionales('academia_sesiones', [payloadSesion], ['reserva_bloqueo_id']);
+  const sesiones = data || [{ ...payloadSesion, id: idLocal('academia_sesion'), _local: true }];
+  return { data: sesiones, error: data ? null : errSesion, bloqueos: [bloqueo] };
 }
 
 // Selector visual de Cancha/Coach/Fecha/Horario compartido entre "Nueva
@@ -22158,10 +22126,9 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
   const [coachEmpleadoId, setCoachEmpleadoId] = useState(coachesDisponibles[0]?.id || '');
   const [coachNombreLibre, setCoachNombreLibre] = useState('');
   const [canchaId, setCanchaId] = useState(prellenado?.canchaId || canchasActivas[0]?.id || '');
-  // Selector de fecha/calendario estructurado (reemplaza el selector de día
-  // de semana en texto suelto) — `dia_semana` se DERIVA de esta fecha con
-  // `diaSemanaDeFecha` al guardar, así el esquema/las sesiones recurrentes
-  // (`proximasFechasDiaSemana`) siguen funcionando exactamente igual.
+  // Fecha Específica Obligatoria (Arquitectura de Fecha Única — ya NO existe
+  // una opción de "repetir semanalmente"): esta clase existe UNA sola vez,
+  // en esta fecha exacta — igual criterio que una Reta/Torneo.
   const [fecha, setFecha] = useState(prellenado?.fecha || hoyISO());
   const [horaInicio, setHoraInicio] = useState(prellenado?.horaInicio || '17:00');
   const [horaFin, setHoraFin] = useState(
@@ -22170,26 +22137,17 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
   const [capacidad, setCapacidad] = useState('6');
   const [precioMensualidad, setPrecioMensualidad] = useState('1200');
   const [precioClaseSuelta, setPrecioClaseSuelta] = useState('180');
-  // FIX (Serie Recurrente opcional): antes, crear una clase SIEMPRE
-  // generaba y bloqueaba de una vez las próximas `CANTIDAD_SESIONES_GENERADAS`
-  // (6) fechas semanales — sorprendía al operador que solo quería agendar
-  // UNA sesión puntual y se encontraba con 6 bloqueos en la Parrilla. Ahora
-  // por default se crea solo 1 sesión (la fecha elegida arriba); el
-  // operador tiene que marcar esta casilla explícitamente para pedir la
-  // serie recurrente completa.
-  const [generarSerieSemanal, setGenerarSerieSemanal] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
   const coachNombre = coachEmpleadoId ? coachesDisponibles.find((c) => c.id === coachEmpleadoId)?.nombre || '' : coachNombreLibre.trim();
-  const diaSemanaMeta = diaSemanaDeFecha(fecha);
   const esPrivada = tipoClase === 'privada';
   const capacidadEfectiva = esPrivada ? '1' : capacidad;
 
   async function guardar() {
     if (!nombre.trim()) return setError('Ponle un nombre a la clase (ej. "Iniciación Adultos").');
     if (!canchaId) return setError('Selecciona una cancha.');
-    if (!fecha) return setError('Elige la fecha de la primera sesión.');
+    if (!fecha) return setError('Elige la fecha de la sesión.');
     if (!coachNombre) return setError('Indica el Coach (elige uno del directorio o escribe su nombre).');
     const ini = parseHoraAMinutos(horaInicio);
     const fin = parseHoraAMinutos(horaFin);
@@ -22221,23 +22179,18 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
       coach_empleado_id: coachEmpleadoId || null,
       coach_nombre: coachNombre,
       cancha_id: canchaId,
-      dia_semana: diaSemanaMeta.value,
       hora_inicio: horaInicio,
       hora_fin: horaFin,
       capacidad_maxima: Number(capacidadEfectiva) || 1,
       precio_mensualidad: Number(precioMensualidad) || 0,
       precio_clase_suelta: Number(precioClaseSuelta) || 0,
       estado: 'activa',
-      // Fecha Única vs. Serie Recurrente (migracion_v33) — refleja en la
-      // propia fila lo que esta misma pantalla ya decide para
-      // `generarSesionesClase` (¿1 sesión puntual, o la serie completa?),
-      // así "Clases Activas" (`claseYaConcluyoHoy`) sabe si debe ocultar
-      // esta clase en cuanto su única fecha ya concluyó, o tratarla como
-      // recurrente para siempre. Sin marcar la casilla, `fecha` guarda la
-      // fecha real de esa sesión única; marcándola, se guarda como
-      // recurrente y `fecha` se deja en null (no aplica un vencimiento).
-      serie_recurrente: generarSerieSemanal,
-      fecha: generarSerieSemanal ? null : fecha,
+      // Arquitectura de Fecha Única Específica (ya NO hay recurrencia/
+      // "repetir semanalmente") — `fecha` es la única fuente de verdad de
+      // cuándo ocurre esta clase; `claseYaConcluyoHoy` la oculta en
+      // automático de Activas/Cronograma/Portal en cuanto fecha+hora_fin ya
+      // quedó en el pasado.
+      fecha,
     });
 
     let claseCreada = null;
@@ -22248,7 +22201,6 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
       'coach_nombre',
       'precio_mensualidad',
       'precio_clase_suelta',
-      'serie_recurrente',
       'fecha',
     ]);
     if (!errClase && data) {
@@ -22266,24 +22218,15 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
 
     let sesionesCreadas = [];
     if (!modoLocal) {
-      // `desdeISO: fecha` — la fecha elegida en el calendario es LA MISMA
-      // fecha de la primera sesión (`proximasFechasDiaSemana` ya no tiene
-      // que "buscar" el próximo lunes/martes/etc.: `dia_semana` viene
-      // derivado de esta misma fecha, así que coincide desde la primera
-      // iteración).
-      // FIX (Serie Recurrente opcional): `cantidad` ya NO es siempre
-      // `CANTIDAD_SESIONES_GENERADAS` (6 semanas) — por default se genera
-      // UNA sola sesión (la fecha elegida) y solo se piden las 6 semanas si
-      // el operador marcó explícitamente "Repetir semanalmente" arriba.
+      // Arquitectura de Fecha Única: se genera SIEMPRE la única sesión de
+      // esta clase, en `fecha` — sin cantidad ni repetición semanal.
       const resultado = await generarSesionesClase({
         clase: claseCreada,
-        cantidad: generarSerieSemanal ? CANTIDAD_SESIONES_GENERADAS : 1,
         reservasExistentes: reservas,
-        desdeISO: fecha,
       });
       sesionesCreadas = resultado.data || [];
       if (resultado.error) {
-        console.warn('[Academia & Clínicas] Clase creada, pero no se pudieron generar sus sesiones/bloqueos.', resultado.error);
+        console.warn('[Academia & Clínicas] Clase creada, pero no se pudo generar su sesión/bloqueo.', resultado.error);
       }
     }
 
@@ -22291,7 +22234,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
     if (!modoLocal) {
       toast({
         titulo: 'Clase creada',
-        detalle: `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)} · ${sesionesCreadas.length} sesión${sesionesCreadas.length === 1 ? '' : 'es'} programada${sesionesCreadas.length === 1 ? '' : 's'}`,
+        detalle: `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)}`,
       });
     }
     onCreada(claseCreada, sesionesCreadas);
@@ -22365,7 +22308,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
           )}
         </Campo>
         <div className="grid grid-cols-3 gap-4">
-          <Campo label="Fecha" hint={`Se repite cada ${diaSemanaMeta.label}`}>
+          <Campo label="Fecha" hint="Fecha específica de esta sesión — no se repite sola">
             <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
           </Campo>
           <Campo label="Hora inicio">
@@ -22414,37 +22357,15 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
           </Campo>
         </div>
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
-        {/* FIX (Serie Recurrente opcional): antes esto era un texto fijo
-            avisando que SIEMPRE se generaban 6 semanas de una vez — ahora es
-            una casilla explícita, apagada por default (una sola sesión, la
-            fecha de arriba); el operador decide si de verdad quiere la
-            serie recurrente completa. */}
-        <label className="flex items-start gap-2.5 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-          <input
-            type="checkbox"
-            checked={generarSerieSemanal}
-            onChange={(e) => setGenerarSerieSemanal(e.target.checked)}
-            className="mt-0.5 h-4 w-4 accent-lime-400"
-          />
-          <span className="text-xs text-slate-300">
-            <span className="block font-bold text-slate-100">Repetir semanalmente (Serie Recurrente)</span>
-            {/* FIX (fecha duplicada): `formatoFechaLarga` YA incluye el
-                nombre del día (`weekday: 'long'`, ver su definición) — antes
-                este texto anteponía también `diaSemanaMeta.label`, dejando
-                "Domingo Domingo, 6 de septiembre". Ya no se repite. */}
-            {generarSerieSemanal ? (
-              <span className="mt-0.5 block text-slate-500">
-                Se generarán y bloquearán las próximas {CANTIDAD_SESIONES_GENERADAS} sesiones (empezando {formatoFechaLarga(fecha)},
-                cada {diaSemanaMeta.label}) en la Parrilla Operativa.
-              </span>
-            ) : (
-              <span className="mt-0.5 block text-slate-500">
-                Sin marcar, se crea solo esta sesión ({formatoFechaLarga(fecha)}). Puedes volver a "Nueva Clase" cuando quieras
-                agendar la siguiente.
-              </span>
-            )}
-          </span>
-        </label>
+        {/* Arquitectura de Fecha Única Específica: ya no existe "repetir
+            semanalmente" — cada clase es una sesión de una sola fecha real,
+            igual que una Reta/Torneo. Para la siguiente sesión, se vuelve a
+            usar "Nueva Clase" con la fecha que corresponda. */}
+        <p className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-500">
+          Esta clase se crea para <span className="font-bold text-slate-300">{formatoFechaLarga(fecha)}</span> únicamente. En
+          cuanto termine su horario, se oculta sola de "Activas" y del Portal — para la siguiente sesión, vuelve a usar "Nueva
+          Clase" con la fecha que corresponda.
+        </p>
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={guardar} disabled={guardando}>
@@ -22467,7 +22388,10 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
 function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, iniciadaHoy, archivado, onArchivar, actualizandoArchivo }) {
   const cupos = alumnosActivos.length;
   const lleno = cupos >= clase.capacidad_maxima;
-  const dia = DIA_ACADEMIA_POR_VALOR[clase.dia_semana]?.label || clase.dia_semana;
+  // Arquitectura de Fecha Única: ya no hay `dia_semana` propio — se muestra
+  // la fecha real de la única sesión (`formatoFechaLarga` ya incluye el
+  // nombre del día, ej. "Miércoles, 23 de septiembre").
+  const diaFecha = clase.fecha ? formatoFechaLarga(clase.fecha) : 'Sin fecha';
   return (
     <div
       className={`flex flex-col gap-3 rounded-2xl border p-4 transition ${
@@ -22511,7 +22435,7 @@ function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, ini
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
           <span className="flex items-center gap-1">
-            <CalendarClock size={12} /> {dia} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
+            <CalendarClock size={12} /> {diaFecha} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
           </span>
           <span className="flex items-center gap-1">
             <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
@@ -22591,9 +22515,8 @@ function ModalDetalleClase({
   const cuposDisponibles = Math.max(0, clase.capacidad_maxima - alumnosActivos.length);
   const claseLlena = cuposDisponibles === 0;
   // Bloqueo Automático por Horario (Academia): ya no se puede inscribir a
-  // nadie más una vez que la ocurrencia de HOY de esta clase recurrente ya
-  // arrancó (ver `claseYaInicioHoy`) — se vuelve a poder inscribir solo
-  // hasta que HOY deje de coincidir con `dia_semana` (la próxima semana).
+  // nadie más una vez que la sesión (fecha única, ver `claseYaInicioHoy`) ya
+  // arrancó.
   const claseIniciada = claseYaInicioHoy(clase);
 
   // Aviso en vivo (sin esperar al submit): solo cuando el alumno viene del
@@ -22866,7 +22789,7 @@ function ModalDetalleClase({
       <div className="space-y-4">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-[11px] font-semibold text-slate-400">
           <span className="flex items-center gap-1">
-            <CalendarClock size={12} /> {DIA_ACADEMIA_POR_VALOR[clase.dia_semana]?.label} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
+            <CalendarClock size={12} /> {clase.fecha ? formatoFechaLarga(clase.fecha) : 'Sin fecha'} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
           </span>
           <span className="flex items-center gap-1">
             <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
@@ -23268,8 +23191,12 @@ function HeatmapAcademia({ clases, alumnosPorClase }) {
     const celdasLocal = filasLocal.map((dia) =>
       HEATMAP_HORAS.map((hora) => {
         const clasesDelSlot = clases.filter((c) => {
-          const meta = DIA_ACADEMIA_POR_VALOR[c.dia_semana];
-          if (!meta || meta.indice !== dia) return false;
+          // Agrupación puramente estadística por día de la semana — se
+          // deriva de `fecha` (Arquitectura de Fecha Única), no de una
+          // columna de recurrencia guardada.
+          if (!c.fecha) return false;
+          const diaMeta = diaSemanaDeFecha(c.fecha);
+          if (!diaMeta || diaMeta.indice !== dia) return false;
           const inicioMin = parseHoraAMinutos(c.hora_inicio);
           return inicioMin !== null && Math.floor(inicioMin / 60) === hora;
         });
@@ -27031,36 +26958,32 @@ function rangoDeHorarioParaHora(horaInicio, horaFin, rangos) {
 // solo pintar el bloque. Reutiliza `buscarSolapeEnCancha` — LA MISMA
 // consulta/arreglo de `reservas` ya cargado (Realtime intacto, ver Regla
 // de Oro), nunca se agrega ninguna consulta nueva. Cuando el bloqueo es
-// una Clase, se busca su coach cruzando cancha+día de la semana+hora
-// contra `academiaClases` (mismo criterio de `generarSesionesClase`/
-// `ModalNuevaClase` — una clase de Academia es recurrente por día de la
-// semana, no tiene "fecha" propia), sin necesitar la tabla puente
-// `academia_sesiones`.
+// una Clase, se busca su coach cruzando cancha+FECHA EXACTA+hora contra
+// `academiaClases` (Arquitectura de Fecha Única — cada clase tiene su
+// propia `fecha` real, ya no es recurrente por día de la semana), sin
+// necesitar la tabla puente `academia_sesiones`.
 function estadoOcupacionCanchaSlot(canchaId, fecha, horaInicio, horaFin, reservas, academiaClases) {
   const bloqueo = buscarSolapeEnCancha(reservas, canchaId, fecha, horaInicio, horaFin);
   if (!bloqueo) return { tipo: 'disponible', coachNombre: null };
   if (bloqueo.estado === 'Torneo' || bloqueo.estado === 'Reta') return { tipo: 'torneo_reta', coachNombre: null };
   if (bloqueo.estado === 'Clase') {
-    const diaSemana = diaSemanaDeFecha(fecha).value;
     const claseCoincide = (academiaClases || []).find(
-      (c) => c.cancha_id === canchaId && c.dia_semana === diaSemana && c.hora_inicio === horaInicio
+      (c) => c.cancha_id === canchaId && c.fecha === fecha && c.hora_inicio === horaInicio
     );
     return { tipo: 'clase', coachNombre: claseCoincide?.coach_nombre || null };
   }
   return { tipo: 'reservado', coachNombre: null };
 }
 
-// ¿Este coach en particular ya tiene una clase recurrente asignada a esta
-// fecha/hora (en CUALQUIER cancha)? Cruza la agenda del coach contra
-// `academiaClases` — mismo criterio recurrente por día de la semana que el
-// resto de Academia (sin `fecha` propia, ver cabecera de `claseYaInicioHoy`).
-// Usada por `estadoOcupacionAgregado` cuando el jugador pide un "Coach
-// Preferido" específico en "Solicitar Clase" (item 3).
+// ¿Este coach en particular ya tiene una clase asignada a esta fecha/hora
+// EXACTA (en CUALQUIER cancha)? Cruza la agenda del coach contra
+// `academiaClases` — Arquitectura de Fecha Única (sin recurrencia por día de
+// la semana). Usada por `estadoOcupacionAgregado` cuando el jugador pide un
+// "Coach Preferido" específico en "Solicitar Clase" (item 3).
 function coachTieneClaseAEstaHora(coachNombre, fecha, horaInicio, academiaClases) {
   if (!coachNombre) return false;
-  const diaSemana = diaSemanaDeFecha(fecha).value;
   return (academiaClases || []).some(
-    (c) => c.coach_nombre === coachNombre && c.dia_semana === diaSemana && c.hora_inicio === horaInicio && c.estado !== 'cancelada' && c.archivado !== true
+    (c) => c.coach_nombre === coachNombre && c.fecha === fecha && c.hora_inicio === horaInicio && c.estado !== 'cancelada' && c.archivado !== true
   );
 }
 
@@ -27090,11 +27013,10 @@ function estadoOcupacionAgregado(canchasActivas, fecha, horaInicio, horaFin, res
     // otro coach y el coach pedido (si lo hay) sigue disponible. Coach
     // sugerido/mostrado (item 2): el que pidió el jugador, si no el que el
     // club asignó a este bloque, y si tampoco hay ninguno de los dos, el de
-    // una clase recurrente que ya ocurra en ese día/hora (en cualquier
+    // una clase que ya exista en esa fecha/hora EXACTA (en cualquier
     // cancha), como referencia informativa.
-    const diaSemana = diaSemanaDeFecha(fecha).value;
     const coachSugerido =
-      coachPreferido || coachDelBloque || (academiaClases || []).find((c) => c.dia_semana === diaSemana && c.hora_inicio === horaInicio)?.coach_nombre || null;
+      coachPreferido || coachDelBloque || (academiaClases || []).find((c) => c.fecha === fecha && c.hora_inicio === horaInicio)?.coach_nombre || null;
     return { tipo: 'disponible', coachNombre: coachSugerido };
   }
 
@@ -27678,13 +27600,13 @@ function PortalPublicoJugadores({ clubSlug }) {
   );
   const torneosActivos = useMemo(() => torneos.filter((t) => t.archivado !== true && t.estado !== 'finalizado'), [torneos]);
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
-  // PURGA ESTRICTA DE CLASES PASADAS (item 3): una clase desaparece del
-  // catálogo público en cuanto `archivado === true` O su ocurrencia de HOY
-  // ya CONCLUYÓ del todo (`claseYaConcluyoHoy`, basado en `hora_fin` — a
-  // propósito NO usa `claseYaInicioHoy`/`hora_inicio`: una clase "en curso"
-  // sigue contando como activa, solo se oculta una vez que terminó) — vuelve
-  // a aparecer sola la próxima semana, cuando HOY deje de coincidir con su
-  // `dia_semana`.
+  // PURGA ESTRICTA DE CLASES PASADAS: una clase desaparece del catálogo
+  // público en cuanto `archivado === true` O su `fecha + hora_fin` ya
+  // CONCLUYÓ (`claseYaConcluyoHoy` — a propósito NO usa
+  // `claseYaInicioHoy`/`hora_inicio`: una clase "en curso" sigue contando
+  // como activa, solo se oculta una vez que terminó). Arquitectura de Fecha
+  // Única: al ser una sesión de una sola fecha, una vez oculta NUNCA vuelve
+  // a reaparecer sola (no hay "próxima semana").
   const academiaClasesPortalVisibles = useMemo(
     () => academiaClasesPortal.filter((c) => c.archivado !== true && !claseYaConcluyoHoy(c, new Date(tickPortal))),
     [academiaClasesPortal, tickPortal]
@@ -29447,7 +29369,8 @@ function PortalPublicoJugadores({ clubSlug }) {
                       const cupos = Math.max(0, c.capacidad_maxima - inscritosActivos);
                       const llena = cupos === 0;
                       const cancha = canchasPorId[c.cancha_id];
-                      const dia = DIA_ACADEMIA_POR_VALOR[c.dia_semana]?.label || c.dia_semana;
+                      // Arquitectura de Fecha Única: se muestra la fecha real de la sesión.
+                      const diaFecha = c.fecha ? formatoFechaLarga(c.fecha) : 'Sin fecha';
                       // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX)
                       const miInscripcionClase = academiaAlumnosPortal.find((a) => a.clase_id === c.id && a.estado !== 'baja' && esMiRegistro(a));
                       return (
@@ -29459,7 +29382,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                                 {c.nivel} · Coach {c.coach_nombre || '—'}
                               </p>
                               <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
-                                <CalendarClock size={12} /> {dia} · {formatoHora12(c.hora_inicio)}–{formatoHora12(c.hora_fin)}
+                                <CalendarClock size={12} /> {diaFecha} · {formatoHora12(c.hora_inicio)}–{formatoHora12(c.hora_fin)}
                                 {cancha ? ` · ${cancha.nombre}` : ''}
                               </p>
                             </div>
@@ -30731,7 +30654,6 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
 function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
   const [confirmandoCancelar, setConfirmandoCancelar] = useState(false);
   const [cancelando, setCancelando] = useState(false);
-  const proximaFecha = proximasFechasDiaSemana(clase.dia_semana, 1)[0];
 
   async function cancelar() {
     setCancelando(true);
@@ -30748,8 +30670,7 @@ function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
               <CalendarIcon size={13} /> Fecha
             </dt>
             <dd className="font-bold text-slate-200">
-              {DIA_ACADEMIA_POR_VALOR[clase.dia_semana]?.label || clase.dia_semana}
-              {proximaFecha ? ` · Próxima: ${formatoFechaLarga(proximaFecha)}` : ''}
+              {clase.fecha ? formatoFechaLarga(clase.fecha) : 'Sin fecha'}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
