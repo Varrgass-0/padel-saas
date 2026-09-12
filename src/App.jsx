@@ -15301,6 +15301,57 @@ function ModuloAnalyticsBI({
     );
   }, [reservas, rango, idsMaestroTorneo]);
 
+  // Sincronización de Ingresos Cruzados por Fecha de Reserva (item 3 de esta
+  // corrección): `ventasRango` (arriba) solo trae las ventas cuya PROPIA
+  // fecha de cobro/registro (`created_at`/`fecha`) cae dentro del rango
+  // activo — así que un add-on (Pro-Shop/Cafetería) vendido junto con una
+  // reserva, pero COBRADO otro día (ej. reserva jugada el 12, ticket
+  // liquidado/cobrado el 11 en "Cuentas Pendientes"), quedaba fuera de
+  // `ventasRango` cuando el BI está filtrado al día 12 — la tabla de
+  // Ingresos Cruzados mostraba entonces la cancha SIN sus consumos ese día,
+  // y los consumos SIN cancha el día 11. Se trae aparte, por
+  // `reserva_id` (no por fecha de cobro), TODA venta ligada a alguna de las
+  // reservas ya confirmadas como jugadas en este rango (`reservasActivasPagadas`)
+  // — sin importar cuándo se haya cobrado — y `ingresosCruzados` (abajo) las
+  // consolida bajo la fecha/bloque horario REAL de la reserva (mismo
+  // criterio que ya usaba para el bloque horario, ver `reservasPorIdBI`).
+  // Esta unión es EXCLUSIVA de la tabla de Ingresos Cruzados — el resto de
+  // las tarjetas de Analytics (Ingresos Totales, Ticket Promedio, Top
+  // Productos) siguen leyendo `ventasRango` tal cual, sin tocar su criterio
+  // de fecha de cobro, que es el correcto para esas otras vistas.
+  const [ventasPorReservaCruce, setVentasPorReservaCruce] = useState([]);
+  const idsReservasActivasPagadas = useMemo(() => reservasActivasPagadas.map((r) => r.id), [reservasActivasPagadas]);
+  const cargarVentasPorReservaCruce = useCallback(async () => {
+    if (idsReservasActivasPagadas.length === 0) {
+      setVentasPorReservaCruce([]);
+      return;
+    }
+    try {
+      const { data, error } = await conClubId(supabase.from('ventas').select('*')).in('reserva_id', idsReservasActivasPagadas);
+      if (error) {
+        console.warn('[Analytics BI] No se pudieron cargar las ventas ligadas a reservas del rango (Ingresos Cruzados).', error);
+        setVentasPorReservaCruce([]);
+        return;
+      }
+      setVentasPorReservaCruce(data || []);
+    } catch (e) {
+      console.warn('[Analytics BI] Excepción cargando ventas ligadas a reservas del rango (Ingresos Cruzados).', e);
+      setVentasPorReservaCruce([]);
+    }
+  }, [idsReservasActivasPagadas]);
+  useEffect(() => {
+    cargarVentasPorReservaCruce();
+  }, [cargarVentasPorReservaCruce]);
+  useEffect(() => {
+    const canal = supabase
+      .channel('analytics-ventas-cruce-reserva')
+      .on('postgres_changes', canalClubFiltro('ventas'), () => cargarVentasPorReservaCruce())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarVentasPorReservaCruce]);
+
   const canchasPorId = useMemo(() => {
     const mapa = {};
     canchas.forEach((c) => {
@@ -15777,7 +15828,23 @@ function ModuloAnalyticsBI({
   /* ---- Ingresos Cruzados por Cancha y Bloque Horario ---- */
   const ingresosCruzados = useMemo(() => {
     const canchasActivas = canchas.filter((c) => c.activa !== false);
-    const ventasPagadas = ventasRango.filter((v) => v.estado_pago === 'pagado');
+    // Unión deduplicada (por `id`) de `ventasRango` (fecha de cobro dentro
+    // del rango — cubre ventas de mostrador/Tienda sin reserva) con
+    // `ventasPorReservaCruce` (ligadas por `reserva_id` a una reserva YA
+    // confirmada como jugada dentro del rango, sin importar cuándo se
+    // cobraron — ver el comentario completo donde se define, arriba). Esto
+    // es lo que resuelve el item 3: un add-on cobrado el día 11 para una
+    // reserva jugada el día 12 ahora SÍ entra aquí cuando el BI está
+    // filtrado al día 12, y se consolida bajo la fecha/bloque de la reserva
+    // más abajo (`reservaLigada`), en vez de perderse o quedar huérfano.
+    const ventasPagadasMapa = new Map();
+    ventasRango.forEach((v) => {
+      if (v.estado_pago === 'pagado' && v?.id != null) ventasPagadasMapa.set(v.id, v);
+    });
+    ventasPorReservaCruce.forEach((v) => {
+      if (v.estado_pago === 'pagado' && v?.id != null) ventasPagadasMapa.set(v.id, v);
+    });
+    const ventasPagadas = Array.from(ventasPagadasMapa.values());
     const filas = [];
     canchasActivas.forEach((c) => {
       BLOQUES_CRUCE.forEach((bloque) => {
@@ -15858,7 +15925,7 @@ function ModuloAnalyticsBI({
       });
     });
     return filas;
-  }, [canchas, ventasRango, reservasActivasPagadas, productosPorId, ingresoEfectivoPorReservaId, reservasPorIdBI]);
+  }, [canchas, ventasRango, ventasPorReservaCruce, reservasActivasPagadas, productosPorId, ingresoEfectivoPorReservaId, reservasPorIdBI]);
 
   const cargandoFinanciero = loadingVentas || loadingKardexRango;
   const errorPeriodo = errorVentas || errorKardexRango;
@@ -21828,47 +21895,40 @@ function claseYaInicioHoy(clase, ahoraDate = new Date()) {
   return minInicio !== null && minInicio <= minAhora;
 }
 
-// Purga y Ocultamiento ESTRICTO de Clases Pasadas: a diferencia de
-// `claseYaInicioHoy` (usada solo para el badge informativo "Clase Iniciada"
-// y para bloquear NUEVAS inscripciones una vez arrancada), esta variante
-// decide si la clase debe DESAPARECER por completo de la lista de "Clases
-// Activas" — Portal y Parrilla de Academia. El criterio pedido es más
-// permisivo mientras la clase sigue en curso ("solo muestra eventos futuros
-// o en curso") y solo la oculta cuando su horario de HOY ya CONCLUYÓ del
-// todo (`hora_fin`, no `hora_inicio`). Mismo criterio recurrente que el
-// resto de Academia (sin `fecha` propia, ver cabecera de arriba): al no ser
-// hoy su `dia_semana`, nunca cuenta como "ya concluida" — vuelve a
-// aparecer sola en cuanto HOY vuelve a coincidir con su día de la semana.
+// Purga y Ocultamiento de Clases Pasadas — Regla de "Clases Activas" (item 2
+// de esta corrección): a diferencia de `claseYaInicioHoy` (usada solo para
+// el badge informativo "Clase Iniciada" y para bloquear NUEVAS inscripciones
+// una vez arrancada), esta variante decide si la clase debe DESAPARECER por
+// completo de la lista de "Clases Activas" — Portal y Parrilla de Academia.
+// Regla pedida explícitamente: activa = HOY O EN EL FUTURO; solo se oculta
+// cuando su fecha/hora de fin YA TRANSCURRIÓ en el pasado. Como
+// `academia_clases` es RECURRENTE por día de la semana (`dia_semana`, sin
+// `fecha` propia — ver cabecera de arriba), su "próxima ocurrencia" SIEMPRE
+// está hoy o por delante salvo en un único caso: cuando HOY es justo su
+// `dia_semana` Y la hora actual ya rebasó su `hora_fin` (ese caso concreto
+// de HOY sí "ya transcurrió"; la próxima ocurrencia, la semana entrante,
+// vuelve a estar en el futuro y por tanto no debe ocultarse el resto de la
+// semana).
+//
+// BUG CORREGIDO (item 2): una versión anterior de esta función regresaba
+// `true` (concluida) para CUALQUIER día que no fuera exactamente el
+// `dia_semana` de la clase — es decir, ocultaba una clase de "Miércoles"
+// los otros 6 días de la semana, incluyendo el día en que se acababa de
+// crear si hoy no era miércoles. Por eso una clase nueva para una fecha
+// futura (ej. 16/09/2026, un miércoles) desaparecía de inmediato de "Clases"
+// y del Portal ("Todavía no hay clases creadas"/"Este club todavía no
+// publicó clases grupales") aunque el Cronograma sí la dibujara bien (lee
+// directo de `reservas`, con fecha real, sin pasar por esta función).
 function claseYaConcluyoHoy(clase, ahoraDate = new Date()) {
   const diaInfo = DIA_ACADEMIA_POR_VALOR[clase?.dia_semana];
   if (!diaInfo) return false;
+  // Hoy no es su día → su próxima ocurrencia sigue por delante (esta semana
+  // o la que sigue) — NUNCA cuenta como "ya concluida" solo por eso.
+  if (diaInfo.indice !== ahoraDate.getDay()) return false;
   const minFin = parseHoraAMinutos(clase?.hora_fin);
   if (minFin === null) return false;
-  // REGLA ESTRICTA DE EXPIRACIÓN (absoluta, sin importar cupos): antes esta
-  // función solo evaluaba la ocurrencia de HOY (`diaInfo.indice !==
-  // ahoraDate.getDay()` cortaba en `false` de inmediato cualquier otro día),
-  // así que una clase de "Miércoles" se veía Activa TODO el resto de la
-  // semana (jueves, viernes...) en cuanto dejaba de ser miércoles — el
-  // sistema nunca llegaba a comparar su fecha/hora de fin real contra
-  // "ahora" fuera de su propio día. Aquí se calcula la fecha de la
-  // ocurrencia MÁS RECIENTE de `dia_semana` (hoy mismo si coincide, o hasta
-  // 6 días atrás) y se compara esa fecha+hora_fin contra el momento actual
-  // sin importar cupos disponibles — si ya quedó en el pasado, la clase se
-  // considera Concluida/Finalizada hasta que su día vuelva a coincidir con
-  // "hoy" la próxima semana (entonces esta misma cuenta vuelve a dar 0 días
-  // de diferencia y se re-evalúa como una ocurrencia nueva).
-  const diasDesdeUltimaOcurrencia = (ahoraDate.getDay() - diaInfo.indice + 7) % 7;
-  if (diasDesdeUltimaOcurrencia > 0) return true;
-  const fechaFin = new Date(
-    ahoraDate.getFullYear(),
-    ahoraDate.getMonth(),
-    ahoraDate.getDate(),
-    Math.floor(minFin / 60),
-    minFin % 60,
-    0,
-    0
-  );
-  return fechaFin < ahoraDate;
+  const minAhora = ahoraDate.getHours() * 60 + ahoraDate.getMinutes();
+  return minFin <= minAhora;
 }
 
 // Reverso de `DIA_ACADEMIA_POR_VALOR`: dado un ISO de fecha, regresa la
@@ -28288,17 +28348,31 @@ function PortalPublicoJugadores({ clubSlug }) {
 
     const itemsReservas = (reservas || [])
       .filter((r) => r.jugador_id && jugador.id && r.jugador_id === jugador.id)
-      .map((r) => ({
-        id: `reserva-${r.id}`,
-        tipo: 'reserva',
-        icon: CalendarDays,
-        titulo: `Reserva de Cancha · ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}`,
-        detalle: `${formatoFechaLarga(r.fecha)}${r.hora_inicio ? ` · ${formatoHora12(r.hora_inicio)}` : ''}`,
-        estadoPago: r.estado_pago,
-        metodoPago: r.metodo_pago || null,
-        monto: Number(r.monto_total || 0) + Number(r.monto_addons || 0),
-        fechaOrden: `${r.fecha || ''}T${r.hora_inicio || '00:00'}`,
-      }));
+      .map((r) => {
+        // Desglose de Add-ons / Tienda (item 1) — cuando la reserva llevó
+        // venta cruzada de Tienda (grips, bebidas, accesorios elegidos al
+        // reservar, ver `addons_detalle` en `confirmarReservaConAddons`), el
+        // Historial cobraba el TOTAL ($790 = $700 cancha + $90 Overgrip)
+        // pero la tarjeta solo decía "Reserva de Cancha" — sin listar qué
+        // se compró junto con ella. Ahora se arma un resumen tipo
+        // "Overgrip ×1" por cada renglón y se agrega al título, ej.
+        // "Reserva Cancha 2 + Overgrip ×1".
+        const addonsDetalle = Array.isArray(r.addons_detalle) ? r.addons_detalle : [];
+        const resumenAddons = addonsDetalle
+          .map((a) => `${a?.nombre || 'Artículo'}${Number(a?.cantidad) > 1 ? ` ×${a.cantidad}` : ''}`)
+          .join(' + ');
+        return {
+          id: `reserva-${r.id}`,
+          tipo: 'reserva',
+          icon: CalendarDays,
+          titulo: `Reserva de Cancha · ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}${resumenAddons ? ` + ${resumenAddons}` : ''}`,
+          detalle: `${formatoFechaLarga(r.fecha)}${r.hora_inicio ? ` · ${formatoHora12(r.hora_inicio)}` : ''}`,
+          estadoPago: r.estado_pago,
+          metodoPago: r.metodo_pago || null,
+          monto: Number(r.monto_total || 0) + Number(r.monto_addons || 0),
+          fechaOrden: `${r.fecha || ''}T${r.hora_inicio || '00:00'}`,
+        };
+      });
 
     const itemsCompras = (comprasTiendaPortal || []).map((v) => ({
       id: `venta-${v.id}`,
