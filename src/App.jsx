@@ -3171,6 +3171,12 @@ const TIPO_ALERTA_META = {
   // ver `alertas_reabastecimiento` (migracion_v18) y el handler dedicado en
   // el canal `centro-alertas-club`.
   reabastecimiento: { icon: PackagePlus, color: 'text-amber-400', bg: 'bg-amber-400/10' },
+  // Motor de Cortesías (migracion_v35, mejora): tampoco viene del Portal
+  // Web — la dispara `DirectorioJugadoresCRM` (`crearNotificacionClub`) en
+  // el instante en que una venta hace que un jugador cruce el 100% de su
+  // meta de cortesía (Pro-Shop o Restaurante/Bar), mismo criterio interno
+  // que `reabastecimiento`.
+  cortesia_lista: { icon: Gift, color: 'text-lime-400', bg: 'bg-lime-400/10' },
 };
 
 // Centro de Alertas del Club: campana con contador de no leídas + dropdown,
@@ -5920,6 +5926,8 @@ function ComandaPanel({
   onCambiarClienteTelefono,
   clienteSeleccionadoId = null,
   onSeleccionarCliente,
+  cortesiaDisponible = null,
+  onAbrirCanjeCortesia,
 }) {
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   const vacio = comanda.length === 0;
@@ -6101,6 +6109,35 @@ function ComandaPanel({
               placeholder="Teléfono (10 dígitos) — identificador del cliente"
               inputMode="tel"
             />
+
+            {/* Insignia de Cortesía Disponible (mejora): visible en cuanto se
+                selecciona un cliente DEL DIRECTORIO que ya tiene alguna
+                categoría lista para canjear (`cortesiasDisponiblesPorJugador`,
+                reportado por Directorio & CRM, ver `ModuloSmartPOS`) — acceso
+                directo al mismo `ModalCanjearCortesia` que usa la Vista 360°,
+                para que Recepción se la ofrezca al momento de cobrar. */}
+            {clienteSeleccionadoId && cortesiaDisponible && (cortesiaDisponible.proshop || cortesiaDisponible.bar) && (
+              <div className="flex flex-wrap gap-1.5">
+                {cortesiaDisponible.proshop && (
+                  <button
+                    type="button"
+                    onClick={() => onAbrirCanjeCortesia?.('proshop')}
+                    className="inline-flex animate-pulse items-center gap-1 rounded-full bg-gradient-to-r from-amber-400 to-lime-400 px-2.5 py-1 text-[10px] font-black text-slate-950 shadow-lg shadow-amber-400/20 transition hover:animate-none"
+                  >
+                    <Gift size={11} /> 1 Cortesía Disponible · Pro-Shop
+                  </button>
+                )}
+                {cortesiaDisponible.bar && (
+                  <button
+                    type="button"
+                    onClick={() => onAbrirCanjeCortesia?.('bar')}
+                    className="inline-flex animate-pulse items-center gap-1 rounded-full bg-gradient-to-r from-amber-400 to-lime-400 px-2.5 py-1 text-[10px] font-black text-slate-950 shadow-lg shadow-amber-400/20 transition hover:animate-none"
+                  >
+                    <Gift size={11} /> 1 Cortesía Disponible · Bar
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -7934,6 +7971,10 @@ function ModuloSmartPOS({
   variantesPorProducto,
   upsertVarianteProducto,
   quitarVarianteProductoLocal,
+  cortesiasDisponiblesPorJugador,
+  onActualizarCortesiasDisponibles,
+  metaCortesiaProShop,
+  metaCortesiaBar,
 }) {
   const mostrarToast = useToast();
 
@@ -7960,6 +8001,59 @@ function ModuloSmartPOS({
   const [clienteTelefono, setClienteTelefono] = useState('');
   const [clienteSeleccionadoId, setClienteSeleccionadoId] = useState(null);
   const directorioJugadoresCRM = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+
+  // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): estado de qué
+  // categoría se está canjeando para el cliente asignado a esta comanda
+  // (`clienteSeleccionadoId`) — null = ningún flujo de canje abierto. Mismo
+  // criterio de reutilización que `ModalPerfilJugadorCRM.confirmarCanjeCortesia`:
+  // reusa `otorgarCortesiaCRM` (ticket $0.00 + descuento real de stock/Kardex
+  // + registro en `cortesias_otorgadas`) en vez de reinventar el flujo aquí.
+  const [canjeCortesiaCategoria, setCanjeCortesiaCategoria] = useState(null);
+  const [canjeandoCortesiaPOS, setCanjeandoCortesiaPOS] = useState(false);
+  const cortesiaClienteActual = clienteSeleccionadoId ? cortesiasDisponiblesPorJugador?.[clienteSeleccionadoId] : null;
+
+  async function confirmarCanjeCortesiaPOS({ producto, variante }) {
+    if (canjeandoCortesiaPOS) return { ok: false, error: new Error('Ya hay un canje en curso.') };
+    const categoria = canjeCortesiaCategoria;
+    const meta = categoria === 'bar' ? metaCortesiaBar || META_CORTESIA_BAR_DEFAULT : metaCortesiaProShop || META_CORTESIA_PROSHOP_DEFAULT;
+    setCanjeandoCortesiaPOS(true);
+    const resultado = await otorgarCortesiaCRM({
+      jugador: { id: clienteSeleccionadoId, nombre: clienteNombre },
+      categoria,
+      producto,
+      variante,
+      operador,
+      turno,
+      upsertProducto,
+      upsertVarianteProducto,
+      productos,
+      variantesPorProducto,
+      metaAplicada: meta,
+    });
+    setCanjeandoCortesiaPOS(false);
+    if (resultado.ok) {
+      setCanjeCortesiaCategoria(null);
+      // Reset Inmediato del Progreso (mismo fix crítico que en Directorio &
+      // CRM): apaga la insignia de ESTE jugador de inmediato, sin esperar a
+      // que alguien tenga abierto Directorio & CRM para que se recalcule —
+      // `DirectorioJugadoresCRM` la vuelve a encender con el dato
+      // autoritativo de Supabase en cuanto se abra/refresque de nuevo.
+      onActualizarCortesiasDisponibles?.((prev) => {
+        const actual = prev?.[clienteSeleccionadoId];
+        if (!actual) return prev;
+        const siguiente = { ...actual, [categoria]: false };
+        if (!siguiente.bar && !siguiente.proshop) {
+          const { [clienteSeleccionadoId]: _quitar, ...resto } = prev;
+          return resto;
+        }
+        return { ...prev, [clienteSeleccionadoId]: siguiente };
+      });
+      mostrarToast({ titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' });
+    } else {
+      mostrarToast({ titulo: 'No se pudo otorgar la cortesía', detalle: resultado.error?.message || 'Intenta de nuevo.', tono: 'error' });
+    }
+    return resultado;
+  }
 
   /* ---------------- "Padel POS Operativo": Roster de Cancha & Split Bill Asimétrico ---------------- */
 
@@ -10036,9 +10130,24 @@ function ModuloSmartPOS({
           onCambiarClienteTelefono={setClienteTelefono}
           clienteSeleccionadoId={clienteSeleccionadoId}
           onSeleccionarCliente={setClienteSeleccionadoId}
+          cortesiaDisponible={cortesiaClienteActual}
+          onAbrirCanjeCortesia={setCanjeCortesiaCategoria}
         />
           </div>
         </>
+      )}
+
+      {canjeCortesiaCategoria && (
+        <ModalCanjearCortesia
+          jugador={{ id: clienteSeleccionadoId, nombre: clienteNombre }}
+          categoria={canjeCortesiaCategoria}
+          meta={canjeCortesiaCategoria === 'bar' ? metaCortesiaBar || META_CORTESIA_BAR_DEFAULT : metaCortesiaProShop || META_CORTESIA_PROSHOP_DEFAULT}
+          productos={productos}
+          variantesPorProducto={variantesPorProducto}
+          procesando={canjeandoCortesiaPOS}
+          onConfirmar={confirmarCanjeCortesiaPOS}
+          onClose={() => setCanjeCortesiaCategoria(null)}
+        />
       )}
 
       {modalCobro && (
@@ -25315,6 +25424,7 @@ function DirectorioJugadoresCRM({
   metaCortesiaBar,
   onGuardarMetasCortesia,
   guardandoMetasCortesia,
+  onEstadoCortesiasCambio,
 }) {
   /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
    * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
@@ -25877,6 +25987,76 @@ function DirectorioJugadoresCRM({
     cortesiasOtorgadas,
   ]);
 
+  // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): reporta hacia
+  // `AppInterno` un mapa LIVIANO `{ [jugadorId]: { bar, proshop } }` (solo
+  // booleanos `lista`, no el desglose completo) cada vez que `perfiles`
+  // recalcula — así `ModuloSmartPOS` puede mostrar la insignia al
+  // seleccionar un cliente SIN duplicar el fetch pesado de
+  // `ventasHistoricas`/canal Realtime que ya vive aquí (Regla de Oro: un
+  // solo fetch/canal por tabla, el resultado nada más se comparte hacia
+  // arriba). Puede quedar "desactualizado" mientras nadie tenga abierto
+  // Directorio & CRM — se refresca solo en cuanto alguien lo vuelve a abrir.
+  useEffect(() => {
+    if (!onEstadoCortesiasCambio) return;
+    const mapa = {};
+    perfiles.forEach((p) => {
+      const bar = Boolean(p.cortesiaBar?.lista);
+      const proshop = Boolean(p.cortesiaProShop?.lista);
+      if (bar || proshop) mapa[p.id] = { bar, proshop };
+    });
+    onEstadoCortesiasCambio(mapa);
+  }, [perfiles, onEstadoCortesiasCambio]);
+
+  // Alerta de Staff en Tiempo Real (mejora): notifica el momento EXACTO en
+  // que una venta hace que un jugador CRUCE el 100% de su meta de cortesía
+  // (Pro-Shop o Restaurante/Bar) — no cada vez que `perfiles` recalcula
+  // (`lista` se queda en `true` aunque el jugador siga comprando después de
+  // cruzar la meta). Se compara el `lista` de este render contra el último
+  // visto (`useRef`, por jugador+categoría) y solo se avisa en la
+  // transición `false -> true`. El PRIMER cálculo de `perfiles` tras montar
+  // este componente (o recargar la página) se usa nada más como línea
+  // base — nunca dispara una alerta retroactiva de algo que ya estaba listo
+  // antes de abrir esta pantalla.
+  // Reutiliza el mecanismo YA EXISTENTE de `notificaciones_club`
+  // (`crearNotificacionClub`, mismo que "Nueva reserva desde el Portal")
+  // en vez de inventar uno nuevo: cualquier fila insertada ahí llega EN
+  // TIEMPO REAL a TODAS las sesiones abiertas de este club (canal
+  // `notificaciones_club_{club_id}`, ver `AppInterno`) como toast + entrada
+  // en la campana — cross-device, sin reconstruir ese mecanismo.
+  const listaAnteriorCortesiaRef = useRef(null);
+  useEffect(() => {
+    const anterior = listaAnteriorCortesiaRef.current;
+    const actual = new Map();
+    perfiles.forEach((p) => {
+      actual.set(`${p.id}:bar`, Boolean(p.cortesiaBar?.lista));
+      actual.set(`${p.id}:proshop`, Boolean(p.cortesiaProShop?.lista));
+    });
+
+    if (anterior) {
+      perfiles.forEach((p) => {
+        [
+          { categoria: 'proshop', datos: p.cortesiaProShop, etiqueta: 'Pro-Shop' },
+          { categoria: 'bar', datos: p.cortesiaBar, etiqueta: 'Restaurant-Bar' },
+        ].forEach(({ categoria, datos, etiqueta }) => {
+          const clave = `${p.id}:${categoria}`;
+          const listaAhora = Boolean(datos?.lista);
+          const listaAntes = anterior.get(clave) || false;
+          if (listaAhora && !listaAntes) {
+            crearNotificacionClub({
+              tipo: 'cortesia_lista',
+              titulo: `🎁 ¡${p.nombre} acaba de alcanzar su meta de cortesía en ${etiqueta}!`,
+              jugadorId: p.id,
+              jugadorNombre: p.nombre,
+              payload: { categoria, meta: datos?.meta || null },
+            });
+          }
+        });
+      });
+    }
+
+    listaAnteriorCortesiaRef.current = actual;
+  }, [perfiles]);
+
   /* ---- Búsqueda, filtros y resumen ejecutivo ---- */
   const [busqueda, setBusqueda] = useState('');
   const [filtroSegmento, setFiltroSegmento] = useState('todos');
@@ -26052,8 +26232,37 @@ function DirectorioJugadoresCRM({
           operador={operador}
           upsertProducto={upsertProducto}
           upsertVarianteProducto={upsertVarianteProducto}
-          onCortesiaOtorgada={async (resultado) => {
-            await cargarCortesiasOtorgadas();
+          onCortesiaOtorgada={(resultado) => {
+            // FIX DE SEGURIDAD CRÍTICO (Reset Inmediato del Progreso): antes
+            // la barra solo se reiniciaba cuando `cargarCortesiasOtorgadas()`
+            // terminaba de ir y volver a Supabase — una ventana real en la
+            // que el Candado de Seguridad seguía viendo `lista: true` y
+            // permitía otorgar cortesías consecutivas de la MISMA categoría
+            // al mismo jugador. Ahora `cortesiasOtorgadas` se actualiza de
+            // forma OPTIMISTA Y SÍNCRONA apenas `otorgarCortesiaCRM` regresa
+            // `ok: true` — `perfiles` (que depende de `cortesiasOtorgadas`,
+            // ver su arreglo de dependencias) recalcula en el mismo ciclo de
+            // render y la barra pasa a $0/$Meta y el botón vuelve a
+            // "Bloqueado hasta llegar al 100%" al instante, sin esperar
+            // ninguna vuelta de red.
+            setCortesiasOtorgadas((prev) => [
+              resultado.registro || {
+                // El ticket y el stock YA se aplicaron de verdad (ver
+                // `otorgarCortesiaCRM`), pero el registro real en
+                // `cortesias_otorgadas` no se pudo guardar (tabla sin
+                // migrar/columna faltante) — se sintetiza una entrada SOLO
+                // LOCAL (id con prefijo `local-`, nunca se manda a Supabase)
+                // para que el progreso de ESTA sesión igual se reinicie de
+                // inmediato; ver el `if` de abajo, que a propósito NO
+                // recarga desde Supabase en este caso para no perderla.
+                id: `local-${Date.now()}`,
+                jugador_id: resultado.jugadorId,
+                jugador_nombre: resultado.jugadorNombre,
+                categoria: resultado.categoria,
+                created_at: new Date().toISOString(),
+              },
+              ...prev,
+            ]);
             mostrarToast(
               resultado.registro
                 ? { titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' }
@@ -26063,6 +26272,15 @@ function DirectorioJugadoresCRM({
                     tono: 'aviso',
                   }
             );
+            // Reconciliación en segundo plano — SOLO cuando sí hay un
+            // registro real en Supabase: reemplaza la lista optimista por la
+            // autoritativa (además de propagar el canje a otros
+            // dispositivos abiertos de este club, junto con el eco del canal
+            // `jugadores-crm-cortesias`). Si `resultado.registro` es `null`
+            // (caso sintético de arriba), NO se recarga — `cargarCortesiasOtorgadas()`
+            // reemplaza el arreglo completo y borraría la entrada local
+            // recién sintetizada, ya que Supabase nunca llegó a guardarla.
+            if (resultado.registro) cargarCortesiasOtorgadas();
           }}
         />
       )}
@@ -26587,6 +26805,12 @@ function ModalPerfilJugadorCRM({
   // flujo solo es alcanzable desde el botón de `BarraProgresoCortesia`,
   // que no existe hasta `lista === true`).
   async function confirmarCanjeCortesia({ producto, variante }) {
+    // Candado contra doble-clic/doble-canje: mientras `canjeando` ya está en
+    // `true`, cualquier confirmación adicional (doble clic, doble tap) se
+    // ignora — sin este guardia, dos canjes podrían alcanzar a dispararse
+    // antes de que el primero termine y el Reset Inmediato de arriba
+    // deshabilite el botón.
+    if (canjeando) return { ok: false, error: new Error('Ya hay un canje en curso.') };
     const categoria = canjeCategoria;
     const meta = categoria === 'bar' ? perfil.cortesiaBar?.meta : perfil.cortesiaProShop?.meta;
     setCanjeando(true);
@@ -26605,7 +26829,11 @@ function ModalPerfilJugadorCRM({
     setCanjeando(false);
     if (resultado.ok) {
       setCanjeCategoria(null);
-      onCortesiaOtorgada?.(resultado);
+      // Contexto extra (jugador/categoría) para que `onCortesiaOtorgada`
+      // (en `DirectorioJugadoresCRM`) pueda reiniciar el progreso de forma
+      // optimista sin depender de `resultado.registro` (puede venir `null`
+      // si solo falló el paso 3 de `otorgarCortesiaCRM`).
+      onCortesiaOtorgada?.({ ...resultado, jugadorId: perfil.id, jugadorNombre: perfil.nombre, categoria });
     }
     return resultado;
   }
@@ -26866,6 +27094,7 @@ function ModuloJugadores({
   metaCortesiaBar,
   onGuardarMetasCortesia,
   guardandoMetasCortesia,
+  onEstadoCortesiasCambio,
 }) {
   const [subvista, setSubvista] = useState('crm');
   const subvistas = [
@@ -26926,6 +27155,7 @@ function ModuloJugadores({
           metaCortesiaBar={metaCortesiaBar}
           onGuardarMetasCortesia={onGuardarMetasCortesia}
           guardandoMetasCortesia={guardandoMetasCortesia}
+          onEstadoCortesiasCambio={onEstadoCortesiasCambio}
         />
       )}
 
@@ -32549,6 +32779,16 @@ function AppInterno() {
   const [metaCortesiaBar, setMetaCortesiaBar] = useState(metasCortesiaLocalIniciales.bar ?? null);
   const [guardandoMetasCortesia, setGuardandoMetasCortesia] = useState(false);
 
+  // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): mapa LIVIANO
+  // `{ [jugadorId]: { bar, proshop } }` de qué jugadores tienen ALGUNA
+  // cortesía lista para canjear — `DirectorioJugadoresCRM` (Directorio &
+  // CRM, que ya trae el historial completo de compras) lo recalcula y lo
+  // reporta hacia aquí cada vez que cambia (`onEstadoCortesiasCambio`), y
+  // `ModuloSmartPOS` solo lo LEE al seleccionar un cliente — evita duplicar
+  // el fetch pesado de `ventasHistoricas`/su canal Realtime (Regla de Oro)
+  // en un módulo que no los necesita para nada más.
+  const [cortesiasDisponiblesPorJugador, setCortesiasDisponiblesPorJugador] = useState({});
+
   // Título de la pestaña del navegador: antes quedaba fijo en "Smash Pádel
   // Club" (ver `index.html`), roto para cualquier OTRO club que use ClubOS.
   // `index.html` ahora trae un genérico "ClubOS" como valor inicial (antes
@@ -33306,7 +33546,15 @@ function AppInterno() {
     ({ tipo, titulo, jugadorId }) => {
       const id = `${tipo}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       setAlertasClub((prev) => [{ id, tipo, titulo, jugadorId: jugadorId || null, leida: false, creadaEn: Date.now() }, ...prev].slice(0, 40));
-      mostrarToast({ titulo: 'Nueva actividad del Portal Web', detalle: titulo });
+      // El encabezado del toast distingue el Motor de Cortesías (evento
+      // INTERNO del club — se dispara desde Smart POS/Directorio & CRM,
+      // nunca desde el Portal Público) del resto de tipos de alerta (esos sí
+      // son actividad real del Portal Web) — mismo `tipo: 'cortesia_lista'`
+      // que inserta `DirectorioJugadoresCRM` en `notificaciones_club`.
+      mostrarToast({
+        titulo: tipo === 'cortesia_lista' ? '🎁 Cortesía de Fidelidad Lista' : 'Nueva actividad del Portal Web',
+        detalle: titulo,
+      });
     },
     [mostrarToast]
   );
@@ -33802,6 +34050,10 @@ function AppInterno() {
                 variantesPorProducto={variantesPorProducto}
                 upsertVarianteProducto={upsertVarianteProducto}
                 quitarVarianteProductoLocal={quitarVarianteProductoLocal}
+                cortesiasDisponiblesPorJugador={cortesiasDisponiblesPorJugador}
+                onActualizarCortesiasDisponibles={setCortesiasDisponiblesPorJugador}
+                metaCortesiaProShop={metaCortesiaProShop}
+                metaCortesiaBar={metaCortesiaBar}
               />
             ) : moduloActivo === 'erp' ? (
               <ModuloERPInventario
@@ -33874,6 +34126,7 @@ function AppInterno() {
                 metaCortesiaBar={metaCortesiaBar}
                 onGuardarMetasCortesia={guardarMetasCortesia}
                 guardandoMetasCortesia={guardandoMetasCortesia}
+                onEstadoCortesiasCambio={setCortesiasDisponiblesPorJugador}
               />
             ) : moduloActivo === 'torneos' ? (
               <ModuloTorneosRetas
