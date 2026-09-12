@@ -24510,7 +24510,26 @@ function ModuloAcademiaClinicas({
   // ver `eliminarClaseSeleccionada`) — Archivar es la Limpieza Visual
   // reversible nueva, ortogonal a esa.
   const [filtroClase, setFiltroClase] = useState('activas'); // 'activas' | 'archivadas'
-  const clasesArchivadas = useMemo(() => todasLasClasesAcademia.filter((c) => c.archivado === true), [todasLasClasesAcademia]);
+  // AUTO-ARCHIVADO AUTOMÁTICO AL CONCLUIR (item 2): antes, una clase
+  // concluida (`claseYaConcluyoHoy`) solo desaparecía de "Activas" pero
+  // nunca aterrizaba en "Archivadas" (esa pestaña solo miraba la columna
+  // persistida `archivado === true`, que el reloj nunca tocaba) — quedaba
+  // en un limbo invisible en ambas pestañas, como si nunca hubiera
+  // existido. Ahora "Archivadas" es la unión de el archivado MANUAL
+  // (`archivado === true`, botón Archivar/Restaurar) Y el archivado
+  // AUTOMÁTICO por tiempo (`now() >= fecha+hora_fin`) — apenas concluye, la
+  // clase se mueve sola a "Archivadas" sin esperar clic del operador. Las
+  // CANCELADAS quedan excluidas del archivado automático por tiempo (igual
+  // que antes): se quedan visibles en "Activas" con badge "Cancelada" hasta
+  // que el operador las archive a mano — si el reloj también las archivara
+  // solas, el botón Archivar jamás podría alcanzarlas.
+  const clasesArchivadas = useMemo(
+    () =>
+      todasLasClasesAcademia.filter(
+        (c) => c.archivado === true || (c.estado !== 'cancelada' && claseYaConcluyoHoy(c, new Date(tickAcademia)))
+      ),
+    [todasLasClasesAcademia, tickAcademia]
+  );
   // PURGA ESTRICTA DE CLASES PASADAS (item 3) + BOTÓN MANUAL DE ARCHIVADO
   // (item 5, Turno 3): la pestaña "Activas" de la Parrilla de Clases aplica
   // el mismo criterio riguroso que el Portal (`claseYaConcluyoHoy` — futuras
@@ -24520,12 +24539,15 @@ function ModuloAcademiaClinicas({
   // hasta que el operador las archive a mano — si se ocultaran solas junto
   // con las concluidas, el botón Archivar jamás podría alcanzarlas y
   // desaparecerían sin dejar rastro en ninguna pestaña. La pestaña
-  // "Archivadas" es una Limpieza Visual manual y separada — nunca se ve
-  // afectada por el reloj, solo por el botón Archivar/Restaurar.
+  // "Archivadas" ahora refleja `clasesArchivadas` de arriba (manual + por
+  // tiempo), así que una clase concluida sí se ve reflejada ahí, no solo
+  // "desaparece" de Activas.
   const clasesVisibles = useMemo(
     () =>
       todasLasClasesAcademia.filter((c) => {
-        if (filtroClase === 'archivadas') return c.archivado === true;
+        if (filtroClase === 'archivadas') {
+          return c.archivado === true || (c.estado !== 'cancelada' && claseYaConcluyoHoy(c, new Date(tickAcademia)));
+        }
         if (c.archivado === true) return false;
         if (c.estado === 'cancelada') return true;
         return !claseYaConcluyoHoy(c, new Date(tickAcademia));
@@ -24873,7 +24895,11 @@ function ModuloAcademiaClinicas({
                     alumnosActivos={alumnosActivosPorClase[c.id] || []}
                     onVerDetalle={() => setClaseSeleccionadaId(c.id)}
                     iniciadaHoy={claseYaInicioHoy(c, new Date(tickAcademia))}
-                    archivado={c.archivado === true}
+                    // Visual de "Archivada" = archivado MANUAL (botón) O
+                    // AUTOMÁTICO por tiempo ya concluido — para que la
+                    // tarjeta se vea consistente con la pestaña en la que
+                    // está parada (ver `clasesArchivadas` arriba).
+                    archivado={c.archivado === true || (c.estado !== 'cancelada' && claseYaConcluyoHoy(c, new Date(tickAcademia)))}
                     onArchivar={archivarClase}
                     actualizandoArchivo={actualizandoArchivoClaseId === c.id}
                   />
@@ -27629,15 +27655,22 @@ function PortalPublicoJugadores({ clubSlug }) {
   );
   const torneosActivos = useMemo(() => torneos.filter((t) => t.archivado !== true && t.estado !== 'finalizado'), [torneos]);
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
-  // PURGA ESTRICTA DE CLASES PASADAS: una clase desaparece del catálogo
-  // público en cuanto `archivado === true` O su `fecha + hora_fin` ya
-  // CONCLUYÓ (`claseYaConcluyoHoy` — a propósito NO usa
-  // `claseYaInicioHoy`/`hora_inicio`: una clase "en curso" sigue contando
-  // como activa, solo se oculta una vez que terminó). Arquitectura de Fecha
-  // Única: al ser una sesión de una sola fecha, una vez oculta NUNCA vuelve
-  // a reaparecer sola (no hay "próxima semana").
+  // OCULTAMIENTO INMEDIATO AL INICIAR LA CLASE: una clase desaparece del
+  // catálogo público en cuanto `archivado === true`, O su `fecha + hora_fin`
+  // ya CONCLUYÓ (`claseYaConcluyoHoy`), O — corrección crítica — en cuanto
+  // arranca su `hora_inicio` (`claseYaInicioHoy`). Antes se usaba
+  // deliberadamente solo `claseYaConcluyoHoy`, dejando una clase "en curso"
+  // visible e inscribible en el Portal todo su horario (el panel interno ya
+  // la marcaba "CLASE INICIADA" mientras el Portal seguía dejando abrir el
+  // modal de pago) — ahora el Portal exige `hora_inicio` estrictamente
+  // FUTURA (`hora_inicio > now()`), igual que ya hacían Retas (`eventoYaInicio`
+  // en `retasAbiertas`, arriba). Arquitectura de Fecha Única: al ser una
+  // sesión de una sola fecha, una vez oculta NUNCA vuelve a reaparecer sola.
   const academiaClasesPortalVisibles = useMemo(
-    () => academiaClasesPortal.filter((c) => c.archivado !== true && !claseYaConcluyoHoy(c, new Date(tickPortal))),
+    () =>
+      academiaClasesPortal.filter(
+        (c) => c.archivado !== true && !claseYaConcluyoHoy(c, new Date(tickPortal)) && !claseYaInicioHoy(c, new Date(tickPortal))
+      ),
     [academiaClasesPortal, tickPortal]
   );
 
