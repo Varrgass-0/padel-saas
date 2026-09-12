@@ -15828,18 +15828,27 @@ function ModuloAnalyticsBI({
   /* ---- Ingresos Cruzados por Cancha y Bloque Horario ---- */
   const ingresosCruzados = useMemo(() => {
     const canchasActivas = canchas.filter((c) => c.activa !== false);
-    // Unión deduplicada (por `id`) de `ventasRango` (fecha de cobro dentro
-    // del rango — cubre ventas de mostrador/Tienda sin reserva) con
-    // `ventasPorReservaCruce` (ligadas por `reserva_id` a una reserva YA
-    // confirmada como jugada dentro del rango, sin importar cuándo se
-    // cobraron — ver el comentario completo donde se define, arriba). Esto
-    // es lo que resuelve el item 3: un add-on cobrado el día 11 para una
-    // reserva jugada el día 12 ahora SÍ entra aquí cuando el BI está
-    // filtrado al día 12, y se consolida bajo la fecha/bloque de la reserva
-    // más abajo (`reservaLigada`), en vez de perderse o quedar huérfano.
+    // Exclusividad de Add-ons ligados a una reserva (corrección de
+    // seguimiento al item 3): una venta con `reserva_id` se atribuye
+    // EXCLUSIVAMENTE a la fecha/bloque de SU reserva — nunca a su propia
+    // fecha de cobro. Antes se armaba la unión con `ventasRango` (fecha de
+    // cobro) PRIMERO y `ventasPorReservaCruce` (fecha de la reserva)
+    // encima — como ambos conjuntos podían traer el MISMO id de venta (una
+    // venta cobrada el mismo rango que se está viendo), la venta terminaba
+    // contandose en las DOS fechas: el día 11 (cobro, vía `ventasRango`,
+    // sin filtrar `reserva_id`) Y el día 12 (juego, vía
+    // `ventasPorReservaCruce`) — el Overgrip aparecía duplicado en vez de
+    // solo bajo la cancha. Ahora `ventasRango` se usa ÚNICAMENTE para
+    // ventas SIN `reserva_id` (mostrador/Tienda sueltos, que sí se cobran y
+    // consumen el mismo día por definición); toda venta CON `reserva_id`
+    // llega nada más por `ventasPorReservaCruce` — que ya viene acotada a
+    // reservas jugadas dentro del rango activo (`reservasActivasPagadas`),
+    // así que una venta ligada a una reserva FUERA de este rango
+    // simplemente no aparece aquí (aparecerá sola al navegar al rango real
+    // de esa reserva).
     const ventasPagadasMapa = new Map();
     ventasRango.forEach((v) => {
-      if (v.estado_pago === 'pagado' && v?.id != null) ventasPagadasMapa.set(v.id, v);
+      if (v.estado_pago === 'pagado' && v?.id != null && v.reserva_id == null) ventasPagadasMapa.set(v.id, v);
     });
     ventasPorReservaCruce.forEach((v) => {
       if (v.estado_pago === 'pagado' && v?.id != null) ventasPagadasMapa.set(v.id, v);
@@ -21895,38 +21904,66 @@ function claseYaInicioHoy(clase, ahoraDate = new Date()) {
   return minInicio !== null && minInicio <= minAhora;
 }
 
-// Purga y Ocultamiento de Clases Pasadas — Regla de "Clases Activas" (item 2
-// de esta corrección): a diferencia de `claseYaInicioHoy` (usada solo para
-// el badge informativo "Clase Iniciada" y para bloquear NUEVAS inscripciones
-// una vez arrancada), esta variante decide si la clase debe DESAPARECER por
-// completo de la lista de "Clases Activas" — Portal y Parrilla de Academia.
-// Regla pedida explícitamente: activa = HOY O EN EL FUTURO; solo se oculta
-// cuando su fecha/hora de fin YA TRANSCURRIÓ en el pasado. Como
-// `academia_clases` es RECURRENTE por día de la semana (`dia_semana`, sin
-// `fecha` propia — ver cabecera de arriba), su "próxima ocurrencia" SIEMPRE
-// está hoy o por delante salvo en un único caso: cuando HOY es justo su
-// `dia_semana` Y la hora actual ya rebasó su `hora_fin` (ese caso concreto
-// de HOY sí "ya transcurrió"; la próxima ocurrencia, la semana entrante,
-// vuelve a estar en el futuro y por tanto no debe ocultarse el resto de la
-// semana).
+// Purga y Ocultamiento de Clases Pasadas — Regla de "Clases Activas". A
+// diferencia de `claseYaInicioHoy` (usada solo para el badge informativo
+// "Clase Iniciada" y para bloquear NUEVAS inscripciones una vez arrancada),
+// esta variante decide si la clase debe DESAPARECER por completo de la
+// lista de "Clases Activas" — Portal y Parrilla de Academia. Regla pedida
+// explícitamente: activa = HOY O EN EL FUTURO; solo se oculta cuando su
+// fecha/hora de fin YA TRANSCURRIÓ en el pasado.
 //
-// BUG CORREGIDO (item 2): una versión anterior de esta función regresaba
-// `true` (concluida) para CUALQUIER día que no fuera exactamente el
-// `dia_semana` de la clase — es decir, ocultaba una clase de "Miércoles"
-// los otros 6 días de la semana, incluyendo el día en que se acababa de
-// crear si hoy no era miércoles. Por eso una clase nueva para una fecha
-// futura (ej. 16/09/2026, un miércoles) desaparecía de inmediato de "Clases"
-// y del Portal ("Todavía no hay clases creadas"/"Este club todavía no
-// publicó clases grupales") aunque el Cronograma sí la dibujara bien (lee
-// directo de `reservas`, con fecha real, sin pasar por esta función).
+// `academia_clases` puede representar 2 cosas distintas (ver `ModalNuevaClase`
+// / migracion_v33, columna `serie_recurrente` + `fecha`):
+//   (a) Serie Recurrente real (`serie_recurrente: true`, la casilla "Repetir
+//       semanalmente" marcada al crearla, o cualquier clase creada ANTES de
+//       migracion_v33 — default `true` para no cambiarles el comportamiento
+//       de siempre): es RECURRENTE por día de la semana, SIN fecha límite
+//       propia — su "próxima ocurrencia" SIEMPRE está hoy o por delante,
+//       salvo el único caso concreto de HOY: si HOY es justo su
+//       `dia_semana` y la hora actual ya rebasó su `hora_fin`, HOY ya
+//       transcurrió — pero la próxima semana vuelve a estar en el futuro,
+//       así que NO debe ocultarse el resto de la semana por eso.
+//   (b) Sesión de Fecha Única (`serie_recurrente: false` + `fecha` real —
+//       el default al crear una clase SIN marcar "Repetir semanalmente"):
+//       es un evento de una sola vez, como una Reta — concluye en definitiva
+//       en cuanto esa fecha+hora_fin exacta ya quedó en el pasado, sin
+//       importar qué día de la semana sea "hoy" después. Este es el caso
+//       corregido en esta versión: antes, una clase de una sola sesión (ej.
+//       "Miércoles 9 de Septiembre 7:00–8:00am") se trataba SIEMPRE como
+//       recurrente por `dia_semana` — seguía apareciendo "Activa" el resto
+//       de la semana e indefinidamente las siguientes, como si volviera a
+//       ocurrir cada miércoles, aunque esa sesión puntual ya hubiera pasado
+//       y jamás se fuera a repetir.
+//
+// BUG CORREGIDO EN UNA VERSIÓN ANTERIOR (para referencia): la función
+// llegó a regresar `true` (concluida) para CUALQUIER día que no fuera
+// exactamente el `dia_semana` de la clase — ocultaba una clase recurrente
+// de "Miércoles" los otros 6 días de la semana, incluso el día en que se
+// acababa de crear si hoy no era miércoles (una clase nueva para una fecha
+// futura desaparecía de inmediato). Ambos bugs ya quedan cubiertos: (a)
+// nunca oculta una serie recurrente fuera de su propio día, y (b) sí oculta
+// en definitiva una sesión de fecha única una vez que esa fecha concreta
+// concluyó.
 function claseYaConcluyoHoy(clase, ahoraDate = new Date()) {
+  const minFin = parseHoraAMinutos(clase?.hora_fin);
+  if (minFin === null) return false;
+
+  // (b) Sesión de Fecha Única: compara la fecha real exacta + hora_fin
+  // contra "ahora" — sin volver a mirar `dia_semana` para nada.
+  if (clase?.serie_recurrente === false && clase?.fecha) {
+    const fechaFin = new Date(`${clase.fecha}T00:00:00`);
+    if (Number.isNaN(fechaFin.getTime())) return false;
+    fechaFin.setHours(Math.floor(minFin / 60), minFin % 60, 0, 0);
+    return fechaFin < ahoraDate;
+  }
+
+  // (a) Serie Recurrente (o clase legacy sin `serie_recurrente`/`fecha`,
+  // que se sigue tratando como recurrente por compatibilidad).
   const diaInfo = DIA_ACADEMIA_POR_VALOR[clase?.dia_semana];
   if (!diaInfo) return false;
   // Hoy no es su día → su próxima ocurrencia sigue por delante (esta semana
   // o la que sigue) — NUNCA cuenta como "ya concluida" solo por eso.
   if (diaInfo.indice !== ahoraDate.getDay()) return false;
-  const minFin = parseHoraAMinutos(clase?.hora_fin);
-  if (minFin === null) return false;
   const minAhora = ahoraDate.getHours() * 60 + ahoraDate.getMinutes();
   return minFin <= minAhora;
 }
@@ -22191,6 +22228,16 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
       precio_mensualidad: Number(precioMensualidad) || 0,
       precio_clase_suelta: Number(precioClaseSuelta) || 0,
       estado: 'activa',
+      // Fecha Única vs. Serie Recurrente (migracion_v33) — refleja en la
+      // propia fila lo que esta misma pantalla ya decide para
+      // `generarSesionesClase` (¿1 sesión puntual, o la serie completa?),
+      // así "Clases Activas" (`claseYaConcluyoHoy`) sabe si debe ocultar
+      // esta clase en cuanto su única fecha ya concluyó, o tratarla como
+      // recurrente para siempre. Sin marcar la casilla, `fecha` guarda la
+      // fecha real de esa sesión única; marcándola, se guarda como
+      // recurrente y `fecha` se deja en null (no aplica un vencimiento).
+      serie_recurrente: generarSerieSemanal,
+      fecha: generarSerieSemanal ? null : fecha,
     });
 
     let claseCreada = null;
@@ -22201,6 +22248,8 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
       'coach_nombre',
       'precio_mensualidad',
       'precio_clase_suelta',
+      'serie_recurrente',
+      'fecha',
     ]);
     if (!errClase && data) {
       claseCreada = data;
