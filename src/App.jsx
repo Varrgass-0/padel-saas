@@ -21553,9 +21553,23 @@ function claseYaInicioHoy(clase, ahoraDate = new Date()) {
 function claseYaConcluyoHoy(clase, ahoraDate = new Date()) {
   const diaInfo = DIA_ACADEMIA_POR_VALOR[clase?.dia_semana];
   if (!diaInfo || diaInfo.indice !== ahoraDate.getDay()) return false;
-  const minAhora = ahoraDate.getHours() * 60 + ahoraDate.getMinutes();
-  const minFin = parseHoraAMinutos(clase.hora_fin);
-  return minFin !== null && minFin <= minAhora;
+  const minFin = parseHoraAMinutos(clase?.hora_fin);
+  if (minFin === null) return false;
+  // Fecha/hora exacta de finalización (YYYY-MM-DD HH:mm) contra el momento
+  // actual, tal como lo pide la Purga Rigurosa por Fecha de Calendario: se
+  // construye un Date real con el año/mes/día de HOY (la clase recurrente ya
+  // fue confirmada arriba como la ocurrencia de ESTA semana) y la hora_fin
+  // de la clase, en vez de comparar solo minutos sueltos.
+  const fechaFin = new Date(
+    ahoraDate.getFullYear(),
+    ahoraDate.getMonth(),
+    ahoraDate.getDate(),
+    Math.floor(minFin / 60),
+    minFin % 60,
+    0,
+    0
+  );
+  return fechaFin < ahoraDate;
 }
 
 // Reverso de `DIA_ACADEMIA_POR_VALOR`: dado un ISO de fecha, regresa la
@@ -22075,7 +22089,12 @@ function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, ini
                 <Archive size={9} /> Archivada
               </span>
             )}
-            {!archivado && iniciadaHoy && (
+            {!archivado && clase.estado === 'cancelada' && (
+              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-rose-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-400 ring-1 ring-rose-400/30">
+                Cancelada
+              </span>
+            )}
+            {!archivado && clase.estado !== 'cancelada' && iniciadaHoy && (
               <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-400 ring-1 ring-amber-400/30">
                 <Lock size={9} /> Clase Iniciada
               </span>
@@ -23863,6 +23882,18 @@ function AnalyticsAcademia({
   );
 }
 
+// Franjas de hora completa (06:00, 07:00 … 24:00, mismo límite
+// `HORA_INICIO_MIN`/`HORA_FIN_MIN` que el resto de la parrilla) para los
+// selectores desplegables de "Horarios Habilitados" — Fix de UI (item 2):
+// reemplaza los `<input type="time">` (cuyo control nativo del navegador
+// dejaba ver un recuadro claro/"fantasma" sobre el tema oscuro, imposible
+// de re-estilizar por completo con CSS) por un `<select>` 100% controlado.
+const OPCIONES_HORA_COMPLETA_ACADEMIA = (() => {
+  const horas = [];
+  for (let m = HORA_INICIO_MIN; m <= HORA_FIN_MIN; m += 60) horas.push(minutosAHora(m));
+  return horas;
+})();
+
 // Configuración de Horarios de Clase del Club (item 2) — el club define
 // aquí sus Rangos de Horario Habilitados para Clases (ej. "Bloque Mañana:
 // 07:00–10:00", "Bloque Tarde: 16:00–20:00"). Se guarda en
@@ -23926,19 +23957,34 @@ function ModalRangosHorarioClases({ rangos, onClose, onGuardar, guardando }) {
                   placeholder="Bloque Mañana"
                   className={`${inputClase} flex-1`}
                 />
-                <input
-                  type="time"
+                {/* FIX DE UI (item 2): `<select>` en vez de `<input type="time">`
+                    — el control nativo de hora dejaba un recuadro claro
+                    "fantasma" a la izquierda sobre el tema oscuro que no se
+                    podía re-estilizar por completo con CSS. Opciones en
+                    horas completas (`OPCIONES_HORA_COMPLETA_ACADEMIA`). */}
+                <select
                   value={r.desde}
                   onChange={(e) => actualizarBloque(r._key, 'desde', e.target.value)}
-                  className={`${inputClase} w-[110px]`}
-                />
+                  className={`${inputClase} w-[92px]`}
+                >
+                  {OPCIONES_HORA_COMPLETA_ACADEMIA.map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
                 <span className="text-slate-500">–</span>
-                <input
-                  type="time"
+                <select
                   value={r.hasta}
                   onChange={(e) => actualizarBloque(r._key, 'hasta', e.target.value)}
-                  className={`${inputClase} w-[110px]`}
-                />
+                  className={`${inputClase} w-[92px]`}
+                >
+                  {OPCIONES_HORA_COMPLETA_ACADEMIA.map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
                 <button
                   type="button"
                   onClick={() => eliminarBloque(r._key)}
@@ -24023,7 +24069,14 @@ function ModuloAcademiaClinicas({
     return mapa;
   }, [canchas]);
 
-  const clasesActivas = useMemo(() => (academiaClases || []).filter((c) => c.estado !== 'cancelada'), [academiaClases]);
+  // Pool completo (TODAS las clases, sin excluir canceladas) — hace falta
+  // aparte de `clasesActivas` porque antes de este ajuste una clase con
+  // `estado: 'cancelada'` quedaba excluida desde aquí y por lo tanto NUNCA
+  // podía aparecer ni en "Activas" ni en "Archivadas": el botón Archivar
+  // era inalcanzable para ella (la tarjeta ya no se renderizaba en ningún
+  // lado). Ver Item 5 (Botón Manual de Archivado).
+  const todasLasClasesAcademia = useMemo(() => academiaClases || [], [academiaClases]);
+  const clasesActivas = useMemo(() => todasLasClasesAcademia.filter((c) => c.estado !== 'cancelada'), [todasLasClasesAcademia]);
 
   // Reloj vivo del módulo — recalcula el Bloqueo Automático por Horario
   // (badge "Clase Iniciada" de `TarjetaClaseAcademia`, ver
@@ -24044,19 +24097,27 @@ function ModuloAcademiaClinicas({
   // ver `eliminarClaseSeleccionada`) — Archivar es la Limpieza Visual
   // reversible nueva, ortogonal a esa.
   const [filtroClase, setFiltroClase] = useState('activas'); // 'activas' | 'archivadas'
-  const clasesArchivadas = useMemo(() => clasesActivas.filter((c) => c.archivado === true), [clasesActivas]);
-  // PURGA ESTRICTA DE CLASES PASADAS (item 3): la pestaña "Activas" de la
-  // Parrilla de Clases aplica el mismo criterio riguroso que el Portal
-  // (`claseYaConcluyoHoy` — futuras o EN CURSO se quedan, solo se oculta
-  // una vez que su horario de HOY ya concluyó del todo). La pestaña
+  const clasesArchivadas = useMemo(() => todasLasClasesAcademia.filter((c) => c.archivado === true), [todasLasClasesAcademia]);
+  // PURGA ESTRICTA DE CLASES PASADAS (item 3) + BOTÓN MANUAL DE ARCHIVADO
+  // (item 5, Turno 3): la pestaña "Activas" de la Parrilla de Clases aplica
+  // el mismo criterio riguroso que el Portal (`claseYaConcluyoHoy` — futuras
+  // o EN CURSO se quedan, solo se oculta una vez que su horario de HOY ya
+  // concluyó del todo). Las clases CANCELADAS son la excepción: se quedan
+  // visibles en "Activas" (con badge "Cancelada" en `TarjetaClaseAcademia`)
+  // hasta que el operador las archive a mano — si se ocultaran solas junto
+  // con las concluidas, el botón Archivar jamás podría alcanzarlas y
+  // desaparecerían sin dejar rastro en ninguna pestaña. La pestaña
   // "Archivadas" es una Limpieza Visual manual y separada — nunca se ve
   // afectada por el reloj, solo por el botón Archivar/Restaurar.
   const clasesVisibles = useMemo(
     () =>
-      clasesActivas.filter((c) =>
-        filtroClase === 'archivadas' ? c.archivado === true : c.archivado !== true && !claseYaConcluyoHoy(c, new Date(tickAcademia))
-      ),
-    [clasesActivas, filtroClase, tickAcademia]
+      todasLasClasesAcademia.filter((c) => {
+        if (filtroClase === 'archivadas') return c.archivado === true;
+        if (c.archivado === true) return false;
+        if (c.estado === 'cancelada') return true;
+        return !claseYaConcluyoHoy(c, new Date(tickAcademia));
+      }),
+    [todasLasClasesAcademia, filtroClase, tickAcademia]
   );
 
   const alumnosActivosPorClase = useMemo(() => {
@@ -24143,7 +24204,7 @@ function ModuloAcademiaClinicas({
     setAcademiaSolicitudes((prev) => prev.map((s) => (s.id === solicitud.id ? { ...s, estado: nuevoEstado } : s)));
   }
 
-  const claseSeleccionada = clasesActivas.find((c) => c.id === claseSeleccionadaId) || null;
+  const claseSeleccionada = todasLasClasesAcademia.find((c) => c.id === claseSeleccionadaId) || null;
   const sesionesDeClaseSeleccionada = useMemo(
     () => (claseSeleccionada ? academiaSesiones.filter((s) => s.clase_id === claseSeleccionada.id) : []),
     [academiaSesiones, claseSeleccionada]
@@ -24339,7 +24400,7 @@ function ModuloAcademiaClinicas({
       {subvista === 'operativa' && (
         <div className="space-y-4">
           {!tablaAcademiaExiste && <BannerTablaFaltante tabla="academia_clases (corre migracion_v16_academia_creditos.sql)" />}
-          {clasesActivas.length > 0 && (
+          {todasLasClasesAcademia.length > 0 && (
             <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 p-1">
               <button
                 type="button"
@@ -26423,6 +26484,10 @@ const ESTILO_OCUPACION_SLOT = {
   // coach). Deliberadamente más apagado que 'reservado' para distinguir "no
   // se ofrece clase a esta hora" de "sí se ofrece, pero está ocupado".
   fuera_horario: { etiqueta: 'No disponible', clases: 'border-slate-800 bg-slate-900/70 text-slate-600' },
+  // Hay cancha libre, pero el "Coach Preferido" elegido ya tiene otra clase
+  // asignada a esa hora (item 3/4) — distinto de 'reservado' porque aquí SÍ
+  // hay cancha disponible, solo que no con ese coach en particular.
+  coach_ocupado: { etiqueta: 'Coach ocupado', clases: 'border-amber-400/50 bg-amber-400/10 text-amber-400' },
 };
 
 // Configuración de Horarios de Clase del Club (item 2) — ¿esta hora cae
@@ -26470,28 +26535,54 @@ function estadoOcupacionCanchaSlot(canchaId, fecha, horaInicio, horaFin, reserva
   return { tipo: 'reservado', coachNombre: null };
 }
 
-// Mismo código de colores que `estadoOcupacionCanchaSlot`, pero AGREGADO
-// sobre todas las canchas activas — usado por "Solicitar Clase", que no
-// pide elegir cancha (la asigna el club al confirmar la solicitud): si
-// CUALQUIER cancha tiene Torneo/Reta a esa hora, gana ese morado; si no, y
-// CUALQUIERA tiene una Clase programada, gana el azul con el coach de esa
-// clase; si ninguna de las dos aplica pero TODAS las canchas activas están
-// en Reservado normal, se marca gris (sin cancha libre); en cualquier otro
-// caso queda "disponible" (verde) — y de haber una clase recurrente de
-// Academia en ese mismo día de la semana + hora (en cualquier cancha), se
-// sugiere su coach como referencia informativa, tal como pide el punto 3
-// ("incluye Nombre del Coach asignado si aplica en el flujo de clases").
-function estadoOcupacionAgregado(canchasActivas, fecha, horaInicio, horaFin, reservas, academiaClases) {
+// ¿Este coach en particular ya tiene una clase recurrente asignada a esta
+// fecha/hora (en CUALQUIER cancha)? Cruza la agenda del coach contra
+// `academiaClases` — mismo criterio recurrente por día de la semana que el
+// resto de Academia (sin `fecha` propia, ver cabecera de `claseYaInicioHoy`).
+// Usada por `estadoOcupacionAgregado` cuando el jugador pide un "Coach
+// Preferido" específico en "Solicitar Clase" (item 3).
+function coachTieneClaseAEstaHora(coachNombre, fecha, horaInicio, academiaClases) {
+  if (!coachNombre) return false;
+  const diaSemana = diaSemanaDeFecha(fecha).value;
+  return (academiaClases || []).some(
+    (c) => c.coach_nombre === coachNombre && c.dia_semana === diaSemana && c.hora_inicio === horaInicio && c.estado !== 'cancelada' && c.archivado !== true
+  );
+}
+
+// DISPONIBILIDAD MULTI-CANCHA REAL (item 4) — usada por "Solicitar Clase",
+// que no pide elegir cancha (la asigna el club al confirmar la solicitud):
+// un slot SOLO cuenta como Ocupado cuando TODAS las canchas activas están
+// tomadas a esa hora (Reservado/Clase/Torneo-Reta, lo que sea) O cuando el
+// "Coach Preferido" elegido ya tiene su propia clase asignada entonces —
+// con que UNA sola cancha esté libre y el coach (si se pidió uno) siga
+// disponible, el recuadro se pinta Verde/"Disponible". Antes, una sola
+// cancha con Torneo/Reta o Clase pintaba TODO el slot de ese color aunque
+// el resto de las canchas siguiera libre — corregido aquí.
+function estadoOcupacionAgregado(canchasActivas, fecha, horaInicio, horaFin, reservas, academiaClases, coachPreferido) {
   const porCancha = (canchasActivas || []).map((c) => estadoOcupacionCanchaSlot(c.id, fecha, horaInicio, horaFin, reservas, academiaClases));
+  const hayCanchaLibre = porCancha.some((e) => e.tipo === 'disponible');
+  const coachOcupado = coachTieneClaseAEstaHora(coachPreferido, fecha, horaInicio, academiaClases);
+
+  if (hayCanchaLibre && !coachOcupado) {
+    // Verde — al menos una cancha libre y el coach pedido (si lo hay) sigue
+    // disponible. Coach sugerido (informativo, item 3): el mismo que pidió
+    // el jugador, o si no pidió ninguno, el de una clase recurrente que ya
+    // ocurra en ese día/hora (en cualquier cancha), como referencia.
+    const diaSemana = diaSemanaDeFecha(fecha).value;
+    const coachSugerido = coachPreferido || (academiaClases || []).find((c) => c.dia_semana === diaSemana && c.hora_inicio === horaInicio)?.coach_nombre || null;
+    return { tipo: 'disponible', coachNombre: coachSugerido };
+  }
+
+  // A partir de aquí NO se puede pintar verde: o no queda ninguna cancha
+  // libre, o sí quedan canchas libres pero el coach pedido específicamente
+  // ya está dando otra clase a esa hora — en ese segundo caso se distingue
+  // con su propio tipo/color en vez de mentir con "Reservado".
+  if (hayCanchaLibre && coachOcupado) return { tipo: 'coach_ocupado', coachNombre: coachPreferido };
   const conTorneo = porCancha.find((e) => e.tipo === 'torneo_reta');
   if (conTorneo) return { tipo: 'torneo_reta', coachNombre: null };
   const conClase = porCancha.find((e) => e.tipo === 'clase');
   if (conClase) return { tipo: 'clase', coachNombre: conClase.coachNombre };
-  const todasReservadas = porCancha.length > 0 && porCancha.every((e) => e.tipo === 'reservado');
-  if (todasReservadas) return { tipo: 'reservado', coachNombre: null };
-  const diaSemana = diaSemanaDeFecha(fecha).value;
-  const coachSugerido = (academiaClases || []).find((c) => c.dia_semana === diaSemana && c.hora_inicio === horaInicio)?.coach_nombre || null;
-  return { tipo: 'disponible', coachNombre: coachSugerido };
+  return { tipo: 'reservado', coachNombre: null };
 }
 
 // TODAS las franjas de inicio del día para una cancha, dada una duración —
@@ -29630,10 +29721,19 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
   const [fecha, setFecha] = useState(hoyISO());
   const [horaInicio, setHoraInicio] = useState('');
+  // Coach Preferido (item 3) — '' = "Cualquiera disponible". La lista de
+  // opciones sale de los coaches que YA dan alguna clase en el catálogo del
+  // club (`academiaClases`) — el Portal no tiene el directorio de
+  // empleados, así que no puede ofrecer coaches que nunca han dado clase.
+  const [coachPreferido, setCoachPreferido] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
 
   const canchasActivas = useMemo(() => (canchas || []).filter((c) => c.activa !== false), [canchas]);
+  const coachesDelClub = useMemo(
+    () => Array.from(new Set((academiaClases || []).map((c) => c.coach_nombre).filter(Boolean))).sort(),
+    [academiaClases]
+  );
 
   // Horas completas del día — mismo límite `HORA_INICIO_MIN`/`HORA_FIN_MIN`
   // que "Reservar Cancha", en pasos de 60 min (nunca 30).
@@ -29657,10 +29757,10 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       if (!horaDentroDeRangosClase(hIni, hFin, rangosHorario)) {
         return { horaInicio: hIni, horaFin: hFin, pasado, tipo: 'fuera_horario', coachNombre: null };
       }
-      const estado = estadoOcupacionAgregado(canchasActivas, fecha, hIni, hFin, reservas, academiaClases);
+      const estado = estadoOcupacionAgregado(canchasActivas, fecha, hIni, hFin, reservas, academiaClases, coachPreferido);
       return { horaInicio: hIni, horaFin: hFin, pasado, ...estado };
     });
-  }, [horasDelDia, canchasActivas, fecha, reservas, academiaClases, esHoy, rangosHorario]);
+  }, [horasDelDia, canchasActivas, fecha, reservas, academiaClases, esHoy, rangosHorario, coachPreferido]);
 
   // Filtrado de Horas Pasadas (item 4): si la hora seleccionada deja de ser
   // elegible (cambió la fecha, o ya pasó/se ocupó), se limpia sola en vez
@@ -29684,10 +29784,11 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       fecha,
       horaDesde: horaInicio,
       horaHasta: slotElegido?.horaFin || null,
-      // Coach sugerido (informativo, item 3) — se manda como preferencia
-      // inicial si la celda elegida ya traía uno asociado; el jugador nunca
-      // lo escribe a mano en esta versión.
-      coach: slotElegido?.coachNombre || null,
+      // Coach: el que el jugador eligió explícitamente en el desplegable
+      // (item 3) gana sobre el sugerido automático de la celda — "Cualquiera
+      // disponible" (`coachPreferido === ''`) cae al sugerido informativo de
+      // esa hora, si lo hay.
+      coach: coachPreferido || slotElegido?.coachNombre || null,
     });
     setEnviando(false);
   }
@@ -29731,6 +29832,17 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
           </div>
         </div>
 
+        <Campo label="Coach Preferido (opcional)">
+          <select value={coachPreferido} onChange={(e) => setCoachPreferido(e.target.value)} className={inputClase}>
+            <option value="">Cualquiera disponible</option>
+            {coachesDelClub.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </Campo>
+
         <Campo label="Fecha">
           <input
             type="date"
@@ -29772,13 +29884,28 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
           </div>
         </Campo>
 
-        <Campo label="Horario" hint="Verde = disponible, gris = reservado, azul = clase con coach, morado = torneo/reta.">
+        <Campo
+          label="Horario"
+          hint={
+            coachPreferido
+              ? 'Verde = disponible con ese coach, ámbar = ese coach ya está ocupado, gris = sin cancha libre.'
+              : 'Verde = disponible, gris = sin cancha libre, azul = clase con coach, morado = torneo/reta.'
+          }
+        >
           <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
             {slots.map((s) => {
               const estilo = ESTILO_OCUPACION_SLOT[s.tipo] || ESTILO_OCUPACION_SLOT.disponible;
               const bloqueado = s.tipo !== 'disponible' || s.pasado;
               const seleccionado = s.horaInicio === horaInicio;
-              const etiqueta = s.pasado ? 'Pasado' : s.tipo === 'clase' ? `Clase${s.coachNombre ? ` · ${s.coachNombre}` : ''}` : s.tipo === 'disponible' && s.coachNombre ? `Disp. · ${s.coachNombre}` : estilo.etiqueta;
+              const etiqueta = s.pasado
+                ? 'Pasado'
+                : s.tipo === 'clase'
+                ? `Clase${s.coachNombre ? ` · ${s.coachNombre}` : ''}`
+                : s.tipo === 'coach_ocupado'
+                ? `${estilo.etiqueta}${s.coachNombre ? ` · ${s.coachNombre}` : ''}`
+                : s.tipo === 'disponible' && s.coachNombre
+                ? `Disp. · ${s.coachNombre}`
+                : estilo.etiqueta;
               return (
                 <button
                   key={s.horaInicio}
