@@ -24268,7 +24268,11 @@ const OPCIONES_HORA_COMPLETA_ACADEMIA = (() => {
 // (comportamiento previo a esta función). Cada bloque además puede traer un
 // `coachAsignado` (nombre del coach, '' = "Todos los coaches") — nuevo campo
 // que "Solicitar Clase" del Portal usa para sugerir/filtrar por coach (ver
-// `rangoDeHorarioParaHora`/`estadoOcupacionAgregado`).
+// `rangosDeHorarioParaHora`/`estadoOcupacionAgregado`). Nada impide que el
+// club cree DOS bloques distintos que cubran la MISMA hora con coaches
+// distintos (ej. "Mañana — Agustín" 07:00–10:00 y "Mañana — Tolito"
+// 07:00–10:00) — Manejo de Coaches Múltiples: "Solicitar Clase" del Portal
+// junta TODOS los bloques que apliquen a esa hora, nunca solo el primero.
 function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardando }) {
   const [lista, setLista] = useState(() =>
     Array.isArray(rangos) ? rangos.map((r, i) => ({ coachAsignado: '', ...r, _key: `r${i}-${Date.now()}` })) : []
@@ -24375,7 +24379,10 @@ function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardan
                     (valor '', por defecto) deja el bloque abierto a
                     cualquiera; elegir un coach específico hace que
                     "Solicitar Clase" del Portal sugiera/filtre por él (ver
-                    `rangoDeHorarioParaHora`/`estadoOcupacionAgregado`). */}
+                    `rangosDeHorarioParaHora`/`estadoOcupacionAgregado`). Se
+                    pueden crear varios bloques que se traslapen en la misma
+                    hora con coaches distintos — el Portal los combina todos,
+                    nunca oculta a ninguno (Manejo de Coaches Múltiples). */}
                 <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                   Coach
                   <select
@@ -26931,24 +26938,27 @@ function horaDentroDeRangosClase(horaInicio, horaFin, rangos) {
   });
 }
 
-// Devuelve el bloque de `rangos_horario_clases` (objeto completo, con su
-// `coachAsignado`) dentro del cual cae esta hora — o `null` si ninguno la
-// cubre. Mismo criterio de coincidencia que `horaDentroDeRangosClase`
-// (arriba), solo que aquí hace falta el bloque completo, no solo un
-// booleano, para poder leer a qué coach quedó asignado ese turno (item 1:
-// Selección de Coach por Bloque).
-function rangoDeHorarioParaHora(horaInicio, horaFin, rangos) {
+// Devuelve TODOS los bloques de `rangos_horario_clases` (objetos completos,
+// con su `coachAsignado`) dentro de los cuales cae esta hora — arreglo
+// vacío si ninguno la cubre. Mismo criterio de coincidencia que
+// `horaDentroDeRangosClase` (arriba), solo que aquí hacen falta los bloques
+// completos, no solo un booleano, para poder leer a qué coach(es) quedó
+// asignado ese turno (item 1: Selección de Coach por Bloque). Manejo de
+// Coaches Múltiples: antes se usaba `.find()` y solo se leía el PRIMER
+// bloque que cubriera la hora — si el club configuraba dos bloques
+// traslapados con coaches distintos (ej. Agustín Tapia y Tolito Aguirre,
+// ambos 14:00–16:00), el segundo coach quedaba invisible para el Portal.
+// Ahora se devuelven todos, sin ocultar a ninguno.
+function rangosDeHorarioParaHora(horaInicio, horaFin, rangos) {
   const lista = Array.isArray(rangos) ? rangos : [];
   const ini = parseHoraAMinutos(horaInicio);
   const fin = parseHoraAMinutos(horaFin);
-  if (ini === null || fin === null) return null;
-  return (
-    lista.find((r) => {
-      const rIni = parseHoraAMinutos(r?.desde);
-      const rFin = parseHoraAMinutos(r?.hasta);
-      return rIni !== null && rFin !== null && ini >= rIni && fin <= rFin;
-    }) || null
-  );
+  if (ini === null || fin === null) return [];
+  return lista.filter((r) => {
+    const rIni = parseHoraAMinutos(r?.desde);
+    const rFin = parseHoraAMinutos(r?.hasta);
+    return rIni !== null && rFin !== null && ini >= rIni && fin <= rFin;
+  });
 }
 
 // TIPO de ocupación de UNA cancha en un horario específico — mismos
@@ -26996,43 +27006,62 @@ function coachTieneClaseAEstaHora(coachNombre, fecha, horaInicio, academiaClases
 // disponible, el recuadro se pinta Verde/"Disponible". Antes, una sola
 // cancha con Torneo/Reta o Clase pintaba TODO el slot de ese color aunque
 // el resto de las canchas siguiera libre — corregido aquí.
-function estadoOcupacionAgregado(canchasActivas, fecha, horaInicio, horaFin, reservas, academiaClases, coachPreferido, coachDelBloque) {
+// `coachesDelBloque` es SIEMPRE un arreglo (0, 1 o varios nombres — puede
+// haber más de un bloque de horario traslapado en la misma hora con coaches
+// distintos, ver `rangosDeHorarioParaHora`). El estado devuelto trae
+// `coachesNombres` (arreglo, nunca un solo string) para que quien lo
+// consuma pueda mostrar TODOS los coaches disponibles sin tener que elegir
+// uno solo y ocultar al resto (Manejo de Coaches Múltiples).
+function estadoOcupacionAgregado(canchasActivas, fecha, horaInicio, horaFin, reservas, academiaClases, coachPreferido, coachesDelBloque) {
   const porCancha = (canchasActivas || []).map((c) => estadoOcupacionCanchaSlot(c.id, fecha, horaInicio, horaFin, reservas, academiaClases));
   const hayCanchaLibre = porCancha.some((e) => e.tipo === 'disponible');
+  const bloque = Array.isArray(coachesDelBloque) ? coachesDelBloque.filter(Boolean) : [];
   // Selección de Coach por Bloque (item 1/3, turno nuevo): si el jugador
-  // pidió un coach específico Y el club asignó este turno a OTRO coach
-  // distinto (no "Todos los coaches", `coachDelBloque` viene de
-  // `rangoDeHorarioParaHora`), ese coach simplemente no ofrece clase en esta
-  // hora — no importa que haya cancha libre ni que el coach esté libre en su
-  // agenda personal.
-  const bloqueEsDeOtroCoach = !!coachPreferido && !!coachDelBloque && coachDelBloque !== coachPreferido;
+  // pidió un coach específico Y esta hora quedó asignada a coach(es)
+  // distinto(s) (no "Todos los coaches" — `bloque` viene de
+  // `rangosDeHorarioParaHora` y puede traer más de un nombre si hay bloques
+  // traslapados), ese coach simplemente no ofrece clase en esta hora — no
+  // importa que haya cancha libre ni que el coach esté libre en su agenda
+  // personal.
+  const bloqueEsDeOtroCoach = !!coachPreferido && bloque.length > 0 && !bloque.includes(coachPreferido);
   const coachOcupado = coachTieneClaseAEstaHora(coachPreferido, fecha, horaInicio, academiaClases);
 
   if (hayCanchaLibre && !bloqueEsDeOtroCoach && !coachOcupado) {
     // Verde — al menos una cancha libre, el turno no está reservado para
-    // otro coach y el coach pedido (si lo hay) sigue disponible. Coach
-    // sugerido/mostrado (item 2): el que pidió el jugador, si no el que el
-    // club asignó a este bloque, y si tampoco hay ninguno de los dos, el de
-    // una clase que ya exista en esa fecha/hora EXACTA (en cualquier
-    // cancha), como referencia informativa.
-    const coachSugerido =
-      coachPreferido || coachDelBloque || (academiaClases || []).find((c) => c.fecha === fecha && c.hora_inicio === horaInicio)?.coach_nombre || null;
-    return { tipo: 'disponible', coachNombre: coachSugerido };
+    // otro coach y el coach pedido (si lo hay) sigue disponible. Coach(es)
+    // sugerido(s)/mostrado(s) (item 2, Manejo de Coaches Múltiples): si el
+    // jugador pidió uno específico, se muestra solo ese; si pidió
+    // "Cualquiera disponible" y el bloque trae VARIOS coaches habilitados a
+    // la vez, se muestran TODOS sin ocultar a ninguno; si el bloque no trae
+    // ninguno asignado ("Todos los coaches"), se usan como referencia
+    // informativa los de cualquier clase que ya exista en esa fecha/hora
+    // EXACTA (en cualquier cancha) — también sin recortar a uno solo.
+    let coachesSugeridos;
+    if (coachPreferido) {
+      coachesSugeridos = [coachPreferido];
+    } else if (bloque.length > 0) {
+      coachesSugeridos = bloque;
+    } else {
+      coachesSugeridos = Array.from(
+        new Set((academiaClases || []).filter((c) => c.fecha === fecha && c.hora_inicio === horaInicio).map((c) => c.coach_nombre).filter(Boolean))
+      );
+    }
+    return { tipo: 'disponible', coachesNombres: coachesSugeridos };
   }
 
   // A partir de aquí NO se puede pintar verde: o no queda ninguna cancha
   // libre, o sí quedan canchas libres pero el coach pedido específicamente
   // no puede dar clase en esta hora — ya sea porque el bloque quedó
-  // asignado a otro coach, o porque ya está dando otra clase a esa hora — en
-  // esos casos se distingue con su propio tipo/color en vez de mentir con
-  // "Reservado".
-  if (hayCanchaLibre && bloqueEsDeOtroCoach) return { tipo: 'coach_no_asignado', coachNombre: coachDelBloque };
-  if (hayCanchaLibre && coachOcupado) return { tipo: 'coach_ocupado', coachNombre: coachPreferido };
+  // asignado a otro(s) coach(es), o porque ya está dando otra clase a esa
+  // hora — en esos casos se distingue con su propio tipo/color en vez de
+  // mentir con "Reservado".
+  if (hayCanchaLibre && bloqueEsDeOtroCoach) return { tipo: 'coach_no_asignado', coachesNombres: bloque };
+  if (hayCanchaLibre && coachOcupado) return { tipo: 'coach_ocupado', coachesNombres: coachPreferido ? [coachPreferido] : [] };
   const conTorneo = porCancha.find((e) => e.tipo === 'torneo_reta');
-  if (conTorneo) return { tipo: 'torneo_reta', coachNombre: null };
+  if (conTorneo) return { tipo: 'torneo_reta', coachesNombres: [] };
   const conClase = porCancha.find((e) => e.tipo === 'clase');
-  if (conClase) return { tipo: 'clase', coachNombre: conClase.coachNombre };
-  return { tipo: 'reservado', coachNombre: null };
+  if (conClase) return { tipo: 'clase', coachesNombres: conClase.coachNombre ? [conClase.coachNombre] : [] };
+  return { tipo: 'reservado', coachesNombres: [] };
 }
 
 // TODAS las franjas de inicio del día para una cancha, dada una duración —
@@ -30429,14 +30458,18 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       const hFin = minutosAHora(m + 60);
       const pasado = esHoy && m < ahoraMin;
       if (!horaDentroDeRangosClase(hIni, hFin, rangosHorario)) {
-        return { horaInicio: hIni, horaFin: hFin, pasado, tipo: 'fuera_horario', coachNombre: null };
+        return { horaInicio: hIni, horaFin: hFin, pasado, tipo: 'fuera_horario', coachesNombres: [] };
       }
-      // Selección de Coach por Bloque (item 1): el bloque que cubre esta
-      // hora puede traer un `coachAsignado` propio — se lee aquí y se pasa a
-      // `estadoOcupacionAgregado` para sugerirlo (item 2) y, si el jugador
-      // pidió un coach distinto, para bloquear el slot (item 3).
-      const coachDelBloque = rangoDeHorarioParaHora(hIni, hFin, rangosHorario)?.coachAsignado || '';
-      const estado = estadoOcupacionAgregado(canchasActivas, fecha, hIni, hFin, reservas, academiaClases, coachPreferido, coachDelBloque);
+      // Selección de Coach por Bloque (item 1): los bloques que cubren esta
+      // hora pueden traer `coachAsignado` propio cada uno — pueden ser VARIOS
+      // bloques traslapados con coaches distintos (Manejo de Coaches
+      // Múltiples), así que se juntan TODOS (sin duplicados) y se pasan como
+      // arreglo a `estadoOcupacionAgregado` para sugerirlos (item 2) y, si el
+      // jugador pidió un coach distinto, para bloquear el slot (item 3).
+      const coachesDelBloque = Array.from(
+        new Set(rangosDeHorarioParaHora(hIni, hFin, rangosHorario).map((r) => r?.coachAsignado).filter(Boolean))
+      );
+      const estado = estadoOcupacionAgregado(canchasActivas, fecha, hIni, hFin, reservas, academiaClases, coachPreferido, coachesDelBloque);
       return { horaInicio: hIni, horaFin: hFin, pasado, ...estado };
     });
   }, [horasDelDia, canchasActivas, fecha, reservas, academiaClases, esHoy, rangosHorario, coachPreferido]);
@@ -30465,9 +30498,10 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       horaHasta: slotElegido?.horaFin || null,
       // Coach: el que el jugador eligió explícitamente en el desplegable
       // (item 3) gana sobre el sugerido automático de la celda — "Cualquiera
-      // disponible" (`coachPreferido === ''`) cae al sugerido informativo de
-      // esa hora, si lo hay.
-      coach: coachPreferido || slotElegido?.coachNombre || null,
+      // disponible" (`coachPreferido === ''`) cae al primero de los
+      // sugeridos informativos de esa hora, si hay alguno (el club confirma
+      // el coach final al revisar la solicitud, esto es solo referencia).
+      coach: coachPreferido || slotElegido?.coachesNombres?.[0] || null,
     });
     setEnviando(false);
   }
@@ -30576,32 +30610,56 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               const estilo = ESTILO_OCUPACION_SLOT[s.tipo] || ESTILO_OCUPACION_SLOT.disponible;
               const bloqueado = s.tipo !== 'disponible' || s.pasado;
               const seleccionado = s.horaInicio === horaInicio;
-              // Texto Completo "Disponible" + Coach (item 2): la palabra
-              // "Disponible" se mantiene completa (ya no se abrevia
-              // "Disp."); si el slot trae un coach (pedido por el jugador,
-              // asignado al bloque, o sugerido por una clase existente) se
-              // agrega "Coach {nombre}" — el `title` lo concatena en una
-              // sola línea, la etiqueta VISIBLE del botón lo parte en dos
-              // líneas más abajo para que no se corte con `truncate`.
-              const etiqueta = s.pasado
-                ? 'Pasado'
-                : s.tipo === 'clase'
-                ? `Clase${s.coachNombre ? ` · ${s.coachNombre}` : ''}`
-                : s.tipo === 'coach_ocupado'
-                ? `${estilo.etiqueta}${s.coachNombre ? ` · ${s.coachNombre}` : ''}`
-                : s.tipo === 'coach_no_asignado'
-                ? `${estilo.etiqueta}${s.coachNombre ? ` · Coach ${s.coachNombre}` : ''}`
-                : s.tipo === 'disponible'
-                ? `Disponible${s.coachNombre ? ` · Coach ${s.coachNombre}` : ''}`
-                : estilo.etiqueta;
+              // Texto de cada celda — Manejo de Coaches Múltiples + limpieza
+              // de "texto encimado" (fotos 2 y 3): SIEMPRE se arman DOS
+              // líneas separadas — `lineaPrincipal` (corta, nunca se
+              // concatena con nombres de coach) y `lineaSecundaria`
+              // (opcional, solo el/los coach(es), en subtexto aparte). Antes
+              // todo se armaba en una sola cadena larga (`etiqueta`) que se
+              // desbordaba/encimaba en celdas angostas — ahora cada línea es
+              // su propio <span> con `truncate` para que nunca se corten a
+              // la mitad ni se monten una sobre otra.
+              const coaches = Array.isArray(s.coachesNombres) ? s.coachesNombres.filter(Boolean) : [];
+              let lineaPrincipal = estilo.etiqueta;
+              let lineaSecundaria = '';
+              if (s.pasado) {
+                lineaPrincipal = 'Pasado';
+              } else if (s.tipo === 'disponible') {
+                lineaPrincipal = 'Disponible';
+                if (coachPreferido) {
+                  // Coach específico pedido y disponible: no hace falta
+                  // repetir su nombre en subtexto, el jugador ya lo eligió.
+                  lineaSecundaria = '';
+                } else if (coaches.length === 1) {
+                  lineaSecundaria = `Coach ${coaches[0]}`;
+                } else if (coaches.length === 2) {
+                  // Concatenado sin ocultar a ningún coach (item 1).
+                  lineaSecundaria = `Coaches ${coaches.join(' y ')}`;
+                } else if (coaches.length > 2) {
+                  lineaSecundaria = `${coaches.length} coaches disponibles`;
+                }
+              } else if (s.tipo === 'coach_no_asignado') {
+                // Coach pedido SIN bloque en esta hora (foto 3): "No
+                // disponible" es siempre su propia línea, nunca se pega con
+                // el nombre del otro coach que sí esté libre.
+                lineaPrincipal = 'No disponible';
+                lineaSecundaria = coaches.length ? `Disponible con ${coaches.join(', ')}` : '';
+              } else if (s.tipo === 'coach_ocupado') {
+                lineaPrincipal = 'No disponible';
+                lineaSecundaria = 'Coach ocupado a esta hora';
+              } else if (s.tipo === 'clase') {
+                lineaPrincipal = 'Clase';
+                lineaSecundaria = coaches.length ? `Coach ${coaches[0]}` : '';
+              }
+              const etiquetaCompleta = lineaSecundaria ? `${lineaPrincipal} · ${lineaSecundaria}` : lineaPrincipal;
               return (
                 <button
                   key={s.horaInicio}
                   type="button"
                   disabled={bloqueado}
                   onClick={() => setHoraInicio(s.horaInicio)}
-                  title={`${formatoHora12(s.horaInicio)} – ${formatoHora12(s.horaFin)} · ${etiqueta}`}
-                  className={`flex flex-col items-center gap-0.5 rounded-lg border px-1.5 py-2 text-center transition ${
+                  title={`${formatoHora12(s.horaInicio)} – ${formatoHora12(s.horaFin)} · ${etiquetaCompleta}`}
+                  className={`flex min-h-[58px] flex-col items-center justify-center gap-0.5 overflow-hidden rounded-lg border px-1.5 py-2 text-center transition ${
                     // FIX DE ESTILO (Pasado): antes, una hora YA TRANSCURRIDA
                     // de HOY que seguía siendo `tipo: 'disponible'` (cancha
                     // libre) heredaba las clases Verdes de `estilo.clases`
@@ -30619,15 +30677,11 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                       : `${estilo.clases} hover:brightness-110`
                   }`}
                 >
-                  <span className="text-[11px] font-bold">{formatoHora12(s.horaInicio)}</span>
-                  {!s.pasado && s.tipo === 'disponible' && s.coachNombre ? (
-                    <>
-                      <span className="truncate text-[9px] font-semibold leading-tight">Disponible</span>
-                      <span className="max-w-full truncate text-[7.5px] font-medium leading-tight opacity-80">Coach {s.coachNombre}</span>
-                    </>
-                  ) : (
-                    <span className="truncate text-[9px] font-semibold">{etiqueta}</span>
-                  )}
+                  <span className="block w-full truncate text-[11px] font-bold leading-tight">{formatoHora12(s.horaInicio)}</span>
+                  <span className="block w-full truncate text-[9px] font-semibold leading-tight">{lineaPrincipal}</span>
+                  {lineaSecundaria ? (
+                    <span className="block w-full truncate text-[7.5px] font-medium leading-tight opacity-80">{lineaSecundaria}</span>
+                  ) : null}
                 </button>
               );
             })}
