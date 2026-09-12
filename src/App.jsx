@@ -2497,6 +2497,29 @@ function guardarConfigClubLocal(config) {
   }
 }
 
+// Rangos de Horario Habilitados para Clases (Academia → Parrilla de Clases
+// → "Horarios Habilitados", migracion_v30) — respaldo/caché local separado
+// del nombre/logo del club (evita mezclar dos flujos de guardado con
+// mensajes/toques distintos). Un arreglo vacío significa "sin restricción",
+// mismo default que la columna en Supabase.
+const LS_KEY_RANGOS_HORARIO_CLASES = 'smashpadel_rangos_horario_clases_v1';
+function leerRangosHorarioClasesLocal() {
+  try {
+    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_RANGOS_HORARIO_CLASES));
+    const parsed = crudo ? JSON.parse(crudo) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_e) {
+    return [];
+  }
+}
+function guardarRangosHorarioClasesLocal(rangos) {
+  try {
+    localStorage.setItem(claveLocalPorClub(LS_KEY_RANGOS_HORARIO_CLASES), JSON.stringify(rangos || []));
+  } catch (_e) {
+    /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
+  }
+}
+
 function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
   const [nombre, setNombre] = useState(configActual.nombre || '');
   const [logoUrl, setLogoUrl] = useState(configActual.logoUrl || '');
@@ -21516,6 +21539,25 @@ function claseYaInicioHoy(clase, ahoraDate = new Date()) {
   return minInicio !== null && minInicio <= minAhora;
 }
 
+// Purga y Ocultamiento ESTRICTO de Clases Pasadas: a diferencia de
+// `claseYaInicioHoy` (usada solo para el badge informativo "Clase Iniciada"
+// y para bloquear NUEVAS inscripciones una vez arrancada), esta variante
+// decide si la clase debe DESAPARECER por completo de la lista de "Clases
+// Activas" — Portal y Parrilla de Academia. El criterio pedido es más
+// permisivo mientras la clase sigue en curso ("solo muestra eventos futuros
+// o en curso") y solo la oculta cuando su horario de HOY ya CONCLUYÓ del
+// todo (`hora_fin`, no `hora_inicio`). Mismo criterio recurrente que el
+// resto de Academia (sin `fecha` propia, ver cabecera de arriba): al no ser
+// hoy su `dia_semana`, nunca cuenta como "ya concluida" — vuelve a
+// aparecer sola en cuanto HOY vuelve a coincidir con su día de la semana.
+function claseYaConcluyoHoy(clase, ahoraDate = new Date()) {
+  const diaInfo = DIA_ACADEMIA_POR_VALOR[clase?.dia_semana];
+  if (!diaInfo || diaInfo.indice !== ahoraDate.getDay()) return false;
+  const minAhora = ahoraDate.getHours() * 60 + ahoraDate.getMinutes();
+  const minFin = parseHoraAMinutos(clase.hora_fin);
+  return minFin !== null && minFin <= minAhora;
+}
+
 // Reverso de `DIA_ACADEMIA_POR_VALOR`: dado un ISO de fecha, regresa la
 // entrada de `DIAS_SEMANA_ACADEMIA` cuyo `indice` coincide con
 // `Date.prototype.getDay()` de esa fecha. `ModalNuevaClase` ya no le pide al
@@ -23821,6 +23863,117 @@ function AnalyticsAcademia({
   );
 }
 
+// Configuración de Horarios de Clase del Club (item 2) — el club define
+// aquí sus Rangos de Horario Habilitados para Clases (ej. "Bloque Mañana:
+// 07:00–10:00", "Bloque Tarde: 16:00–20:00"). Se guarda en
+// `configuracion_club.rangos_horario_clases` (migracion_v30) y lo consume
+// la cuadrícula de "Solicitar Clase" del Portal (`horaDentroDeRangosClase`)
+// para marcar como "No disponible" cualquier hora fuera de estos bloques,
+// sin importar si la cancha está libre. Un arreglo vacío = sin restricción
+// (comportamiento previo a esta función).
+function ModalRangosHorarioClases({ rangos, onClose, onGuardar, guardando }) {
+  const [lista, setLista] = useState(() => (Array.isArray(rangos) ? rangos.map((r, i) => ({ ...r, _key: `r${i}-${Date.now()}` })) : []));
+  const [error, setError] = useState('');
+
+  function agregarBloque() {
+    setLista((prev) => [...prev, { _key: `nuevo-${Date.now()}-${prev.length}`, etiqueta: '', desde: '07:00', hasta: '10:00' }]);
+  }
+  function actualizarBloque(key, campo, valor) {
+    setLista((prev) => prev.map((r) => (r._key === key ? { ...r, [campo]: valor } : r)));
+  }
+  function eliminarBloque(key) {
+    setLista((prev) => prev.filter((r) => r._key !== key));
+  }
+
+  async function guardar() {
+    setError('');
+    for (const r of lista) {
+      const ini = parseHoraAMinutos(r.desde);
+      const fin = parseHoraAMinutos(r.hasta);
+      if (ini === null || fin === null || fin <= ini) {
+        return setError(`El bloque "${r.etiqueta || 'sin nombre'}" necesita una hora de inicio anterior a la de fin.`);
+      }
+    }
+    const limpios = lista.map(({ _key, ...r }) => ({
+      etiqueta: (r.etiqueta || '').trim() || 'Bloque de horario',
+      desde: r.desde,
+      hasta: r.hasta,
+    }));
+    await onGuardar?.(limpios);
+    onClose();
+  }
+
+  return (
+    <ModalShell
+      titulo="Horarios Habilitados para Clases"
+      subtitulo="Solo estas horas aparecerán disponibles en 'Solicitar Clase' del Portal"
+      onClose={onClose}
+      icon={Clock}
+      ancho="max-w-lg"
+    >
+      <div className="space-y-3.5">
+        {lista.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-700 bg-slate-800/40 px-3 py-4 text-center text-xs text-slate-500">
+            Sin bloques definidos — el Portal no restringe ninguna hora todavía.
+          </p>
+        ) : (
+          <div className="space-y-2.5">
+            {lista.map((r) => (
+              <div key={r._key} className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 p-2.5">
+                <input
+                  value={r.etiqueta}
+                  onChange={(e) => actualizarBloque(r._key, 'etiqueta', e.target.value)}
+                  placeholder="Bloque Mañana"
+                  className={`${inputClase} flex-1`}
+                />
+                <input
+                  type="time"
+                  value={r.desde}
+                  onChange={(e) => actualizarBloque(r._key, 'desde', e.target.value)}
+                  className={`${inputClase} w-[110px]`}
+                />
+                <span className="text-slate-500">–</span>
+                <input
+                  type="time"
+                  value={r.hasta}
+                  onChange={(e) => actualizarBloque(r._key, 'hasta', e.target.value)}
+                  className={`${inputClase} w-[110px]`}
+                />
+                <button
+                  type="button"
+                  onClick={() => eliminarBloque(r._key)}
+                  className="shrink-0 rounded-md bg-rose-500/10 p-1.5 text-rose-400 hover:bg-rose-500/20"
+                  title="Quitar bloque"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={agregarBloque}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-700 py-2 text-xs font-bold text-slate-400 hover:border-lime-400/50 hover:text-lime-400"
+        >
+          <Plus size={13} /> Agregar bloque
+        </button>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Guardar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 /* ============================================================================
  * MÓDULO: ACADEMIA & CLÍNICAS — componente raíz
  * ----------------------------------------------------------------------------
@@ -23850,10 +24003,14 @@ function ModuloAcademiaClinicas({
   onIrAPOS,
   permisos,
   configClub,
+  rangosHorarioClases,
+  onGuardarRangosHorarioClases,
+  guardandoRangosHorarioClases,
 }) {
   const toast = useToast();
   const [subvista, setSubvista] = useState('operativa');
   const [modalNuevaClase, setModalNuevaClase] = useState(false);
+  const [modalRangosHorario, setModalRangosHorario] = useState(false);
   const [claseSeleccionadaId, setClaseSeleccionadaId] = useState(null);
   // Cronograma interactivo (item 1): día que se está viendo + la celda
   // (cancha/hora) sobre la que se dio clic para prellenar "Nueva Clase".
@@ -23868,6 +24025,17 @@ function ModuloAcademiaClinicas({
 
   const clasesActivas = useMemo(() => (academiaClases || []).filter((c) => c.estado !== 'cancelada'), [academiaClases]);
 
+  // Reloj vivo del módulo — recalcula el Bloqueo Automático por Horario
+  // (badge "Clase Iniciada" de `TarjetaClaseAcademia`, ver
+  // `claseYaInicioHoy`) Y la Purga Estricta de Clases Pasadas de
+  // `clasesVisibles` (ver abajo, `claseYaConcluyoHoy`) cada 30s, sin esperar
+  // ninguna acción del operador.
+  const [tickAcademia, setTickAcademia] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setTickAcademia(Date.now()), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
   // Archivado de Clases/Clínicas: mismo criterio exacto que Retas/Torneos
   // (ver `archivarReta`/`archivarTorneo`) — filtro Activas/Archivadas
   // dentro de la propia "Parrilla de Clases", una clase sin la columna
@@ -23877,19 +24045,19 @@ function ModuloAcademiaClinicas({
   // reversible nueva, ortogonal a esa.
   const [filtroClase, setFiltroClase] = useState('activas'); // 'activas' | 'archivadas'
   const clasesArchivadas = useMemo(() => clasesActivas.filter((c) => c.archivado === true), [clasesActivas]);
+  // PURGA ESTRICTA DE CLASES PASADAS (item 3): la pestaña "Activas" de la
+  // Parrilla de Clases aplica el mismo criterio riguroso que el Portal
+  // (`claseYaConcluyoHoy` — futuras o EN CURSO se quedan, solo se oculta
+  // una vez que su horario de HOY ya concluyó del todo). La pestaña
+  // "Archivadas" es una Limpieza Visual manual y separada — nunca se ve
+  // afectada por el reloj, solo por el botón Archivar/Restaurar.
   const clasesVisibles = useMemo(
-    () => clasesActivas.filter((c) => (filtroClase === 'archivadas' ? c.archivado === true : c.archivado !== true)),
-    [clasesActivas, filtroClase]
+    () =>
+      clasesActivas.filter((c) =>
+        filtroClase === 'archivadas' ? c.archivado === true : c.archivado !== true && !claseYaConcluyoHoy(c, new Date(tickAcademia))
+      ),
+    [clasesActivas, filtroClase, tickAcademia]
   );
-
-  // Reloj vivo del módulo — recalcula el Bloqueo Automático por Horario
-  // (badge "Clase Iniciada" de `TarjetaClaseAcademia`, ver
-  // `claseYaInicioHoy`) cada 30s, sin esperar ninguna acción del operador.
-  const [tickAcademia, setTickAcademia] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setTickAcademia(Date.now()), 30 * 1000);
-    return () => clearInterval(id);
-  }, []);
 
   const alumnosActivosPorClase = useMemo(() => {
     const mapa = {};
@@ -24152,9 +24320,19 @@ function ModuloAcademiaClinicas({
           })}
         </div>
         {subvista === 'operativa' && (
-          <BotonPrimario onClick={() => setModalNuevaClase(true)} className="px-3 py-1.5 text-xs">
-            <Plus size={14} /> Nueva Clase
-          </BotonPrimario>
+          <div className="flex items-center gap-2">
+            <BotonSecundario onClick={() => setModalRangosHorario(true)} className="px-3 py-1.5 text-xs">
+              <Clock size={14} /> Horarios Habilitados
+              {(rangosHorarioClases || []).length > 0 && (
+                <span className="rounded-full bg-lime-400/15 px-1.5 py-0.5 text-[9px] font-black text-lime-400">
+                  {rangosHorarioClases.length}
+                </span>
+              )}
+            </BotonSecundario>
+            <BotonPrimario onClick={() => setModalNuevaClase(true)} className="px-3 py-1.5 text-xs">
+              <Plus size={14} /> Nueva Clase
+            </BotonPrimario>
+          </div>
         )}
       </div>
 
@@ -24400,6 +24578,15 @@ function ModuloAcademiaClinicas({
             if (sesiones?.length > 0) setAcademiaSesiones((prev) => [...prev, ...sesiones]);
             setCeldaParaNuevaClase(null);
           }}
+        />
+      )}
+
+      {modalRangosHorario && (
+        <ModalRangosHorarioClases
+          rangos={rangosHorarioClases}
+          onClose={() => setModalRangosHorario(false)}
+          onGuardar={onGuardarRangosHorarioClases}
+          guardando={guardandoRangosHorarioClases}
         />
       )}
 
@@ -26204,6 +26391,12 @@ function normalizarFilaClub(fila, tabla) {
     nombre: fila.nombre || fila.name || fila.nombre_club || 'Club de Pádel',
     logo_url: fila.logo_url || fila.logo || fila.logoUrl || fila.imagen_url || null,
     slug: fila.slug || null,
+    // Rangos de Horario Habilitados para Clases (migracion_v30) — arreglo
+    // de bloques `{ etiqueta, desde, hasta }` que alimenta la cuadrícula de
+    // "Solicitar Clase" (ver `horaDentroDeRangosClase`). Un proyecto sin la
+    // migración simplemente no trae esta columna (`undefined`) y
+    // `ModalSolicitarClase` lo trata como "sin restricción".
+    rangos_horario_clases: Array.isArray(fila.rangos_horario_clases) ? fila.rangos_horario_clases : [],
     _tabla: tabla,
   };
 }
@@ -26224,7 +26417,32 @@ const ESTILO_OCUPACION_SLOT = {
   reservado: { etiqueta: 'Reservado', clases: 'border-slate-700 bg-slate-800/90 text-slate-400' },
   clase: { etiqueta: 'Clase', clases: 'border-sky-400/50 bg-sky-400/10 text-sky-400' },
   torneo_reta: { etiqueta: 'Torneo/Reta', clases: 'border-purple-400/50 bg-purple-400/10 text-purple-400' },
+  // Fuera de los Rangos de Horario Habilitados para Clases del club (item
+  // 2, `horaDentroDeRangosClase`) — solo usado en "Solicitar Clase", nunca
+  // en "Reservar Cancha" (esa cuadrícula no tiene restricción de horario de
+  // coach). Deliberadamente más apagado que 'reservado' para distinguir "no
+  // se ofrece clase a esta hora" de "sí se ofrece, pero está ocupado".
+  fuera_horario: { etiqueta: 'No disponible', clases: 'border-slate-800 bg-slate-900/70 text-slate-600' },
 };
+
+// Configuración de Horarios de Clase del Club (item 2) — ¿esta hora cae
+// DENTRO de algún bloque que el club haya habilitado para Solicitar Clase
+// (`rangos_horario_clases`, migracion_v30, editable desde Academia &
+// Clínicas → "Horarios Habilitados")? Un arreglo vacío/sin configurar
+// significa "sin restricción" (comportamiento previo a esta función) — así
+// un club que nunca configuró nada no ve su Portal repentinamente bloqueado.
+function horaDentroDeRangosClase(horaInicio, horaFin, rangos) {
+  const lista = Array.isArray(rangos) ? rangos : [];
+  if (lista.length === 0) return true;
+  const ini = parseHoraAMinutos(horaInicio);
+  const fin = parseHoraAMinutos(horaFin);
+  if (ini === null || fin === null) return false;
+  return lista.some((r) => {
+    const rIni = parseHoraAMinutos(r?.desde);
+    const rFin = parseHoraAMinutos(r?.hasta);
+    return rIni !== null && rFin !== null && ini >= rIni && fin <= rFin;
+  });
+}
 
 // TIPO de ocupación de UNA cancha en un horario específico — mismos
 // bloqueos sintéticos en `reservas` que ya pinta la Parrilla Operativa
@@ -26803,13 +27021,15 @@ function PortalPublicoJugadores({ clubSlug }) {
   );
   const torneosActivos = useMemo(() => torneos.filter((t) => t.archivado !== true && t.estado !== 'finalizado'), [torneos]);
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
-  // Mismo Filtro por Hora y Archivado que las retas, adaptado a la
-  // recurrencia semanal de Academia (ver `claseYaInicioHoy`): una clase
-  // desaparece del catálogo público en cuanto `archivado === true` O su
-  // ocurrencia de HOY ya arrancó — vuelve a aparecer sola la próxima semana,
-  // cuando HOY deje de coincidir con su `dia_semana`.
+  // PURGA ESTRICTA DE CLASES PASADAS (item 3): una clase desaparece del
+  // catálogo público en cuanto `archivado === true` O su ocurrencia de HOY
+  // ya CONCLUYÓ del todo (`claseYaConcluyoHoy`, basado en `hora_fin` — a
+  // propósito NO usa `claseYaInicioHoy`/`hora_inicio`: una clase "en curso"
+  // sigue contando como activa, solo se oculta una vez que terminó) — vuelve
+  // a aparecer sola la próxima semana, cuando HOY deje de coincidir con su
+  // `dia_semana`.
   const academiaClasesPortalVisibles = useMemo(
-    () => academiaClasesPortal.filter((c) => c.archivado !== true && !claseYaInicioHoy(c, new Date(tickPortal))),
+    () => academiaClasesPortal.filter((c) => c.archivado !== true && !claseYaConcluyoHoy(c, new Date(tickPortal))),
     [academiaClasesPortal, tickPortal]
   );
 
@@ -28704,6 +28924,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             canchas={canchas}
             reservas={reservas}
             academiaClases={academiaClasesPortal}
+            rangosHorario={club?.rangos_horario_clases}
           />
         )}
 
@@ -29404,7 +29625,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
 // activas a esa hora (`estadoOcupacionAgregado`) — 100% derivado de
 // `reservas`/`academiaClases` que el Portal ya tiene cargadas, sin ninguna
 // consulta ni suscripción nueva (Regla de Oro de Realtime intacta).
-function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases }) {
+function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario }) {
   const [tipo, setTipo] = useState('grupal'); // 'privada' | 'grupal'
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
   const [fecha, setFecha] = useState(hoyISO());
@@ -29422,15 +29643,24 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
     return horas;
   }, []);
   const esHoy = fecha === hoyISO();
+  // CONFIGURACIÓN DE HORARIOS DE CLASE DEL CLUB (item 2): antes de resolver
+  // ocupación de cancha, se revisa si la hora siquiera cae dentro de algún
+  // "Rango de Horario Habilitado" — si no, la celda es 'fuera_horario' (No
+  // disponible) SIN IMPORTAR si hay cancha libre, y ni se calcula el estado
+  // agregado (no hace falta: de cualquier forma no será seleccionable).
   const slots = useMemo(() => {
     const ahoraMin = minutosAhora();
     return horasDelDia.map((m) => {
       const hIni = minutosAHora(m);
       const hFin = minutosAHora(m + 60);
+      const pasado = esHoy && m < ahoraMin;
+      if (!horaDentroDeRangosClase(hIni, hFin, rangosHorario)) {
+        return { horaInicio: hIni, horaFin: hFin, pasado, tipo: 'fuera_horario', coachNombre: null };
+      }
       const estado = estadoOcupacionAgregado(canchasActivas, fecha, hIni, hFin, reservas, academiaClases);
-      return { horaInicio: hIni, horaFin: hFin, pasado: esHoy && m < ahoraMin, ...estado };
+      return { horaInicio: hIni, horaFin: hFin, pasado, ...estado };
     });
-  }, [horasDelDia, canchasActivas, fecha, reservas, academiaClases, esHoy]);
+  }, [horasDelDia, canchasActivas, fecha, reservas, academiaClases, esHoy, rangosHorario]);
 
   // Filtrado de Horas Pasadas (item 4): si la hora seleccionada deja de ser
   // elegible (cambió la fecha, o ya pasó/se ocupó), se limpia sola en vez
@@ -29510,7 +29740,15 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               const valor = e.target.value;
               setFecha(valor && valor < hoyISO() ? hoyISO() : valor);
             }}
-            className={inputClase}
+            // FIX DE USABILIDAD (item 1): un clic en CUALQUIER parte del
+            // recuadro abre el picker nativo del navegador, no solo el
+            // icono de calendario — `showPicker()` no existe en todos los
+            // navegadores (Safari/iOS), así que se llama solo si está
+            // disponible; donde no lo esté, el input se sigue comportando
+            // como antes (clic abre el calendario nativo por defecto en la
+            // mayoría de navegadores de escritorio/Android).
+            onClick={(e) => e.target.showPicker && e.target.showPicker()}
+            className={`${inputClase} cursor-pointer`}
           />
           <div className="mt-1.5 flex gap-1.5">
             <button
@@ -30180,7 +30418,11 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 // de aceptarlo.
                 setFecha(valor && valor < hoyISO() ? hoyISO() : valor);
               }}
-              className={inputClase}
+              // FIX DE USABILIDAD: mismo criterio que "Solicitar Clase" —
+              // un clic en cualquier parte del recuadro abre el picker
+              // nativo, no solo el icono de calendario.
+              onClick={(e) => e.target.showPicker && e.target.showPicker()}
+              className={`${inputClase} cursor-pointer`}
             />
             {/* DATEPICKER — accesos rápidos: un click para hoy/mañana sin
                 tener que abrir el calendario nativo. */}
@@ -30785,6 +31027,13 @@ function AppInterno() {
   const [configClub, setConfigClub] = useState(() => leerConfigClubLocal());
   const [guardandoConfigClub, setGuardandoConfigClub] = useState(false);
 
+  // Rangos de Horario Habilitados para Clases (migracion_v30) — misma fila
+  // de `configuracion_club`, guardado/cargado por separado del nombre/logo
+  // de arriba (ver `guardarRangosHorarioClases` más abajo) para no mezclar
+  // dos flujos de guardado con mensajes y semántica distintos.
+  const [rangosHorarioClases, setRangosHorarioClases] = useState(() => leerRangosHorarioClasesLocal());
+  const [guardandoRangosHorarioClases, setGuardandoRangosHorarioClases] = useState(false);
+
   // Título de la pestaña del navegador: antes quedaba fijo en "Smash Pádel
   // Club" (ver `index.html`), roto para cualquier OTRO club que use ClubOS.
   // `index.html` ahora trae un genérico "ClubOS" como valor inicial (antes
@@ -31179,6 +31428,14 @@ function AppInterno() {
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
         }
+        // Rangos de Horario Habilitados para Clases (migracion_v30) — mismo
+        // `select('*')` de arriba, sin consulta nueva: si la columna todavía
+        // no existe en un proyecto viejo, `data.rangos_horario_clases` viene
+        // `undefined` y este bloque simplemente no toca el valor local.
+        if (Array.isArray(data.rangos_horario_clases)) {
+          setRangosHorarioClases(data.rangos_horario_clases);
+          guardarRangosHorarioClasesLocal(data.rangos_horario_clases);
+        }
       }
     } catch (err) {
       if (!esErrorTablaInexistente(err) && !opts.silencioso) {
@@ -31186,6 +31443,35 @@ function AppInterno() {
       }
     }
   }, []);
+
+  // Guarda los Rangos de Horario Habilitados para Clases — mismo criterio
+  // de Sincronización Silenciosa que `guardarConfigClub` (estado en vivo +
+  // respaldo local SIEMPRE, Supabase best effort), pero como flujo
+  // independiente: distinto mensaje de toast y sin pisar `configClub`
+  // (nombre/logo), que vive en su propio estado.
+  const guardarRangosHorarioClases = useCallback(
+    async (nuevosRangos) => {
+      const limpios = Array.isArray(nuevosRangos) ? nuevosRangos : [];
+      setGuardandoRangosHorarioClases(true);
+      setRangosHorarioClases(limpios);
+      guardarRangosHorarioClasesLocal(limpios);
+      try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión — no se puede guardar en Supabase todavía.');
+        const { error } = await actualizarConColumnasOpcionales('configuracion_club', CLUB_ACTIVO_ID, { rangos_horario_clases: limpios }, [
+          'rangos_horario_clases',
+        ]);
+        if (error) throw error;
+      } catch (err) {
+        // Sincronización Silenciosa: los rangos ya se aplicaron de forma
+        // optimista arriba — si Supabase no los acepta todavía (columna sin
+        // migrar, red), se reintentará solo con el próximo guardado.
+        console.warn('[Academia & Clínicas] No se pudieron guardar los Horarios Habilitados en Supabase — se guardaron en modo local.', err);
+      }
+      mostrarToast({ titulo: 'Horarios Habilitados actualizados', detalle: 'El Portal ya solo deja elegir horas dentro de estos bloques.' });
+      setGuardandoRangosHorarioClases(false);
+    },
+    [mostrarToast]
+  );
 
   // Guarda Nombre/Logo del Club: SIEMPRE actualiza el estado en vivo y el
   // respaldo en `localStorage` de inmediato (nunca deja al operador viendo
@@ -32057,6 +32343,9 @@ function AppInterno() {
                 onIrAPOS={() => setModuloActivo('pos')}
                 permisos={permisos}
                 configClub={configClub}
+                rangosHorarioClases={rangosHorarioClases}
+                onGuardarRangosHorarioClases={guardarRangosHorarioClases}
+                guardandoRangosHorarioClases={guardandoRangosHorarioClases}
               />
             ) : moduloActivo === 'seguridad' ? (
               <ModuloControlSeguridad
