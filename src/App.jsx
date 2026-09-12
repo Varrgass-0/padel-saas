@@ -1308,11 +1308,48 @@ function SelectorArchivoImagen({ onSubida, carpeta, disabled }) {
   );
 }
 
-const HORA_INICIO_MIN = 6 * 60; // 06:00
-const HORA_FIN_MIN = 24 * 60; // 24:00 (medianoche) — límite exclusivo del cronograma
+const HORA_INICIO_MIN = 6 * 60; // 06:00 — límite de RESPALDO (Horario de Operación del Club, item 4, migracion_v31)
+const HORA_FIN_MIN = 24 * 60; // 24:00 (medianoche) — límite de RESPALDO, exclusivo del cronograma
 const SLOT_MIN = 30; // resolución de la parrilla en minutos (permite bloques de 30 min o 1 hr)
-const TOTAL_SLOTS = (HORA_FIN_MIN - HORA_INICIO_MIN) / SLOT_MIN; // 36 columnas de 30 min = 18 horas
+const TOTAL_SLOTS = (HORA_FIN_MIN - HORA_INICIO_MIN) / SLOT_MIN; // 36 columnas de 30 min = 18 horas — TOTAL de RESPALDO, ver `calcularTotalSlots`
 const SLOT_PX = 56;
+
+// HORARIO DE OPERACIÓN DEL CLUB (item 4, migracion_v31): `configuracion_club`
+// guarda `hora_apertura`/`hora_cierre` (texto "HH:MM") — este helper los lee
+// desde CUALQUIER objeto que los traiga (el `configClub` del panel interno,
+// camelCase `horaApertura`/`horaCierre`, o el `club` del Portal, snake_case
+// `hora_apertura`/`hora_cierre` tal cual viene de Supabase) y regresa sus
+// minutos, con respaldo a los límites fijos históricos `HORA_INICIO_MIN`/
+// `HORA_FIN_MIN` cuando el club no los ha configurado todavía (proyecto sin
+// esta migración, o un valor inválido/vacío) — así ningún club ve su
+// Parrilla, Cronograma o selectores de hora repentinamente vacíos o rotos.
+function minutosOperacionDelClub(fuente) {
+  const aperturaCruda = fuente?.horaApertura ?? fuente?.hora_apertura;
+  const cierreCrudo = fuente?.horaCierre ?? fuente?.hora_cierre;
+  const apertura = parseHoraAMinutos(aperturaCruda);
+  const cierre = parseHoraAMinutos(cierreCrudo);
+  const aperturaMin = apertura !== null ? apertura : HORA_INICIO_MIN;
+  const cierreMin = cierre !== null && cierre > aperturaMin ? cierre : HORA_FIN_MIN;
+  return { aperturaMin, cierreMin };
+}
+
+// Total de columnas/slots de `SLOT_MIN` minutos entre apertura y cierre —
+// generaliza la constante fija `TOTAL_SLOTS` (arriba) para un rango de
+// operación dinámico por club (`VistaCronograma`/`FilaCronograma`, item 4).
+function calcularTotalSlots(aperturaMin, cierreMin) {
+  return Math.max(1, Math.round((cierreMin - aperturaMin) / SLOT_MIN));
+}
+
+// Opciones de hora completa (formato "HH:MM") dentro de un rango, en pasos
+// de `pasoMin` (30 por defecto — mismo grano que `SLOT_MIN`) — usado por los
+// selectores dinámicos de "Nueva Reserva" (item 2) y cualquier otro `<select>`
+// de hora que deba respetar el Horario de Operación del Club (item 4) en vez
+// de un rango fijo.
+function opcionesHoraEnRango(aperturaMin, cierreMin, pasoMin = SLOT_MIN) {
+  const horas = [];
+  for (let m = aperturaMin; m <= cierreMin; m += pasoMin) horas.push(minutosAHora(m));
+  return horas;
+}
 
 const ESTADOS_PAGO = [
   { value: 'pagado', label: 'Pagado', tone: 'emerald' },
@@ -1784,6 +1821,36 @@ const METODOS_PAGO_POS = [
   { value: 'tarjeta', label: 'Tarjeta TPV', icon: CreditCard },
   { value: 'transferencia', label: 'Transferencia SPEI', icon: ArrowRightLeft },
 ];
+
+// Etiqueta de "Método de Pago" para el Modal de Desglose del P&L (Contabilidad
+// & Compras → Estado de Resultados) — normaliza el valor CRUDO guardado en
+// `metodo_pago` de `reta_inscripciones`/`torneo_participantes`/
+// `academia_alumnos` (migracion_v32) al texto exacto que pide el desglose:
+// Efectivo, Transferencia, Tarjeta TPV, Portal Web / Stripe o Wallet.
+// `tarjeta_portal`/`wallet_portal` son los valores propios que guarda el
+// Portal de Jugadores al pagar en línea (ver `inscribirseAClase`/
+// `inscribirseAReta`/`inscribirseATorneo`) — distintos de `tarjeta`/`wallet`
+// "a secas" (cobro presencial en Recepción/Smart POS) para poder mostrar
+// "Portal Web / Stripe" en vez de "Tarjeta TPV" cuando el pago fue en línea.
+function etiquetaMetodoPagoInscripcion(metodo) {
+  switch (metodo) {
+    case 'efectivo':
+      return 'Efectivo';
+    case 'transferencia':
+      return 'Transferencia';
+    case 'tarjeta':
+      return 'Tarjeta TPV';
+    case 'tarjeta_portal':
+      return 'Portal Web / Stripe';
+    case 'wallet':
+    case 'wallet_portal':
+      return 'Wallet';
+    case 'credito':
+      return 'Crédito';
+    default:
+      return null;
+  }
+}
 
 // Duraciones que ofrece la Renta Exprés de canchas dentro del POS.
 const DURACIONES_RENTA = [
@@ -2469,7 +2536,10 @@ const LS_KEY_CLUB_CONFIG = 'smashpadel_club_config_v1';
 // UI ya tiene sus propios respaldos de DISPLAY para cuando todavía no hay
 // nombre capturado (ver `configClubActual.nombre || 'Panel operativo'` en
 // `Sidebar`) — este default solo afecta el valor inicial editable.
-const CONFIG_CLUB_DEFAULT = { nombre: '', logoUrl: '' };
+// Horario de Operación del Club (item 4, migracion_v31) — mismos límites de
+// respaldo que `HORA_INICIO_MIN`/`HORA_FIN_MIN` (06:00–24:00), formateados
+// como texto porque así viaja `configuracion_club.hora_apertura`/`hora_cierre`.
+const CONFIG_CLUB_DEFAULT = { nombre: '', logoUrl: '', horaApertura: '06:00', horaCierre: '24:00' };
 // FIX ClubOS (Filtrado Estricto): `claveLocalPorClub` (definida más abajo,
 // pero una `function` con hoisting — se puede llamar aquí sin problema)
 // mete el `club_id` activo en la llave de `localStorage`. Sin esto, un
@@ -2484,7 +2554,12 @@ function leerConfigClubLocal() {
     const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_CLUB_CONFIG));
     if (!crudo) return { ...CONFIG_CLUB_DEFAULT };
     const parsed = JSON.parse(crudo);
-    return { nombre: (parsed.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre, logoUrl: parsed.logoUrl || '' };
+    return {
+      nombre: (parsed.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
+      logoUrl: parsed.logoUrl || '',
+      horaApertura: parsed.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura,
+      horaCierre: parsed.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
+    };
   } catch (_e) {
     return { ...CONFIG_CLUB_DEFAULT };
   }
@@ -2523,6 +2598,12 @@ function guardarRangosHorarioClasesLocal(rangos) {
 function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
   const [nombre, setNombre] = useState(configActual.nombre || '');
   const [logoUrl, setLogoUrl] = useState(configActual.logoUrl || '');
+  // Horario de Operación del Club (item 4, migracion_v31): apertura/cierre
+  // dinámicos que reemplazan el límite fijo 06:00–24:00 en la Parrilla
+  // Operativa/Cronograma y en los selectores de hora de "Solicitar Clase",
+  // "Nueva Reserva" y las reservas del Portal.
+  const [horaApertura, setHoraApertura] = useState(configActual.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
+  const [horaCierre, setHoraCierre] = useState(configActual.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
   const [error, setError] = useState('');
 
   const logoPreview = logoUrl;
@@ -2547,7 +2628,16 @@ function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
       setError('El nombre del club es obligatorio.');
       return;
     }
-    const nuevaConfig = { nombre: nombre.trim(), logoUrl: logoUrl.trim() || configActual.logoUrl || '' };
+    if ((parseHoraAMinutos(horaCierre) ?? 0) <= (parseHoraAMinutos(horaApertura) ?? 0)) {
+      setError('La Hora de Cierre debe ser posterior a la Hora de Apertura.');
+      return;
+    }
+    const nuevaConfig = {
+      nombre: nombre.trim(),
+      logoUrl: logoUrl.trim() || configActual.logoUrl || '',
+      horaApertura,
+      horaCierre,
+    };
     onClose();
     await onGuardar?.(nuevaConfig);
   }
@@ -2590,6 +2680,34 @@ function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
               <span className="text-[10px] text-slate-600">Sin logo</span>
             )}
           </div>
+        </div>
+
+        {/* Horario de Operación del Club (item 4, migracion_v31): estas 2
+            horas completas reemplazan el límite fijo 06:00–24:00 en toda la
+            app — Parrilla Operativa, Cronograma (Academia incluida) y los
+            selectores de "Solicitar Clase"/"Nueva Reserva"/reservas del
+            Portal. Reutiliza las mismas opciones de hora completa
+            (`OPCIONES_HORA_COMPLETA_ACADEMIA`) que ya usa "Horarios
+            Habilitados para Clases". */}
+        <div className="grid grid-cols-2 gap-4">
+          <Campo label="Hora de Apertura">
+            <select value={horaApertura} onChange={(e) => setHoraApertura(e.target.value)} className={inputClase}>
+              {OPCIONES_HORA_COMPLETA_ACADEMIA.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Hora de Cierre">
+            <select value={horaCierre} onChange={(e) => setHoraCierre(e.target.value)} className={inputClase}>
+              {OPCIONES_HORA_COMPLETA_ACADEMIA.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
+          </Campo>
         </div>
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
@@ -3346,9 +3464,9 @@ function CanchaCard({
  * VISTA CRONOGRAMA
  * ==========================================================================*/
 
-function EncabezadoHoras() {
+function EncabezadoHoras({ horaAperturaMin = HORA_INICIO_MIN, horaCierreMin = HORA_FIN_MIN }) {
   const horas = [];
-  for (let m = HORA_INICIO_MIN; m < HORA_FIN_MIN; m += 60) horas.push(m);
+  for (let m = horaAperturaMin; m < horaCierreMin; m += 60) horas.push(m);
   return (
     <div className="flex border-b border-slate-800">
       {horas.map((m) => (
@@ -3409,9 +3527,23 @@ function asignarCarrilesSolape(bloques) {
   return resultado;
 }
 
-function FilaCronograma({ cancha, estadoActual, reservasDelDia, onSlotClick, onReservaClick, bloqueosMaestroTorneoIds }) {
+function FilaCronograma({
+  cancha,
+  estadoActual,
+  reservasDelDia,
+  onSlotClick,
+  onReservaClick,
+  bloqueosMaestroTorneoIds,
+  horaAperturaMin = HORA_INICIO_MIN,
+  horaCierreMin = HORA_FIN_MIN,
+}) {
   const bloqueada = estadoActual === 'mantenimiento';
   const meta = ESTATUS_META[estadoActual];
+  // Horario de Operación del Club (item 4): `totalSlots` ya no es la
+  // constante fija `TOTAL_SLOTS` — se recalcula para el rango de
+  // apertura/cierre configurado por el club (`calcularTotalSlots`), con el
+  // mismo respaldo a los límites históricos cuando el club no configuró nada.
+  const totalSlots = calcularTotalSlots(horaAperturaMin, horaCierreMin);
 
   const bloques = useMemo(() => {
     return reservasDelDia
@@ -3420,13 +3552,13 @@ function FilaCronograma({ cancha, estadoActual, reservasDelDia, onSlotClick, onR
         const iniMin = parseHoraAMinutos(r.hora_inicio);
         const finMin = parseHoraAMinutos(r.hora_fin);
         if (iniMin === null || finMin === null) return null;
-        const startIdx = Math.max(0, Math.round((iniMin - HORA_INICIO_MIN) / SLOT_MIN));
-        const endIdx = Math.min(TOTAL_SLOTS, Math.round((finMin - HORA_INICIO_MIN) / SLOT_MIN));
+        const startIdx = Math.max(0, Math.round((iniMin - horaAperturaMin) / SLOT_MIN));
+        const endIdx = Math.min(totalSlots, Math.round((finMin - horaAperturaMin) / SLOT_MIN));
         const span = Math.max(1, endIdx - startIdx);
         return { reserva: r, startIdx, span };
       })
       .filter(Boolean);
-  }, [reservasDelDia, cancha.id]);
+  }, [reservasDelDia, cancha.id, horaAperturaMin, totalSlots]);
 
   // Bloqueo Maestro de Torneo (el apartado general 7:00–15:00, antes de
   // programar partidos — ver `idsBloqueosMaestroTorneo`): se pinta como
@@ -3458,18 +3590,18 @@ function FilaCronograma({ cancha, estadoActual, reservasDelDia, onSlotClick, onR
   }, [bloques]);
 
   const slots = [];
-  for (let i = 0; i < TOTAL_SLOTS; i++) slots.push(i);
+  for (let i = 0; i < totalSlots; i++) slots.push(i);
 
   return (
     <div className="relative flex border-b border-slate-800/70" style={{ height: 60 }}>
       {bloqueada ? (
-        <div className="flex items-center gap-2 bg-amber-400/5 px-3 text-xs font-bold text-amber-400" style={{ width: TOTAL_SLOTS * SLOT_PX }}>
+        <div className="flex items-center gap-2 bg-amber-400/5 px-3 text-xs font-bold text-amber-400" style={{ width: totalSlots * SLOT_PX }}>
           <Wrench size={13} /> Cancha bloqueada por mantenimiento
         </div>
       ) : (
         <>
           {slots.map((i) => {
-            const enHora = HORA_INICIO_MIN + i * SLOT_MIN;
+            const enHora = horaAperturaMin + i * SLOT_MIN;
             const esHoraEnPunto = enHora % 60 === 0;
             return (
               <button
@@ -3540,11 +3672,24 @@ function FilaCronograma({ cancha, estadoActual, reservasDelDia, onSlotClick, onR
   );
 }
 
-function VistaCronograma({ canchas, reservas, fechaSeleccionada, onSlotClick, onReservaClick, bloqueosMaestroTorneoIds }) {
+function VistaCronograma({
+  canchas,
+  reservas,
+  fechaSeleccionada,
+  onSlotClick,
+  onReservaClick,
+  bloqueosMaestroTorneoIds,
+  horaAperturaMin = HORA_INICIO_MIN,
+  horaCierreMin = HORA_FIN_MIN,
+}) {
   const reservasDelDia = useMemo(
     () => reservas.filter((r) => r.fecha === fechaSeleccionada),
     [reservas, fechaSeleccionada]
   );
+  // Horario de Operación del Club (item 4) — mismo respaldo que
+  // `FilaCronograma`: cuando el club no configuró nada, se comporta
+  // exactamente igual que antes (06:00–24:00 fijos).
+  const totalSlots = calcularTotalSlots(horaAperturaMin, horaCierreMin);
 
   if (canchas.length === 0) return null;
 
@@ -3574,8 +3719,8 @@ function VistaCronograma({ canchas, reservas, fechaSeleccionada, onSlotClick, on
             termina empujando el scroll horizontal a TODA la página (revelando el
             fondo blanco por defecto del <body>) en vez de quedarse contenido aquí. */}
         <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain bg-slate-900">
-          <div style={{ width: TOTAL_SLOTS * SLOT_PX }} className="bg-slate-900">
-            <EncabezadoHoras />
+          <div style={{ width: totalSlots * SLOT_PX }} className="bg-slate-900">
+            <EncabezadoHoras horaAperturaMin={horaAperturaMin} horaCierreMin={horaCierreMin} />
             {canchas.map((c) => (
               <FilaCronograma
                 key={c.id}
@@ -3585,6 +3730,8 @@ function VistaCronograma({ canchas, reservas, fechaSeleccionada, onSlotClick, on
                 onSlotClick={onSlotClick}
                 onReservaClick={onReservaClick}
                 bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+                horaAperturaMin={horaAperturaMin}
+                horaCierreMin={horaCierreMin}
               />
             ))}
           </div>
@@ -4209,6 +4356,8 @@ function ModalNuevaReserva({
   onCreada,
   onRegistrarAuditoria,
   jugadoresPorId,
+  horaAperturaMin = HORA_INICIO_MIN,
+  horaCierreMin = HORA_FIN_MIN,
 }) {
   const toast = useToast();
   const canchasDisponibles = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
@@ -4222,12 +4371,19 @@ function ModalNuevaReserva({
   const [telefono, setTelefono] = useState('');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [fecha, setFecha] = useState(fechaInicial || hoyISO());
-  const [horaInicio, setHoraInicio] = useState(horaInicial || '09:00');
+  // Selectores desplegables de Hora Inicio/Fin (item 2) dentro del Horario de
+  // Operación del Club (item 4, `horaAperturaMin`/`horaCierreMin`) — el
+  // default de 9:00am se recorta al rango del club si éste abre más tarde.
+  const [horaInicio, setHoraInicio] = useState(() => horaInicial || minutosAHora(Math.min(Math.max(9 * 60, horaAperturaMin), horaCierreMin - 30)));
   const [horaFin, setHoraFin] = useState(() => {
-    const base = parseHoraAMinutos(horaInicial || '09:00') ?? 540;
-    // Tope en 23:59: un <input type="time"> no acepta "24:00" como valor válido.
-    return minutosAHora(Math.min(base + 60, HORA_FIN_MIN - 1));
+    const base = parseHoraAMinutos(horaInicial) ?? Math.max(9 * 60, horaAperturaMin);
+    return minutosAHora(Math.min(base + 60, horaCierreMin));
   });
+  // Opciones de hora completas del `<select>` — mismo rango de Horario de
+  // Operación del Club que pinta la Parrilla/Cronograma (item 4), en pasos
+  // de 30 min (`SLOT_MIN`, igual resolución que la cuadrícula de la Parrilla
+  // Operativa) en vez de los `<input type="time">` manuales de antes (item 2).
+  const opcionesHora = useMemo(() => opcionesHoraEnRango(horaAperturaMin, horaCierreMin, SLOT_MIN), [horaAperturaMin, horaCierreMin]);
   const [monto, setMonto] = useState('');
   const [montoTocado, setMontoTocado] = useState(false);
   const [guardando, setGuardando] = useState(false);
@@ -4405,11 +4561,27 @@ function ModalNuevaReserva({
           <Campo label="Fecha">
             <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
           </Campo>
+          {/* Selectores desplegables de Hora Inicio/Fin (item 2, Turno
+              nuevo): reemplazan los `<input type="time">` manuales por
+              `<select>` con horas completas en pasos de 30 min, dentro del
+              Horario de Operación del Club configurado (item 4). */}
           <Campo label="Hora inicio">
-            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+            <select value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase}>
+              {opcionesHora.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
           </Campo>
           <Campo label="Hora fin">
-            <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
+            <select value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase}>
+              {opcionesHora.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
           </Campo>
         </div>
 
@@ -4639,7 +4811,34 @@ function DetalleReserva({
             .from('jugadores')
             .update({ saldo_a_favor: nuevoSaldo })
             .eq('id', reserva.jugador_id);
-          if (!errUpdate) saldoAplicado = Number(montoAbono);
+          if (!errUpdate) {
+            saldoAplicado = Number(montoAbono);
+            // FIX — Sincronización del Historial en la Wallet (item 3): este
+            // abono por cancelación es el ÚNICO lugar de la app que sumaba
+            // saldo a `jugadores.saldo_a_favor` SIN dejar registro en
+            // `wallet_movimientos` (a diferencia de `aplicarCargoWallet`, que
+            // sí inserta uno por cada cargo). Antes de este fix, el saldo del
+            // jugador subía correctamente pero su "Historial de movimientos"
+            // en el Portal (Wallet) nunca mostraba de dónde salió ese abono —
+            // quedaban desincronizados. Es un insert best-effort (Arquitectura
+            // Flexible): si `wallet_movimientos` no existe todavía en este
+            // proyecto, la cancelación/abono ya quedó aplicada de todos modos.
+            try {
+              await supabase.from('wallet_movimientos').insert(
+                withClubId({
+                  jugador_id: reserva.jugador_id,
+                  tipo: 'abono',
+                  monto: Math.abs(Number(montoAbono)),
+                  saldo_resultante: nuevoSaldo,
+                  motivo: `Saldo a favor por cancelación de reserva · ${cancha?.nombre || 'Cancha'} ${reserva.fecha || ''}`.trim(),
+                  referencia_tipo: 'reserva',
+                  referencia_id: reserva.id,
+                })
+              );
+            } catch (_errMovimiento) {
+              /* best-effort — el abono real ya quedó aplicado arriba */
+            }
+          }
         }
       } catch (_e) {
         /* si jugadores falla, la cancelación de la reserva ya quedó hecha */
@@ -4923,7 +5122,13 @@ function ModuloParrillaOperativa({
   onReservaParaCobro,
   bloqueosMaestroTorneoIds,
   jugadoresPorId,
+  configClub,
 }) {
+  // Horario de Operación del Club (item 4) — el Cronograma y "Nueva Reserva"
+  // de este módulo dejan de usar el límite fijo 06:00–24:00 y respetan el
+  // rango que el club configuró (`ModalConfigClub`), con respaldo a ese
+  // mismo límite fijo si el club no ha configurado nada todavía.
+  const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(configClub);
   const [vista, setVista] = useState('tarjetas');
   const [busqueda, setBusqueda] = useState('');
   const [filtroEstatus, setFiltroEstatus] = useState('todos');
@@ -5118,6 +5323,8 @@ function ModuloParrillaOperativa({
               setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
             }
             bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+            horaAperturaMin={horaAperturaMin}
+            horaCierreMin={horaCierreMin}
           />
           {/* AJUSTE UX: copia visual e interactiva del Mapa de Calor de
               Ocupación — mismo componente `HeatmapOcupacion` que ya usa
@@ -5152,6 +5359,8 @@ function ModuloParrillaOperativa({
           onClose={() => setModalNuevaReserva(null)}
           onRegistrarAuditoria={onRegistrarAuditoria}
           jugadoresPorId={jugadoresPorId}
+          horaAperturaMin={horaAperturaMin}
+          horaCierreMin={horaCierreMin}
           onCreada={(reserva, cancha) => {
             upsertReserva(reserva);
             onReservaParaCobro?.(reserva, cancha);
@@ -8767,34 +8976,41 @@ function ModuloSmartPOS({
     // créditos — el MISMO código sirve tanto para su alta inicial como para
     // una renovación (ver "Cobrar en POS" del Dashboard de Membresías, que
     // regresa una fila ya pagada a "pendiente" para volver a cobrarla aquí).
+    // Método de Pago real (item 1, migracion_v32): antes, `metodoPago` solo
+    // viajaba al comprobante de `ventas` (ver más abajo) — nunca se copiaba
+    // a la propia fila de inscripción/alumno, así que el Modal de Desglose
+    // del P&L nunca podía mostrar el método real, aunque el operador SÍ lo
+    // haya elegido aquí en `ModalCobrarInscripcion`.
     const camposPago =
       fila.tabla === 'academia_alumnos'
         ? {
             estado_pago: 'pagado',
             estado: 'activo',
+            metodo_pago: metodoPago,
             ...(fila.tipoPagoAcademia === 'mensualidad'
               ? activarOrenovarMembresia(fila.paqueteCreditosAcademia || PAQUETE_CREDITOS_DEFECTO)
               : {}),
           }
-        : { estado_pago: 'pagado' };
+        : { estado_pago: 'pagado', metodo_pago: metodoPago };
 
     if (!fila.esLocal) {
       // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo:
       // los 4 campos nuevos de Membresía (`paquete_creditos`/
-      // `creditos_restantes`/`fecha_inicio_membresia`/`fecha_renovacion`)
-      // pueden no existir todavía si el proyecto no corrió
-      // `migracion_v16_academia_creditos.sql` — sin este reintento
-      // tolerante, un solo campo faltante tronaba el UPDATE COMPLETO
-      // (incluyendo `estado_pago`/`estado`, que sí existen desde siempre) y
-      // el cobro se quedaba SOLO local aunque Supabase sí pudiera guardar
-      // el resto. Los nombres de más (irrelevantes para
-      // `reta_inscripciones`/`torneo_participantes`) son inofensivos: solo
-      // se usan si de verdad vienen en `camposPago`.
+      // `creditos_restantes`/`fecha_inicio_membresia`/`fecha_renovacion`) y
+      // `metodo_pago` (migracion_v32) pueden no existir todavía si el
+      // proyecto no corrió esas migraciones — sin este reintento tolerante,
+      // un solo campo faltante tronaba el UPDATE COMPLETO (incluyendo
+      // `estado_pago`/`estado`, que sí existen desde siempre) y el cobro se
+      // quedaba SOLO local aunque Supabase sí pudiera guardar el resto. Los
+      // nombres de más (irrelevantes para `reta_inscripciones`/
+      // `torneo_participantes`) son inofensivos: solo se usan si de verdad
+      // vienen en `camposPago`.
       const { error: errEstado } = await actualizarConColumnasOpcionales(fila.tabla, fila.id, camposPago, [
         'paquete_creditos',
         'creditos_restantes',
         'fecha_inicio_membresia',
         'fecha_renovacion',
+        'metodo_pago',
       ]);
       if (errEstado) {
         console.warn(`[Smart POS] No se pudo sincronizar el cobro de "${fila.tabla}" con Supabase, se aplica solo local:`, errEstado);
@@ -8805,7 +9021,7 @@ function ModuloSmartPOS({
       setInscripciones((prev) =>
         prev.map((i) => {
           if (i.id !== fila.id) return i;
-          const actualizado = { ...i, estado_pago: 'pagado' };
+          const actualizado = { ...i, estado_pago: 'pagado', metodo_pago: metodoPago };
           // Si es un registro `_local` (nunca llegó a existir en Supabase),
           // el localStorage guarda su propia copia — hay que actualizarla
           // también o un F5 la traería de vuelta con el estatus viejo
@@ -8827,7 +9043,7 @@ function ModuloSmartPOS({
       setParticipantesTorneo((prev) =>
         prev.map((p) => {
           if (p.id !== fila.id) return p;
-          const actualizado = { ...p, estado_pago: 'pagado' };
+          const actualizado = { ...p, estado_pago: 'pagado', metodo_pago: metodoPago };
           if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTICIPANTES_LOCAL, actualizado);
           return actualizado;
         })
@@ -13005,6 +13221,13 @@ function ModuloContabilidadCompras({
       _egresosEnRango: egresosEnRango,
       _addonsDeReservasWeb: addonsDeReservasWeb,
       _filasInscripcionesAcademia: filasInscripcionesAcademia,
+      // Torneos y Retas (item 1, tarjeta interactiva) — mismas 2 listas
+      // crudas ya filtradas/rango que arman el KPI `torneosRetas` arriba,
+      // expuestas para que `desglosePnl` arme su propio Modal de Desglose
+      // sin recalcular el mismo filtro dos veces (mismo patrón que
+      // `_filasInscripcionesAcademia`).
+      _filasInscripcionesRetas: filasInscripcionesRetas,
+      _filasInscripcionesTorneos: filasInscripcionesTorneos,
     };
   }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, rangoPnl]);
 
@@ -13111,15 +13334,43 @@ function ModuloContabilidadCompras({
       hora: horaDe(a.created_at),
       concepto: `${a.nombre || 'Alumno'} · ${a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta'}${a.pagado_con_creditos ? ' (crédito)' : ''}`,
       canal: esCanalPortalWeb(a.canal_origen) ? 'Portal Web' : 'Academia & Clínicas',
-      metodoPago: a.pagado_con_creditos ? 'Crédito' : '—',
+      // Método de Pago (item 1, migracion_v32) — real (Efectivo/Transferencia/
+      // Tarjeta TPV/Portal Web/Wallet) cuando la fila ya lo tiene guardado;
+      // "Crédito" si se pagó con un crédito de membresía (no hay método real
+      // porque no hubo cobro); "—" solo para filas anteriores a la migración.
+      metodoPago: etiquetaMetodoPagoInscripcion(a.metodo_pago) || (a.pagado_con_creditos ? 'Crédito' : '—'),
       monto: Number(a.monto) || 0,
     }));
+    // Desglose de "Torneos y Retas" (item 1, tarjeta interactiva) — une las
+    // 2 tablas (retas + torneos) en una sola lista normalizada, igual que el
+    // KPI `pnl.torneosRetas` las suma juntas.
+    const torneosRetasDesglose = [
+      ...pnl._filasInscripcionesRetas.map((i) => ({
+        id: i.id,
+        idCorto: (i.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        hora: horaDe(i.created_at),
+        concepto: `${i.nombre || 'Jugador'} · Reta`,
+        canal: esCanalPortalWeb(i.canal_origen) ? 'Portal Web' : 'Torneos & Retas',
+        metodoPago: etiquetaMetodoPagoInscripcion(i.metodo_pago) || '—',
+        monto: Number(i.monto) || 0,
+      })),
+      ...pnl._filasInscripcionesTorneos.map((p) => ({
+        id: p.id,
+        idCorto: (p.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        hora: horaDe(p.created_at),
+        concepto: `${p.nombre || 'Jugador'} · Torneo${p.categoria ? ` (${p.categoria})` : ''}`,
+        canal: esCanalPortalWeb(p.canal_origen) ? 'Portal Web' : 'Torneos & Retas',
+        metodoPago: etiquetaMetodoPagoInscripcion(p.metodo_pago) || '—',
+        monto: Number(p.monto) || 0,
+      })),
+    ];
     return {
       ventasMostrador: ventasMostradorDesglose,
       ventasWeb: ventasWebDesglose,
       reservas: filasReservasDesglose,
       egresos: filasEgresosDesglose,
       clasesClinicas: clasesClinicasDesglose,
+      torneosRetas: torneosRetasDesglose,
       ingresosTotales: [...ventasMostradorDesglose, ...ventasWebDesglose, ...filasReservasDesglose],
     };
   }, [pnl, canchas]);
@@ -14813,6 +15064,7 @@ function ModuloContabilidadCompras({
                 valor={formatoMoneda(pnl.torneosRetas)}
                 sub="Inscripciones recaudadas"
                 tono="amber"
+                onClick={() => setModalDesglose({ titulo: 'Torneos y Retas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.torneosRetas })}
               />
               <MetricCard
                 icon={Award}
@@ -17678,6 +17930,10 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
   const [correo, setCorreo] = useState('');
   const [nivelJugador, setNivelJugador] = useState('');
   const [estadoPago, setEstadoPago] = useState('pendiente');
+  // Método de Pago (item 1, migracion_v32) — solo aplica cuando se registra
+  // YA pagada aquí mismo (si queda "Pendiente", se cobra después en Smart
+  // POS vía `ModalCobrarInscripcion`, que sí pide su propio método).
+  const [metodoPago, setMetodoPago] = useState('efectivo');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
@@ -17713,6 +17969,10 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       estado_pago: estadoPago,
       estatus_pago: estadoPago,
       estado: 'confirmado',
+      // Método de Pago (item 1, migracion_v32) — solo se manda si ya quedó
+      // "Pagado" aquí mismo; si sigue "Pendiente" no hay método que guardar
+      // todavía (se cobra después en Smart POS).
+      metodo_pago: estadoPago === 'pagado' ? metodoPago : null,
     });
 
     let inscripcionCreada = null;
@@ -17727,6 +17987,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       'estado_pago',
       'estatus_pago',
       'estado',
+      'metodo_pago',
     ]);
 
     if (!errInscripcion && data) {
@@ -17810,6 +18071,17 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
             ))}
           </select>
         </Campo>
+        {estadoPago === 'pagado' && (
+          <Campo label="Método de Pago">
+            <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
+              {METODOS_PAGO_POS.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        )}
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
@@ -18506,6 +18778,9 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
   const [categoria, setCategoria] = useState(torneo.categorias?.[0] ? `${torneo.categorias[0].rama} ${torneo.categorias[0].nivel}` : '');
   const [monto, setMonto] = useState(String(torneo.precio ?? 0));
   const [estadoPago, setEstadoPago] = useState('pendiente');
+  // Método de Pago (item 1, migracion_v32) — solo aplica si se registra YA
+  // pagado aquí mismo (si queda "Pendiente", se cobra después en Smart POS).
+  const [metodoPago, setMetodoPago] = useState('efectivo');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
@@ -18570,6 +18845,8 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       monto: Number(monto) || 0,
       estado_pago: estadoPago,
       estatus_pago: estadoPago,
+      // Método de Pago (item 1, migracion_v32) — solo si ya quedó "Pagado".
+      metodo_pago: estadoPago === 'pagado' ? metodoPago : null,
     });
 
     let participanteCreado = null;
@@ -18591,6 +18868,7 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       'categoria',
       'estado_pago',
       'estatus_pago',
+      'metodo_pago',
     ]);
     if (!errParticipante && data) {
       participanteCreado = data;
@@ -18668,6 +18946,17 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
             </select>
           </Campo>
         </div>
+        {estadoPago === 'pagado' && (
+          <Campo label="Método de Pago">
+            <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
+              {METODOS_PAGO_POS.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        )}
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
@@ -22179,6 +22468,10 @@ function ModalDetalleClase({
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [tipoPago, setTipoPago] = useState('mensualidad');
   const [estadoPagoAlta, setEstadoPagoAlta] = useState('pendiente');
+  // Método de Pago (item 1, migracion_v32) — solo aplica si se registra YA
+  // pagado aquí mismo (si queda "Pendiente", se cobra después en Smart POS;
+  // si se paga con crédito de membresía, `pagado_con_creditos` ya lo cubre).
+  const [metodoPago, setMetodoPago] = useState('efectivo');
   // NUEVO — Membresías por Créditos (item 3): tamaño del paquete que se le
   // asignará a este alumno si su Mensualidad se marca "Ya pagó" aquí mismo
   // (o cuando se cobre después en Smart POS — ver `paquete_creditos` en el
@@ -22234,6 +22527,9 @@ function ModalDetalleClase({
       // pendiente, para que `cobrarInscripcionEvento` (Smart POS) sepa
       // cuántos créditos asignar cuando se cobre más adelante.
       paquete_creditos: !membresiaActiva && tipoPago === 'mensualidad' ? paqueteCreditos : null,
+      // Método de Pago (item 1, migracion_v32) — solo si ya quedó "Pagado" Y
+      // NO fue con crédito de membresía (eso ya lo indica `pagado_con_creditos`).
+      metodo_pago: !membresiaActiva && estadoPagoAlta === 'pagado' ? metodoPago : null,
       ...(yaPagadoAhora ? activarOrenovarMembresia(paqueteCreditos) : {}),
     });
     const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payload, [
@@ -22245,6 +22541,7 @@ function ModalDetalleClase({
       'creditos_restantes',
       'fecha_inicio_membresia',
       'fecha_renovacion',
+      'metodo_pago',
     ]);
     setGuardandoAlta(false);
     if (error || !data) {
@@ -22309,12 +22606,22 @@ function ModalDetalleClase({
       nuevoEstado === 'pagado' && alumno.tipo_pago === 'mensualidad' && !alumno.pagado_con_creditos
         ? activarOrenovarMembresia(alumno.paquete_creditos || PAQUETE_CREDITOS_DEFECTO)
         : {};
-    const cambios = { estado_pago: nuevoEstado, ...activacionMembresia };
+    // Método de Pago (item 1, migracion_v32) — este toggle rápido no tiene UI
+    // de selector propia, así que al marcar "Ya pagó" se asume Efectivo por
+    // defecto (simplificación deliberada: si el operador cobró por otro
+    // medio, puede registrar el pago completo desde Smart POS en su lugar,
+    // que sí pide el método real). Al revertir a "pendiente" se limpia.
+    const cambios = {
+      estado_pago: nuevoEstado,
+      metodo_pago: nuevoEstado === 'pagado' && !alumno.pagado_con_creditos ? 'efectivo' : null,
+      ...activacionMembresia,
+    };
     const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambios, [
       'paquete_creditos',
       'creditos_restantes',
       'fecha_inicio_membresia',
       'fecha_renovacion',
+      'metodo_pago',
     ]);
     if (error) return toast({ titulo: 'No se pudo actualizar el pago', detalle: error.message, tono: 'error' });
     onAlumnoActualizado({ ...alumno, ...cambios });
@@ -22543,6 +22850,17 @@ function ModalDetalleClase({
                       <option value="pagado">Ya pagó</option>
                     </select>
                   </div>
+                )}
+                {!membresiaActivaPreview && estadoPagoAlta === 'pagado' && (
+                  <Campo label="Método de Pago">
+                    <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
+                      {METODOS_PAGO_POS.map((m) => (
+                        <option key={m.value} value={m.value}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Campo>
                 )}
                 {!membresiaActivaPreview && tipoPago === 'mensualidad' && (
                   <Campo label="Paquete de créditos" hint="Cuántas clases/mes incluye esta mensualidad">
@@ -24102,6 +24420,10 @@ function ModuloAcademiaClinicas({
   // `ModalNuevaClase`/`ModalDetalleClase`) — se usan para el selector de
   // "Coach Asignado" por bloque en `ModalRangosHorarioClases`.
   const coachesDisponiblesModulo = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
+  // Horario de Operación del Club (item 4) — el Cronograma de esta parrilla
+  // usa el mismo rango configurado que la Parrilla Operativa principal, en
+  // vez del límite fijo 06:00–24:00.
+  const { aperturaMin: horaAperturaMinAcademia, cierreMin: horaCierreMinAcademia } = minutosOperacionDelClub(configClub);
   const [subvista, setSubvista] = useState('operativa');
   const [modalNuevaClase, setModalNuevaClase] = useState(false);
   const [modalRangosHorario, setModalRangosHorario] = useState(false);
@@ -24539,6 +24861,8 @@ function ModuloAcademiaClinicas({
             fechaSeleccionada={fechaCronograma}
             onSlotClick={manejarClicCeldaLibre}
             onReservaClick={manejarClicReservaCronograma}
+            horaAperturaMin={horaAperturaMinAcademia}
+            horaCierreMin={horaCierreMinAcademia}
           />
           {/* "Mapa de Calor - Saturación de Cupos": vive AQUÍ, justo debajo
               del cronograma de la Parrilla de Clases. Se quitó la copia que
@@ -26507,6 +26831,11 @@ function normalizarFilaClub(fila, tabla) {
     // migración simplemente no trae esta columna (`undefined`) y
     // `ModalSolicitarClase` lo trata como "sin restricción".
     rangos_horario_clases: Array.isArray(fila.rangos_horario_clases) ? fila.rangos_horario_clases : [],
+    // Horario de Operación del Club (item 4, migracion_v31) — respaldo a los
+    // límites fijos históricos cuando el proyecto no ha corrido la
+    // migración (`fila.hora_apertura`/`hora_cierre` vienen `undefined`).
+    hora_apertura: fila.hora_apertura || '06:00',
+    hora_cierre: fila.hora_cierre || '24:00',
     _tabla: tabla,
   };
 }
@@ -26686,10 +27015,10 @@ function estadoOcupacionAgregado(canchasActivas, fecha, horaInicio, horaFin, res
 // de una lista. Mismo `buscarSolapeEnCancha` que ya usa el panel interno de
 // la Parrilla, así el Portal nunca deja reservar un horario que el
 // mostrador ya considera ocupado, y viceversa.
-function franjasDelDiaConEstado(canchaId, fecha, duracionHoras, reservas, academiaClases) {
+function franjasDelDiaConEstado(canchaId, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin = HORA_INICIO_MIN, horaCierreMin = HORA_FIN_MIN) {
   const duracionMin = Math.round((Number(duracionHoras) || 1) * 60);
   const franjas = [];
-  for (let inicio = HORA_INICIO_MIN; inicio + duracionMin <= HORA_FIN_MIN; inicio += 60) {
+  for (let inicio = horaAperturaMin; inicio + duracionMin <= horaCierreMin; inicio += 60) {
     const horaInicio = minutosAHora(inicio);
     const horaFin = minutosAHora(inicio + duracionMin);
     const { tipo, coachNombre } = estadoOcupacionCanchaSlot(canchaId, fecha, horaInicio, horaFin, reservas, academiaClases);
@@ -27146,6 +27475,44 @@ function PortalPublicoJugadores({ clubSlug }) {
     cargarWallet(jugador?.id || null);
   }, [jugador?.id, cargarWallet]);
 
+  // Historial General (item 3) — Compras en Tienda del jugador logueado.
+  // `ventas` NUNCA se carga completa en el Portal (a diferencia de
+  // `reservas`/`inscripciones`/`participantes`/`academiaAlumnosPortal`, que
+  // sí se cargan club-wide para poder pintar cupos/estados en tiempo real):
+  // no tiene columna `jugador_id` propia (el id vive dentro del jsonb
+  // `detalles`, ver cabecera del archivo), así que se trae solo bajo
+  // demanda (login del jugador) y se filtra en el cliente por
+  // `detalles.jugador_id` — mismo criterio de "honor system" ya documentado
+  // en `aplicarCargoWallet`. Se excluyen ventas `es_reserva: true` (esas ya
+  // aparecen como "Reserva de Cancha" en el Historial, vía `reservas` —
+  // contarlas aquí también las duplicaría).
+  const [comprasTiendaPortal, setComprasTiendaPortal] = useState([]);
+  const cargarComprasTienda = useCallback(async (jugadorId) => {
+    if (!jugadorId) {
+      setComprasTiendaPortal([]);
+      return;
+    }
+    try {
+      const { data, error } = await conClubId(supabase.from('ventas').select('*'))
+        .eq('estado_pago', 'pagado')
+        .order('created_at', { ascending: false })
+        .limit(500);
+      if (error) {
+        console.error('[Portal] Error detallado Supabase (leer ventas para Historial):', error);
+        setComprasTiendaPortal([]);
+        return;
+      }
+      setComprasTiendaPortal((data || []).filter((v) => !v.es_reserva && v.detalles?.jugador_id === jugadorId));
+    } catch (e) {
+      console.error('[Portal] Error detallado Supabase (excepción leyendo ventas para Historial):', e);
+      setComprasTiendaPortal([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    cargarComprasTienda(jugador?.id || null);
+  }, [jugador?.id, cargarComprasTienda]);
+
   // FIX DEFINITIVO de variantes: ya no hay estado `variantesProductos` (ni
   // su fetch, ni su canal de Realtime aparte) — el mapa de variantes por
   // producto se deriva directo de `productos`, exactamente igual que en
@@ -27320,6 +27687,10 @@ function PortalPublicoJugadores({ clubSlug }) {
       estatus_pago: pagado ? 'pagado' : 'pendiente',
       estado: 'confirmado',
       canal_origen: ORIGEN_VENTA_WEB,
+      // Método de Pago (item 1, migracion_v32) — distingue el cobro
+      // self-service del Portal (Tarjeta simulada / Wallet) de un cobro
+      // pendiente que se resolverá después en Smart POS (`null`).
+      metodo_pago: esPagoTarjeta ? 'tarjeta_portal' : montoWallet > 0 && montoRestante <= 0 ? 'wallet_portal' : null,
     });
     try {
       const { data, error } = await insertarConColumnasOpcionales('reta_inscripciones', payloadInscripcion, [
@@ -27329,6 +27700,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         'estado',
         'telefono',
         'canal_origen',
+        'metodo_pago',
       ]);
       if (error) throw error;
       if (montoWallet > 0) {
@@ -27467,6 +27839,10 @@ function PortalPublicoJugadores({ clubSlug }) {
       monto,
       estado: 'activo',
       canal_origen: ORIGEN_VENTA_WEB,
+      // Método de Pago (item 1, migracion_v32) — igual criterio que
+      // `inscribirseAReta`: Tarjeta simulada o Wallet del Portal, o `null`
+      // si quedó pendiente por cobrar en recepción.
+      metodo_pago: esPagoTarjeta ? 'tarjeta_portal' : montoWallet > 0 && montoRestante <= 0 ? 'wallet_portal' : null,
       ...(pagado && tipoPago === 'mensualidad' ? activarOrenovarMembresia(PAQUETE_CREDITOS_DEFECTO) : {}),
     });
     try {
@@ -27479,6 +27855,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         'creditos_restantes',
         'fecha_inicio_membresia',
         'fecha_renovacion',
+        'metodo_pago',
       ]);
       if (error) throw error;
       if (montoWallet > 0) {
@@ -27613,6 +27990,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       'busca_pareja',
       'pareja_grupo_id',
       'canal_origen',
+      'metodo_pago',
     ];
     const payloadParticipante = withClubId({
       torneo_id: torneo.id,
@@ -27635,6 +28013,9 @@ function PortalPublicoJugadores({ clubSlug }) {
       // (pareja, más abajo) es la MISMA acción/envío del portal, así que no
       // se marca de nuevo: evita un alerta duplicada por la misma inscripción.
       canal_origen: ORIGEN_VENTA_WEB,
+      // Método de Pago (item 1, migracion_v32) — igual criterio que
+      // `inscribirseAReta`/`inscribirseAClase`.
+      metodo_pago: esPagoTarjeta ? 'tarjeta_portal' : montoWallet > 0 && montoRestante <= 0 ? 'wallet_portal' : null,
     });
     try {
       const { data, error } = await insertarConColumnasOpcionales('torneo_participantes', payloadParticipante, columnasOpcionalesParticipante);
@@ -27666,6 +28047,9 @@ function PortalPublicoJugadores({ clubSlug }) {
           pareja_jugador_id: jugador.id,
           busca_pareja: false,
           pareja_grupo_id: grupoParejaId,
+          // Método de Pago (item 1, migracion_v32) — es el mismo pago que
+          // cubrió al titular, así que la fila de la pareja lleva el mismo valor.
+          metodo_pago: esPagoTarjeta ? 'tarjeta_portal' : montoWallet > 0 && montoRestante <= 0 ? 'wallet_portal' : null,
         });
         try {
           const { data: dataFilaPareja, error: errorFilaPareja } = await insertarConColumnasOpcionales(
@@ -27882,6 +28266,98 @@ function PortalPublicoJugadores({ clubSlug }) {
     if (!jugador || !fila) return false;
     return (jugador.id && fila.jugador_id === jugador.id) || (jugador.telefono && claveTelefono(fila.telefono) === claveTelefono(jugador.telefono));
   }
+
+  // Historial General (item 3) — lista unificada, cronológica, de TODA la
+  // actividad del jugador logueado: reservas de cancha + compras en Tienda +
+  // inscripciones a Torneos/Retas + Clases/Clínicas pagadas, pasadas Y
+  // futuras. Mismo criterio de identidad (`esMiRegistro`) que ya usa cada
+  // pestaña por separado para el aviso "Ya estás inscrito" — aquí solo se
+  // reutiliza para juntar las 5 fuentes en una sola lista en vez de 5 vistas
+  // sueltas. Reservas usan comparación directa por `jugador_id` (esa tabla
+  // no tiene columna `telefono` propia, a diferencia de las otras 4).
+  const historialUnificado = useMemo(() => {
+    if (!jugador) return [];
+    const canchasPorId = {};
+    (canchas || []).forEach((c) => { canchasPorId[c.id] = c; });
+    const torneosPorId = {};
+    (torneos || []).forEach((t) => { torneosPorId[t.id] = t; });
+    const retasPorId = {};
+    (retas || []).forEach((r) => { retasPorId[r.id] = r; });
+    const clasesPorId = {};
+    (academiaClasesPortal || []).forEach((c) => { clasesPorId[c.id] = c; });
+
+    const itemsReservas = (reservas || [])
+      .filter((r) => r.jugador_id && jugador.id && r.jugador_id === jugador.id)
+      .map((r) => ({
+        id: `reserva-${r.id}`,
+        tipo: 'reserva',
+        icon: CalendarDays,
+        titulo: `Reserva de Cancha · ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}`,
+        detalle: `${formatoFechaLarga(r.fecha)}${r.hora_inicio ? ` · ${formatoHora12(r.hora_inicio)}` : ''}`,
+        estadoPago: r.estado_pago,
+        metodoPago: r.metodo_pago || null,
+        monto: Number(r.monto_total || 0) + Number(r.monto_addons || 0),
+        fechaOrden: `${r.fecha || ''}T${r.hora_inicio || '00:00'}`,
+      }));
+
+    const itemsCompras = (comprasTiendaPortal || []).map((v) => ({
+      id: `venta-${v.id}`,
+      tipo: 'compra',
+      icon: ShoppingBag,
+      titulo: 'Compra en Tienda',
+      detalle: Array.isArray(v.detalles?.items) ? v.detalles.items.map((it) => it.nombre).filter(Boolean).join(', ') || 'Artículo(s)' : 'Artículo(s)',
+      estadoPago: v.estado_pago,
+      metodoPago: v.metodo_pago || null,
+      monto: Number(v.total) || 0,
+      fechaOrden: v.created_at || '',
+    }));
+
+    const itemsTorneos = (participantes || [])
+      .filter((p) => esMiRegistro(p))
+      .map((p) => ({
+        id: `torneo-${p.id}`,
+        tipo: 'torneo',
+        icon: Trophy,
+        titulo: `Torneo · ${torneosPorId[p.torneo_id]?.nombre || 'Torneo'}`,
+        detalle: p.categoria || '',
+        estadoPago: p.estado_pago || p.estatus_pago,
+        metodoPago: etiquetaMetodoPagoInscripcion(p.metodo_pago),
+        monto: Number(p.monto) || 0,
+        fechaOrden: p.created_at || '',
+      }));
+
+    const itemsRetas = (inscripciones || [])
+      .filter((i) => esMiRegistro(i))
+      .map((i) => ({
+        id: `reta-${i.id}`,
+        tipo: 'reta',
+        icon: Swords,
+        titulo: `Reta · ${retasPorId[i.reta_id]?.nombre || 'Reta'}`,
+        detalle: '',
+        estadoPago: i.estado_pago || i.estatus_pago,
+        metodoPago: etiquetaMetodoPagoInscripcion(i.metodo_pago),
+        monto: Number(i.monto) || 0,
+        fechaOrden: i.created_at || '',
+      }));
+
+    const itemsClases = (academiaAlumnosPortal || [])
+      .filter((a) => a.estado !== 'baja' && esMiRegistro(a))
+      .map((a) => ({
+        id: `clase-${a.id}`,
+        tipo: 'clase',
+        icon: GraduationCap,
+        titulo: `Clase · ${clasesPorId[a.clase_id]?.nombre || 'Clase'}`,
+        detalle: a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta',
+        estadoPago: a.estado_pago,
+        metodoPago: etiquetaMetodoPagoInscripcion(a.metodo_pago) || (a.pagado_con_creditos ? 'Crédito' : null),
+        monto: Number(a.monto) || 0,
+        fechaOrden: a.created_at || '',
+      }));
+
+    return [...itemsReservas, ...itemsCompras, ...itemsTorneos, ...itemsRetas, ...itemsClases].sort((a, b) =>
+      (b.fechaOrden || '').localeCompare(a.fechaOrden || '')
+    );
+  }, [jugador, canchas, torneos, retas, academiaClasesPortal, reservas, comprasTiendaPortal, participantes, inscripciones, academiaAlumnosPortal]);
 
   // Cancelar mi propia asistencia a una Clase de Academia desde el Portal
   // (resumen de "Ya estás inscrito") — mismo criterio de Sincronización
@@ -28549,6 +29025,7 @@ function PortalPublicoJugadores({ clubSlug }) {
               { value: 'torneos', label: 'Torneos', icon: Trophy },
               { value: 'retas', label: 'Retas', icon: Swords },
               { value: 'academia', label: 'Clases', icon: GraduationCap },
+              { value: 'historial', label: 'Historial', icon: History },
               { value: 'wallet', label: 'Wallet', icon: Wallet },
             ].map((tab) => {
               const Icon = tab.icon;
@@ -28906,6 +29383,56 @@ function PortalPublicoJugadores({ clubSlug }) {
                 </div>
               )}
 
+              {vista === 'historial' && (
+                <div>
+                  {!jugador ? (
+                    <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/5 bg-slate-900/50 p-8 text-center backdrop-blur-sm">
+                      <History size={26} className="text-lime-400" />
+                      <p className="text-sm text-slate-400">Identifícate para ver tu historial de actividad.</p>
+                      <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
+                        <User size={13} /> Identificarme
+                      </BotonPrimario>
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl border border-white/5 bg-slate-900/50 backdrop-blur-sm">
+                      <p className="border-b border-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">
+                        Reservas, compras e inscripciones — pasadas y futuras
+                      </p>
+                      {historialUnificado.length === 0 ? (
+                        <p className="px-4 py-8 text-center text-xs text-slate-500">Todavía no tienes actividad registrada en el club.</p>
+                      ) : (
+                        <div className="divide-y divide-white/5">
+                          {historialUnificado.map((h) => {
+                            const Icon = h.icon;
+                            return (
+                              <div key={h.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                                <div className="flex min-w-0 items-start gap-2.5">
+                                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-lime-400">
+                                    <Icon size={14} />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-semibold text-slate-200">{h.titulo}</p>
+                                    {h.detalle && <p className="truncate text-[10px] text-slate-500">{h.detalle}</p>}
+                                    <p className="text-[10px] text-slate-500">
+                                      {h.metodoPago ? `${h.metodoPago} · ` : ''}
+                                      {h.fechaOrden ? new Date(h.fechaOrden).toLocaleString('es-MX') : ''}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="shrink-0 text-right">
+                                  <p className="text-sm font-black text-slate-100">{formatoMoneda(h.monto)}</p>
+                                  <BadgePago estadoPago={h.estadoPago} />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {vista === 'wallet' && (
                 <div>
                   {!jugador ? (
@@ -29106,6 +29633,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             reservas={reservas}
             academiaClases={academiaClasesPortal}
             rangosHorario={club?.rangos_horario_clases}
+            club={club}
           />
         )}
 
@@ -29806,7 +30334,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
 // activas a esa hora (`estadoOcupacionAgregado`) — 100% derivado de
 // `reservas`/`academiaClases` que el Portal ya tiene cargadas, sin ninguna
 // consulta ni suscripción nueva (Regla de Oro de Realtime intacta).
-function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario }) {
+function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club }) {
   const [tipo, setTipo] = useState('grupal'); // 'privada' | 'grupal'
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
   const [fecha, setFecha] = useState(hoyISO());
@@ -29832,13 +30360,16 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
     return Array.from(new Set([...desdeClases, ...desdeRangos].filter(Boolean))).sort();
   }, [academiaClases, rangosHorario]);
 
-  // Horas completas del día — mismo límite `HORA_INICIO_MIN`/`HORA_FIN_MIN`
-  // que "Reservar Cancha", en pasos de 60 min (nunca 30).
+  // Horas completas del día — Horario de Operación del Club (item 4,
+  // `minutosOperacionDelClub`), mismo rango que "Reservar Cancha", en pasos
+  // de 60 min (nunca 30). Respaldo a `HORA_INICIO_MIN`/`HORA_FIN_MIN` si el
+  // club no configuró nada.
+  const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(club);
   const horasDelDia = useMemo(() => {
     const horas = [];
-    for (let m = HORA_INICIO_MIN; m + 60 <= HORA_FIN_MIN; m += 60) horas.push(m);
+    for (let m = horaAperturaMin; m + 60 <= horaCierreMin; m += 60) horas.push(m);
     return horas;
-  }, []);
+  }, [horaAperturaMin, horaCierreMin]);
   const esHoy = fecha === hoyISO();
   // CONFIGURACIÓN DE HORARIOS DE CLASE DEL CLUB (item 2): antes de resolver
   // ocupación de cancha, se revisa si la hora siquiera cae dentro de algún
@@ -30533,14 +31064,18 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
 
+  // Horario de Operación del Club (item 4) — respaldo a
+  // `HORA_INICIO_MIN`/`HORA_FIN_MIN` si el club no configuró nada.
+  const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(club);
+
   // VISUALIZACIÓN DE DISPONIBILIDAD DE HORARIOS: TODAS las franjas del día
   // (no solo las libres), cada una con su estado `ocupado` — así se puede
   // pintar la cuadrícula completa con los horarios reservados claramente
   // deshabilitados/marcados, en vez de simplemente hacerlos desaparecer de
   // un <select>.
   const franjasBase = useMemo(
-    () => franjasDelDiaConEstado(cancha.id, fecha, duracionHoras, reservas, academiaClases),
-    [cancha.id, fecha, duracionHoras, reservas, academiaClases]
+    () => franjasDelDiaConEstado(cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin),
+    [cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin]
   );
   // OPTIMIZACIÓN DE HORARIOS: cuando la fecha elegida es HOY, cualquier
   // franja cuya hora de inicio ya pasó se marca `pasado` (distinto de
@@ -31675,10 +32210,16 @@ function AppInterno() {
       if (error) throw error;
       if (data) {
         setConfiguracionClubId(data.id);
-        if (data.nombre != null || data.logo_url != null) {
+        if (data.nombre != null || data.logo_url != null || data.hora_apertura != null || data.hora_cierre != null) {
           const nuevaConfig = {
             nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
             logoUrl: data.logo_url || '',
+            // Horario de Operación del Club (item 4, migracion_v31) — mismo
+            // `select('*')` de arriba, sin consulta nueva: en un proyecto
+            // viejo sin esta migración, ambos vienen `undefined` y se cae al
+            // límite fijo de siempre (`CONFIG_CLUB_DEFAULT`).
+            horaApertura: data.hora_apertura || CONFIG_CLUB_DEFAULT.horaApertura,
+            horaCierre: data.hora_cierre || CONFIG_CLUB_DEFAULT.horaCierre,
           };
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
@@ -31749,14 +32290,34 @@ function AppInterno() {
   // por `id = CLUB_ACTIVO_ID`, nunca un `INSERT`.
   const guardarConfigClub = useCallback(
     async (nuevaConfig) => {
-      const limpia = { nombre: (nuevaConfig.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre, logoUrl: nuevaConfig.logoUrl || '' };
+      const limpia = {
+        nombre: (nuevaConfig.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
+        logoUrl: nuevaConfig.logoUrl || '',
+        // Horario de Operación del Club (item 4, migracion_v31).
+        horaApertura: nuevaConfig.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura,
+        horaCierre: nuevaConfig.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
+      };
       setGuardandoConfigClub(true);
       setConfigClub(limpia);
       guardarConfigClubLocal(limpia);
       try {
         if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión — no se puede guardar en Supabase todavía.');
-        const campos = { nombre: limpia.nombre, logo_url: limpia.logoUrl || null };
-        const { error } = await supabase.from('configuracion_club').update(campos).eq('id', CLUB_ACTIVO_ID);
+        const campos = {
+          nombre: limpia.nombre,
+          logo_url: limpia.logoUrl || null,
+          hora_apertura: limpia.horaApertura,
+          hora_cierre: limpia.horaCierre,
+        };
+        // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo
+        // (como antes de este cambio): `hora_apertura`/`hora_cierre` son
+        // columnas NUEVAS (migracion_v31) — sin este reintento tolerante, un
+        // proyecto que no haya corrido la migración vería fallar TODO el
+        // guardado (incluyendo nombre/logo, que sí existen desde siempre)
+        // por 2 columnas que ni siquiera se están mostrando en pantalla.
+        const { error } = await actualizarConColumnasOpcionales('configuracion_club', CLUB_ACTIVO_ID, campos, [
+          'hora_apertura',
+          'hora_cierre',
+        ]);
         if (error) throw error;
         setConfiguracionClubId(CLUB_ACTIVO_ID);
       } catch (err) {
@@ -32433,6 +32994,7 @@ function AppInterno() {
                 onReservaParaCobro={enviarReservaAPOS}
                 bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
                 jugadoresPorId={jugadoresPorId}
+                configClub={configClub}
               />
             ) : moduloActivo === 'pos' ? (
               <ModuloSmartPOS
