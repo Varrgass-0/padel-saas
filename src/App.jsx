@@ -2595,6 +2595,30 @@ function guardarRangosHorarioClasesLocal(rangos) {
   }
 }
 
+// Metas del Motor de Cortesías (Directorio & CRM → "Editar Metas de
+// Cortesía", migracion_v35) — respaldo/caché local separado del resto de
+// `configClub`, mismo criterio que `LS_KEY_RANGOS_HORARIO_CLASES` arriba
+// (flujo de guardado independiente, con su propio toast). `null` en
+// cualquiera de los dos campos significa "el club no configuró nada
+// todavía" — el CRM cae a los valores por defecto (`META_CORTESIA_*_DEFAULT`).
+const LS_KEY_METAS_CORTESIA = 'smashpadel_metas_cortesia_v1';
+function leerMetasCortesiaLocal() {
+  try {
+    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_METAS_CORTESIA));
+    const parsed = crudo ? JSON.parse(crudo) : null;
+    return parsed && typeof parsed === 'object' ? parsed : { proShop: null, bar: null };
+  } catch (_e) {
+    return { proShop: null, bar: null };
+  }
+}
+function guardarMetasCortesiaLocal(metas) {
+  try {
+    localStorage.setItem(claveLocalPorClub(LS_KEY_METAS_CORTESIA), JSON.stringify(metas || { proShop: null, bar: null }));
+  } catch (_e) {
+    /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
+  }
+}
+
 function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
   const [nombre, setNombre] = useState(configActual.nombre || '');
   const [logoUrl, setLogoUrl] = useState(configActual.logoUrl || '');
@@ -10840,6 +10864,141 @@ async function descontarStockKardexAddonsReserva(
   return resultados;
 }
 
+// Otorga una Cortesía de Fidelidad CRM (Vista 360° → "Otorgar/Canjear
+// Cortesía", migracion_v35) — el Candado de Seguridad (100% de progreso
+// alcanzado) ya se validó del lado del llamador (`ModalCanjearCortesia`)
+// antes de siquiera abrir este flujo; aquí solo se EJECUTA el canje, en
+// EXACTAMENTE 3 pasos, mismo criterio "Smart POS real" que cualquier venta
+// del mostrador (Regla de Oro: se reutilizan `descontarStockKardexAddonsReserva`/
+// `insertarMovimientoKardex`, nunca se reinventa el descuento de stock):
+//   1) Ticket en Smart POS en $0.00 — mismas 8 columnas de `ventas` que usa
+//      `registrarVenta` (ver cabecera del archivo), `detalles.jugador_id`/
+//      `jugador_nombre` explícitos (así el ticket queda ligado al jugador,
+//      visible en su propio historial de Smart POS) y una nota clara del
+//      motivo del canje.
+//   2) Descuento REAL de inventario + Kardex (`descontarStockKardexAddonsReserva`,
+//      reutilizada tal cual) — el motivo del Kardex incluye "Cortesía por
+//      Fidelidad CRM" Y el nombre del jugador, para que nunca se confunda
+//      con una venta normal ni con una merma no autorizada.
+//   3) Registro en `cortesias_otorgadas` — el evento que de verdad reinicia
+//      el progreso de esa categoría a $0 (ver `cortesiaBar`/`cortesiaProShop`
+//      en `DirectorioJugadoresCRM`, que leen esta tabla).
+// Best effort en cascada, igual que el resto de la app: si el paso 1 (venta)
+// falla, se aborta todo el canje (sin ticket no hay forma de justificar el
+// descuento de inventario); si 2 o 3 fallan ya con el ticket creado, se
+// avisa por consola pero el canje NO se revierte — el jugador ya recibió su
+// producto en la vida real, revertir el ticket sería mentir sobre lo que
+// pasó en el mostrador.
+async function otorgarCortesiaCRM({
+  jugador,
+  categoria,
+  producto,
+  variante,
+  operador,
+  turno,
+  upsertProducto,
+  upsertVarianteProducto,
+  productos,
+  variantesPorProducto,
+  metaAplicada,
+}) {
+  if (!jugador?.id || !producto?.id || (categoria !== 'bar' && categoria !== 'proshop')) {
+    return { ok: false, error: new Error('Faltan datos del jugador, producto o categoría para otorgar la cortesía.') };
+  }
+  const nombreItem = variante?.nombre ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
+  const etiquetaCategoria = categoria === 'bar' ? 'Restaurante/Bar' : 'Pro-Shop';
+
+  // 1) Ticket en Smart POS, $0.00.
+  const payloadVenta = withClubId({
+    total: 0,
+    metodo_pago: 'Cortesía',
+    turno: turno?.valor || null,
+    operador: operador?.nombre || null,
+    reserva_id: null,
+    cancha_id: null,
+    origen: ORIGEN_VENTA_POS,
+    detalles: {
+      items: [
+        {
+          tipo: 'producto',
+          producto_id: producto.id,
+          variante_id: variante?.id || null,
+          nombre: nombreItem,
+          precio: 0,
+          cantidad: 1,
+          subtotal: 0,
+        },
+      ],
+      pagos_divididos: null,
+      jugador_id: jugador.id,
+      jugador_nombre: jugador.nombre || null,
+      nota: `Cortesía por Fidelidad CRM · ${etiquetaCategoria}`,
+    },
+    estado_pago: 'pagado',
+  });
+  let { data: venta, error: errorVenta } = await supabase.from('ventas').insert(payloadVenta).select().single();
+  if (errorVenta && esErrorColumnaInexistente(errorVenta)) {
+    const { origen, ...sinOrigen } = payloadVenta;
+    ({ data: venta, error: errorVenta } = await supabase.from('ventas').insert(sinOrigen).select().single());
+  }
+  if (errorVenta) {
+    console.error('[CRM] Error detallado Supabase al registrar el ticket de Cortesía en Smart POS:', errorVenta);
+    return { ok: false, error: errorVenta };
+  }
+
+  // 2) Descuento real de inventario + Kardex.
+  const itemParaKardex = [
+    {
+      producto_id: producto.id,
+      productoPadreId: producto.id,
+      variante_id: variante?.id || null,
+      varianteId: variante?.id || null,
+      varianteNombre: variante?.nombre || null,
+      esVariante: !!variante?.id,
+      nombre: nombreItem,
+      cantidad: 1,
+    },
+  ];
+  const resultadosStock = await descontarStockKardexAddonsReserva(itemParaKardex, {
+    motivoBase: `Cortesía por Fidelidad CRM — ${jugador.nombre || 'Jugador'}`,
+    operador: operador?.nombre,
+    upsertProducto,
+    upsertVarianteProducto,
+    productos,
+    variantesPorProducto,
+  });
+  const fallosStock = resultadosStock.filter((r) => !r.ok);
+  if (fallosStock.length > 0) {
+    console.error('[CRM] Cortesía entregada y ticket registrado, pero el stock/Kardex no se pudo descontar:', fallosStock);
+  }
+
+  // 3) Registro del canje — el corte que reinicia el progreso a $0.
+  const { data: registro, error: errorRegistro } = await insertarConColumnasOpcionales(
+    'cortesias_otorgadas',
+    {
+      jugador_id: jugador.id,
+      jugador_nombre: jugador.nombre || 'Jugador',
+      categoria,
+      producto_id: producto.id,
+      producto_nombre: nombreItem,
+      variante_id: variante?.id || null,
+      venta_id: venta?.id || null,
+      monto_meta_aplicado: Number(metaAplicada) || null,
+      operador: operador?.nombre || null,
+    },
+    ['variante_id', 'venta_id', 'monto_meta_aplicado', 'operador']
+  );
+  if (errorRegistro) {
+    console.error(
+      '[CRM] Cortesía entregada (ticket + inventario ya se aplicaron), pero no se pudo guardar el registro en cortesias_otorgadas — el progreso podría no reiniciarse solo hasta que la tabla exista.',
+      errorRegistro
+    );
+    return { ok: true, error: errorRegistro, venta, registro: null };
+  }
+
+  return { ok: true, error: null, venta, registro };
+}
+
 // Edición manual de UNA variante dentro de `productos.variantes` — mismo
 // criterio de búsqueda flexible que `descontarStockVariante`, pero sin
 // descontar: sobrescribe los campos que traiga `cambios` (precio,
@@ -16620,11 +16779,18 @@ function resolverJugadorIdVentaCancha(venta, { reservasPorId, reservasPorCanchaF
 const UMBRAL_LTV_VIP = 15000;
 const UMBRAL_LTV_FRECUENTE = 5000;
 
-// Metas del Motor de Cortesías (tarjeta "Consumo Bar/Tienda" de la Vista
-// 360°) — ver nota en el comentario maestro sobre el modelado cíclico
-// mientras no exista una tabla de canjes propia en Supabase.
-const META_CORTESIA_BAR_CONSUMOS = 5;
-const META_CORTESIA_PROSHOP_MONTO = 1500;
+// Metas del Motor de Cortesías (tarjeta "Consumo Secundario" de la Vista
+// 360°, migracion_v35) — AHORA CONFIGURABLES POR EL CLUB en $ (Pro-Shop y
+// Restaurante/Bar comparten el mismo modelo monetario; antes Bar se medía
+// en "5 consumos" y Pro-Shop en un monto fijo de $1,500 en el código, sin
+// forma de editarlo). Estas dos constantes son SOLO el valor por defecto —
+// se usan cuando `configuracion_club.meta_cortesia_proshop`/`meta_cortesia_bar`
+// todavía no se configuraron (`null`/`undefined`) o el proyecto de Supabase
+// no corrió la migración — ver `metaCortesiaProShop`/`metaCortesiaBar` en
+// `AppInterno` y el botón "Editar Metas de Cortesía" en
+// `DirectorioJugadoresCRM`.
+const META_CORTESIA_PROSHOP_DEFAULT = 1500;
+const META_CORTESIA_BAR_DEFAULT = 1000;
 
 function segmentoPorLTV(ltvTotal) {
   if (ltvTotal >= UMBRAL_LTV_VIP) return 'VIP';
@@ -25141,6 +25307,14 @@ function DirectorioJugadoresCRM({
   academiaAsistencias,
   permisos,
   configClub,
+  operador,
+  upsertProducto,
+  variantesPorProducto,
+  upsertVarianteProducto,
+  metaCortesiaProShop,
+  metaCortesiaBar,
+  onGuardarMetasCortesia,
+  guardandoMetasCortesia,
 }) {
   /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
    * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
@@ -25177,6 +25351,47 @@ function DirectorioJugadoresCRM({
       supabase.removeChannel(canal);
     };
   }, [cargarVentasHistoricas]);
+
+  /* ---- Cortesías Otorgadas (migracion_v35): tabla NUEVA — registra cada
+   * canje real hecho desde Smart POS y es el único evento que reinicia el
+   * progreso de una categoría a $0 (ver `cortesiaBar`/`cortesiaProShop` más
+   * abajo). Tabla nueva → consulta y canal Realtime propios, igual criterio
+   * tolerante que `ventasHistoricas` arriba (`esErrorTablaInexistente`: un
+   * proyecto que no corrió la migración simplemente ve el motor de
+   * cortesías funcionando "desde siempre" — sin cortes — hasta que la
+   * corra). ---- */
+  const [cortesiasOtorgadas, setCortesiasOtorgadas] = useState([]);
+  const [errorCortesiasOtorgadas, setErrorCortesiasOtorgadas] = useState('');
+
+  const cargarCortesiasOtorgadas = useCallback(async () => {
+    setErrorCortesiasOtorgadas('');
+    try {
+      const { data, error } = await conClubId(supabase.from('cortesias_otorgadas').select('*')).order('created_at', { ascending: false });
+      if (error) throw error;
+      setCortesiasOtorgadas(data || []);
+    } catch (err) {
+      if (!esErrorTablaInexistente(err)) {
+        setErrorCortesiasOtorgadas(err.message || 'No se pudieron cargar las Cortesías Otorgadas.');
+      }
+      setCortesiasOtorgadas([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    cargarCortesiasOtorgadas();
+  }, [cargarCortesiasOtorgadas]);
+
+  // Tiempo real: un canje nuevo en Smart POS reinicia el progreso al
+  // instante en cualquier dispositivo con la Vista 360° abierta.
+  useEffect(() => {
+    const canal = supabase
+      .channel('jugadores-crm-cortesias')
+      .on('postgres_changes', canalClubFiltro('cortesias_otorgadas'), () => cargarCortesiasOtorgadas())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarCortesiasOtorgadas]);
 
   /* ---- Agrupaciones O(1): evita recorrer todo el histórico por cada jugador ---- */
   const productosPorId = useMemo(() => {
@@ -25259,6 +25474,26 @@ function DirectorioJugadoresCRM({
     const hoy = new Date(`${hoyISOStr}T12:00:00`);
     const hace90 = new Date(hoy.getTime() - 90 * MS_POR_DIA);
     const hace180 = new Date(hoy.getTime() - 180 * MS_POR_DIA);
+
+    // Metas del Motor de Cortesías (migracion_v35) — la que configuró el
+    // club (`metaCortesiaProShop`/`metaCortesiaBar`, prop) o, si todavía no
+    // configuró nada (`null`/`undefined`/0), el valor por defecto.
+    const metaProShopEfectiva = Number(metaCortesiaProShop) > 0 ? Number(metaCortesiaProShop) : META_CORTESIA_PROSHOP_DEFAULT;
+    const metaBarEfectiva = Number(metaCortesiaBar) > 0 ? Number(metaCortesiaBar) : META_CORTESIA_BAR_DEFAULT;
+
+    // Última cortesía OTORGADA DE VERDAD (Smart POS, `cortesias_otorgadas`)
+    // por jugador+categoría — el corte que reinicia el progreso a $0 (ver
+    // `cortesiaBar`/`cortesiaProShop` más abajo). `Map<jugadorId, Map<categoria, msMasReciente>>`.
+    const ultimaCortesiaPorJugadorCategoria = new Map();
+    (cortesiasOtorgadas || []).forEach((c) => {
+      if (!c.jugador_id || !c.categoria) return;
+      const ts = c.created_at ? new Date(c.created_at).getTime() : 0;
+      if (!Number.isFinite(ts)) return;
+      const porCategoria = ultimaCortesiaPorJugadorCategoria.get(c.jugador_id) || new Map();
+      const actual = porCategoria.get(c.categoria) || 0;
+      if (ts > actual) porCategoria.set(c.categoria, ts);
+      ultimaCortesiaPorJugadorCategoria.set(c.jugador_id, porCategoria);
+    });
 
     return Object.values(jugadoresPorId)
       .filter((j) => j && j.id)
@@ -25437,6 +25672,11 @@ function DirectorioJugadoresCRM({
               subtotal: Number(item.subtotal) || 0,
               categoria: productosPorId[item.producto_id]?.categoria === 'Cafetería/Bar' ? 'Cafetería/Bar' : 'Pro-Shop',
               fecha: fechaVenta,
+              // Timestamp real (ms) de la venta — necesario para "gasto
+              // DESDE la última cortesía otorgada" (ver Motor de Cortesías
+              // abajo): `fecha` sola (día) no alcanza para ordenar canjes y
+              // compras del MISMO día uno contra otro.
+              ts: ts || 0,
             });
           });
         });
@@ -25450,23 +25690,42 @@ function DirectorioJugadoresCRM({
           return entradas.length > 0 ? { nombre: entradas[0][0], cantidad: entradas[0][1] } : null;
         })();
 
-        // 1.b) Motor de Cortesías: progreso hacia la próxima cortesía en
-        // Bar/Cafetería (meta: 5 consumos en visitas distintas) y en
-        // Pro-Shop (meta: $1,500 MXN acumulados). Sin tabla de canjes propia
-        // todavía, el progreso se modela como un ciclo recurrente (módulo de
-        // la meta) sobre el propio historial — ver comentario maestro.
-        const visitasBarUnicas = new Set(
-          comprasPOS.filter((c) => c.categoria === 'Cafetería/Bar').map((c) => c.ventaId)
-        ).size;
+        // 1.b) Motor de Cortesías (migracion_v35) — progreso ADAPTATIVO
+        // hacia la próxima cortesía, comparado contra la meta que el club
+        // configuró (o el valor por defecto si no configuró nada), tanto en
+        // Restaurante/Bar como en Pro-Shop: ambas categorías ahora comparten
+        // el MISMO modelo monetario (antes Bar se medía en "5 consumos" —
+        // ver migraciones anteriores). El progreso YA NO es un ciclo
+        // matemático (módulo del histórico total) — es el gasto real desde
+        // la ÚLTIMA cortesía otorgada DE VERDAD en Smart POS
+        // (`cortesias_otorgadas`, `ultimaCortesiaPorJugadorCategoria` de
+        // arriba); sin ningún canje todavía, es el gasto histórico
+        // completo. `lista` (100%+) habilita el candado de canje — ver
+        // `BarraProgresoCortesia`/`ModalCanjearCortesia`.
+        const cortesPorCategoria = ultimaCortesiaPorJugadorCategoria.get(j.id) || new Map();
         const cortesiaBar = (() => {
-          const resto = visitasBarUnicas % META_CORTESIA_BAR_CONSUMOS;
-          const lista = visitasBarUnicas > 0 && resto === 0;
-          return { progreso: lista ? META_CORTESIA_BAR_CONSUMOS : resto, meta: META_CORTESIA_BAR_CONSUMOS, lista };
+          const desdeMs = cortesPorCategoria.get('bar') || 0;
+          const gastoDesdeUltimoCanje = comprasPOS
+            .filter((c) => c.categoria === 'Cafetería/Bar' && c.ts > desdeMs)
+            .reduce((acc, c) => acc + c.subtotal, 0);
+          return {
+            progreso: Math.min(gastoDesdeUltimoCanje, metaBarEfectiva),
+            gastoActual: gastoDesdeUltimoCanje,
+            meta: metaBarEfectiva,
+            lista: metaBarEfectiva > 0 && gastoDesdeUltimoCanje >= metaBarEfectiva,
+          };
         })();
         const cortesiaProShop = (() => {
-          const resto = gastoProShop % META_CORTESIA_PROSHOP_MONTO;
-          const lista = gastoProShop > 0 && resto === 0;
-          return { progreso: lista ? META_CORTESIA_PROSHOP_MONTO : resto, meta: META_CORTESIA_PROSHOP_MONTO, lista };
+          const desdeMs = cortesPorCategoria.get('proshop') || 0;
+          const gastoDesdeUltimoCanje = comprasPOS
+            .filter((c) => c.categoria === 'Pro-Shop' && c.ts > desdeMs)
+            .reduce((acc, c) => acc + c.subtotal, 0);
+          return {
+            progreso: Math.min(gastoDesdeUltimoCanje, metaProShopEfectiva),
+            gastoActual: gastoDesdeUltimoCanje,
+            meta: metaProShopEfectiva,
+            lista: metaProShopEfectiva > 0 && gastoDesdeUltimoCanje >= metaProShopEfectiva,
+          };
         })();
 
         // 2) Torneos/Retas: eventos combinados (inscripción o participación).
@@ -25613,6 +25872,9 @@ function DirectorioJugadoresCRM({
     partidosTorneo,
     academiaAlumnos,
     academiaAsistencias,
+    metaCortesiaProShop,
+    metaCortesiaBar,
+    cortesiasOtorgadas,
   ]);
 
   /* ---- Búsqueda, filtros y resumen ejecutivo ---- */
@@ -25621,6 +25883,10 @@ function DirectorioJugadoresCRM({
   const [soloRiesgo, setSoloRiesgo] = useState(false);
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [sincronizando, setSincronizando] = useState(false);
+  // Modal "Editar Metas de Cortesía" (migracion_v35): edita
+  // `configuracion_club.meta_cortesia_proshop`/`meta_cortesia_bar` — ver
+  // botón junto a "Sincronizar" y `ModalMetasCortesia` más abajo.
+  const [mostrarModalMetas, setMostrarModalMetas] = useState(false);
   const mostrarToast = useToast();
 
   // Botón "Sincronizar": no solo refresca `jugadores`/`reservas`/`canchas`
@@ -25634,7 +25900,11 @@ function DirectorioJugadoresCRM({
   async function sincronizarDirectorio() {
     setSincronizando(true);
     try {
-      await Promise.all([cargarVentasHistoricas(), onRefrescarDirectorio ? onRefrescarDirectorio() : Promise.resolve()]);
+      await Promise.all([
+        cargarVentasHistoricas(),
+        cargarCortesiasOtorgadas(),
+        onRefrescarDirectorio ? onRefrescarDirectorio() : Promise.resolve(),
+      ]);
       mostrarToast({ titulo: 'Directorio sincronizado', detalle: 'Jugadores, reservas y ventas de Smart POS al día.' });
     } catch (_e) {
       mostrarToast({
@@ -25743,6 +26013,14 @@ function DirectorioJugadoresCRM({
           >
             <RefreshCw size={12} className={sincronizando ? 'animate-spin' : ''} /> {sincronizando ? 'Sincronizando…' : 'Sincronizar'}
           </button>
+          <button
+            type="button"
+            onClick={() => setMostrarModalMetas(true)}
+            title="Define el monto que debe consumir un jugador en Pro-Shop y en Restaurante/Bar para tener derecho a una Cortesía por Fidelidad"
+            className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300 transition hover:text-slate-100"
+          >
+            <Gift size={12} /> Metas de Cortesía
+          </button>
         </div>
       </div>
 
@@ -25769,9 +26047,109 @@ function DirectorioJugadoresCRM({
           onActualizarTelefono={onActualizarTelefonoJugador}
           permisos={permisos}
           nombreClub={configClub?.nombre}
+          productos={productos}
+          variantesPorProducto={variantesPorProducto}
+          operador={operador}
+          upsertProducto={upsertProducto}
+          upsertVarianteProducto={upsertVarianteProducto}
+          onCortesiaOtorgada={async (resultado) => {
+            await cargarCortesiasOtorgadas();
+            mostrarToast(
+              resultado.registro
+                ? { titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' }
+                : {
+                    titulo: 'Cortesía entregada con aviso',
+                    detalle: 'Ticket en $0.00 generado y stock descontado — el registro de canje no se pudo guardar (revisa la migración v35).',
+                    tono: 'aviso',
+                  }
+            );
+          }}
+        />
+      )}
+
+      {mostrarModalMetas && (
+        <ModalMetasCortesia
+          metaProShopActual={metaCortesiaProShop}
+          metaBarActual={metaCortesiaBar}
+          onClose={() => setMostrarModalMetas(false)}
+          onGuardar={onGuardarMetasCortesia}
+          guardando={guardandoMetasCortesia}
         />
       )}
     </div>
+  );
+}
+
+// Modal "Editar Metas de Cortesía" (migracion_v35): edita, por club, el
+// monto ($) que debe acumular un jugador en Pro-Shop y en Restaurante/Bar
+// para desbloquear "Otorgar/Canjear Cortesía" en la Vista 360°. Mismo
+// patrón que `ModalRangosHorarioClases` (arriba): `ModalShell` +
+// `BotonSecundario`/`BotonPrimario`, valida antes de guardar y llama
+// `onGuardar?.(...)` (ya conectado a `guardarMetasCortesia` en `AppInterno`,
+// que escribe en `configuracion_club` vía `actualizarConColumnasOpcionales`)
+// seguido de `onClose()`.
+function ModalMetasCortesia({ metaProShopActual, metaBarActual, onClose, onGuardar, guardando }) {
+  const [proShop, setProShop] = useState(() => String(metaProShopActual ?? META_CORTESIA_PROSHOP_DEFAULT));
+  const [bar, setBar] = useState(() => String(metaBarActual ?? META_CORTESIA_BAR_DEFAULT));
+  const [error, setError] = useState('');
+
+  async function guardar() {
+    setError('');
+    const numProShop = Number(proShop);
+    const numBar = Number(bar);
+    if (!Number.isFinite(numProShop) || numProShop <= 0) {
+      return setError('La meta de Pro-Shop debe ser un monto mayor a $0.');
+    }
+    if (!Number.isFinite(numBar) || numBar <= 0) {
+      return setError('La meta de Restaurante/Bar debe ser un monto mayor a $0.');
+    }
+    await onGuardar?.(numProShop, numBar);
+    onClose();
+  }
+
+  return (
+    <ModalShell
+      titulo="Editar Metas de Cortesía"
+      subtitulo="Monto que debe consumir un jugador para desbloquear una Cortesía por Fidelidad"
+      onClose={onClose}
+      icon={Gift}
+      ancho="max-w-sm"
+    >
+      <div className="space-y-3.5">
+        <Campo label="Meta Pro-Shop ($)">
+          <input
+            type="number"
+            min="1"
+            step="1"
+            value={proShop}
+            onChange={(e) => setProShop(e.target.value)}
+            className={inputClase}
+            placeholder={String(META_CORTESIA_PROSHOP_DEFAULT)}
+          />
+        </Campo>
+        <Campo label="Meta Restaurante / Bar / Cafetería ($)">
+          <input
+            type="number"
+            min="1"
+            step="1"
+            value={bar}
+            onChange={(e) => setBar(e.target.value)}
+            className={inputClase}
+            placeholder={String(META_CORTESIA_BAR_DEFAULT)}
+          />
+        </Campo>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Guardar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -25844,10 +26222,17 @@ function EstadoVacioHistorial({ mensaje }) {
   return <p className="px-1 py-2 text-xs text-slate-500">{mensaje}</p>;
 }
 
-// Barra de progreso del Motor de Cortesías — una por categoría (Bar/
-// Cafetería en consumos, Pro-Shop en monto acumulado). Cuando la meta se
-// cumple exactamente (`lista`), despliega la insignia de canje.
-function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, formatoUnidad }) {
+// Barra de progreso del Motor de Cortesías (migracion_v35) — una por
+// categoría (Pro-Shop y Restaurante/Bar, AMBAS en monto acumulado desde la
+// última cortesía otorgada — ver `cortesiaBar`/`cortesiaProShop` en
+// `DirectorioJugadoresCRM`). Si el gasto del ciclo actual es $0 (recién
+// reiniciado, o el jugador nunca ha llegado a la meta) se muestra igual la
+// barra inicial "$0/$Meta" — solo se OCULTA por completo cuando el jugador
+// nunca ha comprado nada en esa categoría (ver el `compras.some(...)` en
+// `DetalleConsumoPOS`, abajo). Candado de Seguridad (item 3): el botón de
+// canje SOLO existe cuando `lista` (100%+) — antes de eso se ve un badge de
+// bloqueado, nunca un botón deshabilitado que invite a intentarlo.
+function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, canjeando }) {
   const pct = meta > 0 ? Math.min(100, Math.round((progreso / meta) * 100)) : 0;
   return (
     <div className="space-y-1 rounded-lg bg-slate-900 px-2.5 py-2">
@@ -25856,26 +26241,35 @@ function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, formatoUnidad 
           <Gift size={12} className={lista ? 'text-amber-300' : 'text-slate-500'} /> {etiqueta}
         </span>
         <span className="font-bold text-slate-400">
-          {formatoUnidad(progreso)}/{formatoUnidad(meta)}
+          {formatoMoneda(progreso)}/{formatoMoneda(meta)}
         </span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
         <div className={`h-full rounded-full ${lista ? 'bg-amber-400' : 'bg-lime-400'}`} style={{ width: `${pct}%` }} />
       </div>
-      {lista && (
-        <span className="mt-1 inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/30">
-          <Gift size={11} /> ¡Cortesía Lista para Canjear!
+      {lista ? (
+        <button
+          type="button"
+          onClick={onCanjear}
+          disabled={canjeando}
+          className="mt-1 inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-400 px-2.5 py-1 text-[11px] font-bold text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {canjeando ? <Loader2 size={11} className="animate-spin" /> : <Gift size={11} />}
+          {canjeando ? 'Registrando…' : 'Otorgar/Canjear Cortesía'}
+        </button>
+      ) : (
+        <span className="mt-1 inline-flex w-fit items-center gap-1.5 rounded-full bg-slate-800 px-2.5 py-1 text-[10px] font-semibold text-slate-500">
+          <Lock size={10} /> Bloqueado hasta llegar al 100%
         </span>
       )}
     </div>
   );
 }
 
-function DetalleConsumoPOS({ perfil }) {
+function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria }) {
   const compras = perfil.comprasPOS || [];
   const cortesiaBar = perfil.cortesiaBar;
   const cortesiaProShop = perfil.cortesiaProShop;
-  const nombreFavorito = perfil.productoFavorito?.nombre || 'tu producto favorito';
   if (compras.length === 0) return <EstadoVacioHistorial mensaje="Sin compras registradas en Smart POS todavía." />;
   return (
     <div className="space-y-2">
@@ -25884,22 +26278,24 @@ function DetalleConsumoPOS({ perfil }) {
           <Star size={11} /> Favorito: {perfil.productoFavorito.nombre} ({perfil.productoFavorito.cantidad}x)
         </span>
       )}
-      {cortesiaBar && compras.some((c) => c.categoria === 'Cafetería/Bar') && (
-        <BarraProgresoCortesia
-          etiqueta={`Progreso de Cortesía: consumos para 1x ${nombreFavorito} Gratis`}
-          progreso={cortesiaBar.progreso}
-          meta={cortesiaBar.meta}
-          lista={cortesiaBar.lista}
-          formatoUnidad={(n) => String(n)}
-        />
-      )}
       {cortesiaProShop && compras.some((c) => c.categoria === 'Pro-Shop') && (
         <BarraProgresoCortesia
           etiqueta="Progreso de Cortesía: Pro-Shop"
           progreso={cortesiaProShop.progreso}
           meta={cortesiaProShop.meta}
           lista={cortesiaProShop.lista}
-          formatoUnidad={(n) => formatoMoneda(n)}
+          onCanjear={() => onAbrirCanjeCortesia?.('proshop')}
+          canjeando={canjeandoCategoria === 'proshop'}
+        />
+      )}
+      {cortesiaBar && compras.some((c) => c.categoria === 'Cafetería/Bar') && (
+        <BarraProgresoCortesia
+          etiqueta="Progreso de Cortesía: Restaurant / Bar"
+          progreso={cortesiaBar.progreso}
+          meta={cortesiaBar.meta}
+          lista={cortesiaBar.lista}
+          onCanjear={() => onAbrirCanjeCortesia?.('bar')}
+          canjeando={canjeandoCategoria === 'bar'}
         />
       )}
       <div className={listaHistorialClase}>
@@ -26010,10 +26406,10 @@ function DetalleTicketsCanchas({ perfil }) {
 // expandió, el desglose analítico correspondiente — Antigüedad/Constancia y
 // Frecuencia de Juego comparten el mismo historial (reservas de cancha +
 // Horario Favorito + Cancha Preferida).
-function DetalleIndicadorCHS({ indKey, perfil }) {
+function DetalleIndicadorCHS({ indKey, perfil, onAbrirCanjeCortesia, canjeandoCategoria }) {
   switch (indKey) {
     case 'consumo_secundario':
-      return <DetalleConsumoPOS perfil={perfil} />;
+      return <DetalleConsumoPOS perfil={perfil} onAbrirCanjeCortesia={onAbrirCanjeCortesia} canjeandoCategoria={canjeandoCategoria} />;
     case 'comunidad':
       return <DetalleTorneosRetas perfil={perfil} />;
     case 'antiguedad':
@@ -26026,13 +26422,139 @@ function DetalleIndicadorCHS({ indKey, perfil }) {
   }
 }
 
-function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono, permisos, nombreClub }) {
+// Flujo de "Otorgar/Canjear Cortesía" (Candado de Seguridad ya validado por
+// el llamador, ver `ModalPerfilJugadorCRM`) — mismo criterio de Smart POS
+// real que el resto del archivo: el club elige el producto (y su variante,
+// si aplica) del catálogo/inventario REAL, filtrado a la categoría exacta
+// de la barra que se cumplió (Pro-Shop o Restaurante/Bar — mismo criterio
+// de categorización que `comprasPOS`: 'Cafetería/Bar' es Bar, todo lo demás
+// es Pro-Shop). Reutiliza `ModalSeleccionarVariante` (idéntico componente
+// que usa Smart POS para elegir variante) cuando el producto elegido sí
+// tiene variantes — nunca se reinventa ese flujo.
+function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPorProducto, procesando, onConfirmar, onClose }) {
+  const [busqueda, setBusqueda] = useState('');
+  const [error, setError] = useState('');
+  const [productoParaVariante, setProductoParaVariante] = useState(null);
+
+  const etiquetaCategoria = categoria === 'bar' ? 'Restaurante/Bar' : 'Pro-Shop';
+  const catalogo = useMemo(() => {
+    const filtro = busqueda.trim().toLowerCase();
+    return (productos || [])
+      .filter((p) => p.activo !== false)
+      .filter((p) => (categoria === 'bar' ? p.categoria === 'Cafetería/Bar' : p.categoria !== 'Cafetería/Bar'))
+      .filter((p) => !filtro || (p.nombre || '').toLowerCase().includes(filtro))
+      .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+  }, [productos, categoria, busqueda]);
+
+  async function confirmar(producto, variante) {
+    setError('');
+    const resultado = await onConfirmar({ producto, variante });
+    if (!resultado?.ok) {
+      setError(resultado?.error?.message || 'No se pudo registrar la cortesía. Intenta de nuevo.');
+    }
+  }
+
+  function elegirProducto(producto) {
+    const variantes = variantesVisiblesParaVenta(variantesPorProducto?.[producto.id]);
+    if (variantes.length > 0) {
+      setProductoParaVariante(producto);
+    } else {
+      confirmar(producto, null);
+    }
+  }
+
+  return (
+    <ModalShell
+      titulo="Otorgar/Canjear Cortesía"
+      subtitulo={`${jugador.nombre} · ${etiquetaCategoria} · Meta cumplida: ${formatoMoneda(meta)}`}
+      onClose={onClose}
+      icon={Gift}
+      ancho="max-w-lg"
+    >
+      <div className="space-y-3">
+        <p className="rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-xs text-amber-200">
+          Elige el producto del catálogo que se le entrega. Se genera un ticket en $0.00 en Smart POS a nombre de{' '}
+          <span className="font-bold">{jugador.nombre}</span>, se descuenta el stock real y el Kardex, y el progreso de{' '}
+          {etiquetaCategoria} vuelve a $0 para el próximo ciclo.
+        </p>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder={`Buscar producto de ${etiquetaCategoria}...`}
+          className={inputClase}
+        />
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="max-h-80 space-y-1.5 overflow-y-auto pr-1">
+          {catalogo.map((p) => {
+            const variantesNormalizadas = variantesPorProducto?.[p.id] || [];
+            const agotado = productoEstaAgotado(p, variantesNormalizadas);
+            return (
+              <button
+                key={p.id}
+                type="button"
+                disabled={procesando || agotado}
+                onClick={() => elegirProducto(p)}
+                className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-amber-400/50 hover:bg-slate-800/80 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <span className="min-w-0 truncate">
+                  {p.nombre}
+                  {variantesNormalizadas.length > 0 && <span className="ml-1.5 text-[10px] font-normal text-slate-500">({variantesNormalizadas.length} variantes)</span>}
+                </span>
+                <span className="shrink-0 text-[10px] font-semibold text-slate-500">
+                  {procesando ? <Loader2 size={13} className="animate-spin" /> : agotado ? 'Agotado' : p.stock != null ? `${p.stock} disp.` : ''}
+                </span>
+              </button>
+            );
+          })}
+          {catalogo.length === 0 && (
+            <p className="py-6 text-center text-xs text-slate-500">Sin productos de {etiquetaCategoria} en el catálogo.</p>
+          )}
+        </div>
+      </div>
+
+      {productoParaVariante && (
+        <ModalSeleccionarVariante
+          producto={productoParaVariante}
+          variantes={variantesVisiblesParaVenta(variantesPorProducto?.[productoParaVariante.id])}
+          onClose={() => setProductoParaVariante(null)}
+          onSeleccionar={(variante) => {
+            const producto = productoParaVariante;
+            setProductoParaVariante(null);
+            confirmar(producto, variante);
+          }}
+        />
+      )}
+    </ModalShell>
+  );
+}
+
+function ModalPerfilJugadorCRM({
+  perfil,
+  onClose,
+  onActualizarTelefono,
+  permisos,
+  nombreClub,
+  productos,
+  variantesPorProducto,
+  operador,
+  upsertProducto,
+  upsertVarianteProducto,
+  onCortesiaOtorgada,
+}) {
   const [editandoTelefono, setEditandoTelefono] = useState(false);
   const [telefonoDraft, setTelefonoDraft] = useState(perfil.telefono || '');
   const [guardando, setGuardando] = useState(false);
   // Acordeón: qué indicador del CHS está desplegado con su historial exacto
   // (ver `DetalleIndicadorCHS`) — uno a la vez, null = todos colapsados.
   const [indicadorExpandido, setIndicadorExpandido] = useState(null);
+
+  // Motor de Cortesías (Candado + Canje, migracion_v35): qué categoría
+  // ('proshop' | 'bar') tiene abierto el flujo de "Otorgar/Canjear
+  // Cortesía" — null = ninguno. Solo se puede abrir cuando la barra ya está
+  // `lista` (Candado de Seguridad, ver `BarraProgresoCortesia`), así que
+  // este modal nunca necesita re-validar el 100% por su cuenta.
+  const [canjeCategoria, setCanjeCategoria] = useState(null);
+  const [canjeando, setCanjeando] = useState(false);
 
   async function guardarTelefono() {
     setGuardando(true);
@@ -26060,7 +26582,36 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono, permisos
   const mensajeWhatsApp = useMemo(() => plantillaWhatsAppAntiChurn(perfil, nombreClub), [perfil, nombreClub]);
   const linkWhatsApp = useMemo(() => construirEnlaceWhatsApp({ telefono: perfil.telefono, mensaje: mensajeWhatsApp }), [perfil.telefono, mensajeWhatsApp]);
 
+  // Confirma el canje elegido en `ModalCanjearCortesia` (producto/variante
+  // ya seleccionados ahí) — el Candado de Seguridad ya se cumplió (este
+  // flujo solo es alcanzable desde el botón de `BarraProgresoCortesia`,
+  // que no existe hasta `lista === true`).
+  async function confirmarCanjeCortesia({ producto, variante }) {
+    const categoria = canjeCategoria;
+    const meta = categoria === 'bar' ? perfil.cortesiaBar?.meta : perfil.cortesiaProShop?.meta;
+    setCanjeando(true);
+    const resultado = await otorgarCortesiaCRM({
+      jugador: { id: perfil.id, nombre: perfil.nombre },
+      categoria,
+      producto,
+      variante,
+      operador,
+      upsertProducto,
+      upsertVarianteProducto,
+      productos,
+      variantesPorProducto,
+      metaAplicada: meta,
+    });
+    setCanjeando(false);
+    if (resultado.ok) {
+      setCanjeCategoria(null);
+      onCortesiaOtorgada?.(resultado);
+    }
+    return resultado;
+  }
+
   return (
+    <>
     <ModalShell titulo={perfil.nombre} subtitulo="Vista 360° · Gasto Total Histórico & Nivel de Fidelidad" onClose={onClose} ancho="max-w-2xl" icon={HeartPulse}>
       <div className="space-y-5">
         <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5">
@@ -26228,7 +26779,12 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono, permisos
                       </button>
                       {expandido && (
                         <div className="border-t border-slate-800 bg-slate-950/60 px-3 py-2.5">
-                          <DetalleIndicadorCHS indKey={ind.key} perfil={perfil} />
+                          <DetalleIndicadorCHS
+                            indKey={ind.key}
+                            perfil={perfil}
+                            onAbrirCanjeCortesia={setCanjeCategoria}
+                            canjeandoCategoria={canjeando ? canjeCategoria : null}
+                          />
                         </div>
                       )}
                     </div>
@@ -26260,6 +26816,19 @@ function ModalPerfilJugadorCRM({ perfil, onClose, onActualizarTelefono, permisos
         </div>
       </div>
     </ModalShell>
+    {canjeCategoria && (
+      <ModalCanjearCortesia
+        jugador={{ id: perfil.id, nombre: perfil.nombre }}
+        categoria={canjeCategoria}
+        meta={canjeCategoria === 'bar' ? perfil.cortesiaBar?.meta : perfil.cortesiaProShop?.meta}
+        productos={productos}
+        variantesPorProducto={variantesPorProducto}
+        procesando={canjeando}
+        onConfirmar={confirmarCanjeCortesia}
+        onClose={() => setCanjeCategoria(null)}
+      />
+    )}
+    </>
   );
 }
 
@@ -26289,6 +26858,14 @@ function ModuloJugadores({
   academiaAsistencias,
   permisos,
   configClub,
+  operador,
+  upsertProducto,
+  variantesPorProducto,
+  upsertVarianteProducto,
+  metaCortesiaProShop,
+  metaCortesiaBar,
+  onGuardarMetasCortesia,
+  guardandoMetasCortesia,
 }) {
   const [subvista, setSubvista] = useState('crm');
   const subvistas = [
@@ -26341,6 +26918,14 @@ function ModuloJugadores({
           academiaAsistencias={academiaAsistencias}
           permisos={permisos}
           configClub={configClub}
+          operador={operador}
+          upsertProducto={upsertProducto}
+          variantesPorProducto={variantesPorProducto}
+          upsertVarianteProducto={upsertVarianteProducto}
+          metaCortesiaProShop={metaCortesiaProShop}
+          metaCortesiaBar={metaCortesiaBar}
+          onGuardarMetasCortesia={onGuardarMetasCortesia}
+          guardandoMetasCortesia={guardandoMetasCortesia}
         />
       )}
 
@@ -31955,6 +32540,15 @@ function AppInterno() {
   const [rangosHorarioClases, setRangosHorarioClases] = useState(() => leerRangosHorarioClasesLocal());
   const [guardandoRangosHorarioClases, setGuardandoRangosHorarioClases] = useState(false);
 
+  // Metas del Motor de Cortesías (Directorio & CRM, migracion_v35) — misma
+  // fila de `configuracion_club`, mismo criterio de flujo independiente que
+  // `rangosHorarioClases` arriba. `null` = el club no configuró nada
+  // todavía, el CRM cae a `META_CORTESIA_*_DEFAULT`.
+  const metasCortesiaLocalIniciales = leerMetasCortesiaLocal();
+  const [metaCortesiaProShop, setMetaCortesiaProShop] = useState(metasCortesiaLocalIniciales.proShop ?? null);
+  const [metaCortesiaBar, setMetaCortesiaBar] = useState(metasCortesiaLocalIniciales.bar ?? null);
+  const [guardandoMetasCortesia, setGuardandoMetasCortesia] = useState(false);
+
   // Título de la pestaña del navegador: antes quedaba fijo en "Smash Pádel
   // Club" (ver `index.html`), roto para cualquier OTRO club que use ClubOS.
   // `index.html` ahora trae un genérico "ClubOS" como valor inicial (antes
@@ -32363,6 +32957,19 @@ function AppInterno() {
           setRangosHorarioClases(data.rangos_horario_clases);
           guardarRangosHorarioClasesLocal(data.rangos_horario_clases);
         }
+        // Metas del Motor de Cortesías (migracion_v35) — mismo `select('*')`
+        // de arriba, sin consulta nueva: en un proyecto viejo sin la
+        // migración, ambas vienen `undefined` y el CRM cae a
+        // `META_CORTESIA_*_DEFAULT` (ver `DirectorioJugadoresCRM`).
+        if (data.meta_cortesia_proshop != null || data.meta_cortesia_bar != null) {
+          const nuevasMetas = {
+            proShop: data.meta_cortesia_proshop != null ? Number(data.meta_cortesia_proshop) : null,
+            bar: data.meta_cortesia_bar != null ? Number(data.meta_cortesia_bar) : null,
+          };
+          setMetaCortesiaProShop(nuevasMetas.proShop);
+          setMetaCortesiaBar(nuevasMetas.bar);
+          guardarMetasCortesiaLocal(nuevasMetas);
+        }
       }
     } catch (err) {
       if (!esErrorTablaInexistente(err) && !opts.silencioso) {
@@ -32396,6 +33003,39 @@ function AppInterno() {
       }
       mostrarToast({ titulo: 'Horarios Habilitados actualizados', detalle: 'El Portal ya solo deja elegir horas dentro de estos bloques.' });
       setGuardandoRangosHorarioClases(false);
+    },
+    [mostrarToast]
+  );
+
+  // Guarda las Metas del Motor de Cortesías (Pro-Shop / Restaurante-Bar,
+  // migracion_v35) — mismo criterio de Sincronización Silenciosa que
+  // `guardarRangosHorarioClases` arriba: estado en vivo + respaldo local
+  // SIEMPRE, Supabase best effort, flujo y toast propios.
+  const guardarMetasCortesia = useCallback(
+    async (nuevaMetaProShop, nuevaMetaBar) => {
+      const proShop = Number(nuevaMetaProShop) > 0 ? Number(nuevaMetaProShop) : null;
+      const bar = Number(nuevaMetaBar) > 0 ? Number(nuevaMetaBar) : null;
+      setGuardandoMetasCortesia(true);
+      setMetaCortesiaProShop(proShop);
+      setMetaCortesiaBar(bar);
+      guardarMetasCortesiaLocal({ proShop, bar });
+      try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión — no se puede guardar en Supabase todavía.');
+        const { error } = await actualizarConColumnasOpcionales(
+          'configuracion_club',
+          CLUB_ACTIVO_ID,
+          { meta_cortesia_proshop: proShop, meta_cortesia_bar: bar },
+          ['meta_cortesia_proshop', 'meta_cortesia_bar']
+        );
+        if (error) throw error;
+      } catch (err) {
+        // Sincronización Silenciosa: las metas ya se aplicaron de forma
+        // optimista arriba — si Supabase no las acepta todavía (columnas sin
+        // migrar, red), se reintentará solo con el próximo guardado.
+        console.warn('[Directorio & CRM] No se pudieron guardar las Metas de Cortesía en Supabase — se guardaron en modo local.', err);
+      }
+      mostrarToast({ titulo: 'Metas de Cortesía actualizadas', detalle: 'La Vista 360° de cada jugador ya usa las metas nuevas.' });
+      setGuardandoMetasCortesia(false);
     },
     [mostrarToast]
   );
@@ -33226,6 +33866,14 @@ function AppInterno() {
                 academiaAsistencias={academiaAsistencias}
                 permisos={permisos}
                 configClub={configClub}
+                operador={operador}
+                upsertProducto={upsertProducto}
+                variantesPorProducto={variantesPorProducto}
+                upsertVarianteProducto={upsertVarianteProducto}
+                metaCortesiaProShop={metaCortesiaProShop}
+                metaCortesiaBar={metaCortesiaBar}
+                onGuardarMetasCortesia={guardarMetasCortesia}
+                guardandoMetasCortesia={guardandoMetasCortesia}
               />
             ) : moduloActivo === 'torneos' ? (
               <ModuloTorneosRetas
