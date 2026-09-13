@@ -813,6 +813,7 @@ import {
   UserX,
   UserCheck,
   ShieldAlert,
+  ShieldCheck,
   TrendingDown,
   Pencil,
   Archive,
@@ -3003,20 +3004,22 @@ function Sidebar({
           })}
         </nav>
 
-        {/* Cerrar sesión — fijo en la parte inferior del Sidebar (fuera del
-            <nav> con scroll propio de arriba, así siempre queda visible sin
-            tener que bajar por la lista de módulos). Mismo criterio/acción
-            que el botón "Cerrar sesión" que ya existía dentro de
-            `ModalOperador` (cierra la cuenta de ClubOS completa — Supabase
-            Auth — no confundir con "Fichar como", que solo cambia de
-            operador en esta terminal); ambos usan el mismo callback
-            (`cerrarSesionClub` en `AppInterno`), no hay lógica duplicada. */}
+        {/* Cerrar Sesión de Colaborador — fijo en la parte inferior del
+            Sidebar (fuera del <nav> con scroll propio de arriba, así
+            siempre queda visible sin tener que bajar por la lista de
+            módulos). Sistema Kiosko/PIN: este botón, a diferencia del que
+            vive dentro de `ModalOperador`, YA NO destruye la sesión Master
+            (Supabase Auth) — solo limpia quién está fichado en esta
+            terminal (`cerrarSesionColaborador` en `AppInterno`) y regresa a
+            `PantallaKiosko` para que el siguiente colaborador fiche con su
+            PIN, sin que el dueño tenga que volver a escribir su
+            correo/contraseña. */}
         {onCerrarSesion && (
           <div className="shrink-0 border-t border-slate-800 p-3">
             <button
               type="button"
               onClick={onCerrarSesion}
-              title="Cierra la sesión de ClubOS en este dispositivo (correo/contraseña del club)."
+              title="Termina tu turno en esta terminal y regresa a la pantalla de selección de personal — la sesión del club sigue activa."
               className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-bold text-rose-400 transition hover:bg-rose-500/10 ${
                 colapsado ? 'lg:justify-center lg:px-2' : ''
               }`}
@@ -4101,6 +4104,329 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
         )}
       </div>
     </ModalShell>
+  );
+}
+
+/* ============================================================================
+ * SISTEMA DE INICIO DE SESIÓN KIOSKO / MULTIUSUARIO POR PIN
+ * ==========================================================================*/
+// Antes, `AppInterno` arrancaba SIEMPRE fichado como "Propietario" en cuanto
+// no había nada en `localStorage` — sin pantalla, sin PIN, sin distinguir
+// "nadie ha fichado todavía" de "el dueño ya está trabajando". Ahora esa
+// diferencia SÍ existe (ver `operadorRaw`/`hayColaboradorFichado` en
+// `AppInterno`): cuando no hay colaborador fichado en el turno, `AppInterno`
+// renderiza ÚNICAMENTE esta pantalla — ni Sidebar, ni módulos, ni datos del
+// club — en vez de dejar pasar directo a alguien sin identificar.
+
+// Indicador visual "● ● ● ●" del PIN que se va tecleando — compartido por
+// crear/confirmar/ingresar PIN, nunca muestra los dígitos en pantalla.
+function PuntosPin({ longitud = 4, llenos = 0 }) {
+  return (
+    <div className="flex justify-center gap-3">
+      {Array.from({ length: longitud }).map((_, i) => (
+        <div
+          key={i}
+          className={`h-4 w-4 rounded-full border-2 transition ${
+            i < llenos ? 'border-lime-400 bg-lime-400' : 'border-slate-600 bg-transparent'
+          }`}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Teclado numérico táctil (pantallas de recepción suelen ser touch) — a
+// diferencia de un `<input>` normal, nunca dispara el teclado del sistema
+// operativo ni deja copiar/pegar el PIN.
+function TecladoNumericoPin({ valor, onCambiar, deshabilitado }) {
+  function tecla(d) {
+    if (deshabilitado || valor.length >= 4) return;
+    onCambiar(valor + d);
+  }
+  function borrar() {
+    if (deshabilitado) return;
+    onCambiar(valor.slice(0, -1));
+  }
+  const claseTecla =
+    'rounded-xl border border-slate-700 bg-slate-800 py-4 text-xl font-bold text-slate-100 transition hover:border-lime-400/40 hover:bg-slate-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40';
+  return (
+    <div className="mx-auto grid max-w-xs grid-cols-3 gap-2">
+      {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
+        <button key={d} type="button" onClick={() => tecla(d)} disabled={deshabilitado} className={claseTecla}>
+          {d}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={borrar}
+        disabled={deshabilitado || !valor.length}
+        className="rounded-xl border border-slate-700 bg-slate-800 py-4 text-[11px] font-bold text-slate-400 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        Borrar
+      </button>
+      <button type="button" onClick={() => tecla('0')} disabled={deshabilitado} className={claseTecla}>
+        0
+      </button>
+      <div />
+    </div>
+  );
+}
+
+// Primer ingreso de un colaborador (`empleado.pin` nulo/vacío): crea su PIN
+// de 4 dígitos con confirmación antes de guardarlo. Al confirmar con éxito
+// llama a `onGuardar(pin)` — el caller (`PantallaKiosko`) es quien de verdad
+// lo persiste en `empleados` (vía `actualizarEmpleado`) y lo ficha.
+function ModalCrearPin({ empleado, onClose, onGuardar }) {
+  const [paso, setPaso] = useState('crear'); // 'crear' | 'confirmar'
+  const [pin, setPin] = useState('');
+  const [pinConfirmar, setPinConfirmar] = useState('');
+  const [error, setError] = useState('');
+  const [guardando, setGuardando] = useState(false);
+
+  useEffect(() => {
+    if (paso === 'crear' && pin.length === 4) setPaso('confirmar');
+  }, [pin, paso]);
+
+  useEffect(() => {
+    if (paso !== 'confirmar' || pinConfirmar.length !== 4 || guardando) return;
+    if (pinConfirmar !== pin) {
+      setError('Los PIN no coinciden — intenta de nuevo.');
+      setPin('');
+      setPinConfirmar('');
+      setPaso('crear');
+      return;
+    }
+    let cancelado = false;
+    (async () => {
+      setGuardando(true);
+      try {
+        await onGuardar(pin);
+      } finally {
+        if (!cancelado) setGuardando(false);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinConfirmar]);
+
+  const rolMeta = ROLES_POR_VALOR[empleado.rol];
+  const RolIcon = rolMeta?.icon || Users;
+
+  return (
+    <ModalShell
+      titulo={`¡Hola, ${empleado.nombre}!`}
+      subtitulo={paso === 'crear' ? 'Crea tu PIN de 4 dígitos' : 'Confirma tu PIN'}
+      onClose={onClose}
+      icon={RolIcon}
+    >
+      <div className="space-y-5">
+        <p className="text-center text-xs text-slate-400">
+          {paso === 'crear'
+            ? 'Este PIN te lo va a pedir la terminal cada vez que empieces tu turno — solo tú lo debes conocer.'
+            : 'Vuelve a escribir el mismo PIN para confirmarlo.'}
+        </p>
+        <PuntosPin llenos={paso === 'crear' ? pin.length : pinConfirmar.length} />
+        {error && <p className="text-center text-xs font-bold text-rose-400">{error}</p>}
+        <TecladoNumericoPin valor={paso === 'crear' ? pin : pinConfirmar} onCambiar={paso === 'crear' ? setPin : setPinConfirmar} deshabilitado={guardando} />
+        {paso === 'confirmar' && !guardando && (
+          <button
+            onClick={() => {
+              setPaso('crear');
+              setPin('');
+              setPinConfirmar('');
+              setError('');
+            }}
+            className="w-full text-center text-[11px] font-bold text-slate-500 transition hover:text-slate-300"
+          >
+            Regresar y escribir otro PIN
+          </button>
+        )}
+        {guardando && <p className="text-center text-[11px] font-semibold text-lime-400">Guardando tu PIN...</p>}
+      </div>
+    </ModalShell>
+  );
+}
+
+// Ingresos posteriores (`empleado.pin` YA configurado): pide el PIN y lo
+// compara contra `empleado.pin` tal cual viene de Supabase — sin llamada a
+// red, la validación es puramente local contra el directorio ya cargado.
+function ModalIngresarPin({ empleado, onClose, onExito }) {
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState('');
+  const [verificando, setVerificando] = useState(false);
+
+  useEffect(() => {
+    if (pin.length !== 4) return;
+    let cancelado = false;
+    setVerificando(true);
+    setError('');
+    // Pequeña pausa para que el 4º punto se alcance a ver lleno antes de
+    // limpiar el campo en caso de error — sin esto el PIN incorrecto se
+    // borra tan rápido que parece que no pasó nada.
+    const temporizador = setTimeout(() => {
+      if (cancelado) return;
+      const pinReal = String(empleado.pin ?? '').trim();
+      if (pinReal && pinReal === pin) {
+        onExito();
+      } else {
+        setError('PIN incorrecto. Intenta de nuevo.');
+        setPin('');
+        setVerificando(false);
+      }
+    }, 180);
+    return () => {
+      cancelado = true;
+      clearTimeout(temporizador);
+    };
+  }, [pin, empleado, onExito]);
+
+  const rolMeta = ROLES_POR_VALOR[empleado.rol];
+  const RolIcon = rolMeta?.icon || Users;
+
+  return (
+    <ModalShell titulo={empleado.nombre} subtitulo={`Ingresa tu PIN · ${rolMeta?.label || empleado.rol}`} onClose={onClose} icon={RolIcon}>
+      <div className="space-y-5">
+        <PuntosPin llenos={pin.length} />
+        {error && <p className="text-center text-xs font-bold text-rose-400">{error}</p>}
+        <TecladoNumericoPin valor={pin} onCambiar={setPin} deshabilitado={verificando} />
+        <p className="text-center text-[11px] text-slate-600">¿Olvidaste tu PIN? Pide al dueño del club que lo reinicie desde Configuración → Roles.</p>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Pantalla completa (NO un modal flotante — reemplaza TODO el contenido de
+// `AppInterno`) de Selección de Colaborador — el corazón del sistema
+// Kiosko: se muestra cada vez que no hay un colaborador fichado en esta
+// terminal (`hayColaboradorFichado === false`), sin importar si el
+// Propietario ya iba a mitad de turno antes de refrescar — solo el clic en
+// "Entrar como Propietario" o en una tarjeta con PIN correcto abre paso.
+function PantallaKiosko({
+  configClub,
+  empleados,
+  loadingEmpleados,
+  errorEmpleados,
+  onReintentarCarga,
+  onEntrarComoColaborador,
+  onCrearPinColaborador,
+  onEntrarComoPropietario,
+  onCerrarSesionMaster,
+}) {
+  const [empleadoParaPin, setEmpleadoParaPin] = useState(null);
+  const [empleadoParaCrearPin, setEmpleadoParaCrearPin] = useState(null);
+  const [confirmarLogoutMaster, setConfirmarLogoutMaster] = useState(false);
+
+  const empleadosActivos = useMemo(
+    () => (empleados || []).filter((e) => e.activo !== false).sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '')),
+    [empleados]
+  );
+
+  function tocarTarjeta(emp) {
+    const tienePin = emp.pin != null && String(emp.pin).trim() !== '';
+    if (tienePin) setEmpleadoParaPin(emp);
+    else setEmpleadoParaCrearPin(emp);
+  }
+
+  return (
+    <div className="flex min-h-screen w-full flex-col items-center justify-center bg-slate-950 px-4 py-10 text-slate-100">
+      <div className="w-full max-w-3xl space-y-8">
+        <div className="text-center">
+          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-lime-400/10">
+            <Users size={26} className="text-lime-400" />
+          </div>
+          <h1 className="text-xl font-black text-slate-100">{configClub?.nombre || 'ClubOS'}</h1>
+          <p className="mt-1 text-sm text-slate-400">¿Quién está usando esta terminal? Elige tu tarjeta para fichar tu turno.</p>
+        </div>
+
+        {errorEmpleados && <ErrorBanner mensaje={errorEmpleados} onReintentar={onReintentarCarga} />}
+
+        {loadingEmpleados ? (
+          <SkeletonGrid />
+        ) : empleadosActivos.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+            Todavía no hay colaboradores dados de alta. Entra como Propietario y ve a Configuración → Roles para agregar al primero.
+          </p>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {empleadosActivos.map((emp) => {
+              const rolMeta = ROLES_POR_VALOR[emp.rol];
+              const RolIcon = rolMeta?.icon || Users;
+              const tienePin = emp.pin != null && String(emp.pin).trim() !== '';
+              return (
+                <button
+                  key={emp.id}
+                  onClick={() => tocarTarjeta(emp)}
+                  className="flex flex-col items-center gap-2 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-6 text-center transition hover:border-lime-400/40 hover:bg-slate-800"
+                >
+                  <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${rolMeta?.bg || 'bg-slate-800'}`}>
+                    <RolIcon size={20} className={rolMeta?.color || 'text-slate-300'} />
+                  </div>
+                  <p className="truncate text-sm font-bold text-slate-100">{emp.nombre}</p>
+                  <p className="text-[11px] text-slate-500">{rolMeta?.label || emp.rol}</p>
+                  {!tienePin && (
+                    <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-400">
+                      <KeyRound size={10} /> Crear PIN
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        <button
+          onClick={onEntrarComoPropietario}
+          className="mx-auto flex items-center gap-2 rounded-xl border border-lime-400/30 bg-lime-400/5 px-4 py-2.5 text-xs font-bold text-lime-400 transition hover:bg-lime-400/10"
+        >
+          <ShieldCheck size={14} /> Entrar como Propietario / Dueño del Club
+        </button>
+
+        <div className="pt-6 text-center">
+          {!confirmarLogoutMaster ? (
+            <button
+              onClick={() => setConfirmarLogoutMaster(true)}
+              className="text-[11px] font-semibold text-slate-600 transition hover:text-slate-400"
+              title="Destruye la sesión de correo/contraseña del club en Supabase Auth — distinto de solo cambiar de colaborador."
+            >
+              Cerrar Sesión del Club (Master)
+            </button>
+          ) : (
+            <div className="inline-flex flex-wrap items-center justify-center gap-2">
+              <span className="text-[11px] text-slate-400">¿Cerrar la sesión completa de este club en esta terminal?</span>
+              <button onClick={onCerrarSesionMaster} className="text-[11px] font-bold text-rose-400 hover:underline">
+                Sí, cerrar
+              </button>
+              <button onClick={() => setConfirmarLogoutMaster(false)} className="text-[11px] font-bold text-slate-500 hover:underline">
+                Cancelar
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {empleadoParaPin && (
+        <ModalIngresarPin
+          empleado={empleadoParaPin}
+          onClose={() => setEmpleadoParaPin(null)}
+          onExito={() => {
+            onEntrarComoColaborador(empleadoParaPin);
+            setEmpleadoParaPin(null);
+          }}
+        />
+      )}
+      {empleadoParaCrearPin && (
+        <ModalCrearPin
+          empleado={empleadoParaCrearPin}
+          onClose={() => setEmpleadoParaCrearPin(null)}
+          onGuardar={async (pin) => {
+            await onCrearPinColaborador(empleadoParaCrearPin, pin);
+            setEmpleadoParaCrearPin(null);
+          }}
+        />
+      )}
+    </div>
   );
 }
 
@@ -27344,6 +27670,7 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
   const [nombre, setNombre] = useState(empleado?.nombre || '');
   const [rol, setRol] = useState(empleado?.rol || 'recepcion');
   const [telefono, setTelefono] = useState(empleado?.telefono || '');
+  const [email, setEmail] = useState(empleado?.email || '');
   const [pin, setPin] = useState(empleado?.pin || '');
   const [activo, setActivo] = useState(empleado?.activo !== false);
   const [guardando, setGuardando] = useState(false);
@@ -27354,6 +27681,10 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
       setError('El nombre es obligatorio.');
       return;
     }
+    if (pin.trim() && !/^\d{4}$/.test(pin.trim())) {
+      setError('El PIN, si lo capturas, debe ser de exactamente 4 dígitos.');
+      return;
+    }
     setGuardando(true);
     setError('');
     if (editando) {
@@ -27361,11 +27692,12 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
         nombre: nombre.trim(),
         rol,
         telefono: telefono.trim() || null,
+        email: email.trim() || null,
         pin: pin.trim() || null,
         activo,
       });
     } else {
-      await onCrear({ nombre: nombre.trim(), rol, telefono, pin });
+      await onCrear({ nombre: nombre.trim(), rol, telefono, email, pin });
     }
     setGuardando(false);
     onClose();
@@ -27407,10 +27739,33 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
           <Campo label="Teléfono (opcional)">
             <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="55..." />
           </Campo>
-          <Campo label="PIN (opcional)">
-            <input value={pin} onChange={(e) => setPin(e.target.value)} className={inputClase} placeholder="Código corto" />
+          <Campo label="Correo (opcional)">
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className={inputClase}
+              placeholder="nombre@club.com"
+            />
           </Campo>
         </div>
+        <Campo
+          label="PIN de acceso (opcional)"
+          hint={
+            editando
+              ? 'Déjalo vacío y guarda para que a este colaborador le vuelva a pedir crear su PIN la próxima vez que fiche — útil si lo olvidó.'
+              : 'Puedes dejarlo vacío: la Pantalla Kiosko le pedirá crear su propio PIN de 4 dígitos la primera vez que fiche.'
+          }
+        >
+          <input
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+            className={inputClase}
+            placeholder="4 dígitos"
+            inputMode="numeric"
+            maxLength={4}
+          />
+        </Campo>
         {editando && (
           <label className="flex items-center gap-2.5 rounded-lg bg-slate-900/60 p-3">
             <input
@@ -27457,8 +27812,20 @@ function FilaEmpleado({ empleado, puedeGestionar, onEditar }) {
         <p className="text-[11px] text-slate-500">
           {rolMeta?.label || empleado.rol}
           {empleado.telefono ? ` · ${empleado.telefono}` : ''}
+          {empleado.email ? ` · ${empleado.email}` : ''}
         </p>
       </div>
+      {/* PIN de Kiosko: mismo criterio que `PantallaKiosko` para decidir si
+          la tarjeta de este empleado va a pedir "Crear PIN" o "Ingresar
+          PIN" — `pin` nulo/vacío = todavía no lo configuró. */}
+      <span
+        className={`hidden shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide sm:inline-flex ${
+          empleado.pin != null && String(empleado.pin).trim() !== '' ? 'bg-sky-400/10 text-sky-400' : 'bg-amber-400/10 text-amber-400'
+        }`}
+      >
+        <KeyRound size={10} />
+        {empleado.pin != null && String(empleado.pin).trim() !== '' ? 'PIN listo' : 'Sin PIN'}
+      </span>
       <span
         className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
           empleado.activo !== false ? 'bg-emerald-400/10 text-emerald-400' : 'bg-slate-800 text-slate-500'
@@ -32633,37 +33000,110 @@ function AppInterno() {
   // reciba, lo meta a la comanda y el cajero elija cómo cobrarlo.
   const [conceptoPOS, setConceptoPOS] = useState(null);
 
-  // Sesión activa: arranca con lo que haya en `localStorage`
-  // (`LS_KEY_OPERADOR_ACTIVO`) para que el rol/permisos no se reseteen solos
-  // a medio turno con un refresh de la terminal; si no hay nada guardado,
-  // cae al Owner por defecto (primer arranque del club, nadie ha fichado
-  // todavía). `rol` SIEMPRE es uno de `ROLES` — `permisosDeRol` abajo ya
-  // blinda contra un valor vacío/corrupto.
-  const [operador, setOperador] = useState(
-    // Sin nombre de persona hardcodeado (ClubOS es multi-tenant: este
-    // fallback lo ve CUALQUIER club en su primer arranque, no solo el
-    // original) — "Propietario" es neutro y coincide con el rol `owner` por
-    // defecto.
-    () => leerOperadorActivoLocal() || { id: null, nombre: 'Propietario', turno: 'automatico', rol: 'owner' }
+  // Toasts — subido de más abajo (donde vivía originalmente, junto a la
+  // carga de datos de la Parrilla) para que `mostrarToast` ya esté
+  // disponible aquí arriba, en la sección de Sesión/Kiosko/Empleados, que
+  // ahora también dispara avisos (alta/edición de empleado, PIN creado,
+  // etc.) — sin este movimiento, referenciar `mostrarToast` en el `useCallback`
+  // de esos handlers (definidos ANTES en el archivo que la declaración
+  // original de `mostrarToast`) rompería con un ReferenceError de zona
+  // muerta temporal (TDZ) de `const`.
+  const [toasts, setToasts] = useState([]);
+  const toastIdRef = useRef(0);
+
+  const mostrarToast = useCallback(({ titulo, detalle, tono = 'ok' }) => {
+    const id = ++toastIdRef.current;
+    setToasts((prev) => [...prev, { id, titulo, detalle, tono }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4200);
+  }, []);
+
+  // Sesión activa — Sistema Kiosko/PIN: `operadorRaw` es el estado CRUDO,
+  // literalmente lo que haya en `localStorage` (`LS_KEY_OPERADOR_ACTIVO`) —
+  // puede ser `null`. Antes, `null` se resolvía EN EL MISMO `useState` al
+  // Propietario por defecto, así que la app arrancaba fichada sin pantalla
+  // ni PIN, sin forma de distinguir "nadie ha fichado todavía" de "el dueño
+  // ya está trabajando". Ahora esa resolución se separó en dos:
+  //   - `operadorRaw === null` → nadie ha completado la Pantalla de
+  //     Selección Kiosko en esta terminal — `hayColaboradorFichado` es
+  //     `false` y el render de más abajo muestra SOLO `PantallaKiosko`.
+  //   - `operador` (memo) → SIEMPRE un objeto válido, nunca `null` — lo
+  //     sigue consumiendo el resto de `AppInterno` (permisos, Auditoría,
+  //     props hacia cada módulo) exactamente igual que antes, así que
+  //     ningún otro punto del archivo necesita un guard nuevo para `null`.
+  const [operadorRaw, setOperadorRaw] = useState(() => leerOperadorActivoLocal());
+  const operador = useMemo(
+    // Mismo objeto "Propietario" neutro de siempre — ahora es el valor que
+    // usa `entrarComoPropietario` (clic explícito en la Pantalla Kiosko) en
+    // vez de ser el fallback silencioso del primer render.
+    () => operadorRaw || { id: null, nombre: 'Propietario', turno: 'automatico', rol: 'owner' },
+    [operadorRaw]
   );
+  const hayColaboradorFichado = Boolean(operadorRaw);
   const [modalOperador, setModalOperador] = useState(false);
 
   // Cerrar sesión de ClubOS (correo/contraseña del club, Supabase Auth) —
   // `ClubAuthGate` detecta el cambio de sesión vía `onAuthStateChange` y
-  // vuelve a mostrar el Login solo. Distinto de "Fichar como": eso solo
-  // cambia quién es el operador activo EN esta terminal, sin tocar la
-  // sesión. Un único callback compartido por los dos lugares donde ahora
-  // vive el botón "Cerrar sesión" — `ModalOperador` (ya existía) y el nuevo
-  // botón fijo/sticky en la parte inferior del `Sidebar` (menú de
-  // hamburguesa mejorado) — para no duplicar la lógica.
+  // vuelve a mostrar el Login solo. Distinto de "Fichar como"/"Cerrar
+  // Sesión de Colaborador" (ver `cerrarSesionColaborador` abajo): esos solo
+  // cambian/limpian quién es el operador activo EN esta terminal, sin tocar
+  // la sesión Master. Vive en 3 lugares: el botón discreto de
+  // `PantallaKiosko` ("Cerrar Sesión del Club (Master)"), el botón ya
+  // existente dentro de `ModalOperador`, y ya NO en la barra lateral (ver
+  // `cerrarSesionColaborador`, el que ahora usa ese botón).
   const cerrarSesionClub = useCallback(async () => {
     setModalOperador(false);
     await supabase.auth.signOut();
   }, []);
 
+  // Cerrar Sesión de Colaborador ("Cerrar Sesión" de la barra
+  // lateral/superior durante el uso normal del sistema): SOLO limpia quién
+  // está fichado en esta terminal — `operadorRaw` vuelve a `null`,
+  // `hayColaboradorFichado` a `false`, y el render de más abajo regresa a
+  // `PantallaKiosko` — la sesión Master (Supabase Auth) queda intacta, así
+  // que el siguiente colaborador no tiene que volver a escribir el
+  // correo/contraseña del club, solo su PIN.
+  const cerrarSesionColaborador = useCallback(() => {
+    setModalOperador(false);
+    setOperadorRaw(null);
+  }, []);
+
+  // Entrar como Propietario/Dueño — botón discreto de `PantallaKiosko`:
+  // como el Master ya se autenticó con correo/contraseña (Supabase Auth)
+  // para siquiera llegar hasta aquí (`ClubAuthGate`), no se le pide PIN —
+  // esa autenticación YA es su credencial.
+  const entrarComoPropietario = useCallback(() => {
+    setOperadorRaw({ id: null, nombre: 'Propietario', turno: 'automatico', rol: 'owner' });
+  }, []);
+
+  // Fichar como colaborador (PIN ya verificado por `ModalIngresarPin` antes
+  // de llamar esto — ver `PantallaKiosko`).
+  const entrarComoColaborador = useCallback((emp) => {
+    setOperadorRaw({ id: emp.id, nombre: emp.nombre, rol: emp.rol, turno: 'automatico' });
+  }, []);
+
+  // Primer ingreso de un colaborador: guarda su PIN recién creado en
+  // `empleados` (vía `actualizarEmpleado`, más abajo — disponible aquí por
+  // hoisting de function declarations) y de una vez lo ficha, sin pedirle
+  // que vuelva a tocar su tarjeta. A propósito NO es un `useCallback`:
+  // `actualizarEmpleado` es un `function` hoisted que se REDEFINE en cada
+  // render de `AppInterno` (cierra sobre el `empleados` de ESE render) —
+  // memoizar esta función con `useCallback([mostrarToast])` (deps estables
+  // para siempre) la habría dejado fija en la versión de `actualizarEmpleado`
+  // del PRIMER render, con `empleados` permanentemente vacío dentro de esa
+  // llamada. Al ser una función plana, cada render la recrea apuntando al
+  // `actualizarEmpleado` (y al `empleados`) más reciente — igual que
+  // `crearEmpleado`/`actualizarEmpleado` mismas, que siguen el mismo patrón.
+  async function crearPinColaborador(emp, pin) {
+    await actualizarEmpleado(emp.id, { pin });
+    setOperadorRaw({ id: emp.id, nombre: emp.nombre, rol: emp.rol, turno: 'automatico' });
+    mostrarToast({ titulo: 'PIN creado', detalle: `Turno iniciado como ${emp.nombre}.` });
+  }
+
   useEffect(() => {
-    guardarOperadorActivoLocal(operador);
-  }, [operador]);
+    guardarOperadorActivoLocal(operadorRaw);
+  }, [operadorRaw]);
 
   // RBAC: permisos EFECTIVOS de la sesión activa — un solo cálculo
   // memoizado, repartido hacia abajo a todos los módulos (visibilidad de
@@ -32829,38 +33269,57 @@ function AppInterno() {
     [operador.id, operador.nombre, operador.rol]
   );
 
-  async function crearEmpleado({ nombre, rol, telefono, pin }) {
-    const payload = withClubId({
+  // Columnas opcionales de `empleados` (Arquitectura Flexible — ver
+  // `insertarConColumnasOpcionales`/`actualizarConColumnasOpcionales`):
+  // ANTES esto era un `supabase.from('empleados').insert/update(...)`
+  // directo, sin ningún reintento — así que CUALQUIER columna que la tabla
+  // real en Supabase no tuviera todavía (p. ej. `email`, agregado apenas
+  // ahora, o `pin` en un proyecto viejo) tronaba el insert/update COMPLETO
+  // con un error `PGRST204`/`42703` que solo se veía en la consola del
+  // navegador (`console.warn`) — el alta/edición "parecía" funcionar (el
+  // modo local es indistinguible en la UI) pero jamás llegaba a
+  // `public.empleados`, así que la tabla se quedaba vacía en Supabase para
+  // siempre aunque el directorio se viera lleno en pantalla. Con Arquitectura
+  // Flexible, si falta una columna puntual se reintenta SIN esa columna en
+  // vez de caer directo a modo local — y si de verdad no se pudo guardar
+  // nada en Supabase, ahora SIEMPRE se avisa con un toast visible (antes
+  // solo pasaba para el caso específico de `club_id` con tipo incompatible).
+  const COLUMNAS_OPCIONALES_EMPLEADO = ['telefono', 'email', 'pin'];
+
+  async function crearEmpleado({ nombre, rol, telefono, email, pin }) {
+    const payloadCompleto = {
       nombre: nombre.trim(),
       rol,
       telefono: telefono?.trim() || null,
+      email: email?.trim() || null,
       pin: pin?.trim() || null,
       activo: true,
-    });
+    };
     let empleadoCreado = null;
     try {
-      const { data, error } = await supabase.from('empleados').insert(payload).select().single();
+      const { data, error } = await insertarConColumnasOpcionales('empleados', payloadCompleto, COLUMNAS_OPCIONALES_EMPLEADO);
       if (error) throw error;
       empleadoCreado = data;
     } catch (err) {
       console.warn('[Empleados] No se pudo guardar en Supabase — se usa modo local.', err);
       // FIX (alta rápida "desaparece"): antes esta falla quedaba solo en
-      // `console.warn` — el operador veía "Empleado creado" igual (el modo
-      // local es indistinguible en la UI) y nunca se enteraba de que en
-      // realidad NO se guardó en Supabase, solo en localStorage de ESE
-      // navegador — así que en otro dispositivo/sesión el empleado
-      // simplemente no existía. Ahora, específicamente para el desajuste de
-      // tipo de `club_id` (la causa raíz encontrada — ver
-      // `esErrorTipoUUIDInvalido`), se avisa con un toast visible y
-      // accionable en vez de fallar en silencio.
-      if (esErrorTipoUUIDInvalido(err)) {
-        mostrarToast({
-          titulo: 'Empleado guardado solo en este dispositivo',
-          detalle: 'La columna club_id de "empleados" no es del mismo tipo que configuracion_club.id en Supabase — corre migracion_v26_fix_tipo_club_id_empleados.sql para que se guarde en la base de datos real.',
-          tono: 'error',
-        });
-      }
-      empleadoCreado = { ...payload, id: idLocal('empleado'), _local: true };
+      // `console.warn` en la mayoría de los casos — el operador veía
+      // "Empleado creado" igual (el modo local es indistinguible en la UI)
+      // y nunca se enteraba de que en realidad NO se guardó en Supabase,
+      // solo en localStorage de ESE navegador — así que en otro
+      // dispositivo/sesión (o en el propio Supabase) el empleado
+      // simplemente no existía. Ahora SIEMPRE se avisa con un toast visible
+      // y accionable, con un mensaje específico para el desajuste de tipo
+      // de `club_id` (la causa raíz más común — ver `esErrorTipoUUIDInvalido`)
+      // y uno genérico (con el detalle real de Supabase) para cualquier otra falla.
+      mostrarToast({
+        titulo: 'Empleado guardado solo en este dispositivo',
+        detalle: esErrorTipoUUIDInvalido(err)
+          ? 'La columna club_id de "empleados" no es del mismo tipo que configuracion_club.id en Supabase — corre migracion_v26_fix_tipo_club_id_empleados.sql para que se guarde en la base de datos real.'
+          : detalleErrorSupabase(err) || 'No se pudo guardar en la tabla empleados de Supabase — revisa la consola para el detalle exacto.',
+        tono: 'error',
+      });
+      empleadoCreado = { ...payloadCompleto, id: idLocal('empleado'), _local: true };
       guardarRegistroLocal(LS_KEY_EMPLEADOS_LOCAL, empleadoCreado);
     }
     setEmpleados((prev) => [...prev, empleadoCreado].sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '')));
@@ -32873,16 +33332,29 @@ function AppInterno() {
     setEmpleados((prev) => prev.map((e) => (e.id === id ? { ...e, ...cambios } : e)));
     if (!String(id).startsWith('local-')) {
       try {
-        const { error } = await supabase.from('empleados').update(cambios).eq('id', id);
+        const { error } = await actualizarConColumnasOpcionales('empleados', id, cambios, COLUMNAS_OPCIONALES_EMPLEADO);
         if (error) throw error;
       } catch (err) {
-        console.warn('[Empleados] No se pudo sincronizar la edición con Supabase — se queda solo local.', err);
+        // Nota: a diferencia de `crearEmpleado`, aquí NO se guarda un
+        // respaldo en `localStorage` — el id ya es un UUID real de
+        // Supabase, así que `fusionarConRegistrosLocales` lo descartaría de
+        // todos modos en la próxima carga ("el dato de servidor manda si
+        // algún día coincidieran ids"). El cambio queda visible solo en
+        // esta sesión (estado de React, ya actualizado arriba) hasta que se
+        // reintente guardar — el toast es lo que evita que pase
+        // desapercibido.
+        console.warn('[Empleados] No se pudo sincronizar la edición con Supabase — se queda solo en esta sesión.', err);
+        mostrarToast({
+          titulo: 'Cambio no sincronizado con Supabase',
+          detalle: detalleErrorSupabase(err) || 'No se pudo sincronizar la edición con la tabla empleados de Supabase.',
+          tono: 'error',
+        });
       }
     } else {
       guardarRegistroLocal(LS_KEY_EMPLEADOS_LOCAL, { ...anterior, ...cambios });
     }
     const etiquetaCambios = Object.keys(cambios || {})
-      .map((k) => (k === 'rol' ? `rol → ${ROLES_POR_VALOR[cambios.rol]?.label || cambios.rol}` : k === 'activo' ? (cambios.activo ? 'reactivado' : 'desactivado') : k))
+      .map((k) => (k === 'rol' ? `rol → ${ROLES_POR_VALOR[cambios.rol]?.label || cambios.rol}` : k === 'activo' ? (cambios.activo ? 'reactivado' : 'desactivado') : k === 'pin' ? 'PIN' : k))
       .join(', ');
     registrarEventoAuditoria('empleado_editado', { nombre: anterior?.nombre, cambios: etiquetaCambios });
   }
@@ -33006,17 +33478,6 @@ function AppInterno() {
   useEffect(() => {
     document.title = (configClub?.nombre || '').trim() || 'ClubOS';
   }, [configClub?.nombre]);
-
-  const [toasts, setToasts] = useState([]);
-  const toastIdRef = useRef(0);
-
-  const mostrarToast = useCallback(({ titulo, detalle, tono = 'ok' }) => {
-    const id = ++toastIdRef.current;
-    setToasts((prev) => [...prev, { id, titulo, detalle, tono }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4200);
-  }, []);
 
   /* ---------------- Carga de datos (Parrilla, compartida) ---------------- */
 
@@ -34397,6 +34858,32 @@ function AppInterno() {
 
   /* ---------------- Render ---------------- */
 
+  // Sistema Kiosko/PIN — gate de entrada: nadie ha fichado todavía en esta
+  // terminal (`hayColaboradorFichado === false`). En vez del Sidebar/
+  // TopHeader/módulos de siempre, se renderiza ÚNICAMENTE `PantallaKiosko`
+  // — ni un dato del club se ve hasta que alguien elija su tarjeta (con PIN)
+  // o el Propietario entre con su propio botón. Sigue envuelto en
+  // `ToastContext.Provider` + `ToastHost` para que "PIN creado"/errores de
+  // carga de `empleados` se vean igual que en el resto de la app.
+  if (!hayColaboradorFichado) {
+    return (
+      <ToastContext.Provider value={mostrarToast}>
+        <PantallaKiosko
+          configClub={configClub}
+          empleados={empleados}
+          loadingEmpleados={loadingEmpleados}
+          errorEmpleados={errorEmpleados}
+          onReintentarCarga={() => cargarEmpleados()}
+          onEntrarComoColaborador={entrarComoColaborador}
+          onCrearPinColaborador={crearPinColaborador}
+          onEntrarComoPropietario={entrarComoPropietario}
+          onCerrarSesionMaster={cerrarSesionClub}
+        />
+        <ToastHost toasts={toasts} />
+      </ToastContext.Provider>
+    );
+  }
+
   return (
     <ToastContext.Provider value={mostrarToast}>
       <div className="flex min-h-screen w-full min-w-0 overflow-x-hidden bg-slate-950 text-slate-100">
@@ -34413,7 +34900,7 @@ function AppInterno() {
           guardandoConfigClub={guardandoConfigClub}
           modulosOrdenados={navModulosOrdenados}
           onReordenarModulos={reordenarNavModulos}
-          onCerrarSesion={cerrarSesionClub}
+          onCerrarSesion={cerrarSesionColaborador}
         />
 
         <div className="flex min-h-screen min-w-0 flex-1 flex-col lg:pl-0">
@@ -34661,7 +35148,7 @@ function AppInterno() {
           <ModalOperador
             operador={operador}
             empleados={empleados}
-            onGuardar={(datos) => setOperador(datos)}
+            onGuardar={(datos) => setOperadorRaw(datos)}
             onCrearEmpleado={crearEmpleado}
             onClose={() => setModalOperador(false)}
             onCerrarSesion={cerrarSesionClub}
