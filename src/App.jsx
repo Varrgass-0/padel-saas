@@ -7981,6 +7981,7 @@ function ModuloSmartPOS({
   metaCortesiaBar,
   pagoAAbrirEnPOS,
   onPagoAAbrirEnPOSConsumido,
+  onCortesiaCanjeada,
 }) {
   const mostrarToast = useToast();
 
@@ -8058,6 +8059,10 @@ function ModuloSmartPOS({
       // `ok: true` cuando el registro en `cortesias_otorgadas` YA quedó
       // guardado de verdad — ya no existe el caso "éxito con aviso".
       mostrarToast({ titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' });
+      // Limpieza de notificaciones zombi: borra/lee todas las alertas "meta
+      // alcanzada" de este jugador+categoría (mismo criterio que en
+      // Directorio & CRM) para que no sigan apareciendo como pendientes.
+      onCortesiaCanjeada?.(clienteSeleccionadoId, categoria);
     } else {
       // Toast de error explícito y en rojo — el canje NO se completó: no se
       // generó ticket ni se tocó stock (ver `otorgarCortesiaCRM`). El mismo
@@ -25598,6 +25603,7 @@ function DirectorioJugadoresCRM({
   onGuardarMetasCortesia,
   guardandoMetasCortesia,
   onEstadoCortesiasCambio,
+  onCortesiaCanjeada,
 }) {
   /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
    * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
@@ -26405,6 +26411,10 @@ function DirectorioJugadoresCRM({
             // instante, sin esperar ninguna vuelta de red.
             setCortesiasOtorgadas((prev) => [resultado.registro, ...prev]);
             mostrarToast({ titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' });
+            // Limpieza de notificaciones zombi: borra/lee todas las alertas
+            // "meta alcanzada" de este jugador+categoría para que no sigan
+            // apareciendo como pendientes en el Centro de Alertas.
+            onCortesiaCanjeada?.(resultado.registro.jugador_id, resultado.registro.categoria);
             // Reconciliación en segundo plano: reemplaza la lista optimista
             // por la autoritativa de Supabase (además de propagar el canje a
             // otros dispositivos abiertos de este club, junto con el eco del
@@ -27239,6 +27249,7 @@ function ModuloJugadores({
   onGuardarMetasCortesia,
   guardandoMetasCortesia,
   onEstadoCortesiasCambio,
+  onCortesiaCanjeada,
 }) {
   const [subvista, setSubvista] = useState('crm');
   const subvistas = [
@@ -27300,6 +27311,7 @@ function ModuloJugadores({
           onGuardarMetasCortesia={onGuardarMetasCortesia}
           guardandoMetasCortesia={guardandoMetasCortesia}
           onEstadoCortesiasCambio={onEstadoCortesiasCambio}
+          onCortesiaCanjeada={onCortesiaCanjeada}
         />
       )}
 
@@ -33744,13 +33756,24 @@ function AppInterno() {
   // pagada o no hay nada que cobrar). `manejarClicAlerta` (más abajo) es el
   // ÚNICO lugar que la lee — sin esto, cada clic terminaba SIEMPRE en la
   // Tarjeta del Jugador sin importar el tipo de alerta.
+  // `dbId` (opcional): cuando la alerta corresponde a una fila REAL de
+  // `notificaciones_club` (llega por el canal Realtime `notificaciones_club_*`,
+  // no por los listeners directos a tablas de negocio), el id local se arma
+  // como `db-${dbId}` — EXACTAMENTE el mismo formato que usa la carga inicial
+  // de no-leídas al montar. Esto es lo que permite que `marcarAlertaLeida`
+  // (que solo persiste a Supabase cuando el id empieza con "db-") de verdad
+  // marque `leida:true` en la fila real — antes, toda alerta llegada por
+  // Realtime recibía un id 100% local (`tipo-timestamp-random`) y su estado
+  // de lectura nunca se guardaba, así que reaparecía como no leída en cada
+  // recarga/reconexión. El guard de duplicados evita doble-inserción si el
+  // mismo INSERT llega más de una vez (reconexión del canal, StrictMode, etc.).
   const agregarAlertaClub = useCallback(
-    ({ tipo, titulo, jugadorId, metadata }) => {
-      const id = `${tipo}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      setAlertasClub(
-        (prev) =>
-          [{ id, tipo, titulo, jugadorId: jugadorId || null, metadata: metadata || {}, leida: false, creadaEn: Date.now() }, ...prev].slice(0, 40)
-      );
+    ({ tipo, titulo, jugadorId, metadata, dbId }) => {
+      const id = dbId != null ? `db-${dbId}` : `${tipo}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setAlertasClub((prev) => {
+        if (prev.some((a) => a.id === id)) return prev;
+        return [{ id, tipo, titulo, jugadorId: jugadorId || null, metadata: metadata || {}, leida: false, creadaEn: Date.now() }, ...prev].slice(0, 40);
+      });
       // El encabezado del toast distingue el Motor de Cortesías (evento
       // INTERNO del club — se dispara desde Smart POS/Directorio & CRM,
       // nunca desde el Portal Público) del resto de tipos de alerta (esos sí
@@ -33762,6 +33785,44 @@ function AppInterno() {
       });
     },
     [mostrarToast]
+  );
+
+  // Limpieza de notificaciones zombi de Cortesías: al canjear con éxito, ya
+  // no debe quedar en el drawer ninguna alerta "meta alcanzada" (tipo
+  // `cortesia_lista`) de ESE jugador + categoría — ni localmente ni en
+  // Supabase (si no se limpian ahí, reaparecerían como no leídas en la
+  // próxima carga inicial). Compara `jugadorId` como texto en ambos lados
+  // porque `cortesia_lista` guarda el id crudo del jugador (puede llegar
+  // como number o string según el origen) y `categoria` en minúsculas
+  // ('bar'|'proshop'), igual que `cortesias_otorgadas`.
+  const limpiarAlertasCortesia = useCallback(
+    (jugadorId, categoria) => {
+      if (jugadorId == null || !categoria) return;
+      const jugadorIdTexto = String(jugadorId);
+      setAlertasClub((prev) => {
+        const aQuitar = prev.filter(
+          (a) => a.tipo === 'cortesia_lista' && String(a.jugadorId) === jugadorIdTexto && a.metadata?.categoria === categoria
+        );
+        if (aQuitar.length === 0) return prev;
+        // Best effort: marca leída en Supabase cualquier fila real (id
+        // `db-...`) antes de descartarla localmente — no bloquea la UI si
+        // falla, el drawer ya se limpia de inmediato.
+        aQuitar.forEach((a) => {
+          if (typeof a.id === 'string' && a.id.startsWith('db-')) {
+            supabase
+              .from('notificaciones_club')
+              .update({ leida: true })
+              .eq('id', a.id.slice(3))
+              .then(({ error }) => {
+                if (error) console.warn('No se pudo marcar leída la alerta de cortesía en Supabase:', error);
+              });
+          }
+        });
+        const idsAQuitar = new Set(aQuitar.map((a) => a.id));
+        return prev.filter((a) => !idsAQuitar.has(a.id));
+      });
+    },
+    []
   );
 
   // Refs (no dependencias del efecto de abajo): así el canal Realtime del
@@ -33979,6 +34040,13 @@ function AppInterno() {
           // descartaba por completo aquí, así que `manejarClicAlerta` nunca
           // tenía nada más que `jugadorId` para decidir a dónde saltar.
           metadata: fila.payload || {},
+          // `dbId`: esta alerta SÍ corresponde a una fila real en
+          // `notificaciones_club` (llegó por este canal, no por los
+          // listeners directos a tablas de negocio) — pasar el id real deja
+          // que `agregarAlertaClub` arme el id local como `db-${fila.id}`,
+          // igual que la carga inicial, para que marcarla leída SÍ se
+          // persista en Supabase y no reaparezca como no leída.
+          dbId: fila.id,
         });
       })
       .subscribe();
@@ -34097,53 +34165,107 @@ function AppInterno() {
   // `gruposTiendaWebPendientes` y abre `ModalLiquidarCuenta` directo).
   const [pagoAAbrirEnPOS, setPagoAAbrirEnPOS] = useState(null);
 
-  // Manejador de Clics Adaptativo (Notificaciones del Centro de Alertas):
-  // antes CUALQUIER alerta, sin importar su tipo, siempre abría la Tarjeta
-  // del Jugador — ahora evalúa `metadata` (ver `agregarAlertaClub`/
-  // `crearNotificacionClub`) para saltar directo a la acción real:
-  //   1) Inscripción de Retas/Torneos/Clases o cuenta/reserva/pedido web
-  //      TODAVÍA sin pagar (`pagado !== true`) → Smart POS, con el ticket
-  //      de cobro correspondiente ya cargado (`pagoAAbrirEnPOS`).
-  //   2) Transacción YA liquidada (`pagado === true`) con un
-  //      `modulo_destino` conocido → salta a ese módulo (Torneos & Retas,
-  //      Academia & Clínicas, Smart POS, Parrilla Operativa) — ahí vive el
-  //      historial/detalle de esa reserva/inscripción/venta ya cobrada.
-  //   3) Fallback — trae `jugadorId` pero ninguna transacción identificable
-  //      → Tarjeta del Jugador (Vista 360°), comportamiento de siempre.
-  //   4) Último recurso — ni transacción ni jugador (ej. Reabastecimiento)
-  //      → si trae `modulo_destino` salta ahí; si no, avisa con un toast.
+  // Manejador de Clics Adaptativo (Notificaciones del Centro de Alertas) —
+  // REESCRITO por completo: la versión anterior decidía SOLO por presencia
+  // de campos de `metadata` (inscripcion_id/ticket_id/reserva_id/pagado),
+  // así que cualquier tipo que nunca escribe `pagado` (`solicitud_clase`,
+  // `cancelacion`, `reabastecimiento`) jamás cumplía `pagado === true` y
+  // siempre terminaba cayendo al fallback de Tarjeta del Jugador — exacto
+  // bug reportado ("la solicitud de clase privada de Edgar Rosado... sigue
+  // abriendo la Tarjeta del Jugador"). Ahora el `tipo` de la alerta manda
+  // PRIMERO y la metadata solo AFINA el destino dentro de esa categoría:
+  //   0) Cortesía/Fidelidad (`cortesia_lista`) — ÚNICO tipo con permiso de
+  //      abrir la Tarjeta del Jugador (Vista 360°/panel de cortesías).
+  //   1) Pago pendiente (reserva/torneo/reta/compra/académica, confirmada o
+  //      no) o Solicitud (Retas/Torneos/Clases/Compras Web) — PROHIBIDO
+  //      abrir la Tarjeta del Jugador: si `pagado !== true` (incluye
+  //      `undefined`, o sea "no consta que esté pagada") salta a Smart POS
+  //      de inmediato, con el ticket/inscripción/cuenta ya cargados cuando
+  //      la metadata trae el id; si falta el id secundario igual cambia de
+  //      módulo a Smart POS (nunca se queda en la ficha del jugador).
+  //   2) Solicitud de clase/servicio sin pago asociado (`solicitud`,
+  //      `solicitud_clase`) — SIEMPRE Academia & Clínicas, nunca jugador.
+  //   3) Ya liquidada/confirmada — al módulo específico (Parrilla, Torneos
+  //      & Retas, Academia, Smart POS/Ventas) usando `modulo_destino` si
+  //      viene en la metadata, o el mapa `TIPO_MODULO_DEFECTO` como red de
+  //      seguridad para alertas viejas sin metadata enriquecida.
+  //   4) Último recurso — tipo desconocido sin módulo resoluble: si trae
+  //      `jugadorId` abre su ficha (mejor que nada); si no, avisa con toast.
+  const TIPOS_COBRO_PENDIENTE = useMemo(
+    () => new Set(['reserva', 'torneo_reta', 'compra', 'academia', 'inscripcion_reta', 'inscripcion_torneo', 'inscripcion_clase', 'compra_tienda']),
+    []
+  );
+  const TIPOS_SOLICITUD = useMemo(() => new Set(['solicitud', 'solicitud_clase']), []);
+  const TIPO_MODULO_DEFECTO = useMemo(
+    () => ({
+      reserva: 'parrilla',
+      torneo_reta: 'torneos',
+      compra: 'pos',
+      academia: 'academia',
+      cancelacion: 'academia',
+      solicitud: 'academia',
+      reabastecimiento: 'erp',
+      inscripcion_reta: 'torneos',
+      inscripcion_torneo: 'torneos',
+      inscripcion_clase: 'academia',
+      solicitud_clase: 'academia',
+      compra_tienda: 'pos',
+    }),
+    []
+  );
   const manejarClicAlerta = useCallback(
     (alerta) => {
       const meta = alerta?.metadata || {};
+      const tipo = alerta?.tipo;
       const moduloValido = NAV_MODULOS.some((m) => m.id === meta.modulo_destino) ? meta.modulo_destino : null;
+      const moduloDefecto = tipo && TIPO_MODULO_DEFECTO[tipo] ? TIPO_MODULO_DEFECTO[tipo] : null;
 
-      // 1a) Inscripción de Reta/Torneo/Clase pendiente de cobro.
-      if (meta.inscripcion_id != null && meta.tabla && meta.pagado !== true) {
+      // 0) Cortesía/Fidelidad — el único tipo con permiso de ir al jugador.
+      if (tipo === 'cortesia_lista') {
+        if (alerta?.jugadorId) {
+          setModuloActivo('jugadores');
+          setJugadorAAbrirId(alerta.jugadorId);
+          return;
+        }
+        if (moduloValido || moduloDefecto) {
+          setModuloActivo(moduloValido || moduloDefecto);
+          return;
+        }
+        mostrarToast({ titulo: 'Cortesía sin jugador vinculado', detalle: 'Esta alerta no trae un jugador identificado.', tono: 'aviso' });
+        return;
+      }
+
+      // 1) Pago pendiente/solicitud de cobro — PROHIBIDO caer en jugador.
+      if (TIPOS_COBRO_PENDIENTE.has(tipo) && meta.pagado !== true) {
         setModuloActivo('pos');
-        setPagoAAbrirEnPOS({ tabla: meta.tabla, inscripcionId: meta.inscripcion_id });
+        if (meta.inscripcion_id != null && meta.tabla) {
+          setPagoAAbrirEnPOS({ tabla: meta.tabla, inscripcionId: meta.inscripcion_id });
+        } else if (meta.ticket_id != null || meta.reserva_id != null) {
+          setPagoAAbrirEnPOS({ ventaId: meta.ticket_id ?? null, reservaId: meta.reserva_id ?? null });
+        }
+        // Sin id secundario: igual ya cambiamos a Smart POS — el operador
+        // busca la cuenta manualmente en vez de quedarse en la ficha del jugador.
         return;
       }
-      // 1b) Cuenta/reserva/pedido web pendiente de cobro.
-      if ((meta.ticket_id != null || meta.reserva_id != null) && meta.pagado !== true) {
-        setModuloActivo('pos');
-        setPagoAAbrirEnPOS({ ventaId: meta.ticket_id ?? null, reservaId: meta.reserva_id ?? null });
+
+      // 2) Solicitud (clase privada, etc.) sin transacción propia — Academia.
+      if (TIPOS_SOLICITUD.has(tipo) || meta.solicitud_id != null) {
+        setModuloActivo(moduloValido || 'academia');
         return;
       }
-      // 2) Ya liquidada — al módulo específico a ver su detalle/historial.
-      if (meta.pagado === true && moduloValido) {
-        setModuloActivo(moduloValido);
+
+      // 3) Ya liquidada/confirmada, o cualquier tipo con módulo resoluble —
+      // al módulo específico (metadata primero, mapa de tipo como respaldo
+      // para alertas viejas sin `modulo_destino`).
+      if (moduloValido || moduloDefecto) {
+        setModuloActivo(moduloValido || moduloDefecto);
         return;
       }
-      // 3) Fallback — Tarjeta del Jugador.
+
+      // 4) Último recurso — tipo desconocido, ningún módulo resoluble.
       if (alerta?.jugadorId) {
         setModuloActivo('jugadores');
         setJugadorAAbrirId(alerta.jugadorId);
-        return;
-      }
-      // 4) Último recurso — sin jugador ni transacción (ej. Reabastecimiento,
-      // o una Solicitud de Clase de un invitado sin cuenta).
-      if (moduloValido) {
-        setModuloActivo(moduloValido);
         return;
       }
       mostrarToast({
@@ -34152,7 +34274,7 @@ function AppInterno() {
         tono: 'aviso',
       });
     },
-    [mostrarToast]
+    [mostrarToast, TIPOS_COBRO_PENDIENTE, TIPOS_SOLICITUD, TIPO_MODULO_DEFECTO]
   );
 
   // Reloj vivo: se usa como dependencia de `metrics` (dentro de la Parrilla)
@@ -34367,6 +34489,7 @@ function AppInterno() {
                 metaCortesiaBar={metaCortesiaBar}
                 pagoAAbrirEnPOS={pagoAAbrirEnPOS}
                 onPagoAAbrirEnPOSConsumido={() => setPagoAAbrirEnPOS(null)}
+                onCortesiaCanjeada={limpiarAlertasCortesia}
               />
             ) : moduloActivo === 'erp' ? (
               <ModuloERPInventario
@@ -34440,6 +34563,7 @@ function AppInterno() {
                 onGuardarMetasCortesia={guardarMetasCortesia}
                 guardandoMetasCortesia={guardandoMetasCortesia}
                 onEstadoCortesiasCambio={setCortesiasDisponiblesPorJugador}
+                onCortesiaCanjeada={limpiarAlertasCortesia}
               />
             ) : moduloActivo === 'torneos' ? (
               <ModuloTorneosRetas
