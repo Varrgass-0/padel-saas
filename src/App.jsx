@@ -3239,9 +3239,13 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
                   <button
                     key={a.id}
                     onClick={() => {
+                      // Cierre Automático: se marca leída y se cierra el
+                      // drawer ANTES de navegar/abrir cualquier modal — así
+                      // el popover nunca se queda montado por encima del
+                      // destino (Smart POS, Torneos & Retas, etc.).
                       onMarcarLeida(a.id);
-                      onIrAJugador(a);
                       setAbierto(false);
+                      onIrAJugador(a);
                     }}
                     className={`flex w-full items-start gap-2.5 border-b border-slate-800/70 px-3.5 py-2.5 text-left transition last:border-0 hover:bg-slate-800/60 ${
                       a.leida ? 'opacity-60' : ''
@@ -7975,6 +7979,8 @@ function ModuloSmartPOS({
   onActualizarCortesiasDisponibles,
   metaCortesiaProShop,
   metaCortesiaBar,
+  pagoAAbrirEnPOS,
+  onPagoAAbrirEnPOSConsumido,
 }) {
   const mostrarToast = useToast();
 
@@ -9083,6 +9089,67 @@ function ModuloSmartPOS({
     if (!q) return inscripcionesEventoPendientes;
     return inscripcionesEventoPendientes.filter((f) => f.nombre?.toLowerCase().includes(q));
   }, [inscripcionesEventoPendientes, busquedaInscripcion]);
+
+  // Notificaciones Adaptativas — clic en una alerta del Centro de Alertas
+  // (Reta/Torneo/Clase/reserva/pedido web pendiente de cobro) llega hasta
+  // aquí como `pagoAAbrirEnPOS` (ver `manejarClicAlerta` en `AppInterno`) y
+  // abre DIRECTO el mismo modal de cobro que un cajero abriría a mano:
+  //   - `{ tabla, inscripcionId }` → busca en `inscripcionesEventoPendientes`
+  //     (Retas/Torneos/Academia) y abre `ModalCobrarInscripcion`.
+  //   - `{ ventaId, reservaId }` → busca en `gruposReservasPendientes`/
+  //     `gruposCuentasAbiertas`/`gruposTiendaWebPendientes` y abre
+  //     `ModalLiquidarCuenta`.
+  // Espera a que las listas terminen de cargar (`loadingCuentas`/
+  // `loadingInscripcionesEvento`) para no buscar en listas todavía vacías —
+  // y se consume UNA sola vez (`onPagoAAbrirEnPOSConsumido`) para no
+  // reabrirse solo en cada re-render, mismo patrón que `jugadorAAbrirId`.
+  useEffect(() => {
+    if (!pagoAAbrirEnPOS) return;
+    if (loadingCuentas || loadingInscripcionesEvento) return;
+
+    if (pagoAAbrirEnPOS.tabla && pagoAAbrirEnPOS.inscripcionId != null) {
+      setVistaPOS('inscripciones');
+      const fila = inscripcionesEventoPendientes.find(
+        (f) => f.tabla === pagoAAbrirEnPOS.tabla && f.id === pagoAAbrirEnPOS.inscripcionId
+      );
+      if (fila) {
+        setInscripcionACobrar(fila);
+      } else {
+        mostrarToast({
+          titulo: 'Ya no está pendiente',
+          detalle: 'Esta inscripción ya se cobró (o se canceló) desde otra sesión.',
+          tono: 'aviso',
+        });
+      }
+    } else if (pagoAAbrirEnPOS.ventaId != null || pagoAAbrirEnPOS.reservaId != null) {
+      setVistaPOS('cuentas');
+      const coincide = (g) =>
+        (pagoAAbrirEnPOS.ventaId != null && g.ventas?.some((v) => v.id === pagoAAbrirEnPOS.ventaId)) ||
+        (pagoAAbrirEnPOS.reservaId != null && g.reserva?.id === pagoAAbrirEnPOS.reservaId);
+      const grupo =
+        gruposReservasPendientes.find(coincide) || gruposCuentasAbiertas.find(coincide) || gruposTiendaWebPendientes.find(coincide);
+      if (grupo) {
+        setGrupoALiquidar(grupo);
+      } else {
+        mostrarToast({
+          titulo: 'Ya no está pendiente',
+          detalle: 'Esta cuenta/pedido ya se cobró desde otra sesión.',
+          tono: 'aviso',
+        });
+      }
+    }
+    onPagoAAbrirEnPOSConsumido?.();
+  }, [
+    pagoAAbrirEnPOS,
+    loadingCuentas,
+    loadingInscripcionesEvento,
+    inscripcionesEventoPendientes,
+    gruposReservasPendientes,
+    gruposCuentasAbiertas,
+    gruposTiendaWebPendientes,
+    onPagoAAbrirEnPOSConsumido,
+    mostrarToast,
+  ]);
 
   // Cobra una inscripción pendiente (Reta o Torneo): blindaje total, igual
   // filosofía que el resto del módulo Torneos & Retas — intenta marcar
@@ -28711,7 +28778,10 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: `${jugador.nombre} se inscribió a la Reta "${reta.nombre}"`,
         jugadorId: jugador.id,
         jugadorNombre: jugador.nombre,
-        payload: { reta_id: reta.id, monto, metodo },
+        // Notificaciones Adaptativas: `inscripcion_id`+`tabla` dejan que el
+        // clic en esta alerta abra Smart POS directo en el cobro de ESTA
+        // inscripción cuando `pagado` es `false` (pagar en recepción).
+        payload: { reta_id: reta.id, monto, metodo, inscripcion_id: data.id, tabla: 'reta_inscripciones', pagado, modulo_destino: 'torneos' },
       });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (inscripción a Reta):', err);
@@ -28790,7 +28860,16 @@ function PortalPublicoJugadores({ clubSlug }) {
           titulo: `${jugador.nombre} se inscribió a la clase "${clase.nombre}" (con créditos de membresía)`,
           jugadorId: jugador.id,
           jugadorNombre: jugador.nombre,
-          payload: { clase_id: clase.id, pagado_con_creditos: true },
+          // Pagada por completo con créditos — no hay nada que cobrar, así
+          // que el clic manda directo a Academia & Clínicas.
+          payload: {
+            clase_id: clase.id,
+            pagado_con_creditos: true,
+            inscripcion_id: data.id,
+            tabla: 'academia_alumnos',
+            pagado: true,
+            modulo_destino: 'academia',
+          },
         });
       } catch (err) {
         console.error('[Portal] Error detallado Supabase (inscripción con créditos):', err);
@@ -28866,7 +28945,16 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: `${jugador.nombre} se inscribió a la clase "${clase.nombre}"`,
         jugadorId: jugador.id,
         jugadorNombre: jugador.nombre,
-        payload: { clase_id: clase.id, tipo_pago: tipoPago, monto, metodo },
+        payload: {
+          clase_id: clase.id,
+          tipo_pago: tipoPago,
+          monto,
+          metodo,
+          inscripcion_id: data.id,
+          tabla: 'academia_alumnos',
+          pagado,
+          modulo_destino: 'academia',
+        },
       });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (inscripción a Clase de Academia):', err);
@@ -29083,7 +29171,16 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: `${jugador.nombre} se inscribió al Torneo "${torneo.nombre}"${detallePareja}`,
         jugadorId: jugador.id,
         jugadorNombre: jugador.nombre,
-        payload: { torneo_id: torneo.id, categoria: categoria || null, monto, metodo },
+        payload: {
+          torneo_id: torneo.id,
+          categoria: categoria || null,
+          monto,
+          metodo,
+          inscripcion_id: data.id,
+          tabla: 'torneo_participantes',
+          pagado,
+          modulo_destino: 'torneos',
+        },
       });
       return { ok: true, data };
     } catch (err) {
@@ -29226,7 +29323,16 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: `${jugador.nombre} se unió como pareja de ${participanteExistente.nombre} en el torneo`,
         jugadorId: jugador.id,
         jugadorNombre: jugador.nombre,
-        payload: { torneo_id: participanteExistente.torneo_id, categoria: participanteExistente.categoria || null, monto, metodo },
+        payload: {
+          torneo_id: participanteExistente.torneo_id,
+          categoria: participanteExistente.categoria || null,
+          monto,
+          metodo,
+          inscripcion_id: data.id,
+          tabla: 'torneo_participantes',
+          pagado,
+          modulo_destino: 'torneos',
+        },
       });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (unirse como pareja):', err);
@@ -29400,7 +29506,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       estado: 'pendiente',
     });
     try {
-      const { error } = await insertarConColumnasOpcionales('academia_solicitudes', payload, [
+      const { data: solicitudCreada, error } = await insertarConColumnasOpcionales('academia_solicitudes', payload, [
         'jugador_id',
         'coach_deseado',
         'nivel',
@@ -29418,7 +29524,15 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: `${payload.nombre || 'Un jugador'} solicitó una clase ${datos.tipo === 'privada' ? 'privada' : 'grupal'} nueva`,
         jugadorId: jugador?.id || null,
         jugadorNombre: payload.nombre,
-        payload: { tipo_solicitud: datos.tipo, nivel: datos.nivel || null, fecha: datos.fecha || null },
+        // Una solicitud no es una inscripción pagable todavía — el destino
+        // útil del clic es la pestaña Solicitudes de Academia & Clínicas.
+        payload: {
+          tipo_solicitud: datos.tipo,
+          nivel: datos.nivel || null,
+          fecha: datos.fecha || null,
+          solicitud_id: solicitudCreada?.id || null,
+          modulo_destino: 'academia',
+        },
       });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (solicitud de clase):', err);
@@ -29730,7 +29844,10 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: `${jugador.nombre} compró en la Tienda (${items.length} artículo${items.length === 1 ? '' : 's'}) · ${formatoMoneda(totalCarritoTienda)}`,
         jugadorId: jugador.id,
         jugadorNombre: jugador.nombre,
-        payload: { items, total: totalCarritoTienda, metodo },
+        // Pedido Web pendiente de cobro: `ticket_id` es el `ventas.id` recién
+        // creado — con `pagado === false` (Recepción) Smart POS lo abre
+        // directo en "Cuentas Pendientes / Comandas".
+        payload: { items, total: totalCarritoTienda, metodo, ticket_id: data.id, pagado: estadoPago === 'pagado', modulo_destino: 'pos' },
       });
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (checkout de Tienda):', err);
@@ -33619,10 +33736,21 @@ function AppInterno() {
    * ------------------------------------------------------------------ */
   const [alertasClub, setAlertasClub] = useState([]);
 
+  // `metadata` (Notificaciones Adaptativas): estructura de IDs de la
+  // transacción real detrás de la alerta — `inscripcion_id`+`tabla`
+  // ('reta_inscripciones'|'torneo_participantes'|'academia_alumnos'),
+  // `ticket_id`/`reserva_id` (`ventas`/`reservas`), `pagado` (boolean —
+  // ¿ya está liquidada?) y `modulo_destino` (a qué pestaña saltar si ya está
+  // pagada o no hay nada que cobrar). `manejarClicAlerta` (más abajo) es el
+  // ÚNICO lugar que la lee — sin esto, cada clic terminaba SIEMPRE en la
+  // Tarjeta del Jugador sin importar el tipo de alerta.
   const agregarAlertaClub = useCallback(
-    ({ tipo, titulo, jugadorId }) => {
+    ({ tipo, titulo, jugadorId, metadata }) => {
       const id = `${tipo}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      setAlertasClub((prev) => [{ id, tipo, titulo, jugadorId: jugadorId || null, leida: false, creadaEn: Date.now() }, ...prev].slice(0, 40));
+      setAlertasClub(
+        (prev) =>
+          [{ id, tipo, titulo, jugadorId: jugadorId || null, metadata: metadata || {}, leida: false, creadaEn: Date.now() }, ...prev].slice(0, 40)
+      );
       // El encabezado del toast distingue el Motor de Cortesías (evento
       // INTERNO del club — se dispara desde Smart POS/Directorio & CRM,
       // nunca desde el Portal Público) del resto de tipos de alerta (esos sí
@@ -33683,6 +33811,11 @@ function AppInterno() {
             fila.fecha ? formatoFechaLarga(fila.fecha) : 'fecha por confirmar'
           } · ${formatoHora12(fila.hora_inicio)}`,
           jugadorId: fila.jugador_id,
+          // Notificaciones Adaptativas: `pagado === false` (pendiente de
+          // cobro en recepción) manda directo a Smart POS con esta reserva
+          // ya cargada para cobrar; `pagado === true` manda a la Parrilla
+          // Operativa (donde vive el detalle de la reserva ya liquidada).
+          metadata: { reserva_id: fila.id, pagado: fila.estado_pago === 'pagado', modulo_destino: 'parrilla' },
         });
       })
       .on('postgres_changes', filtroInsert('reta_inscripciones'), (payload) => {
@@ -33694,6 +33827,13 @@ function AppInterno() {
           tipo: 'torneo_reta',
           titulo: `${fila.nombre || 'Un jugador'} se inscribió a ${nombreReta}`,
           jugadorId: fila.jugador_id,
+          metadata: {
+            reta_id: fila.reta_id,
+            inscripcion_id: fila.id,
+            tabla: 'reta_inscripciones',
+            pagado: estadoPagoInscripcion(fila) === 'pagado',
+            modulo_destino: 'torneos',
+          },
         });
       })
       .on('postgres_changes', filtroInsert('torneo_participantes'), (payload) => {
@@ -33704,6 +33844,13 @@ function AppInterno() {
           tipo: 'torneo_reta',
           titulo: `${fila.nombre || 'Un jugador'} se inscribió al torneo ${torneo?.nombre || ''}`.trim(),
           jugadorId: fila.jugador_id,
+          metadata: {
+            torneo_id: fila.torneo_id,
+            inscripcion_id: fila.id,
+            tabla: 'torneo_participantes',
+            pagado: estadoPagoInscripcion(fila) === 'pagado',
+            modulo_destino: 'torneos',
+          },
         });
       })
       .on('postgres_changes', filtroInsert('ventas'), (payload) => {
@@ -33715,6 +33862,10 @@ function AppInterno() {
           tipo: 'compra',
           titulo: `${detalles.jugador_nombre || 'Un jugador'} realizó una compra web por ${formatoMoneda(Number(fila.total) || 0)}`,
           jugadorId: detalles.jugador_id,
+          // Pedido Web (Tienda): `ticket_id` es el propio `ventas.id` — con
+          // `pagado === false` (pagar en recepción) Smart POS lo abre
+          // directo en "Cuentas Pendientes" para cobrarlo.
+          metadata: { ticket_id: fila.id, pagado: fila.estado_pago === 'pagado', modulo_destino: 'pos' },
         });
       })
       .on('postgres_changes', filtroInsert('academia_alumnos'), (payload) => {
@@ -33725,6 +33876,13 @@ function AppInterno() {
           tipo: 'academia',
           titulo: `${fila.nombre || 'Un jugador'} se inscribió a la clase ${clase?.nombre || 'de Academia & Clínicas'}`,
           jugadorId: fila.jugador_id,
+          metadata: {
+            clase_id: fila.clase_id,
+            inscripcion_id: fila.id,
+            tabla: 'academia_alumnos',
+            pagado: estadoPagoInscripcion(fila) === 'pagado',
+            modulo_destino: 'academia',
+          },
         });
       })
       // Cancelación desde el Portal: `cancelarInscripcionClase` (dentro de
@@ -33742,6 +33900,10 @@ function AppInterno() {
           tipo: 'cancelacion',
           titulo: `${fila.nombre || 'Un jugador'} canceló su inscripción a la clase ${clase?.nombre || 'de Academia & Clínicas'}`,
           jugadorId: fila.jugador_id,
+          // Una cancelación no es un cobro pendiente — cae directo al
+          // fallback (Tarjeta del Jugador) si trae `jugadorId`; si no, al
+          // módulo de Academia para que el club revise el hueco que dejó.
+          metadata: { clase_id: fila.clase_id, inscripcion_id: fila.id, tabla: 'academia_alumnos', modulo_destino: 'academia' },
         });
       })
       // Solicitud de Clase Privada / Nuevo Grupo: `enviarSolicitudClase`
@@ -33758,6 +33920,10 @@ function AppInterno() {
           tipo: 'solicitud',
           titulo: `${fila.nombre || 'Un jugador'} solicitó ${etiquetaTipo} en Academia & Clínicas`,
           jugadorId: fila.jugador_id,
+          // Una solicitud de clase nueva no tiene nada que cobrar todavía
+          // (la clase ni existe) — el destino útil es la pestaña
+          // Solicitudes de Academia & Clínicas, no un ticket.
+          metadata: { solicitud_id: fila.id, modulo_destino: 'academia' },
         });
       })
       // Mejora de RBAC — "Notificar Abastecimiento": a diferencia de las seis
@@ -33773,6 +33939,9 @@ function AppInterno() {
           tipo: 'reabastecimiento',
           titulo: `${fila.operador_nombre || 'Recepción/Caja'} pidió reabastecimiento: ${fila.resumen || 'ver detalle'}`,
           jugadorId: null,
+          // Nunca trae jugador — antes el clic no hacía nada (toast "sin
+          // vincular"); ahora salta directo a Inventario.
+          metadata: { modulo_destino: 'erp' },
         });
       })
       .subscribe();
@@ -33804,6 +33973,12 @@ function AppInterno() {
           tipo: fila.tipo || 'notificacion',
           titulo: fila.titulo || 'Nueva actividad del Portal Web',
           jugadorId: fila.jugador_id || null,
+          // `fila.payload` YA trae la estructura de IDs que escribió
+          // `crearNotificacionClub` (inscripcion_id/tabla/ticket_id/
+          // reserva_id/pagado/modulo_destino, según el tipo) — antes se
+          // descartaba por completo aquí, así que `manejarClicAlerta` nunca
+          // tenía nada más que `jugadorId` para decidir a dónde saltar.
+          metadata: fila.payload || {},
         });
       })
       .subscribe();
@@ -33851,6 +34026,11 @@ function AppInterno() {
             tipo: fila.tipo || 'notificacion',
             titulo: fila.titulo || 'Nueva actividad del Portal Web',
             jugadorId: fila.jugador_id || null,
+            // Mismo criterio que el canal Realtime de arriba — sin esto, una
+            // notificación cargada de respaldo (al abrir el panel/recargar
+            // la página) perdía su `metadata` y el clic caía siempre al
+            // fallback de Tarjeta del Jugador.
+            metadata: fila.payload || {},
             leida: false,
             creadaEn: fila.created_at ? new Date(fila.created_at).getTime() : Date.now(),
           }));
@@ -33902,24 +34082,78 @@ function AppInterno() {
     }
   }, []);
 
-  // Interconexión total: al hacer clic en una alerta, salta directo al
-  // módulo Jugadores (CRM) y le pide a `DirectorioJugadoresCRM` que abra la
-  // Vista 360° de ese jugador — `jugadorAAbrirId` se consume una sola vez
-  // (ver `onJugadorAAbrirConsumido`) para que no se reabra sola en cada
-  // re-render.
+  // Notificaciones Adaptativas — `jugadorAAbrirId` (Tarjeta del Jugador,
+  // Vista 360°) y `pagoAAbrirEnPOS` (cobro directo en Smart POS) son los 2
+  // "objetivos" que un clic en una alerta puede abrir — cada uno se
+  // consume una sola vez (`onJugadorAAbrirConsumido`/
+  // `onPagoAAbrirEnPOSConsumido`) para que no se reabra solo en cada
+  // re-render, mismo patrón para los dos.
   const [jugadorAAbrirId, setJugadorAAbrirId] = useState(null);
-  const irAJugadorDesdeAlerta = useCallback((alerta) => {
-    if (!alerta.jugadorId) {
+  // `pagoAAbrirEnPOS`: `{ tabla, inscripcionId }` para una inscripción de
+  // Retas/Torneos/Academia pendiente de cobro (`ModuloSmartPOS` la busca en
+  // `inscripcionesEventoPendientes` y abre `ModalCobrarInscripcion`
+  // directo), o `{ ventaId, reservaId }` para una cuenta/reserva/pedido web
+  // pendiente (la busca en `gruposReservasPendientes`/`gruposCuentasAbiertas`/
+  // `gruposTiendaWebPendientes` y abre `ModalLiquidarCuenta` directo).
+  const [pagoAAbrirEnPOS, setPagoAAbrirEnPOS] = useState(null);
+
+  // Manejador de Clics Adaptativo (Notificaciones del Centro de Alertas):
+  // antes CUALQUIER alerta, sin importar su tipo, siempre abría la Tarjeta
+  // del Jugador — ahora evalúa `metadata` (ver `agregarAlertaClub`/
+  // `crearNotificacionClub`) para saltar directo a la acción real:
+  //   1) Inscripción de Retas/Torneos/Clases o cuenta/reserva/pedido web
+  //      TODAVÍA sin pagar (`pagado !== true`) → Smart POS, con el ticket
+  //      de cobro correspondiente ya cargado (`pagoAAbrirEnPOS`).
+  //   2) Transacción YA liquidada (`pagado === true`) con un
+  //      `modulo_destino` conocido → salta a ese módulo (Torneos & Retas,
+  //      Academia & Clínicas, Smart POS, Parrilla Operativa) — ahí vive el
+  //      historial/detalle de esa reserva/inscripción/venta ya cobrada.
+  //   3) Fallback — trae `jugadorId` pero ninguna transacción identificable
+  //      → Tarjeta del Jugador (Vista 360°), comportamiento de siempre.
+  //   4) Último recurso — ni transacción ni jugador (ej. Reabastecimiento)
+  //      → si trae `modulo_destino` salta ahí; si no, avisa con un toast.
+  const manejarClicAlerta = useCallback(
+    (alerta) => {
+      const meta = alerta?.metadata || {};
+      const moduloValido = NAV_MODULOS.some((m) => m.id === meta.modulo_destino) ? meta.modulo_destino : null;
+
+      // 1a) Inscripción de Reta/Torneo/Clase pendiente de cobro.
+      if (meta.inscripcion_id != null && meta.tabla && meta.pagado !== true) {
+        setModuloActivo('pos');
+        setPagoAAbrirEnPOS({ tabla: meta.tabla, inscripcionId: meta.inscripcion_id });
+        return;
+      }
+      // 1b) Cuenta/reserva/pedido web pendiente de cobro.
+      if ((meta.ticket_id != null || meta.reserva_id != null) && meta.pagado !== true) {
+        setModuloActivo('pos');
+        setPagoAAbrirEnPOS({ ventaId: meta.ticket_id ?? null, reservaId: meta.reserva_id ?? null });
+        return;
+      }
+      // 2) Ya liquidada — al módulo específico a ver su detalle/historial.
+      if (meta.pagado === true && moduloValido) {
+        setModuloActivo(moduloValido);
+        return;
+      }
+      // 3) Fallback — Tarjeta del Jugador.
+      if (alerta?.jugadorId) {
+        setModuloActivo('jugadores');
+        setJugadorAAbrirId(alerta.jugadorId);
+        return;
+      }
+      // 4) Último recurso — sin jugador ni transacción (ej. Reabastecimiento,
+      // o una Solicitud de Clase de un invitado sin cuenta).
+      if (moduloValido) {
+        setModuloActivo(moduloValido);
+        return;
+      }
       mostrarToast({
-        titulo: 'Jugador sin vincular',
-        detalle: 'Esta alerta no trae un jugador identificado del Directorio todavía.',
+        titulo: 'Sin destino vinculado',
+        detalle: 'Esta alerta no trae un jugador ni una transacción identificados todavía.',
         tono: 'aviso',
       });
-      return;
-    }
-    setModuloActivo('jugadores');
-    setJugadorAAbrirId(alerta.jugadorId);
-  }, [mostrarToast]);
+    },
+    [mostrarToast]
+  );
 
   // Reloj vivo: se usa como dependencia de `metrics` (dentro de la Parrilla)
   // para que Ocupación Actual / Ingresos del Día se recalculen solos cada
@@ -34069,7 +34303,7 @@ function AppInterno() {
             alertasClub={alertasClub}
             onMarcarAlertaLeida={marcarAlertaLeida}
             onMarcarTodasLeidas={marcarTodasAlertasLeidas}
-            onIrAJugadorDesdeAlerta={irAJugadorDesdeAlerta}
+            onIrAJugadorDesdeAlerta={manejarClicAlerta}
           />
 
           <main className="min-w-0 flex-1 space-y-5 px-4 py-5 sm:px-6">
@@ -34131,6 +34365,8 @@ function AppInterno() {
                 onActualizarCortesiasDisponibles={setCortesiasDisponiblesPorJugador}
                 metaCortesiaProShop={metaCortesiaProShop}
                 metaCortesiaBar={metaCortesiaBar}
+                pagoAAbrirEnPOS={pagoAAbrirEnPOS}
+                onPagoAAbrirEnPOSConsumido={() => setPagoAAbrirEnPOS(null)}
               />
             ) : moduloActivo === 'erp' ? (
               <ModuloERPInventario
@@ -34265,7 +34501,7 @@ function AppInterno() {
                     return existe ? prev.map((a) => (a.id === asistencia.id ? asistencia : a)) : [...prev, asistencia];
                   })
                 }
-                onIrAJugador={(jugadorId) => irAJugadorDesdeAlerta({ jugadorId })}
+                onIrAJugador={(jugadorId) => manejarClicAlerta({ jugadorId })}
                 onIrAPOS={() => setModuloActivo('pos')}
                 permisos={permisos}
                 configClub={configClub}
