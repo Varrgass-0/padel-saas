@@ -11081,12 +11081,13 @@ async function otorgarCortesiaCRM({
   );
   if (errorRegistro) {
     // Diagnóstico específico (bug real encontrado y corregido en
-    // `migracion_v36_force_bigint.sql`): un error de TIPO
+    // `migracion_v36_fix_absoluto_text.sql`): un error de TIPO
     // incompatible (`esErrorTipoUUIDInvalido`, Postgres 22P02) casi siempre
-    // significa que `cortesias_otorgadas.jugador_id` todavía no tiene el
-    // mismo tipo que `jugadores.id` en este proyecto.
+    // significa que `cortesias_otorgadas.jugador_id` todavía no es `text`
+    // en este proyecto (columna vieja en `uuid`/`bigint` que sigue
+    // rechazando el valor que manda `jugador_nombre`/`jugador_id`).
     const pista = esErrorTipoUUIDInvalido(errorRegistro)
-      ? ' Esto normalmente significa que cortesias_otorgadas.jugador_id NO tiene el mismo tipo de dato que jugadores.id — corre migracion_v36_force_bigint.sql en Supabase (elimina cualquier índice/llave foránea sobre jugador_id y fuerza el tipo a bigint) y vuelve a intentar.'
+      ? ' Esto normalmente significa que cortesias_otorgadas.jugador_id NO es de tipo text — corre migracion_v36_fix_absoluto_text.sql en Supabase (elimina cualquier índice/llave foránea sobre jugador_id, lo convierte a text y refresca el caché de PostgREST) y vuelve a intentar.'
       : '';
     console.error(
       `[CRM] BLOQUEO TRANSACCIONAL — el canje se abortó por completo (NO se generó ticket, NO se tocó stock/Kardex) porque no se pudo guardar el registro en cortesias_otorgadas. ${detalleErrorSupabase(errorRegistro)}.${pista}`,
@@ -17345,42 +17346,25 @@ function valorUUIDInvalidoDelError(error) {
   return match ? match[1] : null;
 }
 
-const PATRON_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 // Normaliza un `jugador_id` antes de mandarlo a Supabase (Fallback/
-// Resiliencia de Tipos de Datos, Motor de Cortesías) — puede llegar como
-// `string` (un `<select>`/prop de React SIEMPRE entrega su `value` como
-// texto, aunque el dato real sea numérico — p. ej. `clienteSeleccionadoId`
-// en Smart POS; o un bigint que PostgREST ya sirvió como texto para no
-// perder precisión), `number` (un `integer`/`bigint` ya nativo de JS) o,
-// rara vez, `bigint` nativo de JS. `cortesias_otorgadas.jugador_id` es
-// `bigint` en este proyecto (`migracion_v36_force_bigint.sql`) — mandar un
-// `number` limpio en vez de una "cadena formateada" (`"46"`, `" 46"`) evita
-// cualquier ambigüedad de tipo del lado de PostgREST/Supabase:
-//   1) Si trae forma de uuid real (proyecto donde `jugadores.id` SÍ es
-//      uuid), se manda tal cual como string — nunca se le aplica
-//      `Number()`, que lo destruiría.
-//   2) Si es un entero limpio (con o sin espacios), se convierte
-//      EXPLÍCITAMENTE con `Number.parseInt(..., 10)` a un `number` de JS —
-//      el caso confirmado de este proyecto.
-//   3) Un bigint tan grande que se saliera del rango seguro de `Number`
-//      (`Number.isSafeInteger`) se manda como string — Postgres/PostgREST
-//      aceptan un string numérico para una columna bigint sin perder
-//      precisión, y evita el "Do not know how to serialize a BigInt" de
-//      JSON.stringify si llegó como `bigint` nativo de JS.
+// Resiliencia de Tipos de Datos, Motor de Cortesías). SOLUCIÓN DEFINITIVA
+// (`migracion_v36_fix_absoluto_text.sql`): tras dos intentos fallidos de
+// hacer coincidir `cortesias_otorgadas.jugador_id` con el tipo exacto de
+// `jugadores.id` (primero `uuid`→`bigint` con detección dinámica, luego con
+// casteo forzado — el error `22P02 invalid input syntax for type uuid`
+// siguió apareciendo igual en ambos casos), la columna se volvió `text`: un
+// tipo que Postgres NUNCA valida contra ningún formato (uuid, entero, lo que
+// sea) — así que la única regla del lado del código es mandar SIEMPRE un
+// string plano, nunca un `number`/`bigint` nativo ni una cadena con espacios
+// sueltos. Puede llegar como `string` (un `<select>`/prop de React siempre
+// entrega su `value` como texto — p. ej. `clienteSeleccionadoId` en Smart
+// POS), `number` (un `integer`/`bigint` ya nativo de JS) o `bigint` nativo
+// de JS (que `JSON.stringify` no sabe serializar si no se convierte antes).
 // `null`/`undefined`/`''` se preservan como `null` (jugador sin id resuelto
 // todavía — el llamador ya valida esto antes de intentar el canje).
 function normalizarJugadorId(id) {
   if (id === null || id === undefined || id === '') return null;
-  const comoTexto = (typeof id === 'bigint' ? id.toString() : String(id)).trim();
-  if (PATRON_UUID.test(comoTexto)) return comoTexto;
-  if (/^-?\d+$/.test(comoTexto)) {
-    const comoNumero = Number.parseInt(comoTexto, 10);
-    return Number.isSafeInteger(comoNumero) ? comoNumero : comoTexto;
-  }
-  // Ni uuid ni entero reconocible — se manda tal cual, sin forzar nada, para
-  // no romper un tipo de columna que no reconocemos en este proyecto.
-  return typeof id === 'bigint' ? comoTexto : id;
+  return String(id).trim();
 }
 
 // Detecta un bloqueo de RLS/permisos de Postgres — incluye el caso clásico
@@ -25745,15 +25729,22 @@ function DirectorioJugadoresCRM({
     // Última cortesía OTORGADA DE VERDAD (Smart POS, `cortesias_otorgadas`)
     // por jugador+categoría — el corte que reinicia el progreso a $0 (ver
     // `cortesiaBar`/`cortesiaProShop` más abajo). `Map<jugadorId, Map<categoria, msMasReciente>>`.
+    // CLAVE SIEMPRE COMO STRING (`migracion_v36_fix_absoluto_text.sql`:
+    // `cortesias_otorgadas.jugador_id` es `text`, así que Supabase lo
+    // devuelve como string — p. ej. `"46"` — mientras que `j.id` (abajo, de
+    // `jugadores`) puede llegar como `number`; sin normalizar ambos lados a
+    // texto, `Map.get` nunca encontraría el cruce por igualdad estricta y el
+    // progreso jamás se reiniciaría aunque el registro sí se haya guardado).
     const ultimaCortesiaPorJugadorCategoria = new Map();
     (cortesiasOtorgadas || []).forEach((c) => {
       if (!c.jugador_id || !c.categoria) return;
       const ts = c.created_at ? new Date(c.created_at).getTime() : 0;
       if (!Number.isFinite(ts)) return;
-      const porCategoria = ultimaCortesiaPorJugadorCategoria.get(c.jugador_id) || new Map();
+      const claveJugador = String(c.jugador_id).trim();
+      const porCategoria = ultimaCortesiaPorJugadorCategoria.get(claveJugador) || new Map();
       const actual = porCategoria.get(c.categoria) || 0;
       if (ts > actual) porCategoria.set(c.categoria, ts);
-      ultimaCortesiaPorJugadorCategoria.set(c.jugador_id, porCategoria);
+      ultimaCortesiaPorJugadorCategoria.set(claveJugador, porCategoria);
     });
 
     return Object.values(jugadoresPorId)
@@ -25962,8 +25953,10 @@ function DirectorioJugadoresCRM({
         // (`cortesias_otorgadas`, `ultimaCortesiaPorJugadorCategoria` de
         // arriba); sin ningún canje todavía, es el gasto histórico
         // completo. `lista` (100%+) habilita el candado de canje — ver
-        // `BarraProgresoCortesia`/`ModalCanjearCortesia`.
-        const cortesPorCategoria = ultimaCortesiaPorJugadorCategoria.get(j.id) || new Map();
+        // `BarraProgresoCortesia`/`ModalCanjearCortesia`. Se busca por
+        // `String(j.id)` — mismo motivo que arriba: la clave del mapa
+        // siempre es texto porque `cortesias_otorgadas.jugador_id` es `text`.
+        const cortesPorCategoria = ultimaCortesiaPorJugadorCategoria.get(String(j.id).trim()) || new Map();
         const cortesiaBar = calcularProgresoCortesia(comprasPOS, 'Cafetería/Bar', cortesPorCategoria.get('bar') || 0, metaBarEfectiva);
         const cortesiaProShop = calcularProgresoCortesia(comprasPOS, 'Pro-Shop', cortesPorCategoria.get('proshop') || 0, metaProShopEfectiva);
 
