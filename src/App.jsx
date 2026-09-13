@@ -2619,7 +2619,16 @@ function guardarMetasCortesiaLocal(metas) {
   }
 }
 
-function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
+function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando }) {
+  // Candado en el Componente (defensa final, independiente de quién haya
+  // decidido montar este componente): "Personalizar Club" es una acción de
+  // Propietario exclusivamente. Si por cualquier motivo este componente
+  // llegara a montarse para alguien más, no renderiza NINGÚN formulario —
+  // ni deja ejecutar `guardar()` (ver el guard explícito ahí abajo también,
+  // por si el formulario se llegara a renderizar por algún cambio futuro
+  // que se saltara este `return null`).
+  const esOwner = operador?.rol === 'owner';
+
   const [nombre, setNombre] = useState(configActual.nombre || '');
   const [logoUrl, setLogoUrl] = useState(configActual.logoUrl || '');
   // Horario de Operación del Club (item 4, migracion_v31): apertura/cierre
@@ -2648,6 +2657,14 @@ function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
   // suficiente para cerrar el modal, nunca se bloquea la UI mientras
   // Supabase responde.
   async function guardar() {
+    // Candado explícito en la acción de guardado misma: aunque el `return
+    // null` de abajo ya evita que el formulario exista para un no-Owner,
+    // `guardar` se repite el chequeo por su cuenta — nunca debe depender
+    // ÚNICAMENTE de que el JSX de arriba lo haya ocultado bien.
+    if (!esOwner) {
+      setError('Solo el Propietario del club puede editar esta configuración.');
+      return;
+    }
     if (!nombre.trim()) {
       setError('El nombre del club es obligatorio.');
       return;
@@ -2665,6 +2682,11 @@ function ModalConfigClub({ configActual, onClose, onGuardar, guardando }) {
     onClose();
     await onGuardar?.(nuevaConfig);
   }
+
+  // El modal NO se abre ni renderiza ningún control (ni siquiera de solo
+  // lectura) para alguien que no sea el Propietario — ni un botón de
+  // guardado que se pudiera intentar forzar.
+  if (!esOwner) return null;
 
   return (
     <ModalShell
@@ -2901,14 +2923,23 @@ function Sidebar({
               {configClubActual.nombre || 'Panel operativo'}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setModalConfigClub(true)}
-            title="Editar nombre y logo del club"
-            className={`shrink-0 rounded-md p-1.5 text-slate-600 transition hover:bg-slate-800 hover:text-lime-400 ${colapsado ? 'lg:hidden' : ''}`}
-          >
-            <Settings2 size={14} />
-          </button>
+          {/* Restricción de Privilegios (candado de seguridad): "Personalizar
+              Club" (nombre, logo y horario de apertura/cierre del club
+              entero) es una acción de Propietario, punto — antes cualquier
+              rol veía este engrane y podía abrir el modal. Ahora solo se
+              renderiza si `operador?.rol === 'owner'`; un Coach, Cajero o
+              Mesero ni siquiera ve el botón. Segundo candado, dentro del
+              propio componente — ver `ModalConfigClub`. */}
+          {operador?.rol === 'owner' && (
+            <button
+              type="button"
+              onClick={() => setModalConfigClub(true)}
+              title="Editar nombre, logo y horario del club"
+              className={`shrink-0 rounded-md p-1.5 text-slate-600 transition hover:bg-slate-800 hover:text-lime-400 ${colapsado ? 'lg:hidden' : ''}`}
+            >
+              <Settings2 size={14} />
+            </button>
+          )}
         </div>
 
         {/* Botón de Colapso — "menú hamburguesa": alterna entre sidebar
@@ -3030,8 +3061,14 @@ function Sidebar({
         )}
       </aside>
 
-      {modalConfigClub && (
+      {/* Segundo candado (defensa de respaldo): aunque el botón de arriba ya
+          esté oculto para no-Owner, el render del modal en sí también exige
+          `operador?.rol === 'owner'` — así una condición de carrera o un
+          `modalConfigClub` que quedara en `true` de algún otro camino nunca
+          alcanza a montar el formulario para alguien sin el rol correcto. */}
+      {modalConfigClub && operador?.rol === 'owner' && (
         <ModalConfigClub
+          operador={operador}
           configActual={configClubActual}
           onClose={() => setModalConfigClub(false)}
           onGuardar={onGuardarConfigClub}
