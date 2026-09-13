@@ -1577,6 +1577,9 @@ const PERMISOS_POR_ROL = {
     puedeVerMontos: true,
     soloLecturaParrilla: false,
     soloLecturaInventario: false,
+    // Evaluación de Nivel y Progreso de Jugadores (Academia → Alumnos): el
+    // Propietario siempre puede ver y calificar el Expediente Deportivo.
+    puedeEvaluarJugadores: true,
   },
   manager: {
     modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'],
@@ -1594,6 +1597,9 @@ const PERMISOS_POR_ROL = {
     puedeVerMontos: true,
     soloLecturaParrilla: false,
     soloLecturaInventario: false,
+    // Solo Coach/Propietario califican — Manager ve la lista de Alumnos
+    // pero no el formulario de calificación (pedido explícito del club).
+    puedeEvaluarJugadores: false,
   },
   recepcion: {
     // "Recepción/Caja": Parrilla Operativa, Smart POS, Jugadores
@@ -1614,6 +1620,7 @@ const PERMISOS_POR_ROL = {
     puedeVerMontos: false,
     soloLecturaParrilla: false,
     soloLecturaInventario: false,
+    puedeEvaluarJugadores: false,
   },
   bar: {
     // "Restaurante/Bar": Smart POS (filtrado por defecto a la pestaña
@@ -1634,6 +1641,7 @@ const PERMISOS_POR_ROL = {
     puedeVerMontos: false,
     soloLecturaParrilla: false,
     soloLecturaInventario: true,
+    puedeEvaluarJugadores: false,
   },
   coach: {
     // Academia & Clínicas (crear/programar clases) + Torneos & Retas
@@ -1653,6 +1661,10 @@ const PERMISOS_POR_ROL = {
     puedeVerMontos: false,
     soloLecturaParrilla: true,
     soloLecturaInventario: false,
+    // Evaluación de Nivel y Progreso de Jugadores: el Coach es quien
+    // califica los 6 ejes técnicos y asigna el Nivel Oficial en el
+    // Expediente Deportivo (Academia → Alumnos).
+    puedeEvaluarJugadores: true,
   },
   contador: {
     // Rol de solo lectura/exportación: ÚNICAMENTE Contabilidad & Compras,
@@ -1680,6 +1692,7 @@ const PERMISOS_POR_ROL = {
     puedeVerMontos: true,
     soloLecturaParrilla: false,
     soloLecturaInventario: true,
+    puedeEvaluarJugadores: false,
   },
 };
 
@@ -22756,6 +22769,394 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
 
 const NIVELES_ACADEMIA = ['Principiante', 'Intermedio', 'Avanzado'];
 
+/* ============================================================================
+ * EVALUACIÓN DE NIVEL Y PROGRESO DE JUGADORES (Expediente Deportivo)
+ * ----------------------------------------------------------------------------
+ * Tabla `evaluaciones_jugador` (migracion_v37): una fila por cada vez que un
+ * Coach/Propietario califica a un jugador — NUNCA se actualiza una fila
+ * vieja, cada calificación es un registro nuevo con su propia `fecha`, así
+ * que el Historial de observaciones pedagógicas y el progreso en el tiempo
+ * salen gratis con un simple `order by fecha desc`. El "Nivel Oficial" y
+ * "promedio general" ACTUALES de un jugador nunca se guardan aparte (nada
+ * en `jugadores`) — SIEMPRE se derivan de la evaluación más reciente (ver
+ * `ultimaEvaluacionDe` más abajo), igual criterio que `calcularProgresoCortesia`
+ * usa la fuente de verdad de Supabase en vez de un campo desnormalizado que
+ * se pudiera desincronizar.
+ *
+ * Igual que `cortesias_otorgadas` (migracion_v36, ver esas notas): `jugador_id`
+ * y `coach_id` viajan como TEXT — la lección de esa migración fue que forzar
+ * bigint/uuid ahí terminaba en errores `22P02` según el tipo real (a veces
+ * distinto) de `jugadores.id`/`empleados.id` en cada proyecto de Supabase; TEXT
+ * nunca falla por formato y el respaldo legible (`jugador_nombre`/`coach_nombre`)
+ * ya cubre la trazabilidad si el jugador o el coach se llegaran a borrar.
+ * ==========================================================================*/
+
+// Los 6 ejes técnicos del Skill Radar Chart — MISMO ORDEN siempre (columnas
+// de `evaluaciones_jugador`, ejes del radar, y campos del formulario de
+// calificación del Coach), para no tener que reordenar nada en 3 lugares
+// distintos si algún día cambia el criterio pedagógico.
+const EJES_EVALUACION = [
+  { key: 'derecha_reves', label: 'Derecha/Revés', corto: 'Derecha/Revés' },
+  { key: 'paredes', label: 'Paredes', corto: 'Paredes' },
+  { key: 'ataque_red', label: 'Ataque en Red', corto: 'Ataque Red' },
+  { key: 'tactica', label: 'Táctica', corto: 'Táctica' },
+  { key: 'saque_resto', label: 'Saque/Resto', corto: 'Saque/Resto' },
+  { key: 'fisico', label: 'Físico', corto: 'Físico' },
+];
+
+// Escala 0-10 para cada eje — un `<input type="range">` sencillo en el
+// formulario del Coach, sin inventar una escala nueva.
+const ESCALA_MAX_EVALUACION = 10;
+
+// Promedio general de los 6 ejes (redondeado a 1 decimal) — `null` si algún
+// eje todavía no tiene valor capturado (evita mostrar/guardar un promedio a
+// medias mientras el Coach sigue llenando el formulario).
+function calcularPromedioEjes(valoresPorEje) {
+  const valores = EJES_EVALUACION.map((eje) => valoresPorEje?.[eje.key]);
+  if (valores.some((v) => v == null || Number.isNaN(Number(v)))) return null;
+  const suma = valores.reduce((acc, v) => acc + Number(v), 0);
+  return Math.round((suma / valores.length) * 10) / 10;
+}
+
+// La evaluación MÁS RECIENTE de un jugador entre todas las de su club — esta
+// es, por definición, la fuente del "Nivel Oficial"/"promedio general"
+// actuales (ver nota de arriba). `null` si el jugador todavía no tiene
+// ninguna evaluación registrada.
+function ultimaEvaluacionDe(evaluaciones, jugadorId) {
+  if (jugadorId == null) return null;
+  const idTexto = String(jugadorId);
+  const propias = (evaluaciones || []).filter((e) => String(e.jugador_id) === idTexto);
+  if (propias.length === 0) return null;
+  return propias.reduce((masReciente, actual) => {
+    const fechaActual = new Date(actual.fecha || actual.created_at || 0).getTime();
+    const fechaMasReciente = new Date(masReciente.fecha || masReciente.created_at || 0).getTime();
+    return fechaActual > fechaMasReciente ? actual : masReciente;
+  });
+}
+
+// Badge de color por Nivel Oficial — mismo criterio visual que `ROLES_POR_VALOR`/
+// `TIPO_ALERTA_META` (un mapa chico en vez de un `if/else` repetido en cada
+// lugar que muestre el nivel).
+const NIVEL_OFICIAL_META = {
+  Principiante: { color: 'text-sky-400', bg: 'bg-sky-400/10', ring: 'ring-sky-400/30' },
+  Intermedio: { color: 'text-amber-400', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30' },
+  Avanzado: { color: 'text-lime-400', bg: 'bg-lime-400/10', ring: 'ring-lime-400/30' },
+};
+
+// Skill Radar Chart — hexágono con inline SVG a mano (el archivo no importa
+// ninguna librería de gráficas, ver el resto de visuales custom como el
+// logo/íconos en `<svg>`): un anillo por cada 25/50/75/100% de
+// `ESCALA_MAX_EVALUACION`, una línea por eje desde el centro, el polígono de
+// valores relleno en lima, y la etiqueta corta de cada eje en su vértice.
+function RadarEvaluacion({ valores, size = 240 }) {
+  const centro = size / 2;
+  const radioMax = size / 2 - 34;
+  const n = EJES_EVALUACION.length;
+  const angulo = (i) => (Math.PI * 2 * i) / n - Math.PI / 2;
+  const puntoEn = (i, fraccion) => {
+    const a = angulo(i);
+    return [centro + Math.cos(a) * radioMax * fraccion, centro + Math.sin(a) * radioMax * fraccion];
+  };
+  const anillos = [0.25, 0.5, 0.75, 1];
+  const puntosValor = EJES_EVALUACION.map((eje, i) => {
+    const crudo = Number(valores?.[eje.key]) || 0;
+    const fraccion = Math.max(0, Math.min(1, crudo / ESCALA_MAX_EVALUACION));
+    return puntoEn(i, fraccion);
+  });
+  const puntosValorTexto = puntosValor.map((p) => p.join(',')).join(' ');
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto w-full max-w-[280px]" role="img" aria-label="Skill Radar Chart">
+      {anillos.map((f) => (
+        <polygon
+          key={f}
+          points={EJES_EVALUACION.map((_, i) => puntoEn(i, f).join(',')).join(' ')}
+          fill="none"
+          stroke="#334155"
+          strokeWidth="1"
+        />
+      ))}
+      {EJES_EVALUACION.map((eje, i) => {
+        const [x, y] = puntoEn(i, 1);
+        return <line key={eje.key} x1={centro} y1={centro} x2={x} y2={y} stroke="#334155" strokeWidth="1" />;
+      })}
+      <polygon points={puntosValorTexto} fill="rgba(163,230,53,0.25)" stroke="#a3e635" strokeWidth="2" />
+      {puntosValor.map(([x, y], i) => (
+        <circle key={EJES_EVALUACION[i].key} cx={x} cy={y} r="3.5" fill="#a3e635" stroke="#0f172a" strokeWidth="1" />
+      ))}
+      {EJES_EVALUACION.map((eje, i) => {
+        const [x, y] = puntoEn(i, 1.22);
+        return (
+          <text key={eje.key} x={x} y={y} textAnchor="middle" dominantBaseline="middle" fill="#cbd5e1" fontSize="9" fontWeight="700">
+            {eje.corto}
+          </text>
+        );
+      })}
+    </svg>
+  );
+}
+
+// Portal Público — "Mi Perfil Deportivo": el jugador ve su Nivel Oficial,
+// promedio general, el Skill Radar Chart de su evaluación más reciente y el
+// historial completo de observaciones pedagógicas de sus coaches. 100%
+// solo-lectura — el jugador nunca puede calificarse a sí mismo (eso es
+// exclusivo del Expediente Deportivo del Coach, ver `ModalExpedienteDeportivo`
+// más abajo).
+function ModalPerfilDeportivoJugador({ evaluaciones, loading, onClose }) {
+  const historial = useMemo(
+    () =>
+      (evaluaciones || [])
+        .slice()
+        .sort((a, b) => new Date(b.fecha || b.created_at || 0).getTime() - new Date(a.fecha || a.created_at || 0).getTime()),
+    [evaluaciones]
+  );
+  const ultima = historial[0] || null;
+  const nivelMeta = ultima?.nivel_asignado ? NIVEL_OFICIAL_META[ultima.nivel_asignado] : null;
+
+  return (
+    <ModalShell titulo="Mi Perfil Deportivo" subtitulo="Tu nivel oficial y progreso técnico en el club" onClose={onClose} icon={Gauge}>
+      <div className="space-y-5">
+        {loading ? (
+          <div className="flex items-center justify-center py-10 text-slate-500">
+            <Loader2 size={20} className="animate-spin" />
+          </div>
+        ) : !ultima ? (
+          <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+            Todavía no tienes ninguna evaluación registrada. Tu coach la agrega después de tus primeras clases.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/5 bg-slate-900/50 p-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Nivel Oficial</p>
+                <span
+                  className={`mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-black ring-1 ${nivelMeta?.bg || 'bg-slate-800'} ${
+                    nivelMeta?.color || 'text-slate-300'
+                  } ${nivelMeta?.ring || 'ring-slate-700'}`}
+                >
+                  <Award size={14} /> {ultima.nivel_asignado || 'Sin asignar'}
+                </span>
+              </div>
+              <div className="text-right">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Promedio General</p>
+                <p className="mt-1 text-2xl font-black text-slate-100">
+                  {ultima.promedio != null ? Number(ultima.promedio).toFixed(1) : '—'}
+                  <span className="text-sm text-slate-500">/10</span>
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">Skill Radar Chart</p>
+              <RadarEvaluacion valores={ultima} />
+            </div>
+
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de Observaciones</p>
+              <div className="max-h-64 space-y-2 overflow-y-auto pr-0.5">
+                {historial.map((ev) => {
+                  const meta = NIVEL_OFICIAL_META[ev.nivel_asignado];
+                  return (
+                    <div key={ev.id} className="rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-bold text-slate-300">{ev.coach_nombre || 'Coach'}</p>
+                        <p className="text-[10px] text-slate-500">{formatoFechaLarga(ev.fecha || ev.created_at)}</p>
+                      </div>
+                      {ev.nivel_asignado && (
+                        <span
+                          className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${meta?.bg || 'bg-slate-800'} ${
+                            meta?.color || 'text-slate-400'
+                          }`}
+                        >
+                          {ev.nivel_asignado}
+                        </span>
+                      )}
+                      {ev.comentarios && <p className="mt-1.5 text-xs text-slate-400">{ev.comentarios}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
+// Panel de Gestión — Expediente Deportivo de un alumno (abierto desde la
+// pestaña "Alumnos" de Academia & Clínicas): el Coach/Propietario califica
+// los 6 ejes técnicos, ve el Skill Radar Chart resultante en vivo, escribe
+// una nota pedagógica y asigna el Nivel Oficial — cada "Guardar Evaluación"
+// crea una fila NUEVA en `evaluaciones_jugador` (nunca edita una vieja, ver
+// nota del bloque de arriba), así que el historial de progreso queda
+// intacto. `puedeEvaluar` (de `permisos.puedeEvaluarJugadores` — solo
+// Coach/Propietario) decide si el formulario de calificación se renderiza:
+// alguien sin ese permiso abre el mismo modal en modo 100% solo-lectura —
+// ve la gráfica (de la última evaluación guardada) y el historial, pero
+// nunca el control deslizante ni el botón de guardar.
+function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuardarEvaluacion, onClose }) {
+  const toast = useToast();
+  const historial = useMemo(
+    () =>
+      (evaluaciones || [])
+        .filter((e) => String(e.jugador_id) === String(alumno.jugadorId))
+        .sort((a, b) => new Date(b.fecha || b.created_at || 0).getTime() - new Date(a.fecha || a.created_at || 0).getTime()),
+    [evaluaciones, alumno.jugadorId]
+  );
+  const ultima = historial[0] || null;
+
+  const [valoresEjes, setValoresEjes] = useState(() => {
+    const base = {};
+    EJES_EVALUACION.forEach((eje) => {
+      base[eje.key] = ultima?.[eje.key] != null ? Number(ultima[eje.key]) : 5;
+    });
+    return base;
+  });
+  const [nivelAsignado, setNivelAsignado] = useState(ultima?.nivel_asignado || NIVELES_ACADEMIA[0]);
+  const [comentarios, setComentarios] = useState('');
+  const [guardando, setGuardando] = useState(false);
+
+  const promedioEnVivo = calcularPromedioEjes(valoresEjes);
+
+  async function guardar() {
+    if (!puedeEvaluar) return;
+    setGuardando(true);
+    const resultado = await onGuardarEvaluacion({
+      jugadorId: alumno.jugadorId,
+      jugadorNombre: alumno.nombre,
+      ejes: valoresEjes,
+      nivelAsignado,
+      comentarios: comentarios.trim(),
+    });
+    setGuardando(false);
+    if (resultado?.ok) {
+      toast({ titulo: 'Evaluación guardada', detalle: `${alumno.nombre} · Nivel ${nivelAsignado}` });
+      setComentarios('');
+    } else {
+      toast({ titulo: 'No se pudo guardar la evaluación', detalle: resultado?.error?.message || 'Revisa la consola para el detalle.', tono: 'error' });
+    }
+  }
+
+  return (
+    <ModalShell
+      titulo={`Expediente Deportivo · ${alumno.nombre}`}
+      subtitulo="Evaluación de Nivel y Progreso"
+      onClose={onClose}
+      icon={Gauge}
+      ancho="max-w-lg"
+    >
+      <div className="space-y-5">
+        <div>
+          <p className="mb-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Skill Radar Chart {ultima && !puedeEvaluar ? '(última evaluación)' : ''}
+          </p>
+          <RadarEvaluacion valores={puedeEvaluar ? valoresEjes : ultima || {}} />
+        </div>
+
+        {puedeEvaluar ? (
+          <>
+            <div className="space-y-3">
+              {EJES_EVALUACION.map((eje) => (
+                <div key={eje.key}>
+                  <div className="mb-1 flex items-center justify-between text-xs font-semibold text-slate-300">
+                    <span>{eje.label}</span>
+                    <span className="text-lime-400">{valoresEjes[eje.key]}/10</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={ESCALA_MAX_EVALUACION}
+                    step={1}
+                    value={valoresEjes[eje.key]}
+                    onChange={(e) => setValoresEjes((prev) => ({ ...prev, [eje.key]: Number(e.target.value) }))}
+                    className="w-full accent-lime-400"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between rounded-xl bg-slate-900/60 px-3.5 py-2.5">
+              <span className="text-xs font-semibold text-slate-400">Promedio General</span>
+              <span className="text-lg font-black text-slate-100">{promedioEnVivo != null ? promedioEnVivo.toFixed(1) : '—'}/10</span>
+            </div>
+
+            <Campo label="Nivel Oficial">
+              <div className="grid grid-cols-3 gap-1.5">
+                {NIVELES_ACADEMIA.map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => setNivelAsignado(n)}
+                    className={`rounded-lg border px-2.5 py-2 text-xs font-bold transition ${
+                      nivelAsignado === n
+                        ? `border-lime-400 ${NIVEL_OFICIAL_META[n]?.bg || ''} ${NIVEL_OFICIAL_META[n]?.color || 'text-lime-400'}`
+                        : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </Campo>
+
+            <Campo label="Nota pedagógica (opcional)">
+              <textarea
+                value={comentarios}
+                onChange={(e) => setComentarios(e.target.value)}
+                className={`${inputClase} min-h-[80px] resize-y`}
+                placeholder="Observaciones de esta sesión/evaluación..."
+              />
+            </Campo>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+              <BotonPrimario onClick={guardar} disabled={guardando}>
+                {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                Guardar Evaluación
+              </BotonPrimario>
+            </div>
+          </>
+        ) : (
+          <p className="rounded-xl border border-dashed border-slate-700 px-4 py-6 text-center text-xs text-slate-500">
+            Solo un Coach o el Propietario pueden calificar. Tú puedes ver la gráfica y el historial.
+          </p>
+        )}
+
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de Observaciones</p>
+          {historial.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-slate-700 px-3 py-4 text-center text-xs text-slate-500">Sin evaluaciones todavía.</p>
+          ) : (
+            <div className="max-h-56 space-y-2 overflow-y-auto pr-0.5">
+              {historial.map((ev) => {
+                const meta = NIVEL_OFICIAL_META[ev.nivel_asignado];
+                return (
+                  <div key={ev.id} className="rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] font-bold text-slate-300">{ev.coach_nombre || 'Coach'}</p>
+                      <p className="text-[10px] text-slate-500">{formatoFechaLarga(ev.fecha || ev.created_at)}</p>
+                    </div>
+                    {ev.nivel_asignado && (
+                      <span
+                        className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${meta?.bg || 'bg-slate-800'} ${
+                          meta?.color || 'text-slate-400'
+                        }`}
+                      >
+                        {ev.nivel_asignado}
+                      </span>
+                    )}
+                    {ev.comentarios && <p className="mt-1.5 text-xs text-slate-400">{ev.comentarios}</p>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 const TIPOS_PAGO_ACADEMIA = [
   { value: 'mensualidad', label: 'Mensualidad' },
   { value: 'clase_suelta', label: 'Clase suelta' },
@@ -25341,6 +25742,10 @@ function ModuloAcademiaClinicas({
   rangosHorarioClases,
   onGuardarRangosHorarioClases,
   guardandoRangosHorarioClases,
+  evaluacionesJugador,
+  loadingEvaluacionesJugador,
+  errorEvaluacionesJugador,
+  onGuardarEvaluacionJugador,
 }) {
   const toast = useToast();
   // Coaches activos registrados en el club (mismo criterio que
@@ -25359,6 +25764,9 @@ function ModuloAcademiaClinicas({
   // (cancha/hora) sobre la que se dio clic para prellenar "Nueva Clase".
   const [fechaCronograma, setFechaCronograma] = useState(hoyISO());
   const [celdaParaNuevaClase, setCeldaParaNuevaClase] = useState(null); // { canchaId, fecha, horaInicio }
+  // Alumnos (Evaluación de Nivel y Progreso de Jugadores): jugador_id del
+  // alumno cuyo Expediente Deportivo está abierto (ver `ModalExpedienteDeportivo`).
+  const [alumnoExpedienteId, setAlumnoExpedienteId] = useState(null);
 
   const canchasPorId = useMemo(() => {
     const mapa = {};
@@ -25665,9 +26073,48 @@ function ModuloAcademiaClinicas({
     });
   }
 
+  // Alumnos (Evaluación de Nivel y Progreso de Jugadores): roster
+  // exclusivo de Academia — independiente del CRM general
+  // (`DirectorioJugadoresCRM`) — con Filtro Estricto: únicamente jugadores
+  // con al menos una inscripción ACTIVA (`estado === 'activo'`) en clases
+  // privadas, grupales o clínicas, deduplicados por `jugador_id`. Se
+  // enriquece con la última evaluación (`ultimaEvaluacionDe`) para mostrar
+  // el Nivel Oficial/promedio actual sin necesidad de abrir el Expediente.
+  const academiaClasesPorIdModulo = useMemo(() => {
+    const mapa = {};
+    (academiaClases || []).forEach((c) => (mapa[c.id] = c));
+    return mapa;
+  }, [academiaClases]);
+  const alumnosAcademiaActivos = useMemo(() => {
+    const vistos = new Set();
+    const lista = [];
+    (academiaAlumnos || [])
+      .filter((a) => a.estado === 'activo' && a.jugador_id != null)
+      .forEach((a) => {
+        const idTexto = String(a.jugador_id);
+        if (vistos.has(idTexto)) return;
+        vistos.add(idTexto);
+        const clase = academiaClasesPorIdModulo[a.clase_id];
+        lista.push({
+          jugadorId: idTexto,
+          nombre: a.nombre || jugadoresPorId?.[idTexto]?.nombre || 'Jugador sin nombre',
+          telefono: a.telefono || jugadoresPorId?.[idTexto]?.telefono || '',
+          claseNombre: clase?.nombre || null,
+          tipoClase: clase?.tipo_clase || null,
+          nivelClase: clase?.nivel || null,
+        });
+      });
+    return lista.sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }, [academiaAlumnos, academiaClasesPorIdModulo, jugadoresPorId]);
+  const alumnoExpedienteSeleccionado = useMemo(
+    () => alumnosAcademiaActivos.find((a) => a.jugadorId === alumnoExpedienteId) || null,
+    [alumnosAcademiaActivos, alumnoExpedienteId]
+  );
+
   const subvistas = [
     { value: 'operativa', label: 'Parrilla de Clases', icon: GraduationCap },
     { value: 'solicitudes', label: 'Solicitudes', icon: Inbox, badge: solicitudesPendientes.length || null },
+    { value: 'alumnos', label: 'Alumnos', icon: Users },
     { value: 'analytics', label: 'Analytics', icon: BarChart3 },
   ];
 
@@ -25933,6 +26380,66 @@ function ModuloAcademiaClinicas({
         </div>
       )}
 
+      {subvista === 'alumnos' && (
+        <div className="space-y-3">
+          {!tablaAcademiaExiste && <BannerTablaFaltante tabla="academia_alumnos (corre migracion_v16_academia_creditos.sql)" />}
+          {errorEvaluacionesJugador && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-300">
+              {errorEvaluacionesJugador}
+            </div>
+          )}
+          <p className="text-xs text-slate-500">
+            Roster exclusivo de Academia — jugadores con una inscripción ACTIVA en clases privadas, grupales o clínicas. No
+            incluye a quienes solo tienen reservas de cancha (ver Directorio de Jugadores para el CRM general).
+          </p>
+          {alumnosAcademiaActivos.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center text-slate-500">
+              <Users size={26} />
+              <p className="text-sm font-semibold">Todavía no hay alumnos activos en Academia.</p>
+              <p className="text-xs">Se agregan automáticamente al inscribir a un jugador en una clase o clínica.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {alumnosAcademiaActivos.map((alumno) => {
+                const ultima = ultimaEvaluacionDe(evaluacionesJugador, alumno.jugadorId);
+                const nivelActual = ultima?.nivel_asignado || null;
+                const meta = nivelActual ? NIVEL_OFICIAL_META[nivelActual] : null;
+                return (
+                  <button
+                    key={alumno.jugadorId}
+                    type="button"
+                    onClick={() => setAlumnoExpedienteId(alumno.jugadorId)}
+                    className="flex flex-col gap-2 rounded-2xl border border-slate-800 bg-slate-900 p-4 text-left transition hover:border-lime-400/40"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-bold text-slate-100">{alumno.nombre}</p>
+                        {alumno.claseNombre && <p className="text-[11px] text-slate-500">{alumno.claseNombre}</p>}
+                      </div>
+                      {nivelActual ? (
+                        <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-black ${meta.bg} ${meta.color}`}>
+                          {nivelActual}
+                        </span>
+                      ) : (
+                        <span className="whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                          Sin evaluar
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400">
+                      <span>{ultima?.promedio != null ? `Promedio ${ultima.promedio}/10` : 'Sin calificaciones aún'}</span>
+                      <span className="inline-flex items-center gap-1 text-lime-400">
+                        <Gauge size={12} /> Ver Expediente
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {subvista === 'analytics' && (
         <AnalyticsAcademia
           clases={academiaClases || []}
@@ -25993,6 +26500,16 @@ function ModuloAcademiaClinicas({
           onAsistenciaGuardada={onAcademiaAsistenciaGuardada}
           onGuardarEdicion={guardarEdicionClase}
           onEliminarClase={eliminarClaseSeleccionada}
+        />
+      )}
+
+      {alumnoExpedienteSeleccionado && (
+        <ModalExpedienteDeportivo
+          alumno={alumnoExpedienteSeleccionado}
+          evaluaciones={evaluacionesJugador}
+          puedeEvaluar={!!permisos?.puedeEvaluarJugadores}
+          onGuardarEvaluacion={onGuardarEvaluacionJugador}
+          onClose={() => setAlumnoExpedienteId(null)}
         />
       )}
     </div>
@@ -28833,6 +29350,41 @@ function PortalPublicoJugadores({ clubSlug }) {
   // banner destacado arriba del catálogo '/Clases'.
   const [modalSolicitudClase, setModalSolicitudClase] = useState(false);
 
+  // MI PERFIL DEPORTIVO (Evaluación de Nivel y Progreso de Jugadores) — el
+  // jugador identificado (ver `jugador` arriba) puede ver su propio Nivel
+  // Oficial, promedio y el historial de observaciones de sus coaches. Solo
+  // LECTURA — nunca escribe en `evaluaciones_jugador` desde el Portal (eso
+  // es exclusivo del panel interno, ver `ModalExpedienteDeportivo`).
+  const [mostrarPerfilDeportivo, setMostrarPerfilDeportivo] = useState(false);
+  const [evaluacionesJugadorPortal, setEvaluacionesJugadorPortal] = useState([]);
+  const [cargandoEvaluacionesPortal, setCargandoEvaluacionesPortal] = useState(true);
+
+  useEffect(() => {
+    if (jugador?.id == null) {
+      setEvaluacionesJugadorPortal([]);
+      setCargandoEvaluacionesPortal(false);
+      return;
+    }
+    let cancelado = false;
+    (async () => {
+      setCargandoEvaluacionesPortal(true);
+      const { data, error } = await conClubId(supabase.from('evaluaciones_jugador').select('*'))
+        .eq('jugador_id', String(jugador.id))
+        .order('fecha', { ascending: false });
+      if (cancelado) return;
+      if (error) {
+        if (!esErrorTablaInexistente(error)) console.warn('[Portal] No se pudo cargar Mi Perfil Deportivo.', error);
+        setEvaluacionesJugadorPortal([]);
+      } else {
+        setEvaluacionesJugadorPortal(data || []);
+      }
+      setCargandoEvaluacionesPortal(false);
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [jugador?.id]);
+
   // Cuadro de Torneos (`torneo_partidos`) — se carga de solo lectura para
   // que "Ver Resumen" de una inscripción a Torneo pueda mostrar "Horario de
   // partido" cuando el club ya armó el cuadro y le asignó cancha/hora a esa
@@ -30624,7 +31176,7 @@ function PortalPublicoJugadores({ clubSlug }) {
               { value: 'tienda', label: 'Tienda', icon: ShoppingBag },
               { value: 'torneos', label: 'Torneos', icon: Trophy },
               { value: 'retas', label: 'Retas', icon: Swords },
-              { value: 'academia', label: 'Clases', icon: GraduationCap },
+              { value: 'academia', label: 'Academia', icon: GraduationCap },
               { value: 'historial', label: 'Historial', icon: History },
               { value: 'wallet', label: 'Wallet', icon: Wallet },
             ].map((tab) => {
@@ -30886,6 +31438,46 @@ function PortalPublicoJugadores({ clubSlug }) {
 
               {vista === 'academia' && (
                 <div className="space-y-3">
+                  {/* MI PERFIL DEPORTIVO (Evaluación de Nivel y Progreso de
+                      Jugadores) — acceso visible arriba del todo de la
+                      pestaña Academia. NO reemplaza ni modifica el flujo
+                      existente de abajo (banner de solicitud, próximas
+                      clases, historial): es un acceso NUEVO, independiente. */}
+                  {jugador && (() => {
+                    const ultimaPortal = ultimaEvaluacionDe(evaluacionesJugadorPortal, jugador.id);
+                    const nivelActualPortal = ultimaPortal?.nivel_asignado || null;
+                    const metaPortal = nivelActualPortal ? NIVEL_OFICIAL_META[nivelActualPortal] : null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => setMostrarPerfilDeportivo(true)}
+                        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-lime-400/30 bg-gradient-to-r from-lime-400/10 via-slate-900/50 to-slate-900/50 p-4 text-left backdrop-blur-sm transition hover:border-lime-400/50 hover:bg-lime-400/[0.15]"
+                      >
+                        <span className="flex items-center gap-2.5">
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/15 text-lime-300 ring-1 ring-lime-400/30">
+                            <Gauge size={16} />
+                          </span>
+                          <span>
+                            <span className="block text-sm font-black text-slate-100">Mi Perfil Deportivo</span>
+                            <span className="block text-[11px] text-slate-400">Tu Nivel Oficial, tu progreso y las notas de tus coaches.</span>
+                          </span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-2">
+                          {nivelActualPortal ? (
+                            <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-black ${metaPortal.bg} ${metaPortal.color}`}>
+                              {nivelActualPortal}
+                            </span>
+                          ) : (
+                            <span className="whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                              Sin evaluar
+                            </span>
+                          )}
+                          <ChevronRight size={16} className="text-lime-300" />
+                        </span>
+                      </button>
+                    );
+                  })()}
+
                   {/* PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO
                       (refinamiento UX) — banner destacado arriba del
                       catálogo. Las clases Privadas ya NO aparecen en la
@@ -31226,6 +31818,14 @@ function PortalPublicoJugadores({ clubSlug }) {
         )}
 
         {/* PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO (refinamiento UX) */}
+        {mostrarPerfilDeportivo && jugador && (
+          <ModalPerfilDeportivoJugador
+            evaluaciones={evaluacionesJugadorPortal}
+            loading={cargandoEvaluacionesPortal}
+            onClose={() => setMostrarPerfilDeportivo(false)}
+          />
+        )}
+
         {modalSolicitudClase && (
           <ModalSolicitarClase
             onClose={() => setModalSolicitudClase(false)}
@@ -34297,6 +34897,88 @@ function AppInterno() {
     };
   }, [cargarAcademiaClases, cargarAcademiaAlumnos, cargarAcademiaAsistencias]);
 
+  /* ---------------- Evaluación de Nivel y Progreso de Jugadores ---------------- */
+  // `evaluaciones_jugador` (migracion_v37) — una fila por calificación, ver
+  // las notas de esa migración y de `ultimaEvaluacionDe`/`RadarEvaluacion`
+  // arriba en el archivo. Se carga aquí (junto con Academia, su origen
+  // natural) y se pasa tanto a `ModuloAcademiaClinicas` (pestaña "Alumnos")
+  // como, indirectamente, queda disponible para cualquier otro módulo que
+  // en el futuro quiera mostrar el Nivel Oficial de un jugador.
+  const [evaluacionesJugador, setEvaluacionesJugador] = useState([]);
+  const [loadingEvaluacionesJugador, setLoadingEvaluacionesJugador] = useState(true);
+  const [errorEvaluacionesJugador, setErrorEvaluacionesJugador] = useState('');
+
+  const cargarEvaluacionesJugador = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingEvaluacionesJugador(true);
+    setErrorEvaluacionesJugador('');
+    const { data, error } = await conClubId(supabase.from('evaluaciones_jugador').select('*')).order('fecha', { ascending: false });
+    if (error) {
+      // Mismo criterio tolerante que Retas/Torneos/Academia: tabla ausente
+      // (club que no ha corrido `migracion_v37_evaluaciones_jugadores.sql`
+      // todavía) es un fallback silencioso a "sin evaluaciones", nunca un
+      // banner que bloquee Academia & Clínicas ni el Portal.
+      if (!esErrorTablaInexistente(error)) setErrorEvaluacionesJugador(error.message || 'No se pudieron cargar las evaluaciones de jugadores.');
+      setEvaluacionesJugador([]);
+    } else {
+      setEvaluacionesJugador(data || []);
+    }
+    setLoadingEvaluacionesJugador(false);
+  }, []);
+
+  useEffect(() => {
+    cargarEvaluacionesJugador();
+  }, [cargarEvaluacionesJugador]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('evaluaciones-jugador')
+      .on('postgres_changes', canalClubFiltro('evaluaciones_jugador'), () => cargarEvaluacionesJugador({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarEvaluacionesJugador]);
+
+  // Único punto de escritura — SIEMPRE un INSERT nuevo (nunca UPDATE, ver
+  // nota de la migración/`ModalExpedienteDeportivo`): así el historial de
+  // progreso de cada jugador queda completo, evaluación por evaluación.
+  async function guardarEvaluacionJugador({ jugadorId, jugadorNombre, ejes, nivelAsignado, comentarios }) {
+    const promedio = calcularPromedioEjes(ejes);
+    const payloadCompleto = {
+      jugador_id: String(jugadorId),
+      jugador_nombre: jugadorNombre || null,
+      coach_id: operador.id != null ? String(operador.id) : null,
+      coach_nombre: operador.nombre || null,
+      derecha_reves: ejes.derecha_reves ?? null,
+      paredes: ejes.paredes ?? null,
+      ataque_red: ejes.ataque_red ?? null,
+      tactica: ejes.tactica ?? null,
+      saque_resto: ejes.saque_resto ?? null,
+      fisico: ejes.fisico ?? null,
+      promedio,
+      nivel_asignado: nivelAsignado || null,
+      comentarios: comentarios || null,
+      fecha: new Date().toISOString(),
+    };
+    // Arquitectura Flexible: `jugador_nombre`/`coach_id`/`coach_nombre`/
+    // `comentarios` se reintentan sin la columna si el club todavía no ha
+    // vuelto a correr una versión más reciente de la migración con esos
+    // campos — los 6 ejes + `nivel_asignado`/`promedio`/`fecha` son
+    // obligatorios porque son el corazón del Expediente Deportivo.
+    const { data, error } = await insertarConColumnasOpcionales('evaluaciones_jugador', payloadCompleto, [
+      'jugador_nombre',
+      'coach_id',
+      'coach_nombre',
+      'comentarios',
+    ]);
+    if (error) {
+      console.warn('[Evaluaciones] No se pudo guardar la evaluación en Supabase.', error);
+      return { ok: false, error };
+    }
+    setEvaluacionesJugador((prev) => [data, ...prev]);
+    return { ok: true, registro: data };
+  }
+
   // Sincronización Universal del Nombre/Logo del Club: si se edita desde la
   // Mac, el iPad y el celular lo reflejan solos, sin recargar la página.
   //
@@ -35266,6 +35948,10 @@ function AppInterno() {
                 rangosHorarioClases={rangosHorarioClases}
                 onGuardarRangosHorarioClases={guardarRangosHorarioClases}
                 guardandoRangosHorarioClases={guardandoRangosHorarioClases}
+                evaluacionesJugador={evaluacionesJugador}
+                loadingEvaluacionesJugador={loadingEvaluacionesJugador}
+                errorEvaluacionesJugador={errorEvaluacionesJugador}
+                onGuardarEvaluacionJugador={guardarEvaluacionJugador}
               />
             ) : moduloActivo === 'seguridad' ? (
               <ModuloControlSeguridad
