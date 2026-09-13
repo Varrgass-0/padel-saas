@@ -1147,6 +1147,39 @@ async function crearNotificacionClub({ tipo, titulo, jugadorId, jugadorNombre, p
   }
 }
 
+// Punto ÚNICO de escritura de `notificaciones_jugador`
+// (migracion_v38_clases_privadas_notificaciones.sql) — mismo criterio que
+// `crearNotificacionClub` pero en la dirección contraria: el CLUB avisa al
+// JUGADOR (ej. "tu Clase Privada quedó agendada"). Se llama desde el panel
+// interno (`ModalNuevaClase`, al crear/confirmar una Clase Privada) y el
+// Portal la lee filtrada por `jugador_id` en "Mi Perfil Deportivo"/Academia.
+// Tolerante: si la tabla todavía no existe o el insert falla, se registra en
+// consola y NUNCA bloquea la creación de la clase que lo disparó.
+async function crearNotificacionJugador({ jugadorId, titulo, mensaje, tipo, payload }) {
+  if (!jugadorId) return { ok: false, error: new Error('jugadorId requerido para notificar al jugador.') };
+  try {
+    const fila = {
+      jugador_id: String(jugadorId),
+      titulo,
+      mensaje,
+      tipo: tipo || 'general',
+      leida: false,
+      payload: payload || {},
+    };
+    const { data, error } = await insertarConColumnasOpcionales('notificaciones_jugador', fila, ['tipo', 'payload']);
+    if (error) {
+      if (!esErrorTablaInexistente(error)) {
+        console.warn('[ClubOS] No se pudo guardar la notificación del jugador (notificaciones_jugador).', error);
+      }
+      return { ok: false, error };
+    }
+    return { ok: true, data };
+  } catch (err) {
+    console.warn('[ClubOS] Error inesperado creando la notificación del jugador.', err);
+    return { ok: false, error: err };
+  }
+}
+
 // Helper/hook centralizado para WhatsApp (requerimiento explícito
 // "triggerWhatsAppNotification"): arma el payload {to, mensaje, tipo,
 // clubId, jugadorId, timestamp} listo para una integración real con la API
@@ -23393,44 +23426,83 @@ async function generarSesionesClase({ clase, reservasExistentes = [] }) {
 // clic directo sobre una celda libre (cancha+hora concretas); si no viene
 // (ej. desde el botón "Nueva Clase" suelto), el formulario arranca con los
 // valores por defecto de siempre.
-function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prellenado }) {
+//
+// `solicitudOrigen` (opcional): la fila completa de `academia_solicitudes`
+// cuando este modal se abre desde el botón "Crear Clase" de la pestaña
+// Solicitudes — precarga tipo de clase, alumno solicitante, nivel, coach
+// deseado y horario pedido, y al guardar marca esa solicitud como
+// "atendida" (ver `onCreada` en `ModuloAcademiaClinicas`).
+//
+// `jugadoresPorId`/`onAlumnoAgregado` (nuevos): habilitan el flujo de Clase
+// Privada / Personalizada — selector de alumno del directorio (en vez del
+// nombre libre), alta automática como primer inscrito (cupo 1/1) en
+// `academia_alumnos`, y notificación al jugador (`crearNotificacionJugador`).
+function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
+  const directorioJugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
 
   const [nombre, setNombre] = useState('');
-  const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
+  const [nivel, setNivel] = useState(solicitudOrigen?.nivel || NIVELES_ACADEMIA[0]);
   // NUEVO — Tipo de Clase (item 2): 'privada' fija automáticamente la
   // capacidad en 1 alumno (ver `capacidadEfectiva` más abajo, en vez de un
   // useEffect que pise lo que el operador haya escrito) y cambia el rótulo
   // de los 2 campos de precio a "Precio Clase Individual" — se conservan
   // ambos montos (mensual/por sesión) por debajo para no duplicar el
   // esquema de Membresías por Créditos, que ya distingue mensualidad de
-  // clase suelta sin importar si la clase es grupal o privada.
-  const [tipoClase, setTipoClase] = useState('grupal');
-  const [coachEmpleadoId, setCoachEmpleadoId] = useState(coachesDisponibles[0]?.id || '');
-  const [coachNombreLibre, setCoachNombreLibre] = useState('');
+  // clase suelta sin importar si la clase es grupal o privada. Si viene de
+  // una solicitud web de tipo "privada", arranca ya en modo Privada.
+  const [tipoClase, setTipoClase] = useState(solicitudOrigen?.tipo_solicitud === 'privada' ? 'privada' : 'grupal');
+  const [coachEmpleadoId, setCoachEmpleadoId] = useState(() => {
+    if (solicitudOrigen?.coach_deseado) {
+      const match = (empleados || []).find(
+        (e) => e.rol === 'coach' && e.activo !== false && (e.nombre || '').trim().toLowerCase() === solicitudOrigen.coach_deseado.trim().toLowerCase()
+      );
+      if (match) return match.id;
+    }
+    return coachesDisponibles[0]?.id || '';
+  });
+  const [coachNombreLibre, setCoachNombreLibre] = useState(solicitudOrigen?.coach_deseado || '');
   const [canchaId, setCanchaId] = useState(prellenado?.canchaId || canchasActivas[0]?.id || '');
   // Fecha Específica Obligatoria (Arquitectura de Fecha Única — ya NO existe
   // una opción de "repetir semanalmente"): esta clase existe UNA sola vez,
   // en esta fecha exacta — igual criterio que una Reta/Torneo.
-  const [fecha, setFecha] = useState(prellenado?.fecha || hoyISO());
-  const [horaInicio, setHoraInicio] = useState(prellenado?.horaInicio || '17:00');
-  const [horaFin, setHoraFin] = useState(
-    prellenado?.horaInicio ? minutosAHora(Math.min(parseHoraAMinutos(prellenado.horaInicio) + 60, HORA_FIN_MIN)) : '18:00'
-  );
+  const [fecha, setFecha] = useState(prellenado?.fecha || solicitudOrigen?.fecha || hoyISO());
+  const [horaInicio, setHoraInicio] = useState(prellenado?.horaInicio || solicitudOrigen?.hora_desde || '17:00');
+  const [horaFin, setHoraFin] = useState(() => {
+    const inicio = prellenado?.horaInicio || solicitudOrigen?.hora_desde;
+    if (solicitudOrigen?.hora_hasta) return solicitudOrigen.hora_hasta;
+    return inicio ? minutosAHora(Math.min(parseHoraAMinutos(inicio) + 60, HORA_FIN_MIN)) : '18:00';
+  });
   const [capacidad, setCapacidad] = useState('6');
   const [precioMensualidad, setPrecioMensualidad] = useState('1200');
   const [precioClaseSuelta, setPrecioClaseSuelta] = useState('180');
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
+  // Selector de Alumno (Clase Privada / Personalizada, item 1): reemplaza el
+  // campo libre "Nombre de la clase" cuando `esPrivada`. Preseleccionado
+  // automáticamente si el modal se abrió desde una solicitud web.
+  const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(solicitudOrigen?.jugador_id || null);
+  const [alumnoPrivadoNombre, setAlumnoPrivadoNombre] = useState(solicitudOrigen?.nombre || '');
+  const [alumnoPrivadoTelefono, setAlumnoPrivadoTelefono] = useState(solicitudOrigen?.telefono || '');
+
   const coachNombre = coachEmpleadoId ? coachesDisponibles.find((c) => c.id === coachEmpleadoId)?.nombre || '' : coachNombreLibre.trim();
   const esPrivada = tipoClase === 'privada';
   const capacidadEfectiva = esPrivada ? '1' : capacidad;
+  // Título/nombre resultante de una Clase Privada: "Clase Privada - [Nombre
+  // del Alumno]", autocompletado al elegir/escribir el alumno — el operador
+  // ya no captura un nombre libre para este tipo de clase.
+  const nombreClasePrivada = alumnoPrivadoNombre.trim() ? `Clase Privada - ${alumnoPrivadoNombre.trim()}` : '';
+  const nombreEfectivo = esPrivada ? nombreClasePrivada : nombre;
 
   async function guardar() {
-    if (!nombre.trim()) return setError('Ponle un nombre a la clase (ej. "Iniciación Adultos").');
+    if (esPrivada) {
+      if (!alumnoPrivadoNombre.trim()) return setError('Selecciona (o escribe el nombre de) el alumno de esta Clase Privada.');
+    } else if (!nombre.trim()) {
+      return setError('Ponle un nombre a la clase (ej. "Iniciación Adultos").');
+    }
     if (!canchaId) return setError('Selecciona una cancha.');
     if (!fecha) return setError('Elige la fecha de la sesión.');
     if (!coachNombre) return setError('Indica el Coach (elige uno del directorio o escribe su nombre).');
@@ -23458,7 +23530,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
     setError('');
 
     const payloadClase = withClubId({
-      nombre: nombre.trim(),
+      nombre: nombreEfectivo.trim(),
       nivel,
       tipo_clase: tipoClase,
       coach_empleado_id: coachEmpleadoId || null,
@@ -23515,11 +23587,63 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
       }
     }
 
+    // Alta automática del alumno (item 1, Clase Privada / Personalizada):
+    // el alumno elegido en el selector queda como primer y único inscrito
+    // (cupo 1/1) — mismo payload/patrón que `ModalDetalleClase.altaAlumno`,
+    // sin pedir de nuevo tipo/estado de pago aquí (queda "Pendiente" y se
+    // cobra después en Smart POS, igual que cualquier alta manual). Solo
+    // aplica si la clase sí quedó guardada en Supabase — una clase en Modo
+    // Local no tiene un `id` real contra el que `academia_alumnos` pueda
+    // apuntar.
+    let jugadorIdPrivado = null;
+    if (esPrivada && !modoLocal) {
+      jugadorIdPrivado =
+        jugadorSeleccionadoId || (await resolverJugadorId(alumnoPrivadoNombre, { telefono: alumnoPrivadoTelefono, directorio: directorioJugadores }));
+      const payloadAlumno = withClubId({
+        clase_id: claseCreada.id,
+        jugador_id: jugadorIdPrivado,
+        nombre: alumnoPrivadoNombre.trim(),
+        telefono: alumnoPrivadoTelefono.trim() || null,
+        tipo_pago: 'clase_suelta',
+        estado_pago: 'pendiente',
+        monto: Number(precioClaseSuelta) || 0,
+        estado: 'activo',
+      });
+      const { data: alumnoCreado, error: errAlumno } = await insertarConColumnasOpcionales('academia_alumnos', payloadAlumno, [
+        'jugador_id',
+        'telefono',
+      ]);
+      if (errAlumno || !alumnoCreado) {
+        console.warn('[Academia & Clínicas] Clase Privada creada, pero no se pudo inscribir al alumno automáticamente.', errAlumno);
+        onAlumnoAgregado?.({ ...payloadAlumno, id: idLocal('academia_alumno'), _local: true });
+      } else {
+        onAlumnoAgregado?.(alumnoCreado);
+      }
+
+      // Notificación al jugador (item 3): solo si se pudo resolver su
+      // `jugador_id` real — sin eso no hay a quién notificar en el Portal.
+      if (jugadorIdPrivado) {
+        const mensaje = `Tu clase privada con el Coach ${coachNombre} ha sido agendada para el ${formatoFechaLarga(fecha)} a las ${formatoHora12(horaInicio)}.`;
+        const resultadoNotif = await crearNotificacionJugador({
+          jugadorId: jugadorIdPrivado,
+          titulo: '¡Clase Confirmada!',
+          mensaje,
+          tipo: 'clase_privada_confirmada',
+          payload: { clase_id: claseCreada.id, fecha, hora_inicio: horaInicio, hora_fin: horaFin, coach_nombre: coachNombre },
+        });
+        if (!resultadoNotif.ok) {
+          console.warn('[Academia & Clínicas] Clase Privada creada, pero no se pudo notificar al jugador.', resultadoNotif.error);
+        }
+      }
+    }
+
     setGuardando(false);
     if (!modoLocal) {
       toast({
         titulo: 'Clase creada',
-        detalle: `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)}`,
+        detalle: esPrivada
+          ? `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)} · Alumno inscrito y notificado`
+          : `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)}`,
       });
     }
     onCreada(claseCreada, sesionesCreadas);
@@ -23529,9 +23653,35 @@ function ModalNuevaClase({ canchas, reservas, empleados, onClose, onCreada, prel
   return (
     <ModalShell titulo="Nueva Clase" subtitulo="Academia & Clínicas — parrilla de clases" onClose={onClose} icon={GraduationCap} ancho="max-w-lg">
       <div className="space-y-4">
-        <Campo label="Nombre de la clase">
-          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Iniciación Adultos" />
-        </Campo>
+        {esPrivada ? (
+          <Campo
+            label="Alumno / Jugador"
+            hint={solicitudOrigen ? 'Precargado desde la solicitud web' : 'Busca en el directorio o escribe un nombre nuevo'}
+          >
+            <SelectorJugadorRegistrado
+              jugadores={directorioJugadores}
+              nombre={alumnoPrivadoNombre}
+              onNombreChange={setAlumnoPrivadoNombre}
+              onSeleccionarJugador={(j) => {
+                setJugadorSeleccionadoId(j?.id ?? null);
+                if (j?.telefono) setAlumnoPrivadoTelefono(j.telefono);
+              }}
+              jugadorSeleccionadoId={jugadorSeleccionadoId}
+              placeholder="Nombre del alumno..."
+            />
+            <input
+              value={alumnoPrivadoTelefono}
+              onChange={(e) => setAlumnoPrivadoTelefono(e.target.value)}
+              className={`${inputClase} mt-2`}
+              placeholder="Teléfono (opcional)"
+            />
+            {nombreClasePrivada && <p className="mt-1.5 text-[11px] text-slate-500">Se guardará como: <span className="font-bold text-slate-300">{nombreClasePrivada}</span></p>}
+          </Campo>
+        ) : (
+          <Campo label="Nombre de la clase">
+            <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Iniciación Adultos" />
+          </Campo>
+        )}
         <Campo label="Tipo de Clase" hint={esPrivada ? 'Capacidad fijada en 1 alumno' : undefined}>
           <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
             {TIPOS_CLASE_ACADEMIA.map((t) => (
@@ -25764,6 +25914,11 @@ function ModuloAcademiaClinicas({
   // (cancha/hora) sobre la que se dio clic para prellenar "Nueva Clase".
   const [fechaCronograma, setFechaCronograma] = useState(hoyISO());
   const [celdaParaNuevaClase, setCeldaParaNuevaClase] = useState(null); // { canchaId, fecha, horaInicio }
+  // Clase Privada / Personalizada desde Solicitudes: la fila completa de
+  // `academia_solicitudes` que originó el clic en "Crear Clase" — precarga
+  // el alumno/tipo/horario en `ModalNuevaClase` y, al guardar, marca esa
+  // solicitud como atendida (ver `onCreada` más abajo).
+  const [solicitudParaNuevaClase, setSolicitudParaNuevaClase] = useState(null);
   // Alumnos (Evaluación de Nivel y Progreso de Jugadores): jugador_id del
   // alumno cuyo Expediente Deportivo está abierto (ver `ModalExpedienteDeportivo`).
   const [alumnoExpedienteId, setAlumnoExpedienteId] = useState(null);
@@ -26362,9 +26517,18 @@ function ModuloAcademiaClinicas({
                           <IconoWhatsApp size={12} /> Contactar
                         </a>
                       )}
-                      <BotonPrimario onClick={() => actualizarEstadoSolicitud(s, 'atendida')} className="px-2.5 py-1.5 text-[11px]">
-                        <CheckCircle2 size={12} /> Marcar atendida
+                      <BotonPrimario
+                        onClick={() => {
+                          setSolicitudParaNuevaClase(s);
+                          setModalNuevaClase(true);
+                        }}
+                        className="px-2.5 py-1.5 text-[11px]"
+                      >
+                        <GraduationCap size={12} /> Crear Clase
                       </BotonPrimario>
+                      <BotonSecundario onClick={() => actualizarEstadoSolicitud(s, 'atendida')} className="px-2.5 py-1.5 text-[11px]">
+                        <CheckCircle2 size={12} /> Marcar atendida
+                      </BotonSecundario>
                       <button
                         onClick={() => actualizarEstadoSolicitud(s, 'descartada')}
                         className="rounded-md px-2.5 py-1.5 text-[11px] font-bold text-slate-500 hover:text-rose-400"
@@ -26461,15 +26625,26 @@ function ModuloAcademiaClinicas({
           canchas={canchas}
           reservas={reservas}
           empleados={empleados}
+          jugadoresPorId={jugadoresPorId}
           prellenado={celdaParaNuevaClase}
+          solicitudOrigen={solicitudParaNuevaClase}
           onClose={() => {
             setModalNuevaClase(false);
             setCeldaParaNuevaClase(null);
+            setSolicitudParaNuevaClase(null);
           }}
+          onAlumnoAgregado={onAcademiaAlumnoAgregado}
           onCreada={(clase, sesiones) => {
             onAcademiaClaseCreada(clase);
             if (sesiones?.length > 0) setAcademiaSesiones((prev) => [...prev, ...sesiones]);
             setCeldaParaNuevaClase(null);
+            // Si esta clase se creó desde "Crear Clase" en Solicitudes, la
+            // solicitud queda automáticamente marcada como atendida — crear
+            // la clase personalizada ES la forma de aprobarla.
+            if (solicitudParaNuevaClase) {
+              actualizarEstadoSolicitud(solicitudParaNuevaClase, 'atendida');
+              setSolicitudParaNuevaClase(null);
+            }
           }}
         />
       )}
@@ -29385,6 +29560,52 @@ function PortalPublicoJugadores({ clubSlug }) {
     };
   }, [jugador?.id]);
 
+  // NOTIFICACIONES DEL JUGADOR (item 3, Clases Privadas/Personalizadas) —
+  // espejo de "Mi Perfil Deportivo" arriba: solo LECTURA + marcar como
+  // leída, la escritura ("¡Clase Confirmada!", etc.) es exclusiva del panel
+  // interno vía `crearNotificacionJugador`. Se recarga en vivo con un canal
+  // propio (no comparte el `portal-publico-${club.id}` de abajo porque ese
+  // solo dispara mientras `club` ya cargó, y las notificaciones dependen de
+  // `jugador`, que puede identificarse después).
+  const [notificacionesJugadorPortal, setNotificacionesJugadorPortal] = useState([]);
+  const cargarNotificacionesJugadorPortal = useCallback(async () => {
+    if (jugador?.id == null) {
+      setNotificacionesJugadorPortal([]);
+      return;
+    }
+    const { data, error } = await conClubId(supabase.from('notificaciones_jugador').select('*'))
+      .eq('jugador_id', String(jugador.id))
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (error) {
+      if (!esErrorTablaInexistente(error)) console.warn('[Portal] No se pudieron cargar tus notificaciones.', error);
+      setNotificacionesJugadorPortal([]);
+    } else {
+      setNotificacionesJugadorPortal(data || []);
+    }
+  }, [jugador?.id]);
+
+  useEffect(() => {
+    cargarNotificacionesJugadorPortal();
+  }, [cargarNotificacionesJugadorPortal]);
+
+  useEffect(() => {
+    if (jugador?.id == null) return;
+    const canal = supabase
+      .channel('portal-notificaciones-jugador')
+      .on('postgres_changes', canalClubFiltro('notificaciones_jugador'), () => cargarNotificacionesJugadorPortal())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [jugador?.id, cargarNotificacionesJugadorPortal]);
+
+  async function marcarNotificacionJugadorLeida(notif) {
+    setNotificacionesJugadorPortal((prev) => prev.map((n) => (n.id === notif.id ? { ...n, leida: true } : n)));
+    const { error } = await supabase.from('notificaciones_jugador').update({ leida: true }).eq('id', notif.id);
+    if (error) console.warn('[Portal] No se pudo marcar la notificación como leída en Supabase.', error);
+  }
+
   // Cuadro de Torneos (`torneo_partidos`) — se carga de solo lectura para
   // que "Ver Resumen" de una inscripción a Torneo pueda mostrar "Horario de
   // partido" cuando el club ya armó el cuadro y le asignó cancha/hora a esa
@@ -30393,6 +30614,26 @@ function PortalPublicoJugadores({ clubSlug }) {
     if (!jugador || !fila) return false;
     return (jugador.id && fila.jugador_id === jugador.id) || (jugador.telefono && claveTelefono(fila.telefono) === claveTelefono(jugador.telefono));
   }
+
+  // Mis Próximas Clases Privadas (Clase Privada / Personalizada, item 2): a
+  // diferencia de las clases Grupales, las Privadas NUNCA aparecen en el
+  // catálogo público de la pestaña Academia (ver el `.filter` de
+  // `tipo_clase !== 'privada'` más abajo) — así que sin esta lista aparte,
+  // el jugador nunca vería la clase individual que el club le agendó. Se
+  // arma igual que `itemsClases` (mismo `esMiRegistro`) pero solo con
+  // clases futuras/vigentes (`academiaClasesPortalVisibles`) y de tipo
+  // 'privada'. Vive del mismo `academiaClasesPortal`/`academiaAlumnosPortal`
+  // que ya llega en vivo por el canal `portal-publico-${club.id}` — una
+  // clase Privada creada desde el panel admin aparece aquí sin recargar.
+  const misClasesPrivadasProximas = useMemo(() => {
+    if (!jugador) return [];
+    return academiaClasesPortalVisibles.filter(
+      (c) =>
+        c.estado !== 'cancelada' &&
+        c.tipo_clase === 'privada' &&
+        academiaAlumnosPortal.some((a) => a.clase_id === c.id && a.estado !== 'baja' && esMiRegistro(a))
+    );
+  }, [academiaClasesPortalVisibles, academiaAlumnosPortal, jugador]);
 
   // Historial General (item 3) — lista unificada, cronológica, de TODA la
   // actividad del jugador logueado: reservas de cancha + compras en Tienda +
@@ -31438,6 +31679,35 @@ function PortalPublicoJugadores({ clubSlug }) {
 
               {vista === 'academia' && (
                 <div className="space-y-3">
+                  {/* NOTIFICACIONES DEL JUGADOR (item 3, Clases Privadas) —
+                      p. ej. "¡Clase Confirmada!" cuando el club le agenda
+                      una clase 1-a-1. Solo las NO leídas se muestran aquí;
+                      un clic las marca como leídas y desaparecen. */}
+                  {jugador &&
+                    notificacionesJugadorPortal
+                      .filter((n) => !n.leida)
+                      .map((n) => (
+                        <button
+                          key={n.id}
+                          type="button"
+                          onClick={() => marcarNotificacionJugadorLeida(n)}
+                          className="flex w-full items-start justify-between gap-3 rounded-2xl border border-emerald-400/30 bg-emerald-400/[0.08] p-4 text-left backdrop-blur-sm transition hover:bg-emerald-400/[0.14]"
+                        >
+                          <span className="flex items-start gap-2.5">
+                            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/30">
+                              <Bell size={14} />
+                            </span>
+                            <span>
+                              <span className="block text-sm font-black text-slate-100">{n.titulo}</span>
+                              <span className="block text-[11px] text-slate-400">{n.mensaje}</span>
+                            </span>
+                          </span>
+                          <span className="shrink-0 whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold text-slate-400">
+                            Marcar leída
+                          </span>
+                        </button>
+                      ))}
+
                   {/* MI PERFIL DEPORTIVO (Evaluación de Nivel y Progreso de
                       Jugadores) — acceso visible arriba del todo de la
                       pestaña Academia. NO reemplaza ni modifica el flujo
@@ -31500,6 +31770,38 @@ function PortalPublicoJugadores({ clubSlug }) {
                     </span>
                     <ChevronRight size={16} className="shrink-0 text-violet-300" />
                   </button>
+
+                  {/* MIS PRÓXIMAS CLASES PRIVADAS: clases 1-a-1 que el club
+                      ya agendó y confirmó para este jugador (ver
+                      `misClasesPrivadasProximas`) — no forman parte del
+                      catálogo grupal de abajo, así que sin esto nunca
+                      aparecerían en ningún lado del Portal. */}
+                  {misClasesPrivadasProximas.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-bold uppercase tracking-wide text-lime-400">Tus Próximas Clases Privadas</p>
+                      {misClasesPrivadasProximas.map((c) => {
+                        const cancha = canchasPorId[c.cancha_id];
+                        const diaFecha = c.fecha ? formatoFechaLarga(c.fecha) : 'Sin fecha';
+                        return (
+                          <div key={c.id} className="rounded-2xl border border-lime-400/20 bg-lime-400/[0.04] p-4 backdrop-blur-sm">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="font-black text-slate-100">{c.nombre}</p>
+                                <p className="mt-0.5 text-xs text-slate-400">Coach {c.coach_nombre || '—'}</p>
+                                <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
+                                  <CalendarClock size={12} /> {diaFecha} · {formatoHora12(c.hora_inicio)}–{formatoHora12(c.hora_fin)}
+                                  {cancha ? ` · ${cancha.nombre}` : ''}
+                                </p>
+                              </div>
+                              <span className="whitespace-nowrap rounded-full bg-lime-400/15 px-2 py-0.5 text-[10px] font-black text-lime-400 ring-1 ring-lime-400/30">
+                                Confirmada
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
 
                   {academiaClasesPortalVisibles.filter((c) => c.estado !== 'cancelada' && c.tipo_clase !== 'privada').length === 0 && (
                     <p className="py-10 text-center text-sm text-slate-500">Este club todavía no publicó clases grupales — usa el botón de arriba para pedir una.</p>
