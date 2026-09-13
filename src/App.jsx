@@ -11064,6 +11064,20 @@ async function otorgarCortesiaCRM({
 
   // 1) REQUISITO INDISPENSABLE — registro del canje. `venta_id` va en null
   // por ahora (el ticket todavía no existe); se completa en el paso 3.
+  // Sanitización del Payload (Arquitectura Flexible — MISMO criterio que
+  // CUALQUIER otro insert de este archivo vía `insertarConColumnasOpcionales`,
+  // en vez de mandar un payload fijo con nombres de columna adivinados):
+  // el bug real encontrado fue `PGRST204 — Could not find the
+  // 'jugador_nombre' column of 'cortesias_otorgadas' in the schema cache`,
+  // es decir, la tabla `cortesias_otorgadas` de este proyecto en particular
+  // NO tiene esa columna (a diferencia de lo que crea `migracion_v35` desde
+  // cero). `jugador_nombre` y `producto_nombre` son datos DESCRIPTIVOS (solo
+  // para que el registro se lea solo en una auditoría — el candado de
+  // negocio real es `jugador_id`+`categoria`+`created_at`, que sí son
+  // obligatorios), así que se mueven a `columnasOpcionales`: si la columna
+  // no existe en este proyecto, `insertarConColumnasOpcionales` reintenta
+  // sin ella en vez de abortar el canje completo por un campo que no cambia
+  // el resultado del negocio.
   const { data: registro, error: errorRegistro } = await insertarConColumnasOpcionales(
     'cortesias_otorgadas',
     {
@@ -11077,7 +11091,7 @@ async function otorgarCortesiaCRM({
       monto_meta_aplicado: Number(metaAplicada) || null,
       operador: operador?.nombre || null,
     },
-    ['variante_id', 'venta_id', 'monto_meta_aplicado', 'operador']
+    ['jugador_nombre', 'producto_nombre', 'variante_id', 'venta_id', 'monto_meta_aplicado', 'operador']
   );
   if (errorRegistro) {
     // Diagnóstico específico (bug real encontrado y corregido en
