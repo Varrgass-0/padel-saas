@@ -17345,22 +17345,42 @@ function valorUUIDInvalidoDelError(error) {
   return match ? match[1] : null;
 }
 
+const PATRON_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Normaliza un `jugador_id` antes de mandarlo a Supabase (Fallback/
 // Resiliencia de Tipos de Datos, Motor de Cortesías) — puede llegar como
-// `string` (uuid, o un bigint que PostgREST ya sirvió como texto para no
-// perder precisión), `number` (un `integer`/`int4` normal) o, rara vez,
-// `bigint` nativo de JS. Ninguno de los 3 necesita "convertirse" a otro tipo
-// de columna aquí (eso ya lo resuelve `migracion_v36_force_bigint.sql`
-// dejando `cortesias_otorgadas.jugador_id` en `bigint`, el mismo tipo que
-// `jugadores.id`) — lo único que hace falta es que SIEMPRE viaje como un
-// valor JSON serializable y limpio (nunca un `bigint` nativo, que
-// `JSON.stringify`/el cliente de Supabase no puede serializar y truena con
-// "Do not know how to serialize a BigInt"; nunca una cadena vacía en vez de
-// `null`). `null`/`undefined` se preservan tal cual (jugador sin id
-// resuelto todavía — el llamador ya valida esto antes de intentar el canje).
+// `string` (un `<select>`/prop de React SIEMPRE entrega su `value` como
+// texto, aunque el dato real sea numérico — p. ej. `clienteSeleccionadoId`
+// en Smart POS; o un bigint que PostgREST ya sirvió como texto para no
+// perder precisión), `number` (un `integer`/`bigint` ya nativo de JS) o,
+// rara vez, `bigint` nativo de JS. `cortesias_otorgadas.jugador_id` es
+// `bigint` en este proyecto (`migracion_v36_force_bigint.sql`) — mandar un
+// `number` limpio en vez de una "cadena formateada" (`"46"`, `" 46"`) evita
+// cualquier ambigüedad de tipo del lado de PostgREST/Supabase:
+//   1) Si trae forma de uuid real (proyecto donde `jugadores.id` SÍ es
+//      uuid), se manda tal cual como string — nunca se le aplica
+//      `Number()`, que lo destruiría.
+//   2) Si es un entero limpio (con o sin espacios), se convierte
+//      EXPLÍCITAMENTE con `Number.parseInt(..., 10)` a un `number` de JS —
+//      el caso confirmado de este proyecto.
+//   3) Un bigint tan grande que se saliera del rango seguro de `Number`
+//      (`Number.isSafeInteger`) se manda como string — Postgres/PostgREST
+//      aceptan un string numérico para una columna bigint sin perder
+//      precisión, y evita el "Do not know how to serialize a BigInt" de
+//      JSON.stringify si llegó como `bigint` nativo de JS.
+// `null`/`undefined`/`''` se preservan como `null` (jugador sin id resuelto
+// todavía — el llamador ya valida esto antes de intentar el canje).
 function normalizarJugadorId(id) {
   if (id === null || id === undefined || id === '') return null;
-  return typeof id === 'bigint' ? id.toString() : id;
+  const comoTexto = (typeof id === 'bigint' ? id.toString() : String(id)).trim();
+  if (PATRON_UUID.test(comoTexto)) return comoTexto;
+  if (/^-?\d+$/.test(comoTexto)) {
+    const comoNumero = Number.parseInt(comoTexto, 10);
+    return Number.isSafeInteger(comoNumero) ? comoNumero : comoTexto;
+  }
+  // Ni uuid ni entero reconocible — se manda tal cual, sin forzar nada, para
+  // no romper un tipo de columna que no reconocemos en este proyecto.
+  return typeof id === 'bigint' ? comoTexto : id;
 }
 
 // Detecta un bloqueo de RLS/permisos de Postgres — incluye el caso clásico
