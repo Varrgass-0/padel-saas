@@ -813,7 +813,6 @@ import {
   UserX,
   UserCheck,
   ShieldAlert,
-  ShieldCheck,
   TrendingDown,
   Pencil,
   Archive,
@@ -3093,8 +3092,37 @@ const MODULOS_META = {
 // principal en mobile. El botón de hamburguesa que abre ese Sidebar como
 // drawer en mobile/iPad se conserva (es la única forma de navegar ahí),
 // integrado dentro de la sección Izquierda junto al reloj.
-function TopHeader({ operador, turno, onAbrirSidebar, onAbrirOperador, alertasClub, onMarcarAlertaLeida, onMarcarTodasLeidas, onIrAJugadorDesdeAlerta }) {
+function TopHeader({
+  operador,
+  turno,
+  onAbrirSidebar,
+  onAbrirOperador,
+  onFicharSalida,
+  alertasClub,
+  onMarcarAlertaLeida,
+  onMarcarTodasLeidas,
+  onIrAJugadorDesdeAlerta,
+}) {
   const rolMeta = ROLES_POR_VALOR[operador.rol];
+  // Restricción de Privilegios (candado de seguridad): la tarjeta de
+  // operador, en la esquina superior derecha, YA NO abre el mismo menú para
+  // todos. Un Coach/Recepción/Mesero jamás debe llegar al panel de
+  // administración de personal (`ModalOperador`, que incluye "+ Nuevo
+  // empleado" y la lista completa para fichar como CUALQUIER otro
+  // colaborador sin PIN) — para ellos, el clic abre un menú mínimo con una
+  // sola opción directa: terminar su turno y volver a la Pantalla Kiosko.
+  // Solo el Propietario sigue llegando al panel completo.
+  const esOwner = operador.rol === 'owner';
+  const [menuColaboradorAbierto, setMenuColaboradorAbierto] = useState(false);
+
+  useEffect(() => {
+    if (!menuColaboradorAbierto) return;
+    const cerrar = (e) => {
+      if (!e.target.closest?.('[data-menu-operador]')) setMenuColaboradorAbierto(false);
+    };
+    document.addEventListener('mousedown', cerrar);
+    return () => document.removeEventListener('mousedown', cerrar);
+  }, [menuColaboradorAbierto]);
 
   return (
     <header className="sticky top-0 z-20 grid grid-cols-3 items-center gap-2 border-b border-slate-800 bg-slate-950/95 px-3 py-2 backdrop-blur sm:px-6">
@@ -3137,21 +3165,45 @@ function TopHeader({ operador, turno, onAbrirSidebar, onAbrirOperador, alertasCl
             onIrAJugador={onIrAJugadorDesdeAlerta}
           />
         )}
-        <button
-          onClick={onAbrirOperador}
-          className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-2 py-1.5 pr-2.5 transition hover:border-lime-400/40 hover:bg-slate-800 sm:gap-2.5 sm:px-2.5 sm:pr-3"
-        >
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime-400 text-xs font-black text-slate-950">
-            {iniciales(operador.nombre)}
-          </div>
-          <div className="hidden min-w-0 max-w-[7rem] text-left sm:block md:max-w-[10rem]">
-            <p className="truncate text-xs font-bold leading-tight text-slate-100">{operador.nombre}</p>
-            <p className="truncate text-[11px] text-slate-500">
-              {rolMeta?.label || 'Rol'} · {turno.label}
-            </p>
-          </div>
-          <ChevronDown size={14} className="hidden shrink-0 text-slate-500 sm:block" />
-        </button>
+        <div className="relative shrink-0" data-menu-operador>
+          <button
+            onClick={() => (esOwner ? onAbrirOperador() : setMenuColaboradorAbierto((v) => !v))}
+            className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-2 py-1.5 pr-2.5 transition hover:border-lime-400/40 hover:bg-slate-800 sm:gap-2.5 sm:px-2.5 sm:pr-3"
+          >
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime-400 text-xs font-black text-slate-950">
+              {iniciales(operador.nombre)}
+            </div>
+            <div className="hidden min-w-0 max-w-[7rem] text-left sm:block md:max-w-[10rem]">
+              <p className="truncate text-xs font-bold leading-tight text-slate-100">{operador.nombre}</p>
+              <p className="truncate text-[11px] text-slate-500">
+                {rolMeta?.label || 'Rol'} · {turno.label}
+              </p>
+            </div>
+            <ChevronDown size={14} className="hidden shrink-0 text-slate-500 sm:block" />
+          </button>
+
+          {/* Menú mínimo para colaboradores comunes (no Owner): SOLO la
+              opción de fichar salida — nunca el panel de administración. */}
+          {!esOwner && menuColaboradorAbierto && (
+            <div className="absolute right-0 top-full z-30 mt-2 w-64 max-w-[90vw] overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
+              <div className="border-b border-slate-800 px-3.5 py-2.5">
+                <p className="truncate text-xs font-bold text-slate-100">{operador.nombre}</p>
+                <p className="truncate text-[11px] text-slate-500">
+                  {rolMeta?.label || 'Rol'} · {turno.label}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setMenuColaboradorAbierto(false);
+                  onFicharSalida?.();
+                }}
+                className="flex w-full items-center gap-2.5 px-3.5 py-3 text-left text-xs font-bold text-rose-400 transition hover:bg-rose-500/10"
+              >
+                <LogOut size={15} className="shrink-0" /> Fichar Salida / Cambiar de Turno
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );
@@ -3953,8 +4005,15 @@ function EmptyState({ onNuevaCancha }) {
 // sistema sin nadie con quien operar.
 function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, onClose, onCerrarSesion }) {
   const toast = useToast();
+  // Restricción de Privilegios (candado de seguridad): dar de alta personal
+  // nuevo es una acción de Propietario, punto — un Coach, Cajero o Mesero
+  // jamás debe ver ni poder usar "+ Nuevo empleado", ni aunque este modal
+  // se llegara a abrir para ellos por algún otro camino en el futuro (hoy
+  // en día `TopHeader` ya ni siquiera les ofrece abrirlo — ver ahí). Esta
+  // comprobación es la defensa de respaldo, directamente en el componente.
+  const esOwner = operador.rol === 'owner';
   const [turno, setTurno] = useState(operador.turno);
-  const [modoAlta, setModoAlta] = useState(empleados.length === 0);
+  const [modoAlta, setModoAlta] = useState(esOwner && empleados.length === 0);
   const [nombreNuevo, setNombreNuevo] = useState('');
   const [rolNuevo, setRolNuevo] = useState('recepcion');
   const [creando, setCreando] = useState(false);
@@ -3997,17 +4056,19 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
           </div>
         </Campo>
 
-        {!modoAlta ? (
+        {!(esOwner && modoAlta) ? (
           <>
             <div>
               <div className="mb-1.5 flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fichar como</span>
-                <button
-                  onClick={() => setModoAlta(true)}
-                  className="inline-flex items-center gap-1 text-[11px] font-bold text-lime-400 transition hover:underline"
-                >
-                  <UserPlus size={12} /> Nuevo empleado
-                </button>
+                {esOwner && (
+                  <button
+                    onClick={() => setModoAlta(true)}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-lime-400 transition hover:underline"
+                  >
+                    <UserPlus size={12} /> Nuevo empleado
+                  </button>
+                )}
               </div>
               {empleadosActivos.length === 0 ? (
                 <p className="rounded-lg border border-dashed border-slate-700 px-3 py-4 text-center text-xs text-slate-500">
@@ -4301,8 +4362,19 @@ function ModalIngresarPin({ empleado, onClose, onExito }) {
 // `AppInterno`) de Selección de Colaborador — el corazón del sistema
 // Kiosko: se muestra cada vez que no hay un colaborador fichado en esta
 // terminal (`hayColaboradorFichado === false`), sin importar si el
-// Propietario ya iba a mitad de turno antes de refrescar — solo el clic en
-// "Entrar como Propietario" o en una tarjeta con PIN correcto abre paso.
+// Propietario ya iba a mitad de turno antes de refrescar.
+// CANDADO DE SEGURIDAD: ya NO existe ningún atajo para "entrar como
+// Propietario" sin PIN — antes había un botón verde que bypaseaba por
+// completo la verificación. El Propietario/Dueño es simplemente OTRO
+// registro de `empleados` (con `rol: 'owner'`, ver `ROLES_POR_VALOR.owner`
+// → ícono `Crown`) y su tarjeta se ficha EXACTAMENTE igual que cualquier
+// colaborador: clic en su tarjeta → PIN (o "Crea tu PIN" la primera vez).
+// La ÚNICA puerta de salida de la sesión Master (Supabase Auth) sigue
+// siendo el botón discreto de abajo — nunca una entrada directa sin PIN.
+// `AppInterno` garantiza que SIEMPRE exista al menos una tarjeta con
+// `rol: 'owner'` (ver el efecto "Auto-provisión del Propietario" ahí) para
+// que un club nuevo, sin ningún empleado dado de alta todavía, no se quede
+// sin ninguna forma de entrar.
 function PantallaKiosko({
   configClub,
   empleados,
@@ -4311,7 +4383,6 @@ function PantallaKiosko({
   onReintentarCarga,
   onEntrarComoColaborador,
   onCrearPinColaborador,
-  onEntrarComoPropietario,
   onCerrarSesionMaster,
 }) {
   const [empleadoParaPin, setEmpleadoParaPin] = useState(null);
@@ -4346,7 +4417,8 @@ function PantallaKiosko({
           <SkeletonGrid />
         ) : empleadosActivos.length === 0 ? (
           <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
-            Todavía no hay colaboradores dados de alta. Entra como Propietario y ve a Configuración → Roles para agregar al primero.
+            Todavía no se pudo cargar ninguna tarjeta. Si el problema persiste, contacta a soporte — no debería pasar: siempre
+            debe existir al menos la tarjeta del Propietario.
           </p>
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -4354,11 +4426,14 @@ function PantallaKiosko({
               const rolMeta = ROLES_POR_VALOR[emp.rol];
               const RolIcon = rolMeta?.icon || Users;
               const tienePin = emp.pin != null && String(emp.pin).trim() !== '';
+              const esOwner = emp.rol === 'owner';
               return (
                 <button
                   key={emp.id}
                   onClick={() => tocarTarjeta(emp)}
-                  className="flex flex-col items-center gap-2 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-6 text-center transition hover:border-lime-400/40 hover:bg-slate-800"
+                  className={`flex flex-col items-center gap-2 rounded-2xl border bg-slate-900 px-4 py-6 text-center transition hover:border-lime-400/40 hover:bg-slate-800 ${
+                    esOwner ? 'border-amber-400/40 ring-1 ring-amber-400/20' : 'border-slate-800'
+                  }`}
                 >
                   <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${rolMeta?.bg || 'bg-slate-800'}`}>
                     <RolIcon size={20} className={rolMeta?.color || 'text-slate-300'} />
@@ -4375,13 +4450,6 @@ function PantallaKiosko({
             })}
           </div>
         )}
-
-        <button
-          onClick={onEntrarComoPropietario}
-          className="mx-auto flex items-center gap-2 rounded-xl border border-lime-400/30 bg-lime-400/5 px-4 py-2.5 text-xs font-bold text-lime-400 transition hover:bg-lime-400/10"
-        >
-          <ShieldCheck size={14} /> Entrar como Propietario / Dueño del Club
-        </button>
 
         <div className="pt-6 text-center">
           {!confirmarLogoutMaster ? (
@@ -33032,11 +33100,28 @@ function AppInterno() {
   //     sigue consumiendo el resto de `AppInterno` (permisos, Auditoría,
   //     props hacia cada módulo) exactamente igual que antes, así que
   //     ningún otro punto del archivo necesita un guard nuevo para `null`.
-  const [operadorRaw, setOperadorRaw] = useState(() => leerOperadorActivoLocal());
+  const [operadorRaw, setOperadorRaw] = useState(() => {
+    const guardado = leerOperadorActivoLocal();
+    // Purga de sesiones del bypass eliminado ("Entrar como Propietario" sin
+    // PIN — candado de seguridad, ver `PantallaKiosko`): ese atajo siempre
+    // guardaba `id: null`. Un colaborador fichado de verdad, Propietario
+    // incluido (ver `entrarComoColaborador`), SIEMPRE trae el id real de su
+    // fila en `empleados` — nunca `null`. Cualquier sesión con `id: null`
+    // que sobreviva en el `localStorage` de un navegador es, por
+    // definición, un resto de ese bypass ya eliminado, así que se descarta
+    // aquí para que ese navegador tenga que volver a pasar por la Pantalla
+    // Kiosko con PIN la próxima vez que se abra la app.
+    if (guardado && guardado.id == null) return null;
+    return guardado;
+  });
   const operador = useMemo(
-    // Mismo objeto "Propietario" neutro de siempre — ahora es el valor que
-    // usa `entrarComoPropietario` (clic explícito en la Pantalla Kiosko) en
-    // vez de ser el fallback silencioso del primer render.
+    // Objeto de respaldo — en la práctica solo se usa mientras
+    // `hayColaboradorFichado` es `false` (la Pantalla Kiosko está en
+    // pantalla y el resto del árbol de `AppInterno`, que es quien de
+    // verdad LEE `operador`, ni siquiera se renderiza — ver el gate más
+    // abajo). Ya NO existe ningún botón que asigne este valor directo sin
+    // PIN — el Propietario ficha su propia tarjeta como cualquiera (ver
+    // "CANDADO DE SEGURIDAD" en `PantallaKiosko`).
     () => operadorRaw || { id: null, nombre: 'Propietario', turno: 'automatico', rol: 'owner' },
     [operadorRaw]
   );
@@ -33067,14 +33152,6 @@ function AppInterno() {
   const cerrarSesionColaborador = useCallback(() => {
     setModalOperador(false);
     setOperadorRaw(null);
-  }, []);
-
-  // Entrar como Propietario/Dueño — botón discreto de `PantallaKiosko`:
-  // como el Master ya se autenticó con correo/contraseña (Supabase Auth)
-  // para siquiera llegar hasta aquí (`ClubAuthGate`), no se le pide PIN —
-  // esa autenticación YA es su credencial.
-  const entrarComoPropietario = useCallback(() => {
-    setOperadorRaw({ id: null, nombre: 'Propietario', turno: 'automatico', rol: 'owner' });
   }, []);
 
   // Fichar como colaborador (PIN ya verificado por `ModalIngresarPin` antes
@@ -33166,6 +33243,38 @@ function AppInterno() {
       supabase.removeChannel(canal);
     };
   }, [cargarEmpleados]);
+
+  // Auto-provisión del Propietario (candado de seguridad — ver
+  // `PantallaKiosko`): con el botón "Entrar como Propietario" eliminado, el
+  // Master YA NO tiene ninguna forma de entrar sin tarjeta+PIN, así que
+  // SIEMPRE debe existir al menos un registro en `empleados` con
+  // `rol: 'owner'` para este club — de lo contrario un club recién creado
+  // (o uno migrado desde antes de este sistema, sin ningún empleado dado de
+  // alta todavía) se quedaría sin ninguna forma de entrar jamás. En cuanto
+  // `empleados` termina de cargar y no hay ningún `rol: 'owner'` activo, se
+  // crea uno automáticamente con el correo de la sesión de Supabase Auth ya
+  // autenticada (la ÚNICA forma de haber llegado hasta `AppInterno`) — con
+  // `pin` vacío, así que `PantallaKiosko` le pide crear su PIN la primera
+  // vez que toque su propia tarjeta, igual que a cualquier colaborador
+  // nuevo. El `ref` evita reintentarlo en bucle dentro de esta sesión —
+  // `crearEmpleado` SIEMPRE agrega algo con `rol: 'owner'` a `empleados`
+  // (real o en modo local si Supabase falla), así que una sola pasada basta.
+  const propietarioAutoProvisionadoRef = useRef(false);
+  useEffect(() => {
+    if (loadingEmpleados || propietarioAutoProvisionadoRef.current) return;
+    const yaHayOwnerActivo = empleados.some((e) => e.rol === 'owner' && e.activo !== false);
+    if (yaHayOwnerActivo) return;
+    propietarioAutoProvisionadoRef.current = true;
+    (async () => {
+      const { data } = await supabase.auth.getUser();
+      const correo = data?.user?.email || '';
+      await crearEmpleado({
+        nombre: correo ? correo.split('@')[0] : 'Propietario',
+        rol: 'owner',
+        email: correo,
+      });
+    })();
+  }, [loadingEmpleados, empleados]);
 
   const [logActividad, setLogActividad] = useState([]);
   const [loadingLogActividad, setLoadingLogActividad] = useState(true);
@@ -34861,8 +34970,9 @@ function AppInterno() {
   // Sistema Kiosko/PIN — gate de entrada: nadie ha fichado todavía en esta
   // terminal (`hayColaboradorFichado === false`). En vez del Sidebar/
   // TopHeader/módulos de siempre, se renderiza ÚNICAMENTE `PantallaKiosko`
-  // — ni un dato del club se ve hasta que alguien elija su tarjeta (con PIN)
-  // o el Propietario entre con su propio botón. Sigue envuelto en
+  // — ni un dato del club se ve hasta que alguien elija su tarjeta y ponga
+  // su PIN (el Propietario incluido — ver "CANDADO DE SEGURIDAD" en
+  // `PantallaKiosko`, ya no hay ningún bypass). Sigue envuelto en
   // `ToastContext.Provider` + `ToastHost` para que "PIN creado"/errores de
   // carga de `empleados` se vean igual que en el resto de la app.
   if (!hayColaboradorFichado) {
@@ -34876,7 +34986,6 @@ function AppInterno() {
           onReintentarCarga={() => cargarEmpleados()}
           onEntrarComoColaborador={entrarComoColaborador}
           onCrearPinColaborador={crearPinColaborador}
-          onEntrarComoPropietario={entrarComoPropietario}
           onCerrarSesionMaster={cerrarSesionClub}
         />
         <ToastHost toasts={toasts} />
@@ -34909,6 +35018,7 @@ function AppInterno() {
             turno={turno}
             onAbrirSidebar={() => setSidebarAbierto(true)}
             onAbrirOperador={() => setModalOperador(true)}
+            onFicharSalida={cerrarSesionColaborador}
             alertasClub={alertasClub}
             onMarcarAlertaLeida={marcarAlertaLeida}
             onMarcarTodasLeidas={marcarTodasAlertasLeidas}
