@@ -8048,18 +8048,19 @@ function ModuloSmartPOS({
         }
         return { ...prev, [clienteSeleccionadoId]: siguiente };
       });
-      mostrarToast(
-        resultado.registro
-          ? { titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' }
-          : {
-              titulo: 'Cortesía entregada con aviso',
-              detalle:
-                'Ticket en $0.00 generado y stock descontado — el registro de canje no se pudo guardar en la base de datos (revisa la consola y corre migracion_v36_fix_tipo_jugador_id_cortesias.sql). La insignia se apagó solo en esta pantalla; podría reaparecer hasta que se corrija.',
-              tono: 'aviso',
-            }
-      );
+      // Bloqueo Transaccional Estricto: `otorgarCortesiaCRM` solo regresa
+      // `ok: true` cuando el registro en `cortesias_otorgadas` YA quedó
+      // guardado de verdad — ya no existe el caso "éxito con aviso".
+      mostrarToast({ titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' });
     } else {
-      mostrarToast({ titulo: 'No se pudo otorgar la cortesía', detalle: resultado.error?.message || 'Intenta de nuevo.', tono: 'error' });
+      // Toast de error explícito y en rojo — el canje NO se completó: no se
+      // generó ticket ni se tocó stock (ver `otorgarCortesiaCRM`). El mismo
+      // detalle ya quedó impreso en consola con `detalleErrorSupabase`.
+      mostrarToast({
+        titulo: 'No se pudo otorgar la cortesía',
+        detalle: detalleErrorSupabase(resultado.error) || 'Revisa la consola para el detalle exacto.',
+        tono: 'error',
+      });
     }
     return resultado;
   }
@@ -10982,31 +10983,60 @@ async function descontarStockKardexAddonsReserva(
   return resultados;
 }
 
-// Otorga una Cortesía de Fidelidad CRM (Vista 360° → "Otorgar/Canjear
-// Cortesía", migracion_v35) — el Candado de Seguridad (100% de progreso
-// alcanzado) ya se validó del lado del llamador (`ModalCanjearCortesia`)
-// antes de siquiera abrir este flujo; aquí solo se EJECUTA el canje, en
-// EXACTAMENTE 3 pasos, mismo criterio "Smart POS real" que cualquier venta
-// del mostrador (Regla de Oro: se reutilizan `descontarStockKardexAddonsReserva`/
-// `insertarMovimientoKardex`, nunca se reinventa el descuento de stock):
-//   1) Ticket en Smart POS en $0.00 — mismas 8 columnas de `ventas` que usa
-//      `registrarVenta` (ver cabecera del archivo), `detalles.jugador_id`/
-//      `jugador_nombre` explícitos (así el ticket queda ligado al jugador,
-//      visible en su propio historial de Smart POS) y una nota clara del
-//      motivo del canje.
-//   2) Descuento REAL de inventario + Kardex (`descontarStockKardexAddonsReserva`,
-//      reutilizada tal cual) — el motivo del Kardex incluye "Cortesía por
-//      Fidelidad CRM" Y el nombre del jugador, para que nunca se confunda
-//      con una venta normal ni con una merma no autorizada.
-//   3) Registro en `cortesias_otorgadas` — el evento que de verdad reinicia
-//      el progreso de esa categoría a $0 (ver `cortesiaBar`/`cortesiaProShop`
-//      en `DirectorioJugadoresCRM`, que leen esta tabla).
-// Best effort en cascada, igual que el resto de la app: si el paso 1 (venta)
-// falla, se aborta todo el canje (sin ticket no hay forma de justificar el
-// descuento de inventario); si 2 o 3 fallan ya con el ticket creado, se
-// avisa por consola pero el canje NO se revierte — el jugador ya recibió su
-// producto en la vida real, revertir el ticket sería mentir sobre lo que
-// pasó en el mostrador.
+// Arma un mensaje de consola con TODO el detalle que Supabase regresa
+// (`message`/`details`/`hint`/`code`) — un solo `error.message` seguido
+// puede ocultar la parte más útil para diagnosticar (p. ej. `details` suele
+// traer el valor exacto que Postgres rechazó). Usado por `otorgarCortesiaCRM`
+// para que el bloqueo transaccional de abajo deje SIEMPRE rastro exacto en
+// consola, nunca un genérico "algo falló".
+function detalleErrorSupabase(error) {
+  if (!error) return 'Error desconocido (sin objeto de error).';
+  const partes = [];
+  if (error.message) partes.push(`message: ${error.message}`);
+  if (error.details) partes.push(`details: ${error.details}`);
+  if (error.hint) partes.push(`hint: ${error.hint}`);
+  if (error.code) partes.push(`code: ${error.code}`);
+  return partes.length > 0 ? partes.join(' | ') : String(error);
+}
+
+// Otorga una Cortesía de Fidelidad CRM (Vista 360° / Smart POS →
+// "Otorgar/Canjear Cortesía", migracion_v35) — el Candado de Seguridad (100%
+// de progreso alcanzado) ya se validó del lado del llamador
+// (`ModalCanjearCortesia`) antes de siquiera abrir este flujo; aquí se
+// EJECUTA el canje.
+//
+// BLOQUEO TRANSACCIONAL ESTRICTO (fix de integridad — antes el registro en
+// `cortesias_otorgadas` era el ÚLTIMO paso y, si fallaba, el canje se
+// reportaba como "exitoso con aviso" de todos modos con un reinicio SOLO
+// LOCAL/temporal del progreso — que se perdía en el siguiente reload,
+// dejando la barra otra vez en el gasto histórico completo aunque el ticket
+// y el stock SÍ se hubieran movido de verdad). Ahora el registro en
+// `cortesias_otorgadas` es el PRIMER paso y es un REQUISITO INDISPENSABLE,
+// no un "best effort" más — sin él, NO se genera ticket y NO se toca stock:
+//   1) Registro en `cortesias_otorgadas` PRIMERO — el evento que de verdad
+//      reinicia el progreso de esa categoría a $0 (ver `cortesiaBar`/
+//      `cortesiaProShop` en `DirectorioJugadoresCRM`). Si esto falla por
+//      CUALQUIER motivo, la función ABORTA aquí mismo: no hay ticket $0.00,
+//      no hay descuento de stock/Kardex, y no se regresa `ok: true` bajo
+//      ninguna circunstancia — se regresa `ok: false` con el error completo
+//      (`detalleErrorSupabase`) impreso en consola para diagnóstico exacto.
+//   2) Ticket en Smart POS en $0.00 — mismas columnas que usa `registrarVenta`
+//      (ver cabecera del archivo), con `detalles.jugador_id`/`jugador_nombre`
+//      explícitos. Si ESTE paso falla, se hace un ROLLBACK de compensación
+//      (se borra el registro insertado en el paso 1) para no dejar un
+//      "canje huérfano" que reinició el progreso sin haber entregado nada —
+//      y se aborta igual con `ok: false`.
+//   3) Se actualiza `cortesias_otorgadas.venta_id` con el id real del
+//      ticket ya creado (best effort — solo enlaza el registro con su
+//      ticket para auditoría; si falla, el registro y el ticket ya están
+//      guardados de verdad, así que NO se aborta por esto).
+//   4) Descuento REAL de inventario + Kardex (`descontarStockKardexAddonsReserva`,
+//      reutilizada tal cual — Regla de Oro, nunca se reinventa el descuento
+//      de stock). Si falla, se avisa fuerte por consola pero NO se revierte
+//      el canje — para este punto el registro y el ticket YA son reales
+//      (dinero/fidelidad ya se movieron de verdad), revertirlos sería
+//      mentir sobre lo que pasó; el ajuste de stock queda pendiente de
+//      corrección manual.
 async function otorgarCortesiaCRM({
   jugador,
   categoria,
@@ -11025,8 +11055,48 @@ async function otorgarCortesiaCRM({
   }
   const nombreItem = variante?.nombre ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
   const etiquetaCategoria = categoria === 'bar' ? 'Restaurante/Bar' : 'Pro-Shop';
+  // Fallback/Resiliencia de Tipos de Datos: `jugador.id` puede llegar como
+  // `string` (uuid, o un bigint que PostgREST ya sirvió como texto),
+  // `number` o, rara vez, `bigint` nativo de JS — se normaliza UNA vez aquí
+  // (nunca un `bigint` nativo sin convertir, que rompe la serialización
+  // JSON del cliente de Supabase) y se reutiliza en los 2 inserts de abajo.
+  const jugadorIdNormalizado = normalizarJugadorId(jugador.id);
 
-  // 1) Ticket en Smart POS, $0.00.
+  // 1) REQUISITO INDISPENSABLE — registro del canje. `venta_id` va en null
+  // por ahora (el ticket todavía no existe); se completa en el paso 3.
+  const { data: registro, error: errorRegistro } = await insertarConColumnasOpcionales(
+    'cortesias_otorgadas',
+    {
+      jugador_id: jugadorIdNormalizado,
+      jugador_nombre: jugador.nombre || 'Jugador',
+      categoria,
+      producto_id: producto.id,
+      producto_nombre: nombreItem,
+      variante_id: variante?.id || null,
+      venta_id: null,
+      monto_meta_aplicado: Number(metaAplicada) || null,
+      operador: operador?.nombre || null,
+    },
+    ['variante_id', 'venta_id', 'monto_meta_aplicado', 'operador']
+  );
+  if (errorRegistro) {
+    // Diagnóstico específico (bug real encontrado y corregido en
+    // `migracion_v36_fix_tipo_jugador_id_cortesias.sql`): un error de TIPO
+    // incompatible (`esErrorTipoUUIDInvalido`, Postgres 22P02) casi siempre
+    // significa que `cortesias_otorgadas.jugador_id` todavía no tiene el
+    // mismo tipo que `jugadores.id` en este proyecto.
+    const pista = esErrorTipoUUIDInvalido(errorRegistro)
+      ? ' Esto normalmente significa que cortesias_otorgadas.jugador_id NO tiene el mismo tipo de dato que jugadores.id — corre migracion_v36_fix_tipo_jugador_id_cortesias.sql en Supabase y vuelve a intentar.'
+      : '';
+    console.error(
+      `[CRM] BLOQUEO TRANSACCIONAL — el canje se abortó por completo (NO se generó ticket, NO se tocó stock/Kardex) porque no se pudo guardar el registro en cortesias_otorgadas. ${detalleErrorSupabase(errorRegistro)}.${pista}`,
+      errorRegistro
+    );
+    return { ok: false, error: errorRegistro, venta: null, registro: null };
+  }
+
+  // 2) Ticket en Smart POS, $0.00 — SOLO se intenta porque el paso 1 (el
+  // requisito indispensable) ya quedó guardado de verdad.
   const payloadVenta = withClubId({
     total: 0,
     metodo_pago: 'Cortesía',
@@ -11060,11 +11130,38 @@ async function otorgarCortesiaCRM({
     ({ data: venta, error: errorVenta } = await supabase.from('ventas').insert(sinOrigen).select().single());
   }
   if (errorVenta) {
-    console.error('[CRM] Error detallado Supabase al registrar el ticket de Cortesía en Smart POS:', errorVenta);
-    return { ok: false, error: errorVenta };
+    // ROLLBACK de compensación: sin ticket, el registro del paso 1 quedaría
+    // "huérfano" (reinició el progreso del jugador sin que se le haya
+    // entregado nada de verdad) — se borra para que el canje completo quede
+    // en cero, tal como si nunca se hubiera intentado.
+    const { error: errorRollback } = await supabase.from('cortesias_otorgadas').delete().eq('id', registro.id);
+    if (errorRollback) {
+      console.error(
+        `[CRM] BLOQUEO TRANSACCIONAL — el ticket $0.00 falló Y el rollback del registro ${registro.id} en cortesias_otorgadas TAMBIÉN falló (queda un registro huérfano que hay que borrar a mano). Error del ticket: ${detalleErrorSupabase(errorVenta)}. Error del rollback: ${detalleErrorSupabase(errorRollback)}.`,
+        { errorVenta, errorRollback }
+      );
+    } else {
+      console.error(
+        `[CRM] BLOQUEO TRANSACCIONAL — el canje se abortó por completo (NO se tocó stock/Kardex; el registro en cortesias_otorgadas se revirtió) porque no se pudo generar el ticket $0.00 en Smart POS. ${detalleErrorSupabase(errorVenta)}.`,
+        errorVenta
+      );
+    }
+    return { ok: false, error: errorVenta, venta: null, registro: null };
   }
 
-  // 2) Descuento real de inventario + Kardex.
+  // 3) Enlaza el registro con su ticket real — best effort (no aborta el
+  // canje si falla: para este punto el reinicio de progreso y el ticket YA
+  // son reales, esto solo mejora la auditoría).
+  const { error: errorEnlaceVenta } = await supabase.from('cortesias_otorgadas').update({ venta_id: venta.id }).eq('id', registro.id);
+  if (errorEnlaceVenta) {
+    console.warn(
+      `[CRM] Cortesía entregada y registrada de verdad, pero no se pudo enlazar cortesias_otorgadas.venta_id con el ticket ${venta.id} (solo afecta la auditoría, no el reinicio del progreso). ${detalleErrorSupabase(errorEnlaceVenta)}.`,
+      errorEnlaceVenta
+    );
+  }
+
+  // 4) Descuento real de inventario + Kardex — best effort (ver comentario
+  // de la función: para este punto el canje ya es real de verdad).
   const itemParaKardex = [
     {
       producto_id: producto.id,
@@ -11087,52 +11184,10 @@ async function otorgarCortesiaCRM({
   });
   const fallosStock = resultadosStock.filter((r) => !r.ok);
   if (fallosStock.length > 0) {
-    console.error('[CRM] Cortesía entregada y ticket registrado, pero el stock/Kardex no se pudo descontar:', fallosStock);
+    console.error('[CRM] Cortesía entregada y registrada de verdad, pero el stock/Kardex no se pudo descontar — corrígelo a mano:', fallosStock);
   }
 
-  // 3) Registro del canje — el corte que reinicia el progreso a $0.
-  const { data: registro, error: errorRegistro } = await insertarConColumnasOpcionales(
-    'cortesias_otorgadas',
-    {
-      jugador_id: jugador.id,
-      jugador_nombre: jugador.nombre || 'Jugador',
-      categoria,
-      producto_id: producto.id,
-      producto_nombre: nombreItem,
-      variante_id: variante?.id || null,
-      venta_id: venta?.id || null,
-      monto_meta_aplicado: Number(metaAplicada) || null,
-      operador: operador?.nombre || null,
-    },
-    ['variante_id', 'venta_id', 'monto_meta_aplicado', 'operador']
-  );
-  if (errorRegistro) {
-    // Diagnóstico específico (bug real encontrado y corregido en
-    // `migracion_v36_fix_tipo_jugador_id_cortesias.sql`): si el error es de
-    // TIPO incompatible (`esErrorTipoUUIDInvalido`, Postgres 22P02) —
-    // típicamente `cortesias_otorgadas.jugador_id` quedó como `uuid` cuando
-    // `jugadores.id` en este proyecto en realidad es `bigint` — el registro
-    // del canje falla SIEMPRE, no solo esta vez, y el progreso NUNCA se
-    // reinicia de verdad en la base de datos (solo de forma optimista y
-    // temporal en la sesión que hizo el canje, hasta el próximo reload). Se
-    // deja un mensaje de consola accionable en vez del genérico de "tabla
-    // sin migrar", porque la tabla SÍ existe — lo que falla es su tipo de
-    // columna.
-    if (esErrorTipoUUIDInvalido(errorRegistro)) {
-      console.error(
-        '[CRM] Cortesía entregada (ticket + inventario ya se aplicaron), pero cortesias_otorgadas.jugador_id tiene un tipo de dato incompatible con jugadores.id — corre migracion_v36_fix_tipo_jugador_id_cortesias.sql en Supabase. Hasta entonces, el progreso de esta categoría SOLO se reinicia de forma temporal en esta sesión (vuelve al gasto histórico completo si recargas la página).',
-        errorRegistro
-      );
-    } else {
-      console.error(
-        '[CRM] Cortesía entregada (ticket + inventario ya se aplicaron), pero no se pudo guardar el registro en cortesias_otorgadas — el progreso podría no reiniciarse solo hasta que la tabla exista.',
-        errorRegistro
-      );
-    }
-    return { ok: true, error: errorRegistro, venta, registro: null };
-  }
-
-  return { ok: true, error: null, venta, registro };
+  return { ok: true, error: null, venta, registro: { ...registro, venta_id: venta.id } };
 }
 
 // Edición manual de UNA variante dentro de `productos.variantes` — mismo
@@ -17288,6 +17343,24 @@ function esErrorTipoUUIDInvalido(error) {
 function valorUUIDInvalidoDelError(error) {
   const match = /invalid input syntax for type uuid:\s*"([^"]*)"/i.exec(error?.message || '');
   return match ? match[1] : null;
+}
+
+// Normaliza un `jugador_id` antes de mandarlo a Supabase (Fallback/
+// Resiliencia de Tipos de Datos, Motor de Cortesías) — puede llegar como
+// `string` (uuid, o un bigint que PostgREST ya sirvió como texto para no
+// perder precisión), `number` (un `integer`/`int4` normal) o, rara vez,
+// `bigint` nativo de JS. Ninguno de los 3 necesita "convertirse" a otro tipo
+// de columna aquí (eso ya lo resuelve `migracion_v36_fix_tipo_jugador_id_cortesias.sql`
+// dejando `cortesias_otorgadas.jugador_id` con el mismo tipo que
+// `jugadores.id`) — lo único que hace falta es que SIEMPRE viaje como un
+// valor JSON serializable y limpio (nunca un `bigint` nativo, que
+// `JSON.stringify`/el cliente de Supabase no puede serializar y truena con
+// "Do not know how to serialize a BigInt"; nunca una cadena vacía en vez de
+// `null`). `null`/`undefined` se preservan tal cual (jugador sin id
+// resuelto todavía — el llamador ya valida esto antes de intentar el canje).
+function normalizarJugadorId(id) {
+  if (id === null || id === undefined || id === '') return null;
+  return typeof id === 'bigint' ? id.toString() : id;
 }
 
 // Detecta un bloqueo de RLS/permisos de Postgres — incluye el caso clásico
@@ -26269,55 +26342,25 @@ function DirectorioJugadoresCRM({
           upsertProducto={upsertProducto}
           upsertVarianteProducto={upsertVarianteProducto}
           onCortesiaOtorgada={(resultado) => {
-            // FIX DE SEGURIDAD CRÍTICO (Reset Inmediato del Progreso): antes
-            // la barra solo se reiniciaba cuando `cargarCortesiasOtorgadas()`
-            // terminaba de ir y volver a Supabase — una ventana real en la
-            // que el Candado de Seguridad seguía viendo `lista: true` y
-            // permitía otorgar cortesías consecutivas de la MISMA categoría
-            // al mismo jugador. Ahora `cortesiasOtorgadas` se actualiza de
-            // forma OPTIMISTA Y SÍNCRONA apenas `otorgarCortesiaCRM` regresa
-            // `ok: true` — `perfiles` (que depende de `cortesiasOtorgadas`,
-            // ver su arreglo de dependencias) recalcula en el mismo ciclo de
-            // render y la barra pasa a $0/$Meta y el botón vuelve a
-            // "Bloqueado hasta llegar al 100%" al instante, sin esperar
-            // ninguna vuelta de red.
-            setCortesiasOtorgadas((prev) => [
-              resultado.registro || {
-                // El ticket y el stock YA se aplicaron de verdad (ver
-                // `otorgarCortesiaCRM`), pero el registro real en
-                // `cortesias_otorgadas` no se pudo guardar (tabla sin
-                // migrar/columna faltante) — se sintetiza una entrada SOLO
-                // LOCAL (id con prefijo `local-`, nunca se manda a Supabase)
-                // para que el progreso de ESTA sesión igual se reinicie de
-                // inmediato; ver el `if` de abajo, que a propósito NO
-                // recarga desde Supabase en este caso para no perderla.
-                id: `local-${Date.now()}`,
-                jugador_id: resultado.jugadorId,
-                jugador_nombre: resultado.jugadorNombre,
-                categoria: resultado.categoria,
-                created_at: new Date().toISOString(),
-              },
-              ...prev,
-            ]);
-            mostrarToast(
-              resultado.registro
-                ? { titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' }
-                : {
-                    titulo: 'Cortesía entregada con aviso',
-                    detalle:
-                      'Ticket en $0.00 generado y stock descontado — el registro de canje no se pudo guardar en la base de datos (revisa la consola y corre migracion_v36_fix_tipo_jugador_id_cortesias.sql). El progreso de este jugador solo se reinició en esta sesión; volverá a su gasto histórico si recargas la página.',
-                    tono: 'aviso',
-                  }
-            );
-            // Reconciliación en segundo plano — SOLO cuando sí hay un
-            // registro real en Supabase: reemplaza la lista optimista por la
-            // autoritativa (además de propagar el canje a otros
-            // dispositivos abiertos de este club, junto con el eco del canal
-            // `jugadores-crm-cortesias`). Si `resultado.registro` es `null`
-            // (caso sintético de arriba), NO se recarga — `cargarCortesiasOtorgadas()`
-            // reemplaza el arreglo completo y borraría la entrada local
-            // recién sintetizada, ya que Supabase nunca llegó a guardarla.
-            if (resultado.registro) cargarCortesiasOtorgadas();
+            // FIX DE SEGURIDAD CRÍTICO (Reset Inmediato del Progreso): la
+            // barra no espera a que `cargarCortesiasOtorgadas()` vaya y
+            // vuelva de Supabase — en cuanto `otorgarCortesiaCRM` regresa
+            // `ok: true` (lo que, con el Bloqueo Transaccional Estricto de
+            // esa función, SOLO pasa si el registro ya quedó guardado de
+            // verdad en `cortesias_otorgadas`), `cortesiasOtorgadas` se
+            // actualiza de forma OPTIMISTA Y SÍNCRONA con `resultado.registro`
+            // — `perfiles` (que depende de `cortesiasOtorgadas`) recalcula en
+            // el mismo ciclo de render y la barra pasa a $0/$Meta al
+            // instante, sin esperar ninguna vuelta de red.
+            setCortesiasOtorgadas((prev) => [resultado.registro, ...prev]);
+            mostrarToast({ titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' });
+            // Reconciliación en segundo plano: reemplaza la lista optimista
+            // por la autoritativa de Supabase (además de propagar el canje a
+            // otros dispositivos abiertos de este club, junto con el eco del
+            // canal `jugadores-crm-cortesias`). Ya no hace falta ningún `if`
+            // de por medio — con el registro ahora obligatorio, siempre hay
+            // algo real que reconciliar.
+            cargarCortesiasOtorgadas();
           }}
         />
       )}
@@ -26796,6 +26839,7 @@ function ModalPerfilJugadorCRM({
   upsertVarianteProducto,
   onCortesiaOtorgada,
 }) {
+  const mostrarToast = useToast();
   const [editandoTelefono, setEditandoTelefono] = useState(false);
   const [telefonoDraft, setTelefonoDraft] = useState(perfil.telefono || '');
   const [guardando, setGuardando] = useState(false);
@@ -26866,11 +26910,23 @@ function ModalPerfilJugadorCRM({
     setCanjeando(false);
     if (resultado.ok) {
       setCanjeCategoria(null);
-      // Contexto extra (jugador/categoría) para que `onCortesiaOtorgada`
-      // (en `DirectorioJugadoresCRM`) pueda reiniciar el progreso de forma
-      // optimista sin depender de `resultado.registro` (puede venir `null`
-      // si solo falló el paso 3 de `otorgarCortesiaCRM`).
-      onCortesiaOtorgada?.({ ...resultado, jugadorId: perfil.id, jugadorNombre: perfil.nombre, categoria });
+      // Bloqueo Transaccional Estricto: `otorgarCortesiaCRM` ya garantiza
+      // que `resultado.registro` SIEMPRE viene lleno cuando `ok: true` — si
+      // el registro en `cortesias_otorgadas` no se pudo guardar, la función
+      // aborta todo el canje y regresa `ok: false` (nunca "éxito con
+      // aviso"), así que aquí ya no hace falta ningún respaldo local/
+      // sintético.
+      onCortesiaOtorgada?.(resultado);
+    } else {
+      // Toast de error explícito y en rojo (`tono: 'error'`) — el canje NO
+      // se completó, no se generó ticket ni se tocó stock. El mensaje
+      // inline del propio `ModalCanjearCortesia` (más abajo) también se
+      // actualiza con el mismo error para quien no vea el toast a tiempo.
+      mostrarToast({
+        titulo: 'No se pudo otorgar la cortesía',
+        detalle: detalleErrorSupabase(resultado.error) || 'Revisa la consola para el detalle exacto.',
+        tono: 'error',
+      });
     }
     return resultado;
   }
