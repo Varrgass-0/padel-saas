@@ -11081,12 +11081,12 @@ async function otorgarCortesiaCRM({
   );
   if (errorRegistro) {
     // Diagnóstico específico (bug real encontrado y corregido en
-    // `migracion_v36_fix_tipo_jugador_id_cortesias.sql`): un error de TIPO
+    // `migracion_v36_force_bigint.sql`): un error de TIPO
     // incompatible (`esErrorTipoUUIDInvalido`, Postgres 22P02) casi siempre
     // significa que `cortesias_otorgadas.jugador_id` todavía no tiene el
     // mismo tipo que `jugadores.id` en este proyecto.
     const pista = esErrorTipoUUIDInvalido(errorRegistro)
-      ? ' Esto normalmente significa que cortesias_otorgadas.jugador_id NO tiene el mismo tipo de dato que jugadores.id — corre migracion_v36_fix_tipo_jugador_id_cortesias.sql en Supabase y vuelve a intentar.'
+      ? ' Esto normalmente significa que cortesias_otorgadas.jugador_id NO tiene el mismo tipo de dato que jugadores.id — corre migracion_v36_force_bigint.sql en Supabase (elimina cualquier índice/llave foránea sobre jugador_id y fuerza el tipo a bigint) y vuelve a intentar.'
       : '';
     console.error(
       `[CRM] BLOQUEO TRANSACCIONAL — el canje se abortó por completo (NO se generó ticket, NO se tocó stock/Kardex) porque no se pudo guardar el registro en cortesias_otorgadas. ${detalleErrorSupabase(errorRegistro)}.${pista}`,
@@ -17350,8 +17350,8 @@ function valorUUIDInvalidoDelError(error) {
 // `string` (uuid, o un bigint que PostgREST ya sirvió como texto para no
 // perder precisión), `number` (un `integer`/`int4` normal) o, rara vez,
 // `bigint` nativo de JS. Ninguno de los 3 necesita "convertirse" a otro tipo
-// de columna aquí (eso ya lo resuelve `migracion_v36_fix_tipo_jugador_id_cortesias.sql`
-// dejando `cortesias_otorgadas.jugador_id` con el mismo tipo que
+// de columna aquí (eso ya lo resuelve `migracion_v36_force_bigint.sql`
+// dejando `cortesias_otorgadas.jugador_id` en `bigint`, el mismo tipo que
 // `jugadores.id`) — lo único que hace falta es que SIEMPRE viaje como un
 // valor JSON serializable y limpio (nunca un `bigint` nativo, que
 // `JSON.stringify`/el cliente de Supabase no puede serializar y truena con
