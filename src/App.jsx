@@ -11026,17 +11026,23 @@ function detalleErrorSupabase(error) {
 //      (se borra el registro insertado en el paso 1) para no dejar un
 //      "canje huérfano" que reinició el progreso sin haber entregado nada —
 //      y se aborta igual con `ok: false`.
-//   3) Se actualiza `cortesias_otorgadas.venta_id` con el id real del
-//      ticket ya creado (best effort — solo enlaza el registro con su
-//      ticket para auditoría; si falla, el registro y el ticket ya están
-//      guardados de verdad, así que NO se aborta por esto).
-//   4) Descuento REAL de inventario + Kardex (`descontarStockKardexAddonsReserva`,
+//   3) Descuento REAL de inventario + Kardex (`descontarStockKardexAddonsReserva`,
 //      reutilizada tal cual — Regla de Oro, nunca se reinventa el descuento
 //      de stock). Si falla, se avisa fuerte por consola pero NO se revierte
 //      el canje — para este punto el registro y el ticket YA son reales
 //      (dinero/fidelidad ya se movieron de verdad), revertirlos sería
 //      mentir sobre lo que pasó; el ajuste de stock queda pendiente de
 //      corrección manual.
+//
+// ESQUEMA ESTRICTO DE `cortesias_otorgadas` (reescritura limpia — ya no hay
+// Arquitectura Flexible/columnas opcionales para esta tabla en particular):
+// exactamente `club_id` (bigint), `jugador_id` (text), `categoria` (text),
+// `monto_meta` (numeric) + `id`/`created_at` con default. NO tiene
+// `jugador_nombre`, `producto_id`, `producto_nombre`, `variante_id` ni
+// `venta_id` — cada intento de mandar una de esas terminó en un PGRST204
+// distinto porque simplemente no existen en la tabla real de este proyecto.
+// El vínculo "qué se entregó"/"qué ticket generó este canje" vive en
+// `ventas.detalles` (la venta en $0.00 del paso 2), no en esta tabla.
 async function otorgarCortesiaCRM({
   jugador,
   categoria,
@@ -11053,58 +11059,36 @@ async function otorgarCortesiaCRM({
   if (!jugador?.id || !producto?.id || (categoria !== 'bar' && categoria !== 'proshop')) {
     return { ok: false, error: new Error('Faltan datos del jugador, producto o categoría para otorgar la cortesía.') };
   }
+  if (!CLUB_ACTIVO_ID) {
+    return { ok: false, error: new Error('No hay un club activo en esta sesión — no se puede otorgar la cortesía todavía.') };
+  }
   const nombreItem = variante?.nombre ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
   const etiquetaCategoria = categoria === 'bar' ? 'Restaurante/Bar' : 'Pro-Shop';
-  // Fallback/Resiliencia de Tipos de Datos: `jugador.id` puede llegar como
-  // `string` (uuid, o un bigint que PostgREST ya sirvió como texto),
-  // `number` o, rara vez, `bigint` nativo de JS — se normaliza UNA vez aquí
-  // (nunca un `bigint` nativo sin convertir, que rompe la serialización
-  // JSON del cliente de Supabase) y se reutiliza en los 2 inserts de abajo.
-  const jugadorIdNormalizado = normalizarJugadorId(jugador.id);
 
-  // 1) REQUISITO INDISPENSABLE — registro del canje. `venta_id` va en null
-  // por ahora (el ticket todavía no existe); se completa en el paso 3.
-  // Sanitización del Payload (Arquitectura Flexible — MISMO criterio que
-  // CUALQUIER otro insert de este archivo vía `insertarConColumnasOpcionales`,
-  // en vez de mandar un payload fijo con nombres de columna adivinados):
-  // el bug real encontrado fue `PGRST204 — Could not find the
-  // 'jugador_nombre' column of 'cortesias_otorgadas' in the schema cache`,
-  // es decir, la tabla `cortesias_otorgadas` de este proyecto en particular
-  // NO tiene esa columna (a diferencia de lo que crea `migracion_v35` desde
-  // cero). `jugador_nombre` y `producto_nombre` son datos DESCRIPTIVOS (solo
-  // para que el registro se lea solo en una auditoría — el candado de
-  // negocio real es `jugador_id`+`categoria`+`created_at`, que sí son
-  // obligatorios), así que se mueven a `columnasOpcionales`: si la columna
-  // no existe en este proyecto, `insertarConColumnasOpcionales` reintenta
-  // sin ella en vez de abortar el canje completo por un campo que no cambia
-  // el resultado del negocio.
-  const { data: registro, error: errorRegistro } = await insertarConColumnasOpcionales(
-    'cortesias_otorgadas',
-    {
-      jugador_id: jugadorIdNormalizado,
-      jugador_nombre: jugador.nombre || 'Jugador',
-      categoria,
-      producto_id: producto.id,
-      producto_nombre: nombreItem,
-      variante_id: variante?.id || null,
-      venta_id: null,
-      monto_meta_aplicado: Number(metaAplicada) || null,
-      operador: operador?.nombre || null,
-    },
-    ['jugador_nombre', 'producto_nombre', 'variante_id', 'venta_id', 'monto_meta_aplicado', 'operador']
-  );
+  // 1) REQUISITO INDISPENSABLE — registro del canje. REESCRITURA LIMPIA
+  // (bug real: cada intento anterior de mandar una columna "descriptiva"
+  // más — `jugador_nombre`, luego `producto_id` — tronó con un PGRST204
+  // distinto, porque la tabla real en Supabase NUNCA tuvo esas columnas).
+  // El esquema OFICIAL y único de `cortesias_otorgadas` en este proyecto es
+  // exactamente: `club_id` (bigint), `jugador_id` (text), `categoria`
+  // (text), `monto_meta` (numeric), `created_at` (default now()) — más su
+  // `id` primary key. INSERT directo con un payload fijo de esas 4 columnas
+  // de negocio, sin Arquitectura Flexible/columnas opcionales/reintentos
+  // dinámicos para esta tabla: no hay nada más que adivinar.
+  const payloadCortesia = {
+    club_id: Number(CLUB_ACTIVO_ID),
+    jugador_id: String(jugador.id).trim(),
+    categoria: String(categoria).trim(),
+    monto_meta: Number(metaAplicada) || null,
+  };
+  const { data: registro, error: errorRegistro } = await supabase
+    .from('cortesias_otorgadas')
+    .insert(payloadCortesia)
+    .select()
+    .single();
   if (errorRegistro) {
-    // Diagnóstico específico (bug real encontrado y corregido en
-    // `migracion_v36_fix_absoluto_text.sql`): un error de TIPO
-    // incompatible (`esErrorTipoUUIDInvalido`, Postgres 22P02) casi siempre
-    // significa que `cortesias_otorgadas.jugador_id` todavía no es `text`
-    // en este proyecto (columna vieja en `uuid`/`bigint` que sigue
-    // rechazando el valor que manda `jugador_nombre`/`jugador_id`).
-    const pista = esErrorTipoUUIDInvalido(errorRegistro)
-      ? ' Esto normalmente significa que cortesias_otorgadas.jugador_id NO es de tipo text — corre migracion_v36_fix_absoluto_text.sql en Supabase (elimina cualquier índice/llave foránea sobre jugador_id, lo convierte a text y refresca el caché de PostgREST) y vuelve a intentar.'
-      : '';
     console.error(
-      `[CRM] BLOQUEO TRANSACCIONAL — el canje se abortó por completo (NO se generó ticket, NO se tocó stock/Kardex) porque no se pudo guardar el registro en cortesias_otorgadas. ${detalleErrorSupabase(errorRegistro)}.${pista}`,
+      `[CRM] BLOQUEO TRANSACCIONAL — el canje se abortó por completo (NO se generó ticket, NO se tocó stock/Kardex) porque no se pudo guardar el registro en cortesias_otorgadas. ${detalleErrorSupabase(errorRegistro)}.`,
       errorRegistro
     );
     return { ok: false, error: errorRegistro, venta: null, registro: null };
@@ -11164,19 +11148,12 @@ async function otorgarCortesiaCRM({
     return { ok: false, error: errorVenta, venta: null, registro: null };
   }
 
-  // 3) Enlaza el registro con su ticket real — best effort (no aborta el
-  // canje si falla: para este punto el reinicio de progreso y el ticket YA
-  // son reales, esto solo mejora la auditoría).
-  const { error: errorEnlaceVenta } = await supabase.from('cortesias_otorgadas').update({ venta_id: venta.id }).eq('id', registro.id);
-  if (errorEnlaceVenta) {
-    console.warn(
-      `[CRM] Cortesía entregada y registrada de verdad, pero no se pudo enlazar cortesias_otorgadas.venta_id con el ticket ${venta.id} (solo afecta la auditoría, no el reinicio del progreso). ${detalleErrorSupabase(errorEnlaceVenta)}.`,
-      errorEnlaceVenta
-    );
-  }
-
-  // 4) Descuento real de inventario + Kardex — best effort (ver comentario
-  // de la función: para este punto el canje ya es real de verdad).
+  // 3) Descuento real de inventario + Kardex — best effort (para este punto
+  // el canje ya es real: el registro en cortesias_otorgadas y el ticket
+  // $0.00 quedaron guardados de verdad). `cortesias_otorgadas` ya NO tiene
+  // columna `venta_id` que enlazar (esquema estricto de 4 campos) — el
+  // vínculo "qué ticket generó este canje" queda dentro de `ventas.detalles`
+  // (`nota: 'Cortesía por Fidelidad CRM · ...'`), no en `cortesias_otorgadas`.
   const itemParaKardex = [
     {
       producto_id: producto.id,
@@ -11202,7 +11179,7 @@ async function otorgarCortesiaCRM({
     console.error('[CRM] Cortesía entregada y registrada de verdad, pero el stock/Kardex no se pudo descontar — corrígelo a mano:', fallosStock);
   }
 
-  return { ok: true, error: null, venta, registro: { ...registro, venta_id: venta.id } };
+  return { ok: true, error: null, venta, registro };
 }
 
 // Edición manual de UNA variante dentro de `productos.variantes` — mismo
@@ -17360,26 +17337,6 @@ function valorUUIDInvalidoDelError(error) {
   return match ? match[1] : null;
 }
 
-// Normaliza un `jugador_id` antes de mandarlo a Supabase (Fallback/
-// Resiliencia de Tipos de Datos, Motor de Cortesías). SOLUCIÓN DEFINITIVA
-// (`migracion_v36_fix_absoluto_text.sql`): tras dos intentos fallidos de
-// hacer coincidir `cortesias_otorgadas.jugador_id` con el tipo exacto de
-// `jugadores.id` (primero `uuid`→`bigint` con detección dinámica, luego con
-// casteo forzado — el error `22P02 invalid input syntax for type uuid`
-// siguió apareciendo igual en ambos casos), la columna se volvió `text`: un
-// tipo que Postgres NUNCA valida contra ningún formato (uuid, entero, lo que
-// sea) — así que la única regla del lado del código es mandar SIEMPRE un
-// string plano, nunca un `number`/`bigint` nativo ni una cadena con espacios
-// sueltos. Puede llegar como `string` (un `<select>`/prop de React siempre
-// entrega su `value` como texto — p. ej. `clienteSeleccionadoId` en Smart
-// POS), `number` (un `integer`/`bigint` ya nativo de JS) o `bigint` nativo
-// de JS (que `JSON.stringify` no sabe serializar si no se convierte antes).
-// `null`/`undefined`/`''` se preservan como `null` (jugador sin id resuelto
-// todavía — el llamador ya valida esto antes de intentar el canje).
-function normalizarJugadorId(id) {
-  if (id === null || id === undefined || id === '') return null;
-  return String(id).trim();
-}
 
 // Detecta un bloqueo de RLS/permisos de Postgres — incluye el caso clásico
 // de PostgREST cuando un `INSERT` SÍ se guardó (la política de escritura
