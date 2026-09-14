@@ -316,7 +316,12 @@
 //                           estado_pago ('pagado'|'pendiente'),
 //                           estado ('confirmado'|'cancelado'|'retenido' —
 //                           'retenido' = canceló dentro de la ventana de
-//                           tolerancia, sin reembolso), created_at, club_id.
+//                           tolerancia, sin reembolso), motivo_cancelacion
+//                           (text, nullable, OPCIONAL — Control Interno:
+//                           motivo obligatorio capturado al cancelar una
+//                           inscripción pendiente de cobro desde Smart POS,
+//                           ver `cancelarInscripcionEvento`), created_at,
+//                           club_id.
 //    - torneos:             id, nombre, categorias (jsonb — array de
 //                           {rama, nivel}), precio (numeric),
 //                           unidad_precio ('pareja'|'jugador'),
@@ -342,7 +347,15 @@
 //    - torneo_participantes: id, torneo_id, nombre, telefono, correo, nivel,
 //                           categoria (texto libre), monto,
 //                           estado_pago ('pagado'|'pendiente'), created_at,
-//                           club_id.
+//                           club_id. Sin columna `estado` propia (a
+//                           diferencia de `reta_inscripciones`/
+//                           `academia_alumnos`) — Control Interno: cancelar
+//                           una inscripción pendiente de cobro desde Smart
+//                           POS (`cancelarInscripcionEvento`) borra la fila
+//                           directamente, que es lo mismo que ya usan Mesa de
+//                           Control/Portal para contar inscritos
+//                           (`participantesTorneo.length`, sin tope de cupo
+//                           fijo en Torneos).
 //    - torneo_partidos:     (Motor de Torneos, Fase 1 — Cuadros & Partidos)
 //                           id, torneo_id, categoria (texto libre, nullable —
 //                           null si el torneo no tiene categorías), ronda
@@ -8034,7 +8047,67 @@ function itemsEditablesDeGrupo(grupo) {
   return { items: [], ajuste: 0 };
 }
 
-function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando }) {
+// Anulación / Cancelación con Motivo Obligatorio (Control Interno): modal de
+// confirmación genérico, reutilizado por DOS flujos — Anular Comanda/Ticket
+// del POS (`ModalLiquidarCuenta`, justo abajo) y Cancelar Inscripción
+// pendiente de Reta/Torneo/Academia (`InscripcionesEventoPanel`, más abajo en
+// este mismo archivo). El botón de confirmar permanece deshabilitado hasta
+// que el operador capture una justificación real (no solo espacios en
+// blanco) — `onConfirmar` recibe el motivo ya recortado y debe regresar
+// `true`/`false` (mismo contrato que `ModalDevolucionPOS.onRegistrar`): el
+// modal solo se cierra solo si la operación salió bien, y si falla se queda
+// abierto con el motivo intacto para que el operador pueda reintentar sin
+// volver a escribirlo.
+function ModalMotivoObligatorio({ titulo, subtitulo, textoBoton = 'Confirmar', onClose, onConfirmar }) {
+  const [motivo, setMotivo] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const motivoValido = motivo.trim().length >= 4;
+
+  async function confirmar() {
+    if (!motivoValido || guardando) return;
+    setGuardando(true);
+    const ok = await onConfirmar(motivo.trim());
+    setGuardando(false);
+    if (ok) onClose();
+  }
+
+  return (
+    <ModalShell titulo={titulo} subtitulo={subtitulo} onClose={onClose} icon={Ban} ancho="max-w-sm">
+      <div className="space-y-4">
+        <div className="flex items-start gap-2 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2.5 text-[11px] font-semibold text-rose-300">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          Esta acción no se puede deshacer. Queda registrada en el Log de Actividad para auditoría interna.
+        </div>
+        <Campo label="Motivo de la cancelación (obligatorio)">
+          <textarea
+            value={motivo}
+            onChange={(e) => setMotivo(e.target.value)}
+            disabled={guardando}
+            autoFocus
+            className={`${inputClase} min-h-[90px] resize-y`}
+            placeholder="Ej. Pedido duplicado por error, cliente canceló antes de que llegara la orden..."
+          />
+        </Campo>
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose} disabled={guardando}>
+            Regresar
+          </BotonSecundario>
+          <button
+            type="button"
+            onClick={confirmar}
+            disabled={!motivoValido || guardando}
+            className="inline-flex items-center gap-2 rounded-lg bg-rose-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <Ban size={15} />}
+            {textoBoton}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando, onAnular }) {
   // `useState(() => ...)` — se calcula solo UNA vez, al montar (cada apertura
   // del modal es un montaje nuevo, ver el `{grupoALiquidar && (...)}` que lo
   // renderiza condicionalmente), para no perder las ediciones locales del
@@ -8042,6 +8115,15 @@ function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando }) {
   // sigue abierto.
   const [base] = useState(() => itemsEditablesDeGrupo(grupo));
   const [items, setItems] = useState(base.items);
+  // Anulación / Cancelación con Motivo Obligatorio (Control Interno): solo
+  // tiene sentido ofrecer "Cancelar Ticket" cuando el grupo YA trae al menos
+  // una fila real en `ventas` (`grupo.ventas`) — una reserva pendiente de
+  // recepción SIN ticket todavía (`grupo.reserva` sin `ventas`, ver
+  // `gruposReservasPendientes`) no tiene ninguna comanda que anular aquí; esa
+  // reservación se cancela desde su propio flujo (`ModalDetalleReserva` →
+  // "Cancelar Reserva"), no desde Liquidar/Cobrar.
+  const [mostrarAnular, setMostrarAnular] = useState(false);
+  const puedeAnular = Boolean(onAnular) && Array.isArray(grupo.ventas) && grupo.ventas.length > 0;
 
   function disminuirCantidad(key) {
     setItems((prev) => prev.map((it) => (it._key === key && it.editable && it.cantidad > 1 ? { ...it, cantidad: it.cantidad - 1 } : it)));
@@ -8098,6 +8180,27 @@ function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando }) {
         )}
       </div>
       <PasosDeCobro monto={total} deshabilitado={liquidando} onConfirmar={({ metodo, cambio }) => onLiquidar(metodo, cambio, items)} />
+
+      {puedeAnular && (
+        <button
+          type="button"
+          onClick={() => setMostrarAnular(true)}
+          disabled={liquidando}
+          className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2 text-xs font-bold text-rose-400 transition hover:bg-rose-400/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Ban size={13} /> Cancelar Ticket / Anular Comanda
+        </button>
+      )}
+
+      {mostrarAnular && (
+        <ModalMotivoObligatorio
+          titulo="Anular Comanda"
+          subtitulo={`${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(total)} · Se quita de Cuentas Abiertas`}
+          textoBoton="Sí, anular comanda"
+          onClose={() => setMostrarAnular(false)}
+          onConfirmar={(motivo) => onAnular(motivo, items)}
+        />
+      )}
     </ModalShell>
   );
 }
@@ -8109,7 +8212,18 @@ function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando }) {
  * `estado_pago: 'pendiente'` — vive en `ModuloSmartPOS` (ver más abajo) para
  * poder generar un comprobante de `ventas` igual que cualquier otro cobro. */
 
-function InscripcionesEventoPanel({ filas, cargando, error, onReintentar, busqueda, onBuscar, onCobrar, cobrandoClave }) {
+function InscripcionesEventoPanel({
+  filas,
+  cargando,
+  error,
+  onReintentar,
+  busqueda,
+  onBuscar,
+  onCobrar,
+  cobrandoClave,
+  onCancelar,
+  cancelandoClave,
+}) {
   if (cargando) {
     return (
       <div className="space-y-2">
@@ -8165,14 +8279,27 @@ function InscripcionesEventoPanel({ filas, cargando, error, onReintentar, busque
                   </td>
                   <td className="px-3 py-2.5 text-right font-black text-amber-400">{formatoMoneda(f.monto)}</td>
                   <td className="px-3 py-2.5 text-right">
-                    <BotonPrimario
-                      onClick={() => onCobrar(f)}
-                      disabled={cobrandoClave === f.clave}
-                      className="ml-auto px-3 py-1.5 text-[11px]"
-                    >
-                      {cobrandoClave === f.clave ? <Loader2 size={13} className="animate-spin" /> : <DollarSign size={13} />}
-                      Cobrar
-                    </BotonPrimario>
+                    <div className="ml-auto flex items-center justify-end gap-1.5">
+                      <BotonPrimario
+                        onClick={() => onCobrar(f)}
+                        disabled={cobrandoClave === f.clave || cancelandoClave === f.clave}
+                        className="px-3 py-1.5 text-[11px]"
+                      >
+                        {cobrandoClave === f.clave ? <Loader2 size={13} className="animate-spin" /> : <DollarSign size={13} />}
+                        Cobrar
+                      </BotonPrimario>
+                      {onCancelar && (
+                        <button
+                          type="button"
+                          onClick={() => onCancelar(f)}
+                          disabled={cobrandoClave === f.clave || cancelandoClave === f.clave}
+                          title="Cancelar inscripción y liberar el lugar"
+                          className="inline-flex shrink-0 items-center justify-center rounded-lg border border-rose-400/30 bg-rose-400/5 p-1.5 text-rose-400 transition hover:bg-rose-400/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {cancelandoClave === f.clave ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -9741,6 +9868,57 @@ function ModuloSmartPOS({
     return true;
   }
 
+  // Anulación / Cancelación con Motivo Obligatorio (Control Interno) —
+  // "Cancelar Ticket / Anular Comanda" desde `ModalLiquidarCuenta`. A
+  // diferencia de `liquidarCuenta` (que consolida y cobra), aquí se BORRAN
+  // las filas de `ventas` del grupo directamente — el ticket nunca se cobró,
+  // así que no hay ingreso que reversar ni stock que regresar (el descuento
+  // de inventario ocurre hasta el cobro real, ver comentario en
+  // `liquidarCuenta`, "POSTERGACIÓN DEL DESCUENTO DE INVENTARIO" — una cuenta
+  // pendiente jamás tocó el stock). El rastro completo (quién, cuándo, por
+  // qué, y qué artículos traía) queda en el Log de Actividad
+  // (`log_actividad`, vía `onRegistrarAuditoria`) en vez de en la propia fila
+  // de `ventas`, que desaparece. A diferencia de otros "best effort" del
+  // módulo, aquí SÍ se bloquea si el DELETE falla — anular sin que de verdad
+  // desaparezca de Supabase dejaría la cuenta reapareciendo sola al recargar,
+  // que es justo lo que el operador querría evitar al anular.
+  async function anularCuenta(grupo, motivo, itemsAlMomento) {
+    const idsVentas = (grupo.ventas || []).map((v) => v.id);
+    if (idsVentas.length === 0) return false;
+
+    const { error } = await supabase.from('ventas').delete().in('id', idsVentas);
+    if (error) {
+      mostrarToast({ titulo: 'No se pudo anular la comanda', detalle: error.message, tono: 'error' });
+      return false;
+    }
+
+    setCuentasAbiertas((prev) => prev.filter((v) => !idsVentas.includes(v.id)));
+
+    const itemsTexto =
+      (itemsAlMomento || [])
+        .filter((it) => Number(it.cantidad) > 0)
+        .map((it) => `${it.cantidad}× ${it.nombre}`)
+        .join(', ') || 'Sin desglose';
+
+    onRegistrarAuditoria?.('anulacion_comanda', {
+      origen: grupo.cancha?.nombre || 'Venta General',
+      cliente: grupo.reserva?.jugador_nombre || grupo.clienteNombre || 'Sin nombre',
+      total: grupo.total,
+      motivo,
+      items: itemsTexto,
+    });
+
+    mostrarToast({
+      titulo: 'Comanda anulada',
+      detalle: `${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(grupo.total)} · Motivo: ${motivo}`,
+      tono: 'aviso',
+    });
+
+    setGrupoALiquidar(null);
+    cargarCuentasAbiertas({ silencioso: true });
+    return true;
+  }
+
   /* ---------------- Inscripción Torneo / Reta ---------------- */
 
   // `retas`/`torneos`/`inscripciones`/`participantesTorneo` llegan como
@@ -9753,6 +9931,12 @@ function ModuloSmartPOS({
   const [busquedaInscripcion, setBusquedaInscripcion] = useState('');
   const [inscripcionACobrar, setInscripcionACobrar] = useState(null);
   const [cobrandoInscripcionId, setCobrandoInscripcionId] = useState(null);
+  // Cancelación de Inscripciones con Motivo Obligatorio (Control Interno):
+  // misma pareja de estados que `inscripcionACobrar`/`cobrandoInscripcionId`,
+  // ahora para el flujo de "Cancelar" (ver `cancelarInscripcionEvento`, justo
+  // debajo de `cobrarInscripcionEvento`).
+  const [inscripcionACancelar, setInscripcionACancelar] = useState(null);
+  const [cancelandoInscripcionId, setCancelandoInscripcionId] = useState(null);
 
   const inscripcionesEventoPendientes = useMemo(() => {
     const retasPorId = new Map((retas || []).map((r) => [r.id, r]));
@@ -10069,6 +10253,102 @@ function ModuloSmartPOS({
         cambio: cambio || 0,
       });
     }
+  }
+
+  // Cancelación y Liberación de Cupo (Control Interno) — cancela una
+  // inscripción PENDIENTE DE COBRO (nunca se llegó a pagar, así que no hay
+  // reembolso/retención que calcular — a diferencia de
+  // `cancelarInscripcionReta` en Torneos & Retas, que sí aplica la Política
+  // de Cancelación y Retención sobre inscripciones YA PAGADAS) y libera el
+  // lugar de inmediato:
+  //   - reta_inscripciones: `estado: 'cancelado'` — el mismo valor que ya
+  //     excluye `inscripcionOcupaLugar`/`CUPOS_RETA - confirmados.length` en
+  //     todas las tarjetas de Retas (Mesa de Control, Torneos & Retas,
+  //     Portal), así que el lugar se libera solo, sin tocar ninguna otra
+  //     lógica de conteo.
+  //   - academia_alumnos: `estado: 'baja'` (+ `motivo_baja`/`fecha_baja`,
+  //     igual que `cancelarInscripcionClase` del Portal) — libera el cupo en
+  //     `alumnosActivos` (filtra `estado !== 'baja'`).
+  //   - torneo_participantes: esta tabla NO tiene columna `estado` (ver nota
+  //     de esquema al inicio del archivo) y los Torneos de este proyecto no
+  //     tienen un tope de cupo — se DA DE BAJA eliminando la fila
+  //     directamente, que es lo que la propia Mesa de Control/Portal ya usan
+  //     para contar inscritos (`participantesTorneo.length`).
+  // Mismo criterio de Sincronización Silenciosa que `cobrarInscripcionEvento`
+  // (documentado arriba, en su primer comentario): el estado local se
+  // actualiza de inmediato para que la UI libere el lugar al instante, sin
+  // importar si Supabase confirma — nunca se bloquea al operador por esto.
+  async function cancelarInscripcionEvento(fila, motivo) {
+    setCancelandoInscripcionId(fila.clave);
+
+    if (fila.tabla === 'reta_inscripciones') {
+      if (!fila.esLocal) {
+        const { error: errEstado } = await actualizarConColumnasOpcionales(
+          'reta_inscripciones',
+          fila.id,
+          { estado: 'cancelado', motivo_cancelacion: motivo },
+          ['motivo_cancelacion']
+        );
+        if (errEstado) {
+          console.warn('[Smart POS] No se pudo sincronizar la cancelación de la inscripción con Supabase, se aplica solo local:', errEstado);
+        }
+      }
+      setInscripciones((prev) =>
+        prev.map((i) => {
+          if (i.id !== fila.id) return i;
+          const actualizado = { ...i, estado: 'cancelado', motivo_cancelacion: motivo };
+          if (actualizado._local) guardarRegistroLocal(LS_KEY_RETA_INSCRIPCIONES_LOCAL, actualizado);
+          return actualizado;
+        })
+      );
+    } else if (fila.tabla === 'academia_alumnos') {
+      const cambios = { estado: 'baja', motivo_baja: motivo, fecha_baja: hoyISO() };
+      if (!fila.esLocal) {
+        const { error: errEstado } = await actualizarConColumnasOpcionales('academia_alumnos', fila.id, cambios, [
+          'motivo_baja',
+          'fecha_baja',
+        ]);
+        if (errEstado) {
+          console.warn('[Smart POS] No se pudo sincronizar la baja del alumno con Supabase, se aplica solo local:', errEstado);
+        }
+      }
+      setAcademiaAlumnos((prev) =>
+        prev.map((a) => {
+          if (a.id !== fila.id) return a;
+          const actualizado = { ...a, ...cambios };
+          if (actualizado._local) guardarRegistroLocal(LS_KEY_ACADEMIA_ALUMNOS_LOCAL, actualizado);
+          return actualizado;
+        })
+      );
+    } else {
+      if (!fila.esLocal) {
+        const { error: errDelete } = await supabase.from('torneo_participantes').delete().eq('id', fila.id);
+        if (errDelete) {
+          console.warn('[Smart POS] No se pudo eliminar la inscripción de torneo en Supabase, se quita solo local:', errDelete);
+        }
+      } else {
+        quitarRegistroLocal(LS_KEY_TORNEO_PARTICIPANTES_LOCAL, fila.id);
+      }
+      setParticipantesTorneo((prev) => prev.filter((p) => p.id !== fila.id));
+    }
+
+    setCancelandoInscripcionId(null);
+    setInscripcionACancelar(null);
+
+    mostrarToast({
+      titulo: 'Inscripción cancelada',
+      detalle: `${fila.nombre} · Se liberó el lugar en ${fila.origen}.`,
+      tono: 'aviso',
+    });
+
+    onRegistrarAuditoria?.('anulacion_inscripcion', {
+      nombre: fila.nombre,
+      origen: fila.origen,
+      monto: fila.monto,
+      motivo,
+    });
+
+    return true;
   }
 
   const productosFiltrados = useMemo(() => {
@@ -10937,6 +11217,8 @@ function ModuloSmartPOS({
               onBuscar={setBusquedaInscripcion}
               onCobrar={setInscripcionACobrar}
               cobrandoClave={cobrandoInscripcionId}
+              onCancelar={setInscripcionACancelar}
+              cancelandoClave={cancelandoInscripcionId}
             />
           </div>
         </div>
@@ -11228,6 +11510,7 @@ function ModuloSmartPOS({
           liquidando={liquidandoClave === grupoALiquidar.clave}
           onClose={() => setGrupoALiquidar(null)}
           onLiquidar={(metodo, cambio, items) => liquidarCuenta(grupoALiquidar, metodo, cambio, items)}
+          onAnular={(motivo, items) => anularCuenta(grupoALiquidar, motivo, items)}
         />
       )}
 
@@ -11237,6 +11520,16 @@ function ModuloSmartPOS({
           liquidando={cobrandoInscripcionId === inscripcionACobrar.clave}
           onClose={() => setInscripcionACobrar(null)}
           onCobrar={(metodo, cambio) => cobrarInscripcionEvento(inscripcionACobrar, metodo, cambio)}
+        />
+      )}
+
+      {inscripcionACancelar && (
+        <ModalMotivoObligatorio
+          titulo="Cancelar Inscripción"
+          subtitulo={`${inscripcionACancelar.nombre} · ${inscripcionACancelar.origen} · ${formatoMoneda(inscripcionACancelar.monto)}`}
+          textoBoton="Sí, cancelar y liberar el lugar"
+          onClose={() => setInscripcionACancelar(null)}
+          onConfirmar={(motivo) => cancelarInscripcionEvento(inscripcionACancelar, motivo)}
         />
       )}
     </>
@@ -18664,6 +18957,27 @@ const TIPOS_EVENTO_AUDITORIA = {
     color: 'text-rose-400',
     bg: 'bg-rose-400/10',
     detalleTexto: (d) => `${d?.cancha || 'Cancha'} · ${d?.fecha ? formatoFechaLarga(d.fecha) : ''} ${d?.hora || ''} — ${d?.jugador || 'Jugador'}. Motivo: ${d?.motivo || 'sin especificar'}.`,
+  },
+  // Anulación / Cancelación con Motivo Obligatorio (Control Interno) — los 2
+  // eventos nuevos: "Cancelar Ticket / Anular Comanda" desde
+  // `ModalLiquidarCuenta` (Cuentas Abiertas/Pendientes del POS) y "Cancelar"
+  // una inscripción pendiente de cobro desde `InscripcionesEventoPanel`
+  // (Reta/Torneo/Academia). Ver `anularCuenta`/`cancelarInscripcionEvento` en
+  // `ModuloSmartPOS`.
+  anulacion_comanda: {
+    label: 'Anulación de comanda / ticket',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    detalleTexto: (d) =>
+      `${d?.origen || 'Comanda'} · ${formatoMoneda(d?.total)} — ${d?.cliente || 'Sin cliente'}. Motivo: ${d?.motivo || 'sin especificar'}. Artículos anulados: ${d?.items || '—'}.`,
+  },
+  anulacion_inscripcion: {
+    label: 'Cancelación de inscripción',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    detalleTexto: (d) => `${d?.nombre || 'Participante'} — ${d?.origen || 'Inscripción'} (${formatoMoneda(d?.monto)}). Motivo: ${d?.motivo || 'sin especificar'}.`,
   },
   descuento_manual: {
     label: 'Descuento / precio manual',
