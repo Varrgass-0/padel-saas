@@ -4861,6 +4861,36 @@ async function resolverJugadorId(nombre, opts = {}) {
   return null;
 }
 
+// Inserta una fila en `ventas` con los mismos 2 reintentos que ya usaba
+// `registrarVenta` (Smart POS) en línea — factorizados aquí para
+// reutilizarse también al Dividir Cuenta, donde ahora se inserta UNA fila
+// POR JUGADOR en vez de una sola para todo el ticket (ver `registrarVenta`):
+// (1) si `origen` todavía no existe como columna en tu Supabase, reintenta
+// sin ella (Arquitectura Flexible); (2) si el INSERT sí se guardó pero no
+// hay política de SELECT que deje leer la fila de vuelta (`esErrorPermisoRLS`),
+// reintenta el INSERT puro y sigue con un folio local en vez de bloquear el
+// cobro — el dinero YA se cobró en pantalla antes de llegar aquí, así que
+// nunca se debe invitar a cobrarlo dos veces.
+async function insertarVentaConReintentos(payloadInicial) {
+  let payload = payloadInicial;
+  let { data, error } = await supabase.from('ventas').insert(payload).select().single();
+  if (error && esErrorColumnaInexistente(error)) {
+    const { origen, ...sinOrigen } = payload;
+    payload = sinOrigen;
+    ({ data, error } = await supabase.from('ventas').insert(payload).select().single());
+  }
+  if (error && esErrorPermisoRLS(error)) {
+    const { error: errorSoloInsert } = await supabase.from('ventas').insert(payload);
+    if (!errorSoloInsert) {
+      data = { id: idLocal('venta'), ...payload };
+      error = null;
+    } else {
+      error = errorSoloInsert;
+    }
+  }
+  return { data, error };
+}
+
 // Modal SOLO de agenda: nada de estado/método de pago aquí — la reserva
 // siempre nace `estado_pago: 'pendiente'` y se cobra del otro lado, en Smart
 // POS (ver `onCreada`, que además de guardar en Supabase entrega la reserva
@@ -6842,13 +6872,107 @@ function ModalCobro({ total, onClose, onConfirmado, onDividir, registrandoVenta 
   );
 }
 
-function FilaPagoJugador({ indice, monto, pagado, onPagado }) {
+// Identificación de Jugador dentro de una fila de "Dividir Cuenta" (mejora —
+// Asignación de Jugadores + Autocomplete CRM): por defecto es el buscador ya
+// existente (`SelectorJugadorRegistrado`, ahora también busca por teléfono)
+// contra el directorio de clientes; si no hay match o el jugador todavía no
+// existe, "＋ Registrar como Nuevo Jugador" despliega Nombre Completo +
+// Teléfono capturados EN LÍNEA — ese registro se crea de verdad en Supabase
+// (`resolverJugadorId`, mismo helper de creación/búsqueda que ya usa el
+// campo "Datos del Cliente" de la Comanda) hasta que se presiona "Finalizar
+// Venta" en `ModalDividirCuenta`, no antes — así cancelar el modal nunca deja
+// jugadores huérfanos a medio capturar. Una vez elegido DEL DIRECTORIO se
+// colapsa a un chip compacto (con "Cambiar") para no pelear espacio con los
+// pasos de cobro de abajo; un alta nueva se deja siempre visible (2 campos,
+// cabe perfecto) hasta que la fila se marca pagada.
+function IdentificacionJugadorSplit({ jugadores, participante, onCambiar }) {
+  const modo = participante?.modo || 'buscar';
+  const jugadorId = participante?.jugadorId || null;
+  const nombre = participante?.nombre || '';
+  const telefono = participante?.telefono || '';
+  const vacio = { modo: 'buscar', jugadorId: null, nombre: '', telefono: '' };
+
+  if (jugadorId) {
+    return (
+      <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-white px-2.5 py-1.5 ring-1 ring-slate-200">
+        <span className="flex min-w-0 items-center gap-1.5 text-xs font-bold text-slate-800">
+          <CheckCircle2 size={12} className="shrink-0 text-lime-400" />
+          <span className="truncate">{nombre || 'Jugador del directorio'}</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => onCambiar(vacio)}
+          className="shrink-0 text-[10px] font-bold text-slate-500 hover:text-slate-800"
+        >
+          Cambiar
+        </button>
+      </div>
+    );
+  }
+
+  if (modo === 'nuevo') {
+    const telDigitos = telefono.replace(/\D/g, '');
+    return (
+      <div className="mb-2 space-y-1.5 rounded-lg border border-dashed border-amber-400/40 bg-amber-400/5 p-2">
+        <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-400">
+          <UserPlus size={11} /> Nuevo Jugador (se crea en el CRM al finalizar)
+        </span>
+        <input
+          value={nombre}
+          onChange={(e) => onCambiar({ ...participante, modo: 'nuevo', nombre: e.target.value })}
+          className={`${inputClase} !py-1.5 text-xs`}
+          placeholder="Nombre Completo"
+        />
+        <input
+          value={telefono}
+          onChange={(e) => onCambiar({ ...participante, modo: 'nuevo', telefono: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+          className={`${inputClase} !py-1.5 text-xs`}
+          placeholder="Teléfono (10 dígitos)"
+          inputMode="tel"
+        />
+        {telDigitos.length > 0 && telDigitos.length !== 10 && (
+          <p className="text-[10px] font-semibold text-rose-400">El teléfono debe tener 10 dígitos.</p>
+        )}
+        <button type="button" onClick={() => onCambiar(vacio)} className="text-[10px] font-bold text-slate-500 hover:text-slate-800">
+          ← Buscar en el directorio
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-2 space-y-1">
+      <SelectorJugadorRegistrado
+        jugadores={jugadores}
+        nombre={nombre}
+        onNombreChange={(v) => onCambiar({ modo: 'buscar', jugadorId: null, nombre: v, telefono: '' })}
+        jugadorSeleccionadoId={jugadorId}
+        onSeleccionarJugador={(j) => onCambiar({ modo: 'buscar', jugadorId: j?.id || null, nombre: j?.nombre || nombre, telefono: j?.telefono || '' })}
+        placeholder="Buscar jugador por nombre o teléfono..."
+      />
+      <button
+        type="button"
+        onClick={() => onCambiar({ modo: 'nuevo', jugadorId: null, nombre, telefono: '' })}
+        className="inline-flex items-center gap-1 text-[10px] font-bold text-lime-400 hover:text-lime-300"
+      >
+        <Plus size={11} /> Registrar como Nuevo Jugador
+      </button>
+    </div>
+  );
+}
+
+function FilaPagoJugador({ indice, monto, pagado, onPagado, jugadores, participante, onCambiarParticipante }) {
+  const nombreMostrado = (participante?.nombre || '').trim() || `Jugador ${indice + 1}`;
+
   if (pagado) {
     return (
       <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/5 px-3.5 py-3">
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-bold text-slate-900">Jugador {indice + 1}</span>
-          <span className="text-sm font-black text-slate-900">{formatoMoneda(monto)}</span>
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-bold text-slate-900">
+            <Users size={13} className="shrink-0 text-emerald-400" />
+            <span className="truncate">{nombreMostrado}</span>
+          </span>
+          <span className="shrink-0 text-sm font-black text-slate-900">{formatoMoneda(monto)}</span>
         </div>
         <span className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
           <CheckCircle2 size={13} /> Pagado con {METODOS_PAGO_POS.find((m) => m.value === pagado.metodo)?.label}
@@ -6861,21 +6985,36 @@ function FilaPagoJugador({ indice, monto, pagado, onPagado }) {
   return (
     <div className="rounded-xl border border-slate-300 bg-slate-100 px-3.5 py-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm font-bold text-slate-900">Jugador {indice + 1}</span>
+        <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Jugador {indice + 1}</span>
         <span className="text-sm font-black text-slate-900">{formatoMoneda(monto)}</span>
       </div>
+      <IdentificacionJugadorSplit jugadores={jugadores} participante={participante} onCambiar={onCambiarParticipante} />
       <PasosDeCobro compacto monto={monto} onConfirmar={(datos) => onPagado(indice, datos)} onCancelar={null} />
     </div>
   );
 }
 
-function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta }) {
+// Fila vacía de identificación — un jugador de "Dividir Cuenta" que
+// todavía no se ha buscado/capturado. Función compartida (en vez de un
+// objeto literal repetido) para que `numJugadores`/limpiar nunca deje dos
+// filas apuntando al MISMO objeto por referencia.
+function participanteSplitVacio() {
+  return { modo: 'buscar', jugadorId: null, nombre: '', telefono: '' };
+}
+
+function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jugadores }) {
   const [numJugadores, setNumJugadores] = useState(2);
   const partes = useMemo(() => repartirCentavos(total, numJugadores), [total, numJugadores]);
   const [pagos, setPagos] = useState(() => Array.from({ length: 2 }, () => null)); // null | { metodo, cambio? }
+  // Asignación de Jugadores (mejora): un participante por fila —
+  // `{ modo: 'buscar' | 'nuevo', jugadorId, nombre, telefono }`. Vive
+  // aparte de `pagos` porque se captura ANTES de cobrar esa fila, pero se
+  // manda junto con el pago al finalizar — ver `onFinalizar` abajo.
+  const [participantes, setParticipantes] = useState(() => Array.from({ length: 2 }, participanteSplitVacio));
 
   useEffect(() => {
     setPagos(Array.from({ length: numJugadores }, () => null));
+    setParticipantes(Array.from({ length: numJugadores }, participanteSplitVacio));
   }, [numJugadores]);
 
   const totalPagado = pagos.reduce((acc, p, i) => (p ? acc + partes[i] : acc), 0);
@@ -6884,6 +7023,9 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta }) {
 
   function marcarPagado(idx, datos) {
     setPagos((prev) => prev.map((p, i) => (i === idx ? datos : p)));
+  }
+  function cambiarParticipante(idx, datos) {
+    setParticipantes((prev) => prev.map((p, i) => (i === idx ? datos : p)));
   }
 
   return (
@@ -6908,9 +7050,18 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta }) {
           </div>
         </div>
 
-        <div className="max-h-[360px] space-y-2 overflow-y-auto pr-0.5">
+        <div className="max-h-[420px] space-y-2 overflow-y-auto pr-0.5">
           {partes.map((monto, i) => (
-            <FilaPagoJugador key={i} indice={i} monto={monto} pagado={pagos[i]} onPagado={marcarPagado} />
+            <FilaPagoJugador
+              key={i}
+              indice={i}
+              monto={monto}
+              pagado={pagos[i]}
+              onPagado={marcarPagado}
+              jugadores={jugadores}
+              participante={participantes[i]}
+              onCambiarParticipante={(datos) => cambiarParticipante(i, datos)}
+            />
           ))}
         </div>
 
@@ -6925,7 +7076,24 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta }) {
           <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
           <BotonPrimario
             onClick={() =>
-              onFinalizar(pagos.map((p, i) => ({ jugador: i + 1, monto: partes[i], metodo: p?.metodo || null, cambio: p?.cambio || 0 })))
+              onFinalizar(
+                pagos.map((p, i) => ({
+                  jugador: i + 1,
+                  monto: partes[i],
+                  metodo: p?.metodo || null,
+                  cambio: p?.cambio || 0,
+                  // CRM (mejora): si se seleccionó del directorio, `jugadorId`
+                  // ya viene resuelto; si se capturó "Nuevo Jugador",
+                  // `jugadorId` es `null` y `jugadorNombre`/`jugadorTelefono`
+                  // son lo que `registrarVenta` usa para darlo de alta de
+                  // verdad (`resolverJugadorId`) al finalizar. Si la fila se
+                  // dejó sin identificar, los tres quedan `null` — exactamente
+                  // el comportamiento de antes (folio genérico "Jugador N").
+                  jugadorId: participantes[i]?.jugadorId || null,
+                  jugadorNombre: (participantes[i]?.nombre || '').trim() || null,
+                  jugadorTelefono: (participantes[i]?.telefono || '').trim() || null,
+                }))
+              )
             }
             disabled={!todosPagados || registrandoVenta}
           >
@@ -7558,9 +7726,32 @@ function ModalNuevoProducto({
 /* ---------------- Ticket / Recibo digital ---------------- */
 
 function ModalTicket({ venta, onClose }) {
+  // Generación e Impresión de Tickets Individuales (mejora — Dividir Cuenta
+  // con CRM): `ticketActivo` es `null` (ticket General: todos los
+  // artículos, total completo — igual que siempre) o el índice dentro de
+  // `venta.ticketsIndividuales` (la parte proporcional + nombre de ESE
+  // jugador). El botón "Imprimir" de abajo siempre imprime lo que esté
+  // visible en `#ticket-imprimible`, así que generar/imprimir el ticket de
+  // cada jugador es: elegirlo en el selector de pestañas y presionar
+  // imprimir, uno a la vez — sin salir del modal.
+  const [ticketActivo, setTicketActivo] = useState(null);
   if (!venta) return null;
+
+  const individuales = venta.ticketsIndividuales || [];
+  const parteActiva = ticketActivo != null ? individuales[ticketActivo] : null;
+  const vista = parteActiva
+    ? {
+        folio: parteActiva.folio,
+        items: parteActiva.items,
+        total: parteActiva.total,
+        metodoPago: parteActiva.metodoPago,
+        cambio: parteActiva.cambio,
+        jugadorNombre: parteActiva.jugadorNombre,
+      }
+    : { folio: venta.folio, items: venta.items, total: venta.total, metodoPago: venta.metodoPago, cambio: venta.cambio, jugadorNombre: null };
+
   return (
-    <ModalShell titulo="Ticket de Venta" subtitulo={`Folio ${venta.folio}`} onClose={onClose} icon={Receipt} ancho="max-w-sm">
+    <ModalShell titulo="Ticket de Venta" subtitulo={`Folio ${vista.folio}`} onClose={onClose} icon={Receipt} ancho="max-w-sm">
       <style>{`
         @media print {
           body * { visibility: hidden; }
@@ -7569,20 +7760,47 @@ function ModalTicket({ venta, onClose }) {
         }
       `}</style>
 
+      {individuales.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-1.5 print:hidden">
+          <button
+            type="button"
+            onClick={() => setTicketActivo(null)}
+            className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+              ticketActivo === null ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            General
+          </button>
+          {individuales.map((t, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => setTicketActivo(i)}
+              className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+                ticketActivo === i ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              {t.jugadorNombre}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div id="ticket-imprimible" className="space-y-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 font-mono text-xs text-slate-800">
         <div className="text-center">
           <p className="text-sm font-black tracking-wide text-slate-900">SMASH PÁDEL CLUB</p>
           <p className="text-slate-500">
             {formatoFechaLarga(venta.fecha)} · {venta.horaEmision}
           </p>
-          <p className="text-slate-500">Folio: {venta.folio}</p>
+          <p className="text-slate-500">Folio: {vista.folio}</p>
           <p className="text-slate-500">
             Operador: {venta.operadorNombre} ({venta.turnoLabel})
           </p>
+          {vista.jugadorNombre && <p className="mt-1 font-bold text-slate-800">Ticket individual · {vista.jugadorNombre}</p>}
         </div>
 
         <div className="space-y-0.5 border-t border-dashed border-slate-300 pt-3">
-          {venta.items.map((item, i) => (
+          {vista.items.map((item, i) => (
             <div key={i} className="flex items-center justify-between gap-2 py-0.5">
               <span className="flex-1 truncate">
                 {item.cantidad}× {item.nombre}
@@ -7594,16 +7812,16 @@ function ModalTicket({ venta, onClose }) {
 
         <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-2 text-sm font-black text-slate-900">
           <span>TOTAL</span>
-          <span>{formatoMoneda(venta.total)}</span>
+          <span>{formatoMoneda(vista.total)}</span>
         </div>
 
-        {venta.pagosDivididos && venta.pagosDivididos.length > 0 ? (
+        {!parteActiva && venta.pagosDivididos && venta.pagosDivididos.length > 0 ? (
           <div className="space-y-0.5 border-t border-dashed border-slate-300 pt-3">
             <p className="mb-1 font-bold uppercase tracking-wide text-slate-500">Cobro dividido — folios por jugador</p>
             {venta.pagosDivididos.map((p, i) => (
               <div key={i} className="flex items-center justify-between py-0.5">
                 <span>
-                  Jugador {p.jugador} · {METODOS_PAGO_POS.find((m) => m.value === p.metodo)?.label || p.metodo}
+                  {p.jugadorNombre || `Jugador ${p.jugador}`} · {METODOS_PAGO_POS.find((m) => m.value === p.metodo)?.label || p.metodo}
                 </span>
                 <span className="font-bold">{formatoMoneda(p.monto)}</span>
               </div>
@@ -7612,14 +7830,14 @@ function ModalTicket({ venta, onClose }) {
         ) : (
           <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-3">
             <span className="text-slate-500">Método</span>
-            <span className="font-bold">{METODOS_PAGO_POS.find((m) => m.value === venta.metodoPago)?.label || venta.metodoPago || '—'}</span>
+            <span className="font-bold">{METODOS_PAGO_POS.find((m) => m.value === vista.metodoPago)?.label || vista.metodoPago || '—'}</span>
           </div>
         )}
 
-        {venta.cambio > 0 && (
+        {vista.cambio > 0 && (
           <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-2 text-slate-600">
             <span>Cambio entregado</span>
-            <span className="font-bold">{formatoMoneda(venta.cambio)}</span>
+            <span className="font-bold">{formatoMoneda(vista.cambio)}</span>
           </div>
         )}
 
@@ -10149,50 +10367,132 @@ function ModuloSmartPOS({
     // `ORIGEN_VENTA_WEB` del Portal Público (Tienda, reserva con pago
     // inmediato). Contabilidad & Compras usa esta columna para separar
     // "Ventas Mostrador (POS)" de "Ventas Tienda Web" en el P&L.
-    let payloadVenta = withClubId({
-      total,
-      metodo_pago: metodoPagoParaVenta,
-      turno: turno?.valor || null,
-      operador: operador?.nombre || null,
-      reserva_id: reservaIdParaVenta,
-      cancha_id: canchaIdParaVenta,
-      origen: ORIGEN_VENTA_POS,
-      detalles: {
-        items,
-        pagos_divididos: pagosDivididos,
-        jugador_id: clienteJugadorId,
-        jugador_nombre: clienteNombre.trim() || null,
-      },
-      estado_pago: estadoPago,
-    });
+    let data = null;
+    let error = null;
+    // Tickets Individuales por Jugador (mejora — Dividir Cuenta con CRM):
+    // solo se llena en la rama de abajo cuando `pagosDivididos` viene de
+    // `ModalDividirCuenta`; se usa para armar el ticket/impresión de cada
+    // participante (ver `ticket.ticketsIndividuales` más abajo y `ModalTicket`).
+    const ticketsIndividuales = [];
 
-    let { data, error } = await supabase.from('ventas').insert(payloadVenta).select().single();
+    if (pagosDivididos && pagosDivididos.length > 0) {
+      // Dividir Cuenta con CRM (mejora): en vez de UNA sola fila de `ventas`
+      // con un `pagos_divididos` suelto en el JSON (el diseño anterior),
+      // cada participante ahora es su PROPIA fila — mismo patrón que ya usa
+      // "Padel POS Operativo" (Split Bill Asimétrico, `cobrarJugadorRoster`
+      // más arriba) para que el gasto de cada quien cuente de verdad en su
+      // perfil del CRM: `DirectorioJugadoresCRM` (Nivel de Fidelidad,
+      // Producto Favorito, progreso de Cortesía) SOLO lee de
+      // `ventas.detalles.jugador_id` por fila — no existe ningún acumulador
+      // aparte que se pueda incrementar directo, así que sin una fila propia
+      // por jugador su parte del pago jamás contaría para su historial.
+      // Como aquí NO hay asignación por artículo (es un split de MONTO, no
+      // de línea como el Roster), cada fila se lleva una copia PROPORCIONAL
+      // de los artículos reales — misma fracción que su parte del total —
+      // así la categoría (Pro-Shop/Bar) de cada producto se preserva para el
+      // gasto/Producto Favorito de cada jugador, y sumar las N filas
+      // reconstruye EXACTAMENTE las mismas unidades/ingreso de siempre en
+      // Top 5 Productos/Analytics (nunca se duplican ni se pierden).
+      // IMPORTANTE — cálculo proporcional intacto: la fracción de cada
+      // jugador sigue siendo la que ya calculó `repartirCentavos` en
+      // `ModalDividirCuenta` (`p.monto`); aquí solo se reparte el DETALLE de
+      // artículos con esa misma proporción, nunca se recalcula el total. El
+      // descuento de stock + Kardex de abajo sigue corriendo UNA sola vez
+      // sobre el `comanda` real, exactamente igual que antes — no depende de
+      // cuántas filas de `ventas` haya.
+      for (let i = 0; i < pagosDivididos.length; i++) {
+        const p = pagosDivididos[i];
+        const fraccion = total > 0 ? p.monto / total : 1 / pagosDivididos.length;
+        const itemsParticipante = items.map((it) => ({
+          ...it,
+          cantidad: Math.round(it.cantidad * fraccion * 1000) / 1000,
+          subtotal: Math.round(it.subtotal * fraccion * 100) / 100,
+        }));
 
-    // Columna `origen` opcional (Arquitectura Flexible): si tu Supabase
-    // todavía no la tiene, se reintenta sin ella en vez de bloquear el cobro.
-    if (error && esErrorColumnaInexistente(error)) {
-      const { origen, ...sinOrigen } = payloadVenta;
-      payloadVenta = sinOrigen;
-      ({ data, error } = await supabase.from('ventas').insert(payloadVenta).select().single());
-    }
+        // CRM — Registro de Nuevo Jugador en Línea: si la fila ya trae
+        // `jugadorId` (se eligió del directorio en `ModalDividirCuenta`) se
+        // usa tal cual; si no, pero sí hay nombre/teléfono capturados ("＋
+        // Registrar como Nuevo Jugador"), `resolverJugadorId` busca por
+        // teléfono y, si de verdad no existe, lo CREA en Supabase — mismo
+        // helper que ya usa "Datos del Cliente" más abajo, sin reinventar el
+        // alta. Una fila que se dejó sin identificar (ambos vacíos) se queda
+        // sin `jugador_id`, exactamente como una venta anónima normal.
+        let jugadorIdParticipante = p.jugadorId || null;
+        if (!jugadorIdParticipante && (p.jugadorNombre?.trim() || p.jugadorTelefono?.trim())) {
+          try {
+            jugadorIdParticipante = await resolverJugadorId(p.jugadorNombre, {
+              telefono: p.jugadorTelefono,
+              directorio: directorioJugadoresCRM,
+            });
+          } catch (_e) {
+            jugadorIdParticipante = null;
+          }
+        }
 
-    // Manejo de RLS en Smart POS: si el INSERT sí se guardó (la política de
-    // escritura para `anon` ya lo permite — ver migraciones) pero no hay
-    // política de SELECT que deje leer la fila de vuelta, PostgREST regresa
-    // un error aunque el dinero YA se cobró (ver `esErrorPermisoRLS`). Antes
-    // esto le mostraba al cajero "Error al registrar la venta" con la venta
-    // ya guardada en Supabase — el peor de los casos: dinero cobrado, más
-    // pantalla de error, invitando a cobrar dos veces. Ahora se reintenta el
-    // INSERT puro (sin pedir la fila de vuelta) y, si ese sí pasa, el cobro
-    // sigue con un folio local en vez de bloquear la venta.
-    if (error && esErrorPermisoRLS(error)) {
-      const { error: errorSoloInsert } = await supabase.from('ventas').insert(payloadVenta);
-      if (!errorSoloInsert) {
-        data = { id: idLocal('venta'), ...payloadVenta };
-        error = null;
-      } else {
-        error = errorSoloInsert;
+        const payloadParticipante = withClubId({
+          total: p.monto,
+          metodo_pago: p.metodo || 'dividido',
+          turno: turno?.valor || null,
+          operador: operador?.nombre || null,
+          reserva_id: reservaIdParaVenta,
+          cancha_id: canchaIdParaVenta,
+          origen: ORIGEN_VENTA_POS,
+          detalles: {
+            items: itemsParticipante,
+            pagos_divididos: null,
+            jugador_id: jugadorIdParticipante,
+            jugador_nombre: (p.jugadorNombre || '').trim() || `Jugador ${i + 1}`,
+            split_bill: true,
+            split_bill_parte: i + 1,
+            split_bill_total_partes: pagosDivididos.length,
+          },
+          estado_pago: estadoPago,
+        });
+
+        const resultadoParticipante = await insertarVentaConReintentos(payloadParticipante);
+        if (resultadoParticipante.error) {
+          console.error(
+            `[Smart POS] Dividir Cuenta: no se pudo registrar la parte de "${p.jugadorNombre || `Jugador ${i + 1}`}".`,
+            resultadoParticipante.error
+          );
+          if (!error) error = resultadoParticipante.error; // se reporta si NINGUNA fila llega a guardarse
+          continue;
+        }
+        if (!data) data = resultadoParticipante.data; // primera fila exitosa = referencia principal (folio del ticket general)
+        ticketsIndividuales.push({
+          folio: (resultadoParticipante.data?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+          jugadorNombre: (p.jugadorNombre || '').trim() || `Jugador ${i + 1}`,
+          jugadorId: jugadorIdParticipante,
+          items: itemsParticipante,
+          total: p.monto,
+          metodoPago: p.metodo,
+          cambio: p.cambio || 0,
+        });
       }
+      // Solo se considera un fallo TOTAL (bloquea el cobro con un error) si
+      // NINGUNA fila se guardó — si al menos una sí se registró, el dinero
+      // de esa(s) parte(s) ya está a salvo en Supabase y no tiene caso
+      // bloquear ni invitar a cobrar de nuevo; las fallas puntuales, si las
+      // hay, ya quedaron avisadas arriba en consola para corregirlas a mano.
+      if (ticketsIndividuales.length > 0) error = null;
+    } else {
+      const payloadVenta = withClubId({
+        total,
+        metodo_pago: metodoPagoParaVenta,
+        turno: turno?.valor || null,
+        operador: operador?.nombre || null,
+        reserva_id: reservaIdParaVenta,
+        cancha_id: canchaIdParaVenta,
+        origen: ORIGEN_VENTA_POS,
+        detalles: {
+          items,
+          pagos_divididos: pagosDivididos,
+          jugador_id: clienteJugadorId,
+          jugador_nombre: clienteNombre.trim() || null,
+        },
+        estado_pago: estadoPago,
+      });
+      ({ data, error } = await insertarVentaConReintentos(payloadVenta));
     }
 
     if (error) {
@@ -10406,6 +10706,13 @@ function ModuloSmartPOS({
             total,
             metodoPago,
             pagosDivididos,
+            // Generación e Impresión de Tickets Individuales (mejora): un
+            // ticket propio por cada jugador que participó en Dividir
+            // Cuenta, con SU parte y SU nombre — ver `ModalTicket`, que
+            // agrega un selector "General"/por jugador cuando esto no viene
+            // vacío. En cualquier venta que no fue dividida, `ticketsIndividuales`
+            // queda vacío y el ticket se ve exactamente igual que siempre.
+            ticketsIndividuales: ticketsIndividuales.length > 0 ? ticketsIndividuales : null,
             cambio,
           }
         : null;
@@ -10862,6 +11169,7 @@ function ModuloSmartPOS({
         <ModalDividirCuenta
           total={total}
           registrandoVenta={registrandoVenta}
+          jugadores={directorioJugadoresCRM}
           onClose={() => setModalDividir(false)}
           onFinalizar={async (pagosDivididos) => {
             const cambioTotal = pagosDivididos.reduce((acc, p) => acc + (p.cambio || 0), 0);
@@ -18489,10 +18797,25 @@ function SelectorFechaClick({ value, onChange, className = '', compact = false }
 function SelectorJugadorRegistrado({ jugadores = [], nombre, onNombreChange, onSeleccionarJugador, jugadorSeleccionadoId, placeholder }) {
   const [abierto, setAbierto] = useState(false);
 
+  // Autocomplete por NOMBRE O TELÉFONO (mejora — Dividir Cuenta con CRM): el
+  // filtro original solo comparaba `nombre`; ahora también compara contra el
+  // teléfono crudo del jugador (dígitos, sin formato) cuando lo que se
+  // escribió también parece un número — así buscar "55512" encuentra al
+  // jugador aunque su nombre no tenga nada que ver con lo tecleado. No
+  // rompe el uso existente en ningún otro selector (Retas/Torneo/Academia/
+  // Comanda): si lo tecleado no matchea ningún teléfono, el filtro por
+  // nombre de siempre sigue funcionando exactamente igual.
   const sugerencias = useMemo(() => {
     const q = (nombre || '').trim().toLowerCase();
     if (!q) return [];
-    return jugadores.filter((j) => (j.nombre || '').toLowerCase().includes(q)).slice(0, 6);
+    const qDigitos = q.replace(/\D/g, '');
+    return jugadores
+      .filter((j) => {
+        const coincideNombre = (j.nombre || '').toLowerCase().includes(q);
+        const coincideTelefono = qDigitos.length >= 3 && (j.telefono || '').replace(/\D/g, '').includes(qDigitos);
+        return coincideNombre || coincideTelefono;
+      })
+      .slice(0, 6);
   }, [jugadores, nombre]);
 
   return (
