@@ -8264,6 +8264,11 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
     };
   }, [dias, productosPorId, variantesPorId, filtroCategoria]);
 
+  // Top 5 completo (verificado en esta mejora): ya toma los 5 primeros de
+  // `filas` (que viene ordenado de mayor a menor unidades) — si el periodo
+  // trae menos de 5 productos distintos vendidos, `top5` simplemente sale
+  // más corto (`filas.slice(0, 5)` nunca rellena con vacíos), y el `.map`
+  // de abajo recorre exactamente ese arreglo sin ningún tope adicional.
   const top5 = filas.slice(0, 5);
   const categoriaEstrella = useMemo(() => {
     const acc = {};
@@ -10719,14 +10724,33 @@ function ModuloSmartPOS({
               (Recepción/Caja, Restaurante/Bar) que ya tienen acceso a Smart
               POS. Ver `AnalyticsOperativosSinMontos`/`TarjetaReordenSugerido`
               arriba — ambos son autocontenidos y de solo lectura salvo el
-              INSERT explícito de "Notificar Abastecimiento". */}
+              INSERT explícito de "Notificar Abastecimiento".
+              FILTRADO DINÁMICO POR PESTAÑA (mejora): antes `filtroCategoria`
+              era un valor FIJO por rol (Bar siempre veía solo Cafetería/Bar,
+              Recepción siempre veía todo junto) y nunca reaccionaba a las
+              pestañas de categoría de arriba (Todos/Pro-Shop/Restaurante-Bar/
+              Rentas, `categoriaActiva` — el mismo filtro que ya usa el grid
+              de productos de Smart POS, justo encima de esta tarjeta). Ahora
+              se deriva de `categoriaActiva` directamente: 'todos' → sin
+              filtro (Top 5 global), cualquier otro valor → exactamente esa
+              categoría — así el Top 5 y la Categoría Estrella cambian en
+              vivo al cambiar de pestaña, para cualquier rol. El valor
+              INICIAL de `categoriaActiva` (`'Cafetería/Bar'` para Bar,
+              `'todos'` para Recepción — ver su `useState` arriba) sigue
+              siendo el mismo de antes, así que el primer render se ve
+              idéntico al comportamiento anterior; solo ahora también seguir
+              cambiando de pestaña actualiza la tarjeta. */}
           {permisos?.puedeVerMontos === false && (
             <div className="space-y-4">
               <AnalyticsOperativosSinMontos
                 productos={productos}
                 variantesPorProducto={variantesPorProducto}
-                filtroCategoria={permisos?.rol === 'bar' ? 'Cafetería/Bar' : null}
-                titulo={permisos?.rol === 'bar' ? 'Top 5 Alimentos y Bebidas (Analytics Operativos)' : 'Analytics Operativos · Top 5 Productos'}
+                filtroCategoria={categoriaActiva === 'todos' ? null : categoriaActiva}
+                titulo={
+                  categoriaActiva === 'todos'
+                    ? 'Analytics Operativos · Top 5 Productos'
+                    : `Top 5 ${CATEGORIAS_PRODUCTO.find((c) => c.value === categoriaActiva)?.label || 'Productos'} (Analytics Operativos)`
+                }
               />
               {permisos?.rol === 'recepcion' && (
                 <TarjetaReordenSugerido
