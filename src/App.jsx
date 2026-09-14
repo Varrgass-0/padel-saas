@@ -8931,6 +8931,42 @@ function ModuloSmartPOS({
       }
     }
 
+    // NUEVO — Trazabilidad de Kardex para Platillos/Stock Rígido (Split
+    // Bill): mismo criterio aditivo que en `registrarVenta` — los
+    // artículos con `manejaStock === false` quedan fuera de
+    // `itemsConStock` de arriba (RESTRICCIÓN CLAVE: no se toca stock
+    // físico ni contadores) y solo se agrega su movimiento de salida en el
+    // Kardex, con `stock_anterior`/`stock_nuevo` en `null`.
+    const itemsSinStockSplit = fila.items.filter(
+      (it) => it.tipo === 'producto' && (it.productoPadreId || it.producto_id) && it.manejaStock === false
+    );
+    for (const item of itemsSinStockSplit) {
+      const productoId = item.productoPadreId || item.producto_id;
+      const varianteId = item.varianteId || item.variante_id;
+      const esVariante = item.esVariante === true || !!varianteId;
+      const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
+      const resultadoKardexSinStock = await insertarMovimientoKardex({
+        producto_id: productoId,
+        variante_id: varianteId || undefined,
+        producto_nombre: item.nombre,
+        tipo_movimiento: 'salida_venta',
+        cantidad: item.cantidad,
+        stock_anterior: null,
+        stock_nuevo: null,
+        costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
+        motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`}) (sin control de stock)${
+          esVariante ? ` · ${varianteNombreEtiqueta}` : ''
+        }`,
+        operador: operador?.nombre,
+      });
+      if (!resultadoKardexSinStock.ok) {
+        console.error(
+          `[Smart POS] No se pudo registrar en el Kardex la trazabilidad de "${item.nombre}" (Split Bill, sin control de stock):`,
+          resultadoKardexSinStock.error
+        );
+      }
+    }
+
     const idsAsignados = new Set(fila.items.map((it) => it.id));
     setComanda((prev) => prev.filter((item) => !idsAsignados.has(item.id)));
     setRoster((prev) =>
@@ -10282,6 +10318,51 @@ function ModuloSmartPOS({
       const fallosStock = resultadosStock.filter((r) => !r.ok);
       if (fallosStock.length > 0) {
         console.error('[Smart POS] Venta registrada, pero el stock no se descontó solo para:', fallosStock.map((f) => f.nombre).join(', '));
+      }
+
+      // NUEVO — Trazabilidad de Kardex para Platillos/Stock Rígido: los
+      // artículos con `item.manejaStock === false` (platillos de cocina,
+      // p. ej. "Cholaquiles" — ver `producto.maneja_stock` en la cabecera
+      // del archivo) quedan A PROPÓSITO fuera de `itemsConStock` de arriba
+      // — RESTRICCIÓN CLAVE: eso NO cambia aquí; nunca se descuenta stock
+      // físico de insumos ni se toca ningún contador de inventario para
+      // estos artículos. Lo único que se agrega, de forma puramente
+      // aditiva, es un movimiento en el Kardex por cada unidad vendida —
+      // mismo `tipo_movimiento: 'salida_venta'` ("Venta POS" en la tabla,
+      // ver `KARDEX_TIPO_META`) que ya usan los productos con stock, así
+      // ambos aparecen juntos en la misma bitácora. `stock_anterior`/
+      // `stock_nuevo` van en `null` (no hay contador real que reportar) —
+      // la tabla del Kardex ya muestra "—" para ese caso. Best effort,
+      // igual que el resto del Kardex: si falla, nunca bloquea ni revierte
+      // la venta (ya está cobrada).
+      const itemsSinStock = comanda.filter(
+        (item) => item.tipo === 'producto' && (item.productoPadreId || item.producto_id) && item.manejaStock === false
+      );
+      for (const item of itemsSinStock) {
+        const productoId = item.productoPadreId || item.producto_id;
+        const varianteId = item.varianteId || item.variante_id;
+        const esVariante = item.esVariante === true || !!varianteId;
+        const varianteNombreEtiqueta = item.varianteNombre || item.nombre;
+        const resultadoKardexSinStock = await insertarMovimientoKardex({
+          producto_id: productoId,
+          variante_id: varianteId || undefined,
+          producto_nombre: item.nombre,
+          tipo_movimiento: 'salida_venta',
+          cantidad: item.cantidad,
+          stock_anterior: null,
+          stock_nuevo: null,
+          costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
+          motivo: esVariante
+            ? `Venta en Smart POS · ${varianteNombreEtiqueta} (sin control de stock)`
+            : 'Venta en Smart POS (sin control de stock)',
+          operador: operador?.nombre,
+        });
+        if (!resultadoKardexSinStock.ok) {
+          console.error(
+            `[Smart POS] No se pudo registrar en el Kardex la trazabilidad de "${item.nombre}" (sin control de stock):`,
+            resultadoKardexSinStock.error
+          );
+        }
       }
     }
 
@@ -27108,9 +27189,34 @@ function DirectorioJugadoresCRM({
           });
         });
         comprasPOS.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+        // Favorito de Pro-Shop: acotado a esa categoría (antes se contaban
+        // TODAS las compras juntas — Pro-Shop y Bar mezcladas — y por pura
+        // coincidencia de volumen el resultado casi siempre salía Pro-Shop;
+        // ahora queda explícito, y se separa el mismo cálculo para
+        // Restaurant/Bar justo abajo).
         const productoFavorito = (() => {
           const conteo = {};
           comprasPOS.forEach((c) => {
+            if (c.categoria === 'Cafetería/Bar') return;
+            conteo[c.nombre] = (conteo[c.nombre] || 0) + c.cantidad;
+          });
+          const entradas = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
+          return entradas.length > 0 ? { nombre: entradas[0][0], cantidad: entradas[0][1] } : null;
+        })();
+
+        // Favorito de Restaurant/Bar (nuevo): mismo criterio — producto con
+        // más UNIDADES acumuladas en el historial de compras del cliente,
+        // ahora acotado a `categoria === 'Cafetería/Bar'` (ej. "Cholaquiles
+        // (6x)"). Vive dentro del mismo `useMemo` que `productoFavorito` y
+        // depende de las mismas fuentes (`ventasPorJugadorId` ←
+        // `ventasHistoricas`, ya con su propio canal Realtime existente —
+        // Regla de Oro, no se duplica), así que ambos favoritos se
+        // recalculan y reflejan solos, en tiempo real, en cuanto se
+        // registra una venta nueva en Smart POS — sin plumbing adicional.
+        const productoFavoritoBar = (() => {
+          const conteo = {};
+          comprasPOS.forEach((c) => {
+            if (c.categoria !== 'Cafetería/Bar') return;
             conteo[c.nombre] = (conteo[c.nombre] || 0) + c.cantidad;
           });
           const entradas = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
@@ -27253,6 +27359,7 @@ function DirectorioJugadoresCRM({
           hoyISO: hoyISOStr,
           comprasPOS,
           productoFavorito,
+          productoFavoritoBar,
           cortesiaBar,
           cortesiaProShop,
           eventosTorneoRetas,
@@ -27766,6 +27873,11 @@ function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria })
       {perfil.productoFavorito && (
         <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/30">
           <Star size={11} /> Favorito: {perfil.productoFavorito.nombre} ({perfil.productoFavorito.cantidad}x)
+        </span>
+      )}
+      {perfil.productoFavoritoBar && (
+        <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-lime-400/10 px-2.5 py-1 text-[11px] font-bold text-lime-600 ring-1 ring-lime-400/30">
+          <Star size={11} /> Favorito Restaurant/Bar: {perfil.productoFavoritoBar.nombre} ({perfil.productoFavoritoBar.cantidad}x)
         </span>
       )}
       {cortesiaProShop && compras.some((c) => c.categoria === 'Pro-Shop') && (
@@ -31017,6 +31129,37 @@ function PortalPublicoJugadores({ clubSlug }) {
       });
       if (!resultadoKardex.ok) {
         console.error(`[Portal] Error detallado Supabase: stock descontado pero el Kardex no se pudo registrar para "${item.nombre}":`, resultadoKardex.error);
+      }
+    }
+
+    // NUEVO — Trazabilidad de Kardex para Platillos/Stock Rígido (Portal):
+    // mismo criterio aditivo que en Smart POS — los artículos con
+    // `manejaStock === false` quedan fuera del `for` de arriba
+    // (RESTRICCIÓN CLAVE: no se toca stock físico ni contadores) y solo se
+    // agrega su movimiento de salida en el Kardex, con `stock_anterior`/
+    // `stock_nuevo` en `null`.
+    for (const item of items.filter(
+      (it) => it.tipo === 'producto' && (it.productoPadreId || it.producto_id) && it.manejaStock === false
+    )) {
+      const productoId = item.productoPadreId || item.producto_id;
+      const varianteId = item.varianteId || item.variante_id;
+      const resultadoKardexSinStock = await insertarMovimientoKardex({
+        producto_id: productoId,
+        variante_id: varianteId || undefined,
+        producto_nombre: item.nombre,
+        tipo_movimiento: 'salida_venta',
+        cantidad: item.cantidad,
+        stock_anterior: null,
+        stock_nuevo: null,
+        costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProductoPortal),
+        motivo: `${motivoBase}${item.esVariante || varianteId ? ` · ${item.varianteNombre || item.nombre}` : ''} (sin control de stock)`,
+        operador: 'Portal Público',
+      });
+      if (!resultadoKardexSinStock.ok) {
+        console.error(
+          `[Portal] No se pudo registrar en el Kardex la trazabilidad de "${item.nombre}" (sin control de stock):`,
+          resultadoKardexSinStock.error
+        );
       }
     }
     if (fallos.length > 0) {
@@ -35419,9 +35562,74 @@ function AppInterno() {
         const idsAQuitar = new Set(aQuitar.map((a) => a.id));
         return prev.filter((a) => !idsAQuitar.has(a.id));
       });
+      // FIX (Notificación de Cortesía Redimida — ya no debe reaparecer):
+      // lo de arriba SOLO marca leída la fila que ya estaba cargada en el
+      // estado local de ESTA sesión (`alertasClub`). Si la alerta "meta
+      // alcanzada" original se generó y quedó sin leer en OTRA
+      // sesión/dispositivo (o antes de que este drawer la hubiera cargado
+      // todavía), nunca se marcaba `leida` en Supabase y volvía a aparecer
+      // como no leída en cada recarga — el bug reportado exacto ("Jaime
+      // Camil acaba de alcanzar su meta de cortesía..." aunque el
+      // acumulado ya esté en $0/$1,500 o $100/$500, muy por debajo de la
+      // meta). Este UPDATE es independiente del estado local en memoria:
+      // marca leída CUALQUIER fila de `notificaciones_club` de tipo
+      // `cortesia_lista` de este jugador+categoría que siga sin leer, sin
+      // importar en qué sesión se haya generado ni si llegó a cargarse
+      // aquí. `payload->>categoria` es la misma clave que escribe el
+      // disparador de `DirectorioJugadoresCRM` (ver `cortesia_lista` más
+      // abajo).
+      conClubId(
+        supabase
+          .from('notificaciones_club')
+          .update({ leida: true })
+          .eq('tipo', 'cortesia_lista')
+          .eq('jugador_id', jugadorIdTexto)
+          .eq('payload->>categoria', categoria)
+          .eq('leida', false)
+      ).then(({ error }) => {
+        if (error && !esErrorTablaInexistente(error)) {
+          console.warn('No se pudo limpiar en Supabase el historial de alertas de cortesía ya redimidas:', error);
+        }
+      });
     },
     []
   );
+
+  // FIX (Notificación de Cortesía Redimida — limpieza cross-sesión en
+  // tiempo real): `limpiarAlertasCortesia` de arriba solo corre en la
+  // MISMA sesión/dispositivo donde se otorgó la cortesía (viene por prop
+  // `onCortesiaCanjeada` desde `DirectorioJugadoresCRM`/`ModuloSmartPOS`).
+  // Si el canje ocurre en OTRO dispositivo/pestaña mientras esta campana ya
+  // tiene la alerta "meta alcanzada" abierta, esa alerta se quedaba
+  // huérfana hasta el próximo refresh manual. Este canal escucha
+  // `cortesias_otorgadas` (la fuente de verdad de un canje real, migracion_v35)
+  // directamente — cualquier INSERT nuevo (nunca UPDATE/DELETE: un DELETE
+  // aquí es el rollback transaccional de `otorgarCortesiaCRM` cuando el
+  // ticket $0.00 falla, y ESE no debe limpiar nada) dispara la misma
+  // limpieza local + en Supabase, sin importar qué sesión otorgó la
+  // cortesía. No duplica el canal `jugadores-crm-cortesias` de
+  // `DirectorioJugadoresCRM` (Regla de Oro): ese vive dentro de un módulo
+  // que puede no estar montado cuando llega el canje (la campana, en
+  // cambio, vive siempre en `AppInterno`), y además tiene un propósito
+  // distinto (recalcular `perfiles`, no limpiar alertas).
+  useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return undefined;
+    const canal = supabase
+      .channel(`cortesias-otorgadas-alertas_${CLUB_ACTIVO_ID}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'cortesias_otorgadas', filter: `club_id=eq.${CLUB_ACTIVO_ID}` },
+        (payload) => {
+          const fila = payload.new || {};
+          if (!fila.jugador_id || !fila.categoria) return;
+          limpiarAlertasCortesia(fila.jugador_id, fila.categoria);
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [limpiarAlertasCortesia]);
 
   // Refs (no dependencias del efecto de abajo): así el canal Realtime del
   // Centro de Alertas se suscribe UNA sola vez y no se destruye/recrea cada
@@ -35681,8 +35889,66 @@ function AppInterno() {
         if (!esErrorTablaInexistente(error)) console.warn('[ClubOS] No se pudo cargar el respaldo inicial de notificaciones del club.', error);
         return;
       }
-      const filas = data || [];
+      let filas = data || [];
       if (filas.length === 0) return;
+
+      // FIX (Notificación de Cortesía Redimida — auto-limpieza de filas
+      // "zombi" ya existentes): filas viejas de tipo `cortesia_lista` que
+      // se quedaron `leida: false` en Supabase de ANTES de que existiera la
+      // limpieza de `limpiarAlertasCortesia` (o porque el canje ocurrió en
+      // otra sesión que nunca las vio) reaparecían aquí en cada recarga
+      // aunque el ciclo ya se hubiera reseteado por debajo de la meta —
+      // exactamente el bug reportado ("Jaime Camil acaba de alcanzar su
+      // meta..." con $0/$1,500 o $100/$500 ya reseteados. Se contrasta cada
+      // alerta `cortesia_lista` sin leer contra `cortesias_otorgadas` (la
+      // fuente de verdad de un canje real): si ya existe un canje de ese
+      // jugador+categoría en o después de la fecha en que se generó la
+      // alerta, la cortesía YA fue redimida — se descarta de la campana y
+      // se marca `leida` en Supabase de una vez, para que no vuelva a
+      // aparecer nunca más. Solo se consulta `cortesias_otorgadas` cuando
+      // de verdad hay alertas `cortesia_lista` sin leer (evita una consulta
+      // extra en el caso común de que no haya ninguna).
+      const idsCortesiaZombi = [];
+      if (filas.some((f) => f.tipo === 'cortesia_lista')) {
+        const { data: canjes, error: errorCanjes } = await conClubId(
+          supabase.from('cortesias_otorgadas').select('jugador_id, categoria, created_at')
+        );
+        if (cancelado) return;
+        if (!errorCanjes) {
+          const ultimoCanjePorClave = new Map();
+          (canjes || []).forEach((c) => {
+            if (!c.jugador_id || !c.categoria) return;
+            const ts = c.created_at ? new Date(c.created_at).getTime() : 0;
+            if (!Number.isFinite(ts)) return;
+            const clave = `${String(c.jugador_id).trim()}:${c.categoria}`;
+            if (!ultimoCanjePorClave.has(clave) || ts > ultimoCanjePorClave.get(clave)) ultimoCanjePorClave.set(clave, ts);
+          });
+          filas = filas.filter((fila) => {
+            if (fila.tipo !== 'cortesia_lista') return true;
+            const categoria = fila.payload?.categoria;
+            if (!fila.jugador_id || !categoria) return true;
+            const clave = `${String(fila.jugador_id).trim()}:${categoria}`;
+            const tsCanje = ultimoCanjePorClave.get(clave);
+            const tsAlerta = fila.created_at ? new Date(fila.created_at).getTime() : 0;
+            const yaRedimida = tsCanje != null && tsCanje >= tsAlerta;
+            if (yaRedimida) idsCortesiaZombi.push(fila.id);
+            return !yaRedimida;
+          });
+        } else if (!esErrorTablaInexistente(errorCanjes)) {
+          console.warn('[ClubOS] No se pudo verificar cortesías ya redimidas para limpiar alertas zombi.', errorCanjes);
+        }
+      }
+      if (idsCortesiaZombi.length > 0) {
+        supabase
+          .from('notificaciones_club')
+          .update({ leida: true })
+          .in('id', idsCortesiaZombi)
+          .then(({ error: errorLimpieza }) => {
+            if (errorLimpieza) console.warn('No se pudieron marcar leídas las alertas de cortesía zombi en Supabase:', errorLimpieza);
+          });
+      }
+      if (filas.length === 0) return;
+
       setAlertasClub((prev) => {
         const idsExistentes = new Set(prev.map((a) => a.id));
         const nuevas = filas
