@@ -1632,6 +1632,12 @@ const PERMISOS_POR_ROL = {
     // Evaluación de Nivel y Progreso de Jugadores (Academia → Alumnos): el
     // Propietario siempre puede ver y calificar el Expediente Deportivo.
     puedeEvaluarJugadores: true,
+    // Eliminar Clase Definitivamente (Academia & Clínicas): borrado
+    // PERMANENTE de Supabase (clase + sesión + alumnos + asistencia), a
+    // diferencia de "Cancelar Clase" (reversible/preserva historial) — solo
+    // Owner/Manager ("administradores y coordinadores"), ver
+    // `eliminarClaseDefinitivamente` en `ModuloAcademiaClinicas`.
+    puedeEliminarClaseAcademia: true,
   },
   manager: {
     modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'],
@@ -1652,6 +1658,9 @@ const PERMISOS_POR_ROL = {
     // Solo Coach/Propietario califican — Manager ve la lista de Alumnos
     // pero no el formulario de calificación (pedido explícito del club).
     puedeEvaluarJugadores: false,
+    // Manager = "coordinador" del club en esta matriz de roles — también
+    // puede eliminar una clase definitivamente.
+    puedeEliminarClaseAcademia: true,
   },
   recepcion: {
     // "Recepción/Caja": Parrilla Operativa, Smart POS, Jugadores
@@ -1673,6 +1682,7 @@ const PERMISOS_POR_ROL = {
     soloLecturaParrilla: false,
     soloLecturaInventario: false,
     puedeEvaluarJugadores: false,
+    puedeEliminarClaseAcademia: false,
   },
   bar: {
     // "Restaurante/Bar": Smart POS (filtrado por defecto a la pestaña
@@ -1694,6 +1704,7 @@ const PERMISOS_POR_ROL = {
     soloLecturaParrilla: false,
     soloLecturaInventario: true,
     puedeEvaluarJugadores: false,
+    puedeEliminarClaseAcademia: false,
   },
   coach: {
     // Academia & Clínicas (crear/programar clases) + Torneos & Retas
@@ -1717,6 +1728,9 @@ const PERMISOS_POR_ROL = {
     // califica los 6 ejes técnicos y asigna el Nivel Oficial en el
     // Expediente Deportivo (Academia → Alumnos).
     puedeEvaluarJugadores: true,
+    // El Coach programa/gestiona clases pero no puede borrarlas
+    // definitivamente — solo Owner/Manager.
+    puedeEliminarClaseAcademia: false,
   },
   contador: {
     // Rol de solo lectura/exportación: ÚNICAMENTE Contabilidad & Compras,
@@ -1745,6 +1759,7 @@ const PERMISOS_POR_ROL = {
     soloLecturaParrilla: false,
     soloLecturaInventario: true,
     puedeEvaluarJugadores: false,
+    puedeEliminarClaseAcademia: false,
   },
 };
 
@@ -8107,6 +8122,42 @@ function ModalMotivoObligatorio({ titulo, subtitulo, textoBoton = 'Confirmar', o
   );
 }
 
+// Limpieza de Cronograma (item 2) — prompt simple Sí/No (sin motivo
+// obligatorio, a diferencia de `ModalMotivoObligatorio`: liberar una clase
+// vacía no es una anulación que necesite justificarse, es solo housekeeping)
+// que aparece justo después de cancelar la última inscripción pendiente de
+// una Clase Privada en "Cuentas Pendientes / Inscripciones", ofreciendo
+// cancelarla para que la cancha quede libre para otro cobro o reserva. Ver
+// `liberarClaseVaciaDesdePOS` en `ModuloSmartPOS`.
+function ModalConfirmarLiberarClasePrivada({ clase, onClose, onConfirmar, liberando }) {
+  return (
+    <ModalShell titulo="¿Liberar la cancha?" subtitulo={clase.nombre} onClose={onClose} icon={GraduationCap} ancho="max-w-sm">
+      <div className="space-y-4">
+        <p className="text-xs font-semibold text-slate-600">
+          Esta Clase Privada se quedó sin alumnos (0/1) tras la cancelación. ¿Deseas cancelarla para liberar la cancha en el Cronograma y la Parrilla Operativa, disponible de inmediato para otros cobros o reservas?
+        </p>
+        <p className="text-[11px] text-slate-500">
+          Esto no borra nada — es reversible, igual que "Cancelar Clase" en Academia &amp; Clínicas. Si prefieres dejarla, no pasa nada: puedes cancelarla después desde ahí.
+        </p>
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose} disabled={liberando}>
+            No, dejarla
+          </BotonSecundario>
+          <button
+            type="button"
+            onClick={onConfirmar}
+            disabled={liberando}
+            className="inline-flex items-center gap-2 rounded-lg bg-rose-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {liberando ? <Loader2 size={15} className="animate-spin" /> : <Ban size={15} />}
+            Sí, liberar cancha
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando, onAnular }) {
   // `useState(() => ...)` — se calcula solo UNA vez, al montar (cada apertura
   // del modal es un montaje nuevo, ver el `{grupoALiquidar && (...)}` que lo
@@ -8803,6 +8854,7 @@ function ModuloSmartPOS({
   loadingInscripciones,
   loadingParticipantes,
   academiaClases,
+  onAcademiaClaseActualizada,
   academiaAlumnos,
   setAcademiaAlumnos,
   loadingAcademiaAlumnos,
@@ -9937,6 +9989,12 @@ function ModuloSmartPOS({
   // debajo de `cobrarInscripcionEvento`).
   const [inscripcionACancelar, setInscripcionACancelar] = useState(null);
   const [cancelandoInscripcionId, setCancelandoInscripcionId] = useState(null);
+  // Limpieza de Cronograma (item 2): clase Privada detectada en 0/1 alumnos
+  // justo después de cancelar una inscripción de Academia aquí en el POS —
+  // dispara `ModalConfirmarLiberarClasePrivada` (ver el render al final del
+  // componente) preguntando si se libera la cancha. `null` = sin prompt.
+  const [claseVaciaParaLiberar, setClaseVaciaParaLiberar] = useState(null);
+  const [liberandoClaseVaciaId, setLiberandoClaseVaciaId] = useState(null);
 
   const inscripcionesEventoPendientes = useMemo(() => {
     const retasPorId = new Map((retas || []).map((r) => [r.id, r]));
@@ -10022,6 +10080,11 @@ function ModuloSmartPOS({
           // al darla de alta (`paquete_creditos`, capturado en `altaAlumno`).
           tipoPagoAcademia: a.tipo_pago,
           paqueteCreditosAcademia: a.paquete_creditos,
+          // Limpieza de Cronograma (item 2): `cancelarInscripcionEvento`
+          // necesita el `clase_id` para detectar si, tras esta cancelación,
+          // una Clase Privada se quedó en 0/1 alumnos y ofrecer liberar la
+          // cancha — ver el prompt de `claseVaciaParaLiberar` más abajo.
+          claseId: a.clase_id || null,
         };
       });
 
@@ -10320,6 +10383,19 @@ function ModuloSmartPOS({
           return actualizado;
         })
       );
+      // Limpieza de Cronograma (item 2): si esta era la última inscripción
+      // activa de una Clase Privada ("Clase Privada - Luis Garcia" y
+      // similares, 1 solo cupo), se ofrece liberar la cancha de inmediato en
+      // vez de dejarla bloqueando el horario sin nadie inscrito. Se
+      // recalcula sobre `academiaAlumnos` (el estado ANTES de este cambio,
+      // por eso se excluye `fila.id` a mano en vez de esperar el re-render).
+      const clase = fila.claseId ? (academiaClases || []).find((c) => c.id === fila.claseId) : null;
+      if (clase && clase.tipo_clase === 'privada' && clase.estado !== 'cancelada') {
+        const quedanActivos = (academiaAlumnos || []).filter(
+          (a) => a.clase_id === clase.id && a.id !== fila.id && a.estado !== 'baja'
+        ).length;
+        if (quedanActivos === 0) setClaseVaciaParaLiberar(clase);
+      }
     } else {
       if (!fila.esLocal) {
         const { error: errDelete } = await supabase.from('torneo_participantes').delete().eq('id', fila.id);
@@ -10349,6 +10425,43 @@ function ModuloSmartPOS({
     });
 
     return true;
+  }
+
+  // Limpieza de Cronograma (item 2) — confirma el prompt de
+  // `claseVaciaParaLiberar`: libera la cancha de una Clase Privada que se
+  // quedó sin alumnos, cancelando su bloqueo en `reservas` y marcando la
+  // clase como `cancelada` (MISMA acción reversible que "Cancelar Clase" en
+  // Academia & Clínicas, nunca un borrado — el club puede revertirlo /
+  // seguir viendo el historial ahí). Smart POS no tiene acceso a
+  // `academia_sesiones` (vive local en `ModuloAcademiaClinicas`, self-
+  // contained), así que el bloqueo se ubica por Cancha+Fecha+Hora — únicos
+  // por clase gracias a la Arquitectura de Fecha Única (una sola sesión por
+  // clase, sin recurrencia).
+  async function liberarClaseVaciaDesdePOS(clase) {
+    setLiberandoClaseVaciaId(clase.id);
+    const bloqueo = (reservas || []).find(
+      (r) =>
+        r.estado === 'Clase' &&
+        r.cancha_id === clase.cancha_id &&
+        r.fecha === clase.fecha &&
+        r.hora_inicio === clase.hora_inicio
+    );
+    if (bloqueo) {
+      try {
+        await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', bloqueo.id);
+      } catch (_e) {
+        /* Sincronización Silenciosa — el estado local se actualiza igual abajo */
+      }
+      upsertReserva?.({ id: bloqueo.id, estado: 'Cancelada' });
+    }
+    if (!clase._local) {
+      const { error } = await actualizarConColumnasOpcionales('academia_clases', clase.id, { estado: 'cancelada' }, []);
+      if (error) console.warn('[Smart POS] No se pudo marcar la clase como cancelada en Supabase, se aplicó solo local.', error);
+    }
+    onAcademiaClaseActualizada?.({ ...clase, estado: 'cancelada' });
+    setLiberandoClaseVaciaId(null);
+    setClaseVaciaParaLiberar(null);
+    mostrarToast({ titulo: 'Clase cancelada', detalle: `${clase.nombre} — se liberó la cancha para otros cobros o reservas.` });
   }
 
   const productosFiltrados = useMemo(() => {
@@ -11530,6 +11643,15 @@ function ModuloSmartPOS({
           textoBoton="Sí, cancelar y liberar el lugar"
           onClose={() => setInscripcionACancelar(null)}
           onConfirmar={(motivo) => cancelarInscripcionEvento(inscripcionACancelar, motivo)}
+        />
+      )}
+
+      {claseVaciaParaLiberar && (
+        <ModalConfirmarLiberarClasePrivada
+          clase={claseVaciaParaLiberar}
+          liberando={liberandoClaseVaciaId === claseVaciaParaLiberar.id}
+          onClose={() => setClaseVaciaParaLiberar(null)}
+          onConfirmar={() => liberarClaseVaciaDesdePOS(claseVaciaParaLiberar)}
         />
       )}
     </>
@@ -24615,7 +24737,18 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
 // en `ModuloAcademiaClinicas`). Ya no es un solo `<button>` completo (como
 // antes de este cambio) porque ahora convive con el botón de Archivar: solo
 // el bloque superior (nombre/cupos/horario/barra) abre el detalle.
-function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, iniciadaHoy, archivado, onArchivar, actualizandoArchivo }) {
+function TarjetaClaseAcademia({
+  clase,
+  cancha,
+  alumnosActivos,
+  onVerDetalle,
+  iniciadaHoy,
+  archivado,
+  onArchivar,
+  actualizandoArchivo,
+  puedeEliminarDefinitivo,
+  onEliminarDefinitivo,
+}) {
   const cupos = alumnosActivos.length;
   const lleno = cupos >= clase.capacidad_maxima;
   // Arquitectura de Fecha Única: ya no hay `dia_semana` propio — se muestra
@@ -24675,21 +24808,36 @@ function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, ini
           <div className={`h-full rounded-full ${lleno ? 'bg-rose-400' : 'bg-teal-400'}`} style={{ width: `${Math.min(100, (cupos / Math.max(clase.capacidad_maxima, 1)) * 100)}%` }} />
         </div>
       </button>
-      <button
-        type="button"
-        onClick={() => onArchivar?.(clase, !archivado)}
-        disabled={actualizandoArchivo}
-        className="inline-flex items-center gap-1.5 self-start rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {actualizandoArchivo ? (
-          <Loader2 size={12} className="animate-spin" />
-        ) : archivado ? (
-          <ArchiveRestore size={12} />
-        ) : (
-          <Archive size={12} />
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => onArchivar?.(clase, !archivado)}
+          disabled={actualizandoArchivo}
+          className="inline-flex items-center gap-1.5 self-start rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {actualizandoArchivo ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : archivado ? (
+            <ArchiveRestore size={12} />
+          ) : (
+            <Archive size={12} />
+          )}
+          {archivado ? 'Restaurar' : 'Archivar'}
+        </button>
+        {/* Eliminar Clase Definitivamente (item 1) — directo desde la
+            tarjeta, sin tener que abrir el detalle primero. Solo
+            Owner/Manager (`puedeEliminarDefinitivo`). */}
+        {puedeEliminarDefinitivo && (
+          <button
+            type="button"
+            onClick={() => onEliminarDefinitivo?.(clase)}
+            title="Eliminar Clase Definitivamente"
+            className="inline-flex items-center gap-1.5 self-start rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
+          >
+            <Trash2 size={12} />
+          </button>
         )}
-        {archivado ? 'Restaurar' : 'Archivar'}
-      </button>
+      </div>
     </div>
   );
 }
@@ -24709,18 +24857,28 @@ function ModalDetalleClase({
   asistencias,
   jugadoresPorId,
   empleados,
+  permisos,
   onClose,
   onAlumnoAgregado,
   onAlumnoActualizado,
   onAsistenciaGuardada,
   onGuardarEdicion,
   onEliminarClase,
+  onEliminarClaseDefinitivamente,
 }) {
   const toast = useToast();
   const directorioJugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
   const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
   const alumnosActivos = useMemo(() => alumnos.filter((a) => a.estado !== 'baja'), [alumnos]);
   const alumnosBaja = useMemo(() => alumnos.filter((a) => a.estado === 'baja'), [alumnos]);
+  // Selector/confirmación (item 2): si una Clase Privada se queda en 0
+  // alumnos activos tras una baja hecha AQUÍ MISMO (`darDeBaja`, justo abajo),
+  // se ofrece de inmediato liberar la cancha cancelando la clase — igual
+  // acción que "Cancelar Clase" en Ajustes, sin que el operador tenga que ir
+  // a buscarla. Solo se dispara una vez por baja (`useRef` evita que se
+  // repita en cada re-render mientras el banner sigue visible).
+  const [mostrarPromptClaseVacia, setMostrarPromptClaseVacia] = useState(false);
+  const [liberandoClaseVacia, setLiberandoClaseVacia] = useState(false);
 
   const [subvista, setSubvista] = useState('alumnos'); // 'alumnos' | 'asistencia'
 
@@ -24849,6 +25007,28 @@ function ModalDetalleClase({
     const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, { estado: 'baja' }, []);
     if (error) return toast({ titulo: 'No se pudo dar de baja al alumno', detalle: error.message, tono: 'error' });
     onAlumnoActualizado({ ...alumno, estado: 'baja' });
+    // Clase Privada / Personalizada que se quedó en 0/1 alumnos (item 2): si
+    // ESTE era el último alumno activo y la clase es Privada, se ofrece de
+    // inmediato liberar la cancha — sin esto, una "Clase Privada - Luis
+    // Garcia" sin nadie inscrito se quedaría bloqueando el horario en el
+    // Cronograma hasta que alguien recordara ir a cancelarla a mano.
+    const quedanActivos = alumnosActivos.filter((a) => a.id !== alumno.id).length;
+    if (clase.tipo_clase === 'privada' && quedanActivos === 0 && clase.estado !== 'cancelada') {
+      setMostrarPromptClaseVacia(true);
+    }
+  }
+
+  async function liberarClaseVacia() {
+    setLiberandoClaseVacia(true);
+    const { error } = await onEliminarClase();
+    setLiberandoClaseVacia(false);
+    setMostrarPromptClaseVacia(false);
+    if (error) {
+      toast({ titulo: 'No se pudo liberar la cancha', detalle: error.message, tono: 'error' });
+      return;
+    }
+    toast({ titulo: 'Clase cancelada', detalle: `${clase.nombre} — se liberó la cancha para otros cobros o reservas.` });
+    onClose();
   }
 
   async function reactivar(alumno) {
@@ -24940,6 +25120,11 @@ function ModalDetalleClase({
     setEditando(false);
   }
 
+  // "Cancelar Clase" (reversible): cancela sesiones/bloqueo, libera la
+  // cancha en ambas parrillas, pero CONSERVA la fila y su historial de
+  // alumnos/asistencia — distinto de "Eliminar Clase Definitivamente"
+  // (`mostrarConfirmarEliminarDefinitivo` más abajo), que sí borra todo de
+  // Supabase de forma permanente.
   const [confirmarEliminar, setConfirmarEliminar] = useState(false);
   const [eliminando, setEliminando] = useState(false);
   async function eliminarClase() {
@@ -24947,12 +25132,19 @@ function ModalDetalleClase({
     const { error } = await onEliminarClase();
     setEliminando(false);
     if (error) {
-      toast({ titulo: 'No se pudo eliminar la clase', detalle: error.message, tono: 'error' });
+      toast({ titulo: 'No se pudo cancelar la clase', detalle: error.message, tono: 'error' });
       return;
     }
-    toast({ titulo: 'Clase eliminada', detalle: `${clase.nombre} — se liberó la cancha en ambas parrillas.` });
+    toast({ titulo: 'Clase cancelada', detalle: `${clase.nombre} — se liberó la cancha en ambas parrillas.` });
     onClose();
   }
+
+  // Eliminar Clase Definitivamente (item 1): borrado PERMANENTE de Supabase
+  // — gateado por `permisos.puedeEliminarClaseAcademia` (Owner/Manager) tanto
+  // aquí como en `TarjetaClaseAcademia`. La confirmación real vive en
+  // `ModalConfirmarEliminarClase` (modal aparte, ver justo debajo del render
+  // de este componente) — aquí solo se dispara.
+  const [mostrarConfirmarEliminarDefinitivo, setMostrarConfirmarEliminarDefinitivo] = useState(false);
 
   /* ---- Pase de lista ---- */
   const sesionesOrdenadas = useMemo(
@@ -25052,6 +25244,33 @@ function ModalDetalleClase({
 
         {subvista === 'alumnos' && (
           <div className="space-y-3">
+            {mostrarPromptClaseVacia && (
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-rose-400/30 bg-rose-400/5 p-3">
+                <AlertTriangle size={16} className="shrink-0 text-rose-400" />
+                <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-300">
+                  Esta Clase Privada se quedó sin alumnos (0/1). ¿Deseas cancelarla para liberar la cancha en el Cronograma y la Parrilla, y que quede disponible para otros cobros o reservas?
+                </p>
+                <div className="flex shrink-0 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setMostrarPromptClaseVacia(false)}
+                    disabled={liberandoClaseVacia}
+                    className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
+                  >
+                    No, dejarla
+                  </button>
+                  <button
+                    type="button"
+                    onClick={liberarClaseVacia}
+                    disabled={liberandoClaseVacia}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
+                  >
+                    {liberandoClaseVacia ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />}
+                    Sí, liberar cancha
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-bold text-slate-500">
                 {alumnosActivos.length} alumno{alumnosActivos.length === 1 ? '' : 's'} inscrito{alumnosActivos.length === 1 ? '' : 's'}
@@ -25366,19 +25585,19 @@ function ModalDetalleClase({
               </div>
             )}
 
-            <div className="pt-2">
+            <div className="flex flex-wrap items-center gap-2 pt-2">
               {!confirmarEliminar ? (
                 <button
                   type="button"
                   onClick={() => setConfirmarEliminar(true)}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
                 >
-                  <Trash size={12} /> Eliminar Clase
+                  <Ban size={12} /> Cancelar Clase
                 </button>
               ) : (
-                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
+                <div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
                   <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
-                    ¿Eliminar "{clase.nombre}"? Se cancelan sus sesiones y se libera la cancha en la Parrilla Operativa y en el Portal. El historial de alumnos y asistencia se conserva.
+                    ¿Cancelar "{clase.nombre}"? Se cancelan sus sesiones y se libera la cancha en la Parrilla Operativa y en el Portal. El historial de alumnos y asistencia se conserva.
                   </p>
                   <div className="flex shrink-0 gap-1.5">
                     <button
@@ -25387,7 +25606,7 @@ function ModalDetalleClase({
                       disabled={eliminando}
                       className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
                     >
-                      Cancelar
+                      Regresar
                     </button>
                     <button
                       type="button"
@@ -25395,15 +25614,89 @@ function ModalDetalleClase({
                       disabled={eliminando}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
                     >
-                      {eliminando ? <Loader2 size={12} className="animate-spin" /> : <Trash size={12} />}
+                      {eliminando ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />}
                       Confirmar
                     </button>
                   </div>
                 </div>
               )}
+
+              {/* Eliminar Clase Definitivamente (item 1) — borrado PERMANENTE
+                  de Supabase, distinto de "Cancelar Clase" de arriba
+                  (reversible, conserva historial). Solo Owner/Manager
+                  ("administradores y coordinadores"). */}
+              {permisos?.puedeEliminarClaseAcademia && (
+                <button
+                  type="button"
+                  onClick={() => setMostrarConfirmarEliminarDefinitivo(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500/10 px-2.5 py-1.5 text-[11px] font-bold text-rose-500 ring-1 ring-rose-500/40 transition hover:bg-rose-500/20"
+                >
+                  <Trash2 size={12} /> Eliminar Clase Definitivamente
+                </button>
+              )}
             </div>
           </div>
         )}
+      </div>
+
+      {mostrarConfirmarEliminarDefinitivo && (
+        <ModalConfirmarEliminarClase
+          clase={clase}
+          alumnosActivos={alumnosActivos}
+          onClose={() => setMostrarConfirmarEliminarDefinitivo(false)}
+          onConfirmar={async () => {
+            const resultado = await onEliminarClaseDefinitivamente(clase);
+            if (!resultado?.error) onClose();
+            return resultado;
+          }}
+        />
+      )}
+    </ModalShell>
+  );
+}
+
+// Confirmación de "Eliminar Clase Definitivamente" (item 1) — a diferencia de
+// "Cancelar Clase" (reversible, conserva historial), esta acción borra
+// PERMANENTEMENTE de Supabase la clase, su sesión, sus alumnos inscritos y su
+// asistencia (ver `eliminarClaseDefinitivamente` en `ModuloAcademiaClinicas`,
+// que además se niega a borrar si algún alumno ya pagó — para no perder
+// ingresos históricos del P&L, ahí se le pide al operador usar "Cancelar
+// Clase" en su lugar). Reutilizada tanto desde `ModalDetalleClase` (pestaña
+// Ajustes) como desde el botón directo en `TarjetaClaseAcademia`.
+function ModalConfirmarEliminarClase({ clase, alumnosActivos, onClose, onConfirmar }) {
+  const [eliminando, setEliminando] = useState(false);
+  async function confirmar() {
+    setEliminando(true);
+    const { error } = await onConfirmar();
+    setEliminando(false);
+    if (!error) onClose();
+  }
+  return (
+    <ModalShell titulo="Eliminar Clase Definitivamente" subtitulo={clase.nombre} onClose={onClose} icon={Trash2} ancho="max-w-sm">
+      <div className="space-y-4">
+        <div className="flex items-start gap-2 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2.5 text-[11px] font-semibold text-rose-300">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          Esta acción es permanente: se borra la clase, su sesión, sus alumnos inscritos y su asistencia de Supabase, y se libera la cancha en el Cronograma y la Parrilla Operativa. No se puede deshacer.
+        </div>
+        {alumnosActivos.length > 0 && (
+          <p className="text-[11px] font-semibold text-amber-400">
+            Esta clase tiene {alumnosActivos.length} alumno{alumnosActivos.length === 1 ? '' : 's'} inscrito{alumnosActivos.length === 1 ? '' : 's'} — su(s) registro(s) de inscripción también se eliminarán. Si ya pagaron, usa "Cancelar Clase" en su lugar para no perder ese ingreso del historial.
+          </p>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose} disabled={eliminando}>
+            Regresar
+          </BotonSecundario>
+          <button
+            type="button"
+            onClick={confirmar}
+            disabled={eliminando}
+            className="inline-flex items-center gap-2 rounded-lg bg-rose-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {eliminando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+            Sí, eliminar definitivamente
+          </button>
+        </div>
       </div>
     </ModalShell>
   );
@@ -26675,6 +26968,7 @@ function ModuloAcademiaClinicas({
   academiaClases,
   onAcademiaClaseCreada,
   onAcademiaClaseActualizada,
+  onAcademiaClaseEliminada,
   academiaAlumnos,
   onAcademiaAlumnoAgregado,
   onAcademiaAlumnoActualizado,
@@ -26705,6 +26999,11 @@ function ModuloAcademiaClinicas({
   const [modalNuevaClase, setModalNuevaClase] = useState(false);
   const [modalRangosHorario, setModalRangosHorario] = useState(false);
   const [claseSeleccionadaId, setClaseSeleccionadaId] = useState(null);
+  // Eliminar Clase Definitivamente (item 1) disparada directo desde la
+  // tarjeta (`TarjetaClaseAcademia`), sin pasar primero por el detalle —
+  // guarda la clase completa (no solo el id) porque `ModalConfirmarEliminarClase`
+  // necesita su `.nombre`/alumnos para el texto de confirmación.
+  const [claseAEliminarDefinitivo, setClaseAEliminarDefinitivo] = useState(null);
   // Cronograma interactivo (item 1): día que se está viendo + la celda
   // (cancha/hora) sobre la que se dio clic para prellenar "Nueva Clase".
   const [fechaCronograma, setFechaCronograma] = useState(hoyISO());
@@ -26991,6 +27290,83 @@ function ModuloAcademiaClinicas({
     return { error: null };
   }
 
+  // Eliminar Clase Definitivamente (item 1, Control Interno): a diferencia
+  // de `eliminarClaseSeleccionada` (arriba, reversible y conserva el
+  // historial), esto BORRA PERMANENTEMENTE de Supabase la clase, su sesión,
+  // sus alumnos inscritos y su asistencia — pedido explícito del club para
+  // poder limpiar clases mal creadas/de prueba o Clases Privadas que se
+  // quedaron sin alumno. Gateada en la UI por
+  // `permisos.puedeEliminarClaseAcademia` (Owner/Manager); aquí además se
+  // NIEGA a borrar si algún alumno de la clase ya pagó — esa fila alimenta
+  // el P&L (`filasInscripcionesAcademia`, Contabilidad & Compras) y
+  // borrarla se llevaría ese ingreso histórico con ella, sin poder
+  // recuperarlo. Mismo criterio que `eliminarTorneoDefinitivo`/
+  // `eliminarRetaDefinitivo` en Torneos & Retas (solo eliminan sin
+  // inscritos/participantes) — aquí se permite con alumnos SIEMPRE que
+  // ninguno haya pagado todavía (pendientes de cobro, sin ingreso real que
+  // perder).
+  //
+  // El bloqueo de `reservas` se cancela (no se borra) — igual criterio
+  // universal que el resto del archivo para esa tabla (nunca se hace DELETE
+  // sobre `reservas`, solo `estado: 'Cancelada'`, que la Parrilla/Cronograma
+  // ya tratan como libre) — pero la clase/sesión/alumnos/asistencia sí se
+  // borran de verdad, que es lo que pidió el club.
+  async function eliminarClaseDefinitivamente(clase) {
+    const alumnosDeClase = (academiaAlumnos || []).filter((a) => a.clase_id === clase.id);
+    const tienePagos = alumnosDeClase.some((a) => a.estado_pago === 'pagado');
+    if (tienePagos) {
+      const err = new Error('Esta clase ya tiene pagos registrados — usa "Cancelar Clase" en vez de eliminarla, para no perder ese ingreso del historial.');
+      toast({ titulo: 'No se puede eliminar', detalle: err.message, tono: 'aviso' });
+      return { error: err };
+    }
+    const sesionesDeClase = academiaSesiones.filter((s) => s.clase_id === clase.id);
+    await Promise.all(
+      sesionesDeClase.map(async (s) => {
+        if (s.reserva_bloqueo_id) {
+          try {
+            await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', s.reserva_bloqueo_id);
+          } catch (_e) {
+            /* Sincronización Silenciosa — no bloquea el resto de la eliminación */
+          }
+          marcarReservaCancelada?.(s.reserva_bloqueo_id);
+        }
+      })
+    );
+    if (!clase._local) {
+      try {
+        await supabase.from('academia_asistencias').delete().eq('clase_id', clase.id);
+      } catch (_e) {
+        /* best effort — no bloquea el resto */
+      }
+      try {
+        await supabase.from('academia_alumnos').delete().eq('clase_id', clase.id);
+      } catch (_e) {
+        /* idem */
+      }
+      try {
+        await supabase.from('academia_sesiones').delete().eq('clase_id', clase.id);
+      } catch (_e) {
+        /* idem */
+      }
+      try {
+        const { error } = await supabase.from('academia_clases').delete().eq('id', clase.id);
+        if (error) throw error;
+      } catch (err) {
+        toast({ titulo: 'No se pudo eliminar la clase', detalle: err.message, tono: 'error' });
+        return { error: err };
+      }
+    } else {
+      quitarRegistroLocal(LS_KEY_ACADEMIA_CLASES_LOCAL, clase.id);
+    }
+    setAcademiaSesiones((prev) => prev.filter((s) => s.clase_id !== clase.id));
+    onAcademiaClaseEliminada?.(clase.id);
+    toast({
+      titulo: 'Clase eliminada definitivamente',
+      detalle: `${clase.nombre} se borró de Supabase junto con su sesión, alumnos y asistencia.`,
+    });
+    return { error: null };
+  }
+
   // Archivado de Clases/Clínicas (Limpieza Visual): oculta la clase de la
   // vista activa sin tocar ningún otro registro — alumnos, pagos y
   // asistencia siguen intactos, `archivado` es la única columna que
@@ -27183,6 +27559,8 @@ function ModuloAcademiaClinicas({
                     archivado={c.archivado === true || (c.estado !== 'cancelada' && claseYaConcluyoHoy(c, new Date(tickAcademia)))}
                     onArchivar={archivarClase}
                     actualizandoArchivo={actualizandoArchivoClaseId === c.id}
+                    puedeEliminarDefinitivo={Boolean(permisos?.puedeEliminarClaseAcademia)}
+                    onEliminarDefinitivo={setClaseAEliminarDefinitivo}
                   />
                 </div>
               ))}
@@ -27464,12 +27842,14 @@ function ModuloAcademiaClinicas({
           asistencias={asistenciasDeClaseSeleccionada}
           jugadoresPorId={jugadoresPorId}
           empleados={empleados}
+          permisos={permisos}
           onClose={() => setClaseSeleccionadaId(null)}
           onAlumnoAgregado={onAcademiaAlumnoAgregado}
           onAlumnoActualizado={onAcademiaAlumnoActualizado}
           onAsistenciaGuardada={onAcademiaAsistenciaGuardada}
           onGuardarEdicion={guardarEdicionClase}
           onEliminarClase={eliminarClaseSeleccionada}
+          onEliminarClaseDefinitivamente={eliminarClaseDefinitivamente}
         />
       )}
 
@@ -27480,6 +27860,18 @@ function ModuloAcademiaClinicas({
           puedeEvaluar={!!permisos?.puedeEvaluarJugadores}
           onGuardarEvaluacion={onGuardarEvaluacionJugador}
           onClose={() => setAlumnoExpedienteId(null)}
+        />
+      )}
+
+      {/* Eliminar Clase Definitivamente (item 1) disparada desde la tarjeta
+          — mismo modal de confirmación que usa `ModalDetalleClase` en su
+          pestaña Ajustes, ver `ModalConfirmarEliminarClase`. */}
+      {claseAEliminarDefinitivo && (
+        <ModalConfirmarEliminarClase
+          clase={claseAEliminarDefinitivo}
+          alumnosActivos={(academiaAlumnos || []).filter((a) => a.clase_id === claseAEliminarDefinitivo.id && a.estado !== 'baja')}
+          onClose={() => setClaseAEliminarDefinitivo(null)}
+          onConfirmar={() => eliminarClaseDefinitivamente(claseAEliminarDefinitivo)}
         />
       )}
     </div>
@@ -37119,6 +37511,15 @@ function AppInterno() {
                 loadingInscripciones={loadingInscripciones}
                 loadingParticipantes={loadingParticipantes}
                 academiaClases={academiaClases}
+                // Limpieza de Cronograma (item 2): mismo updater que ya usa
+                // `ModuloAcademiaClinicas` (`onAcademiaClaseActualizada`) —
+                // Smart POS lo necesita para reflejar de inmediato, en el
+                // estado lifted de `AppInterno`, que una Clase Privada quedó
+                // `cancelada` cuando el operador confirma liberar su cancha
+                // (ver `liberarClaseVaciaDesdePOS`).
+                onAcademiaClaseActualizada={(clase) =>
+                  setAcademiaClases((prev) => prev.map((c) => (c.id === clase.id ? { ...c, ...clase } : c)))
+                }
                 academiaAlumnos={academiaAlumnos}
                 setAcademiaAlumnos={setAcademiaAlumnos}
                 loadingAcademiaAlumnos={loadingAcademiaAlumnos}
@@ -37256,6 +37657,16 @@ function AppInterno() {
                 onAcademiaClaseActualizada={(clase) =>
                   setAcademiaClases((prev) => prev.map((c) => (c.id === clase.id ? { ...c, ...clase } : c)))
                 }
+                // Eliminar Clase Definitivamente (Control Interno): un solo
+                // callback quita la clase Y sus filas asociadas (alumnos,
+                // asistencia) de los 3 arreglos lifted de una sola vez — la
+                // fila ya se borró de Supabase en `eliminarClaseDefinitivamente`,
+                // esto solo sincroniza el estado en memoria de `AppInterno`.
+                onAcademiaClaseEliminada={(claseId) => {
+                  setAcademiaClases((prev) => prev.filter((c) => c.id !== claseId));
+                  setAcademiaAlumnos((prev) => prev.filter((a) => a.clase_id !== claseId));
+                  setAcademiaAsistencias((prev) => prev.filter((a) => a.clase_id !== claseId));
+                }}
                 academiaAlumnos={academiaAlumnos}
                 onAcademiaAlumnoAgregado={(alumno) => setAcademiaAlumnos((prev) => [...prev, alumno])}
                 onAcademiaAlumnoActualizado={(alumno) =>
