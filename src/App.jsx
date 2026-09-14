@@ -875,19 +875,19 @@ const LogoQlubOS = ({ className = 'w-auto h-8' }) => (
         fillRule="evenodd"
         clipRule="evenodd"
         d="M40 12C22 12 10 24 10 42C10 60 22 72 40 72C46.5 72 52.5 69.5 57 65.5L64 72.5L71 65.5L63.5 58C68 53.5 70 48 70 42C70 24 58 12 40 12ZM40 25C49 25 57 32 57 42C57 46.5 55 50.5 51.5 53.5L44 46L37 53L45 60.5C43.5 60.8 41.8 61 40 61C29 61 21 52 21 42C21 32 29 25 40 25Z"
-        fill="#FFFFFF"
+        fill="#0f172a"
       />
       {/* L */}
-      <path d="M72 14H86V59H106V72H72V14Z" fill="#FFFFFF" />
+      <path d="M72 14H86V59H106V72H72V14Z" fill="#0f172a" />
       {/* U */}
       <path
         d="M112 14H126V50C126 55 130 59 135 59C140 59 144 55 144 50V14H158V50C158 63 148 72 135 72C122 72 112 63 112 50V14Z"
-        fill="#FFFFFF"
+        fill="#0f172a"
       />
       {/* B */}
       <path
         d="M164 14H188C197 14 204 19 204 27C204 32 200 36 194 38C202 40 206 45 206 53C206 64 197 72 185 72H164V14ZM178 25V36H187C191 36 194 34 194 30.5C194 27 191 25 187 25H178ZM178 46V61H188C192 61 196 58 196 53.5C196 49 192 46 188 46H178Z"
-        fill="#FFFFFF"
+        fill="#0f172a"
       />
 
       {/* O VERDE CON POWER HORIZONTAL — anillo exterior con hueco central */}
@@ -907,7 +907,7 @@ const LogoQlubOS = ({ className = 'w-auto h-8' }) => (
 
       {/* RUN YOUR CLUB. — 12 <path> cerrados (R,U,N,Y,O,U,R,C,L,U,B,.), uno
           por letra, contornos reales de Poppins Bold vía fontTools. */}
-      <g fill="#FFFFFF">
+      <g fill="#0f172a">
         <path
           transform="translate(85.92 84) scale(0.011 -0.011)"
           d="M420 0 274 265H233V0H62V702H349Q432 702 490.5 673.0Q549 644 578.0 593.5Q607 543 607 481Q607 411 567.5 356.0Q528 301 451 278L613 0ZM233 386H339Q386 386 409.5 409.0Q433 432 433 474Q433 514 409.5 537.0Q386 560 339 560H233Z"
@@ -1322,7 +1322,7 @@ function SelectorArchivoImagen({ onSubida, carpeta, disabled }) {
   return (
     <div>
       <label
-        className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-700 bg-slate-800 px-3 py-2.5 text-xs font-bold text-slate-300 transition hover:border-lime-400/50 hover:text-slate-100 ${
+        className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-100 px-3 py-2.5 text-xs font-bold text-slate-600 transition hover:border-lime-400/50 hover:text-slate-900 ${
           disabled || subiendo ? 'pointer-events-none opacity-60' : ''
         }`}
       >
@@ -2387,11 +2387,11 @@ function ToastHost({ toasts }) {
               ? 'border-rose-500/30 bg-rose-950/90 text-rose-100'
               : t.tono === 'aviso'
               ? 'border-amber-500/30 bg-amber-950/90 text-amber-100'
-              : 'border-lime-500/30 bg-slate-900/95 text-slate-100'
+              : 'border-lime-500/30 bg-white/95 text-slate-900'
           }`}
         >
           <p className="text-sm font-semibold">{t.titulo}</p>
-          {t.detalle && <p className="mt-0.5 text-xs text-slate-300">{t.detalle}</p>}
+          {t.detalle && <p className="mt-0.5 text-xs text-slate-600">{t.detalle}</p>}
         </div>
       ))}
     </div>
@@ -2414,9 +2414,9 @@ function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm">
       <div
-        className={`relative w-full ${ancho} max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl`}
+        className={`relative w-full ${ancho} max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl`}
       >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-800 bg-slate-900/95 px-5 py-4 backdrop-blur">
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur">
           <div className="flex items-start gap-3">
             {Icon && (
               <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
@@ -2424,13 +2424,13 @@ function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', 
               </div>
             )}
             <div>
-              <h2 className="text-base font-bold text-slate-100">{titulo}</h2>
-              {subtitulo && <p className="mt-0.5 text-xs text-slate-400">{subtitulo}</p>}
+              <h2 className="text-base font-bold text-slate-900">{titulo}</h2>
+              {subtitulo && <p className="mt-0.5 text-xs text-slate-500">{subtitulo}</p>}
             </div>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-800 hover:text-slate-200"
+            className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
           >
             <X size={18} />
           </button>
@@ -2444,7 +2444,7 @@ function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', 
 function Campo({ label, children, hint }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</span>
+      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
       {children}
       {hint && <span className="mt-1 block text-[11px] text-slate-500">{hint}</span>}
     </label>
@@ -2452,7 +2452,7 @@ function Campo({ label, children, hint }) {
 }
 
 const inputClase =
-  'w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none transition focus:border-lime-400 focus:ring-1 focus:ring-lime-400';
+  'w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-lime-400 focus:ring-1 focus:ring-lime-400';
 
 function BotonPrimario({ children, className = '', ...props }) {
   return (
@@ -2468,7 +2468,7 @@ function BotonPrimario({ children, className = '', ...props }) {
 function BotonSecundario({ children, className = '', ...props }) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+      className={`inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-slate-100 px-4 py-2.5 text-sm font-semibold text-slate-800 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
       {...props}
     >
       {children}
@@ -2748,7 +2748,7 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
         </Campo>
 
         <div className="space-y-2">
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Logo</span>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Logo</span>
           {/* Subida limpia por archivo, ÚNICAMENTE: se quitó el campo de
               pegar una URL/link de texto — la única forma de poner logo es
               subir un archivo real del dispositivo (.jpg/.jpeg/.png/.webp,
@@ -2757,8 +2757,8 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
         </div>
 
         <div>
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Vista previa</span>
-          <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-slate-800 bg-slate-800">
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Vista previa</span>
+          <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
             {logoPreview ? (
               <img
                 src={logoPreview}
@@ -2769,7 +2769,7 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
                 }}
               />
             ) : (
-              <span className="text-[10px] text-slate-600">Sin logo</span>
+              <span className="text-[10px] text-slate-400">Sin logo</span>
             )}
           </div>
         </div>
@@ -2854,7 +2854,7 @@ function Sidebar({
 }) {
   const itemBase = 'flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-bold transition';
   const itemActivo = 'bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20';
-  const itemInactivo = 'text-slate-400 hover:bg-slate-800 hover:text-slate-200';
+  const itemInactivo = 'text-slate-500 hover:bg-slate-100 hover:text-slate-800';
 
   function ir(modulo) {
     onCambiarModulo(modulo);
@@ -2932,11 +2932,11 @@ function Sidebar({
         <div className="fixed inset-0 z-30 bg-slate-950/70 lg:hidden" onClick={onCerrar} />
       )}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-900 transition-all lg:static lg:z-auto lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white transition-all lg:static lg:z-auto lg:translate-x-0 ${
           abierto ? 'translate-x-0' : '-translate-x-full'
         } ${colapsado ? 'lg:w-[76px]' : 'lg:w-64'}`}
       >
-        <div className={`flex items-center gap-2.5 border-b border-slate-800 px-5 py-5 ${colapsado ? 'lg:justify-center lg:px-0' : ''}`}>
+        <div className={`flex items-center gap-2.5 border-b border-slate-200 px-5 py-5 ${colapsado ? 'lg:justify-center lg:px-0' : ''}`}>
           <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-lime-400 font-black text-slate-950">
             {configClubActual.logoUrl ? (
               <img
@@ -2962,10 +2962,13 @@ function Sidebar({
           <div className={`min-w-0 flex-1 ${colapsado ? 'lg:hidden' : ''}`}>
             {/* Nombre del Club más prominente a pedido del club: de un
                 caption gris apenas visible a un título en negritas y
-                blanco puro — el logo/iniciales de la izquierda y el
-                engrane de al lado siguen siendo el ancla visual, esto solo
-                sube la jerarquía tipográfica del texto. */}
-            <p className="truncate text-base font-bold text-white" style={{ color: '#ffffff' }} title={configClubActual.nombre}>
+                oscuro/alto-contraste — el logo/iniciales de la izquierda y
+                el engrane de al lado siguen siendo el ancla visual, esto
+                solo sube la jerarquía tipográfica del texto. Tema Claro: el
+                `style` inline forzaba blanco puro sobre el sidebar oscuro
+                de antes — ahora el sidebar es blanco, así que el nombre
+                pasa a texto oscuro (si no, quedaría invisible). */}
+            <p className="truncate text-base font-bold text-slate-900" title={configClubActual.nombre}>
               {configClubActual.nombre || 'Panel operativo'}
             </p>
           </div>
@@ -2981,7 +2984,7 @@ function Sidebar({
               type="button"
               onClick={() => setModalConfigClub(true)}
               title="Editar nombre, logo y horario del club"
-              className={`shrink-0 rounded-md p-1.5 text-slate-600 transition hover:bg-slate-800 hover:text-lime-400 ${colapsado ? 'lg:hidden' : ''}`}
+              className={`shrink-0 rounded-md p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-lime-400 ${colapsado ? 'lg:hidden' : ''}`}
             >
               <Settings2 size={14} />
             </button>
@@ -2997,7 +3000,7 @@ function Sidebar({
           type="button"
           onClick={alternarColapso}
           title={colapsado ? 'Expandir menú' : 'Colapsar menú'}
-          className={`hidden shrink-0 items-center gap-2.5 border-b border-slate-800 px-5 py-2.5 text-[11px] font-bold text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 lg:flex ${
+          className={`hidden shrink-0 items-center gap-2.5 border-b border-slate-200 px-5 py-2.5 text-[11px] font-bold text-slate-500 transition hover:bg-slate-100 hover:text-lime-400 lg:flex ${
             colapsado ? 'lg:justify-center' : ''
           }`}
         >
@@ -3017,7 +3020,7 @@ function Sidebar({
               className={`mb-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-bold transition ${
                 modoReordenar
                   ? 'border-lime-400/40 bg-lime-400/10 text-lime-400'
-                  : 'border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-800 hover:text-slate-200'
+                  : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-800'
               }`}
             >
               {modoReordenar ? <CheckCircle2 size={13} /> : <GripVertical size={13} />}
@@ -3036,11 +3039,11 @@ function Sidebar({
                   onDrop={() => soltarModulo(m.id)}
                   onDragEnd={() => setArrastrandoId(null)}
                   title="Arrastra para reordenar"
-                  className={`flex items-center gap-2 rounded-lg border border-dashed border-slate-700 bg-slate-950 px-3 py-2 text-sm font-bold text-slate-300 transition ${
+                  className={`flex items-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-600 transition ${
                     arrastrandoId === m.id ? 'opacity-40' : ''
                   }`}
                 >
-                  <GripVertical size={14} className="shrink-0 cursor-grab text-slate-600 active:cursor-grabbing" />
+                  <GripVertical size={14} className="shrink-0 cursor-grab text-slate-400 active:cursor-grabbing" />
                   <Icon size={16} className="shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{m.label}</span>
                   <div className="flex shrink-0 flex-col">
@@ -3049,7 +3052,7 @@ function Sidebar({
                       onClick={() => moverModulo(m.id, -1)}
                       disabled={idx === 0}
                       title="Mover arriba"
-                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
+                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-100 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
                     >
                       <ChevronUp size={13} />
                     </button>
@@ -3058,7 +3061,7 @@ function Sidebar({
                       onClick={() => moverModulo(m.id, 1)}
                       disabled={idx === modulosVisibles.length - 1}
                       title="Mover abajo"
-                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-800 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
+                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-100 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
                     >
                       <ChevronDown size={13} />
                     </button>
@@ -3091,7 +3094,7 @@ function Sidebar({
             PIN, sin que el dueño tenga que volver a escribir su
             correo/contraseña. */}
         {onCerrarSesion && (
-          <div className="shrink-0 border-t border-slate-800 p-3">
+          <div className="shrink-0 border-t border-slate-200 p-3">
             <button
               type="button"
               onClick={onCerrarSesion}
@@ -3138,7 +3141,7 @@ function Reloj() {
   // Mobile por igual, ahora como la sección "Izquierda" fija del header.
   return (
     <div className="flex min-w-0 shrink-0 flex-col items-start whitespace-nowrap leading-tight">
-      <span className="font-mono text-xs font-bold text-slate-200 sm:text-sm">{hora}</span>
+      <span className="font-mono text-xs font-bold text-slate-800 sm:text-sm">{hora}</span>
       <span className="text-[10px] capitalize text-slate-500 sm:text-[11px]">{fecha}</span>
     </div>
   );
@@ -3208,7 +3211,7 @@ function TopHeader({
   }, [menuColaboradorAbierto]);
 
   return (
-    <header className="sticky top-0 z-20 grid grid-cols-3 items-center gap-2 border-b border-slate-800 bg-slate-950/95 px-3 py-2 backdrop-blur sm:px-6">
+    <header className="sticky top-0 z-20 grid grid-cols-3 items-center gap-2 border-b border-slate-200 bg-slate-50/95 px-3 py-2 backdrop-blur sm:px-6">
       {/* Izquierda: botón de menú (solo mobile/iPad — abre el Sidebar como
           drawer; en desktop el Sidebar ya está fijo/visible y este botón se
           oculta) + Reloj en tiempo real. */}
@@ -3216,7 +3219,7 @@ function TopHeader({
         <button
           onClick={onAbrirSidebar}
           title="Abrir menú"
-          className="shrink-0 rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100 lg:hidden"
+          className="shrink-0 rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 lg:hidden"
         >
           <Menu size={20} />
         </button>
@@ -3251,13 +3254,13 @@ function TopHeader({
         <div className="relative shrink-0" data-menu-operador>
           <button
             onClick={() => (esOwner ? onAbrirOperador() : setMenuColaboradorAbierto((v) => !v))}
-            className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-2 py-1.5 pr-2.5 transition hover:border-lime-400/40 hover:bg-slate-800 sm:gap-2.5 sm:px-2.5 sm:pr-3"
+            className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1.5 pr-2.5 transition hover:border-lime-400/40 hover:bg-slate-100 sm:gap-2.5 sm:px-2.5 sm:pr-3"
           >
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime-400 text-xs font-black text-slate-950">
               {iniciales(operador.nombre)}
             </div>
             <div className="hidden min-w-0 max-w-[7rem] text-left sm:block md:max-w-[10rem]">
-              <p className="truncate text-xs font-bold leading-tight text-slate-100">{operador.nombre}</p>
+              <p className="truncate text-xs font-bold leading-tight text-slate-900">{operador.nombre}</p>
               <p className="truncate text-[11px] text-slate-500">
                 {rolMeta?.label || 'Rol'} · {turno.label}
               </p>
@@ -3268,9 +3271,9 @@ function TopHeader({
           {/* Menú mínimo para colaboradores comunes (no Owner): SOLO la
               opción de fichar salida — nunca el panel de administración. */}
           {!esOwner && menuColaboradorAbierto && (
-            <div className="absolute right-0 top-full z-30 mt-2 w-64 max-w-[90vw] overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
-              <div className="border-b border-slate-800 px-3.5 py-2.5">
-                <p className="truncate text-xs font-bold text-slate-100">{operador.nombre}</p>
+            <div className="absolute right-0 top-full z-30 mt-2 w-64 max-w-[90vw] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+              <div className="border-b border-slate-200 px-3.5 py-2.5">
+                <p className="truncate text-xs font-bold text-slate-900">{operador.nombre}</p>
                 <p className="truncate text-[11px] text-slate-500">
                   {rolMeta?.label || 'Rol'} · {turno.label}
                 </p>
@@ -3344,7 +3347,7 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
       <button
         onClick={() => setAbierto((v) => !v)}
         title="Centro de Alertas"
-        className="relative rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+        className="relative rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
       >
         <Bell size={17} />
         {noLeidas > 0 && (
@@ -3354,9 +3357,9 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
         )}
       </button>
       {abierto && (
-        <div className="absolute right-0 top-full z-30 mt-2 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
-          <div className="flex items-center justify-between border-b border-slate-800 px-3.5 py-2.5">
-            <p className="text-xs font-black uppercase tracking-wide text-slate-300">Alertas del Portal Web</p>
+        <div className="absolute right-0 top-full z-30 mt-2 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-3.5 py-2.5">
+            <p className="text-xs font-black uppercase tracking-wide text-slate-600">Alertas del Portal Web</p>
             {noLeidas > 0 && (
               <button onClick={onMarcarTodasLeidas} className="text-[11px] font-bold text-lime-400 hover:text-lime-300">
                 Marcar todas leídas
@@ -3385,7 +3388,7 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
                       setAbierto(false);
                       onIrAJugador(a);
                     }}
-                    className={`flex w-full items-start gap-2.5 border-b border-slate-800/70 px-3.5 py-2.5 text-left transition last:border-0 hover:bg-slate-800/60 ${
+                    className={`flex w-full items-start gap-2.5 border-b border-slate-200/70 px-3.5 py-2.5 text-left transition last:border-0 hover:bg-slate-100/60 ${
                       a.leida ? 'opacity-60' : ''
                     }`}
                   >
@@ -3393,7 +3396,7 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
                       <Icon size={13} />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs font-semibold leading-snug text-slate-200">{a.titulo}</p>
+                      <p className="text-xs font-semibold leading-snug text-slate-800">{a.titulo}</p>
                       <p className="mt-0.5 text-[10px] text-slate-500">{formatoHoraCorta(a.creadaEn)}</p>
                     </div>
                     {!a.leida && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-lime-400" />}
@@ -3433,9 +3436,9 @@ function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime', onClick, 
   const interactiva = typeof onClick === 'function';
   return (
     <div
-      className={`rounded-2xl border border-slate-800 bg-slate-900 p-4 ${
-        interactiva ? 'cursor-pointer transition hover:border-lime-400/50 hover:bg-slate-800/60' : ''
-      } ${interactiva && activo ? 'border-lime-400/60 ring-1 ring-lime-400/40 bg-slate-800/60' : ''}`}
+      className={`rounded-2xl border border-slate-200 bg-white p-4 ${
+        interactiva ? 'cursor-pointer transition hover:border-lime-400/50 hover:bg-slate-100/60' : ''
+      } ${interactiva && activo ? 'border-lime-400/60 ring-1 ring-lime-400/40 bg-slate-100/60' : ''}`}
       onClick={onClick}
       role={interactiva ? 'button' : undefined}
       tabIndex={interactiva ? 0 : undefined}
@@ -3456,7 +3459,7 @@ function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime', onClick, 
           <Icon size={16} />
         </div>
       </div>
-      <p className="mt-2 text-2xl font-black text-slate-100">{valor}</p>
+      <p className="mt-2 text-2xl font-black text-slate-900">{valor}</p>
       {sub && <p className="mt-0.5 text-[11px] text-slate-500">{sub}</p>}
     </div>
   );
@@ -3479,9 +3482,9 @@ function MenuEstatus({ estadoActual, onSeleccionar, onCerrar }) {
   return (
     <div
       ref={ref}
-      className="absolute right-0 top-full z-40 mt-1.5 w-64 overflow-hidden rounded-xl border border-slate-700 bg-slate-800 shadow-2xl"
+      className="absolute right-0 top-full z-40 mt-1.5 w-64 overflow-hidden rounded-xl border border-slate-300 bg-slate-100 shadow-2xl"
     >
-      <p className="border-b border-slate-700 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+      <p className="border-b border-slate-300 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">
         Estatus de la cancha
       </p>
       {ESTATUS_CANCHA_OPTIONS.map((op) => {
@@ -3490,17 +3493,17 @@ function MenuEstatus({ estadoActual, onSeleccionar, onCerrar }) {
           <button
             key={op.value}
             onClick={() => onSeleccionar(op.value)}
-            className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm font-semibold transition hover:bg-slate-700 ${
-              estadoActual === op.value ? 'bg-slate-700/60' : ''
+            className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm font-semibold transition hover:bg-slate-200 ${
+              estadoActual === op.value ? 'bg-slate-200/60' : ''
             }`}
           >
             <span className={`h-2 w-2 rounded-full ${op.dot}`} />
-            <span className="text-slate-100">{op.label}</span>
+            <span className="text-slate-900">{op.label}</span>
             {estadoActual === op.value && <CheckCircle2 size={14} className="ml-auto text-lime-400" />}
           </button>
         );
       })}
-      <p className="border-t border-slate-700 px-3 py-2 text-[10px] leading-snug text-slate-500">
+      <p className="border-t border-slate-300 px-3 py-2 text-[10px] leading-snug text-slate-500">
         Disponible, Reservada y En Juego se calculan solos según las reservas de hoy.
         Solo Mantenimiento se bloquea manualmente; elegir cualquier otra opción libera el bloqueo.
       </p>
@@ -3529,11 +3532,11 @@ function CanchaCard({
 
   return (
     <div
-      className={`group relative rounded-2xl border border-slate-800 bg-slate-900 ring-1 transition hover:border-slate-700 ${meta.card}`}
+      className={`group relative rounded-2xl border border-slate-200 bg-white ring-1 transition hover:border-slate-300 ${meta.card}`}
     >
       {/* overflow-hidden vive solo aquí (recorta la foto), NUNCA en la tarjeta completa:
           si estuviera en la tarjeta, recortaría el menú "Cambiar Estatus" que flota por encima. */}
-      <div className="relative h-36 w-full overflow-hidden rounded-t-2xl bg-slate-800">
+      <div className="relative h-36 w-full overflow-hidden rounded-t-2xl bg-slate-100">
         <img
           src={cancha.imagen_url || fallbackImagen(cancha.id)}
           onError={(e) => {
@@ -3543,7 +3546,7 @@ function CanchaCard({
           alt={cancha.nombre}
           className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/10 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-slate-50/90 via-slate-50/10 to-transparent" />
         <div className="absolute left-3 top-3 flex flex-col items-start gap-1.5">
           <span
             className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide backdrop-blur ${meta.badge}`}
@@ -3553,7 +3556,7 @@ function CanchaCard({
           </span>
           {/* Secundario: la cancha está libre AHORITA, pero ya tiene un juego agendado más tarde hoy. */}
           {estadoActual === 'disponible' && proximaReserva && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-slate-950/70 px-2 py-0.5 text-[10px] font-semibold text-slate-300 backdrop-blur">
+            <span className="inline-flex items-center gap-1 rounded-full bg-slate-50/70 px-2 py-0.5 text-[10px] font-semibold text-slate-600 backdrop-blur">
               <Clock size={10} className="shrink-0" /> Próxima reserva: {formatoHora12(proximaReserva.hora_inicio)}
             </span>
           )}
@@ -3562,22 +3565,22 @@ function CanchaCard({
           <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-2 px-3 pb-2.5">
             <button
               onClick={() => onReservaClick(reservaActual)}
-              className="flex min-w-0 items-center gap-1.5 rounded-lg bg-slate-950/60 px-2 py-1 text-left backdrop-blur transition hover:bg-slate-950/80"
+              className="flex min-w-0 items-center gap-1.5 rounded-lg bg-slate-50/60 px-2 py-1 text-left backdrop-blur transition hover:bg-slate-50/80"
             >
-              <Clock size={12} className="shrink-0 text-slate-300" />
-              <span className="truncate text-xs font-bold text-slate-100">{reservaActual.jugador_nombre || 'Jugador'}</span>
+              <Clock size={12} className="shrink-0 text-slate-600" />
+              <span className="truncate text-xs font-bold text-slate-900">{reservaActual.jugador_nombre || 'Jugador'}</span>
             </button>
             <BadgePago estadoPago={reservaActual.estado_pago} />
           </div>
         )}
-        <span className="absolute right-3 top-3 rounded-lg bg-slate-950/70 px-2 py-1 text-xs font-black text-lime-400 backdrop-blur">
+        <span className="absolute right-3 top-3 rounded-lg bg-slate-50/70 px-2 py-1 text-xs font-black text-lime-400 backdrop-blur">
           {formatoMoneda(precioPorHoraDeCancha(cancha))}/hr
         </span>
       </div>
 
       <div className="p-3.5">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="truncate text-sm font-black text-slate-100">{cancha.nombre}</h3>
+          <h3 className="truncate text-sm font-black text-slate-900">{cancha.nombre}</h3>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -3592,7 +3595,7 @@ function CanchaCard({
           )}
           <button
             onClick={() => onVerHorarios(cancha)}
-            className={`inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700 ${
+            className={`inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-2 text-[11px] font-semibold text-slate-800 transition hover:bg-slate-200 ${
               soloLectura ? 'col-span-2' : ''
             }`}
           >
@@ -3602,14 +3605,14 @@ function CanchaCard({
             <>
               <button
                 onClick={() => onCambiarFoto(cancha)}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-2 text-[11px] font-semibold text-slate-800 transition hover:bg-slate-200"
               >
                 <ImagePlus size={13} /> Foto
               </button>
               <div className="relative col-span-2">
                 <button
                   onClick={() => setMenuAbierto((v) => !v)}
-                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-700"
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-2 text-[11px] font-semibold text-slate-800 transition hover:bg-slate-200"
                 >
                   <Settings2 size={13} /> Cambiar Estatus <ChevronDown size={12} />
                 </button>
@@ -3640,12 +3643,12 @@ function EncabezadoHoras({ horaAperturaMin = HORA_INICIO_MIN, horaCierreMin = HO
   const horas = [];
   for (let m = horaAperturaMin; m < horaCierreMin; m += 60) horas.push(m);
   return (
-    <div className="flex border-b border-slate-800">
+    <div className="flex border-b border-slate-200">
       {horas.map((m) => (
         <div
           key={m}
           style={{ width: SLOT_PX * 2 }}
-          className="shrink-0 border-r border-slate-800/60 py-2 text-center font-mono text-[11px] font-bold text-slate-500"
+          className="shrink-0 border-r border-slate-200/60 py-2 text-center font-mono text-[11px] font-bold text-slate-500"
         >
           {minutosAHora(m)}
         </div>
@@ -3765,7 +3768,7 @@ function FilaCronograma({
   for (let i = 0; i < totalSlots; i++) slots.push(i);
 
   return (
-    <div className="relative flex border-b border-slate-800/70" style={{ height: 60 }}>
+    <div className="relative flex border-b border-slate-200/70" style={{ height: 60 }}>
       {bloqueada ? (
         <div className="flex items-center gap-2 bg-amber-400/5 px-3 text-xs font-bold text-amber-400" style={{ width: totalSlots * SLOT_PX }}>
           <Wrench size={13} /> Cancha bloqueada por mantenimiento
@@ -3782,7 +3785,7 @@ function FilaCronograma({
                 disabled={ocupados.has(i)}
                 style={{ width: SLOT_PX }}
                 className={`h-full shrink-0 border-r transition ${
-                  esHoraEnPunto ? 'border-slate-700/60' : 'border-slate-800/40'
+                  esHoraEnPunto ? 'border-slate-300/60' : 'border-slate-200/40'
                 } ${ocupados.has(i) ? '' : 'hover:bg-lime-400/10'}`}
               />
             );
@@ -3866,10 +3869,10 @@ function VistaCronograma({
   if (canchas.length === 0) return null;
 
   return (
-    <div className="w-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
-      <div className="flex min-w-0 bg-slate-900">
-        <div className="w-40 shrink-0 border-r border-slate-800 bg-slate-900 sm:w-48">
-          <div className="border-b border-slate-800 py-2 text-center text-[11px] font-bold uppercase tracking-wide text-slate-500">
+    <div className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <div className="flex min-w-0 bg-white">
+        <div className="w-40 shrink-0 border-r border-slate-200 bg-white sm:w-48">
+          <div className="border-b border-slate-200 py-2 text-center text-[11px] font-bold uppercase tracking-wide text-slate-500">
             Cancha
           </div>
           {canchas.map((c) => {
@@ -3879,10 +3882,10 @@ function VistaCronograma({
               <div
                 key={c.id}
                 style={{ height: 60 }}
-                className="flex items-center gap-2 border-b border-slate-800/70 px-3"
+                className="flex items-center gap-2 border-b border-slate-200/70 px-3"
               >
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`} />
-                <span className="truncate text-xs font-bold text-slate-200">{c.nombre}</span>
+                <span className="truncate text-xs font-bold text-slate-800">{c.nombre}</span>
               </div>
             );
           })}
@@ -3890,8 +3893,8 @@ function VistaCronograma({
         {/* min-w-0 es clave: sin él, un flex item no se contrae bajo su contenido y
             termina empujando el scroll horizontal a TODA la página (revelando el
             fondo blanco por defecto del <body>) en vez de quedarse contenido aquí. */}
-        <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain bg-slate-900">
-          <div style={{ width: totalSlots * SLOT_PX }} className="bg-slate-900">
+        <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain bg-white">
+          <div style={{ width: totalSlots * SLOT_PX }} className="bg-white">
             <EncabezadoHoras horaAperturaMin={horaAperturaMin} horaCierreMin={horaCierreMin} />
             {canchas.map((c) => (
               <FilaCronograma
@@ -3954,19 +3957,19 @@ function Toolbar({
         <div className="flex items-center gap-1">
           <button
             onClick={() => onCambiarFecha(sumarDia(fechaSeleccionada, -1))}
-            className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700"
+            className="rounded-lg border border-slate-300 bg-slate-100 p-2 text-slate-600 hover:bg-slate-200"
           >
             <ChevronLeft size={14} />
           </button>
           <button
             onClick={() => onCambiarFecha(hoyISO())}
-            className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-[11px] font-bold text-slate-300 hover:bg-slate-700"
+            className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-2 text-[11px] font-bold text-slate-600 hover:bg-slate-200"
           >
             Hoy
           </button>
           <button
             onClick={() => onCambiarFecha(sumarDia(fechaSeleccionada, 1))}
-            className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700"
+            className="rounded-lg border border-slate-300 bg-slate-100 p-2 text-slate-600 hover:bg-slate-200"
           >
             <ChevronRight size={14} />
           </button>
@@ -3990,11 +3993,11 @@ function Toolbar({
       </div>
 
       <div className="flex items-center gap-2">
-        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+        <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
           <button
             onClick={() => onCambiarVista('tarjetas')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              vista === 'tarjetas' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              vista === 'tarjetas' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <LayoutGrid size={14} /> Tarjetas
@@ -4002,7 +4005,7 @@ function Toolbar({
           <button
             onClick={() => onCambiarVista('cronograma')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              vista === 'cronograma' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              vista === 'cronograma' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <CalendarDays size={14} /> Cronograma
@@ -4026,14 +4029,14 @@ function SkeletonGrid() {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="animate-pulse overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
-          <div className="h-36 bg-slate-800" />
+        <div key={i} className="animate-pulse overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="h-36 bg-slate-100" />
           <div className="space-y-2 p-3.5">
-            <div className="h-4 w-2/3 rounded bg-slate-800" />
-            <div className="h-8 rounded bg-slate-800" />
+            <div className="h-4 w-2/3 rounded bg-slate-100" />
+            <div className="h-8 rounded bg-slate-100" />
             <div className="grid grid-cols-2 gap-2">
-              <div className="h-8 rounded bg-slate-800" />
-              <div className="h-8 rounded bg-slate-800" />
+              <div className="h-8 rounded bg-slate-100" />
+              <div className="h-8 rounded bg-slate-100" />
             </div>
           </div>
         </div>
@@ -4061,11 +4064,11 @@ function ErrorBanner({ mensaje, onReintentar }) {
 
 function EmptyState({ onNuevaCancha }) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 py-16 text-center">
-      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-slate-900">
-        <LayoutGrid size={24} className="text-slate-600" />
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 py-16 text-center">
+      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-white">
+        <LayoutGrid size={24} className="text-slate-400" />
       </div>
-      <p className="text-sm font-bold text-slate-300">Todavía no tienes canchas registradas</p>
+      <p className="text-sm font-bold text-slate-600">Todavía no tienes canchas registradas</p>
       <p className="mt-1 max-w-xs text-xs text-slate-500">
         Crea tu primera cancha para empezar a gestionar reservas y disponibilidad.
       </p>
@@ -4130,7 +4133,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                 className={`rounded-lg border px-3 py-2 text-xs font-bold transition ${
                   turno === t.value
                     ? 'border-lime-400 bg-lime-400/10 text-lime-400'
-                    : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
                 {t.label}
@@ -4143,7 +4146,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
           <>
             <div>
               <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fichar como</span>
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Fichar como</span>
                 {esOwner && (
                   <button
                     onClick={() => setModoAlta(true)}
@@ -4154,7 +4157,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                 )}
               </div>
               {empleadosActivos.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-slate-700 px-3 py-4 text-center text-xs text-slate-500">
+                <p className="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-center text-xs text-slate-500">
                   Todavía no hay empleados activos en el directorio.
                 </p>
               ) : (
@@ -4170,14 +4173,14 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                         className={`flex w-full items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition ${
                           activo
                             ? 'border-lime-400/60 bg-lime-400/10'
-                            : 'border-slate-700 bg-slate-800 hover:border-lime-400/40 hover:bg-slate-700'
+                            : 'border-slate-300 bg-slate-100 hover:border-lime-400/40 hover:bg-slate-200'
                         }`}
                       >
-                        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${rolMeta?.bg || 'bg-slate-700'}`}>
-                          <RolIcon size={16} className={rolMeta?.color || 'text-slate-300'} />
+                        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${rolMeta?.bg || 'bg-slate-200'}`}>
+                          <RolIcon size={16} className={rolMeta?.color || 'text-slate-600'} />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-bold text-slate-100">{emp.nombre}</p>
+                          <p className="truncate text-sm font-bold text-slate-900">{emp.nombre}</p>
                           <p className="text-[11px] text-slate-500">{rolMeta?.label || emp.rol}</p>
                         </div>
                         {activo && <CheckCircle2 size={16} className="shrink-0 text-lime-400" />}
@@ -4202,7 +4205,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
           </>
         ) : (
           <div className="space-y-3 rounded-xl border border-lime-400/20 bg-lime-400/5 p-4">
-            <p className="text-sm font-bold text-slate-100">Alta rápida de empleado</p>
+            <p className="text-sm font-bold text-slate-900">Alta rápida de empleado</p>
             <Campo label="Nombre">
               <input
                 value={nombreNuevo}
@@ -4223,7 +4226,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                       className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-[11px] font-bold transition ${
                         rolNuevo === r.value
                           ? `border-lime-400 ${r.bg} ${r.color}`
-                          : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                          : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
                       <RolIcon size={13} className="shrink-0" />
@@ -4271,7 +4274,7 @@ function PuntosPin({ longitud = 4, llenos = 0 }) {
         <div
           key={i}
           className={`h-4 w-4 rounded-full border-2 transition ${
-            i < llenos ? 'border-lime-400 bg-lime-400' : 'border-slate-600 bg-transparent'
+            i < llenos ? 'border-lime-400 bg-lime-400' : 'border-slate-400 bg-transparent'
           }`}
         />
       ))}
@@ -4292,7 +4295,7 @@ function TecladoNumericoPin({ valor, onCambiar, deshabilitado }) {
     onCambiar(valor.slice(0, -1));
   }
   const claseTecla =
-    'rounded-xl border border-slate-700 bg-slate-800 py-4 text-xl font-bold text-slate-100 transition hover:border-lime-400/40 hover:bg-slate-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40';
+    'rounded-xl border border-slate-300 bg-slate-100 py-4 text-xl font-bold text-slate-900 transition hover:border-lime-400/40 hover:bg-slate-200 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40';
   return (
     <div className="mx-auto grid max-w-xs grid-cols-3 gap-2">
       {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
@@ -4304,7 +4307,7 @@ function TecladoNumericoPin({ valor, onCambiar, deshabilitado }) {
         type="button"
         onClick={borrar}
         disabled={deshabilitado || !valor.length}
-        className="rounded-xl border border-slate-700 bg-slate-800 py-4 text-[11px] font-bold text-slate-400 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-30"
+        className="rounded-xl border border-slate-300 bg-slate-100 py-4 text-[11px] font-bold text-slate-500 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-30"
       >
         Borrar
       </button>
@@ -4366,7 +4369,7 @@ function ModalCrearPin({ empleado, onClose, onGuardar }) {
       icon={RolIcon}
     >
       <div className="space-y-5">
-        <p className="text-center text-xs text-slate-400">
+        <p className="text-center text-xs text-slate-500">
           {paso === 'crear'
             ? 'Este PIN te lo va a pedir la terminal cada vez que empieces tu turno — solo tú lo debes conocer.'
             : 'Vuelve a escribir el mismo PIN para confirmarlo.'}
@@ -4382,7 +4385,7 @@ function ModalCrearPin({ empleado, onClose, onGuardar }) {
               setPinConfirmar('');
               setError('');
             }}
-            className="w-full text-center text-[11px] font-bold text-slate-500 transition hover:text-slate-300"
+            className="w-full text-center text-[11px] font-bold text-slate-500 transition hover:text-slate-600"
           >
             Regresar y escribir otro PIN
           </button>
@@ -4435,7 +4438,7 @@ function ModalIngresarPin({ empleado, onClose, onExito }) {
         <PuntosPin llenos={pin.length} />
         {error && <p className="text-center text-xs font-bold text-rose-400">{error}</p>}
         <TecladoNumericoPin valor={pin} onCambiar={setPin} deshabilitado={verificando} />
-        <p className="text-center text-[11px] text-slate-600">¿Olvidaste tu PIN? Pide al dueño del club que lo reinicie desde Configuración → Roles.</p>
+        <p className="text-center text-[11px] text-slate-400">¿Olvidaste tu PIN? Pide al dueño del club que lo reinicie desde Configuración → Roles.</p>
       </div>
     </ModalShell>
   );
@@ -4484,14 +4487,14 @@ function PantallaKiosko({
   }
 
   return (
-    <div className="flex min-h-screen w-full flex-col items-center justify-center bg-slate-950 px-4 py-10 text-slate-100">
+    <div className="flex min-h-screen w-full flex-col items-center justify-center bg-slate-50 px-4 py-10 text-slate-900">
       <div className="w-full max-w-3xl space-y-8">
         <div className="text-center">
           <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-lime-400/10">
             <Users size={26} className="text-lime-400" />
           </div>
-          <h1 className="text-xl font-black text-slate-100">{configClub?.nombre || 'ClubOS'}</h1>
-          <p className="mt-1 text-sm text-slate-400">¿Quién está usando esta terminal? Elige tu tarjeta para fichar tu turno.</p>
+          <h1 className="text-xl font-black text-slate-900">{configClub?.nombre || 'ClubOS'}</h1>
+          <p className="mt-1 text-sm text-slate-500">¿Quién está usando esta terminal? Elige tu tarjeta para fichar tu turno.</p>
         </div>
 
         {errorEmpleados && <ErrorBanner mensaje={errorEmpleados} onReintentar={onReintentarCarga} />}
@@ -4499,7 +4502,7 @@ function PantallaKiosko({
         {loadingEmpleados ? (
           <SkeletonGrid />
         ) : empleadosActivos.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+          <p className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500">
             Todavía no se pudo cargar ninguna tarjeta. Si el problema persiste, contacta a soporte — no debería pasar: siempre
             debe existir al menos la tarjeta del Propietario.
           </p>
@@ -4514,14 +4517,14 @@ function PantallaKiosko({
                 <button
                   key={emp.id}
                   onClick={() => tocarTarjeta(emp)}
-                  className={`flex flex-col items-center gap-2 rounded-2xl border bg-slate-900 px-4 py-6 text-center transition hover:border-lime-400/40 hover:bg-slate-800 ${
-                    esOwner ? 'border-amber-400/40 ring-1 ring-amber-400/20' : 'border-slate-800'
+                  className={`flex flex-col items-center gap-2 rounded-2xl border bg-white px-4 py-6 text-center transition hover:border-lime-400/40 hover:bg-slate-100 ${
+                    esOwner ? 'border-amber-400/40 ring-1 ring-amber-400/20' : 'border-slate-200'
                   }`}
                 >
-                  <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${rolMeta?.bg || 'bg-slate-800'}`}>
-                    <RolIcon size={20} className={rolMeta?.color || 'text-slate-300'} />
+                  <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${rolMeta?.bg || 'bg-slate-100'}`}>
+                    <RolIcon size={20} className={rolMeta?.color || 'text-slate-600'} />
                   </div>
-                  <p className="truncate text-sm font-bold text-slate-100">{emp.nombre}</p>
+                  <p className="truncate text-sm font-bold text-slate-900">{emp.nombre}</p>
                   <p className="text-[11px] text-slate-500">{rolMeta?.label || emp.rol}</p>
                   {!tienePin && (
                     <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-400">
@@ -4538,14 +4541,14 @@ function PantallaKiosko({
           {!confirmarLogoutMaster ? (
             <button
               onClick={() => setConfirmarLogoutMaster(true)}
-              className="text-[11px] font-semibold text-slate-600 transition hover:text-slate-400"
+              className="text-[11px] font-semibold text-slate-400 transition hover:text-slate-500"
               title="Destruye la sesión de correo/contraseña del club en Supabase Auth — distinto de solo cambiar de colaborador."
             >
               Cerrar Sesión del Club (Master)
             </button>
           ) : (
             <div className="inline-flex flex-wrap items-center justify-center gap-2">
-              <span className="text-[11px] text-slate-400">¿Cerrar la sesión completa de este club en esta terminal?</span>
+              <span className="text-[11px] text-slate-500">¿Cerrar la sesión completa de este club en esta terminal?</span>
               <button onClick={onCerrarSesionMaster} className="text-[11px] font-bold text-rose-400 hover:underline">
                 Sí, cerrar
               </button>
@@ -4646,7 +4649,7 @@ function ModalNuevaCancha({ onClose, onCreada }) {
             bucket `app-media` de Supabase Storage y entrega la URL
             pública — nunca base64/blob local, para que la foto se vea
             igual en cualquier dispositivo. */}
-        <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Foto (opcional)</span>
+        <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Foto (opcional)</span>
         <SelectorArchivoImagen
           carpeta="canchas"
           onSubida={(nuevaUrl) => {
@@ -4700,7 +4703,7 @@ function ModalCambiarFoto({ cancha, onClose, onActualizada }) {
   return (
     <ModalShell titulo="Cambiar Foto" subtitulo={cancha.nombre} onClose={onClose} icon={ImagePlus}>
       <div className="space-y-4">
-        <div className="h-40 overflow-hidden rounded-xl border border-slate-800 bg-slate-800">
+        <div className="h-40 overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
           <img
             src={url.trim() || fallbackImagen(cancha.id)}
             onError={(e) => {
@@ -4715,7 +4718,7 @@ function ModalCambiarFoto({ cancha, onClose, onActualizada }) {
             texto. Sube al bucket `app-media` de Supabase Storage y entrega
             la URL pública — nunca base64/blob local, para que la foto se
             vea igual en Mac, iPad o cualquier navegador. */}
-        <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Nueva foto</span>
+        <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Nueva foto</span>
         <SelectorArchivoImagen
           carpeta="canchas"
           onSubida={(nuevaUrl) => {
@@ -5240,9 +5243,9 @@ function DetalleReserva({
         <div className={`rounded-xl border p-4 ${colorBloqueo.borde}`}>
           <div className="flex items-center gap-2">
             <Lock size={15} className={colorBloqueo.icono} />
-            <p className="text-sm font-black text-slate-100">{reserva.jugador_nombre}</p>
+            <p className="text-sm font-black text-slate-900">{reserva.jugador_nombre}</p>
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-y-2 text-xs text-slate-400">
+          <div className="mt-3 grid grid-cols-2 gap-y-2 text-xs text-slate-500">
             <span className="flex items-center gap-1.5">
               <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
             </span>
@@ -5375,12 +5378,12 @@ function DetalleReserva({
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
         <div className="flex items-center justify-between">
-          <p className="text-sm font-black text-slate-100">{reserva.jugador_nombre || 'Jugador'}</p>
+          <p className="text-sm font-black text-slate-900">{reserva.jugador_nombre || 'Jugador'}</p>
           <BadgePago estadoPago={reserva.estado_pago} />
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-y-2 text-xs text-slate-400">
+        <div className="mt-3 grid grid-cols-2 gap-y-2 text-xs text-slate-500">
           <span className="flex items-center gap-1.5">
             <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
           </span>
@@ -5468,7 +5471,7 @@ function DetalleReserva({
           <p className="text-sm font-bold text-rose-200">¿Confirmas cancelar esta reserva?</p>
           <p className="text-xs text-rose-300/80">El horario se liberará de inmediato en la parrilla y el cronograma.</p>
 
-          <label className="flex items-start gap-2.5 rounded-lg bg-slate-900/60 p-3">
+          <label className="flex items-start gap-2.5 rounded-lg bg-white/60 p-3">
             <input
               type="checkbox"
               checked={abonarSaldo}
@@ -5476,8 +5479,8 @@ function DetalleReserva({
               className="mt-0.5 h-4 w-4 accent-lime-400"
               disabled={!reserva.jugador_id}
             />
-            <span className="text-xs text-slate-300">
-              <span className="flex items-center gap-1.5 font-bold text-slate-100">
+            <span className="text-xs text-slate-600">
+              <span className="flex items-center gap-1.5 font-bold text-slate-900">
                 <Wallet size={13} /> Abonar como Saldo a Favor al Wallet del Jugador
               </span>
               {!reserva.jugador_id && (
@@ -5586,7 +5589,7 @@ function ModalDetalleCancha({
       {reservasDelDia.length === 0 ? (
         <div className="flex flex-col items-center gap-2 py-8 text-center">
           <CheckCircle2 size={28} className="text-emerald-400" />
-          <p className="text-sm font-semibold text-slate-300">Sin reservas para este día</p>
+          <p className="text-sm font-semibold text-slate-600">Sin reservas para este día</p>
           <p className="text-xs text-slate-500">La cancha está libre en todo el horario.</p>
         </div>
       ) : (
@@ -5595,17 +5598,17 @@ function ModalDetalleCancha({
             <button
               key={r.id}
               onClick={() => setReservaActiva(r)}
-              className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3 text-left transition hover:border-lime-400/40"
+              className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-left transition hover:border-lime-400/40"
             >
               <div className="min-w-0">
-                <p className="truncate text-sm font-bold text-slate-100">{r.jugador_nombre || 'Jugador'}</p>
+                <p className="truncate text-sm font-bold text-slate-900">{r.jugador_nombre || 'Jugador'}</p>
                 <p className="text-xs text-slate-500">
                   {formatoHora12(r.hora_inicio)} – {formatoHora12(r.hora_fin)}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <BadgePago estadoPago={r.estado_pago} />
-                <ChevronRight size={16} className="text-slate-600" />
+                <ChevronRight size={16} className="text-slate-400" />
               </div>
             </button>
           ))}
@@ -5929,13 +5932,13 @@ function ModalProximasReservas({ reservas, canchasPorId, onClose, onVerDetalle }
                 key={r.id}
                 type="button"
                 onClick={() => onVerDetalle(r)}
-                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-left transition hover:border-lime-400/40 hover:bg-slate-800/60"
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left transition hover:border-lime-400/40 hover:bg-slate-100/60"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-bold text-slate-100">{r.jugador_nombre || 'Jugador'}</p>
-                  <p className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-400">
+                  <p className="truncate text-sm font-bold text-slate-900">{r.jugador_nombre || 'Jugador'}</p>
+                  <p className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-500">
                     <MapPin size={11} className="shrink-0" /> {cancha?.nombre || 'Cancha'}
-                    <span className="text-slate-600">·</span>
+                    <span className="text-slate-400">·</span>
                     <CalendarClock size={11} className="shrink-0" />
                     {formatoFechaLarga(r.fecha)} · {formatoHora12(r.hora_inicio)}–{formatoHora12(r.hora_fin)}
                   </p>
@@ -6185,11 +6188,11 @@ function SkeletonProductos() {
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
       {Array.from({ length: 8 }).map((_, i) => (
-        <div key={i} className="animate-pulse overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
-          <div className="h-24 bg-slate-800 sm:h-28" />
+        <div key={i} className="animate-pulse overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="h-24 bg-slate-100 sm:h-28" />
           <div className="space-y-2 p-2.5">
-            <div className="h-3 w-full rounded bg-slate-800" />
-            <div className="h-3 w-1/2 rounded bg-slate-800" />
+            <div className="h-3 w-full rounded bg-slate-100" />
+            <div className="h-3 w-1/2 rounded bg-slate-100" />
           </div>
         </div>
       ))}
@@ -6199,13 +6202,13 @@ function SkeletonProductos() {
 
 function EmptyStateProductos() {
   return (
-    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 py-16 text-center">
-      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-slate-900">
-        <ShoppingBag size={24} className="text-slate-600" />
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 py-16 text-center">
+      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-white">
+        <ShoppingBag size={24} className="text-slate-400" />
       </div>
-      <p className="text-sm font-bold text-slate-300">Todavía no tienes productos cargados</p>
+      <p className="text-sm font-bold text-slate-600">Todavía no tienes productos cargados</p>
       <p className="mt-1 max-w-sm text-xs text-slate-500">
-        Crea la tabla <code className="rounded bg-slate-800 px-1 py-0.5 text-[11px] text-slate-300">productos</code> en
+        Crea la tabla <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px] text-slate-600">productos</code> en
         Supabase (nombre, categoria, precio, stock, imagen_url) y aparecerán aquí automáticamente.
       </p>
     </div>
@@ -6240,7 +6243,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
   const rangoPrecioVariantes = precioMinVariantes !== null && precioMinVariantes !== precioMaxVariantes;
 
   return (
-    <div className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 transition hover:border-lime-400/40">
+    <div className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white transition hover:border-lime-400/40">
       {onEditar && (
         <button
           type="button"
@@ -6249,7 +6252,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
             onEditar(producto);
           }}
           title="Editar / disponibilidad / eliminar"
-          className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-slate-950/80 text-slate-300 backdrop-blur transition hover:bg-slate-800 hover:text-lime-400"
+          className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-slate-50/80 text-slate-600 backdrop-blur transition hover:bg-slate-100 hover:text-lime-400"
         >
           <Settings2 size={12} />
         </button>
@@ -6260,7 +6263,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
         disabled={bloqueado}
         className="flex flex-1 flex-col text-left disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <div className="relative h-24 w-full overflow-hidden rounded-t-2xl bg-slate-800 sm:h-28">
+        <div className="relative h-24 w-full overflow-hidden rounded-t-2xl bg-slate-100 sm:h-28">
           <img
             src={producto.imagen_url || fallbackImagenProducto(producto)}
             onError={(e) => {
@@ -6276,22 +6279,22 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
             </span>
           )}
           {tieneVariantes && (
-            <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-slate-950/80 px-2 py-0.5 text-[9px] font-bold text-lime-300 backdrop-blur">
+            <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-slate-50/80 px-2 py-0.5 text-[9px] font-bold text-lime-300 backdrop-blur">
               <Layers size={9} /> {variantes.length} opciones
             </span>
           )}
           {sinStock ? (
-            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/70 text-[11px] font-black uppercase tracking-wide text-rose-300">
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-50/70 text-[11px] font-black uppercase tracking-wide text-rose-300">
               Agotado
             </div>
           ) : noDisponible ? (
-            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/70 text-[11px] font-black uppercase tracking-wide text-amber-300">
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-50/70 text-[11px] font-black uppercase tracking-wide text-amber-300">
               No disponible
             </div>
           ) : null}
         </div>
         <div className="flex flex-1 flex-col gap-1 p-2.5">
-          <p className="line-clamp-2 text-xs font-bold leading-snug text-slate-100">{producto.nombre}</p>
+          <p className="line-clamp-2 text-xs font-bold leading-snug text-slate-900">{producto.nombre}</p>
           <div className="mt-auto flex items-center justify-between pt-1">
             <span className="text-sm font-black text-lime-400">
               {tieneVariantes
@@ -6353,9 +6356,9 @@ function ModalSeleccionarVariante({ producto, variantes, onSeleccionar, onClose 
               type="button"
               disabled={sinStock}
               onClick={() => onSeleccionar(v)}
-              className="flex flex-col items-start gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-3 text-left transition hover:border-lime-400/50 hover:bg-slate-800/80 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-slate-100 px-3.5 py-3 text-left transition hover:border-lime-400/50 hover:bg-slate-100/80 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <span className="text-xs font-bold text-slate-100">{v.nombre}</span>
+              <span className="text-xs font-bold text-slate-900">{v.nombre}</span>
               <span className="flex w-full items-center justify-between">
                 <span className="text-sm font-black text-lime-400">{formatoMoneda(precio)}</span>
                 {controlaStock && (
@@ -6422,13 +6425,13 @@ function ComandaPanel({
   const [precioBorrador, setPrecioBorrador] = useState('');
 
   return (
-    <div className="sticky top-20 flex flex-col rounded-2xl border border-slate-800 bg-slate-900">
-      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3.5">
+    <div className="sticky top-20 flex flex-col rounded-2xl border border-slate-200 bg-white">
+      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3.5">
         <div className="flex items-center gap-2">
           <Receipt size={16} className="text-lime-400" />
-          <h3 className="text-sm font-black text-slate-100">Comanda</h3>
+          <h3 className="text-sm font-black text-slate-900">Comanda</h3>
           {!vacio && (
-            <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-bold text-slate-300">{totalArticulos}</span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{totalArticulos}</span>
           )}
         </div>
         <button
@@ -6443,7 +6446,7 @@ function ComandaPanel({
       <div className="max-h-[360px] overflow-y-auto px-4 py-3">
         {vacio ? (
           <div className="flex flex-col items-center gap-2 py-10 text-center">
-            <ShoppingCart size={26} className="text-slate-700" />
+            <ShoppingCart size={26} className="text-slate-300" />
             <p className="text-xs font-semibold text-slate-500">Toca un producto para agregarlo</p>
           </div>
         ) : (
@@ -6452,7 +6455,7 @@ function ComandaPanel({
               <div key={item.id} className="space-y-1.5">
                 <div className="flex items-center gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="flex items-center gap-1.5 truncate text-xs font-bold text-slate-100">
+                    <p className="flex items-center gap-1.5 truncate text-xs font-bold text-slate-900">
                       {item.tipo === 'cancha' && <Clock size={11} className="shrink-0 text-sky-400" />}
                       <span className="truncate">{item.nombre}</span>
                     </p>
@@ -6473,7 +6476,7 @@ function ComandaPanel({
                               setEditandoPrecioId(null);
                             }
                           }}
-                          className="w-20 rounded-md border border-lime-400/40 bg-slate-950 px-1.5 py-0.5 text-[11px] font-bold text-slate-100"
+                          className="w-20 rounded-md border border-lime-400/40 bg-slate-50 px-1.5 py-0.5 text-[11px] font-bold text-slate-900"
                         />
                         <button
                           onClick={() => {
@@ -6484,7 +6487,7 @@ function ComandaPanel({
                         >
                           <CheckCircle2 size={14} />
                         </button>
-                        <button onClick={() => setEditandoPrecioId(null)} className="text-slate-500 hover:text-slate-300">
+                        <button onClick={() => setEditandoPrecioId(null)} className="text-slate-500 hover:text-slate-600">
                           <X size={14} />
                         </button>
                       </div>
@@ -6497,7 +6500,7 @@ function ComandaPanel({
                               setPrecioBorrador(String(item.precio));
                               setEditandoPrecioId(item.id);
                             }}
-                            className="text-slate-600 transition hover:text-amber-400"
+                            className="text-slate-400 transition hover:text-amber-400"
                             title="Editar precio / aplicar descuento"
                           >
                             <Pencil size={11} />
@@ -6509,14 +6512,14 @@ function ComandaPanel({
                   <div className="flex shrink-0 items-center gap-1.5">
                     <button
                       onClick={() => onCambiarCantidad(item.id, -1)}
-                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-700 bg-slate-800 text-slate-300 transition hover:bg-slate-700"
+                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-300 bg-slate-100 text-slate-600 transition hover:bg-slate-200"
                     >
                       <Minus size={12} />
                     </button>
-                    <span className="w-5 text-center text-xs font-bold text-slate-100">{item.cantidad}</span>
+                    <span className="w-5 text-center text-xs font-bold text-slate-900">{item.cantidad}</span>
                     <button
                       onClick={() => onCambiarCantidad(item.id, 1)}
-                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-700 bg-slate-800 text-slate-300 transition hover:bg-slate-700"
+                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-300 bg-slate-100 text-slate-600 transition hover:bg-slate-200"
                     >
                       <Plus size={12} />
                     </button>
@@ -6524,7 +6527,7 @@ function ComandaPanel({
                   <span className="w-16 shrink-0 text-right text-xs font-black text-lime-400">
                     {formatoMoneda(item.precio * item.cantidad)}
                   </span>
-                  <button onClick={() => onQuitarProducto(item.id)} className="shrink-0 text-slate-600 transition hover:text-rose-400">
+                  <button onClick={() => onQuitarProducto(item.id)} className="shrink-0 text-slate-400 transition hover:text-rose-400">
                     <X size={13} />
                   </button>
                 </div>
@@ -6537,7 +6540,7 @@ function ComandaPanel({
                   <select
                     value={item.jugadorIndice ?? ''}
                     onChange={(e) => onAsignarJugador?.(item.id, e.target.value === '' ? null : Number(e.target.value))}
-                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[10px] font-semibold text-slate-300"
+                    className="w-full rounded-md border border-slate-300 bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-600"
                   >
                     <option value="">Sin asignar / compartido</option>
                     {roster.map((j, i) => (
@@ -6553,7 +6556,7 @@ function ComandaPanel({
         )}
       </div>
 
-      <div className="space-y-3 border-t border-slate-800 px-4 py-3.5">
+      <div className="space-y-3 border-t border-slate-200 px-4 py-3.5">
         {/* CRM Unificado: asigna esta comanda a un cliente del directorio (o
             da de alta uno nuevo en el momento) sin importar si trae cancha
             vinculada — permite que ventas de Pro-Shop/Restaurante sin cancha
@@ -6565,8 +6568,8 @@ function ComandaPanel({
             (2+ palabras) antes de dejar procesar la venta cuando no hay
             roster; ver ese handler para la validación real. */}
         {!hayRoster && (
-          <div className="space-y-1.5 rounded-lg border border-slate-800 bg-slate-950/40 p-2.5">
-            <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          <div className="space-y-1.5 rounded-lg border border-slate-200 bg-slate-50/40 p-2.5">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               <Users size={12} /> Datos del Cliente (Obligatorio)
             </span>
             <SelectorJugadorRegistrado
@@ -6623,7 +6626,7 @@ function ComandaPanel({
         )}
 
         <label className="block">
-          <span className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          <span className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             <Link2 size={12} /> Vincular a Cancha (cuenta abierta)
           </span>
           <select value={canchaVinculadaId} onChange={(e) => onCambiarCanchaVinculada(e.target.value)} className={inputClase}>
@@ -6643,7 +6646,7 @@ function ComandaPanel({
 
         {!canchaVinculadaId && (
           <label className="block">
-            <span className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            <span className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               <MapPin size={12} /> Asignar a Cancha (opcional)
             </span>
             <select value={canchaAsignadaId} onChange={(e) => onCambiarCanchaAsignada(e.target.value)} className={inputClase}>
@@ -6661,8 +6664,8 @@ function ComandaPanel({
         )}
 
         <div className="flex items-center justify-between">
-          <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Total</span>
-          <span className="text-2xl font-black text-slate-100">{formatoMoneda(total)}</span>
+          <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Total</span>
+          <span className="text-2xl font-black text-slate-900">{formatoMoneda(total)}</span>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -6713,7 +6716,7 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
     <button
       onClick={() => setPaso('elegir')}
       disabled={deshabilitado}
-      className="rounded-md px-2.5 py-1.5 text-[11px] font-bold text-slate-400 transition hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+      className="rounded-md px-2.5 py-1.5 text-[11px] font-bold text-slate-500 transition hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
     >
       Atrás
     </button>
@@ -6733,8 +6736,8 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
           autoFocus
         />
         <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold text-slate-400">Cambio a entregar</span>
-          <span className={`font-black ${alcanza ? 'text-emerald-400' : 'text-slate-600'}`}>{formatoMoneda(cambio)}</span>
+          <span className="font-semibold text-slate-500">Cambio a entregar</span>
+          <span className={`font-black ${alcanza ? 'text-emerald-400' : 'text-slate-400'}`}>{formatoMoneda(cambio)}</span>
         </div>
         <div className="flex justify-end gap-1.5">
           {botonVolver}
@@ -6756,9 +6759,9 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
     const Icon = metaMetodo?.icon || CreditCard;
     return (
       <div className="space-y-2">
-        <div className="flex items-start gap-2 rounded-lg border border-dashed border-slate-700 bg-slate-950 px-3 py-2.5">
+        <div className="flex items-start gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5">
           <Icon size={16} className="mt-0.5 shrink-0 text-lime-400" />
-          <p className="text-[11px] text-slate-300">
+          <p className="text-[11px] text-slate-600">
             Procesa {formatoMoneda(monto)} en {metodo === 'tarjeta' ? 'la terminal (TPV)' : 'la banca / app SPEI'}. No confirmes hasta ver el
             comprobante.
           </p>
@@ -6786,7 +6789,7 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
           <button
             key={m.value}
             onClick={() => elegir(m.value)}
-            className="flex flex-col items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 py-2 text-[10px] font-bold text-slate-300 transition hover:border-lime-400/40 hover:text-lime-400"
+            className="flex flex-col items-center gap-1 rounded-lg border border-slate-300 bg-white py-2 text-[10px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400"
           >
             <Icon size={14} />
             {m.label}
@@ -6795,12 +6798,12 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
           <button
             key={m.value}
             onClick={() => elegir(m.value)}
-            className="flex w-full items-center gap-3 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-left transition hover:border-lime-400/40 hover:bg-slate-700"
+            className="flex w-full items-center gap-3 rounded-xl border border-slate-300 bg-slate-100 px-4 py-3 text-left transition hover:border-lime-400/40 hover:bg-slate-200"
           >
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
               <Icon size={17} />
             </div>
-            <span className="text-sm font-bold text-slate-100">{m.label}</span>
+            <span className="text-sm font-bold text-slate-900">{m.label}</span>
           </button>
         );
       })}
@@ -6821,12 +6824,12 @@ function ModalCobro({ total, onClose, onConfirmado, onDividir, registrandoVenta 
             key="dividir"
             onClick={onDividir}
             disabled={registrandoVenta}
-            className="flex w-full items-center gap-3 rounded-xl border border-dashed border-slate-700 bg-slate-800/50 px-4 py-3 text-left transition hover:border-lime-400/40 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex w-full items-center gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-100/50 px-4 py-3 text-left transition hover:border-lime-400/40 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-400/10 text-violet-400">
               <Divide size={17} />
             </div>
-            <span className="text-sm font-bold text-slate-100">Cobro Dividido</span>
+            <span className="text-sm font-bold text-slate-900">Cobro Dividido</span>
           </button>
         }
       />
@@ -6839,8 +6842,8 @@ function FilaPagoJugador({ indice, monto, pagado, onPagado }) {
     return (
       <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/5 px-3.5 py-3">
         <div className="flex items-center justify-between">
-          <span className="text-sm font-bold text-slate-100">Jugador {indice + 1}</span>
-          <span className="text-sm font-black text-slate-100">{formatoMoneda(monto)}</span>
+          <span className="text-sm font-bold text-slate-900">Jugador {indice + 1}</span>
+          <span className="text-sm font-black text-slate-900">{formatoMoneda(monto)}</span>
         </div>
         <span className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
           <CheckCircle2 size={13} /> Pagado con {METODOS_PAGO_POS.find((m) => m.value === pagado.metodo)?.label}
@@ -6851,10 +6854,10 @@ function FilaPagoJugador({ indice, monto, pagado, onPagado }) {
   }
 
   return (
-    <div className="rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-3">
+    <div className="rounded-xl border border-slate-300 bg-slate-100 px-3.5 py-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm font-bold text-slate-100">Jugador {indice + 1}</span>
-        <span className="text-sm font-black text-slate-100">{formatoMoneda(monto)}</span>
+        <span className="text-sm font-bold text-slate-900">Jugador {indice + 1}</span>
+        <span className="text-sm font-black text-slate-900">{formatoMoneda(monto)}</span>
       </div>
       <PasosDeCobro compacto monto={monto} onConfirmar={(datos) => onPagado(indice, datos)} onCancelar={null} />
     </div>
@@ -6882,7 +6885,7 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta }) {
     <ModalShell titulo="Dividir Cuenta" subtitulo={`Total: ${formatoMoneda(total)}`} onClose={onClose} icon={Divide} ancho="max-w-lg">
       <div className="space-y-4">
         <div>
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">¿Entre cuántos jugadores?</span>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">¿Entre cuántos jugadores?</span>
           <div className="grid grid-cols-3 gap-2">
             {[2, 3, 4].map((n) => (
               <button
@@ -6891,7 +6894,7 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta }) {
                 className={`rounded-lg border px-3 py-2 text-sm font-bold transition ${
                   numJugadores === n
                     ? 'border-lime-400 bg-lime-400/10 text-lime-400'
-                    : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
                 {n} jugadores
@@ -6906,8 +6909,8 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta }) {
           ))}
         </div>
 
-        <div className="flex items-center justify-between rounded-xl bg-slate-950 px-4 py-3">
-          <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Saldo pendiente</span>
+        <div className="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3">
+          <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Saldo pendiente</span>
           <span className={`text-lg font-black ${saldoPendiente > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
             {formatoMoneda(saldoPendiente)}
           </span>
@@ -6971,7 +6974,7 @@ function ModalArqueo({ operador, turno, onClose, onGuardarCierre }) {
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-400/10 text-emerald-400">
             <CheckCircle2 size={28} />
           </div>
-          <p className="text-sm font-bold text-slate-100">Cierre de turno guardado</p>
+          <p className="text-sm font-bold text-slate-900">Cierre de turno guardado</p>
           <p className="max-w-xs text-xs text-slate-500">
             El conteo quedó registrado. La diferencia contra el sistema se calculó y se guardó para revisión
             administrativa — a propósito, no se muestra aquí.
@@ -7331,8 +7334,8 @@ function ModalNuevoProducto({
           </Campo>
         </div>
 
-        <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2.5">
-          <span className="text-xs font-semibold text-slate-200">
+        <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-2.5">
+          <span className="text-xs font-semibold text-slate-800">
             Maneja Inventario / Stock Rígido
             <span className="mt-0.5 block text-[10px] font-normal text-slate-500">
               Desactívalo para platillos (nachos, baguettes...): nunca mostrarán "Agotado".
@@ -7352,8 +7355,8 @@ function ModalNuevoProducto({
             hint={tieneVariantes ? 'Se calcula solo — es la suma del stock de todas las variantes de abajo.' : undefined}
           >
             {tieneVariantes ? (
-              <div className={`${inputClase} flex cursor-not-allowed items-center justify-between bg-slate-800/60 text-slate-400`}>
-                <span className="font-black text-slate-200">{stockCalculadoDeVariantes}</span>
+              <div className={`${inputClase} flex cursor-not-allowed items-center justify-between bg-slate-100/60 text-slate-500`}>
+                <span className="font-black text-slate-800">{stockCalculadoDeVariantes}</span>
                 <Lock size={13} className="text-slate-500" />
               </div>
             ) : (
@@ -7362,9 +7365,9 @@ function ModalNuevoProducto({
           </Campo>
         )}
 
-        <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-3">
+        <div className="rounded-lg border border-slate-300 bg-slate-100/60 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-slate-200">
+            <span className="text-xs font-semibold text-slate-800">
               Variantes / Modificadores
               <span className="mt-0.5 block text-[10px] font-normal text-slate-500">
                 Ej. "Cerveza 355 ml" → Victoria, Corona, Modelo · "Overgrip" → Tourna, Wilson · "Chilaquiles" → Verdes, Rojos, con Pollo
@@ -7373,7 +7376,7 @@ function ModalNuevoProducto({
             <button
               type="button"
               onClick={agregarFilaVariante}
-              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] font-bold text-lime-400 transition hover:border-lime-400/50"
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-bold text-lime-400 transition hover:border-lime-400/50"
             >
               <Plus size={12} /> Variante
             </button>
@@ -7383,7 +7386,7 @@ function ModalNuevoProducto({
           ) : (
             <div className="space-y-2">
               {variantes.map((v) => (
-                <div key={v.id} className="space-y-1.5 rounded-md border border-slate-700/60 bg-slate-900/50 p-2">
+                <div key={v.id} className="space-y-1.5 rounded-md border border-slate-300/60 bg-white/50 p-2">
                   {/* Nombre en su propio renglón, ancho completo: dentro de una
                       fila `flex` junto a precio/stock/eliminar, este campo se
                       comprimía casi a 0px (se veía como una barra negra sin
@@ -7450,8 +7453,8 @@ function ModalNuevoProducto({
         </div>
 
         {editando && (
-          <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2.5">
-            <span className="text-xs font-semibold text-slate-200">
+          <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-2.5">
+            <span className="text-xs font-semibold text-slate-800">
               {disponible ? 'Disponible' : 'No disponible'}
               <span className="mt-0.5 block text-[10px] font-normal text-slate-500">
                 Apágalo si faltan ingredientes o insumos, sin tocar el stock.
@@ -7467,7 +7470,7 @@ function ModalNuevoProducto({
         )}
 
         <div className="space-y-2">
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
             {editando ? 'Cambiar imagen (opcional)' : 'Imagen del producto'}
           </span>
           {/* Subida limpia por archivo, ÚNICAMENTE — se quitó el campo de
@@ -7476,8 +7479,8 @@ function ModalNuevoProducto({
         </div>
 
         <div>
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Vista previa</span>
-          <div className="h-32 overflow-hidden rounded-xl border border-slate-800 bg-slate-800">
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Vista previa</span>
+          <div className="h-32 overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
             {imagenPreview ? (
               <img
                 src={imagenPreview}
@@ -7488,7 +7491,7 @@ function ModalNuevoProducto({
                 }}
               />
             ) : (
-              <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-600">
+              <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-400">
                 Sin imagen todavía — se usará una de referencia por categoría
               </div>
             )}
@@ -7514,7 +7517,7 @@ function ModalNuevoProducto({
                   <button
                     onClick={() => setConfirmarEliminar(false)}
                     disabled={eliminando}
-                    className="rounded-md px-2 py-1.5 text-[11px] font-semibold text-slate-400 hover:text-slate-200"
+                    className="rounded-md px-2 py-1.5 text-[11px] font-semibold text-slate-500 hover:text-slate-800"
                   >
                     Cancelar
                   </button>
@@ -7561,9 +7564,9 @@ function ModalTicket({ venta, onClose }) {
         }
       `}</style>
 
-      <div id="ticket-imprimible" className="space-y-3 rounded-xl border border-dashed border-slate-700 bg-slate-950 p-4 font-mono text-xs text-slate-200">
+      <div id="ticket-imprimible" className="space-y-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 font-mono text-xs text-slate-800">
         <div className="text-center">
-          <p className="text-sm font-black tracking-wide text-slate-100">SMASH PÁDEL CLUB</p>
+          <p className="text-sm font-black tracking-wide text-slate-900">SMASH PÁDEL CLUB</p>
           <p className="text-slate-500">
             {formatoFechaLarga(venta.fecha)} · {venta.horaEmision}
           </p>
@@ -7573,7 +7576,7 @@ function ModalTicket({ venta, onClose }) {
           </p>
         </div>
 
-        <div className="space-y-0.5 border-t border-dashed border-slate-700 pt-3">
+        <div className="space-y-0.5 border-t border-dashed border-slate-300 pt-3">
           {venta.items.map((item, i) => (
             <div key={i} className="flex items-center justify-between gap-2 py-0.5">
               <span className="flex-1 truncate">
@@ -7584,14 +7587,14 @@ function ModalTicket({ venta, onClose }) {
           ))}
         </div>
 
-        <div className="flex items-center justify-between border-t border-dashed border-slate-700 pt-2 text-sm font-black text-slate-100">
+        <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-2 text-sm font-black text-slate-900">
           <span>TOTAL</span>
           <span>{formatoMoneda(venta.total)}</span>
         </div>
 
         {venta.pagosDivididos && venta.pagosDivididos.length > 0 ? (
-          <div className="space-y-0.5 border-t border-dashed border-slate-700 pt-3">
-            <p className="mb-1 font-bold uppercase tracking-wide text-slate-400">Cobro dividido — folios por jugador</p>
+          <div className="space-y-0.5 border-t border-dashed border-slate-300 pt-3">
+            <p className="mb-1 font-bold uppercase tracking-wide text-slate-500">Cobro dividido — folios por jugador</p>
             {venta.pagosDivididos.map((p, i) => (
               <div key={i} className="flex items-center justify-between py-0.5">
                 <span>
@@ -7602,20 +7605,20 @@ function ModalTicket({ venta, onClose }) {
             ))}
           </div>
         ) : (
-          <div className="flex items-center justify-between border-t border-dashed border-slate-700 pt-3">
-            <span className="text-slate-400">Método</span>
+          <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-3">
+            <span className="text-slate-500">Método</span>
             <span className="font-bold">{METODOS_PAGO_POS.find((m) => m.value === venta.metodoPago)?.label || venta.metodoPago || '—'}</span>
           </div>
         )}
 
         {venta.cambio > 0 && (
-          <div className="flex items-center justify-between border-t border-dashed border-slate-700 pt-2 text-slate-300">
+          <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-2 text-slate-600">
             <span>Cambio entregado</span>
             <span className="font-bold">{formatoMoneda(venta.cambio)}</span>
           </div>
         )}
 
-        <p className="border-t border-dashed border-slate-700 pt-3 text-center text-[10px] text-slate-600">¡Gracias por tu visita!</p>
+        <p className="border-t border-dashed border-slate-300 pt-3 text-center text-[10px] text-slate-400">¡Gracias por tu visita!</p>
       </div>
 
       <div className="mt-4 flex justify-end gap-2 print:hidden">
@@ -7633,14 +7636,14 @@ function ModalTicket({ venta, onClose }) {
 function TarjetaCuentaAbierta({ grupo, onLiquidar, liquidando }) {
   const filasItems = Object.entries(grupo.items);
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-100">
+          <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-900">
             <MapPin size={14} className="shrink-0 text-sky-400" />
             {grupo.cancha?.nombre || 'Venta General (sin cancha)'}
           </p>
-          <p className="mt-1 flex items-center gap-1.5 truncate text-xs font-semibold text-slate-400">
+          <p className="mt-1 flex items-center gap-1.5 truncate text-xs font-semibold text-slate-500">
             <Users size={12} className="shrink-0" />
             {grupo.reserva?.jugador_nombre || grupo.clienteNombre || 'Cliente sin nombre vinculado'}
           </p>
@@ -7650,24 +7653,24 @@ function TarjetaCuentaAbierta({ grupo, onLiquidar, liquidando }) {
         </span>
       </div>
 
-      <div className="mt-3 space-y-1 rounded-xl bg-slate-950 px-3 py-2.5">
+      <div className="mt-3 space-y-1 rounded-xl bg-slate-50 px-3 py-2.5">
         {filasItems.length === 0 ? (
           <p className="text-[11px] text-slate-500">Sin desglose de productos.</p>
         ) : (
           filasItems.map(([nombre, info]) => (
             <div key={nombre} className="flex items-center justify-between gap-2 text-[11px]">
-              <span className="truncate text-slate-300">
+              <span className="truncate text-slate-600">
                 {info.cantidad}× {nombre}
               </span>
-              <span className="shrink-0 font-semibold text-slate-400">{formatoMoneda(info.subtotal)}</span>
+              <span className="shrink-0 font-semibold text-slate-500">{formatoMoneda(info.subtotal)}</span>
             </div>
           ))
         )}
       </div>
 
       <div className="mt-3 flex items-center justify-between">
-        <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Total Pendiente</span>
-        <span className="text-xl font-black text-slate-100">{formatoMoneda(grupo.total)}</span>
+        <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Total Pendiente</span>
+        <span className="text-xl font-black text-slate-900">{formatoMoneda(grupo.total)}</span>
       </div>
 
       <BotonPrimario onClick={() => onLiquidar(grupo)} disabled={liquidando} className="mt-3 w-full">
@@ -7693,7 +7696,7 @@ function CuentasAbiertasPanel({
     return (
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="h-56 animate-pulse rounded-2xl bg-slate-900" />
+          <div key={i} className="h-56 animate-pulse rounded-2xl bg-white" />
         ))}
       </div>
     );
@@ -7703,10 +7706,10 @@ function CuentasAbiertasPanel({
 
   if (grupos.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-16 text-center">
-        <VacioIcon size={26} className="text-slate-700" />
-        <p className="text-sm font-semibold text-slate-400">{vacioTitulo}</p>
-        <p className="text-xs text-slate-600">{vacioDetalle}</p>
+      <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-16 text-center">
+        <VacioIcon size={26} className="text-slate-300" />
+        <p className="text-sm font-semibold text-slate-500">{vacioTitulo}</p>
+        <p className="text-xs text-slate-400">{vacioDetalle}</p>
       </div>
     );
   }
@@ -7719,7 +7722,7 @@ function CuentasAbiertasPanel({
         <span className="text-xs font-bold text-amber-300">
           {grupos.length} {grupos.length === 1 ? 'cuenta abierta' : 'cuentas abiertas'}
         </span>
-        <span className="text-sm font-black text-slate-100">{formatoMoneda(totalPendiente)} pendiente en total</span>
+        <span className="text-sm font-black text-slate-900">{formatoMoneda(totalPendiente)} pendiente en total</span>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {grupos.map((grupo) => (
@@ -7834,24 +7837,24 @@ function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando }) {
       icon={DollarSign}
       ancho="max-w-md"
     >
-      <div className="mb-4 space-y-1.5 rounded-xl bg-slate-950 px-3 py-2.5">
+      <div className="mb-4 space-y-1.5 rounded-xl bg-slate-50 px-3 py-2.5">
         {items.length === 0 ? (
           <p className="text-[11px] text-slate-500">Sin artículos en esta cuenta.</p>
         ) : (
           items.map((it) => (
             <div key={it._key} className="flex items-center justify-between gap-2 text-[11px]">
-              <span className="min-w-0 flex-1 truncate text-slate-300">
+              <span className="min-w-0 flex-1 truncate text-slate-600">
                 {it.cantidad}× {it.nombre}
                 {it.variante_nombre ? ` (${it.variante_nombre})` : ''}
               </span>
-              <span className="shrink-0 font-semibold text-slate-400">{formatoMoneda(it.precio * it.cantidad)}</span>
+              <span className="shrink-0 font-semibold text-slate-500">{formatoMoneda(it.precio * it.cantidad)}</span>
               {it.editable && (
                 <div className="flex shrink-0 items-center gap-1">
                   <button
                     type="button"
                     onClick={() => disminuirCantidad(it._key)}
                     disabled={liquidando || it.cantidad <= 1}
-                    className="rounded-md bg-slate-800 p-1 text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-30"
+                    className="rounded-md bg-slate-100 p-1 text-slate-600 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-30"
                     title="Disminuir cantidad"
                   >
                     <Minus size={11} />
@@ -7888,7 +7891,7 @@ function InscripcionesEventoPanel({ filas, cargando, error, onReintentar, busque
     return (
       <div className="space-y-2">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="h-14 animate-pulse rounded-xl bg-slate-900" />
+          <div key={i} className="h-14 animate-pulse rounded-xl bg-white" />
         ))}
       </div>
     );
@@ -7909,18 +7912,18 @@ function InscripcionesEventoPanel({ filas, cargando, error, onReintentar, busque
       </div>
 
       {filas.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-16 text-center">
-          <Trophy size={26} className="text-slate-700" />
-          <p className="text-sm font-semibold text-slate-400">Sin inscripciones pendientes de cobro.</p>
-          <p className="text-xs text-slate-600">
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-16 text-center">
+          <Trophy size={26} className="text-slate-300" />
+          <p className="text-sm font-semibold text-slate-500">Sin inscripciones pendientes de cobro.</p>
+          <p className="text-xs text-slate-400">
             Se llenan solas desde Torneos &amp; Retas y Academia &amp; Clínicas — cualquier inscripción con saldo pendiente aparece aquí.
           </p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
           <table className="w-full min-w-[620px] text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 <th className="px-3 py-2.5">Participante</th>
                 <th className="px-3 py-2.5">Evento</th>
                 <th className="px-3 py-2.5">Contacto</th>
@@ -7930,10 +7933,10 @@ function InscripcionesEventoPanel({ filas, cargando, error, onReintentar, busque
             </thead>
             <tbody>
               {filas.map((f) => (
-                <tr key={f.clave} className="border-b border-slate-800/70 last:border-0">
-                  <td className="px-3 py-2.5 font-bold text-slate-100">{f.nombre}</td>
-                  <td className="px-3 py-2.5 text-slate-300">{f.origen}</td>
-                  <td className="px-3 py-2.5 text-slate-400">
+                <tr key={f.clave} className="border-b border-slate-200/70 last:border-0">
+                  <td className="px-3 py-2.5 font-bold text-slate-900">{f.nombre}</td>
+                  <td className="px-3 py-2.5 text-slate-600">{f.origen}</td>
+                  <td className="px-3 py-2.5 text-slate-500">
                     {f.telefono && <span className="mr-2">{f.telefono}</span>}
                     {f.correo || (!f.telefono ? '—' : '')}
                   </td>
@@ -7997,7 +8000,7 @@ function FilaSplitBillJugador({
   return (
     <div
       className={`rounded-xl border px-3.5 py-3 ${
-        pagado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-slate-700 bg-slate-800'
+        pagado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-slate-300 bg-slate-100'
       }`}
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -8007,7 +8010,7 @@ function FilaSplitBillJugador({
           onBlur={() => onConfirmarJugador(indice)}
           disabled={Boolean(pagado)}
           placeholder={`Jugador ${indice + 1}`}
-          className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs font-bold text-slate-100 disabled:opacity-70"
+          className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-900 disabled:opacity-70"
         />
         {fila.resolviendo && <Loader2 size={13} className="animate-spin text-slate-500" />}
         {fila.jugadorId && !fila.resolviendo && (
@@ -8019,7 +8022,7 @@ function FilaSplitBillJugador({
           <button
             onClick={() => onQuitarJugador(indice)}
             title="Quitar de la cuenta"
-            className="shrink-0 text-slate-600 transition hover:text-rose-400"
+            className="shrink-0 text-slate-400 transition hover:text-rose-400"
           >
             <X size={14} />
           </button>
@@ -8032,12 +8035,12 @@ function FilaSplitBillJugador({
         onBlur={() => onConfirmarJugador(indice)}
         disabled={Boolean(pagado)}
         placeholder="Teléfono (WhatsApp)"
-        className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[11px] text-slate-300 disabled:opacity-70"
+        className="mt-1.5 w-full rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-600 disabled:opacity-70"
       />
 
       <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
-        <span className="text-slate-400">Cuota de cancha</span>
-        <div className="flex items-center gap-1 text-slate-100">
+        <span className="text-slate-500">Cuota de cancha</span>
+        <div className="flex items-center gap-1 text-slate-900">
           <span>$</span>
           <input
             type="number"
@@ -8046,27 +8049,27 @@ function FilaSplitBillJugador({
             value={fila.cuotaCancha}
             onChange={(e) => onActualizarCuota(indice, e.target.value)}
             disabled={Boolean(pagado)}
-            className="w-20 rounded-md border border-slate-700 bg-slate-950 px-1.5 py-1 text-right font-bold disabled:opacity-70"
+            className="w-20 rounded-md border border-slate-300 bg-slate-50 px-1.5 py-1 text-right font-bold disabled:opacity-70"
           />
         </div>
       </div>
 
       {fila.items.length > 0 && (
-        <div className="mt-1.5 space-y-0.5 border-t border-slate-700/60 pt-1.5">
+        <div className="mt-1.5 space-y-0.5 border-t border-slate-300/60 pt-1.5">
           {fila.items.map((it) => (
-            <div key={it.id} className="flex items-center justify-between text-[11px] text-slate-400">
+            <div key={it.id} className="flex items-center justify-between text-[11px] text-slate-500">
               <span className="truncate">
                 {it.nombre} ×{it.cantidad}
               </span>
-              <span className="shrink-0 text-slate-300">{formatoMoneda(it.precio * it.cantidad)}</span>
+              <span className="shrink-0 text-slate-600">{formatoMoneda(it.precio * it.cantidad)}</span>
             </div>
           ))}
         </div>
       )}
 
-      <div className="mt-2 flex items-center justify-between border-t border-slate-700/60 pt-2">
-        <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Total jugador</span>
-        <span className="text-base font-black text-slate-100">{formatoMoneda(fila.total)}</span>
+      <div className="mt-2 flex items-center justify-between border-t border-slate-300/60 pt-2">
+        <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Total jugador</span>
+        <span className="text-base font-black text-slate-900">{formatoMoneda(fila.total)}</span>
       </div>
 
       {pagado ? (
@@ -8089,7 +8092,7 @@ function FilaSplitBillJugador({
           <button
             onClick={() => onWhatsApp(indice)}
             disabled={!fila.telefono}
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
           >
             <IconoWhatsApp size={12} /> Enviar Ticket / Link por WhatsApp
           </button>
@@ -8128,7 +8131,7 @@ function RosterSplitBillPanel({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Users size={16} className="text-lime-400" />
-          <h3 className="text-sm font-black text-slate-100">Roster & Split Bill · {cancha?.nombre || 'Cancha'}</h3>
+          <h3 className="text-sm font-black text-slate-900">Roster & Split Bill · {cancha?.nombre || 'Cancha'}</h3>
         </div>
         {filas.length < 4 && (
           <button
@@ -8140,9 +8143,9 @@ function RosterSplitBillPanel({
         )}
       </div>
 
-      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg bg-slate-950/60 px-3 py-2 text-[11px] font-semibold">
-        <span className="text-slate-400">
-          Costo de cancha: <span className="text-slate-100">{formatoMoneda(costoCanchaTotal)}</span>
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg bg-slate-50/60 px-3 py-2 text-[11px] font-semibold">
+        <span className="text-slate-500">
+          Costo de cancha: <span className="text-slate-900">{formatoMoneda(costoCanchaTotal)}</span>
         </span>
         <span className={cuentaLiquidada ? 'text-emerald-400' : 'text-amber-400'}>
           {cuentaLiquidada ? '✓ Cancha liquidada' : `Saldo de cancha pendiente: ${formatoMoneda(saldoCanchaPendiente)}`}
@@ -8174,15 +8177,15 @@ function RosterSplitBillPanel({
       </div>
 
       {itemsSinAsignar.length > 0 && (
-        <div className="mt-3 rounded-lg border border-dashed border-slate-700 px-3 py-2">
+        <div className="mt-3 rounded-lg border border-dashed border-slate-300 px-3 py-2">
           <p className="mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-500">Sin asignar / compartido</p>
           <div className="space-y-0.5">
             {itemsSinAsignar.map((it) => (
-              <div key={it.id} className="flex items-center justify-between text-[11px] text-slate-400">
+              <div key={it.id} className="flex items-center justify-between text-[11px] text-slate-500">
                 <span className="truncate">
                   {it.nombre} ×{it.cantidad}
                 </span>
-                <span className="shrink-0 text-slate-300">{formatoMoneda(it.precio * it.cantidad)}</span>
+                <span className="shrink-0 text-slate-600">{formatoMoneda(it.precio * it.cantidad)}</span>
               </div>
             ))}
           </div>
@@ -8268,9 +8271,9 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
   }, [filas]);
 
   return (
-    <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+    <div className="space-y-3 rounded-2xl border border-slate-200 bg-white/60 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-300">
+        <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-600">
           <BarChart3 size={14} className="text-lime-400" /> {titulo || 'Analytics Operativos'}
         </p>
         <select value={dias} onChange={(e) => setDias(Number(e.target.value))} className={`${inputClase} w-36 !py-1.5 text-[11px]`}>
@@ -8279,7 +8282,7 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
         </select>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
+        <div className="rounded-xl border border-slate-200 bg-white p-3">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Top 5 Más Vendidos (unidades)</p>
           {cargando ? (
             <p className="mt-3 text-xs text-slate-500">Cargando...</p>
@@ -8289,13 +8292,13 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
             <ol className="mt-2.5 space-y-1.5">
               {top5.map((f, i) => (
                 <li key={i} className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="flex min-w-0 items-center gap-2 text-slate-200">
+                  <span className="flex min-w-0 items-center gap-2 text-slate-800">
                     <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-lime-400/10 text-[9px] font-black text-lime-400">
                       {i + 1}
                     </span>
                     <span className="truncate">{f.nombre}</span>
                   </span>
-                  <span className="shrink-0 font-bold text-slate-100">{f.unidades} u.</span>
+                  <span className="shrink-0 font-bold text-slate-900">{f.unidades} u.</span>
                 </li>
               ))}
             </ol>
@@ -8377,7 +8380,7 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
 
   if (itemsCriticos.length === 0) {
     return (
-      <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-lime-400">
           <PackagePlus size={14} /> Reorden Sugerido
         </p>
@@ -8393,7 +8396,7 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
       </p>
       <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto pr-1">
         {itemsCriticos.slice(0, 6).map((it, i) => (
-          <li key={i} className="flex items-center justify-between gap-2 text-[11px] text-slate-300">
+          <li key={i} className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
             <span className="truncate">{it.nombre}</span>
             <span className="shrink-0 font-bold text-amber-300">
               quedan {it.stock} · pedir {it.sugerido}
@@ -10391,11 +10394,11 @@ function ModuloSmartPOS({
   return (
     <>
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+        <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
           <button
             onClick={() => setVistaPOS('vender')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-              vistaPOS === 'vender' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              vistaPOS === 'vender' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <ShoppingCart size={14} /> Vender
@@ -10403,14 +10406,14 @@ function ModuloSmartPOS({
           <button
             onClick={() => setVistaPOS('cuentas')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-              vistaPOS === 'cuentas' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              vistaPOS === 'cuentas' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Link2 size={14} /> Cuentas Abiertas / Comandas Activas
             {gruposCuentasAbiertas.length > 0 && (
               <span
                 className={`ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-black ${
-                  vistaPOS === 'cuentas' ? 'bg-slate-950 text-lime-400' : 'bg-rose-500 text-rose-50'
+                  vistaPOS === 'cuentas' ? 'bg-slate-50 text-lime-400' : 'bg-rose-500 text-rose-50'
                 }`}
               >
                 {gruposCuentasAbiertas.length}
@@ -10420,14 +10423,14 @@ function ModuloSmartPOS({
           <button
             onClick={() => setVistaPOS('inscripciones')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-              vistaPOS === 'inscripciones' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              vistaPOS === 'inscripciones' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Trophy size={14} /> Cuentas Pendientes / Inscripciones
             {inscripcionesEventoPendientes.length + gruposReservasPendientes.length + gruposTiendaWebPendientes.length > 0 && (
               <span
                 className={`ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-black ${
-                  vistaPOS === 'inscripciones' ? 'bg-slate-950 text-lime-400' : 'bg-rose-500 text-rose-50'
+                  vistaPOS === 'inscripciones' ? 'bg-slate-50 text-lime-400' : 'bg-rose-500 text-rose-50'
                 }`}
               >
                 {inscripcionesEventoPendientes.length + gruposReservasPendientes.length + gruposTiendaWebPendientes.length}
@@ -10542,7 +10545,7 @@ function ModuloSmartPOS({
                       className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition ${
                         categoriaActiva === cat.value
                           ? 'border-lime-400 bg-lime-400/10 text-lime-400'
-                          : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                          : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
                       <Icon size={13} /> {cat.label}
@@ -10560,12 +10563,12 @@ function ModuloSmartPOS({
                   "Padel POS Operativo" — Split Bill Asimétrico). No afecta
                   a las canchas (esas se reparten aparte, con su propia
                   cuota) ni bloquea reasignar una línea ya en la comanda. */}
-              <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5">
-                <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Agregando para:</span>
+              <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Agregando para:</span>
                 <button
                   onClick={() => setJugadorActivoParaAgregar(null)}
                   className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-                    jugadorActivoParaAgregar === null ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    jugadorActivoParaAgregar === null ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
                   Sin asignar
@@ -10575,7 +10578,7 @@ function ModuloSmartPOS({
                     key={i}
                     onClick={() => setJugadorActivoParaAgregar(i)}
                     className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-                      jugadorActivoParaAgregar === i ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      jugadorActivoParaAgregar === i ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
                     {j.nombre || `Jugador ${i + 1}`}
@@ -10643,7 +10646,7 @@ function ModuloSmartPOS({
           ) : productos.length === 0 ? (
             <EmptyStateProductos />
           ) : productosFiltrados.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-800 py-12 text-center text-sm text-slate-500">
+              <div className="rounded-2xl border border-dashed border-slate-200 py-12 text-center text-sm text-slate-500">
                 Ningún producto coincide con el filtro.
               </div>
           ) : (
@@ -11901,10 +11904,10 @@ function estatusStockProducto(producto) {
 
 function EstatusStockBadge({ estatus }) {
   if (estatus === 'sin_control') {
-    return <span className="whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-400">Sin stock rígido</span>;
+    return <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">Sin stock rígido</span>;
   }
   if (estatus === 'sin_dato') {
-    return <span className="whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-500">Falta stock mín.</span>;
+    return <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">Falta stock mín.</span>;
   }
   if (estatus === 'bajo') {
     return (
@@ -11982,17 +11985,17 @@ function FilaVarianteInventarioCompleta({
   const sinControlStock = variante.stock == null;
 
   return (
-    <tr className="border-b border-slate-800/50 bg-slate-950/30 last:border-0 hover:bg-slate-800/20">
+    <tr className="border-b border-slate-200/50 bg-slate-50/30 last:border-0 hover:bg-slate-100/20">
       <td className="px-3 py-2">
         <div className="flex items-center gap-2 pl-8">
-          <CornerDownRight size={12} className="shrink-0 text-slate-600" />
-          <span className="max-w-[150px] truncate text-[11px] font-semibold text-slate-300">{variante.nombre}</span>
+          <CornerDownRight size={12} className="shrink-0 text-slate-400" />
+          <span className="max-w-[150px] truncate text-[11px] font-semibold text-slate-600">{variante.nombre}</span>
         </div>
       </td>
-      <td className="whitespace-nowrap px-3 py-2 text-[10px] text-slate-600">Variante</td>
+      <td className="whitespace-nowrap px-3 py-2 text-[10px] text-slate-400">Variante</td>
       <td className="px-3 py-2 text-right">
         {soloLectura ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : (
           <input
             type="number"
@@ -12000,7 +12003,7 @@ function FilaVarianteInventarioCompleta({
             value={precio}
             onChange={(e) => setPrecio(e.target.value)}
             onBlur={() => guardarSiCambio('precio', precio, variante.precio ?? null)}
-            className="w-20 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+            className="w-20 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-lime-400 focus:outline-none"
             placeholder={`$${productoPadre.precio || 0}`}
             title="Vacío = hereda el precio del producto"
           />
@@ -12008,7 +12011,7 @@ function FilaVarianteInventarioCompleta({
       </td>
       <td className="px-3 py-2 text-right">
         {soloLectura ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : (
           <input
             type="number"
@@ -12017,7 +12020,7 @@ function FilaVarianteInventarioCompleta({
             value={costo}
             onChange={(e) => setCosto(e.target.value)}
             onBlur={() => guardarSiCambio('costo_unitario', costo, variante.costo_unitario ?? null)}
-            className="w-20 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+            className="w-20 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-lime-400 focus:outline-none"
             placeholder="—"
             title="Vacío = hereda el costo del producto"
           />
@@ -12025,16 +12028,16 @@ function FilaVarianteInventarioCompleta({
       </td>
       <td className="whitespace-nowrap px-3 py-2 text-right text-[11px] font-bold">
         {soloLectura ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : margen !== null ? (
           <span className={margen < 20 ? 'text-rose-400' : margen < 40 ? 'text-amber-400' : 'text-emerald-400'}>{margen.toFixed(1)}%</span>
         ) : (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         )}
       </td>
       <td className="px-3 py-2 text-right">
         {soloLectura ? (
-          <span className="text-[11px] text-slate-300">{stock || '—'}</span>
+          <span className="text-[11px] text-slate-600">{stock || '—'}</span>
         ) : (
           <input
             type="number"
@@ -12042,7 +12045,7 @@ function FilaVarianteInventarioCompleta({
             value={stock}
             onChange={(e) => setStock(e.target.value)}
             onBlur={() => guardarSiCambio('stock', stock, variante.stock ?? null)}
-            className="w-16 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+            className="w-16 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-lime-400 focus:outline-none"
             placeholder="—"
             title="Vacío = sin control de inventario propio"
           />
@@ -12050,9 +12053,9 @@ function FilaVarianteInventarioCompleta({
       </td>
       <td className="px-3 py-2 text-right">
         {sinControlStock ? (
-          <span className="text-[11px] text-slate-600">—</span>
+          <span className="text-[11px] text-slate-400">—</span>
         ) : soloLectura ? (
-          <span className="text-[11px] text-slate-300">{stockMinimo || '—'}</span>
+          <span className="text-[11px] text-slate-600">{stockMinimo || '—'}</span>
         ) : (
           <input
             type="number"
@@ -12060,20 +12063,20 @@ function FilaVarianteInventarioCompleta({
             value={stockMinimo}
             onChange={(e) => setStockMinimo(e.target.value)}
             onBlur={() => guardarSiCambio('stock_minimo', stockMinimo, variante.stock_minimo ?? null)}
-            className="w-16 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-1 text-right text-[11px] text-slate-100 focus:border-lime-400 focus:outline-none"
+            className="w-16 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-lime-400 focus:outline-none"
             placeholder="—"
           />
         )}
       </td>
       <td className="px-3 py-2 text-right">
         {cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato' ? (
-          <span className="text-[11px] text-slate-600">—</span>
+          <span className="text-[11px] text-slate-400">—</span>
         ) : cobertura.estatus === 'sin_ventas' ? (
           <span className="whitespace-nowrap text-[10px] text-slate-500">Sin ventas (7d/30d)</span>
         ) : (
           <span
             className={`text-[11px] font-bold ${
-              cobertura.estatus === 'reordenar' ? 'text-rose-400' : cobertura.estatus === 'critica' ? 'text-amber-400' : 'text-slate-200'
+              cobertura.estatus === 'reordenar' ? 'text-rose-400' : cobertura.estatus === 'critica' ? 'text-amber-400' : 'text-slate-800'
             }`}
           >
             {cobertura.dias.toFixed(1)} d
@@ -12090,7 +12093,7 @@ function FilaVarianteInventarioCompleta({
             ✓ Cobertura OK
           </span>
         ) : (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2">
@@ -12157,7 +12160,7 @@ function FilaProductoInventario({
 
   return (
     <>
-    <tr className="border-b border-slate-800/70 last:border-0 hover:bg-slate-800/30">
+    <tr className="border-b border-slate-200/70 last:border-0 hover:bg-slate-100/30">
       <td className="px-3 py-2.5">
         <div className="flex items-center gap-2.5">
           <img
@@ -12169,7 +12172,7 @@ function FilaProductoInventario({
             alt={producto.nombre}
             className="h-9 w-9 shrink-0 rounded-lg object-cover"
           />
-          <span className="max-w-[170px] truncate font-bold text-slate-100">{producto.nombre}</span>
+          <span className="max-w-[170px] truncate font-bold text-slate-900">{producto.nombre}</span>
           {tieneVariantes && (
             <button
               type="button"
@@ -12185,12 +12188,12 @@ function FilaProductoInventario({
       <td className="whitespace-nowrap px-3 py-2.5">
         {catMeta && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${catMeta.badge}`}>{catMeta.label}</span>}
       </td>
-      <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-200">
-        {soloLectura || !mostrarDetallePropio ? <span className="text-slate-600">—</span> : formatoMoneda(producto.precio)}
+      <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-800">
+        {soloLectura || !mostrarDetallePropio ? <span className="text-slate-400">—</span> : formatoMoneda(producto.precio)}
       </td>
       <td className="px-3 py-2.5 text-right">
         {soloLectura || !mostrarDetallePropio ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : (
           <input
             type="number"
@@ -12199,38 +12202,38 @@ function FilaProductoInventario({
             value={costo}
             onChange={(e) => setCosto(e.target.value)}
             onBlur={() => guardarSiCambio('costo_unitario', costo, producto.costo_unitario ?? null)}
-            className="w-20 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-right text-xs text-slate-100 focus:border-lime-400 focus:outline-none"
+            className="w-20 rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-right text-xs text-slate-900 focus:border-lime-400 focus:outline-none"
             placeholder="—"
           />
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold">
         {soloLectura || !mostrarDetallePropio ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : margen !== null ? (
           <span className={margen < 20 ? 'text-rose-400' : margen < 40 ? 'text-amber-400' : 'text-emerald-400'}>{margen.toFixed(1)}%</span>
         ) : (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         )}
       </td>
-      <td className="whitespace-nowrap px-3 py-2.5 text-right text-slate-200">
+      <td className="whitespace-nowrap px-3 py-2.5 text-right text-slate-800">
         {tieneVariantes ? (
           // Stock Actual Total: suma en tiempo real de todas las variantes
           // (no el `producto.stock` guardado, aunque en la práctica ya
           // debería coincidir — esto lo garantiza sin depender de que ese
           // campo esté sincronizado).
-          <span className="font-bold text-slate-100">{stockTotalVariantes}</span>
+          <span className="font-bold text-slate-900">{stockTotalVariantes}</span>
         ) : producto.maneja_stock === false ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : (
           Number(producto.stock) || 0
         )}
       </td>
       <td className="px-3 py-2.5 text-right">
         {!mostrarDetallePropio || producto.maneja_stock === false ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : soloLectura ? (
-          <span className="text-slate-300">{stockMinimo || '—'}</span>
+          <span className="text-slate-600">{stockMinimo || '—'}</span>
         ) : (
           <input
             type="number"
@@ -12238,23 +12241,23 @@ function FilaProductoInventario({
             value={stockMinimo}
             onChange={(e) => setStockMinimo(e.target.value)}
             onBlur={() => guardarSiCambio('stock_minimo', stockMinimo, producto.stock_minimo ?? null)}
-            className="w-16 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-right text-xs text-slate-100 focus:border-lime-400 focus:outline-none"
+            className="w-16 rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-right text-xs text-slate-900 focus:border-lime-400 focus:outline-none"
             placeholder="—"
           />
         )}
       </td>
       <td className="px-3 py-2.5 text-right">
         {!mostrarDetallePropio ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : cobertura.estatus === 'sin_control' || cobertura.estatus === 'sin_dato' ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : cobertura.estatus === 'sin_ventas' ? (
           <span className="whitespace-nowrap text-[10px] text-slate-500">Sin ventas (7d/30d)</span>
         ) : (
           <div className="flex flex-col items-end gap-0.5">
             <span
               className={`font-bold ${
-                cobertura.estatus === 'reordenar' ? 'text-rose-400' : cobertura.estatus === 'critica' ? 'text-amber-400' : 'text-slate-200'
+                cobertura.estatus === 'reordenar' ? 'text-rose-400' : cobertura.estatus === 'critica' ? 'text-amber-400' : 'text-slate-800'
               }`}
             >
               {cobertura.dias.toFixed(1)} d
@@ -12265,7 +12268,7 @@ function FilaProductoInventario({
       </td>
       <td className="whitespace-nowrap px-3 py-2.5">
         {!mostrarDetallePropio ? (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         ) : cobertura.estatus === 'reordenar' ? (
           <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300 ring-1 ring-rose-500/40">
             {TEXTO_REORDENAR_YA}
@@ -12275,11 +12278,11 @@ function FilaProductoInventario({
             ✓ Cobertura OK
           </span>
         ) : (
-          <span className="text-slate-600">—</span>
+          <span className="text-slate-400">—</span>
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5">
-        {mostrarDetallePropio ? <EstatusStockBadge estatus={estatus} /> : <span className="text-slate-600">—</span>}
+        {mostrarDetallePropio ? <EstatusStockBadge estatus={estatus} /> : <span className="text-slate-400">—</span>}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5 text-right">
         <div className="flex items-center justify-end gap-1.5">
@@ -12313,10 +12316,10 @@ function TablaCatalogoInventario({
   soloLectura = false,
 }) {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900">
+    <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
       <table className="w-full min-w-[1180px] text-left text-xs">
         <thead>
-          <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+          <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
             <th className="px-3 py-3">Producto</th>
             <th className="px-3 py-3">Categoría</th>
             <th className="px-3 py-3 text-right">{soloLectura ? '—' : 'Precio Venta'}</th>
@@ -12362,7 +12365,7 @@ function TablaKardex({ kardex, productos, loading, error, onReintentar }) {
     return (
       <div className="space-y-2">
         {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="h-11 animate-pulse rounded-xl bg-slate-900" />
+          <div key={i} className="h-11 animate-pulse rounded-xl bg-white" />
         ))}
       </div>
     );
@@ -12372,17 +12375,17 @@ function TablaKardex({ kardex, productos, loading, error, onReintentar }) {
 
   if (kardex.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-800 py-16 text-center text-sm text-slate-500">
+      <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-500">
         Todavía no hay movimientos en el Kardex.
       </div>
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900">
+    <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
       <table className="w-full min-w-[780px] text-left text-xs">
         <thead>
-          <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+          <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
             <th className="px-3 py-3">Fecha/Hora</th>
             <th className="px-3 py-3">Producto</th>
             <th className="px-3 py-3">Tipo</th>
@@ -12397,23 +12400,23 @@ function TablaKardex({ kardex, productos, loading, error, onReintentar }) {
             const meta = KARDEX_TIPO_META[mov.tipo_movimiento] || KARDEX_TIPO_META.ajuste;
             const Icon = meta.icon;
             return (
-              <tr key={mov.id} className="border-b border-slate-800/70 last:border-0 hover:bg-slate-800/30">
-                <td className="whitespace-nowrap px-3 py-2.5 text-slate-400">
+              <tr key={mov.id} className="border-b border-slate-200/70 last:border-0 hover:bg-slate-100/30">
+                <td className="whitespace-nowrap px-3 py-2.5 text-slate-500">
                   {mov.created_at ? new Date(mov.created_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
                 </td>
-                <td className="px-3 py-2.5 font-semibold text-slate-100">{nombrePorProductoId[mov.producto_id] || 'Producto eliminado'}</td>
+                <td className="px-3 py-2.5 font-semibold text-slate-900">{nombrePorProductoId[mov.producto_id] || 'Producto eliminado'}</td>
                 <td className="whitespace-nowrap px-3 py-2.5">
                   <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${meta.badge}`}>
                     <Icon size={10} /> {meta.label}
                   </span>
                 </td>
-                <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-200">
+                <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-800">
                   {meta.signo}
                   {Number(mov.cantidad) || 0}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2.5 text-right text-slate-500">{mov.stock_anterior ?? '—'}</td>
-                <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-200">{mov.stock_nuevo ?? '—'}</td>
-                <td className="px-3 py-2.5 text-slate-400">
+                <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-800">{mov.stock_nuevo ?? '—'}</td>
+                <td className="px-3 py-2.5 text-slate-500">
                   {mov.motivo || '—'}
                   {mov.operador ? ` · ${mov.operador}` : ''}
                 </td>
@@ -12460,7 +12463,7 @@ function SelectorFechaCompacto({ value, onChange, tamano = 'compacto' }) {
   return (
     <div
       onClick={abrirCalendario}
-      className={`flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950 transition hover:border-lime-400/60 ${
+      className={`flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-slate-50 transition hover:border-lime-400/60 ${
         // `min-w-[160px]` en vez de `w-full`: este chip vive tanto dentro de
         // un grid de formulario (Egresos, columna ya con ancho propio) como
         // dentro de una barra de filtros flex sin ancho fijo (P&L) — un
@@ -12476,7 +12479,7 @@ function SelectorFechaCompacto({ value, onChange, tamano = 'compacto' }) {
         type="date"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className={`cursor-pointer bg-transparent text-slate-300 outline-none ${amplio ? 'w-[120px] text-xs' : 'w-[86px] text-[10px]'}`}
+        className={`cursor-pointer bg-transparent text-slate-600 outline-none ${amplio ? 'w-[120px] text-xs' : 'w-[86px] text-[10px]'}`}
       />
     </div>
   );
@@ -12500,9 +12503,9 @@ function ModalAlertasReordenDesglose({ items, onClose }) {
       ) : (
         <div className="max-h-96 space-y-1.5 overflow-y-auto pr-1">
           {items.map((it, i) => (
-            <div key={i} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
+            <div key={i} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
               <div className="min-w-0">
-                <p className="truncate text-xs font-bold text-slate-100">{it.nombre}</p>
+                <p className="truncate text-xs font-bold text-slate-900">{it.nombre}</p>
                 <p className="text-[10px] text-slate-500">{etiquetaCategoriaProducto(it.categoria) || 'Sin categoría'}</p>
               </div>
               <span className="shrink-0 rounded-full bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold text-rose-300 ring-1 ring-rose-500/40">
@@ -12834,32 +12837,32 @@ function ModuloERPInventario({
           tono={kpis.alertasReorden > 0 ? 'rose' : 'lime'}
           onClick={kpis.alertasReorden > 0 ? () => setModalAlertasReorden(true) : undefined}
         />
-        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ventas del Día</span>
             <SelectorFechaCompacto value={fechaVentasDia} onChange={setFechaVentasDia} />
           </div>
           {soloLectura ? (
-            <p className="mt-2 text-2xl font-black text-slate-100">{ventasDia.unidades} u.</p>
+            <p className="mt-2 text-2xl font-black text-slate-900">{ventasDia.unidades} u.</p>
           ) : (
             <>
-              <p className="mt-2 text-2xl font-black text-slate-100">{formatoMoneda(ventasDia.monto)}</p>
+              <p className="mt-2 text-2xl font-black text-slate-900">{formatoMoneda(ventasDia.monto)}</p>
               <p className="mt-0.5 text-[11px] text-slate-500">{ventasDia.unidades} unidades vendidas</p>
             </>
           )}
         </div>
-        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ventas del Mes</span>
             <SelectorFechaCompacto value={fechaVentasMes} onChange={setFechaVentasMes} />
           </div>
           {soloLectura ? (
-            <p className="mt-2 text-2xl font-black text-slate-100">
+            <p className="mt-2 text-2xl font-black text-slate-900">
               {ventasMes.unidades} u. <span className="text-xs font-semibold text-slate-500">· {etiquetaMesDeFecha(fechaVentasMes)}</span>
             </p>
           ) : (
             <>
-              <p className="mt-2 text-2xl font-black text-slate-100">{formatoMoneda(ventasMes.monto)}</p>
+              <p className="mt-2 text-2xl font-black text-slate-900">{formatoMoneda(ventasMes.monto)}</p>
               <p className="mt-0.5 text-[11px] text-slate-500">{ventasMes.unidades} unidades vendidas · {etiquetaMesDeFecha(fechaVentasMes)}</p>
             </>
           )}
@@ -12878,11 +12881,11 @@ function ModuloERPInventario({
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+          <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
             <button
               onClick={() => setVista('catalogo')}
               className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                vista === 'catalogo' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                vista === 'catalogo' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Package size={14} /> Catálogo
@@ -12890,7 +12893,7 @@ function ModuloERPInventario({
             <button
               onClick={() => setVista('kardex')}
               className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                vista === 'kardex' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                vista === 'kardex' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <History size={14} /> Kardex
@@ -12927,7 +12930,7 @@ function ModuloERPInventario({
         ) : productos.length === 0 ? (
           <EmptyStateProductos />
         ) : productosFiltrados.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-800 py-16 text-center text-sm text-slate-500">
+          <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-500">
             Ningún producto coincide con el filtro.
           </div>
         ) : (
@@ -13067,7 +13070,7 @@ function minutosSolapadosBI(iniA, finA, iniB, finB) {
 }
 
 function colorCeldaOcupacion(pct) {
-  if (pct <= 0) return 'bg-slate-800/60 text-slate-600';
+  if (pct <= 0) return 'bg-slate-100/60 text-slate-400';
   if (pct < 34) return 'bg-emerald-400/70 text-emerald-950';
   if (pct < 67) return 'bg-amber-400/80 text-amber-950';
   return 'bg-rose-500/85 text-rose-50';
@@ -13080,13 +13083,13 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
   const aniosDisponibles = Array.from({ length: 6 }, (_, i) => anioActual - i);
 
   return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-3.5 lg:flex-row lg:items-center lg:justify-between">
+    <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 lg:flex-row lg:items-center lg:justify-between">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+        <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
           <button
             onClick={() => onModo('dia')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              modo === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              modo === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <CalendarDays size={14} /> Día
@@ -13094,7 +13097,7 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
           <button
             onClick={() => onModo('mes')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              modo === 'mes' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              modo === 'mes' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <CalendarIcon size={14} /> Mes
@@ -13102,7 +13105,7 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
           <button
             onClick={() => onModo('anio')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              modo === 'anio' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              modo === 'anio' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <CalendarRange size={14} /> Año
@@ -13142,8 +13145,8 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
       </div>
 
       <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-        <p className="text-xs font-semibold text-slate-400">
-          Mostrando: <span className="text-slate-100">{etiqueta}</span>
+        <p className="text-xs font-semibold text-slate-500">
+          Mostrando: <span className="text-slate-900">{etiqueta}</span>
         </p>
         <BotonSecundario onClick={onExportar} className="whitespace-nowrap">
           <Download size={15} /> Exportar Reporte
@@ -13159,12 +13162,12 @@ function HeatmapOcupacion({ modo, filas, celdas }) {
   const etiquetasFila = modo === 'dia' ? ['Hoy'] : ORDEN_SEMANA_BI.map((d) => ETIQUETA_DIA_SEMANA[d]);
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
           <Flame size={16} className="text-amber-400" /> Mapa de Calor — Ocupación por Horario
         </h3>
-        <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-400">
+        <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-500">
           <span className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/70" /> Baja
           </span>
@@ -13187,7 +13190,7 @@ function HeatmapOcupacion({ modo, filas, celdas }) {
             ))}
             {filas.map((_, filaIdx) => (
               <React.Fragment key={filaIdx}>
-                <div className="flex items-center pr-2 text-[11px] font-bold text-slate-400">{etiquetasFila[filaIdx]}</div>
+                <div className="flex items-center pr-2 text-[11px] font-bold text-slate-500">{etiquetasFila[filaIdx]}</div>
                 {celdas[filaIdx].map((pct, colIdx) => (
                   <div key={colIdx} className="p-0.5">
                     <div
@@ -13210,18 +13213,18 @@ function HeatmapOcupacion({ modo, filas, celdas }) {
 /* ---------------- Rentabilidad por Categoría ---------------- */
 
 function RentabilidadPorCategoria({ filas, cargando }) {
-  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-slate-900" />;
+  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-      <h3 className="mb-4 flex items-center gap-1.5 text-sm font-black text-slate-100">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      <h3 className="mb-4 flex items-center gap-1.5 text-sm font-black text-slate-900">
         <Percent size={16} className="text-lime-400" /> Rentabilidad por Categoría
       </h3>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-800">
+      <div className="overflow-x-auto rounded-xl border border-slate-200">
         <table className="w-full min-w-[480px] text-left text-xs">
           <thead>
-            <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
               <th className="px-3 py-2.5">Categoría</th>
               <th className="px-3 py-2.5 text-right">Ingreso Bruto</th>
               <th className="px-3 py-2.5 text-right">Costo Total</th>
@@ -13240,17 +13243,17 @@ function RentabilidadPorCategoria({ filas, cargando }) {
               // (con egresos operativos) vive en Contabilidad & Compras.
               const tipoMargen = f.categoria === 'Canchas' ? 'Margen de Contribución' : 'Margen Bruto';
               return (
-                <tr key={f.categoria} className="border-b border-slate-800/70 last:border-0">
-                  <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-200'}`}>
+                <tr key={f.categoria} className="border-b border-slate-200/70 last:border-0">
+                  <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-800'}`}>
                     {etiquetaCategoriaProducto(f.categoria)}
                     <span className="ml-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">({tipoMargen})</span>
                   </td>
-                  <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingreso)}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-400">{formatoMoneda(f.costo)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingreso)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-500">{formatoMoneda(f.costo)}</td>
                   <td className={`px-3 py-2.5 text-right font-bold ${f.utilidad >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {formatoMoneda(f.utilidad)}
                   </td>
-                  <td className="px-3 py-2.5 text-right text-slate-300">{f.margen !== null ? `${f.margen.toFixed(1)}%` : '—'}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{f.margen !== null ? `${f.margen.toFixed(1)}%` : '—'}</td>
                 </tr>
               );
             })}
@@ -13264,10 +13267,10 @@ function RentabilidadPorCategoria({ filas, cargando }) {
 /* ---------------- Top 5 Productos Más Vendidos ---------------- */
 
 function TopProductosTabla({ filas, cargando }) {
-  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-slate-900" />;
+  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
       {/* `filas` (`analisis.topProductos`, en `ModuloAnalyticsBI`) ya suma
           unidades/ingreso de CUALQUIER venta pagada en `ventas.detalles.
           items` sin distinguir canal — un producto comprado tanto en Smart
@@ -13276,19 +13279,19 @@ function TopProductosTabla({ filas, cargando }) {
           subtítulo de abajo es solo para que quede explícito en la UI —
           antes no había ninguna aclaración visible de que la Tienda en
           Línea sí cuenta aquí. */}
-      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-100">
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-900">
         <Trophy size={16} className="text-amber-400" /> Top 5 Productos Más Vendidos
       </h3>
       <p className="mb-3 text-[11px] text-slate-500">Incluye ventas de mostrador (Smart POS) y de la Tienda en Línea del Portal.</p>
       {filas.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
+        <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
           Sin ventas de productos en este rango.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
           <table className="w-full min-w-[520px] text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 <th className="px-3 py-2.5">Producto</th>
                 <th className="px-3 py-2.5">Categoría</th>
                 <th className="px-3 py-2.5 text-right">Unidades</th>
@@ -13300,7 +13303,7 @@ function TopProductosTabla({ filas, cargando }) {
               {filas.map((f) => {
                 const catMeta = CATEGORIA_META[f.categoria];
                 return (
-                  <tr key={f.varianteId || f.productoId} className="border-b border-slate-800/70 last:border-0">
+                  <tr key={f.varianteId || f.productoId} className="border-b border-slate-200/70 last:border-0">
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2.5">
                         <img
@@ -13308,7 +13311,7 @@ function TopProductosTabla({ filas, cargando }) {
                           alt=""
                           className="h-8 w-8 shrink-0 rounded-lg object-cover"
                         />
-                        <span className="font-bold text-slate-100">{f.nombre}</span>
+                        <span className="font-bold text-slate-900">{f.nombre}</span>
                       </div>
                     </td>
                     <td className="px-3 py-2.5">
@@ -13320,8 +13323,8 @@ function TopProductosTabla({ filas, cargando }) {
                         <span className="text-slate-500">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2.5 text-right font-bold text-slate-200">{f.unidades}</td>
-                    <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingreso)}</td>
+                    <td className="px-3 py-2.5 text-right font-bold text-slate-800">{f.unidades}</td>
+                    <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingreso)}</td>
                     <td className={`px-3 py-2.5 text-right font-bold ${f.ganancia >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {formatoMoneda(f.ganancia)}
                     </td>
@@ -13339,22 +13342,22 @@ function TopProductosTabla({ filas, cargando }) {
 /* ---------------- Ingresos Cruzados por Bloque Horario ---------------- */
 
 function IngresosCruzadosTabla({ filas, cargando }) {
-  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-slate-900" />;
+  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-900">
         <Clock size={16} className="text-lime-400" /> Ingresos Cruzados por Cancha y Bloque Horario
       </h3>
       {filas.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
+        <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
           No hay canchas activas para mostrar.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
           <table className="w-full min-w-[760px] text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 <th className="px-3 py-2.5">Cancha</th>
                 <th className="px-3 py-2.5">Bloque</th>
                 <th className="px-3 py-2.5 text-right">Ingreso Cancha</th>
@@ -13365,15 +13368,15 @@ function IngresosCruzadosTabla({ filas, cargando }) {
             </thead>
             <tbody>
               {filas.map((f) => (
-                <tr key={`${f.cancha.id}-${f.bloque.key}`} className="border-b border-slate-800/70 last:border-0 align-top">
-                  <td className="px-3 py-2.5 font-bold text-slate-100">{f.cancha.nombre}</td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-slate-300">
+                <tr key={`${f.cancha.id}-${f.bloque.key}`} className="border-b border-slate-200/70 last:border-0 align-top">
+                  <td className="px-3 py-2.5 font-bold text-slate-900">{f.cancha.nombre}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-slate-600">
                     {f.bloque.label} <span className="text-slate-500">({f.bloque.rango})</span>
                   </td>
-                  <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingresoCancha)}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingresoCafeteria)}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-200">{formatoMoneda(f.ingresoProShop)}</td>
-                  <td className="px-3 py-2.5 text-slate-300">
+                  <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingresoCancha)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingresoCafeteria)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingresoProShop)}</td>
+                  <td className="px-3 py-2.5 text-slate-600">
                     {/* DESGLOSE COMPLETO: ya no se colapsa a un solo "más
                         vendido" — cada producto/variante del bloque aparece
                         con sus propias unidades e ingreso, para que un
@@ -13385,12 +13388,12 @@ function IngresosCruzadosTabla({ filas, cargando }) {
                             <span className="truncate">
                               {p.nombre} <span className="text-slate-500">× {p.unidades}</span>
                             </span>
-                            <span className="shrink-0 text-slate-400">{formatoMoneda(p.ingreso)}</span>
+                            <span className="shrink-0 text-slate-500">{formatoMoneda(p.ingreso)}</span>
                           </li>
                         ))}
                       </ul>
                     ) : (
-                      <span className="text-slate-600">—</span>
+                      <span className="text-slate-400">—</span>
                     )}
                   </td>
                 </tr>
@@ -13407,7 +13410,7 @@ function IngresosCruzadosTabla({ filas, cargando }) {
 
 function RendimientoPorCanchaTabla({ filas }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
       {/* Rentabilidad por Cancha Unificada: `f.ingresos` (desde
           `rendimientoPorCancha`, en `ModuloAnalyticsBI`) ya suma Reservas
           normales + Clases de Academia + Torneos + Retas — estas 3 últimas
@@ -13415,19 +13418,19 @@ function RendimientoPorCanchaTabla({ filas }) {
           `imputacionEventosCancha`), nunca por el dinero de inscripciones/
           mensualidad. El subtítulo deja explícito en la UI qué cubre la
           cifra. */}
-      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-100">
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-900">
         <MapPin size={16} className="text-sky-400" /> Rendimiento por Cancha
       </h3>
       <p className="mb-3 text-[11px] text-slate-500">Ingresos unificados: Reservas + Clases + Torneos + Retas.</p>
       {filas.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
+        <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
           No hay canchas activas para mostrar.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
           <table className="w-full min-w-[820px] text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 <th className="px-3 py-2.5">Cancha</th>
                 <th className="px-3 py-2.5 text-right">Horas Reservadas</th>
                 <th className="px-3 py-2.5 text-right">Ocupación</th>
@@ -13436,9 +13439,9 @@ function RendimientoPorCanchaTabla({ filas }) {
             </thead>
             <tbody>
               {filas.map((f) => (
-                <tr key={f.cancha.id} className="border-b border-slate-800/70 last:border-0">
-                  <td className="px-3 py-2.5 font-bold text-slate-100">{f.cancha.nombre}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-200">{f.horas.toFixed(1)} h</td>
+                <tr key={f.cancha.id} className="border-b border-slate-200/70 last:border-0">
+                  <td className="px-3 py-2.5 font-bold text-slate-900">{f.cancha.nombre}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-800">{f.horas.toFixed(1)} h</td>
                   <td className="px-3 py-2.5 text-right">
                     <span
                       className={`font-bold ${
@@ -13448,7 +13451,7 @@ function RendimientoPorCanchaTabla({ filas }) {
                       {f.ocupacion.toFixed(0)}%
                     </span>
                   </td>
-                  <td className="px-3 py-2.5 text-right font-bold text-slate-200">{formatoMoneda(f.ingresos)}</td>
+                  <td className="px-3 py-2.5 text-right font-bold text-slate-800">{formatoMoneda(f.ingresos)}</td>
                 </tr>
               ))}
             </tbody>
@@ -13776,7 +13779,7 @@ function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
       {filas.length === 0 ? (
         <p className="py-8 text-center text-xs text-slate-500">Sin movimientos en este periodo.</p>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
           <table className="w-full min-w-[620px] table-fixed text-left text-xs">
             <colgroup>
               <col className="w-20" />
@@ -13787,7 +13790,7 @@ function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
               <col className="w-28" />
             </colgroup>
             <thead>
-              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 <th className="px-3 py-2.5">ID</th>
                 <th className="px-3 py-2.5">Hora</th>
                 <th className="px-3 py-2.5">Concepto</th>
@@ -13798,19 +13801,19 @@ function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
             </thead>
             <tbody>
               {filas.map((f, idx) => (
-                <tr key={`${f.id ?? idx}-${idx}`} className="border-b border-slate-800/70 last:border-0">
+                <tr key={`${f.id ?? idx}-${idx}`} className="border-b border-slate-200/70 last:border-0">
                   <td className="px-3 py-2.5 font-mono text-slate-500">{f.idCorto}</td>
-                  <td className="px-3 py-2.5 text-slate-400">{f.hora}</td>
-                  <td className="whitespace-normal break-words px-3 py-2.5 font-semibold text-slate-200">{f.concepto}</td>
-                  <td className="px-3 py-2.5 text-slate-400">{f.canal}</td>
-                  <td className="px-3 py-2.5 text-slate-400">{f.metodoPago || '—'}</td>
-                  <td className="px-3 py-2.5 text-right font-bold text-slate-100">{formatoMoneda(f.monto)}</td>
+                  <td className="px-3 py-2.5 text-slate-500">{f.hora}</td>
+                  <td className="whitespace-normal break-words px-3 py-2.5 font-semibold text-slate-800">{f.concepto}</td>
+                  <td className="px-3 py-2.5 text-slate-500">{f.canal}</td>
+                  <td className="px-3 py-2.5 text-slate-500">{f.metodoPago || '—'}</td>
+                  <td className="px-3 py-2.5 text-right font-bold text-slate-900">{formatoMoneda(f.monto)}</td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={5} className="px-3 py-2.5 text-right text-xs font-bold uppercase tracking-wide text-slate-400">
+                <td colSpan={5} className="px-3 py-2.5 text-right text-xs font-bold uppercase tracking-wide text-slate-500">
                   Total ({filas.length} {filas.length === 1 ? 'movimiento' : 'movimientos'})
                 </td>
                 <td className="px-3 py-2.5 text-right text-sm font-black text-lime-400">{formatoMoneda(total)}</td>
@@ -15068,11 +15071,11 @@ function ModuloContabilidadCompras({
 
   return (
     <div className="space-y-5">
-      <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1 lg:w-fit">
+      <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1 lg:w-fit">
         <button
           onClick={() => setVista('egresos')}
           className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
-            vista === 'egresos' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            vista === 'egresos' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
           <Receipt size={14} /> Egresos & Compras
@@ -15080,7 +15083,7 @@ function ModuloContabilidadCompras({
         <button
           onClick={() => setVista('proveedores')}
           className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
-            vista === 'proveedores' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            vista === 'proveedores' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
           <Truck size={14} /> Proveedores
@@ -15088,7 +15091,7 @@ function ModuloContabilidadCompras({
         <button
           onClick={() => setVista('pnl')}
           className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
-            vista === 'pnl' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+            vista === 'pnl' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
           <Landmark size={14} /> P&L / Estado de Resultados
@@ -15098,8 +15101,8 @@ function ModuloContabilidadCompras({
       {vista === 'egresos' && (
         <div className="space-y-5">
           {!tablaEgresosExiste && <BannerTablaFaltante tabla="compras_gastos" />}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-900">
               <PackagePlus size={16} className="text-lime-400" /> Registrar Compra / Gasto
             </h3>
             {/* Limpieza de Layout: en "+ Crear Nuevo Producto desde Compra" esta
@@ -15181,13 +15184,13 @@ function ModuloContabilidadCompras({
             )}
 
             {esCategoriaInventario && (
-              <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
-                <div className="mb-3 inline-flex rounded-lg bg-slate-800 p-1 text-xs font-bold">
+              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+                <div className="mb-3 inline-flex rounded-lg bg-slate-100 p-1 text-xs font-bold">
                   <button
                     type="button"
                     onClick={() => setFormEgreso((f) => ({ ...f, modoCompra: 'gasto' }))}
                     className={`rounded-md px-3 py-1.5 transition ${
-                      formEgreso.modoCompra === 'gasto' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                      formEgreso.modoCompra === 'gasto' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     Gasto General / Servicio
@@ -15196,7 +15199,7 @@ function ModuloContabilidadCompras({
                     type="button"
                     onClick={() => setFormEgreso((f) => ({ ...f, modoCompra: 'producto' }))}
                     className={`rounded-md px-3 py-1.5 transition ${
-                      formEgreso.modoCompra === 'producto' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                      formEgreso.modoCompra === 'producto' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     Compra de Producto / Stock
@@ -15205,12 +15208,12 @@ function ModuloContabilidadCompras({
 
                 {esModoCompraProducto && (
                   <div className="space-y-3">
-                    <div className="inline-flex rounded-lg bg-slate-800/70 p-1 text-[11px] font-bold">
+                    <div className="inline-flex rounded-lg bg-slate-100/70 p-1 text-[11px] font-bold">
                       <button
                         type="button"
                         onClick={() => setFormEgreso((f) => ({ ...f, subModoProducto: 'existente' }))}
                         className={`rounded-md px-2.5 py-1 transition ${
-                          formEgreso.subModoProducto === 'existente' ? 'bg-slate-100 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                          formEgreso.subModoProducto === 'existente' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
                         }`}
                       >
                         Sumar a producto existente
@@ -15219,7 +15222,7 @@ function ModuloContabilidadCompras({
                         type="button"
                         onClick={() => setFormEgreso((f) => ({ ...f, subModoProducto: 'nuevo' }))}
                         className={`rounded-md px-2.5 py-1 transition ${
-                          formEgreso.subModoProducto === 'nuevo' ? 'bg-slate-100 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                          formEgreso.subModoProducto === 'nuevo' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
                         }`}
                       >
                         + Crear Nuevo Producto desde Compra
@@ -15366,12 +15369,12 @@ function ModuloContabilidadCompras({
                           </div>
                         ) : (
                           <div className="sm:col-span-2 lg:col-span-4">
-                            <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                            <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
                               <input
                                 type="checkbox"
                                 checked={formEgreso.actualizarCostoCatalogo}
                                 onChange={(e) => setFormEgreso((f) => ({ ...f, actualizarCostoCatalogo: e.target.checked }))}
-                                className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 accent-lime-400"
+                                className="h-3.5 w-3.5 rounded border-slate-400 bg-slate-100 accent-lime-400"
                               />
                               Actualizar costo unitario en el catálogo de productos
                             </label>
@@ -15379,7 +15382,7 @@ function ModuloContabilidadCompras({
                         )}
                       </div>
                     ) : (
-                      <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                      <div className="space-y-3 rounded-lg border border-slate-200 bg-white/60 p-3">
                         {/* Limpieza de Layout: Fecha/Proveedor/Método de Pago/Monto
                             Total viven AQUÍ (con la barra general de arriba oculta)
                             en vez de duplicarse en dos lugares de la pantalla. El
@@ -15579,15 +15582,15 @@ function ModuloContabilidadCompras({
                     )}
 
                     <div>
-                      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
                         Estatus de Recepción
                       </span>
-                      <div className="inline-flex rounded-lg bg-slate-800 p-1 text-xs font-bold">
+                      <div className="inline-flex rounded-lg bg-slate-100 p-1 text-xs font-bold">
                         <button
                           type="button"
                           onClick={() => setFormEgreso((f) => ({ ...f, estatusRecepcion: 'pendiente' }))}
                           className={`rounded-md px-3 py-1.5 transition ${
-                            formEgreso.estatusRecepcion === 'pendiente' ? 'bg-amber-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                            formEgreso.estatusRecepcion === 'pendiente' ? 'bg-amber-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                           }`}
                         >
                           🟡 Pendiente de Recepción
@@ -15596,7 +15599,7 @@ function ModuloContabilidadCompras({
                           type="button"
                           onClick={() => setFormEgreso((f) => ({ ...f, estatusRecepcion: 'recibido' }))}
                           className={`rounded-md px-3 py-1.5 transition ${
-                            formEgreso.estatusRecepcion === 'recibido' ? 'bg-emerald-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                            formEgreso.estatusRecepcion === 'recibido' ? 'bg-emerald-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                           }`}
                         >
                           🟢 Recibido en Club
@@ -15648,9 +15651,9 @@ function ModuloContabilidadCompras({
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
                 <History size={16} className="text-lime-400" /> Historial de Compras & Gastos
               </h3>
               <BotonSecundario onClick={exportarEgresosCSV} disabled={egresos.length === 0} className="text-xs">
@@ -15658,7 +15661,7 @@ function ModuloContabilidadCompras({
               </BotonSecundario>
             </div>
             {loadingEgresos ? (
-              <div className="h-40 animate-pulse rounded-xl bg-slate-800/60" />
+              <div className="h-40 animate-pulse rounded-xl bg-slate-100/60" />
             ) : errorEgresos ? (
               <ErrorBanner mensaje={errorEgresos} onReintentar={() => cargarEgresos()} />
             ) : egresos.length === 0 ? (
@@ -15666,10 +15669,10 @@ function ModuloContabilidadCompras({
                 {tablaEgresosExiste ? 'Todavía no hay compras o gastos registrados.' : 'Activa la tabla para ver el historial aquí.'}
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
                 <table className="w-full min-w-[640px] text-left text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       <th className="px-3 py-2.5">Fecha</th>
                       <th className="px-3 py-2.5">Concepto</th>
                       <th className="px-3 py-2.5">Categoría</th>
@@ -15681,11 +15684,11 @@ function ModuloContabilidadCompras({
                   </thead>
                   <tbody>
                     {egresos.map((g) => (
-                      <tr key={g.id} className="border-b border-slate-800/70 last:border-0">
-                        <td className="px-3 py-2.5 text-slate-400">{formatoFechaLarga(g.fecha)}</td>
-                        <td className="px-3 py-2.5 font-semibold text-slate-200">{g.concepto}</td>
-                        <td className="px-3 py-2.5 text-slate-400">{g.categoria || '—'}</td>
-                        <td className="px-3 py-2.5 text-slate-400">{g.proveedor_nombre || '—'}</td>
+                      <tr key={g.id} className="border-b border-slate-200/70 last:border-0">
+                        <td className="px-3 py-2.5 text-slate-500">{formatoFechaLarga(g.fecha)}</td>
+                        <td className="px-3 py-2.5 font-semibold text-slate-800">{g.concepto}</td>
+                        <td className="px-3 py-2.5 text-slate-500">{g.categoria || '—'}</td>
+                        <td className="px-3 py-2.5 text-slate-500">{g.proveedor_nombre || '—'}</td>
                         <td className="px-3 py-2.5 text-slate-500">{g.operador || '—'}</td>
                         <td className="px-3 py-2.5">
                           {g.estatus_recepcion === 'pendiente' ? (
@@ -15712,7 +15715,7 @@ function ModuloContabilidadCompras({
                               🟢 Recibido
                             </span>
                           ) : (
-                            <span className="text-slate-600">—</span>
+                            <span className="text-slate-400">—</span>
                           )}
                         </td>
                         <td className="px-3 py-2.5 text-right font-bold text-rose-400">{formatoMoneda(Number(g.monto) || 0)}</td>
@@ -15729,8 +15732,8 @@ function ModuloContabilidadCompras({
       {vista === 'proveedores' && (
         <div className="space-y-5">
           {!tablaProveedoresExiste && <BannerTablaFaltante tabla="proveedores" />}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-900">
               <UserPlus size={16} className="text-lime-400" /> Alta de Proveedor
             </h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
@@ -15794,12 +15797,12 @@ function ModuloContabilidadCompras({
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-900">
               <Truck size={16} className="text-lime-400" /> Catálogo de Proveedores
             </h3>
             {loadingProveedores ? (
-              <div className="h-40 animate-pulse rounded-xl bg-slate-800/60" />
+              <div className="h-40 animate-pulse rounded-xl bg-slate-100/60" />
             ) : errorProveedores ? (
               <ErrorBanner mensaje={errorProveedores} onReintentar={() => cargarProveedores()} />
             ) : proveedores.length === 0 ? (
@@ -15807,10 +15810,10 @@ function ModuloContabilidadCompras({
                 {tablaProveedoresExiste ? 'Todavía no hay proveedores registrados.' : 'Activa la tabla para ver el catálogo aquí.'}
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
                 <table className="w-full min-w-[640px] text-left text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       <th className="px-3 py-2.5">Nombre</th>
                       <th className="px-3 py-2.5">Categoría</th>
                       <th className="px-3 py-2.5">Contacto</th>
@@ -15820,12 +15823,12 @@ function ModuloContabilidadCompras({
                   </thead>
                   <tbody>
                     {proveedores.map((p) => (
-                      <tr key={p.id} className="border-b border-slate-800/70 last:border-0">
-                        <td className="px-3 py-2.5 font-semibold text-slate-200">{p.nombre}</td>
-                        <td className="px-3 py-2.5 text-slate-400">{p.categoria || '—'}</td>
-                        <td className="px-3 py-2.5 text-slate-400">{p.contacto_nombre || '—'}</td>
-                        <td className="px-3 py-2.5 text-slate-400">{p.telefono || '—'}</td>
-                        <td className="px-3 py-2.5 text-slate-400">{p.email || '—'}</td>
+                      <tr key={p.id} className="border-b border-slate-200/70 last:border-0">
+                        <td className="px-3 py-2.5 font-semibold text-slate-800">{p.nombre}</td>
+                        <td className="px-3 py-2.5 text-slate-500">{p.categoria || '—'}</td>
+                        <td className="px-3 py-2.5 text-slate-500">{p.contacto_nombre || '—'}</td>
+                        <td className="px-3 py-2.5 text-slate-500">{p.telefono || '—'}</td>
+                        <td className="px-3 py-2.5 text-slate-500">{p.email || '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -15848,13 +15851,13 @@ function ModuloContabilidadCompras({
             </div>
           )}
 
-          <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-3.5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+              <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
                 <button
                   onClick={() => setModoFiltroPnl('dia')}
                   className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                    modoFiltroPnl === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                    modoFiltroPnl === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <CalendarDays size={14} /> Día
@@ -15862,7 +15865,7 @@ function ModuloContabilidadCompras({
                 <button
                   onClick={() => setModoFiltroPnl('mes')}
                   className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                    modoFiltroPnl === 'mes' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                    modoFiltroPnl === 'mes' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <CalendarIcon size={14} /> Mes
@@ -15870,7 +15873,7 @@ function ModuloContabilidadCompras({
                 <button
                   onClick={() => setModoFiltroPnl('anio')}
                   className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                    modoFiltroPnl === 'anio' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                    modoFiltroPnl === 'anio' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <CalendarRange size={14} /> Año
@@ -15906,8 +15909,8 @@ function ModuloContabilidadCompras({
               )}
             </div>
             <div className="flex items-center gap-3">
-              <p className="text-xs font-semibold text-slate-400">
-                Mostrando: <span className="text-slate-100">{rangoPnl.etiqueta}</span>
+              <p className="text-xs font-semibold text-slate-500">
+                Mostrando: <span className="text-slate-900">{rangoPnl.etiqueta}</span>
               </p>
               <BotonSecundario onClick={exportarPnlCSV} className="text-xs">
                 <Download size={14} /> Exportar Reporte (.CSV)
@@ -15915,7 +15918,7 @@ function ModuloContabilidadCompras({
             </div>
           </div>
 
-          {(loadingVentasPnl || loadingEgresos) && <div className="h-24 animate-pulse rounded-2xl bg-slate-900" />}
+          {(loadingVentasPnl || loadingEgresos) && <div className="h-24 animate-pulse rounded-2xl bg-white" />}
           {errorVentasPnl && <ErrorBanner mensaje={errorVentasPnl} onReintentar={() => cargarVentasRangoPnl()} />}
 
           <div>
@@ -16003,17 +16006,17 @@ function ModuloContabilidadCompras({
             />
           )}
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-900">
               <Receipt size={16} className="text-lime-400" /> Egresos por Categoría
             </h3>
             {Object.keys(pnl.egresosPorCategoria).length === 0 ? (
               <p className="py-6 text-center text-xs text-slate-500">Sin egresos registrados en este periodo.</p>
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
                 <table className="w-full min-w-[380px] text-left text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       <th className="px-3 py-2.5">Categoría</th>
                       <th className="px-3 py-2.5 text-right">Monto</th>
                       <th className="px-3 py-2.5 text-right">% del Total</th>
@@ -16023,10 +16026,10 @@ function ModuloContabilidadCompras({
                     {Object.entries(pnl.egresosPorCategoria)
                       .sort((a, b) => b[1] - a[1])
                       .map(([categoria, monto]) => (
-                        <tr key={categoria} className="border-b border-slate-800/70 last:border-0">
-                          <td className="px-3 py-2.5 font-semibold text-slate-200">{categoria}</td>
+                        <tr key={categoria} className="border-b border-slate-200/70 last:border-0">
+                          <td className="px-3 py-2.5 font-semibold text-slate-800">{categoria}</td>
                           <td className="px-3 py-2.5 text-right text-rose-400">{formatoMoneda(monto)}</td>
-                          <td className="px-3 py-2.5 text-right text-slate-400">
+                          <td className="px-3 py-2.5 text-right text-slate-500">
                             {pnl.egresosTotales > 0 ? `${((monto / pnl.egresosTotales) * 100).toFixed(1)}%` : '—'}
                           </td>
                         </tr>
@@ -17564,7 +17567,7 @@ function segmentoPorLTV(ltvTotal) {
 const SEGMENTO_META = {
   VIP: { color: 'text-amber-300', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30', icon: Crown },
   Frecuente: { color: 'text-sky-300', bg: 'bg-sky-400/10', ring: 'ring-sky-400/30', icon: Star },
-  Estándar: { color: 'text-slate-300', bg: 'bg-slate-400/10', ring: 'ring-slate-500/30', icon: Users },
+  Estándar: { color: 'text-slate-600', bg: 'bg-slate-400/10', ring: 'ring-slate-400/30', icon: Users },
 };
 
 // Semáforo compartido por los 5 indicadores del Nivel de Fidelidad (Score).
@@ -18305,7 +18308,7 @@ function SelectorFechaClick({ value, onChange, className = '', compact = false }
   return (
     <div
       onClick={abrirCalendario}
-      className={`flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 transition hover:border-lime-400/60 ${className}`}
+      className={`flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 transition hover:border-lime-400/60 ${className}`}
     >
       <CalendarDays size={compact ? 12 : 14} className="shrink-0 text-slate-500" />
       <input
@@ -18313,7 +18316,7 @@ function SelectorFechaClick({ value, onChange, className = '', compact = false }
         type="date"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className={`w-full cursor-pointer bg-transparent text-slate-100 outline-none ${compact ? 'text-xs' : 'text-sm'}`}
+        className={`w-full cursor-pointer bg-transparent text-slate-900 outline-none ${compact ? 'text-xs' : 'text-sm'}`}
       />
     </div>
   );
@@ -18359,7 +18362,7 @@ function SelectorJugadorRegistrado({ jugadores = [], nombre, onNombreChange, onS
         )}
       </div>
       {abierto && sugerencias.length > 0 && (
-        <div className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-xl">
+        <div className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-slate-300 bg-slate-100 shadow-xl">
           {sugerencias.map((j) => (
             <button
               key={j.id}
@@ -18369,7 +18372,7 @@ function SelectorJugadorRegistrado({ jugadores = [], nombre, onNombreChange, onS
                 onSeleccionarJugador?.(j);
                 setAbierto(false);
               }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-200 transition hover:bg-slate-700"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-800 transition hover:bg-slate-200"
             >
               <Users size={12} className="shrink-0 text-lime-400" />
               <span className="min-w-0 flex-1 truncate">{j.nombre}</span>
@@ -18475,7 +18478,7 @@ function TarjetaReta({
   }
 
   return (
-    <div className={`rounded-2xl border p-4 ${archivado ? 'border-slate-800/60 bg-slate-900/50 opacity-80' : 'border-slate-800 bg-slate-900'}`}>
+    <div className={`rounded-2xl border p-4 ${archivado ? 'border-slate-200/60 bg-white/50 opacity-80' : 'border-slate-200 bg-white'}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           {editandoNombre ? (
@@ -18491,7 +18494,7 @@ function TarjetaReta({
                     setEditandoNombre(false);
                   }
                 }}
-                className="w-full rounded-md border border-fuchsia-400/40 bg-slate-950 px-2 py-1 text-sm font-black text-slate-100"
+                className="w-full rounded-md border border-fuchsia-400/40 bg-slate-50 px-2 py-1 text-sm font-black text-slate-900"
               />
               <button onClick={confirmarRenombrar} className="shrink-0 text-lime-400 hover:text-lime-300">
                 <CheckCircle2 size={16} />
@@ -18501,13 +18504,13 @@ function TarjetaReta({
                   setNombreBorrador(reta.nombre || '');
                   setEditandoNombre(false);
                 }}
-                className="shrink-0 text-slate-500 hover:text-slate-300"
+                className="shrink-0 text-slate-500 hover:text-slate-600"
               >
                 <X size={16} />
               </button>
             </div>
           ) : (
-            <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-100">
+            <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-900">
               <Swords size={14} className="shrink-0 text-fuchsia-400" />
               <span className="truncate">{reta.nombre || `Reta ${reta.rama}`}</span>
               <button
@@ -18515,14 +18518,14 @@ function TarjetaReta({
                   setNombreBorrador(reta.nombre || '');
                   setEditandoNombre(true);
                 }}
-                className="shrink-0 text-slate-600 transition hover:text-fuchsia-400"
+                className="shrink-0 text-slate-400 transition hover:text-fuchsia-400"
                 title="Renombrar Reta"
               >
                 <Pencil size={11} />
               </button>
             </p>
           )}
-          <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-400">
+          <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
             <MapPin size={11} className="shrink-0 text-slate-500" /> {cancha?.nombre || 'Cancha'} · {formatoFechaLarga(reta.fecha)} ·{' '}
             {formatoHora12(reta.hora_inicio)}–{formatoHora12(reta.hora_fin)}
           </p>
@@ -18536,7 +18539,7 @@ function TarjetaReta({
             {completa ? 'Completa' : `Quedan ${lugaresDisponibles}/${CUPOS_RETA}`}
           </span>
           {archivado && (
-            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-400">
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
               <Archive size={9} /> Archivada
             </span>
           )}
@@ -18559,11 +18562,11 @@ function TarjetaReta({
       </div>
 
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
-        <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-bold text-slate-600">
           <Award size={10} /> {nivelDeReta(reta) || 'Nivel libre'}
         </span>
-        <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">{ramaDeReta(reta)}</span>
-        <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-bold text-slate-600">{ramaDeReta(reta)}</span>
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-bold text-slate-600">
           {formatoMoneda(precioDeReta(reta))}/lugar
         </span>
       </div>
@@ -18575,15 +18578,15 @@ function TarjetaReta({
             return (
               <div
                 key={idx}
-                className="flex items-center gap-2 rounded-lg border border-dashed border-slate-700 px-2.5 py-1.5 text-xs text-slate-600"
+                className="flex items-center gap-2 rounded-lg border border-dashed border-slate-300 px-2.5 py-1.5 text-xs text-slate-400"
               >
                 <Users size={12} /> Lugar disponible
               </div>
             );
           }
           return (
-            <div key={jugador.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-950 px-2.5 py-1.5 text-xs">
-              <span className="flex min-w-0 items-center gap-1.5 truncate font-semibold text-slate-200">
+            <div key={jugador.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs">
+              <span className="flex min-w-0 items-center gap-1.5 truncate font-semibold text-slate-800">
                 <CheckCircle2 size={12} className="shrink-0 text-emerald-400" />
                 <span className="truncate">{jugador.nombre}</span>
               </span>
@@ -18593,7 +18596,7 @@ function TarjetaReta({
                   onClick={() => onCancelarInscripcion(reta, jugador)}
                   disabled={cancelandoId === jugador.id}
                   title="Cancelar inscripción"
-                  className="text-slate-600 transition hover:text-rose-400 disabled:opacity-40"
+                  className="text-slate-400 transition hover:text-rose-400 disabled:opacity-40"
                 >
                   {cancelandoId === jugador.id ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
                 </button>
@@ -18608,7 +18611,7 @@ function TarjetaReta({
           <p className="flex items-center gap-1.5 text-[11px] font-bold text-lime-400">
             <Trophy size={12} /> Ganó: {ganadorTexto || 'Equipo'}
           </p>
-          <p className="mt-0.5 text-[11px] text-slate-400">
+          <p className="mt-0.5 text-[11px] text-slate-500">
             {(reta.sets || []).map((s, i) => `${s.p1}-${s.p2}`).join('  ·  ')}
           </p>
         </div>
@@ -18638,7 +18641,7 @@ function TarjetaReta({
             type="button"
             onClick={() => onArchivar?.(reta, !archivado)}
             disabled={actualizandoArchivo}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {actualizandoArchivo ? (
               <Loader2 size={12} className="animate-spin" />
@@ -18669,7 +18672,7 @@ function TarjetaReta({
               type="button"
               onClick={() => setConfirmarEliminar(false)}
               disabled={eliminando}
-              className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+              className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
             >
               Cancelar
             </button>
@@ -19127,13 +19130,13 @@ function TarjetaTorneo({
   const [confirmarEliminar, setConfirmarEliminar] = useState(false);
 
   return (
-    <div className={`rounded-2xl border p-4 ${archivado ? 'border-slate-800/60 bg-slate-900/50 opacity-80' : 'border-slate-800 bg-slate-900'}`}>
+    <div className={`rounded-2xl border p-4 ${archivado ? 'border-slate-200/60 bg-white/50 opacity-80' : 'border-slate-200 bg-white'}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-100">
+          <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-900">
             <Trophy size={14} className="shrink-0 text-violet-400" /> {torneo.nombre}
           </p>
-          <p className="mt-1 text-xs text-slate-400">
+          <p className="mt-1 text-xs text-slate-500">
             {formatoFechaLarga(torneo.fecha_inicio)}
             {torneo.fecha_fin && torneo.fecha_fin !== torneo.fecha_inicio ? ` – ${formatoFechaLarga(torneo.fecha_fin)}` : ''}
           </p>
@@ -19143,7 +19146,7 @@ function TarjetaTorneo({
             {torneo.estado || 'planeación'}
           </span>
           {archivado && (
-            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-400">
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
               <Archive size={9} /> Archivado
             </span>
           )}
@@ -19162,13 +19165,13 @@ function TarjetaTorneo({
 
       <div className="mt-2.5 flex flex-wrap gap-1.5 text-[11px]">
         {(torneo.categorias || []).map((c, i) => (
-          <span key={i} className="rounded-full bg-slate-800 px-2 py-0.5 font-bold text-slate-300">
+          <span key={i} className="rounded-full bg-slate-100 px-2 py-0.5 font-bold text-slate-600">
             {c.rama} {c.nivel}
           </span>
         ))}
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-500">
         <span className="flex items-center gap-1.5">
           <Layers size={11} /> {torneo.formato}
         </span>
@@ -19184,11 +19187,11 @@ function TarjetaTorneo({
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <div className="rounded-lg bg-slate-950 px-2.5 py-2">
+        <div className="rounded-lg bg-slate-50 px-2.5 py-2">
           <p className="text-[10px] font-bold uppercase text-slate-500">Cobrado</p>
           <p className="text-sm font-black text-emerald-400">{formatoMoneda(recaudado)}</p>
         </div>
-        <div className="rounded-lg bg-slate-950 px-2.5 py-2">
+        <div className="rounded-lg bg-slate-50 px-2.5 py-2">
           <p className="text-[10px] font-bold uppercase text-slate-500">Pendiente</p>
           <p className="text-sm font-black text-amber-400">{formatoMoneda(pendiente)}</p>
         </div>
@@ -19204,7 +19207,7 @@ function TarjetaTorneo({
             type="button"
             onClick={() => onArchivar?.(torneo, !archivado)}
             disabled={actualizandoArchivo}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {actualizandoArchivo ? (
               <Loader2 size={12} className="animate-spin" />
@@ -19235,7 +19238,7 @@ function TarjetaTorneo({
               type="button"
               onClick={() => setConfirmarEliminar(false)}
               disabled={eliminando}
-              className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+              className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
             >
               Cancelar
             </button>
@@ -19485,7 +19488,7 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
         </Campo>
 
         <div>
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Categorías (Rama por Nivel)</span>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Categorías (Rama por Nivel)</span>
           <div className="flex flex-wrap items-end gap-2">
             <select value={categoriaRama} onChange={(e) => setCategoriaRama(e.target.value)} className={`${inputClase} w-auto`}>
               {RAMAS_JUEGO.map((r) => (
@@ -19518,7 +19521,7 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
 
         <div>
           <div className="mb-1.5 flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
               <Lock size={12} /> Bloqueo de Canchas en la Parrilla
             </span>
             <button onClick={agregarBloqueo} className="text-[11px] font-bold text-lime-400 hover:underline">
@@ -19529,7 +19532,7 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
             {bloqueos.map((b, idx) => (
               <div
                 key={idx}
-                className="grid grid-cols-1 gap-2 rounded-xl border border-slate-800 bg-slate-950 p-2.5 sm:grid-cols-[1.4fr_1fr_0.8fr_0.8fr_auto]"
+                className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2.5 sm:grid-cols-[1.4fr_1fr_0.8fr_0.8fr_auto]"
               >
                 <select value={b.canchaId} onChange={(e) => actualizarBloqueo(idx, 'canchaId', e.target.value)} className={`${inputClase} text-xs`}>
                   <option value="">Sin cancha</option>
@@ -19609,12 +19612,12 @@ function ModalGestionTorneo({
   return (
     <ModalShell titulo={torneo.nombre} subtitulo="Mesa de control del torneo" onClose={onClose} icon={Trophy} ancho="max-w-4xl">
       <div className="space-y-5">
-        <div className="flex gap-1 rounded-xl bg-slate-950 p-1">
+        <div className="flex gap-1 rounded-xl bg-slate-50 p-1">
           <button
             type="button"
             onClick={() => setVista('resumen')}
             className={`flex-1 rounded-lg px-3.5 py-2 text-xs font-bold transition ${
-              vista === 'resumen' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              vista === 'resumen' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             Resumen
@@ -19623,7 +19626,7 @@ function ModalGestionTorneo({
             type="button"
             onClick={() => setVista('cuadro')}
             className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition ${
-              vista === 'cuadro' ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+              vista === 'cuadro' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Layers size={13} /> Cuadros &amp; Partidos
@@ -19633,17 +19636,17 @@ function ModalGestionTorneo({
         {vista === 'resumen' ? (
           <>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="text-[10px] font-bold uppercase text-slate-500">Cobrado</p>
                 <p className="text-lg font-black text-emerald-400">{formatoMoneda(recaudado)}</p>
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="text-[10px] font-bold uppercase text-slate-500">Pendiente</p>
                 <p className="text-lg font-black text-amber-400">{formatoMoneda(pendiente)}</p>
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="text-[10px] font-bold uppercase text-slate-500">Participantes</p>
-                <p className="text-lg font-black text-slate-100">{participantes.length}</p>
+                <p className="text-lg font-black text-slate-900">{participantes.length}</p>
               </div>
             </div>
 
@@ -19658,7 +19661,7 @@ function ModalGestionTorneo({
                   <p className={`text-sm font-black ${finalizado ? 'text-emerald-300' : 'text-amber-300'}`}>
                     {finalizado ? 'Torneo finalizado' : 'Finalizar Torneo & Asignar Puntos'}
                   </p>
-                  <p className="mt-0.5 text-xs text-slate-400">
+                  <p className="mt-0.5 text-xs text-slate-500">
                     {finalizado
                       ? 'Los puntos ya se sumaron al Ranking del Club.'
                       : 'Reparte puntos (Campeón, Subcampeón, Semifinalista…) a cada jugador según cómo terminó en el cuadro — requiere que la Final de cada categoría ya tenga marcador.'}
@@ -19674,7 +19677,7 @@ function ModalGestionTorneo({
             </div>
 
             <div>
-              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
                 <Lock size={14} className="text-violet-400" /> Canchas Bloqueadas
               </h3>
               {bloqueosActivos.length === 0 ? (
@@ -19682,8 +19685,8 @@ function ModalGestionTorneo({
               ) : (
                 <div className="space-y-1.5">
                   {bloqueosActivos.map((b, idx) => (
-                    <div key={idx} className="flex items-center justify-between gap-2 rounded-lg bg-slate-950 px-3 py-2 text-xs">
-                      <span className="flex flex-wrap items-center gap-1.5 text-slate-300">
+                    <div key={idx} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                      <span className="flex flex-wrap items-center gap-1.5 text-slate-600">
                         <MapPin size={11} className="text-violet-400" /> {b.cancha_nombre} · {formatoFechaLarga(b.fecha)} ·{' '}
                         {formatoHora12(b.hora_inicio)}–{formatoHora12(b.hora_fin)}
                       </span>
@@ -19703,7 +19706,7 @@ function ModalGestionTorneo({
 
             <div>
               <div className="mb-2 flex items-center justify-between">
-                <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+                <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
                   <Users size={14} className="text-lime-400" /> Participantes
                 </h3>
                 <BotonSecundario onClick={onAgregarParticipante}>
@@ -19711,14 +19714,14 @@ function ModalGestionTorneo({
                 </BotonSecundario>
               </div>
               {participantes.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-800 py-8 text-center text-xs text-slate-500">
+                <div className="rounded-xl border border-dashed border-slate-200 py-8 text-center text-xs text-slate-500">
                   Sin participantes inscritos todavía.
                 </div>
               ) : (
-                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
                   <table className="w-full min-w-[560px] text-left text-xs">
                     <thead>
-                      <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                         <th className="px-3 py-2">Nombre</th>
                         <th className="px-3 py-2">Categoría</th>
                         <th className="px-3 py-2">Nivel</th>
@@ -19729,15 +19732,15 @@ function ModalGestionTorneo({
                     </thead>
                     <tbody>
                       {participantes.map((p) => (
-                        <tr key={p.id} className="border-b border-slate-800/70 last:border-0">
-                          <td className="px-3 py-2 font-bold text-slate-100">{p.nombre}</td>
-                          <td className="px-3 py-2 text-slate-300">{p.categoria || '—'}</td>
-                          <td className="px-3 py-2 text-slate-300">{p.nivel || '—'}</td>
-                          <td className="px-3 py-2 text-slate-400">
+                        <tr key={p.id} className="border-b border-slate-200/70 last:border-0">
+                          <td className="px-3 py-2 font-bold text-slate-900">{p.nombre}</td>
+                          <td className="px-3 py-2 text-slate-600">{p.categoria || '—'}</td>
+                          <td className="px-3 py-2 text-slate-600">{p.nivel || '—'}</td>
+                          <td className="px-3 py-2 text-slate-500">
                             {p.telefono && <span className="mr-2">{p.telefono}</span>}
                             {p.correo}
                           </td>
-                          <td className="px-3 py-2 text-right font-bold text-slate-200">{formatoMoneda(p.monto)}</td>
+                          <td className="px-3 py-2 text-right font-bold text-slate-800">{formatoMoneda(p.monto)}</td>
                           <td className="px-3 py-2">
                             <span
                               className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
@@ -20013,7 +20016,7 @@ function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, 
           setEditandoSlot(null);
         }}
         onBlur={() => setEditandoSlot(null)}
-        className="w-full rounded-lg border border-lime-400/40 bg-slate-950 px-2 py-1.5 text-xs font-semibold text-slate-100"
+        className="w-full rounded-lg border border-lime-400/40 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-900"
       >
         {opciones.map((op) => (
           <option key={op || '__vacante__'} value={op}>
@@ -20028,11 +20031,11 @@ function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, 
     <div
       onClick={editable ? () => setEditandoSlot(slot) : undefined}
       className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs ${editable ? 'cursor-pointer hover:ring-1 hover:ring-lime-400/40' : ''} ${
-        esGanador ? 'bg-emerald-400/10 font-black text-emerald-300 ring-1 ring-emerald-400/30' : 'bg-slate-900 font-semibold text-slate-200'
+        esGanador ? 'bg-emerald-400/10 font-black text-emerald-300 ring-1 ring-emerald-400/30' : 'bg-white font-semibold text-slate-800'
       }`}
       title={editable ? 'Clic para asignar/reasignar pareja' : undefined}
     >
-      <span className={`truncate ${esBySlot ? 'italic text-slate-500' : !texto ? 'italic text-slate-600' : ''}`}>{etiquetaPareja(texto)}</span>
+      <span className={`truncate ${esBySlot ? 'italic text-slate-500' : !texto ? 'italic text-slate-400' : ''}`}>{etiquetaPareja(texto)}</span>
       {esGanador && <CheckCircle2 size={12} className="shrink-0" />}
       {puedeNotificar && texto && !esBySlot && (
         <button
@@ -20047,7 +20050,7 @@ function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, 
           <IconoWhatsApp size={12} />
         </button>
       )}
-      {editable && <Pencil size={10} className="shrink-0 text-slate-600" />}
+      {editable && <Pencil size={10} className="shrink-0 text-slate-400" />}
     </div>
   );
 }
@@ -20082,7 +20085,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
   return (
     <div
       className={`w-60 shrink-0 rounded-xl border p-3 ${
-        jugado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-slate-800 bg-slate-950'
+        jugado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-slate-200 bg-slate-50'
       }`}
     >
       <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">{partido.ronda}</p>
@@ -20102,7 +20105,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
           puedeNotificar={puedeNotificar}
           onNotificar={notificarWhatsApp}
         />
-        <p className="text-center text-[9px] font-bold text-slate-600">VS</p>
+        <p className="text-center text-[9px] font-bold text-slate-400">VS</p>
         <FilaPareja
           slot="pareja2"
           texto={partido.pareja2}
@@ -20123,7 +20126,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
         esBye ? (
           <p className="mt-2 text-center text-[10px] italic text-slate-500">Pase directo (bye)</p>
         ) : (
-          <p className="mt-2 text-center text-[11px] font-bold text-slate-300">
+          <p className="mt-2 text-center text-[11px] font-bold text-slate-600">
             {(partido.sets || []).map((s) => `${s.p1}-${s.p2}`).join(' · ')}
           </p>
         )
@@ -20133,7 +20136,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
             <button
               type="button"
               onClick={() => onAsignarHorario(partido)}
-              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-2 py-1.5 text-[10px] font-bold text-slate-300 ring-1 ring-slate-800 transition hover:text-lime-400"
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-white px-2 py-1.5 text-[10px] font-bold text-slate-600 ring-1 ring-slate-200 transition hover:text-lime-400"
             >
               <Clock size={11} className="shrink-0" />
               <span className="truncate">
@@ -20145,7 +20148,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
               <Clock size={12} /> Asignar Horario
             </BotonSecundario>
           ) : (
-            <p className="mt-2 text-center text-[10px] italic text-slate-600">Esperando definición</p>
+            <p className="mt-2 text-center text-[10px] italic text-slate-400">Esperando definición</p>
           )}
 
           {parejasListas && (
@@ -20242,7 +20245,7 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
     return (
       <div className="space-y-2">
         {Array.from({ length: 2 }).map((_, i) => (
-          <div key={i} className="h-24 animate-pulse rounded-xl bg-slate-900" />
+          <div key={i} className="h-24 animate-pulse rounded-xl bg-white" />
         ))}
       </div>
     );
@@ -20260,7 +20263,7 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
                 type="button"
                 onClick={() => setCategoriaFiltro(valor)}
                 className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-                  categoriaFiltro === valor ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+                  categoriaFiltro === valor ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {valor}
@@ -20271,9 +20274,9 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
       )}
 
       {columnas.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center">
-          <Layers size={26} className="text-slate-700" />
-          <p className="text-sm font-semibold text-slate-400">
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-14 text-center">
+          <Layers size={26} className="text-slate-300" />
+          <p className="text-sm font-semibold text-slate-500">
             Todavía no hay un cuadro generado{categorias.length > 1 && categoriaFiltro ? ` para ${categoriaFiltro}` : ''}.
           </p>
           <BotonPrimario onClick={() => onGenerarCuadro(categoriaFiltro)} className="mt-1">
@@ -20429,7 +20432,7 @@ function BuscadorSlotPareja({ valor, opciones, onChange, placeholder }) {
         autoComplete="off"
       />
       {abierto && sugerencias.length > 0 && (
-        <div className="absolute z-20 mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-xl">
+        <div className="absolute z-20 mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-slate-300 bg-slate-100 shadow-xl">
           {sugerencias.map((n, i) => (
             <button
               key={i}
@@ -20438,7 +20441,7 @@ function BuscadorSlotPareja({ valor, opciones, onChange, placeholder }) {
                 onChange(n);
                 setAbierto(false);
               }}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-200 transition hover:bg-slate-700"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-800 transition hover:bg-slate-200"
             >
               <Users size={11} className="shrink-0 text-lime-400" />
               <span className="min-w-0 flex-1 truncate">{n}</span>
@@ -20455,7 +20458,7 @@ function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
   const textoResultante = textoDeParejaCompleta(valor);
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{etiqueta}</span>
         <button
@@ -20491,7 +20494,7 @@ function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
         </div>
       )}
 
-      {textoResultante && <p className="mt-1.5 truncate text-[11px] italic text-slate-400">{textoResultante}</p>}
+      {textoResultante && <p className="mt-1.5 truncate text-[11px] italic text-slate-500">{textoResultante}</p>}
     </div>
   );
 }
@@ -20666,7 +20669,7 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
                 type="button"
                 onClick={() => elegirFicha(t)}
                 className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                  modoTamano === 'fichas' && numParejas === t ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+                  modoTamano === 'fichas' && numParejas === t ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {t}
@@ -20676,7 +20679,7 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
               type="button"
               onClick={() => setModoTamano('personalizado')}
               className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                modoTamano === 'personalizado' ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+                modoTamano === 'personalizado' ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
               }`}
             >
               Personalizado
@@ -20706,7 +20709,7 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
         </p>
 
         <div>
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
             Parejas — {nombresRondas(numRondas)[0]}
           </span>
           <div className="max-h-96 space-y-2.5 overflow-y-auto pr-1">
@@ -20895,7 +20898,7 @@ function ModalMarcadorPartido({ partido, onClose, onGuardar, guardando }) {
                 className={inputClase}
               />
             </Campo>
-            <span className="pb-2.5 text-xs font-bold text-slate-600">–</span>
+            <span className="pb-2.5 text-xs font-bold text-slate-400">–</span>
             <Campo label={`${s.label} — ${partido.pareja2}`}>
               <input
                 type="number"
@@ -20984,22 +20987,22 @@ function ModalMarcadorReta({ reta, confirmados, onClose, onGuardar, guardando })
   return (
     <ModalShell titulo="Cargar Marcador de la Reta" subtitulo={reta.nombre} onClose={onClose} icon={ClipboardList} ancho="max-w-md">
       <div className="space-y-4">
-        <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-2.5">
+        <div className="rounded-lg border border-slate-300 bg-slate-100/60 p-2.5">
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">¿Quién jugó con quién?</span>
             {parejasPosibles.length > 1 && (
               <button
                 type="button"
                 onClick={() => setIndiceParejas((i) => (i + 1) % parejasPosibles.length)}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-bold text-lime-400 transition hover:border-lime-400/50"
+                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-lime-400 transition hover:border-lime-400/50"
               >
                 <RefreshCw size={10} /> Cambiar parejas
               </button>
             )}
           </div>
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded-md bg-slate-950 px-2.5 py-2 text-center font-bold text-slate-100">{pareja1Texto || 'Equipo 1'}</div>
-            <div className="rounded-md bg-slate-950 px-2.5 py-2 text-center font-bold text-slate-100">{pareja2Texto || 'Equipo 2'}</div>
+            <div className="rounded-md bg-slate-50 px-2.5 py-2 text-center font-bold text-slate-900">{pareja1Texto || 'Equipo 1'}</div>
+            <div className="rounded-md bg-slate-50 px-2.5 py-2 text-center font-bold text-slate-900">{pareja2Texto || 'Equipo 2'}</div>
           </div>
         </div>
 
@@ -21014,7 +21017,7 @@ function ModalMarcadorReta({ reta, confirmados, onClose, onGuardar, guardando })
                 className={inputClase}
               />
             </Campo>
-            <span className="pb-2.5 text-xs font-bold text-slate-600">–</span>
+            <span className="pb-2.5 text-xs font-bold text-slate-400">–</span>
             <Campo label={`${s.label} — Equipo 2`}>
               <input
                 type="number"
@@ -21116,7 +21119,7 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
           <ClipboardList size={16} className="text-lime-400" /> Desglose Financiero por Evento
         </h3>
         <div className="flex items-center gap-1.5">
@@ -21139,18 +21142,18 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
       </div>
 
       <div>
-        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
           <ClipboardList size={16} className="text-lime-400" /> Directorio de Participantes
         </h3>
         {directorio.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-800 py-12 text-center text-sm text-slate-500">
+          <div className="rounded-2xl border border-dashed border-slate-200 py-12 text-center text-sm text-slate-500">
             {eventoFiltro === 'todos' ? 'Todavía no hay participantes registrados.' : 'Sin participantes registrados para este evento.'}
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
             <table className="w-full min-w-[640px] text-left text-xs">
               <thead>
-                <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                   <th className="px-3 py-2.5">Nombre</th>
                   <th className="px-3 py-2.5">Contacto</th>
                   <th className="px-3 py-2.5">Nivel</th>
@@ -21160,9 +21163,9 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
               </thead>
               <tbody>
                 {directorio.map((f) => (
-                  <tr key={f.id} className="border-b border-slate-800/70 last:border-0">
-                    <td className="px-3 py-2.5 font-bold text-slate-100">{f.nombre}</td>
-                    <td className="px-3 py-2.5 text-slate-400">
+                  <tr key={f.id} className="border-b border-slate-200/70 last:border-0">
+                    <td className="px-3 py-2.5 font-bold text-slate-900">{f.nombre}</td>
+                    <td className="px-3 py-2.5 text-slate-500">
                       <span className="flex flex-col gap-0.5">
                         {f.telefono && (
                           <span className="flex items-center gap-1">
@@ -21177,8 +21180,8 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
                         {!f.telefono && !f.correo && '—'}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-slate-300">{f.nivel}</td>
-                    <td className="px-3 py-2.5 text-slate-300">{f.origen}</td>
+                    <td className="px-3 py-2.5 text-slate-600">{f.nivel}</td>
+                    <td className="px-3 py-2.5 text-slate-600">{f.origen}</td>
                     <td className="px-3 py-2.5">
                       <span
                         className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
@@ -22285,7 +22288,7 @@ function ModuloTorneosRetas({
   return (
     <>
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex flex-wrap rounded-lg border border-slate-700 bg-slate-800 p-1">
+        <div className="flex flex-wrap rounded-lg border border-slate-300 bg-slate-100 p-1">
           {subvistas.map((v) => {
             const Icon = v.icon;
             return (
@@ -22293,7 +22296,7 @@ function ModuloTorneosRetas({
                 key={v.value}
                 onClick={() => setSubvista(v.value)}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Icon size={14} /> {v.label}
@@ -22319,12 +22322,12 @@ function ModuloTorneosRetas({
           {errorInscripciones && <ErrorBanner mensaje={errorInscripciones} onReintentar={() => cargarInscripciones()} />}
 
           {retas.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 p-1">
+            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
               <button
                 type="button"
                 onClick={() => setFiltroReta('activas')}
                 className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroReta === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  filtroReta === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 Activas
@@ -22333,12 +22336,12 @@ function ModuloTorneosRetas({
                 type="button"
                 onClick={() => setFiltroReta('archivadas')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroReta === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  filtroReta === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 <Archive size={11} /> Archivadas
                 {retasArchivadas.length > 0 && (
-                  <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] font-black text-slate-300">
+                  <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-600">
                     {retasArchivadas.length}
                   </span>
                 )}
@@ -22349,16 +22352,16 @@ function ModuloTorneosRetas({
           {loadingRetas || loadingInscripciones ? (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="h-72 animate-pulse rounded-2xl bg-slate-900" />
+                <div key={i} className="h-72 animate-pulse rounded-2xl bg-white" />
               ))}
             </div>
           ) : retasVisibles.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-16 text-center">
-              <Swords size={26} className="text-slate-700" />
-              <p className="text-sm font-semibold text-slate-400">
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-16 text-center">
+              <Swords size={26} className="text-slate-300" />
+              <p className="text-sm font-semibold text-slate-500">
                 {filtroReta === 'archivadas' ? 'No hay retas archivadas.' : 'No hay Retas Abiertas activas.'}
               </p>
-              <p className="text-xs text-slate-600">
+              <p className="text-xs text-slate-400">
                 {filtroReta === 'archivadas'
                   ? 'Las retas que archives aparecerán aquí, sin perder inscripciones ni pagos.'
                   : 'Crea una para vender lugares individuales y bloquear el horario en la Parrilla.'}
@@ -22396,12 +22399,12 @@ function ModuloTorneosRetas({
           {errorParticipantes && <ErrorBanner mensaje={errorParticipantes} onReintentar={() => cargarParticipantesTorneo()} />}
 
           {torneos.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 p-1">
+            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
               <button
                 type="button"
                 onClick={() => setFiltroTorneo('activos')}
                 className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroTorneo === 'activos' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  filtroTorneo === 'activos' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 Activos
@@ -22410,12 +22413,12 @@ function ModuloTorneosRetas({
                 type="button"
                 onClick={() => setFiltroTorneo('archivados')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroTorneo === 'archivados' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  filtroTorneo === 'archivados' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 <Archive size={11} /> Archivados
                 {torneosArchivados.length > 0 && (
-                  <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] font-black text-slate-300">
+                  <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-600">
                     {torneosArchivados.length}
                   </span>
                 )}
@@ -22426,16 +22429,16 @@ function ModuloTorneosRetas({
           {loadingTorneos || loadingParticipantes ? (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="h-64 animate-pulse rounded-2xl bg-slate-900" />
+                <div key={i} className="h-64 animate-pulse rounded-2xl bg-white" />
               ))}
             </div>
           ) : torneosVisibles.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-16 text-center">
-              <Trophy size={26} className="text-slate-700" />
-              <p className="text-sm font-semibold text-slate-400">
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-16 text-center">
+              <Trophy size={26} className="text-slate-300" />
+              <p className="text-sm font-semibold text-slate-500">
                 {filtroTorneo === 'archivados' ? 'No hay torneos archivados.' : 'Todavía no hay torneos activos.'}
               </p>
-              <p className="text-xs text-slate-600">
+              <p className="text-xs text-slate-400">
                 {filtroTorneo === 'archivados'
                   ? 'Los torneos que archives aparecerán aquí, sin perder pagos, inscritos ni puntos del Ranking.'
                   : 'Crea uno para bloquear canchas, definir formato y abrir inscripciones.'}
@@ -22638,7 +22641,7 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
     return (
       <div className="space-y-2">
         {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="h-10 animate-pulse rounded-xl bg-slate-900" />
+          <div key={i} className="h-10 animate-pulse rounded-xl bg-white" />
         ))}
       </div>
     );
@@ -22655,7 +22658,7 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
             type="button"
             onClick={() => setNivelFiltro(n)}
             className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-              nivelFiltro === n ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+              nivelFiltro === n ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
             }`}
           >
             {n}
@@ -22664,16 +22667,16 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
       </div>
 
       {filasNivel.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center">
-          <Award size={26} className="text-slate-700" />
-          <p className="text-sm font-semibold text-slate-400">Todavía no hay resultados en {nivelFiltro}.</p>
-          <p className="text-xs text-slate-600">Se llena solo al usar "Finalizar Torneo &amp; Asignar Puntos" en un torneo de esta categoría.</p>
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-14 text-center">
+          <Award size={26} className="text-slate-300" />
+          <p className="text-sm font-semibold text-slate-500">Todavía no hay resultados en {nivelFiltro}.</p>
+          <p className="text-xs text-slate-400">Se llena solo al usar "Finalizar Torneo &amp; Asignar Puntos" en un torneo de esta categoría.</p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
           <table className="w-full min-w-[640px] text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 <th className="px-3 py-2.5 text-center">Pos.</th>
                 <th className="px-3 py-2.5">Jugador</th>
                 <th className="px-3 py-2.5 text-right">Puntos</th>
@@ -22684,14 +22687,14 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
             </thead>
             <tbody>
               {filasNivel.map((r, idx) => (
-                <tr key={r.id} className="border-b border-slate-800/70 last:border-0">
+                <tr key={r.id} className="border-b border-slate-200/70 last:border-0">
                   <td className="px-3 py-2.5 text-center">
                     <span
                       className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-black ${
                         idx === 0
                           ? 'bg-amber-400/20 text-amber-300'
                           : idx === 1
-                          ? 'bg-slate-400/20 text-slate-200'
+                          ? 'bg-slate-400/20 text-slate-800'
                           : idx === 2
                           ? 'bg-orange-400/20 text-orange-300'
                           : 'text-slate-500'
@@ -22700,11 +22703,11 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
                       {idx + 1}
                     </span>
                   </td>
-                  <td className="px-3 py-2.5 font-bold text-slate-100">{r.nombre}</td>
+                  <td className="px-3 py-2.5 font-bold text-slate-900">{r.nombre}</td>
                   <td className="px-3 py-2.5 text-right font-black text-lime-400">{r.puntos}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-300">{r.partidos_jugados}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-300">{r.efectividad}%</td>
-                  <td className="px-3 py-2.5 text-right text-slate-300">{r.torneosDisputados}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{r.partidos_jugados}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{r.efectividad}%</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{r.torneosDisputados}</td>
                 </tr>
               ))}
             </tbody>
@@ -22905,13 +22908,13 @@ function RadarEvaluacion({ valores, size = 240 }) {
           key={f}
           points={EJES_EVALUACION.map((_, i) => puntoEn(i, f).join(',')).join(' ')}
           fill="none"
-          stroke="#334155"
+          stroke="#cbd5e1"
           strokeWidth="1"
         />
       ))}
       {EJES_EVALUACION.map((eje, i) => {
         const [x, y] = puntoEn(i, 1);
-        return <line key={eje.key} x1={centro} y1={centro} x2={x} y2={y} stroke="#334155" strokeWidth="1" />;
+        return <line key={eje.key} x1={centro} y1={centro} x2={x} y2={y} stroke="#cbd5e1" strokeWidth="1" />;
       })}
       <polygon points={puntosValorTexto} fill="rgba(163,230,53,0.25)" stroke="#a3e635" strokeWidth="2" />
       {puntosValor.map(([x, y], i) => (
@@ -22920,7 +22923,7 @@ function RadarEvaluacion({ valores, size = 240 }) {
       {EJES_EVALUACION.map((eje, i) => {
         const [x, y] = puntoEn(i, 1.22);
         return (
-          <text key={eje.key} x={x} y={y} textAnchor="middle" dominantBaseline="middle" fill="#cbd5e1" fontSize="9" fontWeight="700">
+          <text key={eje.key} x={x} y={y} textAnchor="middle" dominantBaseline="middle" fill="#475569" fontSize="9" fontWeight="700">
             {eje.corto}
           </text>
         );
@@ -22954,25 +22957,25 @@ function ModalPerfilDeportivoJugador({ evaluaciones, loading, onClose }) {
             <Loader2 size={20} className="animate-spin" />
           </div>
         ) : !ultima ? (
-          <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+          <p className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500">
             Todavía no tienes ninguna evaluación registrada. Tu coach la agrega después de tus primeras clases.
           </p>
         ) : (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/5 bg-slate-900/50 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/50 p-4">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Nivel Oficial</p>
                 <span
-                  className={`mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-black ring-1 ${nivelMeta?.bg || 'bg-slate-800'} ${
-                    nivelMeta?.color || 'text-slate-300'
-                  } ${nivelMeta?.ring || 'ring-slate-700'}`}
+                  className={`mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-black ring-1 ${nivelMeta?.bg || 'bg-slate-100'} ${
+                    nivelMeta?.color || 'text-slate-600'
+                  } ${nivelMeta?.ring || 'ring-slate-300'}`}
                 >
                   <Award size={14} /> {ultima.nivel_asignado || 'Sin asignar'}
                 </span>
               </div>
               <div className="text-right">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Promedio General</p>
-                <p className="mt-1 text-2xl font-black text-slate-100">
+                <p className="mt-1 text-2xl font-black text-slate-900">
                   {ultima.promedio != null ? Number(ultima.promedio).toFixed(1) : '—'}
                   <span className="text-sm text-slate-500">/10</span>
                 </p>
@@ -22990,21 +22993,21 @@ function ModalPerfilDeportivoJugador({ evaluaciones, loading, onClose }) {
                 {historial.map((ev) => {
                   const meta = NIVEL_OFICIAL_META[ev.nivel_asignado];
                   return (
-                    <div key={ev.id} className="rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3">
+                    <div key={ev.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-[11px] font-bold text-slate-300">{ev.coach_nombre || 'Coach'}</p>
+                        <p className="text-[11px] font-bold text-slate-600">{ev.coach_nombre || 'Coach'}</p>
                         <p className="text-[10px] text-slate-500">{formatoFechaLarga(ev.fecha || ev.created_at)}</p>
                       </div>
                       {ev.nivel_asignado && (
                         <span
-                          className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${meta?.bg || 'bg-slate-800'} ${
-                            meta?.color || 'text-slate-400'
+                          className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${meta?.bg || 'bg-slate-100'} ${
+                            meta?.color || 'text-slate-500'
                           }`}
                         >
                           {ev.nivel_asignado}
                         </span>
                       )}
-                      {ev.comentarios && <p className="mt-1.5 text-xs text-slate-400">{ev.comentarios}</p>}
+                      {ev.comentarios && <p className="mt-1.5 text-xs text-slate-500">{ev.comentarios}</p>}
                     </div>
                   );
                 })}
@@ -23092,7 +23095,7 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
             <div className="space-y-3">
               {EJES_EVALUACION.map((eje) => (
                 <div key={eje.key}>
-                  <div className="mb-1 flex items-center justify-between text-xs font-semibold text-slate-300">
+                  <div className="mb-1 flex items-center justify-between text-xs font-semibold text-slate-600">
                     <span>{eje.label}</span>
                     <span className="text-lime-400">{valoresEjes[eje.key]}/10</span>
                   </div>
@@ -23109,9 +23112,9 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
               ))}
             </div>
 
-            <div className="flex items-center justify-between rounded-xl bg-slate-900/60 px-3.5 py-2.5">
-              <span className="text-xs font-semibold text-slate-400">Promedio General</span>
-              <span className="text-lg font-black text-slate-100">{promedioEnVivo != null ? promedioEnVivo.toFixed(1) : '—'}/10</span>
+            <div className="flex items-center justify-between rounded-xl bg-white/60 px-3.5 py-2.5">
+              <span className="text-xs font-semibold text-slate-500">Promedio General</span>
+              <span className="text-lg font-black text-slate-900">{promedioEnVivo != null ? promedioEnVivo.toFixed(1) : '—'}/10</span>
             </div>
 
             <Campo label="Nivel Oficial">
@@ -23123,7 +23126,7 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
                     className={`rounded-lg border px-2.5 py-2 text-xs font-bold transition ${
                       nivelAsignado === n
                         ? `border-lime-400 ${NIVEL_OFICIAL_META[n]?.bg || ''} ${NIVEL_OFICIAL_META[n]?.color || 'text-lime-400'}`
-                        : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                        : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
                     {n}
@@ -23150,7 +23153,7 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
             </div>
           </>
         ) : (
-          <p className="rounded-xl border border-dashed border-slate-700 px-4 py-6 text-center text-xs text-slate-500">
+          <p className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center text-xs text-slate-500">
             Solo un Coach o el Propietario pueden calificar. Tú puedes ver la gráfica y el historial.
           </p>
         )}
@@ -23158,27 +23161,27 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de Observaciones</p>
           {historial.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-slate-700 px-3 py-4 text-center text-xs text-slate-500">Sin evaluaciones todavía.</p>
+            <p className="rounded-xl border border-dashed border-slate-300 px-3 py-4 text-center text-xs text-slate-500">Sin evaluaciones todavía.</p>
           ) : (
             <div className="max-h-56 space-y-2 overflow-y-auto pr-0.5">
               {historial.map((ev) => {
                 const meta = NIVEL_OFICIAL_META[ev.nivel_asignado];
                 return (
-                  <div key={ev.id} className="rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3">
+                  <div key={ev.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-[11px] font-bold text-slate-300">{ev.coach_nombre || 'Coach'}</p>
+                      <p className="text-[11px] font-bold text-slate-600">{ev.coach_nombre || 'Coach'}</p>
                       <p className="text-[10px] text-slate-500">{formatoFechaLarga(ev.fecha || ev.created_at)}</p>
                     </div>
                     {ev.nivel_asignado && (
                       <span
-                        className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${meta?.bg || 'bg-slate-800'} ${
-                          meta?.color || 'text-slate-400'
+                        className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${meta?.bg || 'bg-slate-100'} ${
+                          meta?.color || 'text-slate-500'
                         }`}
                       >
                         {ev.nivel_asignado}
                       </span>
                     )}
-                    {ev.comentarios && <p className="mt-1.5 text-xs text-slate-400">{ev.comentarios}</p>}
+                    {ev.comentarios && <p className="mt-1.5 text-xs text-slate-500">{ev.comentarios}</p>}
                   </div>
                 );
               })}
@@ -23675,7 +23678,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
               className={`${inputClase} mt-2`}
               placeholder="Teléfono (opcional)"
             />
-            {nombreClasePrivada && <p className="mt-1.5 text-[11px] text-slate-500">Se guardará como: <span className="font-bold text-slate-300">{nombreClasePrivada}</span></p>}
+            {nombreClasePrivada && <p className="mt-1.5 text-[11px] text-slate-500">Se guardará como: <span className="font-bold text-slate-600">{nombreClasePrivada}</span></p>}
           </Campo>
         ) : (
           <Campo label="Nombre de la clase">
@@ -23683,14 +23686,14 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
           </Campo>
         )}
         <Campo label="Tipo de Clase" hint={esPrivada ? 'Capacidad fijada en 1 alumno' : undefined}>
-          <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+          <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
             {TIPOS_CLASE_ACADEMIA.map((t) => (
               <button
                 key={t.value}
                 type="button"
                 onClick={() => setTipoClase(t.value)}
                 className={`flex-1 rounded-md px-3 py-2 text-xs font-bold transition ${
-                  tipoClase === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                  tipoClase === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {t.label}
@@ -23796,8 +23799,8 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
             semanalmente" — cada clase es una sesión de una sola fecha real,
             igual que una Reta/Torneo. Para la siguiente sesión, se vuelve a
             usar "Nueva Clase" con la fecha que corresponda. */}
-        <p className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-500">
-          Esta clase se crea para <span className="font-bold text-slate-300">{formatoFechaLarga(fecha)}</span> únicamente. En
+        <p className="rounded-lg border border-slate-200 bg-slate-50/40 p-3 text-xs text-slate-500">
+          Esta clase se crea para <span className="font-bold text-slate-600">{formatoFechaLarga(fecha)}</span> únicamente. En
           cuanto termine su horario, se oculta sola de "Activas" y del Portal — para la siguiente sesión, vuelve a usar "Nueva
           Clase" con la fecha que corresponda.
         </p>
@@ -23830,7 +23833,7 @@ function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, ini
   return (
     <div
       className={`flex flex-col gap-3 rounded-2xl border p-4 transition ${
-        archivado ? 'border-slate-800/60 bg-slate-900/50 opacity-80' : 'border-slate-800 bg-slate-900'
+        archivado ? 'border-slate-200/60 bg-white/50 opacity-80' : 'border-slate-200 bg-white'
       }`}
     >
       <button
@@ -23840,7 +23843,7 @@ function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, ini
       >
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <p className="truncate text-sm font-black text-slate-100">{clase.nombre}</p>
+            <p className="truncate text-sm font-black text-slate-900">{clase.nombre}</p>
             <p className="mt-0.5 text-[11px] text-slate-500">{clase.nivel} · Coach {clase.coach_nombre || '—'}</p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
@@ -23852,7 +23855,7 @@ function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, ini
               {cupos}/{clase.capacidad_maxima} cupos
             </span>
             {archivado && (
-              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-400">
+              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
                 <Archive size={9} /> Archivada
               </span>
             )}
@@ -23868,7 +23871,7 @@ function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, ini
             )}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
           <span className="flex items-center gap-1">
             <CalendarClock size={12} /> {diaFecha} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
           </span>
@@ -23876,7 +23879,7 @@ function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, ini
             <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
           </span>
         </div>
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
           <div className={`h-full rounded-full ${lleno ? 'bg-rose-400' : 'bg-teal-400'}`} style={{ width: `${Math.min(100, (cupos / Math.max(clase.capacidad_maxima, 1)) * 100)}%` }} />
         </div>
       </button>
@@ -23884,7 +23887,7 @@ function TarjetaClaseAcademia({ clase, cancha, alumnosActivos, onVerDetalle, ini
         type="button"
         onClick={() => onArchivar?.(clase, !archivado)}
         disabled={actualizandoArchivo}
-        className="inline-flex items-center gap-1.5 self-start rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex items-center gap-1.5 self-start rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {actualizandoArchivo ? (
           <Loader2 size={12} className="animate-spin" />
@@ -24222,7 +24225,7 @@ function ModalDetalleClase({
       ancho="max-w-2xl"
     >
       <div className="space-y-4">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-[11px] font-semibold text-slate-400">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-200 bg-slate-50/40 p-3 text-[11px] font-semibold text-slate-500">
           <span className="flex items-center gap-1">
             <CalendarClock size={12} /> {clase.fecha ? formatoFechaLarga(clase.fecha) : 'Sin fecha'} · {formatoHora12(clase.hora_inicio)}–{formatoHora12(clase.hora_fin)}
           </span>
@@ -24234,7 +24237,7 @@ function ModalDetalleClase({
           </span>
         </div>
 
-        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+        <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
           {[
             { value: 'alumnos', label: 'Alumnos', icon: Users },
             { value: 'asistencia', label: 'Pase de lista', icon: UserCheck },
@@ -24246,7 +24249,7 @@ function ModalDetalleClase({
                 key={v.value}
                 onClick={() => setSubvista(v.value)}
                 className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md py-2 text-xs font-bold transition ${
-                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Icon size={14} /> {v.label}
@@ -24258,7 +24261,7 @@ function ModalDetalleClase({
         {subvista === 'alumnos' && (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs font-bold text-slate-400">
+              <p className="text-xs font-bold text-slate-500">
                 {alumnosActivos.length} alumno{alumnosActivos.length === 1 ? '' : 's'} inscrito{alumnosActivos.length === 1 ? '' : 's'}
               </p>
               <div className="flex items-center gap-2">
@@ -24278,7 +24281,7 @@ function ModalDetalleClase({
             </div>
 
             {mostrarAlta && (
-              <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/40 p-3">
                 <SelectorJugadorRegistrado
                   jugadores={directorioJugadores}
                   nombre={nombreAlumno}
@@ -24352,9 +24355,9 @@ function ModalDetalleClase({
             <div className="max-h-80 space-y-1.5 overflow-y-auto">
               {alumnosActivos.length === 0 && <p className="py-6 text-center text-xs text-slate-500">Todavía no hay alumnos inscritos.</p>}
               {alumnosActivos.map((a) => (
-                <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
+                <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
                   <div className="min-w-0">
-                    <p className="truncate text-xs font-bold text-slate-100">{a.nombre}</p>
+                    <p className="truncate text-xs font-bold text-slate-900">{a.nombre}</p>
                     <p className="text-[10px] text-slate-500">
                       {TIPOS_PAGO_ACADEMIA.find((t) => t.value === a.tipo_pago)?.label || a.tipo_pago} · {formatoMoneda(a.monto)}
                       {a.pagado_con_creditos && <span className="ml-1 text-emerald-400">· pagó con crédito</span>}
@@ -24391,8 +24394,8 @@ function ModalDetalleClase({
                   </summary>
                   <div className="mt-1.5 space-y-1.5">
                     {alumnosBaja.map((a) => (
-                      <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 opacity-60">
-                        <p className="truncate text-xs font-semibold text-slate-400">{a.nombre}</p>
+                      <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white/50 px-3 py-2 opacity-60">
+                        <p className="truncate text-xs font-semibold text-slate-500">{a.nombre}</p>
                         <button onClick={() => reactivar(a)} className="text-[10px] font-bold text-lime-400 hover:underline">
                           Reactivar
                         </button>
@@ -24429,14 +24432,14 @@ function ModalDetalleClase({
                   const asistio = registro?.asistio === true;
                   const noAsistio = registro?.asistio === false;
                   return (
-                    <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
-                      <p className="truncate text-xs font-bold text-slate-100">{a.nombre}</p>
+                    <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <p className="truncate text-xs font-bold text-slate-900">{a.nombre}</p>
                       <div className="flex shrink-0 items-center gap-1.5">
                         <button
                           onClick={() => marcarAsistencia(a, true)}
                           disabled={guardandoAsistenciaId === a.id}
                           className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold transition ${
-                            asistio ? 'bg-emerald-400 text-emerald-950' : 'border border-slate-700 text-slate-400 hover:text-emerald-400'
+                            asistio ? 'bg-emerald-400 text-emerald-950' : 'border border-slate-300 text-slate-500 hover:text-emerald-400'
                           }`}
                         >
                           <UserCheck size={12} /> Presente
@@ -24445,7 +24448,7 @@ function ModalDetalleClase({
                           onClick={() => marcarAsistencia(a, false)}
                           disabled={guardandoAsistenciaId === a.id}
                           className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold transition ${
-                            noAsistio ? 'bg-rose-500 text-white' : 'border border-slate-700 text-slate-400 hover:text-rose-400'
+                            noAsistio ? 'bg-rose-500 text-white' : 'border border-slate-300 text-slate-500 hover:text-rose-400'
                           }`}
                         >
                           <UserX size={12} /> Ausente
@@ -24462,7 +24465,7 @@ function ModalDetalleClase({
         {subvista === 'ajustes' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-bold text-slate-400">Editar datos de la clase</p>
+              <p className="text-xs font-bold text-slate-500">Editar datos de la clase</p>
               {!editando && (
                 <BotonSecundario onClick={() => setEditando(true)} className="px-2.5 py-1.5 text-xs">
                   <Pencil size={13} /> Editar
@@ -24471,7 +24474,7 @@ function ModalDetalleClase({
             </div>
 
             {editando ? (
-              <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/40 p-3">
                 <Campo label="Nombre de la clase">
                   <input value={nombreEdit} onChange={(e) => setNombreEdit(e.target.value)} className={inputClase} />
                 </Campo>
@@ -24552,21 +24555,21 @@ function ModalDetalleClase({
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="rounded-lg border border-slate-800 bg-slate-900 p-2.5">
+                <div className="rounded-lg border border-slate-200 bg-white p-2.5">
                   <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Nivel</p>
-                  <p className="font-bold text-slate-100">{clase.nivel}</p>
+                  <p className="font-bold text-slate-900">{clase.nivel}</p>
                 </div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900 p-2.5">
+                <div className="rounded-lg border border-slate-200 bg-white p-2.5">
                   <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Coach</p>
-                  <p className="font-bold text-slate-100">{clase.coach_nombre || '—'}</p>
+                  <p className="font-bold text-slate-900">{clase.coach_nombre || '—'}</p>
                 </div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900 p-2.5">
+                <div className="rounded-lg border border-slate-200 bg-white p-2.5">
                   <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Mensualidad</p>
-                  <p className="font-bold text-slate-100">{formatoMoneda(clase.precio_mensualidad)}</p>
+                  <p className="font-bold text-slate-900">{formatoMoneda(clase.precio_mensualidad)}</p>
                 </div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900 p-2.5">
+                <div className="rounded-lg border border-slate-200 bg-white p-2.5">
                   <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Clase suelta</p>
-                  <p className="font-bold text-slate-100">{formatoMoneda(clase.precio_clase_suelta)}</p>
+                  <p className="font-bold text-slate-900">{formatoMoneda(clase.precio_clase_suelta)}</p>
                 </div>
               </div>
             )}
@@ -24590,7 +24593,7 @@ function ModalDetalleClase({
                       type="button"
                       onClick={() => setConfirmarEliminar(false)}
                       disabled={eliminando}
-                      className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+                      className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
                     >
                       Cancelar
                     </button>
@@ -24648,12 +24651,12 @@ function HeatmapAcademia({ clases, alumnosPorClase }) {
   }, [clases, alumnosPorClase]);
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
           <Flame size={16} className="text-teal-400" /> Mapa de Calor — Saturación de Cupos por Día/Hora
         </h3>
-        <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-400">
+        <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-500">
           <span className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/70" /> Con cupo
           </span>
@@ -24676,7 +24679,7 @@ function HeatmapAcademia({ clases, alumnosPorClase }) {
             ))}
             {filas.map((dia, filaIdx) => (
               <React.Fragment key={dia}>
-                <div className="flex items-center pr-2 text-[11px] font-bold text-slate-400">{ETIQUETA_DIA_SEMANA[dia]}</div>
+                <div className="flex items-center pr-2 text-[11px] font-bold text-slate-500">{ETIQUETA_DIA_SEMANA[dia]}</div>
                 {celdas[filaIdx].map((pct, colIdx) => (
                   <div key={colIdx} className="p-0.5">
                     <div
@@ -24755,14 +24758,14 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar, n
   }
 
   return (
-    <tr className="border-b border-slate-800/70 last:border-0 align-top">
-      <td className="px-3 py-2.5 font-bold text-slate-100">{alumno.nombre}</td>
-      <td className="px-3 py-2.5 text-slate-400">
+    <tr className="border-b border-slate-200/70 last:border-0 align-top">
+      <td className="px-3 py-2.5 font-bold text-slate-900">{alumno.nombre}</td>
+      <td className="px-3 py-2.5 text-slate-500">
         {clase?.nombre || '—'}
-        {clase?.coach_nombre && <span className="text-slate-600"> · {clase.coach_nombre}</span>}
+        {clase?.coach_nombre && <span className="text-slate-400"> · {clase.coach_nombre}</span>}
       </td>
-      <td className="px-3 py-2.5 text-slate-300">{alumno.creditos_restantes ?? '—'}</td>
-      <td className="px-3 py-2.5 text-slate-300">{alumno.fecha_renovacion ? formatoFechaLarga(alumno.fecha_renovacion) : '—'}</td>
+      <td className="px-3 py-2.5 text-slate-600">{alumno.creditos_restantes ?? '—'}</td>
+      <td className="px-3 py-2.5 text-slate-600">{alumno.fecha_renovacion ? formatoFechaLarga(alumno.fecha_renovacion) : '—'}</td>
       <td className="px-3 py-2.5">
         <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${colorSemaforo}`}>{etiquetaSemaforo}</span>
       </td>
@@ -24773,7 +24776,7 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar, n
               value={motivo}
               onChange={(e) => setMotivo(e.target.value)}
               placeholder="Motivo de la baja…"
-              className="w-36 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-lime-400"
+              className="w-36 rounded-md border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] text-slate-900 outline-none focus:border-lime-400"
             />
             <button
               onClick={() => {
@@ -24785,7 +24788,7 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar, n
             >
               Confirmar
             </button>
-            <button onClick={() => setMostrarBaja(false)} className="rounded-md px-2 py-1 text-[10px] font-bold text-slate-400 hover:text-slate-200">
+            <button onClick={() => setMostrarBaja(false)} className="rounded-md px-2 py-1 text-[10px] font-bold text-slate-500 hover:text-slate-800">
               Cancelar
             </button>
           </div>
@@ -24798,7 +24801,7 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar, n
               className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold ring-1 ${
                 puedeCobrarPOS
                   ? 'bg-lime-400/10 text-lime-300 ring-lime-400/30 hover:bg-lime-400/20'
-                  : 'cursor-not-allowed bg-slate-800/60 text-slate-600 ring-slate-700/50'
+                  : 'cursor-not-allowed bg-slate-100/60 text-slate-400 ring-slate-300/50'
               }`}
             >
               <ShoppingCart size={11} /> Cobrar en POS
@@ -25242,7 +25245,7 @@ function AnalyticsAcademia({
 
   return (
     <div className="space-y-4">
-      <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+      <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
         {dashboards.map((d) => {
           const Icon = d.icon;
           return (
@@ -25250,7 +25253,7 @@ function AnalyticsAcademia({
               key={d.value}
               onClick={() => setDashboard(d.value)}
               className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-bold transition ${
-                dashboard === d.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                dashboard === d.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Icon size={14} /> {d.label}
@@ -25292,8 +25295,8 @@ function AnalyticsAcademia({
             />
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-900">
               <Layers size={16} className="text-violet-400" /> Distribución de Ingresos y Cupos — Grupal vs Individual
             </h3>
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -25307,13 +25310,13 @@ function AnalyticsAcademia({
                   const pct = total > 0 ? Math.round((it.valor / total) * 100) : 0;
                   return (
                     <div key={it.label}>
-                      <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-slate-300">
+                      <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-slate-600">
                         <span>{it.label}</span>
                         <span>
                           {formatoMoneda(it.valor)} ({pct}%)
                         </span>
                       </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
                         <div className="h-full rounded-full bg-lime-400" style={{ width: `${pct}%` }} />
                       </div>
                     </div>
@@ -25330,13 +25333,13 @@ function AnalyticsAcademia({
                   const pct = total > 0 ? Math.round((it.valor / total) * 100) : 0;
                   return (
                     <div key={it.label}>
-                      <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-slate-300">
+                      <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-slate-600">
                         <span>{it.label}</span>
                         <span>
                           {it.valor} cupos ({pct}%)
                         </span>
                       </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
                         <div className="h-full rounded-full bg-violet-400" style={{ width: `${pct}%` }} />
                       </div>
                     </div>
@@ -25404,18 +25407,18 @@ function AnalyticsAcademia({
             />
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
                 <Crown size={16} className="text-lime-400" /> Alumnos con Membresía
               </h3>
-              <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+              <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
                 {filtrosMembresia.map((f) => (
                   <button
                     key={f.value}
                     onClick={() => setFiltroMembresia(f.value)}
                     className={`rounded-md px-2.5 py-1.5 text-[11px] font-bold transition ${
-                      filtroMembresia === f.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                      filtroMembresia === f.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     {f.label}
@@ -25429,7 +25432,7 @@ function AnalyticsAcademia({
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       <th className="px-3 pb-2">Nombre</th>
                       <th className="px-3 pb-2">Clase / Coach</th>
                       <th className="px-3 pb-2">Créditos restantes</th>
@@ -25456,8 +25459,8 @@ function AnalyticsAcademia({
             )}
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-900">
               <UserX size={16} className="text-rose-400" /> Historial de Alumnos Cancelados / Inactivos
             </h3>
             {alumnosChurn.length === 0 ? (
@@ -25469,10 +25472,10 @@ function AnalyticsAcademia({
                   return (
                     <div
                       key={a.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2"
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/40 px-3 py-2"
                     >
                       <div className="min-w-0">
-                        <p className="truncate text-xs font-bold text-slate-100">{a.nombre}</p>
+                        <p className="truncate text-xs font-bold text-slate-900">{a.nombre}</p>
                         <p className="text-[10px] text-slate-500">
                           {clase?.nombre || 'Clase'} · Baja {a.fecha_baja ? formatoFechaLarga(a.fecha_baja) : '—'} ·{' '}
                           {a.motivo_baja || 'Sin razón registrada'}
@@ -25516,20 +25519,20 @@ function AnalyticsAcademia({
                 onClick={() => setFiltroNivel((prev) => (prev === nivel ? 'todos' : nivel))}
                 className={`rounded-2xl border p-4 text-left transition ${
                   filtroNivel === nivel
-                    ? 'border-lime-400/60 bg-slate-800/60 ring-1 ring-lime-400/40'
-                    : 'border-slate-800 bg-slate-900 hover:border-lime-400/30 hover:bg-slate-800/40'
+                    ? 'border-lime-400/60 bg-slate-100/60 ring-1 ring-lime-400/40'
+                    : 'border-slate-200 bg-white hover:border-lime-400/30 hover:bg-slate-100/40'
                 }`}
               >
                 <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{nivel}</p>
-                <p className="mt-1 text-2xl font-black text-slate-100">{totalesPorNivel[nivel]}</p>
+                <p className="mt-1 text-2xl font-black text-slate-900">{totalesPorNivel[nivel]}</p>
                 <p className="text-[11px] text-slate-500">alumno{totalesPorNivel[nivel] === 1 ? '' : 's'} activo{totalesPorNivel[nivel] === 1 ? '' : 's'}</p>
               </button>
             ))}
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
                 <Users size={16} className="text-lime-400" /> Tabla de Alumnos
               </h3>
               <div className="flex items-center gap-2">
@@ -25541,7 +25544,7 @@ function AnalyticsAcademia({
                 {filtroNivel !== 'todos' && (
                   <button
                     onClick={() => setFiltroNivel('todos')}
-                    className="text-[11px] font-bold text-slate-400 hover:text-slate-200"
+                    className="text-[11px] font-bold text-slate-500 hover:text-slate-800"
                   >
                     Quitar filtro
                   </button>
@@ -25554,7 +25557,7 @@ function AnalyticsAcademia({
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       <th className="px-3 pb-2">Nombre</th>
                       <th className="px-3 pb-2">Clase</th>
                       <th className="px-3 pb-2">Nivel</th>
@@ -25562,15 +25565,15 @@ function AnalyticsAcademia({
                       <th className="px-3 pb-2">Estatus</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-800/70">
+                  <tbody className="divide-y divide-slate-200/70">
                     {alumnosPorNivelFiltrados.map((a) => {
                       const clase = clasesPorId[a.clase_id];
                       return (
                         <tr key={a.id}>
-                          <td className="px-3 py-2 font-bold text-slate-100">{a.nombre}</td>
-                          <td className="px-3 py-2 text-slate-400">{clase?.nombre || '—'}</td>
-                          <td className="px-3 py-2 text-slate-300">{clase?.nivel || '—'}</td>
-                          <td className="px-3 py-2 text-slate-400">{clase?.coach_nombre || '—'}</td>
+                          <td className="px-3 py-2 font-bold text-slate-900">{a.nombre}</td>
+                          <td className="px-3 py-2 text-slate-500">{clase?.nombre || '—'}</td>
+                          <td className="px-3 py-2 text-slate-600">{clase?.nivel || '—'}</td>
+                          <td className="px-3 py-2 text-slate-500">{clase?.coach_nombre || '—'}</td>
                           <td className="px-3 py-2">
                             <span
                               className={`rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
@@ -25600,8 +25603,8 @@ function AnalyticsAcademia({
               de nivel, Tabla de Alumnos, Alertas de Riesgo de Deserción,
               tabla de KPIs por Coach) se queda igual. */}
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-900">
               <UserX size={16} className="text-rose-400" /> Alertas de Riesgo de Deserción
             </h3>
             {alumnosEnRiesgo.length === 0 ? (
@@ -25619,7 +25622,7 @@ function AnalyticsAcademia({
                       className="flex w-full items-center justify-between gap-2 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-left transition hover:bg-rose-500/10 disabled:cursor-default"
                     >
                       <div className="min-w-0">
-                        <p className="truncate text-xs font-bold text-slate-100">{alumno.nombre}</p>
+                        <p className="truncate text-xs font-bold text-slate-900">{alumno.nombre}</p>
                         <p className="text-[10px] text-slate-500">{clase?.nombre || 'Clase'}</p>
                       </div>
                       <span className="shrink-0 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
@@ -25632,8 +25635,8 @@ function AnalyticsAcademia({
             )}
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-100">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-900">
               <Award size={16} className="text-teal-400" /> KPIs Operativos por Coach
             </h3>
             {kpisPorCoach.length === 0 ? (
@@ -25642,7 +25645,7 @@ function AnalyticsAcademia({
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       <th className="pb-2 pr-3">Coach</th>
                       <th className="pb-2 pr-3">Clases Impartidas (Día / Mes)</th>
                       <th className="pb-2 pr-3">Desglose (Privadas / Grupales)</th>
@@ -25651,23 +25654,23 @@ function AnalyticsAcademia({
                       <th className="pb-2">Índice de Retención</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-800">
+                  <tbody className="divide-y divide-slate-200">
                     {kpisPorCoach.map((c) => (
                       <tr key={c.nombre}>
-                        <td className="py-2 pr-3 font-bold text-slate-100">{c.nombre}</td>
-                        <td className="py-2 pr-3 text-slate-300">
+                        <td className="py-2 pr-3 font-bold text-slate-900">{c.nombre}</td>
+                        <td className="py-2 pr-3 text-slate-600">
                           {c.clasesImpartidasDia} / {c.clasesImpartidasMes}
                         </td>
-                        <td className="py-2 pr-3 text-slate-300">
+                        <td className="py-2 pr-3 text-slate-600">
                           {c.clasesPrivadas} privadas / {c.clasesGrupales} grupales
                         </td>
-                        <td className="py-2 pr-3 text-slate-300">{c.promedioAlumnosGrupal === null ? '—' : c.promedioAlumnosGrupal}</td>
-                        <td className="py-2 pr-3 text-slate-300">
+                        <td className="py-2 pr-3 text-slate-600">{c.promedioAlumnosGrupal === null ? '—' : c.promedioAlumnosGrupal}</td>
+                        <td className="py-2 pr-3 text-slate-600">
                           <span className="text-emerald-400">{c.alumnosActivos}</span>
                           {' / '}
                           <span className="text-slate-500">{c.alumnosInactivos}</span>
                         </td>
-                        <td className="py-2 text-slate-300">{c.retencionPct === null ? 'Sin datos suficientes' : `${c.retencionPct}%`}</td>
+                        <td className="py-2 text-slate-600">{c.retencionPct === null ? 'Sin datos suficientes' : `${c.retencionPct}%`}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -25757,13 +25760,13 @@ function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardan
     >
       <div className="space-y-3.5">
         {lista.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-slate-700 bg-slate-800/40 px-3 py-4 text-center text-xs text-slate-500">
+          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-100/40 px-3 py-4 text-center text-xs text-slate-500">
             Sin bloques definidos — el Portal no restringe ninguna hora todavía.
           </p>
         ) : (
           <div className="space-y-2.5">
             {lista.map((r) => (
-              <div key={r._key} className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-900 p-2.5">
+              <div key={r._key} className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-2.5">
                 <div className="flex items-center gap-2">
                   {/* FIX DE UI: el renglón ya NO empieza con el `<input>` de
                       texto libre para "etiqueta" — ese recuadro (vacío la
@@ -25841,7 +25844,7 @@ function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardan
         <button
           type="button"
           onClick={agregarBloque}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-700 py-2 text-xs font-bold text-slate-400 hover:border-lime-400/50 hover:text-lime-400"
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-2 text-xs font-bold text-slate-500 hover:border-lime-400/50 hover:text-lime-400"
         >
           <Plus size={13} /> Agregar bloque
         </button>
@@ -26276,7 +26279,7 @@ function ModuloAcademiaClinicas({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+        <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
           {subvistas.map((v) => {
             const Icon = v.icon;
             return (
@@ -26284,14 +26287,14 @@ function ModuloAcademiaClinicas({
                 key={v.value}
                 onClick={() => setSubvista(v.value)}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Icon size={14} /> {v.label}
                 {!!v.badge && (
                   <span
                     className={`rounded-full px-1.5 py-0.5 text-[9px] font-black ${
-                      subvista === v.value ? 'bg-slate-950/20 text-slate-950' : 'bg-rose-500 text-white'
+                      subvista === v.value ? 'bg-slate-50/20 text-slate-950' : 'bg-rose-500 text-white'
                     }`}
                   >
                     {v.badge}
@@ -26322,12 +26325,12 @@ function ModuloAcademiaClinicas({
         <div className="space-y-4">
           {!tablaAcademiaExiste && <BannerTablaFaltante tabla="academia_clases (corre migracion_v16_academia_creditos.sql)" />}
           {todasLasClasesAcademia.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 p-1">
+            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
               <button
                 type="button"
                 onClick={() => setFiltroClase('activas')}
                 className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroClase === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  filtroClase === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 Activas
@@ -26336,12 +26339,12 @@ function ModuloAcademiaClinicas({
                 type="button"
                 onClick={() => setFiltroClase('archivadas')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroClase === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  filtroClase === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 <Archive size={11} /> Archivadas
                 {clasesArchivadas.length > 0 && (
-                  <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] font-black text-slate-300">
+                  <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-600">
                     {clasesArchivadas.length}
                   </span>
                 )}
@@ -26351,11 +26354,11 @@ function ModuloAcademiaClinicas({
           {loadingSesiones && clasesVisibles.length === 0 ? (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {[0, 1, 2].map((i) => (
-                <div key={i} className="h-32 animate-pulse rounded-2xl bg-slate-900" />
+                <div key={i} className="h-32 animate-pulse rounded-2xl bg-white" />
               ))}
             </div>
           ) : clasesVisibles.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center text-slate-500">
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-14 text-center text-slate-500">
               <GraduationCap size={26} />
               <p className="text-sm font-semibold">
                 {filtroClase === 'archivadas' ? 'No hay clases archivadas.' : 'Todavía no hay clases creadas.'}
@@ -26442,7 +26445,7 @@ function ModuloAcademiaClinicas({
               <Loader2 size={20} className="animate-spin" />
             </div>
           ) : solicitudesOrdenadas.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center text-slate-500">
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-14 text-center text-slate-500">
               <Inbox size={26} />
               <p className="text-sm font-semibold">Todavía no hay solicitudes de clase.</p>
               <p className="text-xs">Cuando un jugador pida una clase privada o un grupo nuevo desde el Portal, aparecerá aquí.</p>
@@ -26461,13 +26464,13 @@ function ModuloAcademiaClinicas({
                     (s.estado || 'pendiente') === 'pendiente'
                       ? 'border-amber-400/30 bg-amber-400/5'
                       : s.estado === 'atendida'
-                      ? 'border-emerald-400/20 bg-slate-900'
-                      : 'border-slate-800 bg-slate-900/60 opacity-60'
+                      ? 'border-emerald-400/20 bg-white'
+                      : 'border-slate-200 bg-white/60 opacity-60'
                   }`}
                 >
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <p className="flex items-center gap-1.5 font-black text-slate-100">
+                      <p className="flex items-center gap-1.5 font-black text-slate-900">
                         {s.nombre}
                         <span
                           className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ring-1 ${
@@ -26479,10 +26482,10 @@ function ModuloAcademiaClinicas({
                           {s.tipo_solicitud === 'privada' ? 'Privada 1-a-1' : 'Nuevo grupo'}
                         </span>
                       </p>
-                      <p className="mt-0.5 text-xs text-slate-400">
+                      <p className="mt-0.5 text-xs text-slate-500">
                         {s.nivel || 'Nivel sin indicar'} · Coach {s.coach_deseado || 'sin preferencia'}
                       </p>
-                      <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
+                      <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
                         <CalendarClock size={12} /> {diaLabel}
                         {rangoHora ? ` · ${rangoHora}` : ''}
                       </p>
@@ -26494,7 +26497,7 @@ function ModuloAcademiaClinicas({
                           ? 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
                           : s.estado === 'atendida'
                           ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
-                          : 'bg-slate-700/40 text-slate-400'
+                          : 'bg-slate-200/40 text-slate-500'
                       }`}
                     >
                       {(s.estado || 'pendiente') === 'pendiente' ? 'Pendiente' : s.estado === 'atendida' ? 'Atendida' : 'Descartada'}
@@ -26557,7 +26560,7 @@ function ModuloAcademiaClinicas({
             incluye a quienes solo tienen reservas de cancha (ver Directorio de Jugadores para el CRM general).
           </p>
           {alumnosAcademiaActivos.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center text-slate-500">
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-14 text-center text-slate-500">
               <Users size={26} />
               <p className="text-sm font-semibold">Todavía no hay alumnos activos en Academia.</p>
               <p className="text-xs">Se agregan automáticamente al inscribir a un jugador en una clase o clínica.</p>
@@ -26573,11 +26576,11 @@ function ModuloAcademiaClinicas({
                     key={alumno.jugadorId}
                     type="button"
                     onClick={() => setAlumnoExpedienteId(alumno.jugadorId)}
-                    className="flex flex-col gap-2 rounded-2xl border border-slate-800 bg-slate-900 p-4 text-left transition hover:border-lime-400/40"
+                    className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-lime-400/40"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <p className="text-sm font-bold text-slate-100">{alumno.nombre}</p>
+                        <p className="text-sm font-bold text-slate-900">{alumno.nombre}</p>
                         {alumno.claseNombre && <p className="text-[11px] text-slate-500">{alumno.claseNombre}</p>}
                       </div>
                       {nivelActual ? (
@@ -26585,12 +26588,12 @@ function ModuloAcademiaClinicas({
                           {nivelActual}
                         </span>
                       ) : (
-                        <span className="whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                        <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-500">
                           Sin evaluar
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400">
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
                       <span>{ultima?.promedio != null ? `Promedio ${ultima.promedio}/10` : 'Sin calificaciones aún'}</span>
                       <span className="inline-flex items-center gap-1 text-lime-400">
                         <Gauge size={12} /> Ver Expediente
@@ -27441,7 +27444,7 @@ function DirectorioJugadoresCRM({
         />
       </div>
 
-      <div className="flex flex-col gap-2.5 rounded-2xl border border-slate-800 bg-slate-900 p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2.5 rounded-2xl border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative flex-1 sm:max-w-xs">
           <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
@@ -27458,7 +27461,7 @@ function DirectorioJugadoresCRM({
               type="button"
               onClick={() => setFiltroSegmento(seg)}
               className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-                filtroSegmento === seg ? 'bg-lime-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+                filtroSegmento === seg ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
               }`}
             >
               {seg === 'todos' ? 'Todos' : seg}
@@ -27468,7 +27471,7 @@ function DirectorioJugadoresCRM({
             type="button"
             onClick={() => setSoloRiesgo((v) => !v)}
             className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-              soloRiesgo ? 'bg-rose-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:text-slate-100'
+              soloRiesgo ? 'bg-rose-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
             }`}
           >
             <ShieldAlert size={12} /> En riesgo
@@ -27478,7 +27481,7 @@ function DirectorioJugadoresCRM({
             onClick={sincronizarDirectorio}
             disabled={sincronizando}
             title="Vuelve a traer jugadores, reservas y ventas de Smart POS, y re-evalúa a qué jugador pertenece cada consumo por cancha"
-            className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300 transition hover:text-slate-100 disabled:cursor-wait disabled:opacity-60"
+            className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600 transition hover:text-slate-900 disabled:cursor-wait disabled:opacity-60"
           >
             <RefreshCw size={12} className={sincronizando ? 'animate-spin' : ''} /> {sincronizando ? 'Sincronizando…' : 'Sincronizar'}
           </button>
@@ -27486,7 +27489,7 @@ function DirectorioJugadoresCRM({
             type="button"
             onClick={() => setMostrarModalMetas(true)}
             title="Define el monto que debe consumir un jugador en Pro-Shop y en Restaurante/Bar para tener derecho a una Cortesía por Fidelidad"
-            className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300 transition hover:text-slate-100"
+            className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600 transition hover:text-slate-900"
           >
             <Gift size={12} /> Metas de Cortesía
           </button>
@@ -27494,12 +27497,12 @@ function DirectorioJugadoresCRM({
       </div>
 
       {perfilesFiltrados.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 py-14 text-center">
-          <Users size={26} className="text-slate-700" />
-          <p className="text-sm font-semibold text-slate-400">
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-14 text-center">
+          <Users size={26} className="text-slate-300" />
+          <p className="text-sm font-semibold text-slate-500">
             {perfiles.length === 0 ? 'Todavía no hay jugadores en el directorio.' : 'Ningún jugador coincide con el filtro.'}
           </p>
-          <p className="text-xs text-slate-600">Se llena solo con cada reserva agendada en la Parrilla (ver "Nueva Reserva").</p>
+          <p className="text-xs text-slate-400">Se llena solo con cada reserva agendada en la Parrilla (ver "Nueva Reserva").</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -27645,11 +27648,11 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos }) {
     <button
       type="button"
       onClick={onVerDetalle}
-      className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-4 text-left transition hover:border-slate-700 hover:bg-slate-800/60"
+      className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-slate-300 hover:bg-slate-100/60"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-sm font-bold text-slate-100">{perfil.nombre}</p>
+          <p className="truncate text-sm font-bold text-slate-900">{perfil.nombre}</p>
           <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500">
             <Phone size={10} /> {perfil.telefono || 'Sin teléfono'}
           </p>
@@ -27688,7 +27691,7 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos }) {
         </div>
       </div>
 
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
         <div className={`h-full rounded-full ${colorBarra}`} style={{ width: `${perfil.chs.puntaje}%` }} />
       </div>
     </button>
@@ -27697,7 +27700,7 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos }) {
 
 /* ---- Historial exacto por indicador del CHS (acordeón de la ficha) ---- */
 
-const filaHistorialClase = 'flex items-center justify-between gap-2 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs';
+const filaHistorialClase = 'flex items-center justify-between gap-2 rounded-lg bg-white px-2.5 py-1.5 text-xs';
 const listaHistorialClase = 'max-h-56 space-y-1.5 overflow-y-auto pr-1';
 
 function EstadoVacioHistorial({ mensaje }) {
@@ -27717,16 +27720,16 @@ function EstadoVacioHistorial({ mensaje }) {
 function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, canjeando }) {
   const pct = meta > 0 ? Math.min(100, Math.round((progreso / meta) * 100)) : 0;
   return (
-    <div className="space-y-1 rounded-lg bg-slate-900 px-2.5 py-2">
+    <div className="space-y-1 rounded-lg bg-white px-2.5 py-2">
       <div className="flex items-center justify-between gap-2 text-[11px]">
-        <span className="flex items-center gap-1.5 font-semibold text-slate-300">
+        <span className="flex items-center gap-1.5 font-semibold text-slate-600">
           <Gift size={12} className={lista ? 'text-amber-300' : 'text-slate-500'} /> {etiqueta}
         </span>
-        <span className="font-bold text-slate-400">
+        <span className="font-bold text-slate-500">
           {formatoMoneda(progreso)}/{formatoMoneda(meta)}
         </span>
       </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
         <div className={`h-full rounded-full ${lista ? 'bg-amber-400' : 'bg-lime-400'}`} style={{ width: `${pct}%` }} />
       </div>
       {lista ? (
@@ -27740,7 +27743,7 @@ function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, can
           {canjeando ? 'Registrando…' : 'Otorgar/Canjear Cortesía'}
         </button>
       ) : (
-        <span className="mt-1 inline-flex w-fit items-center gap-1.5 rounded-full bg-slate-800 px-2.5 py-1 text-[10px] font-semibold text-slate-500">
+        <span className="mt-1 inline-flex w-fit items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-500">
           <Lock size={10} /> Bloqueado hasta llegar al 100%
         </span>
       )}
@@ -27784,14 +27787,14 @@ function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria })
         {compras.map((c, idx) => (
           <div key={`${c.ventaId}-${idx}`} className={filaHistorialClase}>
             <div className="min-w-0">
-              <p className="truncate font-semibold text-slate-200">
+              <p className="truncate font-semibold text-slate-800">
                 {c.cantidad}x {c.nombre}
               </p>
               <p className="text-[10px] text-slate-500">
                 {c.fecha ? formatoFechaLarga(c.fecha) : 'Fecha desconocida'} · {etiquetaCategoriaProducto(c.categoria)}
               </p>
             </div>
-            <span className="shrink-0 font-bold text-slate-300">{formatoMoneda(c.subtotal)}</span>
+            <span className="shrink-0 font-bold text-slate-600">{formatoMoneda(c.subtotal)}</span>
           </div>
         ))}
       </div>
@@ -27807,7 +27810,7 @@ function DetalleTorneosRetas({ perfil }) {
       {eventos.map((e, idx) => (
         <div key={idx} className={filaHistorialClase}>
           <div className="min-w-0">
-            <p className="flex items-center gap-1.5 font-semibold text-slate-200">
+            <p className="flex items-center gap-1.5 font-semibold text-slate-800">
               <span
                 className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
                   e.tipo === 'Torneo' ? 'bg-violet-400/20 text-violet-300' : 'bg-fuchsia-400/20 text-fuchsia-300'
@@ -27821,7 +27824,7 @@ function DetalleTorneosRetas({ perfil }) {
               {e.fecha ? formatoFechaLarga(e.fecha) : 'Fecha por confirmar'} · {e.categoria}
             </p>
           </div>
-          <span className="shrink-0 font-bold text-slate-300">{formatoMoneda(e.monto)}</span>
+          <span className="shrink-0 font-bold text-slate-600">{formatoMoneda(e.monto)}</span>
         </div>
       ))}
     </div>
@@ -27851,7 +27854,7 @@ function DetalleHistorialCanchas({ perfil }) {
           {historial.map((r) => (
             <div key={r.id} className={filaHistorialClase}>
               <div className="min-w-0">
-                <p className="truncate font-semibold text-slate-200">{r.canchaNombre}</p>
+                <p className="truncate font-semibold text-slate-800">{r.canchaNombre}</p>
                 <p className="text-[10px] text-slate-500">
                   {formatoFechaLarga(r.fecha)} · {formatoHora12(r.horaInicio)}–{formatoHora12(r.horaFin)}
                 </p>
@@ -27872,7 +27875,7 @@ function DetalleTicketsCanchas({ perfil }) {
       {tickets.map((t) => (
         <div key={t.id} className={filaHistorialClase}>
           <div className="min-w-0">
-            <p className="truncate font-semibold text-slate-200">{t.canchaNombre}</p>
+            <p className="truncate font-semibold text-slate-800">{t.canchaNombre}</p>
             <p className="text-[10px] text-slate-500">
               {formatoFechaLarga(t.fecha)} · {formatoHora12(t.horaInicio)}
             </p>
@@ -27976,7 +27979,7 @@ function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPo
                 type="button"
                 disabled={procesando || agotado}
                 onClick={() => elegirProducto(p)}
-                className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-amber-400/50 hover:bg-slate-800/80 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2.5 text-left text-xs font-semibold text-slate-800 transition hover:border-amber-400/50 hover:bg-slate-100/80 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <span className="min-w-0 truncate">
                   {p.nombre}
@@ -28119,7 +28122,7 @@ function ModalPerfilJugadorCRM({
     <>
     <ModalShell titulo={perfil.nombre} subtitulo="Vista 360° · Gasto Total Histórico & Nivel de Fidelidad" onClose={onClose} ancho="max-w-2xl" icon={HeartPulse}>
       <div className="space-y-5">
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
           {editandoTelefono ? (
             <div className="flex flex-1 flex-wrap items-center gap-2">
               <Phone size={14} className="shrink-0 text-slate-500" />
@@ -28144,7 +28147,7 @@ function ModalPerfilJugadorCRM({
             </div>
           ) : (
             <>
-              <span className="flex items-center gap-1.5 text-sm text-slate-300">
+              <span className="flex items-center gap-1.5 text-sm text-slate-600">
                 <Phone size={14} className="text-slate-500" /> {perfil.telefono || 'Sin teléfono registrado'}
               </span>
               <button
@@ -28176,7 +28179,7 @@ function ModalPerfilJugadorCRM({
             </span>
           )}
           {permisos?.puedeVerMontos !== false && perfil.saldoAFavor > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300">
+            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">
               <Wallet size={13} /> Saldo a favor: {formatoMoneda(perfil.saldoAFavor)}
             </span>
           )}
@@ -28190,19 +28193,19 @@ function ModalPerfilJugadorCRM({
           // montos, ver `DetalleIndicadorCHS`) por un resumen puramente
           // operativo: reservas, visitas y asistencias a Academia.
           <div>
-            <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+            <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
               <CalendarClock size={15} className="text-lime-400" /> Actividad del Jugador
             </h3>
             <div className="grid grid-cols-3 gap-2">
-              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-center">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
                 <p className="text-xl font-black text-lime-400">{perfil.historialCanchas?.length || 0}</p>
                 <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reservas</p>
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-center">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
                 <p className="text-xl font-black text-lime-400">{perfil.visitasPropias || 0}</p>
                 <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Visitas</p>
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-center">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
                 <p className="text-xl font-black text-lime-400">{perfil.clasesAcademiaTomadas || 0}</p>
                 <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Asistencias Academia</p>
               </div>
@@ -28225,7 +28228,7 @@ function ModalPerfilJugadorCRM({
         ) : (
           <>
             <div>
-              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
                 <DollarSign size={15} className="text-lime-400" /> Gasto Total Histórico
               </h3>
               <p className="text-2xl font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
@@ -28233,13 +28236,13 @@ function ModalPerfilJugadorCRM({
                 {ltvFilas.map((f) => (
                   <div key={f.label}>
                     <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400">
+                      <span className="text-slate-500">
                         {f.label}
-                        {f.detalle && <span className="ml-1 text-slate-600">· {f.detalle}</span>}
+                        {f.detalle && <span className="ml-1 text-slate-400">· {f.detalle}</span>}
                       </span>
-                      <span className="font-bold text-slate-200">{formatoMoneda(f.valor)}</span>
+                      <span className="font-bold text-slate-800">{formatoMoneda(f.valor)}</span>
                     </div>
-                    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
                       <div
                         className={`h-full rounded-full ${f.color}`}
                         style={{ width: `${Math.max(0, Math.min(100, (f.valor / ltvMax) * 100))}%` }}
@@ -28251,7 +28254,7 @@ function ModalPerfilJugadorCRM({
             </div>
 
             <div>
-              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-100">
+              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
                 <Gauge size={15} className="text-lime-400" /> Nivel de Fidelidad (Score) — {perfil.chs.puntaje}/100 pts
               </h3>
               <p className="mb-2 text-[11px] text-slate-500">Da clic en cualquier indicador para ver su historial exacto.</p>
@@ -28260,15 +28263,15 @@ function ModalPerfilJugadorCRM({
                   const meta = NIVEL_CHS_META[ind.nivel];
                   const expandido = indicadorExpandido === ind.key;
                   return (
-                    <div key={ind.key} className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+                    <div key={ind.key} className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
                       <button
                         type="button"
                         onClick={() => setIndicadorExpandido(expandido ? null : ind.key)}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-slate-900/70"
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-white/70"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between text-xs">
-                            <span className="flex items-center gap-1.5 font-bold text-slate-200">
+                            <span className="flex items-center gap-1.5 font-bold text-slate-800">
                               {meta.emoji} {ind.label}
                             </span>
                             <span className={`font-bold ${meta.color}`}>
@@ -28283,7 +28286,7 @@ function ModalPerfilJugadorCRM({
                         />
                       </button>
                       {expandido && (
-                        <div className="border-t border-slate-800 bg-slate-950/60 px-3 py-2.5">
+                        <div className="border-t border-slate-200 bg-slate-50/60 px-3 py-2.5">
                           <DetalleIndicadorCHS
                             indKey={ind.key}
                             perfil={perfil}
@@ -28300,11 +28303,11 @@ function ModalPerfilJugadorCRM({
           </>
         )}
 
-        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-3">
-          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-400">
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/60 p-3">
+          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-500">
             <TrendingDown size={13} /> Motor Anti-Churn — plantilla sugerida
           </h3>
-          <p className="text-xs text-slate-300">{mensajeWhatsApp}</p>
+          <p className="text-xs text-slate-600">{mensajeWhatsApp}</p>
           <a
             href={perfil.telefono ? linkWhatsApp : undefined}
             target="_blank"
@@ -28313,7 +28316,7 @@ function ModalPerfilJugadorCRM({
               if (!perfil.telefono) e.preventDefault();
             }}
             className={`mt-3 inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold transition ${
-              perfil.telefono ? 'bg-emerald-500 text-white hover:bg-emerald-400' : 'cursor-not-allowed bg-slate-800 text-slate-500'
+              perfil.telefono ? 'bg-emerald-500 text-white hover:bg-emerald-400' : 'cursor-not-allowed bg-slate-100 text-slate-500'
             }`}
           >
             <IconoWhatsApp size={15} /> {perfil.telefono ? 'Enviar por WhatsApp' : 'Agrega un teléfono para contactarlo'}
@@ -28388,7 +28391,7 @@ function ModuloJugadores({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap rounded-lg border border-slate-700 bg-slate-800 p-1">
+      <div className="flex flex-wrap rounded-lg border border-slate-300 bg-slate-100 p-1">
         {subvistas.map((v) => {
           const Icon = v.icon;
           return (
@@ -28396,7 +28399,7 @@ function ModuloJugadores({
               key={v.value}
               onClick={() => setSubvista(v.value)}
               className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-                subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Icon size={14} /> {v.label}
@@ -28522,7 +28525,7 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
                   className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-[11px] font-bold transition ${
                     rol === r.value
                       ? `border-lime-400 ${r.bg} ${r.color}`
-                      : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
                   <RolIcon size={13} className="shrink-0" />
@@ -28564,14 +28567,14 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
           />
         </Campo>
         {editando && (
-          <label className="flex items-center gap-2.5 rounded-lg bg-slate-900/60 p-3">
+          <label className="flex items-center gap-2.5 rounded-lg bg-white/60 p-3">
             <input
               type="checkbox"
               checked={activo}
               onChange={(e) => setActivo(e.target.checked)}
               className="h-4 w-4 accent-lime-400"
             />
-            <span className="text-xs font-semibold text-slate-300">Empleado activo (aparece para ficharse)</span>
+            <span className="text-xs font-semibold text-slate-600">Empleado activo (aparece para ficharse)</span>
           </label>
         )}
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
@@ -28593,15 +28596,15 @@ function FilaEmpleado({ empleado, puedeGestionar, onEditar }) {
   const rolMeta = ROLES_POR_VALOR[empleado.rol];
   const RolIcon = rolMeta?.icon || Users;
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3">
-      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${rolMeta?.bg || 'bg-slate-800'}`}>
-        <RolIcon size={17} className={rolMeta?.color || 'text-slate-300'} />
+    <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${rolMeta?.bg || 'bg-slate-100'}`}>
+        <RolIcon size={17} className={rolMeta?.color || 'text-slate-600'} />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-2 truncate text-sm font-bold text-slate-100">
+        <p className="flex items-center gap-2 truncate text-sm font-bold text-slate-900">
           {empleado.nombre}
           {empleado._local && (
-            <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
+            <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
               Local
             </span>
           )}
@@ -28625,7 +28628,7 @@ function FilaEmpleado({ empleado, puedeGestionar, onEditar }) {
       </span>
       <span
         className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
-          empleado.activo !== false ? 'bg-emerald-400/10 text-emerald-400' : 'bg-slate-800 text-slate-500'
+          empleado.activo !== false ? 'bg-emerald-400/10 text-emerald-400' : 'bg-slate-100 text-slate-500'
         }`}
       >
         {empleado.activo !== false ? 'Activo' : 'Inactivo'}
@@ -28633,7 +28636,7 @@ function FilaEmpleado({ empleado, puedeGestionar, onEditar }) {
       {puedeGestionar && (
         <button
           onClick={() => onEditar(empleado)}
-          className="shrink-0 rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-400 transition hover:border-lime-400/40 hover:text-lime-400"
+          className="shrink-0 rounded-lg border border-slate-300 bg-slate-100 p-2 text-slate-500 transition hover:border-lime-400/40 hover:text-lime-400"
         >
           <Pencil size={13} />
         </button>
@@ -28655,12 +28658,12 @@ function FilaCierreCaja({ cierre, puedeAprobar, onAprobar }) {
   return (
     <div
       className={`rounded-xl border p-3.5 ${
-        tieneDiferencia ? 'border-amber-400/30 bg-amber-400/5' : 'border-slate-800 bg-slate-950'
+        tieneDiferencia ? 'border-amber-400/30 bg-amber-400/5' : 'border-slate-200 bg-slate-50'
       }`}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <p className="flex items-center gap-2 text-sm font-bold text-slate-100">
+          <p className="flex items-center gap-2 text-sm font-bold text-slate-900">
             {cierre.operador_nombre || 'Operador'}
             <span className="text-xs font-semibold text-slate-500">
               {TURNOS.find((t) => t.value === cierre.turno)?.label || cierre.turno || 'Turno'}
@@ -28681,24 +28684,24 @@ function FilaCierreCaja({ cierre, puedeAprobar, onAprobar }) {
               <CheckCircle2 size={12} /> Aprobar
             </button>
           ) : (
-            <span className="rounded-full bg-slate-800 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
               Pendiente
             </span>
           )}
         </div>
       </div>
       <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-        <div className="rounded-lg bg-slate-900/60 px-2 py-2">
+        <div className="rounded-lg bg-white/60 px-2 py-2">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Contado</p>
-          <p className="text-sm font-black text-slate-100">{formatoMoneda(cierre.monto_reportado_efectivo)}</p>
+          <p className="text-sm font-black text-slate-900">{formatoMoneda(cierre.monto_reportado_efectivo)}</p>
         </div>
-        <div className="rounded-lg bg-slate-900/60 px-2 py-2">
+        <div className="rounded-lg bg-white/60 px-2 py-2">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Teórico</p>
-          <p className="text-sm font-black text-slate-100">{formatoMoneda(cierre.monto_teorico_efectivo)}</p>
+          <p className="text-sm font-black text-slate-900">{formatoMoneda(cierre.monto_teorico_efectivo)}</p>
         </div>
-        <div className={`rounded-lg px-2 py-2 ${tieneDiferencia ? 'bg-amber-400/10' : 'bg-slate-900/60'}`}>
+        <div className={`rounded-lg px-2 py-2 ${tieneDiferencia ? 'bg-amber-400/10' : 'bg-white/60'}`}>
           <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Diferencia</p>
-          <p className={`text-sm font-black ${diferencia > 0 ? 'text-emerald-400' : diferencia < 0 ? 'text-rose-400' : 'text-slate-100'}`}>
+          <p className={`text-sm font-black ${diferencia > 0 ? 'text-emerald-400' : diferencia < 0 ? 'text-rose-400' : 'text-slate-900'}`}>
             {diferencia > 0 ? '+' : ''}
             {formatoMoneda(diferencia)}
           </p>
@@ -28722,17 +28725,17 @@ function FilaLogActividad({ evento }) {
     ? new Date(evento.created_at).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })
     : '';
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3">
-      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${meta?.bg || 'bg-slate-800'}`}>
-        <Icon size={14} className={meta?.color || 'text-slate-400'} />
+    <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${meta?.bg || 'bg-slate-100'}`}>
+        <Icon size={14} className={meta?.color || 'text-slate-500'} />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <p className="text-xs font-bold text-slate-100">{etiquetaTipoEvento(evento.tipo)}</p>
+          <p className="text-xs font-bold text-slate-900">{etiquetaTipoEvento(evento.tipo)}</p>
           <p className="text-[10px] text-slate-500">{fechaHora}</p>
         </div>
-        <p className="mt-0.5 text-[11px] text-slate-400">{meta?.detalleTexto?.(evento.detalle) || ''}</p>
-        <p className="mt-1 text-[10px] font-semibold text-slate-600">
+        <p className="mt-0.5 text-[11px] text-slate-500">{meta?.detalleTexto?.(evento.detalle) || ''}</p>
+        <p className="mt-1 text-[10px] font-semibold text-slate-400">
           {evento.empleado_nombre || 'Operador'} · {ROLES_POR_VALOR[evento.empleado_rol]?.label || evento.empleado_rol || ''}
         </p>
       </div>
@@ -28815,7 +28818,7 @@ function ModuloControlSeguridad({
         <MetricCard icon={History} etiqueta="Eventos en el Log" valor={logActividad.length} sub="Cancelaciones, descuentos, ediciones..." tono="violet" />
       </div>
 
-      <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+      <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
         {SUBVISTAS.map((sv) => {
           const Icon = sv.icon;
           return (
@@ -28823,7 +28826,7 @@ function ModuloControlSeguridad({
               key={sv.value}
               onClick={() => setSubvista(sv.value)}
               className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-                subvista === sv.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                subvista === sv.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Icon size={14} /> {sv.label}
@@ -28835,7 +28838,7 @@ function ModuloControlSeguridad({
       {subvista === 'empleados' && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Directorio de Empleados</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Directorio de Empleados</p>
             {permisos?.puedeGestionarEmpleados && (
               <BotonPrimario onClick={() => setModalEmpleado({})}>
                 <UserPlus size={15} /> Nuevo Empleado
@@ -28846,7 +28849,7 @@ function ModuloControlSeguridad({
           {loadingEmpleados ? (
             <SkeletonGrid />
           ) : empleadosOrdenados.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+            <p className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500">
               Sin empleados todavía. Usa "Cambiar Operador" en el header para dar de alta al primero.
             </p>
           ) : (
@@ -28866,14 +28869,14 @@ function ModuloControlSeguridad({
 
       {subvista === 'cortes' && (
         <div className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Cortes de Caja / Arqueos — Aprobación de Cortes
           </p>
           {errorCierresCaja && <ErrorBanner mensaje={errorCierresCaja} onReintentar={() => cargarCierresCaja()} />}
           {loadingCierresCaja ? (
             <SkeletonGrid />
           ) : cierresOrdenados.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+            <p className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500">
               Sin cortes de caja registrados todavía. Se crean desde "Cerrar Turno / Arqueo" en Smart POS.
             </p>
           ) : (
@@ -28894,7 +28897,7 @@ function ModuloControlSeguridad({
       {subvista === 'log' && (
         <div className="space-y-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               Log de Actividad / Historial Auditable
             </p>
             <div className="flex flex-col gap-2 sm:flex-row">
@@ -28918,7 +28921,7 @@ function ModuloControlSeguridad({
           {loadingLogActividad ? (
             <SkeletonGrid />
           ) : logFiltrado.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+            <p className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500">
               Sin eventos que coincidan. Cancelaciones, descuentos, ediciones de precio y cambios de horario/cancha aparecen aquí automáticamente.
             </p>
           ) : (
@@ -29057,7 +29060,7 @@ function normalizarFilaClub(fila, tabla) {
 // igual sin duplicar la paleta en cada componente.
 const ESTILO_OCUPACION_SLOT = {
   disponible: { etiqueta: 'Disponible', clases: 'border-lime-400/50 bg-lime-400/10 text-lime-400' },
-  reservado: { etiqueta: 'Reservado', clases: 'border-slate-700 bg-slate-800/90 text-slate-400' },
+  reservado: { etiqueta: 'Reservado', clases: 'border-slate-300 bg-slate-100/90 text-slate-500' },
   clase: { etiqueta: 'Clase', clases: 'border-sky-400/50 bg-sky-400/10 text-sky-400' },
   torneo_reta: { etiqueta: 'Torneo/Reta', clases: 'border-purple-400/50 bg-purple-400/10 text-purple-400' },
   // Fuera de los Rangos de Horario Habilitados para Clases del club (item
@@ -29065,7 +29068,7 @@ const ESTILO_OCUPACION_SLOT = {
   // en "Reservar Cancha" (esa cuadrícula no tiene restricción de horario de
   // coach). Deliberadamente más apagado que 'reservado' para distinguir "no
   // se ofrece clase a esta hora" de "sí se ofrece, pero está ocupado".
-  fuera_horario: { etiqueta: 'No disponible', clases: 'border-slate-800 bg-slate-900/70 text-slate-600' },
+  fuera_horario: { etiqueta: 'No disponible', clases: 'border-slate-200 bg-white/70 text-slate-400' },
   // Hay cancha libre, pero el "Coach Preferido" elegido ya tiene otra clase
   // asignada a esa hora (item 3/4) — distinto de 'reservado' porque aquí SÍ
   // hay cancha disponible, solo que no con ese coach en particular.
@@ -31354,7 +31357,7 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   if (cargandoClub) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-950 via-gray-900 to-black text-slate-400">
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-white to-slate-100 text-slate-500">
         <Loader2 size={22} className="animate-spin" />
       </div>
     );
@@ -31362,9 +31365,9 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   if (!club) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-950 via-gray-900 to-black px-6 text-center text-slate-400">
-        <MapPin size={28} className="text-slate-600" />
-        <p className="text-lg font-bold text-slate-200">Club no encontrado</p>
+      <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-50 via-white to-slate-100 px-6 text-center text-slate-500">
+        <MapPin size={28} className="text-slate-400" />
+        <p className="text-lg font-bold text-slate-800">Club no encontrado</p>
         <p className="max-w-sm text-sm">No encontramos ningún club en esta dirección. Verifica el enlace con tu club.</p>
       </div>
     );
@@ -31372,26 +31375,26 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   return (
     <ToastContext.Provider value={mostrarToast}>
-      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-gray-900 to-black text-slate-100">
-        <header className="sticky top-0 z-30 border-b border-white/5 bg-slate-950/70 px-4 py-3.5 backdrop-blur-xl">
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 text-slate-900">
+        <header className="sticky top-0 z-30 border-b border-slate-200 bg-slate-50/70 px-4 py-3.5 backdrop-blur-xl">
           <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               {club.logo_url ? (
-                <img src={club.logo_url} alt={club.nombre} className="h-9 w-9 rounded-lg object-cover ring-1 ring-white/10" />
+                <img src={club.logo_url} alt={club.nombre} className="h-9 w-9 rounded-lg object-cover ring-1 ring-slate-200" />
               ) : (
                 <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20">
                   <Trophy size={17} />
                 </div>
               )}
               <div>
-                <p className="text-sm font-black leading-tight text-slate-50">{club.nombre || 'Club de Pádel'}</p>
+                <p className="text-sm font-black leading-tight text-slate-900">{club.nombre || 'Club de Pádel'}</p>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Portal de jugadores</p>
               </div>
             </div>
             {jugador ? (
               <button
                 onClick={cerrarSesionPortal}
-                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-slate-900/60 px-2.5 py-1.5 text-xs font-bold text-slate-300 backdrop-blur hover:text-slate-100"
+                className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/60 px-2.5 py-1.5 text-xs font-bold text-slate-600 backdrop-blur hover:text-slate-900"
               >
                 <User size={13} /> {jugador.nombre.split(' ')[0]}
               </button>
@@ -31411,7 +31414,7 @@ function PortalPublicoJugadores({ clubSlug }) {
               se desplaza lateralmente (`overflow-x-auto`) en vez de
               comprimirlas — mismo criterio que el conmutador de módulos del
               Header Operativo (`TopHeader`). */}
-          <div className="mb-4 flex gap-1 overflow-x-auto rounded-lg border border-white/5 bg-slate-900/50 p-1 backdrop-blur-sm">
+          <div className="mb-4 flex gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-white/50 p-1 backdrop-blur-sm">
             {[
               { value: 'canchas', label: 'Canchas', icon: MapPin },
               { value: 'tienda', label: 'Tienda', icon: ShoppingBag },
@@ -31427,7 +31430,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                   key={tab.value}
                   onClick={() => setVista(tab.value)}
                   className={`flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3.5 py-2 text-[11px] font-bold transition sm:flex-1 ${
-                    vista === tab.value ? 'bg-lime-400 text-slate-950 shadow-lg shadow-lime-400/20' : 'text-slate-400 hover:text-slate-200'
+                    vista === tab.value ? 'bg-lime-400 text-slate-950 shadow-lg shadow-lime-400/20' : 'text-slate-500 hover:text-slate-800'
                   }`}
                 >
                   <Icon size={14} /> {tab.label}
@@ -31455,9 +31458,9 @@ function PortalPublicoJugadores({ clubSlug }) {
                         key={c.id}
                         type="button"
                         onClick={() => setCanchaParaReservar(c)}
-                        className="group overflow-hidden rounded-2xl border border-white/5 bg-slate-900/50 text-left backdrop-blur-sm transition hover:border-lime-400/30 hover:bg-slate-900/70"
+                        className="group overflow-hidden rounded-2xl border border-slate-200 bg-white/50 text-left backdrop-blur-sm transition hover:border-lime-400/30 hover:bg-white/70"
                       >
-                        <div className="relative h-28 w-full bg-slate-800">
+                        <div className="relative h-28 w-full bg-slate-100">
                           <img
                             src={c.imagen_url || fallbackImagen(c.id)}
                             onError={(e) => {
@@ -31467,16 +31470,16 @@ function PortalPublicoJugadores({ clubSlug }) {
                             alt={c.nombre}
                             className="h-full w-full object-cover"
                           />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/70 via-transparent to-transparent" />
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-50/70 via-transparent to-transparent" />
                         </div>
                         <div className="p-3.5">
                           <div className="flex items-center justify-between gap-2">
-                            <p className="font-black text-slate-100">{c.nombre}</p>
+                            <p className="font-black text-slate-900">{c.nombre}</p>
                             <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${meta.badge}`}>{meta.label}</span>
                           </div>
                           <div className="mt-1 flex items-center justify-between">
                             <p className="text-sm font-bold text-lime-400">{formatoMoneda(precioPorHoraDeCancha(c))}/hora</p>
-                            <span className="flex items-center gap-1 text-[11px] font-bold text-slate-400 group-hover:text-lime-400">
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-slate-500 group-hover:text-lime-400">
                               Reservar <ChevronRight size={13} />
                             </span>
                           </div>
@@ -31503,9 +31506,9 @@ function PortalPublicoJugadores({ clubSlug }) {
                           type="button"
                           disabled={sinStock}
                           onClick={() => (tieneVariantes ? setProductoParaVariantePortal({ producto: p, destino: 'tienda' }) : agregarAlCarritoPortal(p))}
-                          className="overflow-hidden rounded-2xl border border-white/5 bg-slate-900/50 text-left backdrop-blur-sm transition hover:border-violet-400/30 hover:bg-slate-900/70 disabled:cursor-not-allowed disabled:opacity-40"
+                          className="overflow-hidden rounded-2xl border border-slate-200 bg-white/50 text-left backdrop-blur-sm transition hover:border-violet-400/30 hover:bg-white/70 disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          <div className="h-20 w-full bg-slate-800">
+                          <div className="h-20 w-full bg-slate-100">
                             <img
                               src={p.imagen_url || fallbackImagenProducto(p)}
                               onError={(e) => {
@@ -31517,7 +31520,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                             />
                           </div>
                           <div className="p-2.5">
-                            <p className="truncate text-xs font-bold text-slate-100">{p.nombre}</p>
+                            <p className="truncate text-xs font-bold text-slate-900">{p.nombre}</p>
                             <p className="mt-0.5 text-sm font-black text-violet-400">{textoPrecioConVariantes(p, variantes)}</p>
                             {sinStock && <p className="mt-0.5 text-[10px] font-bold text-rose-400">Agotado</p>}
                             {tieneVariantes && <p className="mt-0.5 text-[10px] font-semibold text-slate-500">{variantes.length} opciones</p>}
@@ -31548,12 +31551,12 @@ function PortalPublicoJugadores({ clubSlug }) {
                         key={t.id}
                         type="button"
                         onClick={() => setTorneoDetalle(t)}
-                        className="w-full rounded-2xl border border-white/5 bg-slate-900/50 p-4 text-left backdrop-blur-sm transition hover:border-violet-400/30 hover:bg-slate-900/70"
+                        className="w-full rounded-2xl border border-slate-200 bg-white/50 p-4 text-left backdrop-blur-sm transition hover:border-violet-400/30 hover:bg-white/70"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div>
-                            <p className="font-black text-slate-100">{t.nombre}</p>
-                            <p className="mt-0.5 text-xs text-slate-400">
+                            <p className="font-black text-slate-900">{t.nombre}</p>
+                            <p className="mt-0.5 text-xs text-slate-500">
                               {formatoFechaLarga(t.fecha_inicio)}
                               {t.fecha_fin && t.fecha_fin !== t.fecha_inicio ? ` — ${formatoFechaLarga(t.fecha_fin)}` : ''}
                             </p>
@@ -31574,7 +31577,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                             {t.categorias.map((c, idx) => (
                               <span
                                 key={idx}
-                                className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300"
+                                className="rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600"
                               >
                                 {c.rama} {c.nivel}
                               </span>
@@ -31591,7 +31594,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                                 {buscandoPareja} en busca de pareja
                               </span>
                             )}
-                            <span className="flex items-center gap-1 text-[11px] font-bold text-slate-400">
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-slate-500">
                               Ver detalle <ChevronRight size={13} />
                             </span>
                           </span>
@@ -31614,11 +31617,11 @@ function PortalPublicoJugadores({ clubSlug }) {
                     // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX)
                     const miInscripcionReta = inscritos.find((i) => esMiRegistro(i));
                     return (
-                      <div key={r.id} className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 backdrop-blur-sm">
+                      <div key={r.id} className="rounded-2xl border border-slate-200 bg-white/50 p-4 backdrop-blur-sm">
                         <div className="flex items-start justify-between gap-2">
                           <div>
-                            <p className="font-black text-slate-100">{r.nombre}</p>
-                            <p className="mt-0.5 text-xs text-slate-400">
+                            <p className="font-black text-slate-900">{r.nombre}</p>
+                            <p className="mt-0.5 text-xs text-slate-500">
                               {formatoFechaLarga(r.fecha)} · {r.hora_inicio}–{r.hora_fin} {cancha ? `· ${cancha.nombre}` : ''}
                             </p>
                           </div>
@@ -31639,12 +31642,12 @@ function PortalPublicoJugadores({ clubSlug }) {
                         {(nivelDeReta(r) || ramaDeReta(r)) && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {ramaDeReta(r) && (
-                              <span className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300">
+                              <span className="rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
                                 {ramaDeReta(r)}
                               </span>
                             )}
                             {nivelDeReta(r) && (
-                              <span className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-300">
+                              <span className="rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
                                 {nivelDeReta(r)}
                               </span>
                             )}
@@ -31698,11 +31701,11 @@ function PortalPublicoJugadores({ clubSlug }) {
                               <Bell size={14} />
                             </span>
                             <span>
-                              <span className="block text-sm font-black text-slate-100">{n.titulo}</span>
-                              <span className="block text-[11px] text-slate-400">{n.mensaje}</span>
+                              <span className="block text-sm font-black text-slate-900">{n.titulo}</span>
+                              <span className="block text-[11px] text-slate-500">{n.mensaje}</span>
                             </span>
                           </span>
-                          <span className="shrink-0 whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold text-slate-400">
+                          <span className="shrink-0 whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-500">
                             Marcar leída
                           </span>
                         </button>
@@ -31721,15 +31724,15 @@ function PortalPublicoJugadores({ clubSlug }) {
                       <button
                         type="button"
                         onClick={() => setMostrarPerfilDeportivo(true)}
-                        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-lime-400/30 bg-gradient-to-r from-lime-400/10 via-slate-900/50 to-slate-900/50 p-4 text-left backdrop-blur-sm transition hover:border-lime-400/50 hover:bg-lime-400/[0.15]"
+                        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-lime-400/30 bg-gradient-to-r from-lime-400/10 via-white/50 to-white/50 p-4 text-left backdrop-blur-sm transition hover:border-lime-400/50 hover:bg-lime-400/[0.15]"
                       >
                         <span className="flex items-center gap-2.5">
                           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/15 text-lime-300 ring-1 ring-lime-400/30">
                             <Gauge size={16} />
                           </span>
                           <span>
-                            <span className="block text-sm font-black text-slate-100">Mi Perfil Deportivo</span>
-                            <span className="block text-[11px] text-slate-400">Tu Nivel Oficial, tu progreso y las notas de tus coaches.</span>
+                            <span className="block text-sm font-black text-slate-900">Mi Perfil Deportivo</span>
+                            <span className="block text-[11px] text-slate-500">Tu Nivel Oficial, tu progreso y las notas de tus coaches.</span>
                           </span>
                         </span>
                         <span className="flex shrink-0 items-center gap-2">
@@ -31738,7 +31741,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                               {nivelActualPortal}
                             </span>
                           ) : (
-                            <span className="whitespace-nowrap rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                            <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-500">
                               Sin evaluar
                             </span>
                           )}
@@ -31757,15 +31760,15 @@ function PortalPublicoJugadores({ clubSlug }) {
                   <button
                     type="button"
                     onClick={() => (jugador ? setModalSolicitudClase(true) : setModalIdentificacion(true))}
-                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-violet-400/30 bg-gradient-to-r from-violet-400/10 via-slate-900/50 to-slate-900/50 p-4 text-left backdrop-blur-sm transition hover:border-violet-400/50 hover:bg-violet-400/[0.15]"
+                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-violet-400/30 bg-gradient-to-r from-violet-400/10 via-white/50 to-white/50 p-4 text-left backdrop-blur-sm transition hover:border-violet-400/50 hover:bg-violet-400/[0.15]"
                   >
                     <span className="flex items-center gap-2.5">
                       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-400/15 text-violet-300 ring-1 ring-violet-400/30">
                         <Sparkles size={16} />
                       </span>
                       <span>
-                        <span className="block text-sm font-black text-slate-100">Solicitar Clase Privada o Nuevo Grupo</span>
-                        <span className="block text-[11px] text-slate-400">Elige fecha, nivel y horario en la cuadrícula — el club te confirma.</span>
+                        <span className="block text-sm font-black text-slate-900">Solicitar Clase Privada o Nuevo Grupo</span>
+                        <span className="block text-[11px] text-slate-500">Elige fecha, nivel y horario en la cuadrícula — el club te confirma.</span>
                       </span>
                     </span>
                     <ChevronRight size={16} className="shrink-0 text-violet-300" />
@@ -31786,9 +31789,9 @@ function PortalPublicoJugadores({ clubSlug }) {
                           <div key={c.id} className="rounded-2xl border border-lime-400/20 bg-lime-400/[0.04] p-4 backdrop-blur-sm">
                             <div className="flex items-start justify-between gap-2">
                               <div>
-                                <p className="font-black text-slate-100">{c.nombre}</p>
-                                <p className="mt-0.5 text-xs text-slate-400">Coach {c.coach_nombre || '—'}</p>
-                                <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
+                                <p className="font-black text-slate-900">{c.nombre}</p>
+                                <p className="mt-0.5 text-xs text-slate-500">Coach {c.coach_nombre || '—'}</p>
+                                <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
                                   <CalendarClock size={12} /> {diaFecha} · {formatoHora12(c.hora_inicio)}–{formatoHora12(c.hora_fin)}
                                   {cancha ? ` · ${cancha.nombre}` : ''}
                                 </p>
@@ -31823,14 +31826,14 @@ function PortalPublicoJugadores({ clubSlug }) {
                       // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX)
                       const miInscripcionClase = academiaAlumnosPortal.find((a) => a.clase_id === c.id && a.estado !== 'baja' && esMiRegistro(a));
                       return (
-                        <div key={c.id} className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 backdrop-blur-sm">
+                        <div key={c.id} className="rounded-2xl border border-slate-200 bg-white/50 p-4 backdrop-blur-sm">
                           <div className="flex items-start justify-between gap-2">
                             <div>
-                              <p className="font-black text-slate-100">{c.nombre}</p>
-                              <p className="mt-0.5 text-xs text-slate-400">
+                              <p className="font-black text-slate-900">{c.nombre}</p>
+                              <p className="mt-0.5 text-xs text-slate-500">
                                 {c.nivel} · Coach {c.coach_nombre || '—'}
                               </p>
-                              <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
+                              <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
                                 <CalendarClock size={12} /> {diaFecha} · {formatoHora12(c.hora_inicio)}–{formatoHora12(c.hora_fin)}
                                 {cancha ? ` · ${cancha.nombre}` : ''}
                               </p>
@@ -31881,32 +31884,32 @@ function PortalPublicoJugadores({ clubSlug }) {
               {vista === 'historial' && (
                 <div>
                   {!jugador ? (
-                    <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/5 bg-slate-900/50 p-8 text-center backdrop-blur-sm">
+                    <div className="flex flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-white/50 p-8 text-center backdrop-blur-sm">
                       <History size={26} className="text-lime-400" />
-                      <p className="text-sm text-slate-400">Identifícate para ver tu historial de actividad.</p>
+                      <p className="text-sm text-slate-500">Identifícate para ver tu historial de actividad.</p>
                       <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
                         <User size={13} /> Identificarme
                       </BotonPrimario>
                     </div>
                   ) : (
-                    <div className="rounded-2xl border border-white/5 bg-slate-900/50 backdrop-blur-sm">
-                      <p className="border-b border-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">
+                    <div className="rounded-2xl border border-slate-200 bg-white/50 backdrop-blur-sm">
+                      <p className="border-b border-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-500">
                         Reservas, compras e inscripciones — pasadas y futuras
                       </p>
                       {historialUnificado.length === 0 ? (
                         <p className="px-4 py-8 text-center text-xs text-slate-500">Todavía no tienes actividad registrada en el club.</p>
                       ) : (
-                        <div className="divide-y divide-white/5">
+                        <div className="divide-y divide-slate-200">
                           {historialUnificado.map((h) => {
                             const Icon = h.icon;
                             return (
                               <div key={h.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                                 <div className="flex min-w-0 items-start gap-2.5">
-                                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-lime-400">
+                                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-lime-400">
                                     <Icon size={14} />
                                   </div>
                                   <div className="min-w-0">
-                                    <p className="truncate text-xs font-semibold text-slate-200">{h.titulo}</p>
+                                    <p className="truncate text-xs font-semibold text-slate-800">{h.titulo}</p>
                                     {h.detalle && <p className="truncate text-[10px] text-slate-500">{h.detalle}</p>}
                                     <p className="text-[10px] text-slate-500">
                                       {h.metodoPago ? `${h.metodoPago} · ` : ''}
@@ -31915,7 +31918,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                                   </div>
                                 </div>
                                 <div className="shrink-0 text-right">
-                                  <p className="text-sm font-black text-slate-100">{formatoMoneda(h.monto)}</p>
+                                  <p className="text-sm font-black text-slate-900">{formatoMoneda(h.monto)}</p>
                                   <BadgePago estadoPago={h.estadoPago} />
                                 </div>
                               </div>
@@ -31931,38 +31934,38 @@ function PortalPublicoJugadores({ clubSlug }) {
               {vista === 'wallet' && (
                 <div>
                   {!jugador ? (
-                    <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/5 bg-slate-900/50 p-8 text-center backdrop-blur-sm">
+                    <div className="flex flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-white/50 p-8 text-center backdrop-blur-sm">
                       <Wallet size={26} className="text-lime-400" />
-                      <p className="text-sm text-slate-400">Identifícate para ver tu saldo y tu historial.</p>
+                      <p className="text-sm text-slate-500">Identifícate para ver tu saldo y tu historial.</p>
                       <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
                         <User size={13} /> Identificarme
                       </BotonPrimario>
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      <div className="overflow-hidden rounded-2xl border border-lime-400/20 bg-gradient-to-br from-lime-400/10 via-slate-900/60 to-slate-900/60 p-5 backdrop-blur-sm">
+                      <div className="overflow-hidden rounded-2xl border border-lime-400/20 bg-gradient-to-br from-lime-400/10 via-white/60 to-white/60 p-5 backdrop-blur-sm">
                         <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-lime-400/80">
                           <Sparkles size={12} /> Saldo disponible
                         </p>
-                        <p className="mt-1 text-3xl font-black text-slate-50">
+                        <p className="mt-1 text-3xl font-black text-slate-900">
                           {cargandoWallet ? <Loader2 size={22} className="animate-spin text-lime-400" /> : formatoMoneda(saldoWallet)}
                         </p>
-                        <p className="mt-1 text-xs text-slate-400">
+                        <p className="mt-1 text-xs text-slate-500">
                           Úsalo para pagar canchas, torneos, retas o compras en la Tienda — cubre lo que alcance, el resto se paga en recepción.
                         </p>
                       </div>
-                      <div className="rounded-2xl border border-white/5 bg-slate-900/50 backdrop-blur-sm">
-                        <p className="border-b border-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">
+                      <div className="rounded-2xl border border-slate-200 bg-white/50 backdrop-blur-sm">
+                        <p className="border-b border-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-500">
                           Historial de movimientos
                         </p>
                         {walletMovimientos.length === 0 ? (
                           <p className="px-4 py-8 text-center text-xs text-slate-500">Todavía no hay movimientos en tu Wallet.</p>
                         ) : (
-                          <div className="divide-y divide-white/5">
+                          <div className="divide-y divide-slate-200">
                             {walletMovimientos.map((m) => (
                               <div key={m.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                                 <div className="min-w-0">
-                                  <p className="truncate text-xs font-semibold text-slate-200">{m.motivo || 'Movimiento de Wallet'}</p>
+                                  <p className="truncate text-xs font-semibold text-slate-800">{m.motivo || 'Movimiento de Wallet'}</p>
                                   <p className="text-[10px] text-slate-500">{m.created_at ? new Date(m.created_at).toLocaleString('es-MX') : ''}</p>
                                 </div>
                                 <p className={`shrink-0 text-sm font-black ${Number(m.monto) < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
@@ -31989,9 +31992,9 @@ function PortalPublicoJugadores({ clubSlug }) {
           <button
             type="button"
             onClick={() => setModalCarritoAbierto(true)}
-            className="fixed inset-x-4 bottom-4 z-40 mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-2xl border border-lime-400/30 bg-slate-900/90 px-4 py-3 text-left shadow-2xl shadow-black/50 backdrop-blur-xl"
+            className="fixed inset-x-4 bottom-4 z-40 mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-2xl border border-lime-400/30 bg-white/90 px-4 py-3 text-left shadow-2xl shadow-black/50 backdrop-blur-xl"
           >
-            <span className="flex items-center gap-2 text-sm font-bold text-slate-100">
+            <span className="flex items-center gap-2 text-sm font-bold text-slate-900">
               <ShoppingCart size={16} className="text-lime-400" />
               {carritoTienda.reduce((acc, i) => acc + i.cantidad, 0)} artículo(s)
             </span>
@@ -32263,7 +32266,7 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
           <button
             key={idx}
             onClick={() => onElegir(`${c.rama} ${c.nivel}`.trim())}
-            className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2.5 text-sm font-bold text-slate-200 hover:border-lime-400/50 hover:text-lime-400"
+            className="flex w-full items-center justify-between rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-2.5 text-sm font-bold text-slate-800 hover:border-lime-400/50 hover:text-lime-400"
           >
             {c.rama} {c.nivel}
             <ChevronRight size={15} />
@@ -32518,8 +32521,8 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
   return (
     <ModalShell titulo={torneo.nombre} subtitulo="Detalle del torneo" onClose={onClose} icon={Trophy} ancho="max-w-lg">
       <div className="space-y-4">
-        <div className="rounded-xl border border-white/5 bg-slate-800/60 p-3.5">
-          <p className="flex items-center gap-1.5 text-xs text-slate-400">
+        <div className="rounded-xl border border-slate-200 bg-slate-100/60 p-3.5">
+          <p className="flex items-center gap-1.5 text-xs text-slate-500">
             <CalendarIcon size={13} />
             {formatoFechaLarga(torneo.fecha_inicio)}
             {torneo.fecha_fin && torneo.fecha_fin !== torneo.fecha_inicio ? ` — ${formatoFechaLarga(torneo.fecha_fin)}` : ''}
@@ -32533,7 +32536,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
             </p>
           )}
           {(torneo.reglas || torneo.regla_puntuacion) && (
-            <p className="mt-2 text-xs leading-relaxed text-slate-400">{torneo.reglas || torneo.regla_puntuacion}</p>
+            <p className="mt-2 text-xs leading-relaxed text-slate-500">{torneo.reglas || torneo.regla_puntuacion}</p>
           )}
           <p className="mt-2 text-xs font-semibold text-slate-500">{(participantes || []).length} inscritos</p>
         </div>
@@ -32551,7 +32554,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                     type="button"
                     onClick={() => setCategoria(valor)}
                     className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
-                      activa ? 'border-lime-400 bg-lime-400/10 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/50'
+                      activa ? 'border-lime-400 bg-lime-400/10 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/50'
                     }`}
                   >
                     {c.rama} {c.nivel}
@@ -32617,26 +32620,26 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
               {parejaYaConfirmada ? 'Inscripción Confirmada' : 'Buscando pareja'}
             </span>
 
-            <p className="text-xs leading-relaxed text-slate-300">
+            <p className="text-xs leading-relaxed text-slate-600">
               {parejaYaConfirmada
                 ? `¡Ya tienes pareja! Tu compañero es: ${nombreDeMiPareja || 'pareja confirmada'}.`
                 : 'Te encuentras inscrito en busca de pareja. Otros jugadores podrán ver tu perfil disponible para unirse a ti.'}
             </p>
 
-            <dl className="space-y-1.5 border-t border-white/5 pt-2.5 text-xs">
+            <dl className="space-y-1.5 border-t border-slate-200 pt-2.5 text-xs">
               <div className="flex items-center justify-between gap-2">
                 <dt className="text-slate-500">Categoría</dt>
-                <dd className="font-bold text-slate-200">{miInscripcion?.categoria || (tieneCategorias ? '—' : 'Sin categorías')}</dd>
+                <dd className="font-bold text-slate-800">{miInscripcion?.categoria || (tieneCategorias ? '—' : 'Sin categorías')}</dd>
               </div>
               {parejaYaConfirmada && (
                 <div className="flex items-center justify-between gap-2">
                   <dt className="text-slate-500">Compañero</dt>
-                  <dd className="font-bold text-slate-200">{nombreDeMiPareja || '—'}</dd>
+                  <dd className="font-bold text-slate-800">{nombreDeMiPareja || '—'}</dd>
                 </div>
               )}
               <div className="flex items-center justify-between gap-2">
                 <dt className="text-slate-500">Horario de partido</dt>
-                <dd className="text-right font-bold text-slate-200">
+                <dd className="text-right font-bold text-slate-800">
                   {miProximoPartido
                     ? [
                         miProximoPartido.fecha ? formatoFechaLarga(miProximoPartido.fecha) : null,
@@ -32665,9 +32668,9 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
             <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-lime-400">
               <UserPlus size={13} /> Unirme a pareja seleccionada
             </p>
-            <p className="mt-1.5 text-sm font-black text-slate-100">Te unes a {parejaParaUnirme.nombre}</p>
-            {parejaParaUnirme.categoria && <p className="text-xs text-slate-400">{parejaParaUnirme.categoria}</p>}
-            <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
+            <p className="mt-1.5 text-sm font-black text-slate-900">Te unes a {parejaParaUnirme.nombre}</p>
+            {parejaParaUnirme.categoria && <p className="text-xs text-slate-500">{parejaParaUnirme.categoria}</p>}
+            <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
               Al confirmar, elegirás cómo pagar tu parte (si queda algo pendiente — {parejaParaUnirme.nombre} ya pudo haber cubierto todo o solo parte de la inscripción de la pareja).
             </p>
             <button
@@ -32676,7 +32679,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                 setModoPareja('ninguna');
                 setParejaParaUnirme(null);
               }}
-              className="mt-2 text-[11px] font-bold text-slate-400 hover:text-slate-200"
+              className="mt-2 text-[11px] font-bold text-slate-500 hover:text-slate-800"
             >
               Cambiar
             </button>
@@ -32692,7 +32695,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                   {enBuscaDePareja.map((p) => (
                     <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2">
                       <div className="min-w-0">
-                        <p className="truncate text-xs font-bold text-slate-100">{p.nombre}</p>
+                        <p className="truncate text-xs font-bold text-slate-900">{p.nombre}</p>
                         {p.categoria && <p className="text-[10px] text-slate-500">{p.categoria}</p>}
                       </div>
                       <BotonSecundario onClick={() => unirse(p)} className="shrink-0 px-2.5 py-1 text-[11px]">
@@ -32707,7 +32710,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
 
             <div>
               <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Inscribirme con...</p>
-              <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+              <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
                 {[
                   { id: 'ninguna', label: 'Sin pareja' },
                   { id: 'nueva', label: 'Pareja nueva' },
@@ -32718,7 +32721,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                     type="button"
                     onClick={() => setModoPareja(op.id)}
                     className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
-                      modoPareja === op.id ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                      modoPareja === op.id ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     {op.label}
@@ -32727,7 +32730,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
               </div>
 
               {modoPareja === 'ninguna' && (
-                <p className="mt-2.5 rounded-lg border border-white/5 bg-slate-800/40 p-2.5 text-[11px] leading-relaxed text-slate-400">
+                <p className="mt-2.5 rounded-lg border border-slate-200 bg-slate-100/40 p-2.5 text-[11px] leading-relaxed text-slate-500">
                   Te inscribes como "En busca de pareja" — otros jugadores podrán verte aquí mismo y unirse contigo antes del torneo.
                 </p>
               )}
@@ -32771,7 +32774,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                   {parejaSeleccionada ? (
                     <div className="flex items-center justify-between rounded-lg border border-lime-400/30 bg-lime-400/10 px-3 py-2">
                       <p className="text-xs font-bold text-lime-400">{parejaSeleccionada.nombre}</p>
-                      <button type="button" onClick={() => setParejaSeleccionada(null)} className="text-[11px] font-bold text-slate-400 hover:text-slate-200">
+                      <button type="button" onClick={() => setParejaSeleccionada(null)} className="text-[11px] font-bold text-slate-500 hover:text-slate-800">
                         Cambiar
                       </button>
                     </div>
@@ -32788,9 +32791,9 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                               key={r.id}
                               type="button"
                               onClick={() => setParejaSeleccionada(r)}
-                              className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-left hover:border-lime-400/50"
+                              className="flex w-full items-center justify-between rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-lime-400/50"
                             >
-                              <span className="text-xs font-bold text-slate-200">{r.nombre}</span>
+                              <span className="text-xs font-bold text-slate-800">{r.nombre}</span>
                               <ChevronRight size={13} className="text-slate-500" />
                             </button>
                           ))}
@@ -32939,14 +32942,14 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       <div className="space-y-3.5">
         <div>
           <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Tipo de Clase</p>
-          <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+          <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
             {TIPOS_CLASE_ACADEMIA.map((t) => (
               <button
                 key={t.value}
                 type="button"
                 onClick={() => setTipo(t.value)}
                 className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
-                  tipo === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'
+                  tipo === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {t.value === 'privada' ? 'Privada 1-a-1' : 'Grupal'}
@@ -32964,7 +32967,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                 type="button"
                 onClick={() => setNivel(n)}
                 className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
-                  nivel === n ? 'border-lime-400 bg-lime-400/10 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/50'
+                  nivel === n ? 'border-lime-400 bg-lime-400/10 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/50'
                 }`}
               >
                 {n}
@@ -33008,7 +33011,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               type="button"
               onClick={() => setFecha(hoyISO())}
               className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                fecha === hoyISO() ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/40'
+                fecha === hoyISO() ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
               }`}
             >
               Hoy
@@ -33017,7 +33020,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               type="button"
               onClick={() => setFecha(sumarDia(hoyISO(), 1))}
               className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                fecha === sumarDia(hoyISO(), 1) ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/40'
+                fecha === sumarDia(hoyISO(), 1) ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
               }`}
             >
               Mañana
@@ -33097,7 +33100,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                     // el mismo estilo Gris/Deshabilitado que "Fuera de
                     // Horario", sin importar su `tipo` real.
                     s.pasado
-                      ? 'cursor-not-allowed border-slate-800 bg-slate-800 text-slate-500'
+                      ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500'
                       : bloqueado
                       ? `cursor-not-allowed opacity-60 ${estilo.clases}`
                       : seleccionado
@@ -33146,12 +33149,12 @@ function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
   return (
     <ModalShell titulo={clase.nombre} subtitulo="Resumen de tu inscripción" onClose={onClose} icon={GraduationCap} ancho="max-w-md">
       <div className="space-y-3.5">
-        <dl className="space-y-2 rounded-xl border border-white/5 bg-slate-800/60 p-3.5 text-xs">
+        <dl className="space-y-2 rounded-xl border border-slate-200 bg-slate-100/60 p-3.5 text-xs">
           <div className="flex items-center justify-between gap-2">
             <dt className="flex items-center gap-1.5 text-slate-500">
               <CalendarIcon size={13} /> Fecha
             </dt>
-            <dd className="font-bold text-slate-200">
+            <dd className="font-bold text-slate-800">
               {clase.fecha ? formatoFechaLarga(clase.fecha) : 'Sin fecha'}
             </dd>
           </div>
@@ -33159,19 +33162,19 @@ function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
             <dt className="flex items-center gap-1.5 text-slate-500">
               <MapPin size={13} /> Cancha
             </dt>
-            <dd className="font-bold text-slate-200">{cancha?.nombre || 'Por confirmar'}</dd>
+            <dd className="font-bold text-slate-800">{cancha?.nombre || 'Por confirmar'}</dd>
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="flex items-center gap-1.5 text-slate-500">
               <User size={13} /> Coach
             </dt>
-            <dd className="font-bold text-slate-200">{clase.coach_nombre || '—'}</dd>
+            <dd className="font-bold text-slate-800">{clase.coach_nombre || '—'}</dd>
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="flex items-center gap-1.5 text-slate-500">
               <DollarSign size={13} /> Tipo de pago
             </dt>
-            <dd className="text-right font-bold text-slate-200">
+            <dd className="text-right font-bold text-slate-800">
               {alumno.tipo_pago === 'mensualidad' ? 'Mensualidad' : alumno.pagado_con_creditos ? 'Con crédito de membresía' : 'Clase suelta'}
               <span className={`ml-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold ${
                 alumno.estado_pago === 'pagado' ? 'bg-emerald-400/10 text-emerald-400' : 'bg-amber-400/10 text-amber-400'
@@ -33185,7 +33188,7 @@ function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
         {confirmandoCancelar ? (
           <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-3.5">
             <p className="text-xs font-bold text-rose-300">¿Seguro que quieres cancelar tu asistencia a esta clase?</p>
-            <p className="mt-1 text-[11px] text-slate-400">Liberas tu lugar de inmediato — si cambias de opinión, tendrás que volver a inscribirte.</p>
+            <p className="mt-1 text-[11px] text-slate-500">Liberas tu lugar de inmediato — si cambias de opinión, tendrás que volver a inscribirte.</p>
             <div className="mt-2.5 flex justify-end gap-2">
               <BotonSecundario onClick={() => setConfirmandoCancelar(false)} className="px-2.5 py-1.5 text-xs">
                 Ya no
@@ -33229,18 +33232,18 @@ function ModalResumenReta({ reta, cancha, inscritos, jugador, onClose }) {
   return (
     <ModalShell titulo={reta.nombre} subtitulo="Resumen de tu inscripción" onClose={onClose} icon={Swords} ancho="max-w-md">
       <div className="space-y-3.5">
-        <dl className="space-y-2 rounded-xl border border-white/5 bg-slate-800/60 p-3.5 text-xs">
+        <dl className="space-y-2 rounded-xl border border-slate-200 bg-slate-100/60 p-3.5 text-xs">
           <div className="flex items-center justify-between gap-2">
             <dt className="flex items-center gap-1.5 text-slate-500">
               <MapPin size={13} /> Cancha
             </dt>
-            <dd className="font-bold text-slate-200">{cancha?.nombre || 'Por confirmar'}</dd>
+            <dd className="font-bold text-slate-800">{cancha?.nombre || 'Por confirmar'}</dd>
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="flex items-center gap-1.5 text-slate-500">
               <Clock size={13} /> Hora
             </dt>
-            <dd className="font-bold text-slate-200">
+            <dd className="font-bold text-slate-800">
               {formatoFechaLarga(reta.fecha)} · {reta.hora_inicio}–{reta.hora_fin}
             </dd>
           </div>
@@ -33249,7 +33252,7 @@ function ModalResumenReta({ reta, cancha, inscritos, jugador, onClose }) {
               <dt className="flex items-center gap-1.5 text-slate-500">
                 <Gauge size={13} /> Nivel
               </dt>
-              <dd className="font-bold text-slate-200">{[ramaDeReta(reta), nivelDeReta(reta)].filter(Boolean).join(' · ')}</dd>
+              <dd className="font-bold text-slate-800">{[ramaDeReta(reta), nivelDeReta(reta)].filter(Boolean).join(' · ')}</dd>
             </div>
           )}
           <div className="flex items-center justify-between gap-2">
@@ -33273,10 +33276,10 @@ function ModalResumenReta({ reta, cancha, inscritos, jugador, onClose }) {
                 <div
                   key={j?.id || `vacio-${idx}`}
                   className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
-                    j ? 'border-slate-700 bg-slate-800' : 'border-dashed border-slate-800 bg-slate-900/40'
+                    j ? 'border-slate-300 bg-slate-100' : 'border-dashed border-slate-200 bg-white/40'
                   }`}
                 >
-                  <span className={`text-xs font-bold ${j ? 'text-slate-200' : 'text-slate-600'}`}>
+                  <span className={`text-xs font-bold ${j ? 'text-slate-800' : 'text-slate-400'}`}>
                     {j ? `${j.nombre}${soyYo ? ' (Tú)' : ''}` : 'Lugar disponible'}
                   </span>
                   {j && (
@@ -33342,7 +33345,7 @@ function SelectorMetodoPagoPortal({
   const chico = tamano === 'chico';
   const claseBoton = `flex w-full items-center justify-between rounded-xl border ${
     chico ? 'px-3.5 py-2.5 text-xs' : 'px-3.5 py-3 text-sm'
-  } text-left font-bold text-slate-100 transition disabled:cursor-not-allowed disabled:opacity-40`;
+  } text-left font-bold text-slate-900 transition disabled:cursor-not-allowed disabled:opacity-40`;
   return (
     <div className="space-y-2">
       {mostrarWallet && (
@@ -33350,35 +33353,35 @@ function SelectorMetodoPagoPortal({
           type="button"
           onClick={() => onCambiarMetodo('wallet')}
           disabled={saldoWallet <= 0}
-          className={`${claseBoton} justify-between ${metodo === 'wallet' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-700 bg-slate-800'}`}
+          className={`${claseBoton} justify-between ${metodo === 'wallet' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-300 bg-slate-100'}`}
         >
           <span className="flex items-center gap-2">
             <Wallet size={chico ? 14 : 15} className="text-lime-400" /> Pagar con Wallet
           </span>
-          <span className="text-[11px] font-semibold text-slate-400">Saldo: {formatoMoneda(saldoWallet)}</span>
+          <span className="text-[11px] font-semibold text-slate-500">Saldo: {formatoMoneda(saldoWallet)}</span>
         </button>
       )}
       <button
         type="button"
         onClick={() => onCambiarMetodo('recepcion')}
-        className={`${claseBoton} ${metodo === 'recepcion' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-700 bg-slate-800'}`}
+        className={`${claseBoton} ${metodo === 'recepcion' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-300 bg-slate-100'}`}
       >
         <span className="flex items-center gap-2">
-          <Banknote size={chico ? 14 : 15} className="text-slate-400" /> Pagar en Recepción
+          <Banknote size={chico ? 14 : 15} className="text-slate-500" /> Pagar en Recepción
         </span>
       </button>
       <button
         type="button"
         onClick={() => onCambiarMetodo('tarjeta')}
-        className={`${claseBoton} ${metodo === 'tarjeta' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-700 bg-slate-800'}`}
+        className={`${claseBoton} ${metodo === 'tarjeta' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-300 bg-slate-100'}`}
       >
         <span className="flex items-center gap-2">
-          <CreditCard size={chico ? 14 : 15} className="text-slate-400" /> Pagar con Tarjeta (Débito/Crédito)
+          <CreditCard size={chico ? 14 : 15} className="text-slate-500" /> Pagar con Tarjeta (Débito/Crédito)
         </span>
       </button>
 
       {metodo === 'wallet' && (
-        <p className="rounded-lg bg-slate-800/60 px-3 py-2 text-xs text-slate-400">
+        <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-xs text-slate-500">
           {montoRestante > 0
             ? `Tu Wallet cubre ${formatoMoneda(montoWallet)} — quedan ${formatoMoneda(montoRestante)} por pagar en recepción.`
             : 'Tu Wallet cubre el total — no debes nada más.'}
@@ -33386,7 +33389,7 @@ function SelectorMetodoPagoPortal({
       )}
 
       {metodo === 'tarjeta' && (
-        <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-3">
+        <div className="space-y-2 rounded-xl border border-slate-300 bg-slate-100/60 p-3">
           <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-400">
             <ShieldAlert size={12} /> Simulación de TPV — no se procesa ningún cargo real
           </p>
@@ -33448,7 +33451,7 @@ function ModalElegirPago({ monto, saldoWallet, concepto, onClose, onConfirmar })
   return (
     <ModalShell titulo="¿Cómo quieres pagar?" subtitulo={concepto} onClose={onClose} icon={Wallet} ancho="max-w-sm">
       <div className="space-y-3">
-        <p className="text-center text-2xl font-black text-slate-50">{formatoMoneda(monto)}</p>
+        <p className="text-center text-2xl font-black text-slate-900">{formatoMoneda(monto)}</p>
         <SelectorMetodoPagoPortal
           metodo={metodo}
           onCambiarMetodo={setMetodo}
@@ -33498,24 +33501,24 @@ function ModalCarritoTienda({ carrito, total, saldoWallet, jugador, onCambiarCan
         ) : (
           <div className="max-h-64 space-y-2 overflow-y-auto">
             {carrito.map((item) => (
-              <div key={item.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2">
+              <div key={item.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2">
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-bold text-slate-100">{item.nombre}</p>
+                  <p className="truncate text-xs font-bold text-slate-900">{item.nombre}</p>
                   <p className="text-[11px] text-slate-500">{formatoMoneda(item.precio)} c/u</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <button
                     type="button"
                     onClick={() => onCambiarCantidad(item.id, -1)}
-                    className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-700 text-slate-300 hover:bg-slate-600"
+                    className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-200 text-slate-600 hover:bg-slate-300"
                   >
                     <Minus size={12} />
                   </button>
-                  <span className="w-5 text-center text-xs font-bold text-slate-100">{item.cantidad}</span>
+                  <span className="w-5 text-center text-xs font-bold text-slate-900">{item.cantidad}</span>
                   <button
                     type="button"
                     onClick={() => onCambiarCantidad(item.id, 1)}
-                    className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-700 text-slate-300 hover:bg-slate-600"
+                    className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-200 text-slate-600 hover:bg-slate-300"
                   >
                     <Plus size={12} />
                   </button>
@@ -33527,8 +33530,8 @@ function ModalCarritoTienda({ carrito, total, saldoWallet, jugador, onCambiarCan
 
         {carrito.length > 0 && (
           <>
-            <div className="flex items-center justify-between border-t border-slate-800 pt-3">
-              <span className="text-sm font-bold text-slate-300">Total</span>
+            <div className="flex items-center justify-between border-t border-slate-200 pt-3">
+              <span className="text-sm font-bold text-slate-600">Total</span>
               <span className="text-xl font-black text-lime-400">{formatoMoneda(total)}</span>
             </div>
 
@@ -33747,7 +33750,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 type="button"
                 onClick={() => setFecha(hoyISO())}
                 className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                  fecha === hoyISO() ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/40'
+                  fecha === hoyISO() ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
                 }`}
               >
                 Hoy
@@ -33756,7 +33759,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 type="button"
                 onClick={() => setFecha(sumarDia(hoyISO(), 1))}
                 className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                  fecha === sumarDia(hoyISO(), 1) ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-lime-400/40'
+                  fecha === sumarDia(hoyISO(), 1) ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
                 }`}
               >
                 Mañana
@@ -33794,7 +33797,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 type="button"
                 onClick={() => setTurnoFiltro(t.id)}
                 className={`shrink-0 rounded-full border px-3 py-1 text-[10px] font-bold transition ${
-                  turnoFiltro === t.id ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-700 bg-slate-800 text-slate-400 hover:border-lime-400/40'
+                  turnoFiltro === t.id ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-lime-400/40'
                 }`}
               >
                 {t.label}
@@ -33806,7 +33809,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
               No hay horarios disponibles ese día para {duracionHoras}h — prueba otra fecha o duración.
             </p>
           ) : franjasDelTurno.length === 0 ? (
-            <p className="rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-xs font-semibold text-slate-400">
+            <p className="rounded-lg border border-slate-300 bg-slate-100/60 px-3 py-2 text-xs font-semibold text-slate-500">
               Sin horarios en este turno — prueba otro turno arriba.
             </p>
           ) : (
@@ -33857,9 +33860,9 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                   type="button"
                   disabled={sinStock}
                   onClick={() => (variantes.length > 0 ? setAddonParaVariante(p) : agregarAddon(p))}
-                  className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-left hover:border-lime-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-700"
+                  className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-lime-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-300"
                 >
-                  <span className="text-[11px] font-bold text-slate-200">{p.nombre}</span>
+                  <span className="text-[11px] font-bold text-slate-800">{p.nombre}</span>
                   <span className="text-[11px] font-semibold text-lime-400">{textoPrecioConVariantes(p, variantes)}</span>
                   {sinStock && <span className="text-[10px] font-bold text-rose-400">Agotado</span>}
                 </button>
@@ -33870,15 +33873,15 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           {addons.length > 0 && (
             <div className="mt-2 space-y-1.5">
               {addons.map((a) => (
-                <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-800/60 px-3 py-1.5">
-                  <span className="text-xs text-slate-300">
+                <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-100/60 px-3 py-1.5">
+                  <span className="text-xs text-slate-600">
                     {a.cantidad}× {a.nombre}
                   </span>
                   <div className="flex items-center gap-1.5">
-                    <button type="button" onClick={() => cambiarCantidadAddon(a.id, -1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-700 text-slate-300">
+                    <button type="button" onClick={() => cambiarCantidadAddon(a.id, -1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-200 text-slate-600">
                       <Minus size={10} />
                     </button>
-                    <button type="button" onClick={() => cambiarCantidadAddon(a.id, 1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-700 text-slate-300">
+                    <button type="button" onClick={() => cambiarCantidadAddon(a.id, 1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-200 text-slate-600">
                       <Plus size={10} />
                     </button>
                   </div>
@@ -33899,18 +33902,18 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           </div>
         )}
 
-        <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-800/40 p-3">
-          <div className="flex items-center justify-between text-xs text-slate-400">
+        <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-100/40 p-3">
+          <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Cancha ({duracionHoras}h)</span>
             <span>{formatoMoneda(costoCancha)}</span>
           </div>
           {addonsSubtotal > 0 && (
-            <div className="flex items-center justify-between text-xs text-slate-400">
+            <div className="flex items-center justify-between text-xs text-slate-500">
               <span>Adicionales</span>
               <span>{formatoMoneda(addonsSubtotal)}</span>
             </div>
           )}
-          <div className="flex items-center justify-between border-t border-slate-700 pt-2 text-sm font-black text-slate-100">
+          <div className="flex items-center justify-between border-t border-slate-300 pt-2 text-sm font-black text-slate-900">
             <span>Total</span>
             <span className="text-lime-400">{formatoMoneda(total)}</span>
           </div>
@@ -35877,16 +35880,16 @@ function AppInterno() {
     return () => clearInterval(id);
   }, []);
 
-  // Respaldo defensivo: fija el fondo de <html>/<body> al mismo slate-950 del
-  // panel. Sin esto, el rebote elástico de scroll (iOS/Safari/trackpads) o
-  // cualquier overflow accidental puede asomar el blanco por defecto del
-  // navegador detrás de la parrilla, especialmente en el scroll horizontal
-  // del Cronograma.
+  // Respaldo defensivo: fija el fondo de <html>/<body> al mismo gris súper
+  // tenue (#f8fafc, Tema Claro) del panel. Sin esto, el rebote elástico de
+  // scroll (iOS/Safari/trackpads) o cualquier overflow accidental puede
+  // asomar un blanco puro desfasado detrás de la parrilla, especialmente en
+  // el scroll horizontal del Cronograma.
   useEffect(() => {
     const prevHtmlBg = document.documentElement.style.backgroundColor;
     const prevBodyBg = document.body.style.backgroundColor;
-    document.documentElement.style.backgroundColor = '#020617';
-    document.body.style.backgroundColor = '#020617';
+    document.documentElement.style.backgroundColor = '#f8fafc';
+    document.body.style.backgroundColor = '#f8fafc';
     return () => {
       document.documentElement.style.backgroundColor = prevHtmlBg;
       document.body.style.backgroundColor = prevBodyBg;
@@ -36016,7 +36019,7 @@ function AppInterno() {
 
   return (
     <ToastContext.Provider value={mostrarToast}>
-      <div className="flex min-h-screen w-full min-w-0 overflow-x-hidden bg-slate-950 text-slate-100">
+      <div className="flex min-h-screen w-full min-w-0 overflow-x-hidden bg-slate-50 text-slate-900">
         <Sidebar
           operador={operador}
           turno={turno}
@@ -36301,9 +36304,9 @@ function AppInterno() {
  * ==========================================================================*/
 // `ClubAuthScreen` (Login / Registro de Nuevo Club / Recuperar Contraseña)
 // + `ClubAuthGate` (resuelve la sesión y el club antes de montar
-// `AppInterno`) — mismo lenguaje visual que el resto de la app (fondo
-// `#0b132b`, tarjetas oscuras `bg-slate-900` con borde sutil
-// `border-slate-800`, `BotonPrimario`/`BotonSecundario`/`Campo`/
+// `AppInterno`) — mismo lenguaje visual que el resto de la app (Tema Claro:
+// fondo `#f8fafc`, tarjetas blancas `bg-white` con borde sutil
+// `border-slate-200`, `BotonPrimario`/`BotonSecundario`/`Campo`/
 // `inputClase` ya existentes, reutilizados tal cual, sin reinventar
 // estilos nuevos).
 //
@@ -36321,7 +36324,7 @@ function AppInterno() {
 // decorativo: un ticker/marquee de filas horizontales en grilla CSS,
 // alternando 2 frases del posicionamiento del producto en direcciones
 // opuestas, en verde neón (mismo lime del botón principal) a opacidad casi
-// imperceptible sobre el fondo `#0b132b` — marca de agua, no protagonista:
+// imperceptible sobre el fondo `#f8fafc` — marca de agua, no protagonista:
 // el formulario/tarjeta sigue siendo lo único que de verdad se lee.
 // Reescrito desde cero sobre una base de CSS Grid: `auto-rows-[minmax(0,1fr)]`
 // reparte el alto disponible en partes EXACTAMENTE iguales entre
@@ -36351,7 +36354,7 @@ const REPETICIONES_BLOQUE_FONDO_AUTH = 5;
 
 function FondoAuthAnimado() {
   return (
-    <div className="pointer-events-none fixed -inset-x-0 -inset-y-12 z-0 h-[calc(100vh+6rem)] h-[calc(100dvh+6rem)] w-full overflow-hidden bg-[#0b132b]">
+    <div className="pointer-events-none fixed -inset-x-0 -inset-y-12 z-0 h-[calc(100vh+6rem)] h-[calc(100dvh+6rem)] w-full overflow-hidden bg-[#f8fafc]">
       {/* Keyframes + clases de animación propias (no dependen de
           tailwind.config — este proyecto se entrega como un solo App.jsx):
           cada fila trae un track `w-max flex` con 2 bloques `shrink-0`
@@ -36555,20 +36558,20 @@ function ClubAuthScreen({ onAutenticado }) {
   };
 
   return (
-    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#0b132b] p-4 gap-4">
+    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#f8fafc] p-4 gap-4">
       <FondoAuthAnimado />
 
       {/* Tarjeta Superior — Header del Logo: mismo estilo dark/glassmorphism
           que la tarjeta del formulario de abajo, pero MÁS ANCHA (max-w-lg
           vs. max-w-md), así el logo sobresale hacia los lados y domina la
           jerarquía visual de la pantalla. */}
-      <div className="relative z-10 w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900/80 px-8 py-6 shadow-2xl backdrop-blur-xl">
+      <div className="relative z-10 w-full max-w-lg rounded-2xl border border-slate-200 bg-white/80 px-8 py-6 shadow-2xl backdrop-blur-xl">
         <LogoQlubOS className="mx-auto h-auto w-64 md:w-80" />
       </div>
 
       {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
       <div className="relative z-10 w-full max-w-md">
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-xl">
+        <div className="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-2xl backdrop-blur-xl">
           {/* Encabezado interno removido en 'login': el logo de la tarjeta
               de arriba ya se lleva todo el protagonismo de marca — repetir
               "Run Your Club" aquí sería redundante. Se conserva SOLO para
@@ -36576,8 +36579,8 @@ function ClubAuthScreen({ onAutenticado }) {
               contexto real (le dice al usuario en qué paso del flujo está). */}
           {modo !== 'login' && (
             <div className="mb-5">
-              <h2 className="text-base font-bold text-slate-100">{titulos[modo].titulo}</h2>
-              {titulos[modo].subtitulo && <p className="mt-0.5 text-xs text-slate-400">{titulos[modo].subtitulo}</p>}
+              <h2 className="text-base font-bold text-slate-900">{titulos[modo].titulo}</h2>
+              {titulos[modo].subtitulo && <p className="mt-0.5 text-xs text-slate-500">{titulos[modo].subtitulo}</p>}
             </div>
           )}
 
@@ -36598,7 +36601,7 @@ function ClubAuthScreen({ onAutenticado }) {
             <form onSubmit={manejarLogin} className="space-y-4">
               <Campo label="Correo">
                 <div className="relative">
-                  <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type="email"
                     autoComplete="email"
@@ -36611,7 +36614,7 @@ function ClubAuthScreen({ onAutenticado }) {
               </Campo>
               <Campo label="Contraseña">
                 <div className="relative">
-                  <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type={mostrarPassword ? 'text' : 'password'}
                     autoComplete="current-password"
@@ -36623,7 +36626,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   <button
                     type="button"
                     onClick={() => setMostrarPassword((v) => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                   >
                     {mostrarPassword ? <EyeOff size={15} /> : <Eye size={15} />}
                   </button>
@@ -36653,7 +36656,7 @@ function ClubAuthScreen({ onAutenticado }) {
 
           {modo === 'registro' && (
             <form onSubmit={manejarRegistro} className="space-y-4">
-              <label className="flex items-start gap-2 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-slate-300">
+              <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
                 <input
                   type="checkbox"
                   checked={vincularExistente}
@@ -36661,7 +36664,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
                 />
                 <span>
-                  <span className="font-semibold text-slate-200">Vincular mi club existente</span> — ya tengo canchas,
+                  <span className="font-semibold text-slate-800">Vincular mi club existente</span> — ya tengo canchas,
                   reservas y datos cargados en este sistema y quiero que se muevan a mi cuenta nueva, en vez de crear un club
                   vacío.
                 </span>
@@ -36669,7 +36672,7 @@ function ClubAuthScreen({ onAutenticado }) {
               {!vincularExistente && (
                 <Campo label="Nombre del club">
                   <div className="relative">
-                    <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                    <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
                       type="text"
                       className={`${inputClase} pl-9`}
@@ -36682,7 +36685,7 @@ function ClubAuthScreen({ onAutenticado }) {
               )}
               <Campo label="Correo">
                 <div className="relative">
-                  <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type="email"
                     autoComplete="email"
@@ -36695,7 +36698,7 @@ function ClubAuthScreen({ onAutenticado }) {
               </Campo>
               <Campo label="Contraseña" hint="Mínimo 6 caracteres.">
                 <div className="relative">
-                  <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type={mostrarPassword ? 'text' : 'password'}
                     autoComplete="new-password"
@@ -36707,7 +36710,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   <button
                     type="button"
                     onClick={() => setMostrarPassword((v) => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                   >
                     {mostrarPassword ? <EyeOff size={15} /> : <Eye size={15} />}
                   </button>
@@ -36740,7 +36743,7 @@ function ClubAuthScreen({ onAutenticado }) {
             <form onSubmit={manejarRecuperar} className="space-y-4">
               <Campo label="Correo" hint="Te mandamos ahí el enlace para elegir una nueva contraseña.">
                 <div className="relative">
-                  <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type="email"
                     autoComplete="email"
@@ -36946,7 +36949,7 @@ function ClubAuthGate() {
 
   if (estado === 'cargando') {
     return (
-      <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#0b132b]">
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#f8fafc]">
         <FondoAuthAnimado />
         <Loader2 size={28} className="relative z-10 animate-spin text-lime-400" />
       </div>
@@ -36969,14 +36972,14 @@ function ClubAuthGate() {
 
   if (estado === 'error_reloj') {
     return (
-      <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#0b132b] px-4">
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#f8fafc] px-4">
         <FondoAuthAnimado />
-        <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 text-center shadow-2xl">
+        <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-2xl">
           <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30">
             <AlertTriangle size={22} />
           </div>
-          <h2 className="text-base font-bold text-slate-100">Reloj del dispositivo desincronizado</h2>
-          <p className="mt-2 text-xs text-slate-400">{errorClub || MENSAJE_ERROR_RELOJ_DESFASADO}</p>
+          <h2 className="text-base font-bold text-slate-900">Reloj del dispositivo desincronizado</h2>
+          <p className="mt-2 text-xs text-slate-500">{errorClub || MENSAJE_ERROR_RELOJ_DESFASADO}</p>
           <BotonPrimario className="mt-4 w-full" onClick={() => resolverClubDeSesion(sesion)}>
             <RefreshCw size={16} /> Reintentar
           </BotonPrimario>
@@ -37030,17 +37033,17 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
   }
 
   return (
-    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#0b132b] px-4 py-10">
+    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#f8fafc] px-4 py-10">
       <FondoAuthAnimado />
       <div className="relative z-10 w-full max-w-md">
-        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
           <div className="mb-5 flex items-start gap-3">
             <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
               <Building2 size={18} />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-100">Un último paso</h2>
-              <p className="mt-0.5 text-xs text-slate-400">Tu correo ya está confirmado — ponle nombre a tu club para terminar.</p>
+              <h2 className="text-base font-bold text-slate-900">Un último paso</h2>
+              <p className="mt-0.5 text-xs text-slate-500">Tu correo ya está confirmado — ponle nombre a tu club para terminar.</p>
             </div>
           </div>
 
@@ -37052,7 +37055,7 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
           )}
 
           <form onSubmit={guardar} className="space-y-4">
-            <label className="flex items-start gap-2 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-slate-300">
+            <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
               <input
                 type="checkbox"
                 checked={vincularExistente}
@@ -37060,14 +37063,14 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
                 className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
               />
               <span>
-                <span className="font-semibold text-slate-200">Vincular mi club existente</span> — ya tengo datos cargados en
+                <span className="font-semibold text-slate-800">Vincular mi club existente</span> — ya tengo datos cargados en
                 este sistema y quiero que se muevan a mi cuenta.
               </span>
             </label>
             {!vincularExistente && (
               <Campo label="Nombre del club">
                 <div className="relative">
-                  <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
                     className={`${inputClase} pl-9`}
@@ -37137,16 +37140,17 @@ export default function App() {
   const matchPortal = ruta.match(PATRON_RUTA_PORTAL);
   return (
     <>
-      {/* Fondo global de html/body/#root — mismo azul oscuro que usa toda
-          la app (`#0b132b`) + `overscroll-behavior: none`: sin esto, el
-          blanco por defecto de html/body se alcanza a asomar en los bordes
-          durante el rebote de scroll (bounce scroll) de iOS, sobre todo en
+      {/* Fondo global de html/body/#root — mismo gris súper tenue que usa
+          toda la app en Tema Claro (`#f8fafc`) + `overscroll-behavior:
+          none`: sin esto, un blanco puro por defecto de html/body podría
+          alcanzar a asomar (desfasado del `#f8fafc` de la app) en los
+          bordes durante el rebote de scroll (bounce scroll) de iOS, sobre todo en
           las pantallas de Auth donde `FondoAuthAnimado` ya se estira con
           `-inset-y-12` para cubrir notch/barra de estado/barra de Safari.
           Va aquí (no en un index.css aparte) porque este proyecto se
           entrega como un solo App.jsx; se aplica una sola vez para TODO el
           árbol (Portal Público y panel interno / Auth por igual). */}
-      <style>{`html, body, #root { background-color: #0b132b; overscroll-behavior: none; }`}</style>
+      <style>{`html, body, #root { background-color: #f8fafc; overscroll-behavior: none; }`}</style>
       {matchPortal ? (
         <PortalPublicoJugadores clubSlug={matchPortal[1]} />
       ) : (
