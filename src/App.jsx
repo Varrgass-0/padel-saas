@@ -37863,6 +37863,53 @@ function FondoAuthAnimado() {
   );
 }
 
+// Fondo de VIDEO en bucle para la pantalla de Login (`ClubAuthScreen`) — a
+// pedido del club, reemplaza ahí el fondo tipográfico animado
+// (`FondoAuthAnimado`, que se conserva tal cual para las otras pantallas de
+// Auth: loading, error de reloj, completar registro) por un `<video>` a
+// pantalla completa, fijado detrás de la tarjeta de login.
+// - `fixed inset-0 -z-10 h-full w-full object-cover`: cubre todo el
+//   viewport sin deformarse sin importar el aspect ratio del video ni el
+//   tamaño de pantalla (recorta, nunca estira) — mismo criterio `fixed` +
+//   `-z-10` que ya usa `FondoAuthAnimado` para no competir con la tarjeta.
+// - `autoPlay muted loop playsInline`: reproducción automática en bucle
+//   infinito, sin audio (requisito de los navegadores para permitir
+//   autoplay) y `playsInline` para que iOS no lo abra a pantalla completa
+//   nativa.
+// - `poster` + `bg-[#0f172a]` de respaldo: color de marca (mismo navy que
+//   las letras Q/L/U/B del logo) visible de inmediato mientras el video
+//   carga o si el navegador no puede reproducirlo, para que nunca se vea un
+//   parpadeo blanco.
+// - Capa oscurecedora (`absolute inset-0` + gradiente `black/…`) ENCIMA del
+//   video pero DEBAJO de la tarjeta (`relative z-10` en la tarjeta, sin
+//   z-index explícito aquí — pinta después del `-z-10` del video y antes
+//   del `z-10` de la tarjeta): asegura contraste alto para que la tarjeta
+//   blanca semitransparente (`bg-white/80 backdrop-blur-xl`) se siga
+//   leyendo perfecto sobre cualquier escena del video.
+// - `<source src="...">`: ruta placeholder lista para recibir el archivo
+//   real (público, servido desde `public/assets/videos/`) — basta con
+//   colocar el .mp4 en esa ruta del proyecto, sin tocar este componente.
+const RUTA_VIDEO_FONDO_LOGIN = '/assets/videos/padel-bg.mp4';
+const RUTA_POSTER_FONDO_LOGIN = '/assets/videos/padel-bg-poster.jpg';
+
+function FondoAuthVideo() {
+  return (
+    <>
+      <video
+        autoPlay
+        muted
+        loop
+        playsInline
+        poster={RUTA_POSTER_FONDO_LOGIN}
+        className="fixed inset-0 -z-10 h-full w-full bg-[#0f172a] object-cover"
+      >
+        <source src={RUTA_VIDEO_FONDO_LOGIN} type="video/mp4" />
+      </video>
+      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/40 to-black/65" />
+    </>
+  );
+}
+
 function ClubAuthScreen({ onAutenticado }) {
   const [modo, setModo] = useState('login'); // 'login' | 'registro' | 'recuperar'
   const [email, setEmail] = useState('');
@@ -37993,8 +38040,8 @@ function ClubAuthScreen({ onAutenticado }) {
   };
 
   return (
-    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#f8fafc] p-4">
-      <FondoAuthAnimado />
+    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#0f172a] p-4">
+      <FondoAuthVideo />
 
       {/* Tarjeta única (consolidada): logo + leyenda "RUN YOUR CLUB." (ambos
           ya viven dentro del mismo SVG de `LogoQlubOS`) y el formulario de
