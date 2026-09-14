@@ -8951,8 +8951,21 @@ function ModuloSmartPOS({
         producto_nombre: item.nombre,
         tipo_movimiento: 'salida_venta',
         cantidad: item.cantidad,
-        stock_anterior: null,
-        stock_nuevo: null,
+        // FIX (el movimiento no aparecía en el Kardex): `stock_anterior`/
+        // `stock_nuevo` en `null` hacía que Supabase RECHAZARA el INSERT
+        // completo si esas columnas son `NOT NULL` en el proyecto —
+        // `insertarMovimientoKardex` solo reintenta sin una columna cuando
+        // el error es "la columna no existe" (`esErrorColumnaInexistente`),
+        // nunca cuando es una violación de NOT NULL, así que el insert
+        // fallaba en silencio (solo quedaba un `console.error`) y la fila
+        // JAMÁS se guardaba — por eso Cholaquiles nunca aparecía en el
+        // Kardex aunque Overgrips (con stock real) sí. Se manda `0` en vez
+        // de `null` — `TablaKardex` (`ModuloERPInventario`) ya detecta este
+        // caso por el propio `motivo` ("sin control de stock") y pinta
+        // "—" en vez de "0" para que no se confunda con un producto que de
+        // verdad tiene cero unidades en existencia.
+        stock_anterior: 0,
+        stock_nuevo: 0,
         costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
         motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`}) (sin control de stock)${
           esVariante ? ` · ${varianteNombreEtiqueta}` : ''
@@ -10349,8 +10362,15 @@ function ModuloSmartPOS({
           producto_nombre: item.nombre,
           tipo_movimiento: 'salida_venta',
           cantidad: item.cantidad,
-          stock_anterior: null,
-          stock_nuevo: null,
+          // FIX (no aparecía en el Kardex): ver el comentario completo en
+          // el Split Bill de arriba — `null` disparaba una violación de
+          // NOT NULL que `insertarMovimientoKardex` no sabe reintentar (esa
+          // adaptación solo cubre columnas INEXISTENTES, no NULLs
+          // prohibidos), así el INSERT completo fallaba en silencio. `0` +
+          // el propio `motivo` ("sin control de stock") es lo que
+          // `TablaKardex` usa para pintar "—" en vez de "0".
+          stock_anterior: 0,
+          stock_nuevo: 0,
           costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
           motivo: esVariante
             ? `Venta en Smart POS · ${varianteNombreEtiqueta} (sin control de stock)`
@@ -12485,23 +12505,41 @@ function TablaKardex({ kardex, productos, loading, error, onReintentar }) {
           {kardex.map((mov) => {
             const meta = KARDEX_TIPO_META[mov.tipo_movimiento] || KARDEX_TIPO_META.ajuste;
             const Icon = meta.icon;
+            // Platillos/Stock Rígido (Cholaquiles y similares, `maneja_stock:
+            // false`): su movimiento de Kardex ahora se guarda con
+            // `stock_anterior`/`stock_nuevo` en `0` (no `null`, para no
+            // chocar con un posible NOT NULL de Supabase — ver
+            // `insertarMovimientoKardex`/`registrarVenta`), pero mostrar
+            // "0 → 0" en la tabla se leería como "se quedó sin existencias",
+            // que es engañoso — este artículo NUNCA tuvo un contador de
+            // stock que reportar. Se detecta por el mismo marcador que
+            // ponen los tres flujos de venta que generan este movimiento
+            // ("(sin control de stock)" en `motivo`) y se pinta "—" en vez
+            // del número, dejando clarísimo que es trazabilidad, no un
+            // descuento de inventario real.
+            const sinControlStock = typeof mov.motivo === 'string' && mov.motivo.includes('(sin control de stock)');
             return (
               <tr key={mov.id} className="border-b border-slate-200/70 last:border-0 hover:bg-slate-100/30">
                 <td className="whitespace-nowrap px-3 py-2.5 text-slate-500">
                   {mov.created_at ? new Date(mov.created_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
                 </td>
-                <td className="px-3 py-2.5 font-semibold text-slate-900">{nombrePorProductoId[mov.producto_id] || 'Producto eliminado'}</td>
+                <td className="px-3 py-2.5 font-semibold text-slate-900">{nombrePorProductoId[mov.producto_id] || mov.producto_nombre || 'Producto eliminado'}</td>
                 <td className="whitespace-nowrap px-3 py-2.5">
                   <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${meta.badge}`}>
                     <Icon size={10} /> {meta.label}
                   </span>
+                  {sinControlStock && (
+                    <span className="ml-1.5 inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-500">
+                      Sin stock rígido
+                    </span>
+                  )}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-800">
                   {meta.signo}
                   {Number(mov.cantidad) || 0}
                 </td>
-                <td className="whitespace-nowrap px-3 py-2.5 text-right text-slate-500">{mov.stock_anterior ?? '—'}</td>
-                <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-800">{mov.stock_nuevo ?? '—'}</td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-right text-slate-500">{sinControlStock ? '—' : mov.stock_anterior ?? '—'}</td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-800">{sinControlStock ? '—' : mov.stock_nuevo ?? '—'}</td>
                 <td className="px-3 py-2.5 text-slate-500">
                   {mov.motivo || '—'}
                   {mov.operador ? ` · ${mov.operador}` : ''}
@@ -17633,8 +17671,15 @@ const META_CORTESIA_BAR_DEFAULT = 1000;
 //      `cortesiasOtorgadas`/`cortesiasDisponiblesPorJugador` de inmediato
 //      sin esperar a un refresh de página).
 function calcularProgresoCortesia(comprasPOS, categoriaCompras, desdeMs, meta) {
+  // FIX explícito ("nunca evaluar sobre un ticket de $0"): el ticket $0.00
+  // que genera un canje de cortesía (`otorgarCortesiaCRM`) YA entra con
+  // `subtotal: 0`, así que sumarlo no cambia el total — pero se filtra
+  // aquí de forma EXPLÍCITA (`c.subtotal > 0`) en vez de confiar en que
+  // sumar cero no altere nada, para que quede a prueba de cualquier venta
+  // futura con descuento total a $0 que no sea, en sentido estricto, una
+  // "compra" real para efectos del Motor de Cortesías.
   const gastoDesdeUltimoCanje = comprasPOS
-    .filter((c) => c.categoria === categoriaCompras && c.ts > desdeMs)
+    .filter((c) => c.categoria === categoriaCompras && c.ts > desdeMs && c.subtotal > 0)
     .reduce((acc, c) => acc + c.subtotal, 0);
   return {
     progreso: Math.min(gastoDesdeUltimoCanje, meta),
@@ -27427,38 +27472,81 @@ function DirectorioJugadoresCRM({
   // TIEMPO REAL a TODAS las sesiones abiertas de este club (canal
   // `notificaciones_club_{club_id}`, ver `AppInterno`) como toast + entrada
   // en la campana — cross-device, sin reconstruir ese mecanismo.
+  //
+  // FIX (Notificación de Cortesía Redimida — race condition real): un
+  // canje ($0.00, `otorgarCortesiaCRM`) dispara DOS refrescos Realtime casi
+  // simultáneos — `cortesias_otorgadas` (resetea `ultimaCortesiaPorJugador
+  // Categoria`, lo que debería bajar `gastoActual` a ~$0) y `ventas` (el
+  // ticket $0.00 en sí, que NO suma nada porque su `subtotal` es 0 — ver
+  // `otorgarCortesiaCRM`). Como son dos `fetch` independientes
+  // (`cargarCortesiasOtorgadas`/`cargarVentasHistoricas`), `perfiles`
+  // recalcula varias veces en rápida sucesión MIENTRAS uno de los dos ya
+  // llegó y el otro todavía no — es decir, durante uno o dos renders
+  // intermedios, `lista` puede leer `true` de pura casualidad de timing
+  // (con datos a medio actualizar) aunque el estado FINAL, ya asentado,
+  // sea `false` ($0/$500). Antes, este efecto evaluaba y notificaba en
+  // CADA recálculo de `perfiles`, así que ese blip intermedio bastaba para
+  // disparar la alerta "justo en el instante del canje" — el bug
+  // reportado. Ahora se DEBOUNCEA: cada cambio de `perfiles` reprograma la
+  // evaluación 900ms más adelante en vez de dispararla al instante: si
+  // `perfiles` se sigue moviendo (como pasa en la ráfaga de un canje), la
+  // evaluación anterior se cancela y se reprograma, así que solo se
+  // compara/notifica hasta que los datos se ASIENTAN — usando siempre el
+  // `perfiles` MÁS RECIENTE en ese momento (leído de `perfilesCortesiaRef`,
+  // no una copia vieja capturada al programar el timer). Un jugador que de
+  // verdad cruza el 100% y se queda ahí (sin canjear en los siguientes
+  // 900ms) sigue notificando exactamente igual que antes — la ventana solo
+  // absorbe el ruido de una ráfaga de refrescos simultáneos.
   const listaAnteriorCortesiaRef = useRef(null);
+  const perfilesCortesiaRef = useRef(perfiles);
   useEffect(() => {
-    const anterior = listaAnteriorCortesiaRef.current;
-    const actual = new Map();
-    perfiles.forEach((p) => {
-      actual.set(`${p.id}:bar`, Boolean(p.cortesiaBar?.lista));
-      actual.set(`${p.id}:proshop`, Boolean(p.cortesiaProShop?.lista));
-    });
-
-    if (anterior) {
-      perfiles.forEach((p) => {
-        [
-          { categoria: 'proshop', datos: p.cortesiaProShop, etiqueta: 'Pro-Shop' },
-          { categoria: 'bar', datos: p.cortesiaBar, etiqueta: 'Restaurant-Bar' },
-        ].forEach(({ categoria, datos, etiqueta }) => {
-          const clave = `${p.id}:${categoria}`;
-          const listaAhora = Boolean(datos?.lista);
-          const listaAntes = anterior.get(clave) || false;
-          if (listaAhora && !listaAntes) {
-            crearNotificacionClub({
-              tipo: 'cortesia_lista',
-              titulo: `🎁 ¡${p.nombre} acaba de alcanzar su meta de cortesía en ${etiqueta}!`,
-              jugadorId: p.id,
-              jugadorNombre: p.nombre,
-              payload: { categoria, meta: datos?.meta || null },
-            });
-          }
-        });
+    perfilesCortesiaRef.current = perfiles;
+  }, [perfiles]);
+  const evaluarCortesiaTimeoutRef = useRef(null);
+  useEffect(() => {
+    if (evaluarCortesiaTimeoutRef.current) clearTimeout(evaluarCortesiaTimeoutRef.current);
+    evaluarCortesiaTimeoutRef.current = setTimeout(() => {
+      evaluarCortesiaTimeoutRef.current = null;
+      const perfilesAsentados = perfilesCortesiaRef.current;
+      const anterior = listaAnteriorCortesiaRef.current;
+      const actual = new Map();
+      perfilesAsentados.forEach((p) => {
+        actual.set(`${p.id}:bar`, Boolean(p.cortesiaBar?.lista));
+        actual.set(`${p.id}:proshop`, Boolean(p.cortesiaProShop?.lista));
       });
-    }
 
-    listaAnteriorCortesiaRef.current = actual;
+      if (anterior) {
+        perfilesAsentados.forEach((p) => {
+          [
+            { categoria: 'proshop', datos: p.cortesiaProShop, etiqueta: 'Pro-Shop' },
+            { categoria: 'bar', datos: p.cortesiaBar, etiqueta: 'Restaurant-Bar' },
+          ].forEach(({ categoria, datos, etiqueta }) => {
+            const clave = `${p.id}:${categoria}`;
+            // Doble candado, explícito, contra el caso "$0 no cuenta":
+            // `lista` de `calcularProgresoCortesia` ya exige
+            // `gastoActual >= meta` (con `meta > 0`), pero aquí se repite a
+            // propósito — nunca se notifica sin un `gastoActual` real y
+            // positivo, ni sin una meta configurada.
+            const listaAhora = Boolean(datos?.lista) && Number(datos?.gastoActual) > 0 && Number(datos?.meta) > 0;
+            const listaAntes = anterior.get(clave) || false;
+            if (listaAhora && !listaAntes) {
+              crearNotificacionClub({
+                tipo: 'cortesia_lista',
+                titulo: `🎁 ¡${p.nombre} acaba de alcanzar su meta de cortesía en ${etiqueta}!`,
+                jugadorId: p.id,
+                jugadorNombre: p.nombre,
+                payload: { categoria, meta: datos?.meta || null },
+              });
+            }
+          });
+        });
+      }
+
+      listaAnteriorCortesiaRef.current = actual;
+    }, 900);
+    return () => {
+      if (evaluarCortesiaTimeoutRef.current) clearTimeout(evaluarCortesiaTimeoutRef.current);
+    };
   }, [perfiles]);
 
   /* ---- Búsqueda, filtros y resumen ejecutivo ---- */
@@ -31149,8 +31237,11 @@ function PortalPublicoJugadores({ clubSlug }) {
         producto_nombre: item.nombre,
         tipo_movimiento: 'salida_venta',
         cantidad: item.cantidad,
-        stock_anterior: null,
-        stock_nuevo: null,
+        // FIX (no aparecía en el Kardex): mismo criterio que en Smart POS —
+        // `0` en vez de `null` para no chocar con un posible NOT NULL en
+        // Supabase; `TablaKardex` pinta "—" viendo el `motivo`.
+        stock_anterior: 0,
+        stock_nuevo: 0,
         costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProductoPortal),
         motivo: `${motivoBase}${item.esVariante || varianteId ? ` · ${item.varianteNombre || item.nombre}` : ''} (sin control de stock)`,
         operador: 'Portal Público',
