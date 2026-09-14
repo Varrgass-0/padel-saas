@@ -37876,21 +37876,28 @@ function FondoAuthAnimado() {
 //   infinito, sin audio (requisito de los navegadores para permitir
 //   autoplay) y `playsInline` para que iOS no lo abra a pantalla completa
 //   nativa.
-// - `poster` + `bg-[#0f172a]` de respaldo: color de marca (mismo navy que
-//   las letras Q/L/U/B del logo) visible de inmediato mientras el video
-//   carga o si el navegador no puede reproducirlo, para que nunca se vea un
-//   parpadeo blanco.
+// - `bg-[#0f172a]` de respaldo: color de marca (mismo navy que las letras
+//   Q/L/U/B del logo) visible de inmediato mientras el video carga o si el
+//   navegador no puede reproducirlo, para que nunca se vea un parpadeo
+//   blanco (no hay archivo de `poster` todavía — en cuanto el club entregue
+//   una imagen de portada basta con agregar el atributo `poster` aquí).
 // - Capa oscurecedora (`absolute inset-0` + gradiente `black/…`) ENCIMA del
 //   video pero DEBAJO de la tarjeta (`relative z-10` en la tarjeta, sin
 //   z-index explícito aquí — pinta después del `-z-10` del video y antes
 //   del `z-10` de la tarjeta): asegura contraste alto para que la tarjeta
 //   blanca semitransparente (`bg-white/80 backdrop-blur-xl`) se siga
 //   leyendo perfecto sobre cualquier escena del video.
-// - `<source src="...">`: ruta placeholder lista para recibir el archivo
-//   real (público, servido desde `public/assets/videos/`) — basta con
-//   colocar el .mp4 en esa ruta del proyecto, sin tocar este componente.
-const RUTA_VIDEO_FONDO_LOGIN = '/assets/videos/padel-bg.mp4';
-const RUTA_POSTER_FONDO_LOGIN = '/assets/videos/padel-bg-poster.jpg';
+// - Ruta REAL del archivo, tal como está guardado en el proyecto (público,
+//   raíz de `public/`): `/background-padel.MP4` — mayúsculas/minúsculas
+//   exactas, porque el hosting sirve archivos estáticos con nombre
+//   sensible a mayúsculas (a diferencia de Windows/Mac, un `.mp4` en
+//   minúsculas NO encuentra un archivo guardado como `.MP4`). Se listan 2
+//   `<source>`: el real primero, y una variante 100% en minúsculas como
+//   fallback — si el navegador no puede cargar el primero (404 u otra
+//   causa), intenta automáticamente el siguiente `<source>` del mismo
+//   `<video>` antes de darse por vencido.
+const RUTA_VIDEO_FONDO_LOGIN = '/background-padel.MP4';
+const RUTA_VIDEO_FONDO_LOGIN_FALLBACK = '/background-padel.mp4';
 
 function FondoAuthVideo() {
   return (
@@ -37900,10 +37907,10 @@ function FondoAuthVideo() {
         muted
         loop
         playsInline
-        poster={RUTA_POSTER_FONDO_LOGIN}
         className="fixed inset-0 -z-10 h-full w-full bg-[#0f172a] object-cover"
       >
         <source src={RUTA_VIDEO_FONDO_LOGIN} type="video/mp4" />
+        <source src={RUTA_VIDEO_FONDO_LOGIN_FALLBACK} type="video/mp4" />
       </video>
       <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/40 to-black/65" />
     </>
