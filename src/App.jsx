@@ -835,15 +835,15 @@ import {
 /* ============================================================================
  * LOGO OFICIAL DE QLUB OS — COMPONENTE LOCAL PERMANENTE
  * ==========================================================================*/
-// Rebranding: "CLUB OS" → "QLUB OS" — ÚNICAMENTE la letra C se reemplazó por
-// una Q con cola diagonal exterior (mismo trazo pesado que las demás
-// letras). L, U, B, la "O" verde neón (anillo con hueco central + su
-// cápsula/power horizontal saliendo por la izquierda) y la S verde son
-// EXACTAMENTE los mismos `<path>`/coordenadas que ya existían — un intento
-// anterior de este rebranding reconstruyó el logo entero con un SVG
-// distinto (viewBox distinto, letras como `<text>` en vez de `<path>`, la O
-// convertida en una cápsula con un símbolo de "+") y rompió el diseño; esta
-// versión revierte todo eso y solo toca el nodo de la Q.
+// Rebranding: "CLUB OS" → "QLUB OS". Unificación tipográfica (a pedido del
+// club): "QLUBOS" y la leyenda "RUN YOUR CLUB." usan AHORA exactamente la
+// misma fuente/trazo — las 6 letras de "QLUBOS" ya NO son la Q/L/U/B
+// geométricas dibujadas a mano ni la "O" con anillo/cápsula de power de
+// versiones anteriores: son contornos reales de Poppins Bold (idéntica
+// familia y técnica que la leyenda de abajo, ver el bloque siguiente),
+// solo que a mayor escala. "O"/"S" van en el mismo verde neón
+// (`#a3e635` = `lime-400`, el mismo tono exacto de `BotonPrimario`/los
+// botones de acción principal) y "Q"/"L"/"U"/"B" en `#0f172a`.
 //
 // Tagline "RUN YOUR CLUB." SIN <text>: antes usaba un `<text fontFamily=
 // "system-ui">` — se ve distinto según la fuente que tenga instalada cada
@@ -854,10 +854,11 @@ import {
 // ya usada en el resto de ClubOS) con fontTools/SVGPathPen, NO dibujado a
 // mano — así el resultado es geométricamente idéntico al de la fuente real
 // pero ya no depende de que esa fuente esté instalada: es curva vectorial
-// pura, se ve IGUAL en cualquier dispositivo/navegador, para siempre.
-// Regenerar (por ejemplo si cambia el texto del tagline): correr un script
-// con fontTools contra Poppins-Bold.ttf, uno por letra, y pegar los `<path>`
-// resultantes aquí — nunca reemplazar por un `<text>`.
+// pura, se ve IGUAL en cualquier dispositivo/navegador, para siempre. Mismo
+// criterio y misma técnica ahora para "QLUBOS" arriba.
+// Regenerar (por ejemplo si cambia el texto): correr un script con
+// fontTools/SVGPathPen contra Poppins-Bold.ttf, uno por letra, y pegar los
+// `<path>` resultantes aquí — nunca reemplazar por un `<text>`.
 //
 // Componente 100% local, declarado AQUÍ, directo en `App.jsx`, fuera de
 // `App`/`AppInterno` (componente de módulo, no anidado) — NUNCA se importa
@@ -870,39 +871,44 @@ import {
 const LogoQlubOS = ({ className = 'w-auto h-8' }) => (
   <div className={`flex items-center justify-center ${className}`}>
     <svg width="240" height="65" viewBox="0 0 320 85" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
-      {/* Q - Mantiene la tipografía pesada original con cierre limpio y pata diagonal exterior */}
+      {/* QLUBOS — contornos reales de Poppins Bold vía fontTools/SVGPathPen
+          (mismo método/familia que "RUN YOUR CLUB." abajo, ver comentario de
+          cabecera). "Q"/"L"/"U"/"B" en `#0f172a`, "O"/"S" en `#a3e635`
+          (`lime-400`, idéntico al verde de `BotonPrimario`). */}
       <path
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d="M40 12C22 12 10 24 10 42C10 60 22 72 40 72C46.5 72 52.5 69.5 57 65.5L64 72.5L71 65.5L63.5 58C68 53.5 70 48 70 42C70 24 58 12 40 12ZM40 25C49 25 57 32 57 42C57 46.5 55 50.5 51.5 53.5L44 46L37 53L45 60.5C43.5 60.8 41.8 61 40 61C29 61 21 52 21 42C21 32 29 25 40 25Z"
+        transform="translate(7.43 68.68) scale(0.077896 -0.077896)"
+        d="M562 -120 472 1Q432 -7 394 -7Q295 -7 212.5 39.0Q130 85 81.5 167.5Q33 250 33 353Q33 456 81.5 538.0Q130 620 212.5 666.0Q295 712 394 712Q493 712 575.5 666.0Q658 620 705.5 538.0Q753 456 753 353Q753 263 716.5 188.5Q680 114 615 65L769 -120ZM394 149Q478 149 528.5 205.0Q579 261 579 353Q579 446 528.5 501.5Q478 557 394 557Q309 557 258.5 502.0Q208 447 208 353Q208 260 258.5 204.5Q309 149 394 149Z"
         fill="#0f172a"
       />
       {/* L */}
-      <path d="M72 14H86V59H106V72H72V14Z" fill="#0f172a" />
+      <path
+        transform="translate(68.81 68.68) scale(0.077896 -0.077896)"
+        d="M233 132H457V0H62V702H233Z"
+        fill="#0f172a"
+      />
       {/* U */}
       <path
-        d="M112 14H126V50C126 55 130 59 135 59C140 59 144 55 144 50V14H158V50C158 63 148 72 135 72C122 72 112 63 112 50V14Z"
+        transform="translate(105.97 68.68) scale(0.077896 -0.077896)"
+        d="M230 702V282Q230 219 261.0 185.0Q292 151 352 151Q412 151 444.0 185.0Q476 219 476 282V702H647V283Q647 189 607.0 124.0Q567 59 499.5 26.0Q432 -7 349 -7Q266 -7 200.5 25.5Q135 58 97.0 123.5Q59 189 59 283V702Z"
         fill="#0f172a"
       />
       {/* B */}
       <path
-        d="M164 14H188C197 14 204 19 204 27C204 32 200 36 194 38C202 40 206 45 206 53C206 64 197 72 185 72H164V14ZM178 25V36H187C191 36 194 34 194 30.5C194 27 191 25 187 25H178ZM178 46V61H188C192 61 196 58 196 53.5C196 49 192 46 188 46H178Z"
+        transform="translate(160.88 68.68) scale(0.077896 -0.077896)"
+        d="M622 191Q622 103 560.5 51.5Q499 0 389 0H62V702H378Q485 702 545.5 653.0Q606 604 606 520Q606 458 573.5 417.0Q541 376 487 360Q548 347 585.0 299.5Q622 252 622 191ZM233 418H345Q387 418 409.5 436.5Q432 455 432 491Q432 527 409.5 546.0Q387 565 345 565H233ZM449 214Q449 251 424.5 272.0Q400 293 357 293H233V138H359Q402 138 425.5 157.5Q449 177 449 214Z"
         fill="#0f172a"
       />
-
-      {/* O VERDE CON POWER HORIZONTAL — anillo exterior con hueco central */}
+      {/* O VERDE */}
       <path
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d="M242 12C223 12 208 25 208 42C208 59 223 72 242 72C261 72 276 59 276 42C276 25 261 12 242 12ZM242 27C232 27 224 34 224 42C224 50 232 57 242 57C252 57 260 50 260 42C260 34 252 27 242 27Z"
-        fill="#CCFF00"
+        transform="translate(212.22 68.68) scale(0.077896 -0.077896)"
+        d="M33 353Q33 456 81.5 538.0Q130 620 212.5 666.0Q295 712 394 712Q493 712 575.5 666.0Q658 620 705.5 538.0Q753 456 753 353Q753 250 705.0 167.5Q657 85 575.0 39.0Q493 -7 394 -7Q295 -7 212.5 39.0Q130 85 81.5 167.5Q33 250 33 353ZM579 353Q579 446 528.5 501.5Q478 557 394 557Q309 557 258.5 502.0Q208 447 208 353Q208 260 258.5 204.5Q309 149 394 149Q478 149 528.5 205.0Q579 261 579 353Z"
+        fill="#a3e635"
       />
-      {/* Pestaña/Cápsula horizontal de encendido saliendo de la izquierda */}
-      <rect x="208" y="38" width="30" height="8" rx="4" fill="#CCFF00" />
       {/* S VERDE */}
       <path
-        d="M288 58C288 60 291 62 296 62C302 62 307 59 307 54C307 49 302 46 293 44C281 41 276 36 276 27C276 17 285 12 298 12C311 12 318 18 319 27H304C303 23 300 22 297 22C292 22 289 24 289 27C289 30 292 32 300 34C311 37 320 41 320 53C320 64 310 72 296 72C282 72 274 63 273 53H288V58Z"
-        fill="#CCFF00"
+        transform="translate(273.44 68.68) scale(0.077896 -0.077896)"
+        d="M42 210H224Q228 171 251.0 150.5Q274 130 311 130Q349 130 371.0 147.5Q393 165 393 196Q393 222 375.5 239.0Q358 256 332.5 267.0Q307 278 260 292Q192 313 149.0 334.0Q106 355 75.0 396.0Q44 437 44 503Q44 601 115.0 656.5Q186 712 300 712Q416 712 487.0 656.5Q558 601 563 502H378Q376 536 353.0 555.5Q330 575 294 575Q263 575 244.0 558.5Q225 542 225 511Q225 477 257.0 458.0Q289 439 357 417Q425 394 467.5 373.0Q510 352 541.0 312.0Q572 272 572 209Q572 149 541.5 100.0Q511 51 453.0 22.0Q395 -7 316 -7Q239 -7 178.0 18.0Q117 43 80.5 92.0Q44 141 42 210Z"
+        fill="#a3e635"
       />
 
       {/* RUN YOUR CLUB. — 12 <path> cerrados (R,U,N,Y,O,U,R,C,L,U,B,.), uno
@@ -3546,7 +3552,6 @@ function CanchaCard({
           alt={cancha.nombre}
           className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-slate-50/90 via-slate-50/10 to-transparent" />
         <div className="absolute left-3 top-3 flex flex-col items-start gap-1.5">
           <span
             className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide backdrop-blur ${meta.badge}`}
@@ -31470,7 +31475,6 @@ function PortalPublicoJugadores({ clubSlug }) {
                             alt={c.nombre}
                             className="h-full w-full object-cover"
                           />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-50/70 via-transparent to-transparent" />
                         </div>
                         <div className="p-3.5">
                           <div className="flex items-center justify-between gap-2">
@@ -36323,9 +36327,11 @@ function AppInterno() {
 // Fondo tipográfico animado de las pantallas de Auth — puramente
 // decorativo: un ticker/marquee de filas horizontales en grilla CSS,
 // alternando 2 frases del posicionamiento del producto en direcciones
-// opuestas, en verde neón (mismo lime del botón principal) a opacidad casi
-// imperceptible sobre el fondo `#f8fafc` — marca de agua, no protagonista:
-// el formulario/tarjeta sigue siendo lo único que de verdad se lee.
+// opuestas, en verde neón (exactamente el mismo `lime-400` del botón
+// principal) a opacidad visible (25%, subida a pedido del club — antes
+// casi imperceptible al 10%) sobre el fondo `#f8fafc`: se nota claramente
+// sin competir con la tarjeta de login, que sigue siendo lo único que de
+// verdad se lee.
 // Reescrito desde cero sobre una base de CSS Grid: `auto-rows-[minmax(0,1fr)]`
 // reparte el alto disponible en partes EXACTAMENTE iguales entre
 // `FILAS_FONDO_AUTH` filas, sin importar el alto real del viewport — así no
@@ -36405,7 +36411,7 @@ function FondoAuthAnimado() {
               >
                 <div className="flex shrink-0 pr-4">
                   <span
-                    className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-10 sm:text-4xl lg:text-5xl"
+                    className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-25 sm:text-4xl lg:text-5xl"
                     style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
                   >
                     {textoRepetido}
@@ -36413,7 +36419,7 @@ function FondoAuthAnimado() {
                 </div>
                 <div className="flex shrink-0 pr-4">
                   <span
-                    className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-10 sm:text-4xl lg:text-5xl"
+                    className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-25 sm:text-4xl lg:text-5xl"
                     style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
                   >
                     {textoRepetido}
@@ -36558,23 +36564,22 @@ function ClubAuthScreen({ onAutenticado }) {
   };
 
   return (
-    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#f8fafc] p-4 gap-4">
+    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#f8fafc] p-4">
       <FondoAuthAnimado />
 
-      {/* Tarjeta Superior — Header del Logo: mismo estilo dark/glassmorphism
-          que la tarjeta del formulario de abajo, pero MÁS ANCHA (max-w-lg
-          vs. max-w-md), así el logo sobresale hacia los lados y domina la
-          jerarquía visual de la pantalla. */}
-      <div className="relative z-10 w-full max-w-lg rounded-2xl border border-slate-200 bg-white/80 px-8 py-6 shadow-2xl backdrop-blur-xl">
-        <LogoQlubOS className="mx-auto h-auto w-64 md:w-80" />
-      </div>
-
-      {/* Tarjeta Inferior — Formulario de Login/Registro/Recuperación */}
+      {/* Tarjeta única (consolidada): logo + leyenda "RUN YOUR CLUB." (ambos
+          ya viven dentro del mismo SVG de `LogoQlubOS`) y el formulario de
+          Login/Registro/Recuperación comparten UNA sola tarjeta — antes eran
+          2 tarjetas apiladas (una solo para el logo, otra para el
+          formulario); a pedido del club se consolidaron en un único
+          contenedor `max-w-md` para que todo (logo, campos, botón) quepa
+          balanceado sin la separación visual redundante. */}
       <div className="relative z-10 w-full max-w-md">
         <div className="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-2xl backdrop-blur-xl">
-          {/* Encabezado interno removido en 'login': el logo de la tarjeta
-              de arriba ya se lleva todo el protagonismo de marca — repetir
-              "Run Your Club" aquí sería redundante. Se conserva SOLO para
+          <LogoQlubOS className="mx-auto mb-6 h-auto w-56 sm:w-64" />
+          {/* Encabezado interno removido en 'login': el logo de arriba (que
+              ya incluye "RUN YOUR CLUB.") se lleva todo el protagonismo de
+              marca — repetirlo aquí sería redundante. Se conserva SOLO para
               'registro'/'recuperar', donde el título no es una marca sino
               contexto real (le dice al usuario en qué paso del flujo está). */}
           {modo !== 'login' && (
