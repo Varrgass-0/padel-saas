@@ -1885,6 +1885,32 @@ const CATEGORIA_META = {
   Rentas: { label: 'Rentas', badge: 'bg-sky-400/10 text-sky-400 ring-1 ring-sky-400/30' },
 };
 
+// Subcategoría "Alimentos" (Restaurante/Bar) — SOLO aplica cuando
+// `categoria === 'Cafetería/Bar'` (ver `ModalNuevoProducto`): un platillo o
+// bebida preparada (chilaquiles, hamburguesa, café de olla...) no se
+// controla con unidades de stock como una cerveza embotellada o una bolsa
+// de papitas — se prepara sobre pedido y lo único que puede "faltar" es el
+// insumo, no un número. `productos.subcategoria` guarda el `value` de aquí
+// abajo (o `null`/'' para el resto del catálogo, incluida cualquier otra
+// fila de Restaurante/Bar que SÍ se controle por stock — botellas, latas,
+// snacks empaquetados). Columna nueva y opcional — ver el uso de
+// `insertarConColumnasOpcionales`/`actualizarConColumnasOpcionales` en
+// `ModalNuevoProducto.guardar()`, tolera un proyecto de Supabase que
+// todavía no la tenga.
+const SUBCATEGORIAS_RESTAURANTE_BAR = [
+  { value: '', label: 'Sin subcategoría (bebidas embotelladas, snacks empaquetados...)' },
+  { value: 'alimentos', label: 'Alimentos (platillos / bebidas preparadas)' },
+];
+
+// `true` únicamente para productos de Restaurante/Bar marcados como
+// "Alimentos" — usado tanto por `ModalNuevoProducto` (para ocultar los
+// controles de stock rígido y forzar `maneja_stock: false`) como, en
+// teoría, por cualquier otra pantalla que necesite el mismo criterio sin
+// repetir la comparación a mano.
+function esSubcategoriaAlimentos(categoria, subcategoria) {
+  return categoria === 'Cafetería/Bar' && subcategoria === 'alimentos';
+}
+
 // RENOMBRADO DE UX: en un puñado de lugares el código muestra el valor
 // CRUDO de `producto.categoria` directo en pantalla (tablas de
 // Rentabilidad/Kardex, historial de consumo del CRM, exportes CSV) en vez
@@ -6292,11 +6318,23 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
   const tieneVariantes = variantes.length > 0;
   const manejaStock = producto.maneja_stock !== false;
   const stock = Number(producto.stock);
-  const stockValido = !tieneVariantes && manejaStock && Number.isFinite(stock);
-  const variantesConControl = tieneVariantes ? variantes.filter((v) => v.stock != null) : [];
+  const stockValido = manejaStock && !tieneVariantes && Number.isFinite(stock);
+  // FIX (Alimentos/subcategoría "sin stock rígido"): con `maneja_stock:
+  // false` (ver "Maneja Inventario / Stock Rígido" en `ModalNuevoProducto`,
+  // forzado a `false` para la subcategoría "Alimentos" de Restaurante/Bar)
+  // el producto NUNCA debe bloquearse ni mostrar "Agotado"/"N disp." — ni
+  // por su propio stock NI por el de sus variantes. Antes `manejaStock`
+  // solo se usaba para el caso SIN variantes (`stockValido`); con
+  // variantes, `variantesConControl`/`sinStockVariantes` se calculaban
+  // ignorando por completo el toggle del producto padre, así que un
+  // platillo con variantes (ej. "Chilaquiles" → Verdes/Rojos) que traía
+  // números de stock en sus variantes (para costeo en ERP) terminaba
+  // mostrando "Agotado" en el POS igual — justo lo que el toggle
+  // prometía evitar. Ahora `manejaStock` gatea AMBOS casos.
+  const variantesConControl = manejaStock && tieneVariantes ? variantes.filter((v) => v.stock != null) : [];
   const stockAgregadoVariantes = variantesConControl.reduce((acc, v) => acc + (Number(v.stock) || 0), 0);
-  const sinStockVariantes = tieneVariantes && variantesConControl.length > 0 && stockAgregadoVariantes <= 0;
-  const sinStock = tieneVariantes ? sinStockVariantes : stockValido && stock <= 0;
+  const sinStockVariantes = manejaStock && tieneVariantes && variantesConControl.length > 0 && stockAgregadoVariantes <= 0;
+  const sinStock = manejaStock && (tieneVariantes ? sinStockVariantes : stockValido && stock <= 0);
   const noDisponible = producto.disponible === false;
   const bloqueado = sinStock || noDisponible;
   const catMeta = CATEGORIA_META[producto.categoria];
@@ -6400,6 +6438,12 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
 // antes de que se agregue a la comanda; cada variante trae su propio precio
 // (o hereda el del producto si no tiene uno propio) y su propio stock.
 function ModalSeleccionarVariante({ producto, variantes, onSeleccionar, onClose }) {
+  // Mismo criterio que `ProductoCard`: con `producto.maneja_stock === false`
+  // (Alimentos de Restaurante/Bar, o cualquier producto sin stock rígido)
+  // ninguna variante debe bloquearse ni mostrar "Agotado" por su propio
+  // número de stock — se puede agregar a la comanda sin importar el stock
+  // de sus variantes.
+  const manejaStockProducto = producto?.maneja_stock !== false;
   return (
     <ModalShell
       titulo={producto?.nombre || 'Elegir variante'}
@@ -6411,7 +6455,7 @@ function ModalSeleccionarVariante({ producto, variantes, onSeleccionar, onClose 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {variantes.map((v) => {
           const precio = v.precio != null ? Number(v.precio) : Number(producto?.precio) || 0;
-          const controlaStock = v.stock != null;
+          const controlaStock = manejaStockProducto && v.stock != null;
           const sinStock = controlaStock && Number(v.stock) <= 0;
           return (
             <button
@@ -7329,9 +7373,34 @@ function ModalNuevoProducto({
     producto?.categoria || CATEGORIAS_PRODUCTO.find((c) => c.value !== 'todos')?.value || 'Pro-Shop'
   );
   const [precio, setPrecio] = useState(producto?.precio != null ? String(producto.precio) : '');
+  // Subcategoría "Alimentos" (Restaurante/Bar) — solo tiene sentido cuando
+  // `categoria === 'Cafetería/Bar'` (ver `SUBCATEGORIAS_RESTAURANTE_BAR`);
+  // se limpia sola si el admin cambia a otra categoría (ver `cambiarCategoria`
+  // más abajo) para no dejar guardado un valor huérfano que ya no aplica.
+  const [subcategoria, setSubcategoria] = useState(
+    producto?.categoria === 'Cafetería/Bar' ? producto?.subcategoria || '' : ''
+  );
   const [manejaStock, setManejaStock] = useState(producto?.maneja_stock !== false);
   const [stock, setStock] = useState(producto?.stock != null ? String(producto.stock) : '');
   const [disponible, setDisponible] = useState(producto?.disponible !== false);
+  // "Alimentos": platillos/bebidas preparadas que se preparan sobre pedido —
+  // nunca se controlan por unidades de stock, solo por si hay insumos para
+  // prepararlos ahora mismo (el toggle Disponible/No disponible, más abajo).
+  const esAlimento = esSubcategoriaAlimentos(categoria, subcategoria);
+
+  function cambiarCategoria(nuevaCategoria) {
+    setCategoria(nuevaCategoria);
+    if (nuevaCategoria !== 'Cafetería/Bar') setSubcategoria('');
+  }
+
+  // Comportamiento por defecto de "Alimentos": al elegir la subcategoría,
+  // apaga de inmediato "Maneja Inventario / Stock Rígido" — el admin puede
+  // volver a prenderlo a mano después si de verdad quiere controlar stock
+  // para ese platillo en particular (esto es un DEFAULT, no un candado).
+  function cambiarSubcategoria(nuevaSubcategoria) {
+    setSubcategoria(nuevaSubcategoria);
+    if (esSubcategoriaAlimentos(categoria, nuevaSubcategoria)) setManejaStock(false);
+  }
   const [imagenUrl, setImagenUrl] = useState(producto?.imagen_url || '');
   const [guardando, setGuardando] = useState(false);
   const [eliminando, setEliminando] = useState(false);
@@ -7450,17 +7519,30 @@ function ModalNuevoProducto({
         activo: true,
       }));
 
+    // Subcategoría "Alimentos": el `esAlimento` derivado (categoría +
+    // subcategoría actuales) manda sobre `manejaStock` AL GUARDAR, sin
+    // importar si el admin lo reactivó a mano un instante y luego cambió de
+    // opinión sin volver a tocar el checkbox — así un platillo nunca se
+    // guarda por accidente con stock rígido encendido solo porque el estado
+    // de React no alcanzó a re-sincronizarse.
+    const manejaStockFinal = esAlimento ? false : manejaStock;
+
     const campos = {
       nombre: nombre.trim(),
       categoria,
+      // Solo se guarda algo distinto de null cuando la categoría es
+      // Restaurante/Bar — en cualquier otra categoría este selector ni
+      // siquiera se muestra (ver el JSX más abajo) y `subcategoria` ya se
+      // limpió sola en `cambiarCategoria`.
+      subcategoria: categoria === 'Cafetería/Bar' ? subcategoria || null : null,
       precio: Number(precio),
-      maneja_stock: manejaStock,
+      maneja_stock: manejaStockFinal,
       // Sincronización Automática Padre-Variantes: con variantes en pantalla,
       // el Stock Total NUNCA sale de lo que el operador tecleó a mano en este
       // campo — siempre es la suma recién calculada de `variantes` (ver
       // `stockCalculadoDeVariantes`), que ya coincide exactamente con la suma
       // de `variantesJSONB` porque ambas vienen de la misma lista en pantalla.
-      stock: !manejaStock ? null : tieneVariantes ? stockCalculadoDeVariantes : stock === '' ? 0 : Number(stock),
+      stock: !manejaStockFinal ? null : tieneVariantes ? stockCalculadoDeVariantes : stock === '' ? 0 : Number(stock),
       disponible,
       variantes: variantesJSONB,
     };
@@ -7468,11 +7550,14 @@ function ModalNuevoProducto({
     // archivo nuevo; así editar otros campos no borra la foto existente.
     if (imagen) campos.imagen_url = imagen;
 
-    const query = editando
-      ? supabase.from('productos').update(campos).eq('id', producto.id)
-      : supabase.from('productos').insert(withClubId({ ...campos, imagen_url: imagen || null, activo: true }));
-
-    const { data, error: err } = await query.select().single();
+    // Arquitectura Flexible: `subcategoria` es una columna nueva — un
+    // proyecto de Supabase que todavía no corrió esa migración no debe
+    // tronar el alta/edición completa del producto por ella, solo se
+    // reintenta sin esa columna puntual (ver `insertarConColumnasOpcionales`/
+    // `actualizarConColumnasOpcionales`).
+    const { data, error: err } = editando
+      ? await actualizarConColumnasOpcionales('productos', producto.id, campos, ['subcategoria'])
+      : await insertarConColumnasOpcionales('productos', { ...campos, imagen_url: imagen || null, activo: true }, ['subcategoria']);
 
     setGuardando(false);
 
@@ -7522,7 +7607,7 @@ function ModalNuevoProducto({
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Campo label="Categoría">
-            <select value={categoria} onChange={(e) => setCategoria(e.target.value)} className={inputClase}>
+            <select value={categoria} onChange={(e) => cambiarCategoria(e.target.value)} className={inputClase}>
               {CATEGORIAS_PRODUCTO.filter((c) => c.value !== 'todos').map((c) => (
                 <option key={c.value} value={c.value}>
                   {c.label}
@@ -7535,35 +7620,65 @@ function ModalNuevoProducto({
           </Campo>
         </div>
 
-        <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-2.5">
-          <span className="text-xs font-semibold text-slate-800">
-            Maneja Inventario / Stock Rígido
-            <span className="mt-0.5 block text-[10px] font-normal text-slate-500">
-              Desactívalo para platillos (nachos, baguettes...): nunca mostrarán "Agotado".
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={manejaStock}
-            onChange={(e) => setManejaStock(e.target.checked)}
-            className="h-4 w-8 shrink-0 accent-lime-400"
-          />
-        </label>
-
-        {manejaStock && (
-          <Campo
-            label={tieneVariantes ? 'Stock Total (automático)' : editando ? 'Stock' : 'Stock inicial'}
-            hint={tieneVariantes ? 'Se calcula solo — es la suma del stock de todas las variantes de abajo.' : undefined}
-          >
-            {tieneVariantes ? (
-              <div className={`${inputClase} flex cursor-not-allowed items-center justify-between bg-slate-100/60 text-slate-500`}>
-                <span className="font-black text-slate-800">{stockCalculadoDeVariantes}</span>
-                <Lock size={13} className="text-slate-500" />
-              </div>
-            ) : (
-              <input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} className={inputClase} placeholder="0" />
-            )}
+        {/* Subcategoría "Alimentos" — SOLO para Restaurante/Bar (ver
+            `SUBCATEGORIAS_RESTAURANTE_BAR`): platillos/bebidas preparadas que
+            no se controlan por unidades de stock. Elegirla apaga de
+            inmediato "Maneja Inventario / Stock Rígido" de abajo (ver
+            `cambiarSubcategoria`). */}
+        {categoria === 'Cafetería/Bar' && (
+          <Campo label="Subcategoría (opcional)">
+            <select value={subcategoria} onChange={(e) => cambiarSubcategoria(e.target.value)} className={inputClase}>
+              {SUBCATEGORIAS_RESTAURANTE_BAR.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
           </Campo>
+        )}
+
+        {esAlimento ? (
+          <div className="flex items-start gap-2 rounded-lg border border-lime-400/30 bg-lime-400/5 px-3.5 py-2.5 text-[11px] font-semibold text-slate-600">
+            <Info size={14} className="mt-0.5 shrink-0 text-lime-500" />
+            <span>
+              Alimentos no maneja unidades de stock — se prepara sobre pedido. En su lugar, controla si hay insumos para
+              prepararlo ahora mismo con el toggle Disponible / No disponible de abajo. Nunca mostrará "Agotado" ni
+              "N disp." en el catálogo del POS.
+            </span>
+          </div>
+        ) : (
+          <>
+            <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-2.5">
+              <span className="text-xs font-semibold text-slate-800">
+                Maneja Inventario / Stock Rígido
+                <span className="mt-0.5 block text-[10px] font-normal text-slate-500">
+                  Desactívalo para platillos (nachos, baguettes...): nunca mostrarán "Agotado".
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                checked={manejaStock}
+                onChange={(e) => setManejaStock(e.target.checked)}
+                className="h-4 w-8 shrink-0 accent-lime-400"
+              />
+            </label>
+
+            {manejaStock && (
+              <Campo
+                label={tieneVariantes ? 'Stock Total (automático)' : editando ? 'Stock' : 'Stock inicial'}
+                hint={tieneVariantes ? 'Se calcula solo — es la suma del stock de todas las variantes de abajo.' : undefined}
+              >
+                {tieneVariantes ? (
+                  <div className={`${inputClase} flex cursor-not-allowed items-center justify-between bg-slate-100/60 text-slate-500`}>
+                    <span className="font-black text-slate-800">{stockCalculadoDeVariantes}</span>
+                    <Lock size={13} className="text-slate-500" />
+                  </div>
+                ) : (
+                  <input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} className={inputClase} placeholder="0" />
+                )}
+              </Campo>
+            )}
+          </>
         )}
 
         <div className="rounded-lg border border-slate-300 bg-slate-100/60 p-3">
@@ -7653,7 +7768,11 @@ function ModalNuevoProducto({
           )}
         </div>
 
-        {editando && (
+        {/* Con `editando` (cualquier producto ya existente) o `esAlimento`
+            (Alimentos necesita este toggle DESDE el alta, ver el comentario
+            de `esAlimento` arriba — es su único control de disponibilidad,
+            reemplaza los campos de stock). */}
+        {(editando || esAlimento) && (
           <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-2.5">
             <span className="text-xs font-semibold text-slate-800">
               {disponible ? 'Disponible' : 'No disponible'}
@@ -8166,15 +8285,24 @@ function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando, onAnular 
   // sigue abierto.
   const [base] = useState(() => itemsEditablesDeGrupo(grupo));
   const [items, setItems] = useState(base.items);
-  // Anulación / Cancelación con Motivo Obligatorio (Control Interno): solo
-  // tiene sentido ofrecer "Cancelar Ticket" cuando el grupo YA trae al menos
-  // una fila real en `ventas` (`grupo.ventas`) — una reserva pendiente de
-  // recepción SIN ticket todavía (`grupo.reserva` sin `ventas`, ver
-  // `gruposReservasPendientes`) no tiene ninguna comanda que anular aquí; esa
-  // reservación se cancela desde su propio flujo (`ModalDetalleReserva` →
-  // "Cancelar Reserva"), no desde Liquidar/Cobrar.
+  // Anulación / Cancelación con Motivo Obligatorio (Control Interno):
+  // "Cancelar Ticket / Anular Comanda" aparece siempre que haya algo real
+  // que cancelar — dos casos posibles, y pueden darse juntos:
+  // - `grupo.ventas.length > 0`: ya existe al menos un ticket/comanda real
+  //   en `ventas` (Cuentas Abiertas de mostrador, Tienda Web del Portal, o
+  //   una Reserva pendiente de Recepción que YA generó su ticket).
+  // - `grupo.reserva`: el grupo viene de una Reserva pendiente de pago en
+  //   Recepción (ver `gruposReservasPendientes`) — CON o SIN ticket en
+  //   `ventas` todavía (`confirmarReservaConAddons` puede no haberlo creado,
+  //   ver el comentario ahí). Antes esto se excluía a propósito ("esa
+  //   reservación se cancela desde ModalDetalleReserva"), pero eso dejaba a
+  //   Recepción sin forma de anular con motivo obligatorio + auditoría
+  //   ANTES de cobrar, que es justo donde hace falta. `onAnular` (ver
+  //   `anularCuenta`) ahora cancela la reserva (`estado: 'Cancelada'`, libera
+  //   la cancha en el Cronograma/Parrilla) además de borrar el ticket si
+  //   existe.
   const [mostrarAnular, setMostrarAnular] = useState(false);
-  const puedeAnular = Boolean(onAnular) && Array.isArray(grupo.ventas) && grupo.ventas.length > 0;
+  const puedeAnular = Boolean(onAnular) && ((Array.isArray(grupo.ventas) && grupo.ventas.length > 0) || Boolean(grupo.reserva));
 
   function disminuirCantidad(key) {
     setItems((prev) => prev.map((it) => (it._key === key && it.editable && it.cantidad > 1 ? { ...it, cantidad: it.cantidad - 1 } : it)));
@@ -8245,9 +8373,11 @@ function ModalLiquidarCuenta({ grupo, onClose, onLiquidar, liquidando, onAnular 
 
       {mostrarAnular && (
         <ModalMotivoObligatorio
-          titulo="Anular Comanda"
-          subtitulo={`${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(total)} · Se quita de Cuentas Abiertas`}
-          textoBoton="Sí, anular comanda"
+          titulo={grupo.reserva ? 'Anular Reserva / Ticket' : 'Anular Comanda'}
+          subtitulo={`${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(total)} · ${
+            grupo.reserva ? 'Cancela la reserva y libera la cancha en el Cronograma' : 'Se quita de Cuentas Abiertas'
+          }`}
+          textoBoton={grupo.reserva ? 'Sí, anular reserva' : 'Sí, anular comanda'}
           onClose={() => setMostrarAnular(false)}
           onConfirmar={(motivo) => onAnular(motivo, items)}
         />
@@ -9931,20 +10061,49 @@ function ModuloSmartPOS({
   // qué, y qué artículos traía) queda en el Log de Actividad
   // (`log_actividad`, vía `onRegistrarAuditoria`) en vez de en la propia fila
   // de `ventas`, que desaparece. A diferencia de otros "best effort" del
-  // módulo, aquí SÍ se bloquea si el DELETE falla — anular sin que de verdad
-  // desaparezca de Supabase dejaría la cuenta reapareciendo sola al recargar,
-  // que es justo lo que el operador querría evitar al anular.
+  // módulo, aquí SÍ se bloquea si el UPDATE/DELETE falla — anular sin que de
+  // verdad desaparezca de Supabase dejaría la cuenta reapareciendo sola al
+  // recargar, que es justo lo que el operador querría evitar al anular.
+  //
+  // EXTENSIÓN A RESERVAS PENDIENTES DE RECEPCIÓN (`grupo.reserva`, ver
+  // `gruposReservasPendientes`/`puedeAnular` en `ModalLiquidarCuenta`): con
+  // reserva ligada, además de borrar el/los ticket(s) si ya existían, hay
+  // que CANCELAR LA RESERVA MISMA — si no, seguiría ocupando su horario en
+  // el Cronograma/Parrilla aunque el ticket ya no exista, y seguiría
+  // apareciendo en "Reservas pendientes de pago". Mismo criterio ya
+  // establecido en todo el archivo para `reservas`: NUNCA se borra la fila,
+  // siempre `estado: 'Cancelada'` (igual que Academia/Torneos/Retas al
+  // liberar una cancha) — el Cronograma/Parrilla ya tratan ese estado como
+  // hueco libre de inmediato, y `reservasPendientesRecepcion` (arriba)
+  // excluye 'Cancelada' de su filtro, así que el saldo pendiente también
+  // desaparece solo de Recepción.
   async function anularCuenta(grupo, motivo, itemsAlMomento) {
     const idsVentas = (grupo.ventas || []).map((v) => v.id);
-    if (idsVentas.length === 0) return false;
+    const reserva = grupo.reserva || null;
+    if (idsVentas.length === 0 && !reserva) return false;
 
-    const { error } = await supabase.from('ventas').delete().in('id', idsVentas);
-    if (error) {
-      mostrarToast({ titulo: 'No se pudo anular la comanda', detalle: error.message, tono: 'error' });
-      return false;
+    if (reserva && reserva.estado !== 'Cancelada') {
+      const { error: errReserva } = await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', reserva.id);
+      if (errReserva) {
+        mostrarToast({ titulo: 'No se pudo cancelar la reserva', detalle: errReserva.message, tono: 'error' });
+        return false;
+      }
     }
 
-    setCuentasAbiertas((prev) => prev.filter((v) => !idsVentas.includes(v.id)));
+    if (idsVentas.length > 0) {
+      const { error } = await supabase.from('ventas').delete().in('id', idsVentas);
+      if (error) {
+        mostrarToast({ titulo: 'No se pudo anular la comanda', detalle: error.message, tono: 'error' });
+        return false;
+      }
+      setCuentasAbiertas((prev) => prev.filter((v) => !idsVentas.includes(v.id)));
+    }
+
+    // Libera la cancha de inmediato en el estado en memoria (Cronograma/
+    // Parrilla leen `reservas` lifted en `AppInterno`) — mismo helper que ya
+    // usa el resto del app para sincronizar una cancelación recién escrita
+    // en Supabase sin esperar a un refetch completo.
+    if (reserva) upsertReserva?.({ id: reserva.id, estado: 'Cancelada' });
 
     const itemsTexto =
       (itemsAlMomento || [])
@@ -9958,11 +10117,14 @@ function ModuloSmartPOS({
       total: grupo.total,
       motivo,
       items: itemsTexto,
+      reserva_cancelada: Boolean(reserva),
     });
 
     mostrarToast({
-      titulo: 'Comanda anulada',
-      detalle: `${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(grupo.total)} · Motivo: ${motivo}`,
+      titulo: reserva ? 'Reserva anulada' : 'Comanda anulada',
+      detalle: `${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(grupo.total)} · Motivo: ${motivo}${
+        reserva ? ' · Cancha liberada en el Cronograma' : ''
+      }`,
       tono: 'aviso',
     });
 
@@ -19092,7 +19254,9 @@ const TIPOS_EVENTO_AUDITORIA = {
     color: 'text-rose-400',
     bg: 'bg-rose-400/10',
     detalleTexto: (d) =>
-      `${d?.origen || 'Comanda'} · ${formatoMoneda(d?.total)} — ${d?.cliente || 'Sin cliente'}. Motivo: ${d?.motivo || 'sin especificar'}. Artículos anulados: ${d?.items || '—'}.`,
+      `${d?.origen || 'Comanda'} · ${formatoMoneda(d?.total)} — ${d?.cliente || 'Sin cliente'}. Motivo: ${d?.motivo || 'sin especificar'}. Artículos anulados: ${d?.items || '—'}.${
+        d?.reserva_cancelada ? ' Reserva cancelada y cancha liberada en el Cronograma.' : ''
+      }`,
   },
   anulacion_inscripcion: {
     label: 'Cancelación de inscripción',
