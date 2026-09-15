@@ -15951,15 +15951,18 @@ function ModuloContabilidadCompras({
 
     const ingresosTotalesConsolidados = ventasMostrador + ventasWeb + reservasCanchas + torneosRetas + clasesClinicas;
 
-    // `!g.cancelada` — una Compra Cancelada/Revertida (ver `cancelarCompra`)
-    // sigue viviendo en `egresos` para que el Historial la muestre con su
-    // badge rojo/gris, pero NO debe seguir contando como Egreso real: se
-    // excluye aquí, en la ÚNICA fuente de `egresosEnRango` que alimenta
+    // `g.estatus_recepcion !== 'cancelada'` — una Compra Cancelada/Revertida
+    // (ver `cancelarCompra`) sigue viviendo en `egresos` para que el
+    // Historial la muestre con su badge rojo/gris, pero NO debe seguir
+    // contando como Egreso real: se excluye aquí, en la ÚNICA fuente de
+    // `egresosEnRango` que alimenta
     // `egresosTotales`/`egresosPorCategoria`/`utilidadReal` y el Modal de
     // Desglose (`desglosePnl`, más abajo) — así el P&L / Estado de
     // Resultados nunca se infla con una compra que en los hechos se
     // devolvió al proveedor.
-    const egresosEnRango = egresos.filter((g) => !g.cancelada && g.fecha >= rangoPnl.inicioFechaISO && g.fecha < rangoPnl.finFechaISO);
+    const egresosEnRango = egresos.filter(
+      (g) => g.estatus_recepcion !== 'cancelada' && g.fecha >= rangoPnl.inicioFechaISO && g.fecha < rangoPnl.finFechaISO
+    );
     const egresosTotales = egresosEnRango.reduce((acc, g) => acc + (Number(g.monto) || 0), 0);
 
     const egresosPorCategoria = {};
@@ -16898,11 +16901,19 @@ function ModuloContabilidadCompras({
   //    desde el catálogo si fue un error. Si YA tiene ventas, no se toca el
   //    producto — cancelar la compra no debe esconder algo que un jugador
   //    ya compró.
-  // En los 3 casos: `compras_gastos.cancelada = true` (con badge rojo/gris
-  // en el Historial, y excluido de `egresosEnRango`/P&L, ver ese `useMemo`)
-  // + registro en el Log de Auditoría.
+  // En los 3 casos: `compras_gastos.estatus_recepcion = 'cancelada'` (con
+  // badge rojo/gris en el Historial, y excluido de `egresosEnRango`/P&L, ver
+  // ese `useMemo`) + registro en el Log de Auditoría. Se reutiliza
+  // `estatus_recepcion` (ya existente y ya usado por
+  // `confirmarRecepcionCompra` arriba: 'pendiente'/'recibido') en vez de
+  // crear una columna `cancelada` nueva — Supabase regresaba
+  // "Could not find the 'cancelada' column of 'compras_gastos' in the
+  // schema cache" porque esa columna nunca existió en el proyecto; añadir
+  // otro estado más a una columna que YA sabemos que existe evita depender
+  // de una migración nueva, mismo criterio que el resto de "Arquitectura
+  // Flexible" del archivo.
   async function cancelarCompra(compra, motivo) {
-    if (compra.cancelada) return;
+    if (compra.estatus_recepcion === 'cancelada') return;
     setCancelandoCompraId(compra.id);
     let notaInventario = 'Esta compra no tenía producto/variante vinculado — solo se canceló el gasto.';
     try {
@@ -16998,14 +17009,23 @@ function ModuloContabilidadCompras({
         }
       }
 
+      // `estatus_recepcion` a secas (sin columnas opcionales) — ya sabemos
+      // que existe, la usa `confirmarRecepcionCompra` arriba de la misma
+      // forma. `motivo_cancelacion` sí es una columna nueva/opcional: si el
+      // proyecto de Supabase todavía no la tiene, `actualizarConColumnasOpcionales`
+      // reintenta sin ella en vez de tronar toda la cancelación — el motivo
+      // igual queda capturado en el Log de Auditoría (`onRegistrarAuditoria`
+      // abajo), que es tolerante por su cuenta.
       const { error } = await actualizarConColumnasOpcionales(
         'compras_gastos',
         compra.id,
-        { cancelada: true, motivo_cancelacion: motivo },
+        { estatus_recepcion: 'cancelada', motivo_cancelacion: motivo },
         ['motivo_cancelacion']
       );
       if (error) throw error;
-      setEgresos((prev) => prev.map((g) => (g.id === compra.id ? { ...g, cancelada: true, motivo_cancelacion: motivo } : g)));
+      setEgresos((prev) =>
+        prev.map((g) => (g.id === compra.id ? { ...g, estatus_recepcion: 'cancelada', motivo_cancelacion: motivo } : g))
+      );
 
       onRegistrarAuditoria?.('cancelacion_compra', {
         concepto: compra.concepto || 'Compra',
@@ -17092,7 +17112,7 @@ function ModuloContabilidadCompras({
         // propia columna — y excluido del Total de abajo, mismo criterio
         // que `egresosEnRango` en el P&L, para que este CSV no le muestre
         // al contador un total inflado con compras ya devueltas.
-        g.cancelada ? 'Cancelada / Revertida' : '',
+        g.estatus_recepcion === 'cancelada' ? 'Cancelada / Revertida' : '',
         (Number(g.monto) || 0).toFixed(2),
       ]),
       [],
@@ -17105,7 +17125,7 @@ function ModuloContabilidadCompras({
         '',
         '',
         egresos
-          .filter((g) => !g.cancelada)
+          .filter((g) => g.estatus_recepcion !== 'cancelada')
           .reduce((acc, g) => acc + (Number(g.monto) || 0), 0)
           .toFixed(2),
       ],
@@ -17552,15 +17572,26 @@ function ModuloContabilidadCompras({
                             </select>
                           </Campo>
                           {/* Ocultar Costo/Precio de venta del producto padre en cuanto
-                              hay variantes con datos (mejora UX): esa información ya
-                              vive en cada variante (columnas PRECIO/COSTO de la tabla
-                              de abajo) — dejarlos visibles aquí invitaba a llenar dos
-                              veces el mismo dato, o a que el operador capturara el
-                              precio/costo "base" pensando que aplicaba al producto
-                              cuando en realidad el catálogo/POS solo lee el de cada
-                              variante. Mismo criterio que ya usa Stock Inicial (se
-                              oculta/calcula solo) unas líneas abajo. */}
-                          {variantesNuevoProductoConDatos.length === 0 && (
+                              hay AL MENOS UNA fila de variante en pantalla (mejora UX):
+                              esa información ya vive en cada variante (columnas
+                              PRECIO/COSTO de la tabla de abajo) — dejarlos visibles aquí
+                              invitaba a llenar dos veces el mismo dato, o a que el
+                              operador capturara el precio/costo "base" pensando que
+                              aplicaba al producto cuando en realidad el catálogo/POS
+                              solo lee el de cada variante.
+                              FIX: antes esta condición usaba
+                              `variantesNuevoProductoConDatos` (filtrado — solo cuenta
+                              variantes que YA tienen un nombre capturado), así que los
+                              campos de arriba reaparecían apenas el operador agregaba
+                              una fila de variante nueva (todavía vacía) — justo lo
+                              contrario de lo pedido ("variantes.length > 0" a secas).
+                              Aquí se usa el arreglo CRUDO (`nuevoProductoForm.variantes`,
+                              sin filtrar) porque lo que debe ocultar estos 2 campos es
+                              que haya UNA FILA en pantalla, no que ya tenga datos — el
+                              cálculo de Stock Inicial/Monto Total/el payload final SÍ
+                              siguen usando la versión filtrada (`variantesNuevoProductoConDatos`)
+                              porque esos sí necesitan datos reales para sumar algo. */}
+                          {nuevoProductoForm.variantes.length === 0 && (
                             <>
                               <Campo label="Precio de venta">
                                 <input
@@ -17586,7 +17617,7 @@ function ModuloContabilidadCompras({
                               </Campo>
                             </>
                           )}
-                          {variantesNuevoProductoConDatos.length > 0 && (
+                          {nuevoProductoForm.variantes.length > 0 && (
                             <div className="sm:col-span-2 lg:col-span-2 flex items-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
                               Precio y costo se capturan por variante (columnas PRECIO/COSTO en "Variantes" abajo) — no hay un precio/costo
                               único de producto mientras haya variantes.
@@ -17815,14 +17846,17 @@ function ModuloContabilidadCompras({
                       // se ve "apagada" (opacidad) para distinguirla de un
                       // vistazo de las compras vigentes que sí cuentan en el
                       // P&L.
-                      <tr key={g.id} className={`border-b border-slate-200/70 last:border-0 ${g.cancelada ? 'opacity-50' : ''}`}>
+                      <tr
+                        key={g.id}
+                        className={`border-b border-slate-200/70 last:border-0 ${g.estatus_recepcion === 'cancelada' ? 'opacity-50' : ''}`}
+                      >
                         <td className="px-3 py-2.5 text-slate-500">{formatoFechaLarga(g.fecha)}</td>
                         <td className="px-3 py-2.5 font-semibold text-slate-800">{g.concepto}</td>
                         <td className="px-3 py-2.5 text-slate-500">{g.categoria || '—'}</td>
                         <td className="px-3 py-2.5 text-slate-500">{g.proveedor_nombre || '—'}</td>
                         <td className="px-3 py-2.5 text-slate-500">{g.operador || '—'}</td>
                         <td className="px-3 py-2.5">
-                          {g.cancelada ? (
+                          {g.estatus_recepcion === 'cancelada' ? (
                             <span
                               className="inline-flex items-center gap-1 rounded-full bg-slate-400/10 px-2 py-0.5 text-[10px] font-bold text-slate-500 ring-1 ring-slate-400/30"
                               title={g.motivo_cancelacion ? `Motivo: ${g.motivo_cancelacion}` : undefined}
@@ -17857,7 +17891,9 @@ function ModuloContabilidadCompras({
                           )}
                         </td>
                         <td
-                          className={`px-3 py-2.5 text-right font-bold ${g.cancelada ? 'text-slate-400 line-through' : 'text-rose-400'}`}
+                          className={`px-3 py-2.5 text-right font-bold ${
+                            g.estatus_recepcion === 'cancelada' ? 'text-slate-400 line-through' : 'text-rose-400'
+                          }`}
                         >
                           {formatoMoneda(Number(g.monto) || 0)}
                         </td>
@@ -17869,7 +17905,7 @@ function ModuloContabilidadCompras({
                               caso qué revertir. Ya cancelada = sin acción,
                               es un estado final (mismo criterio que
                               "Cancelada" en Reservas). */}
-                          {!g.cancelada && (
+                          {g.estatus_recepcion !== 'cancelada' && (
                             <button
                               type="button"
                               onClick={() => setCompraParaCancelarId(g.id)}
