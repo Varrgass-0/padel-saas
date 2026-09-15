@@ -7052,14 +7052,16 @@ function IdentificacionJugadorSplit({ jugadores, participante, onCambiar }) {
   );
 }
 
-function FilaPagoJugador({ indice, monto, pagado, transferidoANombre, onPagado, jugadores, participante, onCambiarParticipante }) {
+function FilaPagoJugador({ indice, monto, pagado, transferidoTexto, onPagado, jugadores, participante, onCambiarParticipante }) {
   const nombreMostrado = (participante?.nombre || '').trim() || `Jugador ${indice + 1}`;
 
   // Absorción / Transferir consumo (mejora): esta fila ya no paga nada por
-  // su cuenta — su parte se sumó a la de otro jugador (ver `montoEfectivo`
-  // en `ModalDividirCuenta`). Se muestra distinto de "Pagado" para que quede
+  // su cuenta — su parte se sumó a la de otro(s) jugador(es) (ver
+  // `montoEfectivo` en `ModalDividirCuenta`). `transferidoTexto` ya trae la
+  // frase completa — "Transferido a X" (uno a uno) o "Dividido entre el
+  // resto" (prorrateo) — se muestra distinto de "Pagado" para que quede
   // claro que NO hubo cobro aquí, solo una reasignación.
-  if (transferidoANombre) {
+  if (transferidoTexto) {
     return (
       <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 px-3.5 py-3">
         <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-bold text-slate-900">
@@ -7067,7 +7069,7 @@ function FilaPagoJugador({ indice, monto, pagado, transferidoANombre, onPagado, 
           <span className="truncate">{nombreMostrado}</span>
         </span>
         <span className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-amber-400">
-          <ArrowRightLeft size={13} /> Transferido a {transferidoANombre}
+          <ArrowRightLeft size={13} /> {transferidoTexto}
         </span>
       </div>
     );
@@ -7134,12 +7136,15 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
   // manda junto con el pago al finalizar — ver `onFinalizar` abajo.
   const [participantes, setParticipantes] = useState(() => Array.from({ length: 2 }, participanteSplitVacio));
   // Absorber / Transferir consumo (mejora — en 2 clics: Origen → Destino):
-  // `transferidoA[i]` es el índice del jugador que absorbió la parte del
-  // jugador `i` (o `null` si el jugador `i` sigue pagando la suya). La fila
-  // `i` deja de pedir cobro (ver `FilaPagoJugador`) y su monto se suma al
-  // de la fila destino (`montoEfectivo`, abajo) — no hay estado de "a medio
-  // elegir" más allá de `origenAbsorcion` (qué jugador se está reasignando
-  // ahora mismo, mientras se escoge el destino).
+  // `transferidoA[i]` es `null` (el jugador `i` sigue pagando lo suyo), un
+  // número (el índice de OTRO jugador que absorbió toda su parte), o
+  // `{ tipo: 'todos', destinos: [...índices] }` (su parte se prorrateó en
+  // partes iguales entre esos jugadores — "Dividir entre todos los
+  // restantes"). En cualquier caso la fila `i` deja de pedir cobro (ver
+  // `FilaPagoJugador`) y su monto se reparte entre las filas destino
+  // (`montoEfectivo`, abajo) — no hay estado de "a medio elegir" más allá de
+  // `origenAbsorcion` (qué jugador se está reasignando ahora mismo, mientras
+  // se escoge el destino).
   const [transferidoA, setTransferidoA] = useState(() => Array.from({ length: 2 }, () => null));
   const [mostrarAbsorcion, setMostrarAbsorcion] = useState(false);
   const [origenAbsorcion, setOrigenAbsorcion] = useState(null);
@@ -7153,17 +7158,25 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
   }, [numJugadores]);
 
   // Monto real a cobrar por fila: su parte equitativa (`partes[i]`) más lo
-  // que le hayan transferido otras filas — 0 si esta fila fue la que
-  // transfirió la suya (ver `transferidoA`).
-  const montoEfectivo = useMemo(
-    () =>
-      partes.map((m, i) => {
-        if (transferidoA[i] != null) return 0;
-        const absorbido = transferidoA.reduce((acc, destino, k) => (destino === i ? acc + partes[k] : acc), 0);
-        return Math.round((m + absorbido) * 100) / 100;
-      }),
-    [partes, transferidoA]
-  );
+  // que le hayan transferido otras filas (completo si fue una absorción
+  // "uno a uno", o su fracción proporcional — `repartirCentavos` — si fue
+  // "Dividir entre todos los restantes") — 0 si esta fila fue la que
+  // transfirió/repartió la suya (ver `transferidoA`).
+  const montoEfectivo = useMemo(() => {
+    const extra = partes.map(() => 0);
+    transferidoA.forEach((t, i) => {
+      if (t == null) return;
+      if (typeof t === 'number') {
+        extra[t] += partes[i];
+      } else if (t.tipo === 'todos' && t.destinos.length > 0) {
+        const fracciones = repartirCentavos(partes[i], t.destinos.length);
+        t.destinos.forEach((d, k) => {
+          extra[d] += fracciones[k];
+        });
+      }
+    });
+    return partes.map((m, i) => (transferidoA[i] != null ? 0 : Math.round((m + extra[i]) * 100) / 100));
+  }, [partes, transferidoA]);
 
   const totalPagado = pagos.reduce((acc, p, i) => (p && transferidoA[i] == null ? acc + montoEfectivo[i] : acc), 0);
   const saldoPendiente = Math.max(0, Math.round((total - totalPagado) * 100) / 100);
@@ -7186,6 +7199,16 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
     .map((_, i) => i)
     .filter((i) => i !== origenAbsorcion && !pagos[i] && transferidoA[i] == null);
 
+  // Texto de la tarjeta de una fila ya transferida ("Transferido a X" o
+  // "Dividido entre el resto") — usado tanto en el picker (paso 2, para no
+  // repetir la lógica) como en `FilaPagoJugador` más abajo.
+  function textoTransferido(t) {
+    if (t == null) return null;
+    if (typeof t === 'number') return `Transferido a ${nombreFila(t)}`;
+    if (t.tipo === 'todos') return 'Dividido entre el resto';
+    return null;
+  }
+
   function elegirOrigenAbsorcion(i) {
     setOrigenAbsorcion(i);
   }
@@ -7196,6 +7219,27 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
     onRegistrarAuditoria?.('absorcion_split_bill', {
       origen: nombreFila(origen),
       destino: nombreFila(destino),
+      monto: montoEfectivo[origen],
+    });
+    setOrigenAbsorcion(null);
+    setMostrarAbsorcion(false);
+  }
+  // "Dividir entre todos los restantes": prorratea la parte del jugador de
+  // origen en partes iguales entre TODOS los demás jugadores activos que
+  // todavía no hayan pagado (`opcionesDestino`, ya excluye al propio origen,
+  // a los que ya pagaron y a los ya transferidos). La lista de destinos
+  // queda FIJA al momento de confirmar — si después cambia quién ha pagado,
+  // el prorrateo ya hecho no se recalcula solo (mismo criterio que una
+  // absorción uno a uno, que tampoco se deshace sola).
+  function elegirDividirEntreTodos() {
+    const origen = origenAbsorcion;
+    if (origen == null || opcionesDestino.length === 0) return;
+    const destinos = opcionesDestino;
+    setTransferidoA((prev) => prev.map((v, i) => (i === origen ? { tipo: 'todos', destinos } : v)));
+    onRegistrarAuditoria?.('absorcion_split_bill', {
+      origen: nombreFila(origen),
+      destino: 'todos los jugadores restantes',
+      destinos: destinos.map((d) => nombreFila(d)).join(', '),
       monto: montoEfectivo[origen],
     });
     setOrigenAbsorcion(null);
@@ -7254,6 +7298,18 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
                       {nombreFila(i)}
                     </button>
                   ))}
+                  {/* Paso 2 únicamente — prorratea la cuota del origen entre
+                      TODOS los destinos elegibles en vez de uno solo. Solo
+                      tiene sentido con 2+ destinos posibles. */}
+                  {origenAbsorcion != null && opcionesDestino.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={elegirDividirEntreTodos}
+                      className="rounded-md border border-amber-400/50 bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-600 transition hover:border-amber-400 hover:bg-amber-400/20"
+                    >
+                      Dividir entre todos los restantes
+                    </button>
+                  )}
                 </div>
                 {origenAbsorcion != null && (
                   <button
@@ -7276,7 +7332,7 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
               indice={i}
               monto={montoEfectivo[i]}
               pagado={pagos[i]}
-              transferidoANombre={transferidoA[i] != null ? nombreFila(transferidoA[i]) : null}
+              transferidoTexto={textoTransferido(transferidoA[i])}
               onPagado={marcarPagado}
               jugadores={jugadores}
               participante={participantes[i]}
