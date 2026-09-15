@@ -7052,8 +7052,26 @@ function IdentificacionJugadorSplit({ jugadores, participante, onCambiar }) {
   );
 }
 
-function FilaPagoJugador({ indice, monto, pagado, onPagado, jugadores, participante, onCambiarParticipante }) {
+function FilaPagoJugador({ indice, monto, pagado, transferidoANombre, onPagado, jugadores, participante, onCambiarParticipante }) {
   const nombreMostrado = (participante?.nombre || '').trim() || `Jugador ${indice + 1}`;
+
+  // Absorción / Transferir consumo (mejora): esta fila ya no paga nada por
+  // su cuenta — su parte se sumó a la de otro jugador (ver `montoEfectivo`
+  // en `ModalDividirCuenta`). Se muestra distinto de "Pagado" para que quede
+  // claro que NO hubo cobro aquí, solo una reasignación.
+  if (transferidoANombre) {
+    return (
+      <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 px-3.5 py-3">
+        <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-bold text-slate-900">
+          <Users size={13} className="shrink-0 text-amber-400" />
+          <span className="truncate">{nombreMostrado}</span>
+        </span>
+        <span className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-amber-400">
+          <ArrowRightLeft size={13} /> Transferido a {transferidoANombre}
+        </span>
+      </div>
+    );
+  }
 
   if (pagado) {
     return (
@@ -7093,7 +7111,20 @@ function participanteSplitVacio() {
   return { modo: 'buscar', jugadorId: null, nombre: '', telefono: '' };
 }
 
-function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jugadores }) {
+// Interfaz ÚNICA de "Dividir Cuenta" — la misma para Venta Directa (carrito
+// principal, ver `onDividir` en `ModalCobro`), Reservas del Portal pendientes
+// de pago en Recepción y Cuentas Abiertas vinculadas a cancha
+// (`ModalLiquidarCuenta`, botón "Dividir Cuenta" → `onDividirCuenta`).
+// Deliberadamente sencilla: reparto EQUITATIVO automático entre 2-4
+// jugadores (`repartirCentavos`), buscador con autocomplete contra el
+// Directorio CRM (`IdentificacionJugadorSplit` → `SelectorJugadorRegistrado`)
+// sin pedir teléfono en pantalla para un jugador ya registrado, y alta de
+// jugador nuevo en línea si hace falta — nada de asignar artículos ni de
+// "Sin asignar". `onFinalizar` recibe un pago por cada fila que sí cobra
+// (las transferidas por absorción quedan fuera, ver más abajo) — cada
+// llamador decide qué hacer con esas filas (`registrarVenta` para el
+// carrito, `liquidarCuentaDividida` para Reservas/Cuentas Abiertas).
+function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jugadores, onRegistrarAuditoria }) {
   const [numJugadores, setNumJugadores] = useState(2);
   const partes = useMemo(() => repartirCentavos(total, numJugadores), [total, numJugadores]);
   const [pagos, setPagos] = useState(() => Array.from({ length: 2 }, () => null)); // null | { metodo, cambio? }
@@ -7102,21 +7133,73 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
   // aparte de `pagos` porque se captura ANTES de cobrar esa fila, pero se
   // manda junto con el pago al finalizar — ver `onFinalizar` abajo.
   const [participantes, setParticipantes] = useState(() => Array.from({ length: 2 }, participanteSplitVacio));
+  // Absorber / Transferir consumo (mejora — en 2 clics: Origen → Destino):
+  // `transferidoA[i]` es el índice del jugador que absorbió la parte del
+  // jugador `i` (o `null` si el jugador `i` sigue pagando la suya). La fila
+  // `i` deja de pedir cobro (ver `FilaPagoJugador`) y su monto se suma al
+  // de la fila destino (`montoEfectivo`, abajo) — no hay estado de "a medio
+  // elegir" más allá de `origenAbsorcion` (qué jugador se está reasignando
+  // ahora mismo, mientras se escoge el destino).
+  const [transferidoA, setTransferidoA] = useState(() => Array.from({ length: 2 }, () => null));
+  const [mostrarAbsorcion, setMostrarAbsorcion] = useState(false);
+  const [origenAbsorcion, setOrigenAbsorcion] = useState(null);
 
   useEffect(() => {
     setPagos(Array.from({ length: numJugadores }, () => null));
     setParticipantes(Array.from({ length: numJugadores }, participanteSplitVacio));
+    setTransferidoA(Array.from({ length: numJugadores }, () => null));
+    setMostrarAbsorcion(false);
+    setOrigenAbsorcion(null);
   }, [numJugadores]);
 
-  const totalPagado = pagos.reduce((acc, p, i) => (p ? acc + partes[i] : acc), 0);
+  // Monto real a cobrar por fila: su parte equitativa (`partes[i]`) más lo
+  // que le hayan transferido otras filas — 0 si esta fila fue la que
+  // transfirió la suya (ver `transferidoA`).
+  const montoEfectivo = useMemo(
+    () =>
+      partes.map((m, i) => {
+        if (transferidoA[i] != null) return 0;
+        const absorbido = transferidoA.reduce((acc, destino, k) => (destino === i ? acc + partes[k] : acc), 0);
+        return Math.round((m + absorbido) * 100) / 100;
+      }),
+    [partes, transferidoA]
+  );
+
+  const totalPagado = pagos.reduce((acc, p, i) => (p && transferidoA[i] == null ? acc + montoEfectivo[i] : acc), 0);
   const saldoPendiente = Math.max(0, Math.round((total - totalPagado) * 100) / 100);
-  const todosPagados = pagos.length > 0 && pagos.every(Boolean);
+  const todosPagados = pagos.length > 0 && pagos.every((p, i) => transferidoA[i] != null || Boolean(p));
 
   function marcarPagado(idx, datos) {
     setPagos((prev) => prev.map((p, i) => (i === idx ? datos : p)));
   }
   function cambiarParticipante(idx, datos) {
     setParticipantes((prev) => prev.map((p, i) => (i === idx ? datos : p)));
+  }
+  function nombreFila(i) {
+    return (participantes[i]?.nombre || '').trim() || `Jugador ${i + 1}`;
+  }
+
+  // Filas elegibles para el picker: nunca una que ya pagó, ni una que ya se
+  // transfirió a alguien más (ya no tiene saldo propio que mover).
+  const opcionesOrigen = partes.map((_, i) => i).filter((i) => !pagos[i] && transferidoA[i] == null);
+  const opcionesDestino = partes
+    .map((_, i) => i)
+    .filter((i) => i !== origenAbsorcion && !pagos[i] && transferidoA[i] == null);
+
+  function elegirOrigenAbsorcion(i) {
+    setOrigenAbsorcion(i);
+  }
+  function elegirDestinoAbsorcion(destino) {
+    const origen = origenAbsorcion;
+    if (origen == null) return;
+    setTransferidoA((prev) => prev.map((v, i) => (i === origen ? destino : v)));
+    onRegistrarAuditoria?.('absorcion_split_bill', {
+      origen: nombreFila(origen),
+      destino: nombreFila(destino),
+      monto: montoEfectivo[origen],
+    });
+    setOrigenAbsorcion(null);
+    setMostrarAbsorcion(false);
   }
 
   return (
@@ -7141,13 +7224,59 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
           </div>
         </div>
 
+        {opcionesOrigen.length > 1 && (
+          <div className="rounded-lg border border-amber-400/25 bg-amber-400/5 p-2.5">
+            <button
+              type="button"
+              onClick={() => {
+                setMostrarAbsorcion((v) => !v);
+                setOrigenAbsorcion(null);
+              }}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-500 hover:text-amber-400"
+            >
+              <ArrowRightLeft size={13} /> Absorber / Transferir consumo
+            </button>
+            {mostrarAbsorcion && (
+              <div className="mt-2 space-y-1.5">
+                <p className="text-[11px] font-semibold text-slate-600">
+                  {origenAbsorcion == null
+                    ? '1. ¿Quién no va a pagar? (Origen)'
+                    : `2. ¿A quién le pasamos lo de ${nombreFila(origenAbsorcion)}? (Destino)`}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {(origenAbsorcion == null ? opcionesOrigen : opcionesDestino).map((i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => (origenAbsorcion == null ? elegirOrigenAbsorcion(i) : elegirDestinoAbsorcion(i))}
+                      className="rounded-md border border-amber-400/30 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 transition hover:border-amber-400 hover:bg-amber-400/10"
+                    >
+                      {nombreFila(i)}
+                    </button>
+                  ))}
+                </div>
+                {origenAbsorcion != null && (
+                  <button
+                    type="button"
+                    onClick={() => setOrigenAbsorcion(null)}
+                    className="text-[10px] font-bold text-slate-500 hover:text-slate-800"
+                  >
+                    ← Cancelar
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="max-h-[420px] space-y-2 overflow-y-auto pr-0.5">
-          {partes.map((monto, i) => (
+          {partes.map((_, i) => (
             <FilaPagoJugador
               key={i}
               indice={i}
-              monto={monto}
+              monto={montoEfectivo[i]}
               pagado={pagos[i]}
+              transferidoANombre={transferidoA[i] != null ? nombreFila(transferidoA[i]) : null}
               onPagado={marcarPagado}
               jugadores={jugadores}
               participante={participantes[i]}
@@ -7168,22 +7297,26 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
           <BotonPrimario
             onClick={() =>
               onFinalizar(
-                pagos.map((p, i) => ({
-                  jugador: i + 1,
-                  monto: partes[i],
-                  metodo: p?.metodo || null,
-                  cambio: p?.cambio || 0,
-                  // CRM (mejora): si se seleccionó del directorio, `jugadorId`
-                  // ya viene resuelto; si se capturó "Nuevo Jugador",
-                  // `jugadorId` es `null` y `jugadorNombre`/`jugadorTelefono`
-                  // son lo que `registrarVenta` usa para darlo de alta de
-                  // verdad (`resolverJugadorId`) al finalizar. Si la fila se
-                  // dejó sin identificar, los tres quedan `null` — exactamente
-                  // el comportamiento de antes (folio genérico "Jugador N").
-                  jugadorId: participantes[i]?.jugadorId || null,
-                  jugadorNombre: (participantes[i]?.nombre || '').trim() || null,
-                  jugadorTelefono: (participantes[i]?.telefono || '').trim() || null,
-                }))
+                pagos
+                  .map((p, i) => ({ p, i }))
+                  .filter(({ i }) => transferidoA[i] == null)
+                  .map(({ p, i }) => ({
+                    jugador: i + 1,
+                    monto: montoEfectivo[i],
+                    metodo: p?.metodo || null,
+                    cambio: p?.cambio || 0,
+                    // CRM (mejora): si se seleccionó del directorio, `jugadorId`
+                    // ya viene resuelto; si se capturó "Nuevo Jugador",
+                    // `jugadorId` es `null` y `jugadorNombre`/`jugadorTelefono`
+                    // son lo que `registrarVenta`/`liquidarCuentaDividida` usan
+                    // para darlo de alta de verdad (`resolverJugadorId`) al
+                    // finalizar. Si la fila se dejó sin identificar, los tres
+                    // quedan `null` — exactamente el comportamiento de siempre
+                    // (folio genérico "Jugador N").
+                    jugadorId: participantes[i]?.jugadorId || null,
+                    jugadorNombre: (participantes[i]?.nombre || '').trim() || null,
+                    jugadorTelefono: (participantes[i]?.telefono || '').trim() || null,
+                  }))
               )
             }
             disabled={!todosPagados || registrandoVenta}
@@ -8323,145 +8456,13 @@ function ModalConfirmarLiberarClasePrivada({ clase, onClose, onConfirmar, libera
   );
 }
 
-// Tarjeta de un jugador dentro de "Dividir Cuenta" (`ModalLiquidarCuenta` —
-// Reservas Pendientes de Recepción / Cuentas Abiertas vinculadas a cancha):
-// mismo espíritu que `FilaSplitBillJugador` (nombre/teléfono editables,
-// cuota de cancha si aplica, `PasosDeCobro` compacto para cobrar SU parte de
-// forma independiente, estado "Transferido a X" si fue absorbido), pero con
-// una diferencia clave — aquí los artículos NO llegan ya etiquetados desde
-// el carrito (no hay "Agregando para:"), son consumo YA EXISTENTE que hay
-// que repartir retroactivamente, así que cada renglón asignado trae su
-// propio botón para regresarlo a "Sin asignar" (`onQuitarItem`).
-function FilaDividirCuentaJugador({
-  fila,
-  indice,
-  esUnico,
-  cobrando,
-  mostrarCuota,
-  onActualizarNombre,
-  onActualizarTelefono,
-  onActualizarCuota,
-  onConfirmarJugador,
-  onQuitarJugador,
-  onQuitarItem,
-  onCobrar,
-}) {
-  const pagado = fila.pagado;
-  const absorbido = pagado?.tipo === 'absorcion';
-  return (
-    <div
-      className={`rounded-xl border px-3.5 py-3 ${
-        pagado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-slate-300 bg-slate-100'
-      }`}
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          value={fila.nombre || ''}
-          onChange={(e) => onActualizarNombre(indice, e.target.value)}
-          onBlur={() => onConfirmarJugador(indice)}
-          disabled={Boolean(pagado)}
-          placeholder={`Jugador ${indice + 1}`}
-          className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-900 disabled:opacity-70"
-        />
-        {fila.resolviendo && <Loader2 size={13} className="animate-spin text-slate-500" />}
-        {fila.jugadorId && !fila.resolviendo && (
-          <span title="Enlazado al Directorio CRM" className="text-emerald-400">
-            <CheckCircle2 size={13} />
-          </span>
-        )}
-        {!pagado && !esUnico && (
-          <button
-            onClick={() => onQuitarJugador(indice)}
-            title="Quitar de la división"
-            className="shrink-0 text-slate-400 transition hover:text-rose-400"
-          >
-            <X size={14} />
-          </button>
-        )}
-      </div>
-
-      <input
-        value={fila.telefono || ''}
-        onChange={(e) => onActualizarTelefono(indice, e.target.value)}
-        onBlur={() => onConfirmarJugador(indice)}
-        disabled={Boolean(pagado)}
-        placeholder="Teléfono (opcional)"
-        className="mt-1.5 w-full rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-600 disabled:opacity-70"
-      />
-
-      {mostrarCuota && (
-        <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
-          <span className="text-slate-500">Cuota de cancha</span>
-          <div className="flex items-center gap-1 text-slate-900">
-            <span>$</span>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={fila.cuotaCancha}
-              onChange={(e) => onActualizarCuota(indice, e.target.value)}
-              disabled={Boolean(pagado)}
-              className="w-20 rounded-md border border-slate-300 bg-slate-50 px-1.5 py-1 text-right font-bold disabled:opacity-70"
-            />
-          </div>
-        </div>
-      )}
-
-      {fila.items.length > 0 && (
-        <div className="mt-1.5 space-y-0.5 border-t border-slate-300/60 pt-1.5">
-          {fila.items.map((it) => (
-            <div key={it._key} className="flex items-center justify-between gap-1.5 text-[11px] text-slate-500">
-              <span className="min-w-0 flex-1 truncate">
-                {it.cantidad}× {it.nombre}
-              </span>
-              <span className="shrink-0 text-slate-600">{formatoMoneda(it.precio * it.cantidad)}</span>
-              {!pagado && (
-                <button
-                  onClick={() => onQuitarItem(it._key)}
-                  title="Regresar a Sin asignar"
-                  className="shrink-0 text-slate-400 transition hover:text-rose-400"
-                >
-                  <X size={11} />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-2 flex items-center justify-between border-t border-slate-300/60 pt-2">
-        <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Total jugador</span>
-        <span className="text-base font-black text-slate-900">{formatoMoneda(fila.total)}</span>
-      </div>
-
-      {absorbido ? (
-        <div className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-amber-400">
-          <ArrowRightLeft size={13} className="shrink-0" />
-          <span>Transferido a {pagado.destinoNombre || 'otro jugador'}</span>
-        </div>
-      ) : pagado ? (
-        <div className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
-          <CheckCircle2 size={13} /> Pagado con {METODOS_PAGO_POS.find((m) => m.value === pagado.metodo)?.label || pagado.metodo}
-        </div>
-      ) : (
-        <div className="mt-2">
-          <PasosDeCobro compacto monto={fila.total} deshabilitado={cobrando} onConfirmar={(datos) => onCobrar(indice, datos)} onCancelar={null} />
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ModalLiquidarCuenta({
   grupo,
   onClose,
   onLiquidar,
   liquidando,
   onAnular,
-  onRegistrarAuditoria,
-  directorioJugadoresCRM,
-  onCobrarJugadorDividir,
-  onFinalizarDividirCuenta,
+  onDividirCuenta,
 }) {
   // `useState(() => ...)` — se calcula solo UNA vez, al montar (cada apertura
   // del modal es un montaje nuevo, ver el `{grupoALiquidar && (...)}` que lo
@@ -8489,26 +8490,25 @@ function ModalLiquidarCuenta({
   const [mostrarAnular, setMostrarAnular] = useState(false);
   const puedeAnular = Boolean(onAnular) && ((Array.isArray(grupo.ventas) && grupo.ventas.length > 0) || Boolean(grupo.reserva));
 
-  // "Dividir Cuenta" (mejora): disponible para cualquier ticket/reserva
-  // pendiente de pago que venga del Portal de jugadores — una Reserva con
-  // "Pagar en Recepción" (`grupo.reserva`) o una compra de Tienda del Portal
-  // pendiente de pago (`grupo.ventas` con `origen` de portal, ver
-  // `esOrigenPortalWeb`) — y para Cuentas Abiertas vinculadas a una cancha
-  // activa (`grupo.cancha`). Una "Venta General" de mostrador sin cancha ni
-  // portal de por medio se queda con el cobro único de siempre.
+  // "Dividir Cuenta" (mejora — vuelve a la interfaz sencilla y única de
+  // siempre, `ModalDividirCuenta`: reparto equitativo automático + buscador
+  // de Jugadores Registrados con autocomplete, SIN campos de teléfono ni
+  // selectores de artículo, y con "Absorber / Transferir consumo" integrado
+  // ahí mismo — ver comentario en `ModalDividirCuenta`). Disponible para
+  // cualquier ticket/reserva pendiente de pago que venga del Portal de
+  // jugadores — una Reserva con "Pagar en Recepción" (`grupo.reserva`) o una
+  // compra de Tienda del Portal pendiente de pago (`grupo.ventas` con
+  // `origen` de portal, ver `esOrigenPortalWeb`) — y para Cuentas Abiertas
+  // vinculadas a una cancha activa (`grupo.cancha`). `ModuloSmartPOS` es
+  // quien de verdad abre `ModalDividirCuenta` (mismo componente que usa la
+  // Venta Directa del carrito principal — una sola interfaz para los tres
+  // tipos, ver `onDividirCuenta`), así que aquí solo se decide si el botón
+  // se muestra y se le entrega el `total`/`items` vigentes al momento.
   const puedeDividir =
-    Boolean(onCobrarJugadorDividir) &&
+    Boolean(onDividirCuenta) &&
     (Boolean(grupo.reserva) ||
       Boolean(grupo.cancha) ||
       (Array.isArray(grupo.ventas) && grupo.ventas.some((v) => esOrigenPortalWeb(v?.origen))));
-
-  const [dividiendo, setDividiendo] = useState(false);
-  const [itemsDividir, setItemsDividir] = useState(null);
-  const [rosterDividir, setRosterDividir] = useState([]);
-  const [cobrandoJugadorDividirIndice, setCobrandoJugadorDividirIndice] = useState(null);
-  const [mostrarAbsorcionDividir, setMostrarAbsorcionDividir] = useState(false);
-  const [procesandoAbsorcionDividir, setProcesandoAbsorcionDividir] = useState(false);
-  const [finalizandoDividir, setFinalizandoDividir] = useState(false);
 
   function disminuirCantidad(key) {
     setItems((prev) => prev.map((it) => (it._key === key && it.editable && it.cantidad > 1 ? { ...it, cantidad: it.cantidad - 1 } : it)));
@@ -8519,385 +8519,85 @@ function ModalLiquidarCuenta({
 
   const total = Math.max(0, items.reduce((acc, it) => acc + it.precio * it.cantidad, 0) + base.ajuste);
 
-  // ---- Dividir Cuenta ----------------------------------------------------
-  // Arranca la división a partir del estado ACTUAL de `items` (respeta
-  // cualquier edición de cantidades/eliminaciones que el cajero ya haya
-  // hecho en la vista normal antes de decidir dividir). Slot 1 se
-  // precapture con el nombre del cliente de la reserva/cuenta, si lo hay —
-  // igual que el Roster de "Vincular a Cancha" precaptura al ocupante real.
-  function iniciarDivision() {
-    const nombreCliente = (grupo.clienteNombre || grupo.reserva?.jugador_nombre || '').trim();
-    setItemsDividir(items.map((it) => ({ ...it, jugadorIndice: null })));
-    setRosterDividir([
-      { nombre: nombreCliente, telefono: '', jugadorId: grupo.reserva?.jugador_id || null, resolviendo: false, cuotaCancha: null, pagado: null },
-      { nombre: '', telefono: '', jugadorId: null, resolviendo: false, cuotaCancha: null, pagado: null },
-    ]);
-    setDividiendo(true);
-  }
-  function cancelarDivision() {
-    setDividiendo(false);
-    setItemsDividir(null);
-    setRosterDividir([]);
-  }
-
-  // La línea de cancha (si la hay) nunca se "asigna" como un artículo más —
-  // se reparte con su propia cuota por jugador (automática o editable a
-  // mano), igual que el Roster de "Vincular a Cancha" (`cuotaCancha`).
-  const costoCanchaTotalDividir = (itemsDividir || [])
-    .filter((it) => it.tipo === 'cancha')
-    .reduce((acc, it) => acc + (Number(it.precio) || 0) * (Number(it.cantidad) || 0), 0);
-  const itemsProductoDividir = (itemsDividir || []).filter((it) => it.tipo !== 'cancha');
-
-  const cuotasCanchaAutomaticasDividir = useMemo(
-    () => (rosterDividir.length > 0 ? repartirCentavos(costoCanchaTotalDividir, rosterDividir.length) : []),
-    [costoCanchaTotalDividir, rosterDividir.length]
-  );
-
-  const comandaPorJugadorDividir = useMemo(() => {
-    const porIndice = rosterDividir.map(() => []);
-    const sinAsignar = [];
-    itemsProductoDividir.forEach((it) => {
-      const idx = it.jugadorIndice;
-      if (Number.isInteger(idx) && porIndice[idx]) porIndice[idx].push(it);
-      else sinAsignar.push(it);
-    });
-    return { porIndice, sinAsignar };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [itemsDividir, rosterDividir.length]);
-
-  const filasSplitBillDividir = useMemo(() => {
-    return rosterDividir.map((j, i) => {
-      const itemsJugador = comandaPorJugadorDividir.porIndice[i] || [];
-      const consumos = itemsJugador.reduce((acc, it) => acc + it.precio * it.cantidad, 0);
-      const cuotaCancha = j.cuotaCancha != null ? Number(j.cuotaCancha) || 0 : cuotasCanchaAutomaticasDividir[i] || 0;
-      return { ...j, items: itemsJugador, consumos, cuotaCancha, total: Math.round((cuotaCancha + consumos) * 100) / 100 };
-    });
-  }, [rosterDividir, comandaPorJugadorDividir, cuotasCanchaAutomaticasDividir]);
-
-  const totalSinAsignarDividir = comandaPorJugadorDividir.sinAsignar.reduce((acc, it) => acc + it.precio * it.cantidad, 0);
-  const saldoCanchaPendienteDividir = Math.max(
-    0,
-    Math.round((costoCanchaTotalDividir - filasSplitBillDividir.filter((f) => f.pagado).reduce((acc, f) => acc + f.cuotaCancha, 0)) * 100) / 100
-  );
-
-  function actualizarNombreDividir(indice, nombre) {
-    setRosterDividir((prev) => prev.map((j, i) => (i === indice ? { ...j, nombre, jugadorId: null } : j)));
-  }
-  function actualizarTelefonoDividir(indice, telefono) {
-    setRosterDividir((prev) => prev.map((j, i) => (i === indice ? { ...j, telefono } : j)));
-  }
-  function actualizarCuotaDividir(indice, valor) {
-    setRosterDividir((prev) => prev.map((j, i) => (i === indice ? { ...j, cuotaCancha: valor === '' ? null : Number(valor) } : j)));
-  }
-  function agregarJugadorDividir() {
-    setRosterDividir((prev) =>
-      prev.length >= 4 ? prev : [...prev, { nombre: '', telefono: '', jugadorId: null, resolviendo: false, cuotaCancha: null, pagado: null }]
-    );
-  }
-  function quitarJugadorDividir(indice) {
-    setRosterDividir((prev) => prev.filter((_, i) => i !== indice));
-    setItemsDividir((prev) =>
-      (prev || []).map((it) => {
-        if (it.jugadorIndice === indice) return { ...it, jugadorIndice: null };
-        if (typeof it.jugadorIndice === 'number' && it.jugadorIndice > indice) return { ...it, jugadorIndice: it.jugadorIndice - 1 };
-        return it;
-      })
-    );
-  }
-  async function confirmarJugadorDividir(indice) {
-    const slot = rosterDividir[indice];
-    if (!slot || !slot.nombre?.trim() || slot.jugadorId || slot.resolviendo) return;
-    setRosterDividir((prev) => prev.map((j, i) => (i === indice ? { ...j, resolviendo: true } : j)));
-    const id = await resolverJugadorId(slot.nombre, { telefono: slot.telefono, directorio: directorioJugadoresCRM });
-    setRosterDividir((prev) => prev.map((j, i) => (i === indice ? { ...j, jugadorId: id, resolviendo: false } : j)));
-  }
-  function asignarItemDividir(key, jugadorIndice) {
-    setItemsDividir((prev) => (prev || []).map((it) => (it._key === key ? { ...it, jugadorIndice } : it)));
-  }
-  function quitarItemDividir(key) {
-    setItemsDividir((prev) => (prev || []).map((it) => (it._key === key ? { ...it, jugadorIndice: null } : it)));
-  }
-
-  async function cobrarJugadorDividirLocal(indice, { metodo, cambio }) {
-    const fila = filasSplitBillDividir[indice];
-    if (!fila) return;
-    setCobrandoJugadorDividirIndice(indice);
-    const resultado = await onCobrarJugadorDividir(grupo, { ...fila, metodo, cambio });
-    setCobrandoJugadorDividirIndice(null);
-    if (!resultado?.ok) return;
-    const idsAsignados = new Set(fila.items.map((it) => it._key));
-    setItemsDividir((prev) => (prev || []).filter((it) => !idsAsignados.has(it._key)));
-    setRosterDividir((prev) =>
-      prev.map((j, i) =>
-        i === indice ? { ...j, jugadorId: resultado.jugadorId || j.jugadorId, pagado: { metodo, cambio: cambio || 0, monto: fila.total } } : j
-      )
-    );
-  }
-
-  // Absorción/Reasignación — mismo criterio que `absorberJugadorRoster` (ver
-  // `ModuloSmartPOS`), pero local a esta división: no hay ninguna escritura
-  // en Supabase (nada se cobra todavía), solo reasignación del estado local
-  // + el registro de auditoría.
-  async function absorberJugadorDividir(indiceOrigen, indiceDestino) {
-    const filaOrigen = filasSplitBillDividir[indiceOrigen];
-    if (!filaOrigen) return;
-    const destinoEsJugador = Number.isInteger(indiceDestino);
-    const destinoNombre = destinoEsJugador
-      ? rosterDividir[indiceDestino]?.nombre?.trim() || `Jugador ${indiceDestino + 1}`
-      : 'la cuenta principal del grupo';
-    const origenNombre = rosterDividir[indiceOrigen]?.nombre?.trim() || `Jugador ${indiceOrigen + 1}`;
-    const cuotaCanchaOrigen = filaOrigen.cuotaCancha || 0;
-    const cuotaCanchaDestinoActual = destinoEsJugador ? filasSplitBillDividir[indiceDestino]?.cuotaCancha || 0 : 0;
-
-    setProcesandoAbsorcionDividir(true);
-    try {
-      setItemsDividir((prev) =>
-        (prev || []).map((it) => (it.jugadorIndice === indiceOrigen ? { ...it, jugadorIndice: destinoEsJugador ? indiceDestino : null } : it))
-      );
-      setRosterDividir((prev) =>
-        prev.map((j, i) => {
-          if (i === indiceOrigen) {
-            return {
-              ...j,
-              cuotaCancha: 0,
-              pagado: {
-                tipo: 'absorcion',
-                destinoNombre,
-                destinoIndice: destinoEsJugador ? indiceDestino : null,
-                monto: filaOrigen.total,
-                fecha: new Date().toISOString(),
-              },
-            };
-          }
-          if (destinoEsJugador && i === indiceDestino) {
-            return { ...j, cuotaCancha: cuotaCanchaDestinoActual + cuotaCanchaOrigen };
-          }
-          return j;
-        })
-      );
-      onRegistrarAuditoria?.('absorcion_split_bill', {
-        origen: origenNombre,
-        destino: destinoNombre,
-        monto: filaOrigen.total,
-        cancha: grupo.cancha?.nombre || null,
-      });
-    } finally {
-      setProcesandoAbsorcionDividir(false);
-    }
-  }
-  async function confirmarAbsorcionDividir(indiceOrigen, indiceDestino) {
-    await absorberJugadorDividir(indiceOrigen, indiceDestino);
-    setMostrarAbsorcionDividir(false);
-  }
-
-  // Auto-finaliza en cuanto no queda nada por repartir: todos los artículos
-  // ya se cobraron (se van quitando de `itemsDividir` al pagarse, ver
-  // `cobrarJugadorDividirLocal`) y la cuota de cancha (si la hay) quedó
-  // cubierta. `onFinalizarDividirCuenta` (en `ModuloSmartPOS`) limpia los
-  // tickets originales/sincroniza la reserva y cierra este modal.
-  useEffect(() => {
-    if (!dividiendo || !itemsDividir || finalizandoDividir) return;
-    if (!rosterDividir.some((j) => j.pagado)) return; // nada cobrado todavía — no autocerrar en cuanto se abre
-    const productosRestantes = itemsDividir.filter((it) => it.tipo !== 'cancha');
-    const canchaLiquidada = costoCanchaTotalDividir <= 0 || saldoCanchaPendienteDividir <= 0;
-    if (productosRestantes.length > 0 || !canchaLiquidada) return;
-    setFinalizandoDividir(true);
-    onFinalizarDividirCuenta?.(grupo);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dividiendo, itemsDividir, rosterDividir, costoCanchaTotalDividir, saldoCanchaPendienteDividir, finalizandoDividir]);
-
   return (
     <ModalShell
-      titulo={dividiendo ? 'Dividir Cuenta' : 'Liquidar / Cobrar'}
+      titulo="Liquidar / Cobrar"
       subtitulo={`${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(total)}`}
       onClose={onClose}
-      icon={dividiendo ? Divide : DollarSign}
-      ancho={dividiendo ? 'max-w-2xl' : 'max-w-md'}
+      icon={DollarSign}
+      ancho="max-w-md"
     >
-      {dividiendo ? (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-lime-400/30 bg-lime-400/5 px-3 py-2">
-            <div className="flex items-center gap-2">
-              <Users size={15} className="text-lime-400" />
-              <span className="text-xs font-black text-slate-900">Jugadores presentes</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {filasSplitBillDividir.some((f) => f.total > 0 && !f.pagado) && (
-                <button
-                  type="button"
-                  onClick={() => setMostrarAbsorcionDividir(true)}
-                  className="inline-flex items-center gap-1 rounded-md border border-amber-400/30 bg-amber-400/5 px-2 py-1 text-[11px] font-bold text-amber-500 transition hover:bg-amber-400/10"
-                  title="Reasigna el consumo y la cuota de cancha de un jugador que se retira sin pagar"
-                >
-                  <ArrowRightLeft size={13} /> Absorber / Transferir consumo
-                </button>
-              )}
-              {rosterDividir.length < 4 && (
-                <button
-                  type="button"
-                  onClick={agregarJugadorDividir}
-                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold text-lime-400 transition hover:bg-lime-400/10"
-                >
-                  <UserPlus size={13} /> Agregar jugador
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={cancelarDivision}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold text-slate-500 transition hover:bg-slate-200"
-              >
-                <X size={13} /> Cancelar división
-              </button>
-            </div>
-          </div>
-
-          {mostrarAbsorcionDividir && (
-            <ModalAbsorberConsumo
-              filas={filasSplitBillDividir}
-              onClose={() => setMostrarAbsorcionDividir(false)}
-              onConfirmar={confirmarAbsorcionDividir}
-              procesando={procesandoAbsorcionDividir}
-            />
-          )}
-
-          {costoCanchaTotalDividir > 0 && (
-            <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50/60 px-3 py-2 text-[11px] font-semibold">
-              <span className="text-slate-500">
-                Costo de cancha: <span className="text-slate-900">{formatoMoneda(costoCanchaTotalDividir)}</span>
+      <div className="mb-4 space-y-1.5 rounded-xl bg-slate-50 px-3 py-2.5">
+        {items.length === 0 ? (
+          <p className="text-[11px] text-slate-500">Sin artículos en esta cuenta.</p>
+        ) : (
+          items.map((it) => (
+            <div key={it._key} className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="min-w-0 flex-1 truncate text-slate-600">
+                {it.cantidad}× {it.nombre}
+                {it.variante_nombre ? ` (${it.variante_nombre})` : ''}
               </span>
-              <span className={saldoCanchaPendienteDividir <= 0 ? 'text-emerald-400' : 'text-amber-400'}>
-                {saldoCanchaPendienteDividir <= 0 ? '✓ Cancha liquidada' : `Saldo de cancha pendiente: ${formatoMoneda(saldoCanchaPendienteDividir)}`}
-              </span>
-            </div>
-          )}
-
-          {comandaPorJugadorDividir.sinAsignar.length > 0 && (
-            <div className="rounded-lg border border-dashed border-slate-300 px-3 py-2">
-              <p className="mb-1.5 flex items-center gap-1 text-[11px] font-bold uppercase tracking-wide text-rose-400">
-                <AlertTriangle size={12} /> Sin asignar — {formatoMoneda(totalSinAsignarDividir)}
-              </p>
-              <div className="space-y-1.5">
-                {comandaPorJugadorDividir.sinAsignar.map((it) => (
-                  <div key={it._key} className="flex items-center justify-between gap-2 text-[11px]">
-                    <span className="min-w-0 flex-1 truncate text-slate-600">
-                      {it.cantidad}× {it.nombre}
-                    </span>
-                    <span className="shrink-0 font-semibold text-slate-500">{formatoMoneda(it.precio * it.cantidad)}</span>
-                    <select
-                      value=""
-                      onChange={(e) => asignarItemDividir(it._key, Number(e.target.value))}
-                      className="shrink-0 rounded-md border border-slate-300 bg-slate-50 px-1.5 py-1 text-[10px] font-bold text-slate-700"
-                    >
-                      <option value="" disabled>
-                        Asignar a...
-                      </option>
-                      {rosterDividir.map((j, i) => (
-                        <option key={i} value={i}>
-                          {j.nombre?.trim() || `Jugador ${i + 1}`}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {filasSplitBillDividir.map((fila, i) => (
-              <FilaDividirCuentaJugador
-                key={i}
-                fila={fila}
-                indice={i}
-                esUnico={filasSplitBillDividir.length === 1}
-                cobrando={cobrandoJugadorDividirIndice === i}
-                mostrarCuota={costoCanchaTotalDividir > 0}
-                onActualizarNombre={actualizarNombreDividir}
-                onActualizarTelefono={actualizarTelefonoDividir}
-                onActualizarCuota={actualizarCuotaDividir}
-                onConfirmarJugador={confirmarJugadorDividir}
-                onQuitarJugador={quitarJugadorDividir}
-                onQuitarItem={quitarItemDividir}
-                onCobrar={cobrarJugadorDividirLocal}
-              />
-            ))}
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="mb-4 space-y-1.5 rounded-xl bg-slate-50 px-3 py-2.5">
-            {items.length === 0 ? (
-              <p className="text-[11px] text-slate-500">Sin artículos en esta cuenta.</p>
-            ) : (
-              items.map((it) => (
-                <div key={it._key} className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="min-w-0 flex-1 truncate text-slate-600">
-                    {it.cantidad}× {it.nombre}
-                    {it.variante_nombre ? ` (${it.variante_nombre})` : ''}
-                  </span>
-                  <span className="shrink-0 font-semibold text-slate-500">{formatoMoneda(it.precio * it.cantidad)}</span>
-                  {it.editable && (
-                    <div className="flex shrink-0 items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => disminuirCantidad(it._key)}
-                        disabled={liquidando || it.cantidad <= 1}
-                        className="rounded-md bg-slate-100 p-1 text-slate-600 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-30"
-                        title="Disminuir cantidad"
-                      >
-                        <Minus size={11} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => eliminarItem(it._key)}
-                        disabled={liquidando}
-                        className="rounded-md bg-rose-500/10 p-1 text-rose-400 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-30"
-                        title="Quitar artículo"
-                      >
-                        <Trash2 size={11} />
-                      </button>
-                    </div>
-                  )}
+              <span className="shrink-0 font-semibold text-slate-500">{formatoMoneda(it.precio * it.cantidad)}</span>
+              {it.editable && (
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => disminuirCantidad(it._key)}
+                    disabled={liquidando || it.cantidad <= 1}
+                    className="rounded-md bg-slate-100 p-1 text-slate-600 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-30"
+                    title="Disminuir cantidad"
+                  >
+                    <Minus size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => eliminarItem(it._key)}
+                    disabled={liquidando}
+                    className="rounded-md bg-rose-500/10 p-1 text-rose-400 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-30"
+                    title="Quitar artículo"
+                  >
+                    <Trash2 size={11} />
+                  </button>
                 </div>
-              ))
-            )}
-          </div>
-          <PasosDeCobro monto={total} deshabilitado={liquidando} onConfirmar={({ metodo, cambio }) => onLiquidar(metodo, cambio, items)} />
+              )}
+            </div>
+          ))
+        )}
+      </div>
+      <PasosDeCobro monto={total} deshabilitado={liquidando} onConfirmar={({ metodo, cambio }) => onLiquidar(metodo, cambio, items)} />
 
-          {puedeDividir && (
-            <button
-              type="button"
-              onClick={iniciarDivision}
-              disabled={liquidando || items.length === 0}
-              className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-lime-400/30 bg-lime-400/5 px-3 py-2 text-xs font-bold text-lime-500 transition hover:bg-lime-400/10 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Divide size={13} /> Dividir Cuenta
-            </button>
-          )}
+      {puedeDividir && (
+        <button
+          type="button"
+          onClick={() => onDividirCuenta(grupo, items, total)}
+          disabled={liquidando || items.length === 0}
+          className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-lime-400/30 bg-lime-400/5 px-3 py-2 text-xs font-bold text-lime-500 transition hover:bg-lime-400/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Divide size={13} /> Dividir Cuenta
+        </button>
+      )}
 
-          {puedeAnular && (
-            <button
-              type="button"
-              onClick={() => setMostrarAnular(true)}
-              disabled={liquidando}
-              className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2 text-xs font-bold text-rose-400 transition hover:bg-rose-400/10 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Ban size={13} /> Cancelar Ticket / Anular Comanda
-            </button>
-          )}
+      {puedeAnular && (
+        <button
+          type="button"
+          onClick={() => setMostrarAnular(true)}
+          disabled={liquidando}
+          className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2 text-xs font-bold text-rose-400 transition hover:bg-rose-400/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Ban size={13} /> Cancelar Ticket / Anular Comanda
+        </button>
+      )}
 
-          {mostrarAnular && (
-            <ModalMotivoObligatorio
-              titulo={grupo.reserva ? 'Anular Reserva / Ticket' : 'Anular Comanda'}
-              subtitulo={`${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(total)} · ${
-                grupo.reserva ? 'Cancela la reserva y libera la cancha en el Cronograma' : 'Se quita de Cuentas Abiertas'
-              }`}
-              textoBoton={grupo.reserva ? 'Sí, anular reserva' : 'Sí, anular comanda'}
-              onClose={() => setMostrarAnular(false)}
-              onConfirmar={(motivo) => onAnular(motivo, items)}
-            />
-          )}
-        </>
+      {mostrarAnular && (
+        <ModalMotivoObligatorio
+          titulo={grupo.reserva ? 'Anular Reserva / Ticket' : 'Anular Comanda'}
+          subtitulo={`${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(total)} · ${
+            grupo.reserva ? 'Cancela la reserva y libera la cancha en el Cronograma' : 'Se quita de Cuentas Abiertas'
+          }`}
+          textoBoton={grupo.reserva ? 'Sí, anular reserva' : 'Sí, anular comanda'}
+          onClose={() => setMostrarAnular(false)}
+          onConfirmar={(motivo) => onAnular(motivo, items)}
+        />
       )}
     </ModalShell>
   );
@@ -10333,6 +10033,14 @@ function ModuloSmartPOS({
 
   const [modalCobro, setModalCobro] = useState(false);
   const [modalDividir, setModalDividir] = useState(false);
+  // "Dividir Cuenta" desde Reservas Pendientes/Cuentas Abiertas
+  // (`ModalLiquidarCuenta` → botón "Dividir Cuenta"): guarda el `grupo` +
+  // los `items`/`total` vigentes al momento de presionarlo (respeta
+  // cualquier edición de cantidades que el cajero ya haya hecho ahí) y abre
+  // el MISMO `ModalDividirCuenta` que usa la Venta Directa del carrito —
+  // ver `liquidarCuentaDividida`.
+  const [grupoParaDividir, setGrupoParaDividir] = useState(null);
+  const [liquidandoDividido, setLiquidandoDividido] = useState(false);
   const [modalArqueo, setModalArqueo] = useState(false);
   const [modalDevolucion, setModalDevolucion] = useState(false);
   const [modalNuevoProducto, setModalNuevoProducto] = useState(false);
@@ -10917,27 +10625,27 @@ function ModuloSmartPOS({
     return true;
   }
 
-  // "Dividir Cuenta" en Reservas Pendientes/Cuentas Abiertas — cobra la
-  // parte de UN jugador de la división que arma `ModalLiquidarCuenta`
-  // (estado 100% local a ese modal, ver `filasSplitBillDividir` ahí):
-  // inserta su propio ticket en `ventas` (mismo criterio que
-  // `cobrarJugadorRoster` para el Roster de "Vincular a Cancha" —
-  // `split_bill: true`, `jugador_id`/`jugador_nombre` explícitos para que
-  // `resolverJugadorIdVentaCancha` la impute de inmediato al LTV/CHS
-  // correcto) y descuenta stock/Kardex de sus artículos con
-  // `descontarStockKardexAddonsReserva` — el mismo helper que ya usa
-  // `liquidarCuenta` para esta MISMA pantalla, así que el criterio de
-  // "el stock se descuenta hasta el cobro real, nunca antes" (ver el
-  // comentario "POSTERGACIÓN DEL DESCUENTO DE INVENTARIO" en `liquidarCuenta`)
-  // se respeta igual aquí. `ModalLiquidarCuenta` es quien decide cuándo ya
-  // no queda nada por repartir y llama a `finalizarDividirCuenta` (abajo).
-  async function cobrarJugadorDividirCuenta(grupo, filaJugador) {
-    let jugadorId = filaJugador.jugadorId || null;
-    if (!jugadorId && (filaJugador.nombre || '').trim()) {
-      jugadorId = await resolverJugadorId(filaJugador.nombre, { telefono: filaJugador.telefono, directorio: directorioJugadoresCRM });
-    }
-
-    const itemsAsignados = filaJugador.items.map((it) => ({
+  // "Dividir Cuenta" en Reservas Pendientes/Cuentas Abiertas — mismo botón,
+  // MISMO componente (`ModalDividirCuenta`) que ya usa la Venta Directa del
+  // carrito principal (ver `registrarVenta`, rama `pagosDivididos`), así que
+  // el criterio es idéntico: cada fila que sí cobra (`pagosDivididos`, ya
+  // sin las filas transferidas por absorción — ver `ModalDividirCuenta`) se
+  // guarda como su PROPIO ticket en `ventas`, con una copia PROPORCIONAL de
+  // los artículos reales (misma fracción que su parte del total) para que la
+  // categoría de cada producto siga contando en el CRM/Analytics de cada
+  // jugador. El descuento de stock + Kardex corre UNA sola vez sobre los
+  // artículos REALES (`itemsOriginales`, capturados por `ModalLiquidarCuenta`
+  // al momento de presionar "Dividir Cuenta") — nunca fraccionado — con
+  // `descontarStockKardexAddonsReserva`, el mismo helper que ya usa
+  // `liquidarCuenta` para esta misma pantalla. Los tickets ORIGINALES del
+  // grupo (si los había — Cuentas Abiertas/Tienda Web ya traían su propia
+  // fila 'pendiente') se BORRAN al final — no se marcan 'pagado', porque el
+  // ingreso real ya quedó registrado en las filas nuevas de arriba; dejarlos
+  // también en 'pagado' duplicaría el ingreso.
+  async function liquidarCuentaDividida(grupo, pagosDivididos, itemsOriginales, totalOriginal) {
+    setLiquidandoDividido(true);
+    const totalRef = totalOriginal > 0 ? totalOriginal : itemsOriginales.reduce((acc, it) => acc + it.precio * it.cantidad, 0);
+    const itemsParaGuardarBase = itemsOriginales.map((it) => ({
       tipo: it.tipo || 'producto',
       producto_id: it.producto_id || null,
       productoPadreId: it.producto_id || null,
@@ -10951,58 +10659,75 @@ function ModuloSmartPOS({
       cantidad: it.cantidad,
       subtotal: Math.round((Number(it.precio) || 0) * (Number(it.cantidad) || 0) * 100) / 100,
     }));
-    const nombreJugador = filaJugador.nombre?.trim() || `Jugador ${(filaJugador.indice ?? 0) + 1}`;
-    const itemCuotaCancha =
-      filaJugador.cuotaCancha > 0
-        ? [
-            {
-              tipo: 'cancha',
-              producto_id: null,
-              cancha_id: grupo.cancha?.id || grupo.reserva?.cancha_id || null,
-              nombre: `Renta ${grupo.cancha?.nombre || 'cancha'} · parte de ${nombreJugador}`,
-              precio: filaJugador.cuotaCancha,
-              cantidad: 1,
-              subtotal: Math.round(filaJugador.cuotaCancha * 100) / 100,
-            },
-          ]
-        : [];
-    const items = [...itemCuotaCancha, ...itemsAsignados];
-    const total = Math.round(items.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0) * 100) / 100;
 
-    if (total <= 0) {
-      mostrarToast({ titulo: 'Nada que cobrar', detalle: `${nombreJugador} no tiene consumos ni cuota de cancha asignados.`, tono: 'aviso' });
+    let errorGeneral = null;
+    let algunaGuardada = false;
+    for (let i = 0; i < pagosDivididos.length; i++) {
+      const p = pagosDivididos[i];
+      if (!(p.monto > 0)) continue;
+      const fraccion = totalRef > 0 ? p.monto / totalRef : 1 / pagosDivididos.length;
+      const itemsParticipante = itemsParaGuardarBase.map((it) => ({
+        ...it,
+        cantidad: Math.round(it.cantidad * fraccion * 1000) / 1000,
+        subtotal: Math.round(it.subtotal * fraccion * 100) / 100,
+      }));
+
+      let jugadorIdParticipante = p.jugadorId || null;
+      if (!jugadorIdParticipante && (p.jugadorNombre?.trim() || p.jugadorTelefono?.trim())) {
+        try {
+          jugadorIdParticipante = await resolverJugadorId(p.jugadorNombre, { telefono: p.jugadorTelefono, directorio: directorioJugadoresCRM });
+        } catch (_e) {
+          jugadorIdParticipante = null;
+        }
+      }
+
+      const payloadParticipante = withClubId({
+        total: p.monto,
+        metodo_pago: p.metodo || 'dividido',
+        turno: turno?.valor || null,
+        operador: operador?.nombre || 'Recepción (Cuentas Pendientes)',
+        reserva_id: grupo.reserva?.id || null,
+        es_reserva: Boolean(grupo.reserva),
+        origen: ORIGEN_VENTA_POS,
+        cancha_id: grupo.cancha?.id || grupo.reserva?.cancha_id || null,
+        detalles: {
+          items: itemsParticipante,
+          pagos_divididos: null,
+          jugador_id: jugadorIdParticipante,
+          jugador_nombre: (p.jugadorNombre || '').trim() || `Jugador ${i + 1}`,
+          split_bill: true,
+          split_bill_parte: i + 1,
+          split_bill_total_partes: pagosDivididos.length,
+        },
+        estado_pago: 'pagado',
+      });
+      let { error } = await supabase.from('ventas').insert(payloadParticipante);
+      if (error && esErrorColumnaInexistente(error)) {
+        delete payloadParticipante.es_reserva;
+        delete payloadParticipante.origen;
+        ({ error } = await supabase.from('ventas').insert(payloadParticipante));
+      }
+      if (error) {
+        console.error(
+          `[Smart POS] Dividir Cuenta (Cuentas Pendientes): no se pudo registrar la parte de "${p.jugadorNombre || `Jugador ${i + 1}`}".`,
+          error
+        );
+        if (!errorGeneral) errorGeneral = error;
+        continue;
+      }
+      algunaGuardada = true;
+    }
+
+    if (!algunaGuardada) {
+      setLiquidandoDividido(false);
+      mostrarToast({ titulo: 'No se pudo dividir la cuenta', detalle: errorGeneral?.message || 'Ningún pago se pudo registrar.', tono: 'error' });
       return { ok: false };
     }
 
-    const payloadVenta = withClubId({
-      total,
-      metodo_pago: filaJugador.metodo,
-      turno: turno?.valor || null,
-      operador: operador?.nombre || 'Recepción (Cuentas Pendientes)',
-      reserva_id: grupo.reserva?.id || null,
-      es_reserva: Boolean(grupo.reserva),
-      origen: ORIGEN_VENTA_POS,
-      cancha_id: grupo.cancha?.id || grupo.reserva?.cancha_id || null,
-      detalles: { items, pagos_divididos: null, split_bill: true, jugador_id: jugadorId, jugador_nombre: filaJugador.nombre || null },
-      estado_pago: 'pagado',
-    });
-    let { data, error } = await supabase.from('ventas').insert(payloadVenta).select().single();
-    if (error && esErrorColumnaInexistente(error)) {
-      delete payloadVenta.es_reserva;
-      delete payloadVenta.origen;
-      ({ data, error } = await supabase.from('ventas').insert(payloadVenta).select().single());
-    }
-    if (error) {
-      mostrarToast({ titulo: 'No se pudo cobrar la cuota de este jugador', detalle: error.message, tono: 'error' });
-      return { ok: false, error };
-    }
-
-    const itemsConStockFinal = filaJugador.items.filter(
-      (it) => (it.tipo || 'producto') === 'producto' && it.producto_id && Number(it.cantidad) > 0
-    );
+    const itemsConStockFinal = itemsParaGuardarBase.filter((it) => it.tipo === 'producto' && it.producto_id && it.cantidad > 0);
     if (itemsConStockFinal.length > 0) {
       await descontarStockKardexAddonsReserva(itemsConStockFinal, {
-        motivoBase: `Cobro dividido en Recepción · ${grupo.cancha?.nombre || 'Venta General'} (${nombreJugador})`,
+        motivoBase: `Dividir Cuenta en Recepción · ${grupo.cancha?.nombre || 'Venta General'}`,
         operador: operador?.nombre,
         upsertProducto,
         upsertVarianteProducto,
@@ -11011,65 +10736,45 @@ function ModuloSmartPOS({
       });
     }
 
-    mostrarToast({
-      titulo: 'Cuota cobrada',
-      detalle: `${nombreJugador} · ${formatoMoneda(total)}${filaJugador.cambio > 0 ? ` · Cambio: ${formatoMoneda(filaJugador.cambio)}` : ''}`,
-    });
-    return { ok: true, jugadorId, total, data };
+    if (Array.isArray(grupo.ventas) && grupo.ventas.length > 0) {
+      const idsOriginales = grupo.ventas.map((v) => v.id);
+      const { error: errDelete } = await supabase.from('ventas').delete().in('id', idsOriginales);
+      if (errDelete) {
+        console.warn(
+          '[Smart POS] Dividir Cuenta: se cobró completa por partes, pero no se pudieron eliminar los tickets originales ya reemplazados:',
+          errDelete
+        );
+      } else {
+        setCuentasAbiertas((prev) => prev.filter((v) => !idsOriginales.includes(v.id)));
+      }
+    }
+
+    if (grupo.reserva?.id) {
+      try {
+        const { error: errReserva } = await supabase
+          .from('reservas')
+          .update({ estado_pago: 'pagado', metodo_pago: 'dividido' })
+          .eq('id', grupo.reserva.id);
+        if (errReserva) throw errReserva;
+        upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: 'dividido' });
+      } catch (errReserva) {
+        upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: 'dividido' });
+        mostrarToast({
+          titulo: 'Cuenta dividida y cobrada, pero sin sincronizar la reserva',
+          detalle: esErrorPermisoRLS(errReserva)
+            ? 'Falta correr migracion_v8_rls_reservas_update.sql en Supabase — la reserva podría reaparecer como pendiente al recargar.'
+            : 'No se pudo actualizar el estatus de la reserva en Supabase. Puede reaparecer como pendiente al recargar.',
+          tono: 'error',
+        });
+      }
+    }
+
+    setLiquidandoDividido(false);
+    mostrarToast({ titulo: 'Cuenta dividida y cobrada', detalle: `${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(totalRef)}` });
+    cargarCuentasAbiertas({ silencioso: true });
+    return { ok: true };
   }
 
-  // Cierre de "Dividir Cuenta" (Reservas Pendientes/Cuentas Abiertas): se
-  // dispara cuando `ModalLiquidarCuenta` detecta que ya no queda nada por
-  // repartir (todos los jugadores cobraron su parte y la cuota de cancha, si
-  // la hay, quedó cubierta). Los tickets ORIGINALES del grupo (si los había
-  // — Cuentas Abiertas/Tienda Web ya traían su propia fila 'pendiente' en
-  // `ventas`) se BORRAN aquí — no se marcan 'pagado', porque el ingreso real
-  // ya quedó registrado en las filas nuevas que insertó
-  // `cobrarJugadorDividirCuenta`, una por jugador; dejarlos también en
-  // 'pagado' duplicaría el ingreso. Mismo criterio que `liquidarCuenta` para
-  // sincronizar `reservas.estado_pago` al terminar.
-  async function finalizarDividirCuenta(grupo) {
-    try {
-      if (Array.isArray(grupo.ventas) && grupo.ventas.length > 0) {
-        const idsOriginales = grupo.ventas.map((v) => v.id);
-        const { error: errDelete } = await supabase.from('ventas').delete().in('id', idsOriginales);
-        if (errDelete) {
-          console.warn(
-            '[Smart POS] Dividir Cuenta: la cuenta se cobró completa por partes, pero no se pudieron eliminar los tickets originales ya reemplazados:',
-            errDelete
-          );
-        } else {
-          setCuentasAbiertas((prev) => prev.filter((v) => !idsOriginales.includes(v.id)));
-        }
-      }
-      if (grupo.reserva?.id) {
-        try {
-          const { error: errReserva } = await supabase
-            .from('reservas')
-            .update({ estado_pago: 'pagado', metodo_pago: 'dividido' })
-            .eq('id', grupo.reserva.id);
-          if (errReserva) throw errReserva;
-          upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: 'dividido' });
-        } catch (errReserva) {
-          upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: 'dividido' });
-          mostrarToast({
-            titulo: 'Cuenta dividida y cobrada, pero sin sincronizar la reserva',
-            detalle: esErrorPermisoRLS(errReserva)
-              ? 'Falta correr migracion_v8_rls_reservas_update.sql en Supabase — la reserva podría reaparecer como pendiente al recargar.'
-              : 'No se pudo actualizar el estatus de la reserva en Supabase. Puede reaparecer como pendiente al recargar.',
-            tono: 'error',
-          });
-        }
-      }
-      mostrarToast({
-        titulo: 'Cuenta dividida y liquidada',
-        detalle: `${grupo.cancha?.nombre || 'Venta General'} · todos los jugadores cobraron su parte`,
-      });
-    } finally {
-      setGrupoALiquidar(null);
-      cargarCuentasAbiertas({ silencioso: true });
-    }
-  }
 
   /* ---------------- Inscripción Torneo / Reta ---------------- */
 
@@ -12679,6 +12384,7 @@ function ModuloSmartPOS({
           total={total}
           registrandoVenta={registrandoVenta}
           jugadores={directorioJugadoresCRM}
+          onRegistrarAuditoria={onRegistrarAuditoria}
           onClose={() => setModalDividir(false)}
           onFinalizar={async (pagosDivididos) => {
             const cambioTotal = pagosDivididos.reduce((acc, p) => acc + (p.cambio || 0), 0);
@@ -12689,6 +12395,28 @@ function ModuloSmartPOS({
               cambio: cambioTotal,
             });
             if (resultado.ok) setModalDividir(false);
+          }}
+        />
+      )}
+
+      {/* "Dividir Cuenta" desde Reservas Pendientes/Cuentas Abiertas — MISMO
+          `ModalDividirCuenta` que usa la Venta Directa arriba, solo con un
+          `total`/`onFinalizar` distintos (ver `liquidarCuentaDividida`). */}
+      {grupoParaDividir && (
+        <ModalDividirCuenta
+          total={grupoParaDividir.total}
+          registrandoVenta={liquidandoDividido}
+          jugadores={directorioJugadoresCRM}
+          onRegistrarAuditoria={onRegistrarAuditoria}
+          onClose={() => setGrupoParaDividir(null)}
+          onFinalizar={async (pagosDivididos) => {
+            const resultado = await liquidarCuentaDividida(
+              grupoParaDividir.grupo,
+              pagosDivididos,
+              grupoParaDividir.items,
+              grupoParaDividir.total
+            );
+            if (resultado.ok) setGrupoParaDividir(null);
           }}
         />
       )}
@@ -12738,10 +12466,10 @@ function ModuloSmartPOS({
           onClose={() => setGrupoALiquidar(null)}
           onLiquidar={(metodo, cambio, items) => liquidarCuenta(grupoALiquidar, metodo, cambio, items)}
           onAnular={(motivo, items) => anularCuenta(grupoALiquidar, motivo, items)}
-          onRegistrarAuditoria={onRegistrarAuditoria}
-          directorioJugadoresCRM={directorioJugadoresCRM}
-          onCobrarJugadorDividir={cobrarJugadorDividirCuenta}
-          onFinalizarDividirCuenta={finalizarDividirCuenta}
+          onDividirCuenta={(grupo, items, totalGrupo) => {
+            setGrupoParaDividir({ grupo, items, total: totalGrupo });
+            setGrupoALiquidar(null);
+          }}
         />
       )}
 
