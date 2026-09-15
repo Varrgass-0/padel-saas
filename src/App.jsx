@@ -8572,8 +8572,18 @@ function FilaSplitBillJugador({
   onQuitarJugador,
   onCobrar,
   onWhatsApp,
+  onAbsorber,
 }) {
   const pagado = fila.pagado;
+  // Absorción / Reasignación de Cuentas Divididas Pendientes: un `pagado`
+  // "sintético" con `tipo: 'absorcion'` (en vez de `metodo`) marca que este
+  // jugador se retiró sin pagar y su consumo/cuota se transfirió a otro —
+  // ver `absorberJugadorRoster`. Comparte el mismo campo `pagado` (así toda
+  // la UI que ya revisa `if (pagado)` — WhatsApp, `PasosDeCobro`, el chip
+  // "Agregando para:" — se comporta igual de bien sin tocarla), pero se
+  // distingue con su propia rama visual más abajo en vez de decir "Pagado
+  // con absorcion".
+  const absorbido = pagado?.tipo === 'absorcion';
   return (
     <div
       className={`rounded-xl border px-3.5 py-3 ${
@@ -8649,7 +8659,12 @@ function FilaSplitBillJugador({
         <span className="text-base font-black text-slate-900">{formatoMoneda(fila.total)}</span>
       </div>
 
-      {pagado ? (
+      {absorbido ? (
+        <div className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-amber-400">
+          <ArrowRightLeft size={13} className="shrink-0" />
+          <span>Transferido a {pagado.destinoNombre || 'otro jugador'}</span>
+        </div>
+      ) : pagado ? (
         <div className="mt-2 flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
             <CheckCircle2 size={13} /> Pagado con {METODOS_PAGO_POS.find((m) => m.value === pagado.metodo)?.label || pagado.metodo}
@@ -8673,6 +8688,17 @@ function FilaSplitBillJugador({
           >
             <IconoWhatsApp size={12} /> Enviar Ticket / Link por WhatsApp
           </button>
+          {/* Absorción / Reasignación (jugador que se retira sin pagar):
+              solo tiene sentido si de verdad hay algo que transferir. */}
+          {fila.total > 0 && onAbsorber && (
+            <button
+              onClick={() => onAbsorber(indice)}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/5 px-2.5 py-1.5 text-[11px] font-bold text-amber-500 transition hover:bg-amber-400/10"
+              title="El jugador se retira sin pagar — transfiere su consumo y cuota de cancha a otro jugador o a la cuenta principal del grupo"
+            >
+              <ArrowRightLeft size={12} /> Absorber / Transferir consumo
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -8701,6 +8727,7 @@ function RosterSplitBillPanel({
   onQuitarJugador,
   onCobrar,
   onWhatsApp,
+  onAbsorber,
 }) {
   const cuentaLiquidada = saldoCanchaPendiente <= 0;
   return (
@@ -8749,6 +8776,7 @@ function RosterSplitBillPanel({
             onQuitarJugador={onQuitarJugador}
             onCobrar={onCobrar}
             onWhatsApp={onWhatsApp}
+            onAbsorber={onAbsorber}
           />
         ))}
       </div>
@@ -8769,6 +8797,105 @@ function RosterSplitBillPanel({
         </div>
       )}
     </div>
+  );
+}
+
+// Absorción / Reasignación de Cuentas Divididas Pendientes: cuando un
+// jugador del roster se retira sin pagar su parte, recepción elige aquí a
+// quién transferirle el consumo y la cuota de cancha de ese jugador — otro
+// jugador del roster que TAMPOCO haya pagado todavía (no tiene sentido
+// sumarle más a alguien que ya cerró su cuenta y probablemente ya se fue),
+// o "la cuenta principal del grupo" (los ítems quedan "Sin asignar /
+// compartido", el mismo cajón que ya usa `RosterSplitBillPanel` para
+// consumo no atado a ningún jugador en particular). Sin motivo obligatorio
+// — a diferencia de `ModalMotivoObligatorio` (anular/cancelar), esto no es
+// una pérdida de ingreso ni requiere justificarse: el dinero sigue
+// pendiente de cobro, solo cambia de quién lo va a pagar — pero sí queda
+// registrado en el Log de Actividad (ver `absorberJugadorRoster`).
+function ModalAbsorberConsumo({ filaOrigen, indiceOrigen, roster, filasSplitBill, onClose, onConfirmar, procesando }) {
+  const opcionesJugadores = useMemo(
+    () =>
+      roster
+        .map((j, i) => ({ indice: i, nombre: j.nombre?.trim() || `Jugador ${i + 1}`, pagado: Boolean(filasSplitBill[i]?.pagado) }))
+        .filter((o) => o.indice !== indiceOrigen && !o.pagado),
+    [roster, filasSplitBill, indiceOrigen]
+  );
+  const [destino, setDestino] = useState('principal');
+
+  async function confirmar() {
+    const indiceDestino = destino === 'principal' ? null : Number(destino);
+    await onConfirmar(indiceDestino);
+  }
+
+  return (
+    <ModalShell
+      titulo="Absorber / Transferir consumo"
+      subtitulo={`${filaOrigen?.nombre?.trim() || `Jugador ${indiceOrigen + 1}`} · ${formatoMoneda(filaOrigen?.total || 0)}`}
+      onClose={onClose}
+      icon={ArrowRightLeft}
+      ancho="max-w-sm"
+    >
+      <div className="space-y-4">
+        <p className="text-xs font-semibold text-slate-600">
+          Este jugador se retira sin pagar. Elige a quién transferir su consumo y su cuota de cancha pendiente — su cuenta
+          quedará marcada como reasignada por absorción, y el receptor podrá liquidar el total (lo suyo + lo absorbido) en un
+          solo cobro.
+        </p>
+        <div className="space-y-2">
+          <label
+            className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2.5 transition ${
+              destino === 'principal' ? 'border-lime-400 bg-lime-400/5' : 'border-slate-300 bg-slate-100 hover:border-slate-400'
+            }`}
+          >
+            <input
+              type="radio"
+              name="destino-absorcion"
+              checked={destino === 'principal'}
+              onChange={() => setDestino('principal')}
+              className="accent-lime-400"
+            />
+            <span className="text-xs font-semibold text-slate-800">
+              Cuenta principal del grupo
+              <span className="mt-0.5 block text-[10px] font-normal text-slate-500">Queda "Sin asignar / compartido" — se cobra con el resto de la comanda.</span>
+            </span>
+          </label>
+          {opcionesJugadores.map((o) => (
+            <label
+              key={o.indice}
+              className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2.5 transition ${
+                destino === String(o.indice) ? 'border-lime-400 bg-lime-400/5' : 'border-slate-300 bg-slate-100 hover:border-slate-400'
+              }`}
+            >
+              <input
+                type="radio"
+                name="destino-absorcion"
+                checked={destino === String(o.indice)}
+                onChange={() => setDestino(String(o.indice))}
+                className="accent-lime-400"
+              />
+              <span className="text-xs font-semibold text-slate-800">{o.nombre}</span>
+            </label>
+          ))}
+          {opcionesJugadores.length === 0 && (
+            <p className="text-[11px] text-slate-500">No hay otro jugador pendiente de pago en este roster — solo puedes transferir a la cuenta principal.</p>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose} disabled={procesando}>
+            Regresar
+          </BotonSecundario>
+          <button
+            type="button"
+            onClick={confirmar}
+            disabled={procesando}
+            className="inline-flex items-center gap-2 rounded-lg bg-lime-400 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {procesando ? <Loader2 size={15} className="animate-spin" /> : <ArrowRightLeft size={15} />}
+            Transferir consumo
+          </button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -8913,7 +9040,7 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
   const itemsCriticos = useMemo(() => {
     const lista = [];
     (productos || [])
-      .filter((p) => p.activo !== false && p.maneja_stock !== false)
+      .filter((p) => p.activo !== false && !productoIgnoraStockRigido(p))
       .forEach((p) => {
         const variantes = (variantesPorProducto?.[p.id] || []).filter((v) => v.activo !== false && v.stock != null);
         if (variantes.length > 0) {
@@ -9155,6 +9282,12 @@ function ModuloSmartPOS({
   // Chip "Agregando para:" — a qué jugador del roster se etiquetan los
   // próximos productos que toque el cajero en el grid (null = sin asignar).
   const [jugadorActivoParaAgregar, setJugadorActivoParaAgregar] = useState(null);
+  // Absorción/Reasignación de Cuentas Divididas Pendientes: índice del
+  // jugador del roster para el que está abierto `ModalAbsorberConsumo`
+  // (null = modal cerrado) y bandera de "procesando" mientras se resuelve
+  // `absorberJugadorRoster`.
+  const [jugadorAAbsorber, setJugadorAAbsorber] = useState(null);
+  const [absorbiendoRoster, setAbsorbiendoRoster] = useState(false);
 
   // Hidrata el roster al vincular una cancha con partido en curso: primero
   // intenta recuperar lo que ya se había capturado (localStorage, por si la
@@ -9581,6 +9714,83 @@ function ModuloSmartPOS({
       pagosDivididos: null,
       cambio: cambio || 0,
     });
+  }
+
+  // Absorción / Reasignación de Cuentas Divididas Pendientes: el jugador en
+  // `indiceOrigen` se retira sin pagar — reasigna sus artículos de comanda y
+  // su cuota de cancha resuelta a `indiceDestino` (un índice del roster que
+  // TAMPOCO haya pagado todavía, o `null` para "la cuenta principal del
+  // grupo" / Sin asignar) y marca su fila como liquidada por absorción.
+  async function absorberJugadorRoster(indiceOrigen, indiceDestino) {
+    const filaOrigen = filasSplitBill[indiceOrigen];
+    if (!filaOrigen) return;
+    const destinoEsJugador = Number.isInteger(indiceDestino);
+    const destinoNombre = destinoEsJugador
+      ? roster[indiceDestino]?.nombre?.trim() || `Jugador ${indiceDestino + 1}`
+      : 'la cuenta principal del grupo';
+    const origenNombre = roster[indiceOrigen]?.nombre?.trim() || `Jugador ${indiceOrigen + 1}`;
+    const cuotaCanchaOrigen = filaOrigen.cuotaCancha || 0;
+    const cuotaCanchaDestinoActual = destinoEsJugador ? filasSplitBill[indiceDestino]?.cuotaCancha || 0 : 0;
+
+    setAbsorbiendoRoster(true);
+    try {
+      // 1) Reasigna al destino elegido los artículos de consumo que traía el
+      //    jugador que se retira (o los suelta a "Sin asignar / cuenta
+      //    principal" si el destino es el grupo).
+      setComanda((prev) =>
+        prev.map((item) =>
+          item.jugadorIndice === indiceOrigen ? { ...item, jugadorIndice: destinoEsJugador ? indiceDestino : null } : item
+        )
+      );
+
+      // 2) Marca la fila de origen como liquidada por absorción (su cuota de
+      //    cancha se transfiere y queda en $0 para que ni el resumen del
+      //    roster ni el auto-marcado de "reserva pagada" la sigan contando
+      //    como pendiente en SU fila) y, si el destino es otro jugador, le
+      //    suma la cuota de cancha absorbida a la suya — así puede liquidar
+      //    todo (lo suyo + lo absorbido) en un solo cobro.
+      setRoster((prev) =>
+        prev.map((j, i) => {
+          if (i === indiceOrigen) {
+            return {
+              ...j,
+              cuotaCancha: 0,
+              pagado: {
+                tipo: 'absorcion',
+                destinoNombre,
+                destinoIndice: destinoEsJugador ? indiceDestino : null,
+                monto: filaOrigen.total,
+                fecha: new Date().toISOString(),
+              },
+            };
+          }
+          if (destinoEsJugador && i === indiceDestino) {
+            return { ...j, cuotaCancha: cuotaCanchaDestinoActual + cuotaCanchaOrigen };
+          }
+          return j;
+        })
+      );
+
+      // 3) Si el jugador que se retira era el "Agregando para:" activo, lo
+      //    regresamos a "Sin asignar" — ya no tiene sentido seguir
+      //    etiquetando productos nuevos a una cuenta que acaba de cerrarse.
+      setJugadorActivoParaAgregar((prev) => (prev === indiceOrigen ? null : prev));
+
+      onRegistrarAuditoria?.('absorcion_split_bill', {
+        origen: origenNombre,
+        destino: destinoNombre,
+        monto: filaOrigen.total,
+        cancha: canchaVinculada?.nombre || null,
+      });
+
+      mostrarToast({
+        titulo: 'Consumo transferido',
+        detalle: `${origenNombre} → ${destinoNombre} · ${formatoMoneda(filaOrigen.total)}`,
+      });
+      setJugadorAAbsorber(null);
+    } finally {
+      setAbsorbiendoRoster(false);
+    }
   }
 
   // Recibe el concepto que "Reservar y Cobrar en POS" deja en App() (una
@@ -11635,8 +11845,21 @@ function ModuloSmartPOS({
                 onQuitarJugador={quitarJugadorRoster}
                 onCobrar={cobrarJugadorRoster}
                 onWhatsApp={enviarWhatsAppRosterJugador}
+                onAbsorber={(indice) => setJugadorAAbsorber(indice)}
               />
             </>
+          )}
+
+          {jugadorAAbsorber != null && (
+            <ModalAbsorberConsumo
+              filaOrigen={filasSplitBill[jugadorAAbsorber]}
+              indiceOrigen={jugadorAAbsorber}
+              roster={roster}
+              filasSplitBill={filasSplitBill}
+              onClose={() => setJugadorAAbsorber(null)}
+              onConfirmar={(indiceDestino) => absorberJugadorRoster(jugadorAAbsorber, indiceDestino)}
+              procesando={absorbiendoRoster}
+            />
           )}
 
           {errorProductos && <ErrorBanner mensaje={errorProductos} onReintentar={() => cargarProductos()} />}
@@ -11978,7 +12201,8 @@ const TEXTO_REORDENAR_YA = '❌ Reordenar Ya';
 //   Venta Diaria Promedio 30d) — no hay nada que "reactivar" a mano.
 const RITMO_MINIMO_DIARIO_COBERTURA = 0.05;
 function calcularCoberturaStock(producto, unidadesUltimos30Dias) {
-  if (producto?.maneja_stock === false) return { dias: null, ritmoDiario: 0, tiempoEntrega: null, estatus: 'sin_control' };
+  // Mismo bypass que `estatusStockProducto` — ver `productoIgnoraStockRigido`.
+  if (productoIgnoraStockRigido(producto)) return { dias: null, ritmoDiario: 0, tiempoEntrega: null, estatus: 'sin_control' };
   const stock = Number(producto?.stock);
   if (!Number.isFinite(stock)) return { dias: null, ritmoDiario: 0, tiempoEntrega: null, estatus: 'sin_dato' };
   const tiempoEntregaCrudo = Number(producto?.tiempo_entrega_dias);
@@ -12227,12 +12451,18 @@ function variantesVisiblesParaVenta(variantes) {
 //   la Tienda del Portal ni siquiera lo intentaba para productos con
 //   variantes: `!tieneVariantes && ...` los daba siempre por disponibles).
 function productoEstaAgotado(producto, variantesNormalizadas) {
+  // BYPASS PRIORITARIO (Alimentos / sin stock rígido) — ver
+  // `productoIgnoraStockRigido`: manda ANTES que el caso "con variantes" de
+  // abajo. Antes, un producto sin stock rígido pero CON variantes que
+  // conservaran un número de stock propio (de costeo, o de antes de activar
+  // el toggle) podía seguir marcándose "Agotado" en el Portal/selector de
+  // add-ons — justo lo que "Alimentos" prometía evitar.
+  if (productoIgnoraStockRigido(producto)) return false;
   const variantes = variantesNormalizadas || [];
   if (variantes.length > 0) {
     const conControl = variantes.filter((v) => v.stock != null);
     return conControl.length > 0 && conControl.reduce((acc, v) => acc + (Number(v.stock) || 0), 0) <= 0;
   }
-  if (producto?.maneja_stock === false) return false;
   const stock = Number(producto?.stock);
   return Number.isFinite(stock) && stock <= 0;
 }
@@ -12964,11 +13194,16 @@ function margenPorcentaje(producto) {
   return ((precio - costo) / precio) * 100;
 }
 
-// 'sin_control' = platillo/artículo sin stock rígido (maneja_stock: false);
-// 'sin_dato' = maneja stock pero no tiene stock_minimo cargado, así que no se
-// puede evaluar; 'bajo' | 'normal' = comparación directa contra el mínimo.
+// 'sin_control' = platillo/artículo sin stock rígido (maneja_stock: false, o
+// subcategoría "Alimentos" — ver `productoIgnoraStockRigido`, único punto de
+// verdad reutilizado también por `calcularCoberturaStock`/
+// `TarjetaReordenSugerido`/los KPIs de Alertas de Reorden del ERP, para que
+// Alimentos nunca dispare una alerta de reorden ni se pinte "Bajo Stock" en
+// ningún lado); 'sin_dato' = maneja stock pero no tiene stock_minimo
+// cargado, así que no se puede evaluar; 'bajo' | 'normal' = comparación
+// directa contra el mínimo.
 function estatusStockProducto(producto) {
-  if (producto?.maneja_stock === false) return 'sin_control';
+  if (productoIgnoraStockRigido(producto)) return 'sin_control';
   const stock = Number(producto?.stock);
   const minimo = Number(producto?.stock_minimo);
   if (!Number.isFinite(stock) || !Number.isFinite(minimo)) return 'sin_dato';
@@ -13042,20 +13277,33 @@ function FilaVarianteInventarioCompleta({
     setGuardando(false);
   }
 
+  // Ajuste fino — Alertas de Reorden: `productoPadre.maneja_stock === false`
+  // (Alimentos, o "Maneja Inventario" apagado a mano) manda SIEMPRE sobre el
+  // stock propio de esta variante — antes `maneja_stock` de abajo se
+  // derivaba SOLO de si esta variante en particular traía un número de
+  // stock (`variante.stock != null`), sin mirar el toggle del producto
+  // padre en absoluto, así que un platillo con una variante que conservara
+  // un stock viejo cargado (de costeo, o de antes de este toggle) seguía
+  // pudiendo mostrar "Bajo Stock"/"Reordenar Ya" para esa variante.
+  const varianteIgnoraStock = productoIgnoraStockRigido(productoPadre);
+
   // Objeto "normalizado" — variante con sus vacíos heredados del padre — para
   // reutilizar exactamente las mismas funciones de negocio que un producto.
   const varianteNormalizada = {
+    categoria: productoPadre.categoria,
+    subcategoria: productoPadre.subcategoria,
     precio: variante.precio != null ? variante.precio : productoPadre.precio,
     costo_unitario: variante.costo_unitario != null ? variante.costo_unitario : productoPadre.costo_unitario,
     stock: variante.stock,
     stock_minimo: variante.stock_minimo != null ? variante.stock_minimo : productoPadre.stock_minimo,
-    maneja_stock: variante.stock != null, // sin stock propio = sin control de inventario, igual que maneja_stock:false
+    // sin stock propio = sin control de inventario, igual que maneja_stock:false — salvo que el padre YA lo ignore, que manda primero.
+    maneja_stock: varianteIgnoraStock ? false : variante.stock != null,
     tiempo_entrega_dias: productoPadre.tiempo_entrega_dias,
   };
   const margen = margenPorcentaje(varianteNormalizada);
   const estatus = estatusStockProducto(varianteNormalizada);
   const cobertura = calcularCoberturaStock(varianteNormalizada, unidadesUltimos30Dias);
-  const sinControlStock = variante.stock == null;
+  const sinControlStock = varianteIgnoraStock || variante.stock == null;
 
   return (
     <tr className="border-b border-slate-200/50 bg-slate-50/30 last:border-0 hover:bg-slate-100/20">
@@ -13296,14 +13544,14 @@ function FilaProductoInventario({
           // debería coincidir — esto lo garantiza sin depender de que ese
           // campo esté sincronizado).
           <span className="font-bold text-slate-900">{stockTotalVariantes}</span>
-        ) : producto.maneja_stock === false ? (
+        ) : productoIgnoraStockRigido(producto) ? (
           <span className="text-slate-400">—</span>
         ) : (
           Number(producto.stock) || 0
         )}
       </td>
       <td className="px-3 py-2.5 text-right">
-        {!mostrarDetallePropio || producto.maneja_stock === false ? (
+        {!mostrarDetallePropio || productoIgnoraStockRigido(producto) ? (
           <span className="text-slate-400">—</span>
         ) : soloLectura ? (
           <span className="text-slate-600">{stockMinimo || '—'}</span>
@@ -13778,16 +14026,30 @@ function ModuloERPInventario({
 
     const variantesActivas = [];
     activos.forEach((p) => {
+      // Ajuste fino — Alertas de Reorden: `maneja_stock` de la variante ya
+      // NO se infiere solo de si ESA variante trae un número de stock
+      // propio (`v.stock != null`) — antes, un producto "Alimentos" (o con
+      // "Maneja Inventario" apagado a mano) cuya variante conservara un
+      // stock viejo cargado (de antes de este toggle, o para costeo) seguía
+      // contando para el Valor del Inventario y podía disparar una Alerta
+      // de Reorden/"Bajo Stock", justo lo que el toggle del producto padre
+      // prometía evitar. `productoIgnoraStockRigido(p)` (que también cubre
+      // `subcategoria === 'alimentos'` como respaldo) manda SIEMPRE sobre
+      // el stock propio de la variante — se pasan `categoria`/`subcategoria`
+      // heredadas del padre para que el mismo helper funcione igual sobre
+      // esta fila "producto-like" sintética.
+      const varianteIgnoraStock = productoIgnoraStockRigido(p);
       (variantesPorProducto?.[p.id] || []).forEach((v) => {
         if (v.activo === false) return;
         variantesActivas.push({
           nombre: `${p.nombre} — ${v.nombre}`,
           categoria: p.categoria,
+          subcategoria: p.subcategoria,
           precio: v.precio != null ? v.precio : p.precio,
           costo_unitario: v.costo_unitario != null ? v.costo_unitario : p.costo_unitario,
           stock: v.stock,
           stock_minimo: v.stock_minimo != null ? v.stock_minimo : p.stock_minimo,
-          maneja_stock: v.stock != null,
+          maneja_stock: varianteIgnoraStock ? false : v.stock != null,
         });
       });
     });
@@ -13795,7 +14057,7 @@ function ModuloERPInventario({
     const itemsInventario = [...activos, ...variantesActivas];
 
     const valorInventario = itemsInventario.reduce((acc, p) => {
-      if (p.maneja_stock === false) return acc;
+      if (productoIgnoraStockRigido(p)) return acc;
       const stock = Number(p.stock);
       if (!Number.isFinite(stock)) return acc;
       const costo = Number(p.costo_unitario);
@@ -13809,10 +14071,11 @@ function ModuloERPInventario({
     // ya existía), ahora se guarda el DETALLE completo (`detalleAlertas`)
     // para que la tarjeta "Alertas de Reorden" pueda abrir un desglose de
     // qué falta y cuánto stock queda — sin exponer costo/precio, solo
-    // unidades.
+    // unidades. Alimentos / sin stock rígido: excluidos con
+    // `productoIgnoraStockRigido`, nunca entran a este desglose.
     const detalleAlertas = itemsInventario
       .filter((p) => {
-        if (p.maneja_stock === false) return false;
+        if (productoIgnoraStockRigido(p)) return false;
         const stock = Number(p.stock);
         const minimo = Number(p.stock_minimo);
         return Number.isFinite(stock) && Number.isFinite(minimo) && stock <= minimo;
@@ -14696,7 +14959,7 @@ function generarCSVReporte({
   productos
     .filter((p) => p.activo !== false)
     .forEach((p) => {
-      const manejaStock = p.maneja_stock !== false;
+      const manejaStock = !productoIgnoraStockRigido(p);
       const stock = Number(p.stock);
       const costo = Number(p.costo_unitario);
       const valor = manejaStock && Number.isFinite(stock) && Number.isFinite(costo) ? stock * costo : 0;
@@ -14718,8 +14981,14 @@ function generarCSVReporte({
       (variantesPorProducto?.[p.id] || [])
         .filter((v) => v.activo !== false)
         .forEach((v) => {
+          // Mismo criterio que `FilaVarianteInventarioCompleta`: el toggle
+          // del producto padre (o Alimentos) manda sobre el stock propio de
+          // la variante — ver `productoIgnoraStockRigido`.
+          const vIgnoraStock = productoIgnoraStockRigido(p);
           const vNormalizada = {
-            maneja_stock: v.stock != null,
+            categoria: p.categoria,
+            subcategoria: p.subcategoria,
+            maneja_stock: vIgnoraStock ? false : v.stock != null,
             stock: v.stock,
             stock_minimo: v.stock_minimo != null ? v.stock_minimo : p.stock_minimo,
             tiempo_entrega_dias: p.tiempo_entrega_dias,
@@ -19322,6 +19591,24 @@ const TIPOS_EVENTO_AUDITORIA = {
     color: 'text-rose-400',
     bg: 'bg-rose-400/10',
     detalleTexto: (d) => `${d?.nombre || 'Participante'} — ${d?.origen || 'Inscripción'} (${formatoMoneda(d?.monto)}). Motivo: ${d?.motivo || 'sin especificar'}.`,
+  },
+  // Absorción / Reasignación de Cuentas Divididas Pendientes (Roster & Split
+  // Bill Asimétrico, Smart POS): un jugador se retira sin pagar su parte y
+  // recepción transfiere su consumo/cuota de cancha a otro jugador del
+  // roster (o a la cuenta principal/sin asignar del grupo) — ver
+  // `absorberJugadorRoster` en `ModuloSmartPOS`. El "por [Operador]" que
+  // pide el control interno ya lo cubre `evento.empleado_nombre`, que el
+  // Log de Actividad siempre muestra junto a cada evento (no hace falta
+  // repetirlo aquí en el texto).
+  absorcion_split_bill: {
+    label: 'Absorción de consumo (Split Bill)',
+    icon: ArrowRightLeft,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    detalleTexto: (d) =>
+      `Consumo de ${d?.origen || 'un jugador'} transferido a ${d?.destino || 'otro jugador'} · ${formatoMoneda(d?.monto)}${
+        d?.cancha ? ` — ${d.cancha}` : ''
+      }.`,
   },
   descuento_manual: {
     label: 'Descuento / precio manual',
@@ -35182,8 +35469,14 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   function agregarAddon(producto, variante = null) {
     const nombreArticulo = variante ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
     const precioArticulo = variante && variante.precio != null ? Number(variante.precio) : Number(producto.precio) || 0;
+    // Mismo bypass prioritario que `agregarProducto`/`agregarAlCarritoPortal`
+    // (ver `productoIgnoraStockRigido`).
     const stockCrudoVariante = variante ? variante.stock ?? variante.cantidad : producto.stock;
-    const manejaStock = variante ? stockCrudoVariante != null : producto.maneja_stock !== false;
+    const manejaStock = productoIgnoraStockRigido(producto)
+      ? false
+      : variante
+      ? stockCrudoVariante != null
+      : producto.maneja_stock !== false;
     const stockDisponible = Number(stockCrudoVariante);
     const hayLimite = manejaStock && Number.isFinite(stockDisponible);
     const id = `${producto.id}${variante ? `-var-${variante.id}` : ''}`;
