@@ -1911,6 +1911,25 @@ function esSubcategoriaAlimentos(categoria, subcategoria) {
   return categoria === 'Cafetería/Bar' && subcategoria === 'alimentos';
 }
 
+// Bypass PRIORITARIO de validación de stock (Ajuste fino — Alimentos / sin
+// stock rígido): único punto de verdad para "¿este producto puede
+// bloquearse por stock?" — reutilizado por `agregarProducto` (Smart POS),
+// `agregarAlCarritoPortal` (Portal Público), `ProductoCard` y
+// `ModalSeleccionarVariante`. `producto.maneja_stock === false` es la
+// señal que manda siempre (es lo que `ModalNuevoProducto.guardar()` fuerza
+// para "Alimentos", ver `esAlimento`/`manejaStockFinal` ahí) — se suma
+// `esSubcategoriaAlimentos` como respaldo defensivo por si algún registro
+// viejo/editado a mano trae `subcategoria: 'alimentos'` sin que
+// `maneja_stock` se haya sincronizado todavía. Cuando regresa `true`, NINGÚN
+// llamador debe seguir evaluando stock — ni el del producto padre NI el de
+// ninguna de sus variantes, sin importar qué número traiga esa variante
+// guardado (por ejemplo, para costeo en ERP).
+function productoIgnoraStockRigido(producto) {
+  if (!producto) return false;
+  if (producto.maneja_stock === false) return true;
+  return esSubcategoriaAlimentos(producto.categoria, producto.subcategoria);
+}
+
 // RENOMBRADO DE UX: en un puñado de lugares el código muestra el valor
 // CRUDO de `producto.categoria` directo en pantalla (tablas de
 // Rentabilidad/Kardex, historial de consumo del CRM, exportes CSV) en vez
@@ -6316,7 +6335,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
   // stock de variantes con control) y se muestra un rango de precio si
   // difieren entre sí.
   const tieneVariantes = variantes.length > 0;
-  const manejaStock = producto.maneja_stock !== false;
+  const manejaStock = !productoIgnoraStockRigido(producto);
   const stock = Number(producto.stock);
   const stockValido = manejaStock && !tieneVariantes && Number.isFinite(stock);
   // FIX (Alimentos/subcategoría "sin stock rígido"): con `maneja_stock:
@@ -6443,7 +6462,7 @@ function ModalSeleccionarVariante({ producto, variantes, onSeleccionar, onClose 
   // ninguna variante debe bloquearse ni mostrar "Agotado" por su propio
   // número de stock — se puede agregar a la comanda sin importar el stock
   // de sus variantes.
-  const manejaStockProducto = producto?.maneja_stock !== false;
+  const manejaStockProducto = !productoIgnoraStockRigido(producto);
   return (
     <ModalShell
       titulo={producto?.nombre || 'Elegir variante'}
@@ -7387,6 +7406,13 @@ function ModalNuevoProducto({
   // nunca se controlan por unidades de stock, solo por si hay insumos para
   // prepararlos ahora mismo (el toggle Disponible/No disponible, más abajo).
   const esAlimento = esSubcategoriaAlimentos(categoria, subcategoria);
+  // Ajuste fino (Variantes de Alimentos / sin stock rígido): mismo criterio
+  // que el producto padre — sin stock rígido, ninguna de sus variantes debe
+  // poder capturar un número de stock/stock mínimo tampoco (ver la tabla de
+  // Variantes / Modificadores más abajo y `variantesJSONB` en `guardar()`),
+  // para que el operador no pueda dejar sin querer una variante con un
+  // límite que el producto ya prometió ignorar en el POS.
+  const ocultarStockVariantes = esAlimento || !manejaStock;
 
   function cambiarCategoria(nuevaCategoria) {
     setCategoria(nuevaCategoria);
@@ -7513,9 +7539,15 @@ function ModalNuevoProducto({
         id: v.id,
         nombre: v.nombre.trim(),
         precio: v.precio === '' ? null : Number(v.precio),
-        stock: v.stock === '' ? null : Number(v.stock),
+        // Ajuste fino: sin stock rígido (`ocultarStockVariantes`), NINGUNA
+        // variante guarda una restricción de stock — sin importar qué haya
+        // quedado tecleado en el input antes de ocultarse (ej. el operador
+        // apagó "Maneja Inventario" DESPUÉS de haber capturado números).
+        // `null` = "sin control de inventario", el mismo valor que ya usa
+        // el resto del archivo cuando una variante nunca tuvo stock.
+        stock: ocultarStockVariantes ? null : v.stock === '' ? null : Number(v.stock),
         costo_unitario: v.costoUnitario === '' ? null : Number(v.costoUnitario),
-        stock_minimo: v.stockMinimo === '' ? null : Number(v.stockMinimo),
+        stock_minimo: ocultarStockVariantes ? null : v.stockMinimo === '' ? null : Number(v.stockMinimo),
         activo: true,
       }));
 
@@ -7686,7 +7718,9 @@ function ModalNuevoProducto({
             <span className="text-xs font-semibold text-slate-800">
               Variantes / Modificadores
               <span className="mt-0.5 block text-[10px] font-normal text-slate-500">
-                Ej. "Cerveza 355 ml" → Victoria, Corona, Modelo · "Overgrip" → Tourna, Wilson · "Chilaquiles" → Verdes, Rojos, con Pollo
+                {ocultarStockVariantes
+                  ? 'Sin stock rígido — las variantes solo llevan nombre, precio y costo (para margen). Ninguna controla inventario.'
+                  : 'Ej. "Cerveza 355 ml" → Victoria, Corona, Modelo · "Overgrip" → Tourna, Wilson · "Chilaquiles" → Verdes, Rojos, con Pollo'}
               </span>
             </span>
             <button
@@ -7735,24 +7769,36 @@ function ModalNuevoProducto({
                       placeholder="Costo unit."
                       title="Costo Unitario (vacío = hereda el del producto) — alimenta Margen Bruto % y Analytics BI"
                     />
-                    <input
-                      type="number"
-                      min="0"
-                      value={v.stock}
-                      onChange={(e) => actualizarFilaVariante(v.id, 'stock', e.target.value)}
-                      className={`${inputClase} w-20`}
-                      placeholder="Stock"
-                      title="Stock actual (vacío = sin control de inventario)"
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      value={v.stockMinimo}
-                      onChange={(e) => actualizarFilaVariante(v.id, 'stockMinimo', e.target.value)}
-                      className={`${inputClase} w-20`}
-                      placeholder="Stock mín."
-                      title="Stock Mínimo — activa el Estatus 'Bajo Stock' y la Alerta de Reabastecimiento"
-                    />
+                    {/* Ajuste fino — Variantes de Alimentos / sin stock
+                        rígido: los inputs de Stock/Stock mínimo se OCULTAN
+                        por completo (no solo se deshabilitan) para que el
+                        operador ni siquiera pueda teclear un `0` o
+                        cualquier otro número — `ocultarStockVariantes`
+                        también fuerza `stock`/`stock_minimo` a `null` al
+                        guardar (ver `variantesJSONB`), así que esto no es
+                        solo cosmético. */}
+                    {!ocultarStockVariantes && (
+                      <>
+                        <input
+                          type="number"
+                          min="0"
+                          value={v.stock}
+                          onChange={(e) => actualizarFilaVariante(v.id, 'stock', e.target.value)}
+                          className={`${inputClase} w-20`}
+                          placeholder="Stock"
+                          title="Stock actual (vacío = sin control de inventario)"
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          value={v.stockMinimo}
+                          onChange={(e) => actualizarFilaVariante(v.id, 'stockMinimo', e.target.value)}
+                          className={`${inputClase} w-20`}
+                          placeholder="Stock mín."
+                          title="Stock Mínimo — activa el Estatus 'Bajo Stock' y la Alerta de Reabastecimiento"
+                        />
+                      </>
+                    )}
                     <button
                       type="button"
                       onClick={() => eliminarFilaVariante(v.id)}
@@ -10670,8 +10716,20 @@ function ModuloSmartPOS({
     // causa real de que el carrito nunca intentara descontar nada: el
     // artículo entraba a la comanda con `stock: null` y `registrarVenta` lo
     // excluía del todo, en silencio).
+    // BYPASS PRIORITARIO (Alimentos / sin stock rígido): `productoIgnoraStockRigido`
+    // manda ANTES que cualquier otra cosa — antes, con una variante, el
+    // toggle "Maneja Inventario / Stock Rígido" del producto PADRE se
+    // ignoraba por completo (`manejaStock` solo miraba si esa variante en
+    // particular traía un número de stock propio), así que un platillo con
+    // variantes ("Chilaquiles" → Verdes/Rojos) que sí tuviera stock
+    // capturado en sus variantes (para costeo en ERP) terminaba bloqueando
+    // el carrito igual — justo lo que "Alimentos" prometía evitar.
     const stockCrudoVariante = variante ? variante.stock ?? variante.cantidad : producto.stock;
-    const manejaStock = variante ? stockCrudoVariante != null : producto.maneja_stock !== false;
+    const manejaStock = productoIgnoraStockRigido(producto)
+      ? false
+      : variante
+      ? stockCrudoVariante != null
+      : producto.maneja_stock !== false;
     const stockDisponible = Number(stockCrudoVariante);
     const hayLimiteStock = manejaStock && Number.isFinite(stockDisponible);
     // Split Bill Asimétrico: si hay un roster activo, el producto nace
@@ -32284,8 +32342,15 @@ function PortalPublicoJugadores({ clubSlug }) {
   function agregarAlCarritoPortal(producto, variante = null) {
     const nombreArticulo = variante ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
     const precioArticulo = variante && variante.precio != null ? Number(variante.precio) : Number(producto.precio) || 0;
+    // BYPASS PRIORITARIO (Alimentos / sin stock rígido) — mismo criterio y
+    // mismo motivo que `agregarProducto` del mostrador: `productoIgnoraStockRigido`
+    // manda antes que el stock propio de la variante.
     const stockCrudoVariante = variante ? variante.stock ?? variante.cantidad : producto.stock;
-    const manejaStock = variante ? stockCrudoVariante != null : producto.maneja_stock !== false;
+    const manejaStock = productoIgnoraStockRigido(producto)
+      ? false
+      : variante
+      ? stockCrudoVariante != null
+      : producto.maneja_stock !== false;
     const stockDisponible = Number(stockCrudoVariante);
     const hayLimiteStock = manejaStock && Number.isFinite(stockDisponible);
     const id = `producto-${producto.id}${variante ? `-var-${variante.id}` : ''}`;
