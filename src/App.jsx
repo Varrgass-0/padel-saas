@@ -6257,6 +6257,40 @@ async function consultarVentasEnRango(inicio, fin) {
   return { data: [], error: res.error };
 }
 
+// Cancelación de Compras (Contabilidad & Compras): antes de desactivar un
+// producto/variante que una compra dio de alta (ver `cancelarCompra`), hay
+// que confirmar que "no hay ventas registradas de este" (instrucción
+// explícita del usuario) — de lo contrario desactivarlo lo quitaría del
+// POS/Portal aunque ya tenga historial real de ventas detrás. No existe una
+// tabla relacional de líneas de venta: cada ticket en `ventas` guarda sus
+// artículos como JSONB en `detalles.items` (ver `registrarVenta`/
+// `liquidarCuentaDividida`), así que la única forma de confirmarlo es
+// revisar ese campo fila por fila — se acota a los 2000 tickets más
+// recientes del club (mismo respaldo/límite que ya usa
+// `consultarVentasEnRango` cuando `ventas` no tiene `created_at`) por
+// costo/tamaño de la consulta. Ante CUALQUIER duda (error de red/permisos,
+// o simplemente no se pudo confirmar) se regresa `true` a propósito — el
+// caller trata "no se pudo verificar" igual que "sí tiene ventas" (más
+// conservador: prefiere dejar el producto activo de más a desactivar de
+// más uno que sí se vendió).
+async function productoTuvoVentasRegistradas(productoId, varianteId) {
+  if (!productoId) return false;
+  try {
+    const { data, error } = await conClubId(supabase.from('ventas').select('id, detalles')).order('id', { ascending: false }).limit(2000);
+    if (error) return true;
+    return (data || []).some((v) => {
+      const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
+      return items.some((it) => {
+        if (String(it?.producto_id ?? it?.productoPadreId ?? '') !== String(productoId)) return false;
+        if (!varianteId) return true;
+        return String(it?.variante_id ?? it?.varianteId ?? '') === String(varianteId);
+      });
+    });
+  } catch (_e) {
+    return true;
+  }
+}
+
 // Suma "en vivo" del efectivo teórico del día, calculado desde `ventas`.
 // Es intencionalmente la ÚNICA función que conoce este número — el modal de
 // Arqueo la llama pero nunca imprime su resultado en pantalla.
@@ -15655,6 +15689,7 @@ function ModuloContabilidadCompras({
   configClub,
   productos,
   upsertProducto,
+  onRegistrarAuditoria,
 }) {
   const mostrarToast = useToast();
   // Nombre real del club activo para los encabezados de los reportes
@@ -15768,6 +15803,17 @@ function ModuloContabilidadCompras({
       'cantidad_unidades',
       'producto_nombre',
       'requiere_suma_stock',
+      // `producto_nuevo` — le dice a `cancelarCompra` si esta compra fue la
+      // que DIO DE ALTA el producto/variante (`true`, ver ramas
+      // `modoNuevoProducto`/`modoNuevaVarianteExistente`) o si solo sumó
+      // stock a algo que YA existía (`false`, restock de "Sumar a producto
+      // existente"). `requiere_suma_stock` no sirve para esta distinción
+      // porque también es `false` cuando un restock existente se recibe DE
+      // INMEDIATO (su stock ya se sumó al registrar la compra, no al
+      // confirmar recepción) — sin este campo, cancelar esa compra no
+      // sabría si debe restar stock (restock ya recibido) o desactivar un
+      // producto (alta nueva), ver comentario completo en `cancelarCompra`.
+      'producto_nuevo',
     ]);
     if (error) throw error;
     setEgresos((prev) => [data, ...prev]);
@@ -15905,7 +15951,15 @@ function ModuloContabilidadCompras({
 
     const ingresosTotalesConsolidados = ventasMostrador + ventasWeb + reservasCanchas + torneosRetas + clasesClinicas;
 
-    const egresosEnRango = egresos.filter((g) => g.fecha >= rangoPnl.inicioFechaISO && g.fecha < rangoPnl.finFechaISO);
+    // `!g.cancelada` — una Compra Cancelada/Revertida (ver `cancelarCompra`)
+    // sigue viviendo en `egresos` para que el Historial la muestre con su
+    // badge rojo/gris, pero NO debe seguir contando como Egreso real: se
+    // excluye aquí, en la ÚNICA fuente de `egresosEnRango` que alimenta
+    // `egresosTotales`/`egresosPorCategoria`/`utilidadReal` y el Modal de
+    // Desglose (`desglosePnl`, más abajo) — así el P&L / Estado de
+    // Resultados nunca se infla con una compra que en los hechos se
+    // devolvió al proveedor.
+    const egresosEnRango = egresos.filter((g) => !g.cancelada && g.fecha >= rangoPnl.inicioFechaISO && g.fecha < rangoPnl.finFechaISO);
     const egresosTotales = egresosEnRango.reduce((acc, g) => acc + (Number(g.monto) || 0), 0);
 
     const egresosPorCategoria = {};
@@ -16146,6 +16200,15 @@ function ModuloContabilidadCompras({
   const [guardandoEgreso, setGuardandoEgreso] = useState(false);
   const [errorFormEgreso, setErrorFormEgreso] = useState('');
   const [confirmandoRecepcionId, setConfirmandoRecepcionId] = useState(null);
+  // Cancelación / Anulación de Compras (Devoluciones de Proveedor):
+  // `cancelandoCompraId` bloquea el botón mientras corre la reversión de
+  // inventario + el update de `compras_gastos` (mismo criterio que
+  // `confirmandoRecepcionId` arriba); `compraParaCancelarId` controla qué
+  // fila abre el `ModalMotivoObligatorio` (Control Interno: toda
+  // cancelación de compra exige motivo, igual que "Cancelar Ticket / Anular
+  // Comanda" en `ModalLiquidarCuenta`).
+  const [cancelandoCompraId, setCancelandoCompraId] = useState(null);
+  const [compraParaCancelarId, setCompraParaCancelarId] = useState(null);
   // Fix de Duplicación de Egresos: `guardandoEgreso` (state de React) NO
   // alcanza por sí solo para bloquear un doble clic — se actualiza de forma
   // asíncrona, así que dos clics casi simultáneos pueden leer AMBOS
@@ -16442,6 +16505,12 @@ function ModuloContabilidadCompras({
             // `confirmarRecepcionCompra`), nunca hay que volver a sumar
             // stock.
             requiere_suma_stock: false,
+            // Esta compra DIO DE ALTA la variante — ver `cancelarCompra`
+            // (Cancelación de Compras): si se cancela y la variante no
+            // tiene ventas registradas, se marca inactiva en vez de
+            // restarle stock (su stock nació CON la compra, no se sumó
+            // aparte).
+            producto_nuevo: true,
           };
         } else {
         const esVariante = variantesDelProductoExistente.length > 0;
@@ -16565,13 +16634,22 @@ function ModuloContabilidadCompras({
           // creado por esta misma compra, cuyo stock ya nace correcto (ver
           // rama `nuevo` abajo).
           requiere_suma_stock: formEgreso.estatusRecepcion === 'pendiente',
+          // Restock de un producto/variante que YA EXISTÍA antes de esta
+          // compra — ver `cancelarCompra`: si se cancela, lo que corresponde
+          // es RESTAR `cantidad_unidades` del stock actual (nunca
+          // desactivar el producto completo, que puede tener historia
+          // propia previa a esta compra).
+          producto_nuevo: false,
         };
         }
       } else if (modoNuevoProducto) {
         // El nombre ya se validó arriba (antes de ocultar el top bar no
-        // había forma de llegar aquí sin él); solo falta el precio de
-        // venta, que sí sigue siendo un campo propio de este sub-formulario.
-        if (nuevoProductoForm.precio === '' || Number(nuevoProductoForm.precio) < 0) {
+        // había forma de llegar aquí sin él); el precio de venta del
+        // PRODUCTO solo se valida a mano cuando NO hay variantes — con
+        // variantes en pantalla ese campo está oculto (mejora UX: el precio
+        // ya vive en cada variante, ver JSX) así que exigirlo aquí dejaría
+        // "atorado" cualquier alta con variantes sin forma de completarlo.
+        if (variantesNuevoProductoConDatos.length === 0 && (nuevoProductoForm.precio === '' || Number(nuevoProductoForm.precio) < 0)) {
           throw new Error('Indica un precio de venta válido para el nuevo producto.');
         }
 
@@ -16590,6 +16668,21 @@ function ModuloContabilidadCompras({
         }));
         const stockTotal = stockCalculadoNuevoProducto;
 
+        // Precio "de catálogo" del producto padre cuando hay variantes: el
+        // campo de arriba está oculto (cada variante trae el suyo), así que
+        // en vez de guardar el `''` que nunca se llenó, se usa el precio MÁS
+        // BAJO entre las variantes — mismo criterio que ya usa `ProductoCard`
+        // para su badge "Desde $X" cuando un producto se vende en varias
+        // presentaciones. Sin variantes, el campo del producto sigue siendo
+        // la única fuente, igual que siempre.
+        const preciosVariantesNuevoProducto = variantesJSONB.filter((v) => v.precio != null).map((v) => v.precio);
+        const precioProductoPadre =
+          variantesNuevoProductoConDatos.length > 0
+            ? preciosVariantesNuevoProducto.length > 0
+              ? Math.min(...preciosVariantesNuevoProducto)
+              : 0
+            : Number(nuevoProductoForm.precio);
+
         // El stock (del producto o de cada variante) se guarda YA con su
         // cantidad real desde el alta, sea 🟡 Pendiente o 🟢 Recibido — la
         // visibilidad la controla ÚNICAMENTE `recibido` (Filtro Doble en
@@ -16600,7 +16693,7 @@ function ModuloContabilidadCompras({
         const nuevoProductoPayload = {
           nombre: nuevoProductoForm.nombre.trim(),
           categoria: nuevoProductoForm.categoriaPOS,
-          precio: Number(nuevoProductoForm.precio),
+          precio: precioProductoPadre,
           costo_unitario: nuevoProductoForm.costo === '' ? null : Number(nuevoProductoForm.costo),
           maneja_stock: true,
           stock: stockTotal,
@@ -16624,6 +16717,10 @@ function ModuloContabilidadCompras({
           cantidad_unidades: stockTotal,
           producto_nombre: productoCreado.nombre,
           requiere_suma_stock: false,
+          // Esta compra DIO DE ALTA el producto — ver `cancelarCompra`: si
+          // se cancela y el producto no tiene ventas registradas, se marca
+          // inactivo en vez de restarle stock.
+          producto_nuevo: true,
         };
       }
 
@@ -16779,6 +16876,165 @@ function ModuloContabilidadCompras({
     setConfirmandoRecepcionId(null);
   }
 
+  // Cancelación / Anulación de Compras (Devoluciones de Proveedor):
+  // "Cancelar Compra" en el Historial — Control Interno con Motivo
+  // Obligatorio (mismo patrón que `anularCuenta`/`ModalMotivoObligatorio`).
+  // Reversión de Inventario y Finanzas, según cómo nació esta compra
+  // (`producto_nuevo`/`estatus_recepcion`, ver `registrarEgreso`):
+  //  · Restock de un producto/variante YA EXISTENTE (`producto_nuevo:
+  //    false`) que ya estaba 🟢 Recibido: su stock SÍ se incrementó al
+  //    registrar la compra — aquí se resta esa misma `cantidad_unidades`
+  //    (ajuste de Kardex, nunca se borra el movimiento de 'entrada'
+  //    original: control interno = ledger inmutable, se compensa con un
+  //    nuevo movimiento 'ajuste').
+  //  · Restock 🟡 Pendiente de Recepción: su stock nunca se tocó (ver
+  //    `registrarEgreso`/`confirmarRecepcionCompra`) — no hay nada que
+  //    revertir, solo se cancela el gasto.
+  //  · Alta de un producto o variante NUEVA (`producto_nuevo: true`, con o
+  //    sin recepción confirmada — su stock nace correcto desde el alta,
+  //    nunca espera a "Confirmar Recepción"): si NO tiene ventas
+  //    registradas (`productoTuvoVentasRegistradas`) se marca inactiva —
+  //    más seguro que restarle stock/borrar su Kardex, y reversible a mano
+  //    desde el catálogo si fue un error. Si YA tiene ventas, no se toca el
+  //    producto — cancelar la compra no debe esconder algo que un jugador
+  //    ya compró.
+  // En los 3 casos: `compras_gastos.cancelada = true` (con badge rojo/gris
+  // en el Historial, y excluido de `egresosEnRango`/P&L, ver ese `useMemo`)
+  // + registro en el Log de Auditoría.
+  async function cancelarCompra(compra, motivo) {
+    if (compra.cancelada) return;
+    setCancelandoCompraId(compra.id);
+    let notaInventario = 'Esta compra no tenía producto/variante vinculado — solo se canceló el gasto.';
+    try {
+      if (compra.producto_id) {
+        const producto = (productos || []).find((p) => String(p.id) === String(compra.producto_id));
+        if (!producto) {
+          notaInventario = 'El producto vinculado ya no existe en el catálogo — no se revirtió inventario.';
+        } else if (compra.producto_nuevo) {
+          const tuvoVentas = await productoTuvoVentasRegistradas(compra.producto_id, compra.variante_id);
+          if (tuvoVentas) {
+            notaInventario = `"${compra.producto_nombre || producto.nombre}" ya tiene ventas registradas — no se desactivó ni se tocó su stock.`;
+          } else if (compra.variante_id) {
+            const resultado = await actualizarVarianteEnJSONB({
+              productoId: producto.id,
+              varianteId: compra.variante_id,
+              varianteNombre: compra.variante_nombre,
+              cambios: { activo: false },
+              nuevoStock: null,
+              upsertProducto,
+            });
+            notaInventario = resultado.ok
+              ? `Variante "${compra.variante_nombre || ''}" marcada como inactiva (sin ventas registradas).`
+              : 'No se pudo desactivar la variante — revísala manualmente en el catálogo.';
+          } else {
+            const { error: errInactivo } = await actualizarConColumnasOpcionales(
+              'productos',
+              producto.id,
+              { activo: false, disponible: false },
+              []
+            );
+            if (errInactivo) {
+              notaInventario = 'No se pudo desactivar el producto — revísalo manualmente en el catálogo.';
+            } else {
+              upsertProducto({ id: producto.id, activo: false, disponible: false });
+              notaInventario = `"${producto.nombre}" marcado como inactivo (sin ventas registradas).`;
+            }
+          }
+        } else if (compra.estatus_recepcion === 'recibido') {
+          const cantidad = Number(compra.cantidad_unidades) || 0;
+          if (compra.variante_id) {
+            const varianteActual = variantesDeProductoJSONB(producto).find(
+              (v) => String(v.id) === String(compra.variante_id) || v.nombre === compra.variante_nombre
+            );
+            const stockAnterior = Number(varianteActual?.stock) || 0;
+            const stockNuevo = Math.max(0, stockAnterior - cantidad);
+            const resultado = await actualizarVarianteEnJSONB({
+              productoId: producto.id,
+              varianteId: compra.variante_id,
+              varianteNombre: compra.variante_nombre,
+              cambios: {},
+              nuevoStock: stockNuevo,
+              upsertProducto,
+            });
+            if (resultado.ok) {
+              await insertarMovimientoKardex({
+                producto_id: producto.id,
+                variante_id: compra.variante_id,
+                producto_nombre: compra.producto_nombre || `${producto.nombre} — ${compra.variante_nombre || ''}`,
+                tipo_movimiento: 'ajuste',
+                cantidad,
+                stock_anterior: stockAnterior,
+                stock_nuevo: stockNuevo,
+                motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
+                operador: operador?.nombre,
+              });
+              notaInventario = `Stock revertido: -${cantidad} unidad(es) de "${compra.variante_nombre || producto.nombre}".`;
+            } else {
+              notaInventario = 'No se pudo revertir el stock de la variante — revísalo manualmente en Inventario.';
+            }
+          } else {
+            const stockAnterior = Number(producto.stock) || 0;
+            const stockNuevo = Math.max(0, stockAnterior - cantidad);
+            const { error: errStock } = await actualizarConColumnasOpcionales('productos', producto.id, { stock: stockNuevo }, []);
+            if (errStock) {
+              notaInventario = 'No se pudo revertir el stock del producto — revísalo manualmente en Inventario.';
+            } else {
+              upsertProducto({ id: producto.id, stock: stockNuevo });
+              await insertarMovimientoKardex({
+                producto_id: producto.id,
+                producto_nombre: compra.producto_nombre || producto.nombre,
+                tipo_movimiento: 'ajuste',
+                cantidad,
+                stock_anterior: stockAnterior,
+                stock_nuevo: stockNuevo,
+                motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
+                operador: operador?.nombre,
+              });
+              notaInventario = `Stock revertido: -${cantidad} unidad(es) de "${producto.nombre}".`;
+            }
+          }
+        } else {
+          notaInventario = 'La compra estaba pendiente de recepción — el stock nunca se había alterado.';
+        }
+      }
+
+      const { error } = await actualizarConColumnasOpcionales(
+        'compras_gastos',
+        compra.id,
+        { cancelada: true, motivo_cancelacion: motivo },
+        ['motivo_cancelacion']
+      );
+      if (error) throw error;
+      setEgresos((prev) => prev.map((g) => (g.id === compra.id ? { ...g, cancelada: true, motivo_cancelacion: motivo } : g)));
+
+      onRegistrarAuditoria?.('cancelacion_compra', {
+        concepto: compra.concepto || 'Compra',
+        monto: compra.monto,
+        motivo,
+        nota_inventario: notaInventario,
+      });
+
+      mostrarToast({
+        titulo: 'Compra cancelada',
+        detalle: `${compra.concepto || 'Compra'} — ${formatoMoneda(compra.monto)}. ${notaInventario}`,
+        tono: 'aviso',
+      });
+      setCompraParaCancelarId(null);
+      setCancelandoCompraId(null);
+      // `true` — mismo contrato que `ModalMotivoObligatorio` espera de
+      // `onConfirmar` (ver `anularCuenta`): ya cerramos el modal a mano
+      // arriba (`setCompraParaCancelarId(null)`, como `anularCuenta` hace
+      // con `setGrupoALiquidar(null)`), así que este `true` es solo
+      // "doble seguro" por si el componente algún día deja de cerrarse
+      // solo — nunca hace daño, `onClose` ya es idempotente.
+      return true;
+    } catch (err) {
+      mostrarToast({ titulo: 'No se pudo cancelar la compra', detalle: err.message || 'Error desconocido', tono: 'error' });
+    }
+    setCancelandoCompraId(null);
+    return false;
+  }
+
   /* ---- Formulario de Proveedores ---- */
   const [formProveedor, setFormProveedor] = useState({ nombre: '', categoria: '', contacto: '', telefono: '', email: '', notas: '' });
   const [guardandoProveedor, setGuardandoProveedor] = useState(false);
@@ -16823,7 +17079,7 @@ function ModuloContabilidadCompras({
       [`${nombreClubExport} — Historial de Compras & Gastos`],
       ['Generado', new Date().toLocaleString('es-MX')],
       [],
-      ['Fecha', 'Concepto', 'Categoría', 'Proveedor', 'Método de Pago', 'Operador', 'Monto'],
+      ['Fecha', 'Concepto', 'Categoría', 'Proveedor', 'Método de Pago', 'Operador', 'Estatus', 'Monto'],
       ...egresos.map((g) => [
         g.fecha || '',
         g.concepto || '',
@@ -16831,10 +17087,28 @@ function ModuloContabilidadCompras({
         g.proveedor_nombre || '',
         g.metodo_pago || '',
         g.operador || '',
+        // Se exporta el registro cancelado igual (control interno: el
+        // Historial completo, no solo lo vigente), pero marcado en su
+        // propia columna — y excluido del Total de abajo, mismo criterio
+        // que `egresosEnRango` en el P&L, para que este CSV no le muestre
+        // al contador un total inflado con compras ya devueltas.
+        g.cancelada ? 'Cancelada / Revertida' : '',
         (Number(g.monto) || 0).toFixed(2),
       ]),
       [],
-      ['Total', '', '', '', '', '', egresos.reduce((acc, g) => acc + (Number(g.monto) || 0), 0).toFixed(2)],
+      [
+        'Total',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        egresos
+          .filter((g) => !g.cancelada)
+          .reduce((acc, g) => acc + (Number(g.monto) || 0), 0)
+          .toFixed(2),
+      ],
     ];
     const csv = '﻿' + filas.map((fila) => fila.map(escaparCSV).join(',')).join('\n');
     const nombreArchivo = `egresos-compras_${hoyISO()}.csv`;
@@ -17277,28 +17551,47 @@ function ModuloContabilidadCompras({
                               ))}
                             </select>
                           </Campo>
-                          <Campo label="Precio de venta">
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              placeholder="0.00"
-                              value={nuevoProductoForm.precio}
-                              onChange={(e) => setNuevoProductoForm((f) => ({ ...f, precio: e.target.value }))}
-                              className={inputClase}
-                            />
-                          </Campo>
-                          <Campo label="Costo">
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              placeholder="0.00"
-                              value={nuevoProductoForm.costo}
-                              onChange={(e) => setNuevoProductoForm((f) => ({ ...f, costo: e.target.value }))}
-                              className={inputClase}
-                            />
-                          </Campo>
+                          {/* Ocultar Costo/Precio de venta del producto padre en cuanto
+                              hay variantes con datos (mejora UX): esa información ya
+                              vive en cada variante (columnas PRECIO/COSTO de la tabla
+                              de abajo) — dejarlos visibles aquí invitaba a llenar dos
+                              veces el mismo dato, o a que el operador capturara el
+                              precio/costo "base" pensando que aplicaba al producto
+                              cuando en realidad el catálogo/POS solo lee el de cada
+                              variante. Mismo criterio que ya usa Stock Inicial (se
+                              oculta/calcula solo) unas líneas abajo. */}
+                          {variantesNuevoProductoConDatos.length === 0 && (
+                            <>
+                              <Campo label="Precio de venta">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="0.00"
+                                  value={nuevoProductoForm.precio}
+                                  onChange={(e) => setNuevoProductoForm((f) => ({ ...f, precio: e.target.value }))}
+                                  className={inputClase}
+                                />
+                              </Campo>
+                              <Campo label="Costo">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="0.00"
+                                  value={nuevoProductoForm.costo}
+                                  onChange={(e) => setNuevoProductoForm((f) => ({ ...f, costo: e.target.value }))}
+                                  className={inputClase}
+                                />
+                              </Campo>
+                            </>
+                          )}
+                          {variantesNuevoProductoConDatos.length > 0 && (
+                            <div className="sm:col-span-2 lg:col-span-2 flex items-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+                              Precio y costo se capturan por variante (columnas PRECIO/COSTO en "Variantes" abajo) — no hay un precio/costo
+                              único de producto mientras haya variantes.
+                            </div>
+                          )}
                           <Campo
                             label={
                               variantesNuevoProductoConDatos.length > 0 ? 'Stock inicial (suma automática de variantes)' : 'Stock inicial'
@@ -17347,11 +17640,24 @@ function ModuloContabilidadCompras({
                           </div>
                           {nuevoProductoForm.variantes.length > 0 && (
                             <div className="space-y-2">
+                              {/* Etiquetas permanentes por columna (mejora UX) — antes
+                                  vivían solo como placeholder DENTRO de cada input
+                                  ("Nombre", "Precio"...), que desaparecían en cuanto el
+                                  operador empezaba a teclear y duplicaban la etiqueta de
+                                  la sección ("Variantes"). Ahora el encabezado queda fijo
+                                  arriba de la columna y el placeholder solo da un
+                                  ejemplo/formato. */}
+                              <div className="grid grid-cols-5 gap-2 px-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                                <span className="col-span-2">Nombre</span>
+                                <span>Precio</span>
+                                <span>Costo</span>
+                                <span>Stock</span>
+                              </div>
                               {nuevoProductoForm.variantes.map((v) => (
                                 <div key={v.id} className="grid grid-cols-5 items-center gap-2">
                                   <input
                                     type="text"
-                                    placeholder="Nombre (ej. Victoria)"
+                                    placeholder="Ej. Victoria"
                                     value={v.nombre}
                                     onChange={(e) => actualizarFilaVarianteNuevoProducto(v.id, 'nombre', e.target.value)}
                                     className={`${inputClase} col-span-2`}
@@ -17360,7 +17666,7 @@ function ModuloContabilidadCompras({
                                     type="number"
                                     min="0"
                                     step="0.01"
-                                    placeholder="Precio"
+                                    placeholder="0.00"
                                     value={v.precio}
                                     onChange={(e) => actualizarFilaVarianteNuevoProducto(v.id, 'precio', e.target.value)}
                                     className={inputClase}
@@ -17369,7 +17675,7 @@ function ModuloContabilidadCompras({
                                     type="number"
                                     min="0"
                                     step="0.01"
-                                    placeholder="Costo"
+                                    placeholder="0.00"
                                     value={v.costoUnitario}
                                     onChange={(e) => actualizarFilaVarianteNuevoProducto(v.id, 'costoUnitario', e.target.value)}
                                     className={inputClase}
@@ -17379,7 +17685,7 @@ function ModuloContabilidadCompras({
                                       type="number"
                                       min="0"
                                       step="1"
-                                      placeholder="Stock"
+                                      placeholder="0"
                                       value={v.stock}
                                       onChange={(e) => actualizarFilaVarianteNuevoProducto(v.id, 'stock', e.target.value)}
                                       className={inputClase}
@@ -17499,18 +17805,31 @@ function ModuloContabilidadCompras({
                       <th className="px-3 py-2.5">Operador</th>
                       <th className="px-3 py-2.5">Recepción</th>
                       <th className="px-3 py-2.5 text-right">Monto</th>
+                      <th className="px-3 py-2.5">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
                     {egresos.map((g) => (
-                      <tr key={g.id} className="border-b border-slate-200/70 last:border-0">
+                      // Compra Cancelada/Revertida: la fila se queda en el
+                      // Historial (control interno — nunca se borra), pero
+                      // se ve "apagada" (opacidad) para distinguirla de un
+                      // vistazo de las compras vigentes que sí cuentan en el
+                      // P&L.
+                      <tr key={g.id} className={`border-b border-slate-200/70 last:border-0 ${g.cancelada ? 'opacity-50' : ''}`}>
                         <td className="px-3 py-2.5 text-slate-500">{formatoFechaLarga(g.fecha)}</td>
                         <td className="px-3 py-2.5 font-semibold text-slate-800">{g.concepto}</td>
                         <td className="px-3 py-2.5 text-slate-500">{g.categoria || '—'}</td>
                         <td className="px-3 py-2.5 text-slate-500">{g.proveedor_nombre || '—'}</td>
                         <td className="px-3 py-2.5 text-slate-500">{g.operador || '—'}</td>
                         <td className="px-3 py-2.5">
-                          {g.estatus_recepcion === 'pendiente' ? (
+                          {g.cancelada ? (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full bg-slate-400/10 px-2 py-0.5 text-[10px] font-bold text-slate-500 ring-1 ring-slate-400/30"
+                              title={g.motivo_cancelacion ? `Motivo: ${g.motivo_cancelacion}` : undefined}
+                            >
+                              <Ban size={10} /> Cancelada / Revertida
+                            </span>
+                          ) : g.estatus_recepcion === 'pendiente' ? (
                             <div className="flex flex-col items-start gap-1.5">
                               <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-400 ring-1 ring-amber-400/30">
                                 🟡 Pendiente de Recepción
@@ -17537,7 +17856,31 @@ function ModuloContabilidadCompras({
                             <span className="text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 text-right font-bold text-rose-400">{formatoMoneda(Number(g.monto) || 0)}</td>
+                        <td
+                          className={`px-3 py-2.5 text-right font-bold ${g.cancelada ? 'text-slate-400 line-through' : 'text-rose-400'}`}
+                        >
+                          {formatoMoneda(Number(g.monto) || 0)}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {/* Cancelar Compra / Devolución de Proveedor —
+                              disponible en CUALQUIER compra vigente (con o
+                              sin producto vinculado, 🟡 pendiente o 🟢
+                              recibida); `cancelarCompra` decide caso por
+                              caso qué revertir. Ya cancelada = sin acción,
+                              es un estado final (mismo criterio que
+                              "Cancelada" en Reservas). */}
+                          {!g.cancelada && (
+                            <button
+                              type="button"
+                              onClick={() => setCompraParaCancelarId(g.id)}
+                              disabled={cancelandoCompraId === g.id}
+                              className="inline-flex items-center gap-1 rounded-md bg-rose-400/10 px-2 py-1 text-[10px] font-bold text-rose-400 ring-1 ring-rose-400/30 transition hover:bg-rose-400/20 disabled:opacity-50"
+                            >
+                              {cancelandoCompraId === g.id ? <Loader2 size={11} className="animate-spin" /> : <Ban size={11} />}
+                              Cancelar Compra
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -17545,6 +17888,21 @@ function ModuloContabilidadCompras({
               </div>
             )}
           </div>
+
+          {compraParaCancelarId &&
+            (() => {
+              const compraACancelar = egresos.find((g) => g.id === compraParaCancelarId);
+              if (!compraACancelar) return null;
+              return (
+                <ModalMotivoObligatorio
+                  titulo="Cancelar Compra"
+                  subtitulo={`${compraACancelar.concepto || 'Compra'} · ${formatoMoneda(Number(compraACancelar.monto) || 0)} · Revierte el stock ya sumado (si aplica) y descuenta el gasto del P&L`}
+                  textoBoton="Sí, cancelar compra"
+                  onClose={() => setCompraParaCancelarId(null)}
+                  onConfirmar={(motivo) => cancelarCompra(compraACancelar, motivo)}
+                />
+              );
+            })()}
         </div>
       )}
 
@@ -20135,6 +20493,20 @@ const TIPOS_EVENTO_AUDITORIA = {
     color: 'text-sky-400',
     bg: 'bg-sky-400/10',
     detalleTexto: (d) => `${d?.nombre || 'Empleado'} — ${d?.cambios || 'datos actualizados'}.`,
+  },
+  // Cancelación / Anulación de Compras (Devoluciones de Proveedor,
+  // Contabilidad & Compras) — ver `cancelarCompra` en
+  // `ModuloContabilidadCompras`. `d.nota_inventario` ya trae el resumen de
+  // qué pasó con el inventario (stock revertido, producto desactivado, o
+  // nada que revertir), calculado ahí mismo para no duplicar esa lógica
+  // aquí.
+  cancelacion_compra: {
+    label: 'Cancelación de compra',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    detalleTexto: (d) =>
+      `${d?.concepto || 'Compra'} — ${formatoMoneda(d?.monto)}. Motivo: ${d?.motivo || 'sin especificar'}. ${d?.nota_inventario || ''}`,
   },
 };
 
@@ -38540,6 +38912,7 @@ function AppInterno() {
                 configClub={configClub}
                 productos={productos}
                 upsertProducto={upsertProducto}
+                onRegistrarAuditoria={registrarEventoAuditoria}
               />
             ) : moduloActivo === 'analytics' ? (
               <ModuloAnalyticsBI
