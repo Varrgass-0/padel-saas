@@ -11361,7 +11361,7 @@ function ModuloSmartPOS({
 
   const productosFiltrados = useMemo(() => {
     return productos.filter((p) => {
-      if (p.activo === false) return false;
+      if (p.activo === false || p.eliminado === true) return false;
       // Filtro Doble (Compras & Inventario en Tránsito): un producto/
       // variante creado desde una Compra "🟡 Pendiente de Recepción" nace
       // con `recibido: false` — NUNCA debe poder venderse en el POS
@@ -12826,6 +12826,34 @@ async function insertarMovimientoKardex({
     return { ok: false, error, esRLS: esErrorRLS(error) };
   }
   return { ok: true, error: null, esRLS: false };
+}
+
+// Cancelación de Compras — Alta de Producto Nuevo revertida
+// (`cancelarCompra`, en `ModuloContabilidadCompras`): borra TODO el
+// historial de `kardex` de un producto ANTES de intentar borrar la fila de
+// `productos` misma. Reporte explícito del usuario: el `DELETE` de
+// `productos` rebotaba con una violación de llave foránea
+// (`kardex.producto_id` → `productos.id`) porque la compra original ya
+// había dejado su movimiento de 'entrada' ahí — Postgres no deja borrar el
+// producto mientras algo más lo siga referenciando. Best-effort a
+// propósito (igual que `insertarMovimientoKardex` arriba): si el proyecto
+// de Supabase no le dio permiso de DELETE a `kardex` (nunca tuvo ni
+// siquiera una política de SELECT dedicada, ver el comentario de arriba),
+// esta llamada regresa `ok:false` sin tronar nada — `cancelarCompra` ya
+// trae su propio respaldo (`activo:false`) para cuando el DELETE de
+// `productos` de todos modos no se puede completar.
+async function eliminarKardexDeProducto(productoId) {
+  try {
+    const { error } = await conClubId(supabase.from('kardex').delete()).eq('producto_id', productoId);
+    if (error) {
+      console.error('[kardex] no se pudo borrar el historial del producto (probablemente sin permiso de DELETE):', error);
+      return { ok: false, error };
+    }
+    return { ok: true, error: null };
+  } catch (e) {
+    console.error('[kardex] excepción al borrar el historial del producto:', e);
+    return { ok: false, error: e };
+  }
 }
 
 // ============================================================================
@@ -14642,9 +14670,21 @@ function ModuloERPInventario({
 
   /* ---------------- Catálogo filtrado ---------------- */
 
+  // Filtro Estricto: `p.activo !== false` sigue siendo la condición real
+  // (`activo` puede venir `null`/`undefined` en productos viejos, y esos SÍ
+  // deben verse — por eso no es `p.activo === true`), pero se le suma
+  // `p.eliminado !== true` como defensa extra explícita (pedido del
+  // usuario) por si algún flujo futuro llega a marcar esa bandera en vez de
+  // `activo`. A propósito NO se excluye por `stock === 0` aquí: un stock en
+  // 0 es un estado legítimo de un producto activo (es justo lo que dispara
+  // las alertas de "Bajo Stock"/"Sin Stock" de este mismo módulo, para que
+  // el operador sepa que hay que reabastecerlo) — un producto de una compra
+  // CANCELADA sin ventas ya no llega aquí porque `cancelarCompra` lo borra
+  // o lo desactiva de raíz (ver ese comentario), así que no hace falta —y
+  // sería incorrecto— adivinar cuál es cuál por su stock.
   const productosFiltrados = useMemo(() => {
     return productos
-      .filter((p) => p.activo !== false)
+      .filter((p) => p.activo !== false && p.eliminado !== true)
       .filter((p) => (categoriaFiltro === 'todos' ? true : p.categoria === categoriaFiltro))
       .filter((p) => (busqueda.trim() ? p.nombre?.toLowerCase().includes(busqueda.trim().toLowerCase()) : true));
   }, [productos, categoriaFiltro, busqueda]);
@@ -17067,42 +17107,54 @@ function ModuloContabilidadCompras({
               const stockNuevo = Math.max(0, stockAnterior - cantidad);
               const seDesactiva = stockNuevo <= 0;
 
-              // Kardex primero (mientras el producto todavía existe), sea
-              // cual sea el desenlace de abajo (DELETE o desactivación).
-              await insertarMovimientoKardex({
-                producto_id: producto.id,
-                producto_nombre: compra.producto_nombre || producto.nombre,
-                tipo_movimiento: 'ajuste',
-                cantidad,
-                stock_anterior: stockAnterior,
-                stock_nuevo: seDesactiva ? 0 : stockNuevo,
-                motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
-                operador: operador?.nombre,
-              });
-
               if (!seDesactiva) {
                 // Restock real de un producto con historia propia: solo se
-                // revierte la cantidad puntual, se queda activo.
+                // revierte la cantidad puntual, se queda activo — el
+                // producto sigue vivo y consultable, así que SÍ vale la
+                // pena dejar el ajuste en Kardex.
                 const { error: errStock } = await actualizarConColumnasOpcionales('productos', producto.id, { stock: stockNuevo }, []);
                 if (errStock) {
                   notaInventario = 'No se pudo revertir el stock del producto — revísalo manualmente en Inventario.';
                 } else {
                   upsertProducto({ id: producto.id, stock: stockNuevo });
+                  await insertarMovimientoKardex({
+                    producto_id: producto.id,
+                    producto_nombre: compra.producto_nombre || producto.nombre,
+                    tipo_movimiento: 'ajuste',
+                    cantidad,
+                    stock_anterior: stockAnterior,
+                    stock_nuevo: stockNuevo,
+                    motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
+                    operador: operador?.nombre,
+                  });
                   notaInventario = `Stock revertido: -${cantidad} unidad(es) de "${producto.nombre}".`;
                 }
               } else {
                 // Sin ventas y stock en 0: esta compra fue la que dio de
-                // alta el producto — se intenta ELIMINARLO del catálogo por
-                // completo. Si el proyecto tiene una llave foránea (p. ej.
-                // `kardex.producto_id`) sin ON DELETE CASCADE, el DELETE
-                // truena con una violación de integridad — en ese caso se
-                // cae de vuelta al borrado lógico (`activo: false`), que
-                // siempre funciona porque son columnas normales del mismo
-                // registro.
+                // alta el producto — se elimina TODO rastro. Reporte
+                // explícito del usuario: el `DELETE` de `productos` rebotaba
+                // con una violación de llave foránea porque el propio
+                // movimiento de 'entrada' de la compra original ya vivía en
+                // `kardex` apuntando a este `producto_id` — Postgres no deja
+                // borrar la fila padre mientras algo la siga referenciando.
+                // Por eso aquí el Kardex se borra PRIMERO (best-effort, ver
+                // `eliminarKardexDeProducto`) y recién después se intenta el
+                // `DELETE` de `productos` — sin nada que lo referencie ya,
+                // Supabase lo borra de raíz sin rebotar. Si el proyecto no le
+                // dio permiso de DELETE a `kardex` (o hay alguna OTRA tabla
+                // con una llave foránea propia), el `DELETE` de `productos`
+                // de todos modos puede tronar — en ese caso se cae de vuelta
+                // al borrado lógico (`activo: false`), que siempre funciona
+                // porque son columnas normales del mismo registro. No tiene
+                // caso insertar un movimiento nuevo en Kardex aquí: el
+                // producto (y su historial) están a punto de desaparecer —
+                // el registro permanente de esta cancelación queda en el Log
+                // de Auditoría (`onRegistrarAuditoria`, más abajo).
+                await eliminarKardexDeProducto(producto.id);
                 const { error: errDelete } = await supabase.from('productos').delete().eq('id', producto.id);
                 if (!errDelete) {
                   quitarProductoLocal?.(producto.id);
-                  notaInventario = `"${producto.nombre}" se eliminó del catálogo (stock en 0, sin ventas registradas).`;
+                  notaInventario = `"${producto.nombre}" se eliminó del catálogo junto con su historial de Kardex (stock en 0, sin ventas registradas).`;
                 } else {
                   const { error: errInactivo } = await actualizarConColumnasOpcionales(
                     'productos',
@@ -17114,7 +17166,8 @@ function ModuloContabilidadCompras({
                     notaInventario = 'No se pudo eliminar ni desactivar el producto — revísalo manualmente en el catálogo.';
                   } else {
                     upsertProducto({ id: producto.id, stock: stockNuevo, activo: false, disponible: false });
-                    notaInventario = `"${producto.nombre}" marcado como inactivo (sin ventas registradas) — no se pudo eliminar del catálogo (${
+                    quitarProductoLocal?.(producto.id);
+                    notaInventario = `"${producto.nombre}" marcado como inactivo y quitado de la vista (sin ventas registradas) — no se pudo eliminar del catálogo del todo (${
                       errDelete.message || 'referenciado por otro registro'
                     }).`;
                   }
