@@ -843,7 +843,189 @@ import {
   Building2,
   Eye,
   LogOut,
+  Moon,
+  Sun,
 } from 'lucide-react';
+
+/* ============================================================================
+ * MODO OSCURO / MODO CLARO — TOGGLE DE TEMA (QLUB OS)
+ * ==========================================================================*/
+// Preferencia GLOBAL del dispositivo (no por club/operador): se guarda tal
+// cual pidió el requerimiento, en `localStorage.setItem('qlubos_theme',
+// 'dark' | 'light')` — a propósito NO usa `claveLocalPorClub` (que
+// prefijaría la llave con el club activo): el tema es una preferencia visual
+// de QUIEN esté sentado frente a la pantalla, no del club, así que debe
+// sobrevivir a un cambio de club/cierre de sesión en el mismo dispositivo.
+const LS_KEY_TEMA_CLUBOS = 'qlubos_theme';
+
+function leerTemaGuardado() {
+  try {
+    const crudo = localStorage.getItem(LS_KEY_TEMA_CLUBOS);
+    return crudo === 'dark' ? 'dark' : 'light';
+  } catch (_e) {
+    return 'light';
+  }
+}
+
+// Alterna la clase `dark` en `<html>` (no en un contenedor interno): así
+// TODO el árbol —Portal Público, Auth, panel interno— queda bajo el mismo
+// ancestro que usa la hoja de estilos de Modo Oscuro (ver el `<style>` de
+// `App()`, más abajo), sin tener que envolver cada sub-árbol a mano.
+function aplicarClaseTemaClubOS(tema) {
+  try {
+    document.documentElement.classList.toggle('dark', tema === 'dark');
+  } catch (_e) {
+    /* document no disponible (no debería pasar en un SPA de navegador) */
+  }
+}
+
+// Efecto inmediato AL CARGAR EL MÓDULO (antes del primer render de React):
+// si el dispositivo ya tenía Modo Oscuro guardado, la clase `dark` queda
+// puesta en `<html>` desde el primer pintado — evita el parpadeo de
+// "destello claro" que se vería si esto solo se aplicara dentro de un
+// `useEffect` (que corre DESPUÉS del primer render).
+if (typeof window !== 'undefined') {
+  aplicarClaseTemaClubOS(leerTemaGuardado());
+}
+
+// Hook compartido: cualquier componente que necesite saber/cambiar el tema
+// actual (hoy solo `TopHeader`, vía `BotonTemaClubOS`) lo usa aquí — el
+// propio `document.documentElement`/`localStorage` es la única fuente de
+// verdad, así que no hace falta subir este estado a `AppInterno` ni
+// prop-drilling por media docena de componentes intermedios.
+function useTemaClubOS() {
+  const [tema, setTema] = useState(() => leerTemaGuardado());
+
+  const alternarTema = useCallback(() => {
+    setTema((actual) => {
+      const siguiente = actual === 'dark' ? 'light' : 'dark';
+      aplicarClaseTemaClubOS(siguiente);
+      try {
+        localStorage.setItem(LS_KEY_TEMA_CLUBOS, siguiente);
+      } catch (_e) {
+        /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
+      }
+      return siguiente;
+    });
+  }, []);
+
+  return [tema, alternarTema];
+}
+
+// Botón/Toggle de tema — Luna (🌙) en Modo Claro (invita a pasar a Oscuro),
+// Sol (☀️) en Modo Oscuro (invita a volver a Claro). Vive junto al reloj en
+// la sección "Izquierda" de `TopHeader` (ver más abajo).
+function BotonTemaClubOS({ tema, onAlternar }) {
+  const esOscuro = tema === 'dark';
+  return (
+    <button
+      type="button"
+      onClick={onAlternar}
+      title={esOscuro ? 'Cambiar a Modo Claro' : 'Cambiar a Modo Oscuro'}
+      aria-label={esOscuro ? 'Cambiar a Modo Claro' : 'Cambiar a Modo Oscuro'}
+      className="inline-flex shrink-0 items-center justify-center rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+    >
+      {esOscuro ? <Sun size={17} /> : <Moon size={17} />}
+    </button>
+  );
+}
+
+// Hoja de Modo Oscuro (Diseño Legacy Original) — retrofit vía overrides de
+// CSS puro sobre las clases de Tailwind YA usadas en toda la app, en vez de
+// reescribir cada `className` una por una (inviable en un archivo de este
+// tamaño). Selectores de ATRIBUTO `[class~="..."]`: igualan el TOKEN EXACTO
+// dentro de `class="..."` (separado por espacios) — nunca una subcadena, así
+// que pisar `bg-slate-100` jamás toca por accidente `hover:bg-slate-100`
+// (token distinto) ni nada parecido; tampoco hace falta escapar `/` ni `:`
+// (van dentro de una cadena de atributo, no de un selector de clase). Todo
+// vive bajo el ancestro `html.dark` (la clase que alterna
+// `aplicarClaseTemaClubOS` arriba), así que en Modo Claro esta hoja no
+// cambia absolutamente nada — y como cada regla suma un selector extra
+// (`html` + `.dark` + el atributo) siempre gana por especificidad sobre la
+// clase de Tailwind original, sin necesitar un solo `!important`.
+//
+// Paleta (a pedido, "Diseño Legacy Original"):
+//   - Fondo general de la app (`bg-slate-50`, que en Tailwind ES `#f8fafc`,
+//     el tono claro que ya usa toda la app como fondo de página): `#0b1329`.
+//   - Tarjetas/modales/tablas/Smart POS/Sidebar (`bg-white`/`bg-slate-100`):
+//     `#1e293b`.
+//   - Hover/chip resaltado (`bg-slate-200`/`bg-slate-300` y los `hover:bg-*`
+//     de esa misma familia) y bordes/anillos/divisores
+//     (`border-slate-*`/`ring-slate-*`/`divide-slate-*`): `#334155`.
+//   - Texto principal (`text-slate-900`/`text-slate-800`): `#f8fafc`.
+//   - Texto secundario (`text-slate-700/600/500/400/300`): `#94a3b8`.
+//   - `text-slate-950` (botones/badges de fondo `bg-lime-400`) y las clases
+//     `lime-*`/`emerald-*`/etc. de marca y estado NUNCA se tocan — ya son el
+//     verde neón de QLUB OS, así que resaltan solas más fuerte todavía sobre
+//     el nuevo fondo oscuro (justo lo que pide el punto 2 del requerimiento).
+const CSS_MODO_OSCURO_CLUBOS = `
+html.dark, html.dark body, html.dark #root { background-color: #0b1329; }
+
+html.dark [class~="bg-slate-50"] { background-color: #0b1329; }
+html.dark [class~="bg-slate-50/20"] { background-color: rgba(11, 19, 41, 0.2); }
+html.dark [class~="bg-slate-50/30"] { background-color: rgba(11, 19, 41, 0.3); }
+html.dark [class~="bg-slate-50/40"] { background-color: rgba(11, 19, 41, 0.4); }
+html.dark [class~="bg-slate-50/50"] { background-color: rgba(11, 19, 41, 0.5); }
+html.dark [class~="bg-slate-50/60"] { background-color: rgba(11, 19, 41, 0.6); }
+html.dark [class~="bg-slate-50/70"] { background-color: rgba(11, 19, 41, 0.7); }
+html.dark [class~="bg-slate-50/80"] { background-color: rgba(11, 19, 41, 0.8); }
+html.dark [class~="bg-slate-50/95"] { background-color: rgba(11, 19, 41, 0.95); }
+
+html.dark [class~="bg-white"] { background-color: #1e293b; }
+html.dark [class~="bg-white/40"] { background-color: rgba(30, 41, 59, 0.4); }
+html.dark [class~="bg-white/50"] { background-color: rgba(30, 41, 59, 0.5); }
+html.dark [class~="bg-white/60"] { background-color: rgba(30, 41, 59, 0.6); }
+html.dark [class~="bg-white/70"] { background-color: rgba(30, 41, 59, 0.7); }
+html.dark [class~="bg-white/80"] { background-color: rgba(30, 41, 59, 0.8); }
+html.dark [class~="bg-white/90"] { background-color: rgba(30, 41, 59, 0.9); }
+html.dark [class~="bg-white/95"] { background-color: rgba(30, 41, 59, 0.95); }
+html.dark [class~="bg-slate-100"] { background-color: #1e293b; }
+html.dark [class~="bg-slate-100/20"] { background-color: rgba(30, 41, 59, 0.2); }
+html.dark [class~="bg-slate-100/30"] { background-color: rgba(30, 41, 59, 0.3); }
+html.dark [class~="bg-slate-100/40"] { background-color: rgba(30, 41, 59, 0.4); }
+html.dark [class~="bg-slate-100/50"] { background-color: rgba(30, 41, 59, 0.5); }
+html.dark [class~="bg-slate-100/60"] { background-color: rgba(30, 41, 59, 0.6); }
+html.dark [class~="bg-slate-100/70"] { background-color: rgba(30, 41, 59, 0.7); }
+html.dark [class~="bg-slate-100/80"] { background-color: rgba(30, 41, 59, 0.8); }
+html.dark [class~="bg-slate-100/90"] { background-color: rgba(30, 41, 59, 0.9); }
+
+html.dark [class~="bg-slate-200"], html.dark [class~="bg-slate-300"] { background-color: #334155; }
+html.dark [class~="bg-slate-200/40"] { background-color: rgba(51, 65, 85, 0.4); }
+html.dark [class~="bg-slate-200/60"] { background-color: rgba(51, 65, 85, 0.6); }
+html.dark [class~="hover:bg-slate-50"]:hover,
+html.dark [class~="hover:bg-slate-100"]:hover,
+html.dark [class~="hover:bg-slate-200"]:hover,
+html.dark [class~="hover:bg-slate-300"]:hover { background-color: #334155; }
+
+html.dark [class~="border-slate-200"],
+html.dark [class~="border-slate-300"],
+html.dark [class~="border-slate-400"] { border-color: #334155; }
+html.dark [class~="border-slate-200/40"] { border-color: rgba(51, 65, 85, 0.4); }
+html.dark [class~="border-slate-200/50"] { border-color: rgba(51, 65, 85, 0.5); }
+html.dark [class~="border-slate-200/60"] { border-color: rgba(51, 65, 85, 0.6); }
+html.dark [class~="border-slate-200/70"] { border-color: rgba(51, 65, 85, 0.7); }
+html.dark [class~="border-slate-300/60"] { border-color: rgba(51, 65, 85, 0.6); }
+html.dark [class~="ring-slate-200"], html.dark [class~="ring-slate-300"] { --tw-ring-color: #334155; }
+html.dark [class~="ring-slate-300/50"] { --tw-ring-color: rgba(51, 65, 85, 0.5); }
+html.dark [class~="ring-slate-400/30"] { --tw-ring-color: rgba(51, 65, 85, 0.3); }
+html.dark [class~="divide-slate-200"] > :not([hidden]) ~ :not([hidden]) { border-color: #334155; }
+html.dark [class~="divide-slate-200/70"] > :not([hidden]) ~ :not([hidden]) { border-color: rgba(51, 65, 85, 0.7); }
+
+html.dark [class~="text-slate-900"],
+html.dark [class~="text-slate-800"],
+html.dark [class~="hover:text-slate-900"]:hover,
+html.dark [class~="hover:text-slate-800"]:hover { color: #f8fafc; }
+
+html.dark [class~="text-slate-700"],
+html.dark [class~="text-slate-600"],
+html.dark [class~="text-slate-500"],
+html.dark [class~="text-slate-400"],
+html.dark [class~="text-slate-300"],
+html.dark [class~="hover:text-slate-600"]:hover,
+html.dark [class~="hover:text-slate-500"]:hover { color: #94a3b8; }
+
+html.dark [class~="placeholder-slate-400"]::placeholder { color: #64748b; }
+`;
 
 /* ============================================================================
  * LOGO OFICIAL DE QLUB OS — COMPONENTE LOCAL PERMANENTE
@@ -3301,6 +3483,11 @@ function TopHeader({
   // Solo el Propietario sigue llegando al panel completo.
   const esOwner = operador.rol === 'owner';
   const [menuColaboradorAbierto, setMenuColaboradorAbierto] = useState(false);
+  // Toggle de Modo Oscuro/Claro — ver `useTemaClubOS`/`BotonTemaClubOS`
+  // (declarados junto a los imports): el propio hook lee/persiste en
+  // `localStorage` y alterna la clase `dark` en `<html>`, así que este
+  // componente no necesita nada más que llamarlo y renderizar el botón.
+  const [temaClubOS, alternarTemaClubOS] = useTemaClubOS();
 
   useEffect(() => {
     if (!menuColaboradorAbierto) return;
@@ -3315,7 +3502,8 @@ function TopHeader({
     <header className="sticky top-0 z-20 grid grid-cols-3 items-center gap-2 border-b border-slate-200 bg-slate-50/95 px-3 py-2 backdrop-blur sm:px-6">
       {/* Izquierda: botón de menú (solo mobile/iPad — abre el Sidebar como
           drawer; en desktop el Sidebar ya está fijo/visible y este botón se
-          oculta) + Reloj en tiempo real. */}
+          oculta) + Reloj en tiempo real + Toggle de Modo Oscuro/Claro (justo
+          al lado del reloj, a pedido del requerimiento). */}
       <div className="flex min-w-0 items-center justify-self-start gap-1.5 sm:gap-2">
         <button
           onClick={onAbrirSidebar}
@@ -3325,6 +3513,7 @@ function TopHeader({
           <Menu size={20} />
         </button>
         <Reloj />
+        <BotonTemaClubOS tema={temaClubOS} onAlternar={alternarTemaClubOS} />
       </div>
 
       {/* Centro: logo oficial de QLUB OS — mismo componente local
@@ -40694,8 +40883,16 @@ export default function App() {
           `-inset-y-12` para cubrir notch/barra de estado/barra de Safari.
           Va aquí (no en un index.css aparte) porque este proyecto se
           entrega como un solo App.jsx; se aplica una sola vez para TODO el
-          árbol (Portal Público y panel interno / Auth por igual). */}
-      <style>{`html, body, #root { background-color: #f8fafc; overscroll-behavior: none; }`}</style>
+          árbol (Portal Público y panel interno / Auth por igual).
+          Seguido de `CSS_MODO_OSCURO_CLUBOS` (ver junto a los imports, al
+          principio del archivo): el retrofit completo de Modo Oscuro, bajo
+          `html.dark` — por eso no cambia nada mientras esa clase no esté
+          puesta (Modo Claro, el default), y el override de fondo general de
+          abajo (`#0b1329`) le gana en especificidad a la regla de arriba en
+          cuanto el operador activa el Modo Oscuro desde el Toggle del
+          Header (`BotonTemaClubOS`, ver `TopHeader`). */}
+      <style>{`html, body, #root { background-color: #f8fafc; overscroll-behavior: none; }
+${CSS_MODO_OSCURO_CLUBOS}`}</style>
       {matchPortal ? (
         <PortalPublicoJugadores clubSlug={matchPortal[1]} />
       ) : (
