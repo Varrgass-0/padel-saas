@@ -13610,6 +13610,67 @@ async function actualizarVarianteEnJSONB({ productoId, varianteId, varianteNombr
   }
 }
 
+// Read-modify-write GEMELO de `actualizarVarianteEnJSONB`, pero para
+// ELIMINAR por completo una entrada del arreglo (no solo marcarla inactiva)
+// — usado por `cancelarCompra` (Cancelación de Compras) cuando la compra
+// cancelada fue la que dio de alta una variante nueva y ésta se queda en 0
+// unidades sin ninguna venta registrada: a diferencia de `activo: false`
+// (que depende de que CADA consumidor de `productos.variantes` se acuerde
+// de filtrarla), quitar la entrada del arreglo la hace desaparecer del
+// Catálogo/Inventario/POS de raíz, sin ninguna otra condición — no hay
+// riesgo de llave foránea (a diferencia de borrar la FILA de `productos`)
+// porque las variantes nunca fueron su propia tabla, solo entradas de este
+// mismo JSONB.
+async function eliminarVarianteEnJSONB({ productoId, varianteId, varianteNombre, upsertProducto }) {
+  try {
+    const { data: productoPadre, error: errPadre } = await supabase
+      .from('productos')
+      .select('id, variantes, stock')
+      .eq('id', productoId)
+      .maybeSingle();
+    if (errPadre || !productoPadre || !Array.isArray(productoPadre.variantes)) {
+      const error = errPadre || new Error(`El producto ${productoId} no tiene un arreglo productos.variantes válido.`);
+      console.error('[Inventario] Error detallado Supabase (eliminar variante):', error);
+      return { ok: false, error };
+    }
+
+    const listaVariantes = productoPadre.variantes;
+    const idBuscado = varianteId != null ? String(varianteId).trim().toLowerCase() : '';
+    const nombreBuscado = varianteNombre != null ? String(varianteNombre).trim().toLowerCase() : '';
+    const variantesRestantes = listaVariantes.filter((v, i) => {
+      const idCalculado = idEstableVarianteJSONB(v, i).trim().toLowerCase();
+      const idCrudo = v?.id != null ? String(v.id).trim().toLowerCase() : '';
+      const nombreV = nombreDeVarianteJSONB(v).trim().toLowerCase();
+      const coincidePorId = idBuscado && (idBuscado === idCalculado || idBuscado === idCrudo);
+      const coincidePorNombre = nombreBuscado && nombreBuscado === nombreV;
+      return !(coincidePorId || coincidePorNombre);
+    });
+    if (variantesRestantes.length === listaVariantes.length) {
+      const error = new Error(`La variante "${varianteNombre || varianteId}" no se encontró en productos.variantes del producto ${productoId}.`);
+      console.error('[Inventario] Error detallado Supabase:', error);
+      return { ok: false, error };
+    }
+
+    const stockTotalPadre = variantesRestantes.reduce((acc, v) => acc + (stockDeVarianteJSONB(v) || 0), 0);
+    const { data: productoActualizado, error: errUpdate } = await supabase
+      .from('productos')
+      .update({ variantes: variantesRestantes, stock: stockTotalPadre })
+      .eq('id', productoId)
+      .select()
+      .single();
+    if (errUpdate) {
+      console.error('[Inventario] Error detallado Supabase (eliminar de productos.variantes):', errUpdate);
+      return { ok: false, error: errUpdate };
+    }
+
+    upsertProducto?.(productoActualizado);
+    return { ok: true, error: null, producto: productoActualizado };
+  } catch (e) {
+    console.error('[Inventario] Error detallado Supabase (excepción al eliminar de productos.variantes):', e);
+    return { ok: false, error: e };
+  }
+}
+
 // Read-modify-write GEMELO de `actualizarVarianteEnJSONB` de arriba, pero
 // para AÑADIR una variante que no existía — usado por "+ Crear Nueva
 // Variante para este Producto" en Compras → Sumar a producto existente
@@ -15689,6 +15750,7 @@ function ModuloContabilidadCompras({
   configClub,
   productos,
   upsertProducto,
+  quitarProductoLocal,
   onRegistrarAuditoria,
 }) {
   const mostrarToast = useToast();
@@ -16878,18 +16940,34 @@ function ModuloContabilidadCompras({
   //     producto YA EXISTENTE, ver `registrarEgreso`). Si es `true`, no
   //     hay nada que revertir — ni un alta de producto/variante nueva NI
   //     un restock ya recibido dejan `requiere_suma_stock: true`.
-  //  2) El STOCK RESULTANTE después de restar `cantidad_unidades` — si
-  //     cae en 0 (o menos) Y el producto/variante no tiene ninguna venta
-  //     registrada, se desactiva de una vez. Esto detecta un alta de
-  //     producto/variante nueva SIN necesitar saber de antemano que lo
-  //     era: nace con stock = cantidad_unidades, así que restar esa misma
-  //     cantidad SIEMPRE la deja en 0. Un restock de un producto que ya
-  //     tenía existencia previa (ej. tenía 5, esta compra sumó 10, total
-  //     15) cae en 5 al revertir — arriba de 0, así que se queda activo
-  //     con su stock previo intacto, tal como debe ser.
+  //  2) El STOCK RESULTANTE después de restar `cantidad_unidades` — si cae
+  //     en 0 (o menos) Y el producto/variante no tiene ninguna venta
+  //     registrada, se ELIMINA de una vez (no solo `activo: false`). Esto
+  //     detecta un alta de producto/variante nueva SIN necesitar saber de
+  //     antemano que lo era: nace con stock = cantidad_unidades, así que
+  //     restar esa misma cantidad SIEMPRE la deja en 0. Un restock de un
+  //     producto que ya tenía existencia previa (ej. tenía 5, esta compra
+  //     sumó 10, total 15) cae en 5 al revertir — arriba de 0, así que se
+  //     queda activo con su stock previo intacto, tal como debe ser.
+  //
+  // FIX 2 (reporte de seguimiento: "el stock bajó a 0 pero la fila sigue en
+  // Inventario con precio/costo/margen/badge Bajo Stock"): la versión
+  // anterior de este fix solo hacía `activo: false` — pedido explícito
+  // ahora: eliminar el registro DE VERDAD. Producto simple → `DELETE` de la
+  // fila en `productos` (con `activo: false` como respaldo automático si el
+  // DELETE truena por una llave foránea, p. ej. `kardex.producto_id`).
+  // Variante → se quita la entrada del arreglo `productos.variantes` por
+  // completo (`eliminarVarianteEnJSONB`, sin riesgo de llave foránea: nunca
+  // fue su propia tabla). Además, `quitarProductoLocal` saca el producto del
+  // estado React DE INMEDIATO en vez de solo mezclar `{ activo: false }` con
+  // `upsertProducto` — así la fila desaparece en el mismo click, sin esperar
+  // a Realtime ni al poll de 20s que refresca `productos` en segundo plano
+  // (ver el comentario de ese `useEffect`, que además es el que podía haber
+  // hecho "reaparecer" la fila si el usuario la vio justo antes del primer
+  // refetch confirmado).
   // Si el producto/variante YA tiene ventas registradas, no se toca su
-  // stock ni su `activo` bajo ninguna circunstancia — cancelar la compra
-  // no debe esconder ni descuadrar algo que un jugador ya compró.
+  // stock ni se elimina bajo ninguna circunstancia — cancelar la compra no
+  // debe esconder ni descuadrar algo que un jugador ya compró.
   //
   // En todos los casos: `compras_gastos.estatus_recepcion = 'cancelada'`
   // (con badge rojo/gris en el Historial, y excluido de
@@ -16926,55 +17004,121 @@ function ModuloContabilidadCompras({
               const stockAnterior = Number(varianteActual?.stock) || 0;
               const stockNuevo = Math.max(0, stockAnterior - cantidad);
               const seDesactiva = stockNuevo <= 0;
-              const resultado = await actualizarVarianteEnJSONB({
-                productoId: producto.id,
-                varianteId: compra.variante_id,
-                varianteNombre: compra.variante_nombre,
-                cambios: seDesactiva ? { activo: false } : {},
-                nuevoStock: stockNuevo,
-                upsertProducto,
-              });
-              if (resultado.ok) {
-                await insertarMovimientoKardex({
-                  producto_id: producto.id,
-                  variante_id: compra.variante_id,
-                  producto_nombre: compra.producto_nombre || `${producto.nombre} — ${compra.variante_nombre || ''}`,
-                  tipo_movimiento: 'ajuste',
-                  cantidad,
-                  stock_anterior: stockAnterior,
-                  stock_nuevo: stockNuevo,
-                  motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
-                  operador: operador?.nombre,
+              if (!seDesactiva) {
+                // Restock real de una variante con historia propia: solo se
+                // revierte la cantidad puntual, se queda activa.
+                const resultado = await actualizarVarianteEnJSONB({
+                  productoId: producto.id,
+                  varianteId: compra.variante_id,
+                  varianteNombre: compra.variante_nombre,
+                  cambios: {},
+                  nuevoStock: stockNuevo,
+                  upsertProducto,
                 });
-                notaInventario = seDesactiva
-                  ? `Stock revertido a 0 y variante "${compra.variante_nombre || ''}" desactivada (sin ventas registradas).`
-                  : `Stock revertido: -${cantidad} unidad(es) de "${compra.variante_nombre || producto.nombre}".`;
+                if (resultado.ok) {
+                  await insertarMovimientoKardex({
+                    producto_id: producto.id,
+                    variante_id: compra.variante_id,
+                    producto_nombre: compra.producto_nombre || `${producto.nombre} — ${compra.variante_nombre || ''}`,
+                    tipo_movimiento: 'ajuste',
+                    cantidad,
+                    stock_anterior: stockAnterior,
+                    stock_nuevo: stockNuevo,
+                    motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
+                    operador: operador?.nombre,
+                  });
+                  notaInventario = `Stock revertido: -${cantidad} unidad(es) de "${compra.variante_nombre || producto.nombre}".`;
+                } else {
+                  notaInventario = 'No se pudo revertir el stock de la variante — revísalo manualmente en Inventario.';
+                }
               } else {
-                notaInventario = 'No se pudo revertir el stock de la variante — revísalo manualmente en Inventario.';
+                // Sin ventas y stock en 0: esta compra fue la que dio de
+                // alta la variante — se ELIMINA la entrada del arreglo por
+                // completo (no solo `activo: false`), para que desaparezca
+                // del Catálogo/Inventario/POS de raíz sin depender de que
+                // cada consumidor recuerde filtrarla. Sin riesgo de llave
+                // foránea: las variantes solo viven dentro de este JSONB,
+                // nunca fueron su propia tabla.
+                const resultado = await eliminarVarianteEnJSONB({
+                  productoId: producto.id,
+                  varianteId: compra.variante_id,
+                  varianteNombre: compra.variante_nombre,
+                  upsertProducto,
+                });
+                if (resultado.ok) {
+                  await insertarMovimientoKardex({
+                    producto_id: producto.id,
+                    variante_id: compra.variante_id,
+                    producto_nombre: compra.producto_nombre || `${producto.nombre} — ${compra.variante_nombre || ''}`,
+                    tipo_movimiento: 'ajuste',
+                    cantidad,
+                    stock_anterior: stockAnterior,
+                    stock_nuevo: 0,
+                    motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
+                    operador: operador?.nombre,
+                  });
+                  notaInventario = `Variante "${compra.variante_nombre || ''}" se eliminó del producto (stock en 0, sin ventas registradas).`;
+                } else {
+                  notaInventario = 'No se pudo eliminar la variante — revísala manualmente en Inventario.';
+                }
               }
             } else {
               const stockAnterior = Number(producto.stock) || 0;
               const stockNuevo = Math.max(0, stockAnterior - cantidad);
               const seDesactiva = stockNuevo <= 0;
-              const cambiosProducto = seDesactiva ? { stock: stockNuevo, activo: false, disponible: false } : { stock: stockNuevo };
-              const { error: errStock } = await actualizarConColumnasOpcionales('productos', producto.id, cambiosProducto, []);
-              if (errStock) {
-                notaInventario = 'No se pudo revertir el stock del producto — revísalo manualmente en Inventario.';
+
+              // Kardex primero (mientras el producto todavía existe), sea
+              // cual sea el desenlace de abajo (DELETE o desactivación).
+              await insertarMovimientoKardex({
+                producto_id: producto.id,
+                producto_nombre: compra.producto_nombre || producto.nombre,
+                tipo_movimiento: 'ajuste',
+                cantidad,
+                stock_anterior: stockAnterior,
+                stock_nuevo: seDesactiva ? 0 : stockNuevo,
+                motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
+                operador: operador?.nombre,
+              });
+
+              if (!seDesactiva) {
+                // Restock real de un producto con historia propia: solo se
+                // revierte la cantidad puntual, se queda activo.
+                const { error: errStock } = await actualizarConColumnasOpcionales('productos', producto.id, { stock: stockNuevo }, []);
+                if (errStock) {
+                  notaInventario = 'No se pudo revertir el stock del producto — revísalo manualmente en Inventario.';
+                } else {
+                  upsertProducto({ id: producto.id, stock: stockNuevo });
+                  notaInventario = `Stock revertido: -${cantidad} unidad(es) de "${producto.nombre}".`;
+                }
               } else {
-                upsertProducto({ id: producto.id, ...cambiosProducto });
-                await insertarMovimientoKardex({
-                  producto_id: producto.id,
-                  producto_nombre: compra.producto_nombre || producto.nombre,
-                  tipo_movimiento: 'ajuste',
-                  cantidad,
-                  stock_anterior: stockAnterior,
-                  stock_nuevo: stockNuevo,
-                  motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
-                  operador: operador?.nombre,
-                });
-                notaInventario = seDesactiva
-                  ? `Stock revertido a 0 y "${producto.nombre}" marcado como inactivo (sin ventas registradas).`
-                  : `Stock revertido: -${cantidad} unidad(es) de "${producto.nombre}".`;
+                // Sin ventas y stock en 0: esta compra fue la que dio de
+                // alta el producto — se intenta ELIMINARLO del catálogo por
+                // completo. Si el proyecto tiene una llave foránea (p. ej.
+                // `kardex.producto_id`) sin ON DELETE CASCADE, el DELETE
+                // truena con una violación de integridad — en ese caso se
+                // cae de vuelta al borrado lógico (`activo: false`), que
+                // siempre funciona porque son columnas normales del mismo
+                // registro.
+                const { error: errDelete } = await supabase.from('productos').delete().eq('id', producto.id);
+                if (!errDelete) {
+                  quitarProductoLocal?.(producto.id);
+                  notaInventario = `"${producto.nombre}" se eliminó del catálogo (stock en 0, sin ventas registradas).`;
+                } else {
+                  const { error: errInactivo } = await actualizarConColumnasOpcionales(
+                    'productos',
+                    producto.id,
+                    { stock: stockNuevo, activo: false, disponible: false },
+                    []
+                  );
+                  if (errInactivo) {
+                    notaInventario = 'No se pudo eliminar ni desactivar el producto — revísalo manualmente en el catálogo.';
+                  } else {
+                    upsertProducto({ id: producto.id, stock: stockNuevo, activo: false, disponible: false });
+                    notaInventario = `"${producto.nombre}" marcado como inactivo (sin ventas registradas) — no se pudo eliminar del catálogo (${
+                      errDelete.message || 'referenciado por otro registro'
+                    }).`;
+                  }
+                }
               }
             }
           }
@@ -37306,6 +37450,19 @@ function AppInterno() {
     });
   }
 
+  // Cancelación de Compras — Alta de Producto Nuevo revertida
+  // (`cancelarCompra` en `ModuloContabilidadCompras`): quita el producto del
+  // estado local YA MISMO, sin esperar al canal Realtime ni al poll de 20s
+  // de arriba (ver el FIX de "Catálogo con stock congelado" en el comentario
+  // de ese `useEffect`) — ese mismo poll silencioso es justo lo que podía
+  // hacer "reaparecer" una fila recién borrada/desactivada si el refetch de
+  // los 20s todavía no confirmaba el cambio. Filtrar por `id` en vez de
+  // reconstruir todo el arreglo evita cualquier condición de carrera con
+  // otro `setProductos` que llegue casi al mismo tiempo.
+  function quitarProductoLocal(id) {
+    setProductos((prev) => prev.filter((p) => p.id !== id));
+  }
+
   /* ---------------- Catálogo Inteligente: Variantes/Modificadores ----------------
    * FIX DEFINITIVO: este proyecto de Supabase NO tiene tabla
    * `producto_variantes` — las variantes viven ÚNICAMENTE en el arreglo
@@ -38920,6 +39077,7 @@ function AppInterno() {
                 configClub={configClub}
                 productos={productos}
                 upsertProducto={upsertProducto}
+                quitarProductoLocal={quitarProductoLocal}
                 onRegistrarAuditoria={registrarEventoAuditoria}
               />
             ) : moduloActivo === 'analytics' ? (
