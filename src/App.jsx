@@ -15803,17 +15803,6 @@ function ModuloContabilidadCompras({
       'cantidad_unidades',
       'producto_nombre',
       'requiere_suma_stock',
-      // `producto_nuevo` — le dice a `cancelarCompra` si esta compra fue la
-      // que DIO DE ALTA el producto/variante (`true`, ver ramas
-      // `modoNuevoProducto`/`modoNuevaVarianteExistente`) o si solo sumó
-      // stock a algo que YA existía (`false`, restock de "Sumar a producto
-      // existente"). `requiere_suma_stock` no sirve para esta distinción
-      // porque también es `false` cuando un restock existente se recibe DE
-      // INMEDIATO (su stock ya se sumó al registrar la compra, no al
-      // confirmar recepción) — sin este campo, cancelar esa compra no
-      // sabría si debe restar stock (restock ya recibido) o desactivar un
-      // producto (alta nueva), ver comentario completo en `cancelarCompra`.
-      'producto_nuevo',
     ]);
     if (error) throw error;
     setEgresos((prev) => [data, ...prev]);
@@ -16508,12 +16497,6 @@ function ModuloContabilidadCompras({
             // `confirmarRecepcionCompra`), nunca hay que volver a sumar
             // stock.
             requiere_suma_stock: false,
-            // Esta compra DIO DE ALTA la variante — ver `cancelarCompra`
-            // (Cancelación de Compras): si se cancela y la variante no
-            // tiene ventas registradas, se marca inactiva en vez de
-            // restarle stock (su stock nació CON la compra, no se sumó
-            // aparte).
-            producto_nuevo: true,
           };
         } else {
         const esVariante = variantesDelProductoExistente.length > 0;
@@ -16637,12 +16620,6 @@ function ModuloContabilidadCompras({
           // creado por esta misma compra, cuyo stock ya nace correcto (ver
           // rama `nuevo` abajo).
           requiere_suma_stock: formEgreso.estatusRecepcion === 'pendiente',
-          // Restock de un producto/variante que YA EXISTÍA antes de esta
-          // compra — ver `cancelarCompra`: si se cancela, lo que corresponde
-          // es RESTAR `cantidad_unidades` del stock actual (nunca
-          // desactivar el producto completo, que puede tener historia
-          // propia previa a esta compra).
-          producto_nuevo: false,
         };
         }
       } else if (modoNuevoProducto) {
@@ -16720,10 +16697,6 @@ function ModuloContabilidadCompras({
           cantidad_unidades: stockTotal,
           producto_nombre: productoCreado.nombre,
           requiere_suma_stock: false,
-          // Esta compra DIO DE ALTA el producto — ver `cancelarCompra`: si
-          // se cancela y el producto no tiene ventas registradas, se marca
-          // inactivo en vez de restarle stock.
-          producto_nuevo: true,
         };
       }
 
@@ -16882,36 +16855,49 @@ function ModuloContabilidadCompras({
   // Cancelación / Anulación de Compras (Devoluciones de Proveedor):
   // "Cancelar Compra" en el Historial — Control Interno con Motivo
   // Obligatorio (mismo patrón que `anularCuenta`/`ModalMotivoObligatorio`).
-  // Reversión de Inventario y Finanzas, según cómo nació esta compra
-  // (`producto_nuevo`/`estatus_recepcion`, ver `registrarEgreso`):
-  //  · Restock de un producto/variante YA EXISTENTE (`producto_nuevo:
-  //    false`) que ya estaba 🟢 Recibido: su stock SÍ se incrementó al
-  //    registrar la compra — aquí se resta esa misma `cantidad_unidades`
-  //    (ajuste de Kardex, nunca se borra el movimiento de 'entrada'
-  //    original: control interno = ledger inmutable, se compensa con un
-  //    nuevo movimiento 'ajuste').
-  //  · Restock 🟡 Pendiente de Recepción: su stock nunca se tocó (ver
-  //    `registrarEgreso`/`confirmarRecepcionCompra`) — no hay nada que
-  //    revertir, solo se cancela el gasto.
-  //  · Alta de un producto o variante NUEVA (`producto_nuevo: true`, con o
-  //    sin recepción confirmada — su stock nace correcto desde el alta,
-  //    nunca espera a "Confirmar Recepción"): si NO tiene ventas
-  //    registradas (`productoTuvoVentasRegistradas`) se marca inactiva —
-  //    más seguro que restarle stock/borrar su Kardex, y reversible a mano
-  //    desde el catálogo si fue un error. Si YA tiene ventas, no se toca el
-  //    producto — cancelar la compra no debe esconder algo que un jugador
-  //    ya compró.
-  // En los 3 casos: `compras_gastos.estatus_recepcion = 'cancelada'` (con
-  // badge rojo/gris en el Historial, y excluido de `egresosEnRango`/P&L, ver
-  // ese `useMemo`) + registro en el Log de Auditoría. Se reutiliza
-  // `estatus_recepcion` (ya existente y ya usado por
-  // `confirmarRecepcionCompra` arriba: 'pendiente'/'recibido') en vez de
-  // crear una columna `cancelada` nueva — Supabase regresaba
-  // "Could not find the 'cancelada' column of 'compras_gastos' in the
-  // schema cache" porque esa columna nunca existió en el proyecto; añadir
-  // otro estado más a una columna que YA sabemos que existe evita depender
-  // de una migración nueva, mismo criterio que el resto de "Arquitectura
-  // Flexible" del archivo.
+  //
+  // FIX (reporte de "Overgrips 3 con stock 0" reapareciendo en Inventario
+  // tras cancelar): la primera versión de esta función decidía "¿esta
+  // compra dio de alta un producto nuevo, o solo restockeó uno que ya
+  // existía?" leyendo `compra.producto_nuevo` — una columna que, igual que
+  // `cancelada` (ver el fix anterior), NUNCA se agregó al proyecto real de
+  // Supabase del club. `insertarConColumnasOpcionales` la descarta en
+  // silencio al guardar la compra (por diseño — "Arquitectura Flexible"),
+  // así que `compra.producto_nuevo` siempre volvía `undefined`/falsy al
+  // leerla de vuelta. Eso hacía caer CUALQUIER compra "Alta de Producto
+  // Nuevo" a la rama de abajo (pensada para restocks), que RESTA
+  // `cantidad_unidades` del stock — como un producto nuevo nace con
+  // stock = cantidad_unidades, el resultado quedaba en stock 0 pero
+  // `activo` nunca se tocaba: exactamente el síntoma reportado.
+  //
+  // Reescrito para NO depender de ninguna columna nueva/incierta — usa
+  // solo 2 señales que ya sabemos que existen y funcionan en cualquier
+  // proyecto (las usa `confirmarRecepcionCompra`, arriba):
+  //  1) `compra.requiere_suma_stock` — dice si el stock de ESTA compra
+  //     todavía NO se sumó (solo pasa en un restock 🟡 Pendiente de un
+  //     producto YA EXISTENTE, ver `registrarEgreso`). Si es `true`, no
+  //     hay nada que revertir — ni un alta de producto/variante nueva NI
+  //     un restock ya recibido dejan `requiere_suma_stock: true`.
+  //  2) El STOCK RESULTANTE después de restar `cantidad_unidades` — si
+  //     cae en 0 (o menos) Y el producto/variante no tiene ninguna venta
+  //     registrada, se desactiva de una vez. Esto detecta un alta de
+  //     producto/variante nueva SIN necesitar saber de antemano que lo
+  //     era: nace con stock = cantidad_unidades, así que restar esa misma
+  //     cantidad SIEMPRE la deja en 0. Un restock de un producto que ya
+  //     tenía existencia previa (ej. tenía 5, esta compra sumó 10, total
+  //     15) cae en 5 al revertir — arriba de 0, así que se queda activo
+  //     con su stock previo intacto, tal como debe ser.
+  // Si el producto/variante YA tiene ventas registradas, no se toca su
+  // stock ni su `activo` bajo ninguna circunstancia — cancelar la compra
+  // no debe esconder ni descuadrar algo que un jugador ya compró.
+  //
+  // En todos los casos: `compras_gastos.estatus_recepcion = 'cancelada'`
+  // (con badge rojo/gris en el Historial, y excluido de
+  // `egresosEnRango`/P&L, ver ese `useMemo`) + registro en el Log de
+  // Auditoría. Se reutiliza `estatus_recepcion` (ya existente, la misma
+  // columna que usa `confirmarRecepcionCompra`: 'pendiente'/'recibido') en
+  // vez de una columna `cancelada` nueva — mismo criterio anti-columna-
+  // incierta que el punto de arriba.
   async function cancelarCompra(compra, motivo) {
     if (compra.estatus_recepcion === 'cancelada') return;
     setCancelandoCompraId(compra.id);
@@ -16921,91 +16907,77 @@ function ModuloContabilidadCompras({
         const producto = (productos || []).find((p) => String(p.id) === String(compra.producto_id));
         if (!producto) {
           notaInventario = 'El producto vinculado ya no existe en el catálogo — no se revirtió inventario.';
-        } else if (compra.producto_nuevo) {
+        } else if (compra.requiere_suma_stock) {
+          // Restock 🟡 Pendiente de un producto YA EXISTENTE: su stock
+          // nunca se tocó al registrar la compra (se suma hasta "Confirmar
+          // Recepción", ver `confirmarRecepcionCompra`) — no hay nada que
+          // revertir, solo se cancela el gasto.
+          notaInventario = 'La compra estaba pendiente de recepción — el stock nunca se había alterado.';
+        } else {
           const tuvoVentas = await productoTuvoVentasRegistradas(compra.producto_id, compra.variante_id);
           if (tuvoVentas) {
-            notaInventario = `"${compra.producto_nombre || producto.nombre}" ya tiene ventas registradas — no se desactivó ni se tocó su stock.`;
-          } else if (compra.variante_id) {
-            const resultado = await actualizarVarianteEnJSONB({
-              productoId: producto.id,
-              varianteId: compra.variante_id,
-              varianteNombre: compra.variante_nombre,
-              cambios: { activo: false },
-              nuevoStock: null,
-              upsertProducto,
-            });
-            notaInventario = resultado.ok
-              ? `Variante "${compra.variante_nombre || ''}" marcada como inactiva (sin ventas registradas).`
-              : 'No se pudo desactivar la variante — revísala manualmente en el catálogo.';
+            notaInventario = `"${compra.producto_nombre || producto.nombre}" ya tiene ventas registradas — no se tocó su stock ni se desactivó.`;
           } else {
-            const { error: errInactivo } = await actualizarConColumnasOpcionales(
-              'productos',
-              producto.id,
-              { activo: false, disponible: false },
-              []
-            );
-            if (errInactivo) {
-              notaInventario = 'No se pudo desactivar el producto — revísalo manualmente en el catálogo.';
+            const cantidad = Number(compra.cantidad_unidades) || 0;
+            if (compra.variante_id) {
+              const varianteActual = variantesDeProductoJSONB(producto).find(
+                (v) => String(v.id) === String(compra.variante_id) || v.nombre === compra.variante_nombre
+              );
+              const stockAnterior = Number(varianteActual?.stock) || 0;
+              const stockNuevo = Math.max(0, stockAnterior - cantidad);
+              const seDesactiva = stockNuevo <= 0;
+              const resultado = await actualizarVarianteEnJSONB({
+                productoId: producto.id,
+                varianteId: compra.variante_id,
+                varianteNombre: compra.variante_nombre,
+                cambios: seDesactiva ? { activo: false } : {},
+                nuevoStock: stockNuevo,
+                upsertProducto,
+              });
+              if (resultado.ok) {
+                await insertarMovimientoKardex({
+                  producto_id: producto.id,
+                  variante_id: compra.variante_id,
+                  producto_nombre: compra.producto_nombre || `${producto.nombre} — ${compra.variante_nombre || ''}`,
+                  tipo_movimiento: 'ajuste',
+                  cantidad,
+                  stock_anterior: stockAnterior,
+                  stock_nuevo: stockNuevo,
+                  motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
+                  operador: operador?.nombre,
+                });
+                notaInventario = seDesactiva
+                  ? `Stock revertido a 0 y variante "${compra.variante_nombre || ''}" desactivada (sin ventas registradas).`
+                  : `Stock revertido: -${cantidad} unidad(es) de "${compra.variante_nombre || producto.nombre}".`;
+              } else {
+                notaInventario = 'No se pudo revertir el stock de la variante — revísalo manualmente en Inventario.';
+              }
             } else {
-              upsertProducto({ id: producto.id, activo: false, disponible: false });
-              notaInventario = `"${producto.nombre}" marcado como inactivo (sin ventas registradas).`;
+              const stockAnterior = Number(producto.stock) || 0;
+              const stockNuevo = Math.max(0, stockAnterior - cantidad);
+              const seDesactiva = stockNuevo <= 0;
+              const cambiosProducto = seDesactiva ? { stock: stockNuevo, activo: false, disponible: false } : { stock: stockNuevo };
+              const { error: errStock } = await actualizarConColumnasOpcionales('productos', producto.id, cambiosProducto, []);
+              if (errStock) {
+                notaInventario = 'No se pudo revertir el stock del producto — revísalo manualmente en Inventario.';
+              } else {
+                upsertProducto({ id: producto.id, ...cambiosProducto });
+                await insertarMovimientoKardex({
+                  producto_id: producto.id,
+                  producto_nombre: compra.producto_nombre || producto.nombre,
+                  tipo_movimiento: 'ajuste',
+                  cantidad,
+                  stock_anterior: stockAnterior,
+                  stock_nuevo: stockNuevo,
+                  motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
+                  operador: operador?.nombre,
+                });
+                notaInventario = seDesactiva
+                  ? `Stock revertido a 0 y "${producto.nombre}" marcado como inactivo (sin ventas registradas).`
+                  : `Stock revertido: -${cantidad} unidad(es) de "${producto.nombre}".`;
+              }
             }
           }
-        } else if (compra.estatus_recepcion === 'recibido') {
-          const cantidad = Number(compra.cantidad_unidades) || 0;
-          if (compra.variante_id) {
-            const varianteActual = variantesDeProductoJSONB(producto).find(
-              (v) => String(v.id) === String(compra.variante_id) || v.nombre === compra.variante_nombre
-            );
-            const stockAnterior = Number(varianteActual?.stock) || 0;
-            const stockNuevo = Math.max(0, stockAnterior - cantidad);
-            const resultado = await actualizarVarianteEnJSONB({
-              productoId: producto.id,
-              varianteId: compra.variante_id,
-              varianteNombre: compra.variante_nombre,
-              cambios: {},
-              nuevoStock: stockNuevo,
-              upsertProducto,
-            });
-            if (resultado.ok) {
-              await insertarMovimientoKardex({
-                producto_id: producto.id,
-                variante_id: compra.variante_id,
-                producto_nombre: compra.producto_nombre || `${producto.nombre} — ${compra.variante_nombre || ''}`,
-                tipo_movimiento: 'ajuste',
-                cantidad,
-                stock_anterior: stockAnterior,
-                stock_nuevo: stockNuevo,
-                motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
-                operador: operador?.nombre,
-              });
-              notaInventario = `Stock revertido: -${cantidad} unidad(es) de "${compra.variante_nombre || producto.nombre}".`;
-            } else {
-              notaInventario = 'No se pudo revertir el stock de la variante — revísalo manualmente en Inventario.';
-            }
-          } else {
-            const stockAnterior = Number(producto.stock) || 0;
-            const stockNuevo = Math.max(0, stockAnterior - cantidad);
-            const { error: errStock } = await actualizarConColumnasOpcionales('productos', producto.id, { stock: stockNuevo }, []);
-            if (errStock) {
-              notaInventario = 'No se pudo revertir el stock del producto — revísalo manualmente en Inventario.';
-            } else {
-              upsertProducto({ id: producto.id, stock: stockNuevo });
-              await insertarMovimientoKardex({
-                producto_id: producto.id,
-                producto_nombre: compra.producto_nombre || producto.nombre,
-                tipo_movimiento: 'ajuste',
-                cantidad,
-                stock_anterior: stockAnterior,
-                stock_nuevo: stockNuevo,
-                motivo: `Cancelación de compra — ${compra.concepto || 'Compra'}`,
-                operador: operador?.nombre,
-              });
-              notaInventario = `Stock revertido: -${cantidad} unidad(es) de "${producto.nombre}".`;
-            }
-          }
-        } else {
-          notaInventario = 'La compra estaba pendiente de recepción — el stock nunca se había alterado.';
         }
       }
 
