@@ -2726,19 +2726,41 @@ function guardarRangosHorarioClasesLocal(rangos) {
 // (flujo de guardado independiente, con su propio toast). `null` en
 // cualquiera de los dos campos significa "el club no configuró nada
 // todavía" — el CRM cae a los valores por defecto (`META_CORTESIA_*_DEFAULT`).
+// `activo` (Switch Master ON/OFF, mejora): por defecto `true` — un club
+// existente que nunca tocó este interruptor sigue viendo el motor de
+// cortesías funcionando exactamente igual que antes. `productosProShop`/
+// `productosBar`: listas de "claves de autorización" (ver
+// `claveAutorizacionCortesia`) de los productos/variantes específicos que
+// SÍ se pueden regalar en cada categoría — vacío = todavía no se autorizó
+// nada (ver el estado vacío amigable en `ModalCanjearCortesia`). `activadaDesde`
+// (Blindaje "sin acumulados fantasma", mejora): ISO string de la última vez
+// que el switch pasó de Desactivado a Activado, o `null` si nunca se ha
+// desactivado — ver `calcularProgresoCortesia`/`perfiles` en
+// `DirectorioJugadoresCRM`, que usa este valor como piso adicional del gasto
+// acumulado para que ninguna compra hecha DURANTE el periodo Desactivado (ni
+// antes de él) cuente retroactivamente al reactivar.
 const LS_KEY_METAS_CORTESIA = 'smashpadel_metas_cortesia_v1';
+const METAS_CORTESIA_DEFAULT_LOCAL = { proShop: null, bar: null, activo: true, productosProShop: [], productosBar: [], activadaDesde: null };
 function leerMetasCortesiaLocal() {
   try {
     const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_METAS_CORTESIA));
     const parsed = crudo ? JSON.parse(crudo) : null;
-    return parsed && typeof parsed === 'object' ? parsed : { proShop: null, bar: null };
+    if (!parsed || typeof parsed !== 'object') return { ...METAS_CORTESIA_DEFAULT_LOCAL };
+    return {
+      proShop: parsed.proShop ?? null,
+      bar: parsed.bar ?? null,
+      activo: parsed.activo !== false,
+      productosProShop: Array.isArray(parsed.productosProShop) ? parsed.productosProShop : [],
+      productosBar: Array.isArray(parsed.productosBar) ? parsed.productosBar : [],
+      activadaDesde: typeof parsed.activadaDesde === 'string' ? parsed.activadaDesde : null,
+    };
   } catch (_e) {
-    return { proShop: null, bar: null };
+    return { ...METAS_CORTESIA_DEFAULT_LOCAL };
   }
 }
 function guardarMetasCortesiaLocal(metas) {
   try {
-    localStorage.setItem(claveLocalPorClub(LS_KEY_METAS_CORTESIA), JSON.stringify(metas || { proShop: null, bar: null }));
+    localStorage.setItem(claveLocalPorClub(LS_KEY_METAS_CORTESIA), JSON.stringify(metas || METAS_CORTESIA_DEFAULT_LOCAL));
   } catch (_e) {
     /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
   }
@@ -9489,6 +9511,8 @@ function ModuloSmartPOS({
   onActualizarCortesiasDisponibles,
   metaCortesiaProShop,
   metaCortesiaBar,
+  productosAutorizadosCortesiaProShop,
+  productosAutorizadosCortesiaBar,
   pagoAAbrirEnPOS,
   onPagoAAbrirEnPOSConsumido,
   onCortesiaCanjeada,
@@ -12447,6 +12471,7 @@ function ModuloSmartPOS({
           meta={canjeCortesiaCategoria === 'bar' ? metaCortesiaBar || META_CORTESIA_BAR_DEFAULT : metaCortesiaProShop || META_CORTESIA_PROSHOP_DEFAULT}
           productos={productos}
           variantesPorProducto={variantesPorProducto}
+          productosAutorizados={canjeCortesiaCategoria === 'bar' ? productosAutorizadosCortesiaBar : productosAutorizadosCortesiaProShop}
           procesando={canjeandoCortesiaPOS}
           onConfirmar={confirmarCanjeCortesiaPOS}
           onClose={() => setCanjeCortesiaCategoria(null)}
@@ -19945,6 +19970,82 @@ function calcularProgresoCortesia(comprasPOS, categoriaCompras, desdeMs, meta) {
     meta,
     lista: meta > 0 && gastoDesdeUltimoCanje >= meta,
   };
+}
+
+// Productos/Variantes Autorizados para Canje (mejora): antes, el modal de
+// "Otorgar/Canjear Cortesía" mostraba TODO el catálogo de la categoría —
+// incluyendo artículos de alto valor (palas premium, botellas caras) que el
+// club nunca querría regalar. Ahora el club elige, por categoría, EXACTAMENTE
+// qué productos/variantes se pueden regalar (`ModalMetasCortesia`, sección
+// "Productos Autorizados para Canje") y ese modal de canje se filtra a solo
+// esa lista (ver `ModalCanjearCortesia`).
+//
+// Clave de autorización: un producto SIN variantes se autoriza por su propio
+// `id`; uno CON variantes se autoriza variante por variante (`id::varianteId`)
+// para poder dejar pasar unas variantes sí y otras no del mismo producto.
+function claveAutorizacionCortesia(productoId, varianteId) {
+  return varianteId != null ? `${productoId}::${varianteId}` : String(productoId);
+}
+
+// ¿Es este producto de la categoría de cortesía indicada? Mismo criterio de
+// categorización que `comprasPOS`/`ModalCanjearCortesia`: 'Cafetería/Bar' es
+// Bar, todo lo demás es Pro-Shop.
+function productoEsDeCategoriaCortesia(producto, categoria) {
+  return categoria === 'bar' ? producto?.categoria === 'Cafetería/Bar' : producto?.categoria !== 'Cafetería/Bar';
+}
+
+// ¿Tiene este producto AL MENOS UN ítem (él mismo, o alguna de sus variantes)
+// autorizado para cortesía? `autorizados` puede ser un array o un Set de
+// claves (`claveAutorizacionCortesia`).
+function productoAutorizadoParaCortesia(producto, variantesNormalizadas, autorizados) {
+  const set = autorizados instanceof Set ? autorizados : new Set(autorizados || []);
+  const variantes = variantesVisiblesParaVenta(variantesNormalizadas);
+  if (variantes.length === 0) return set.has(claveAutorizacionCortesia(producto.id));
+  return variantes.some((v) => set.has(claveAutorizacionCortesia(producto.id, v.id)));
+}
+
+// Filtra las variantes de un producto a solo las autorizadas para cortesía —
+// usado al abrir `ModalSeleccionarVariante` desde el flujo de canje, para que
+// el club nunca termine regalando una variante que no autorizó de un
+// producto que sí tiene otras variantes autorizadas.
+function variantesAutorizadasParaCortesia(producto, variantesNormalizadas, autorizados) {
+  const set = autorizados instanceof Set ? autorizados : new Set(autorizados || []);
+  return variantesVisiblesParaVenta(variantesNormalizadas).filter((v) => set.has(claveAutorizacionCortesia(producto.id, v.id)));
+}
+
+// Sanitización de IDs Huérfanos (mejora): la lista de "Productos Autorizados
+// para Canje" que vive en `configuracion_club` puede quedar con claves de
+// productos/variantes que YA NO EXISTEN en el catálogo (se borraron de
+// verdad, o quedaron `activo:false`/`eliminado:true` — ver el fix de
+// cascada Kardex→productos de Contabilidad & Compras). Esta función hace el
+// "clean-up en caliente": cruza cada clave guardada contra el catálogo REAL
+// y ACTIVO (`activo !== false && eliminado !== true`, mismo criterio que
+// `ModuloERPInventario`/la Tienda del Portal) y descarta cualquier clave que
+// ya no tenga un producto/variante vivo del otro lado — así nunca se
+// intenta mostrar ni procesar un producto extinto, ni en el modal de canje
+// ni en el modal de configuración. Se llama SIEMPRE al abrir/renderizar
+// ambos modales (nunca se persiste sola — el guardado normal del club ya
+// persiste la versión sanitizada la próxima vez que edite la configuración).
+function sanitizarAutorizadosCortesia(productos, variantesPorProducto, autorizados) {
+  const productosActivosPorId = new Map(
+    (productos || []).filter((p) => p.activo !== false && p.eliminado !== true).map((p) => [String(p.id), p])
+  );
+  const limpio = [];
+  (autorizados || []).forEach((clave) => {
+    const claveTexto = String(clave);
+    const separador = claveTexto.indexOf('::');
+    const productoId = separador === -1 ? claveTexto : claveTexto.slice(0, separador);
+    const varianteId = separador === -1 ? null : claveTexto.slice(separador + 2);
+    const producto = productosActivosPorId.get(productoId);
+    if (!producto) return; // producto eliminado/inactivo — se descarta.
+    if (varianteId == null) {
+      limpio.push(claveTexto);
+      return;
+    }
+    const variantesVigentes = variantesVisiblesParaVenta(variantesPorProducto?.[producto.id]);
+    if (variantesVigentes.some((v) => String(v.id) === varianteId)) limpio.push(claveTexto);
+  });
+  return limpio;
 }
 
 function segmentoPorLTV(ltvTotal) {
@@ -29455,11 +29556,31 @@ function DirectorioJugadoresCRM({
   upsertVarianteProducto,
   metaCortesiaProShop,
   metaCortesiaBar,
+  cortesiasActivas,
+  cortesiasActivadasDesde,
+  productosAutorizadosCortesiaProShop,
+  productosAutorizadosCortesiaBar,
   onGuardarMetasCortesia,
   guardandoMetasCortesia,
   onEstadoCortesiasCambio,
   onCortesiaCanjeada,
 }) {
+  // Switch Master ON/OFF del Módulo de Metas de Cortesía (mejora): `true` por
+  // defecto — SOLO se apaga cuando el club lo desactivó explícitamente
+  // (`cortesiasActivas === false`), así que un club que nunca tocó el
+  // interruptor no pierde el motor de cortesías que ya tenía funcionando.
+  const cortesiasActivasEfectivo = cortesiasActivas !== false;
+  // Blindaje "sin acumulados fantasma" (mejora): milisegundos de la última
+  // reactivación del switch (ver `guardarMetasCortesia` en `AppInterno`,
+  // donde este valor SOLO se mueve en la transición exacta Desactivado ->
+  // Activado) — `0` si nunca se ha desactivado, para que `Math.max(...)`
+  // más abajo no altere en nada el cálculo histórico de siempre.
+  const cortesiasActivadasDesdeMs = useMemo(() => {
+    if (!cortesiasActivadasDesde) return 0;
+    const ts = new Date(cortesiasActivadasDesde).getTime();
+    return Number.isFinite(ts) ? ts : 0;
+  }, [cortesiasActivadasDesde]);
+
   /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
    * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
    * (reutiliza `consultarVentasEnRango`, que ya sabe caer de `created_at` a
@@ -29881,8 +30002,31 @@ function DirectorioJugadoresCRM({
         // `String(j.id)` — mismo motivo que arriba: la clave del mapa
         // siempre es texto porque `cortesias_otorgadas.jugador_id` es `text`.
         const cortesPorCategoria = ultimaCortesiaPorJugadorCategoria.get(String(j.id).trim()) || new Map();
-        const cortesiaBar = calcularProgresoCortesia(comprasPOS, 'Cafetería/Bar', cortesPorCategoria.get('bar') || 0, metaBarEfectiva);
-        const cortesiaProShop = calcularProgresoCortesia(comprasPOS, 'Pro-Shop', cortesPorCategoria.get('proshop') || 0, metaProShopEfectiva);
+        // Blindaje "sin acumulados fantasma" (mejora, regla de negocio
+        // explícita): el piso desde el que se cuenta el gasto acumulado es
+        // el MÁS RECIENTE entre (a) la última cortesía otorgada de verdad en
+        // esa categoría, y (b) la última vez que el switch se reactivó
+        // (`cortesiasActivadasDesdeMs`, `0` si nunca se ha desactivado). Con
+        // esto, cualquier compra hecha MIENTRAS el módulo estuvo Desactivado
+        // — o antes de esa desactivación — queda SIEMPRE excluida del
+        // cálculo en cuanto el club vuelve a Activarlo: el progreso arranca
+        // en $0 desde el instante exacto de la reactivación, nunca se suma
+        // retroactivo ni se "congela" nada intermedio en un estado ambiguo.
+        const desdeBarMs = Math.max(cortesPorCategoria.get('bar') || 0, cortesiasActivadasDesdeMs);
+        const desdeProShopMs = Math.max(cortesPorCategoria.get('proshop') || 0, cortesiasActivadasDesdeMs);
+        // Switch Master ON/OFF (mejora): con el módulo Desactivado, ambas
+        // categorías se dejan en `null` — un único punto de control del que
+        // dependen, sin tocar nada más, TANTO las barras de progreso de la
+        // Vista 360° (`BarraProgresoCortesia`/`DetalleConsumoPOS`, que solo
+        // se renderizan cuando `perfil.cortesiaBar`/`cortesiaProShop` existen)
+        // COMO la insignia "🎁 Cortesía Disponible" de Smart POS/CRM (el
+        // `useEffect` de `onEstadoCortesiasCambio`, más abajo, nunca marca
+        // `lista` en `cortesiasDisponiblesPorJugador` porque `datos` viene
+        // `null`) COMO la Alerta de Staff en Tiempo Real (mismo motivo).
+        const cortesiaBar = cortesiasActivasEfectivo ? calcularProgresoCortesia(comprasPOS, 'Cafetería/Bar', desdeBarMs, metaBarEfectiva) : null;
+        const cortesiaProShop = cortesiasActivasEfectivo
+          ? calcularProgresoCortesia(comprasPOS, 'Pro-Shop', desdeProShopMs, metaProShopEfectiva)
+          : null;
 
         // 2) Torneos/Retas: eventos combinados (inscripción o participación).
         const eventosTorneoRetas = [
@@ -30031,6 +30175,8 @@ function DirectorioJugadoresCRM({
     academiaAsistencias,
     metaCortesiaProShop,
     metaCortesiaBar,
+    cortesiasActivasEfectivo,
+    cortesiasActivadasDesdeMs,
     cortesiasOtorgadas,
   ]);
 
@@ -30322,6 +30468,8 @@ function DirectorioJugadoresCRM({
           operador={operador}
           upsertProducto={upsertProducto}
           upsertVarianteProducto={upsertVarianteProducto}
+          productosAutorizadosCortesiaProShop={productosAutorizadosCortesiaProShop}
+          productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
           onCortesiaOtorgada={(resultado) => {
             // FIX DE SEGURIDAD CRÍTICO (Reset Inmediato del Progreso): la
             // barra no espera a que `cargarCortesiasOtorgadas()` vaya y
@@ -30354,6 +30502,11 @@ function DirectorioJugadoresCRM({
         <ModalMetasCortesia
           metaProShopActual={metaCortesiaProShop}
           metaBarActual={metaCortesiaBar}
+          activoActual={cortesiasActivas}
+          productosAutorizadosProShopActual={productosAutorizadosCortesiaProShop}
+          productosAutorizadosBarActual={productosAutorizadosCortesiaBar}
+          productos={productos}
+          variantesPorProducto={variantesPorProducto}
           onClose={() => setMostrarModalMetas(false)}
           onGuardar={onGuardarMetasCortesia}
           guardando={guardandoMetasCortesia}
@@ -30363,18 +30516,178 @@ function DirectorioJugadoresCRM({
   );
 }
 
-// Modal "Editar Metas de Cortesía" (migracion_v35): edita, por club, el
+// Interruptor Master ON/OFF del Módulo de Metas de Cortesía (mejora): texto
+// y color siempre en español y siempre visible — verde "Activado", gris
+// "Desactivado". Puramente controlado (`activo`/`onCambiar`), sin estado
+// propio, para que `ModalMetasCortesia` sea la única fuente de verdad.
+function SwitchMetasCortesia({ activo, onCambiar }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onCambiar(!activo)}
+      className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition ${
+        activo ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+      }`}
+    >
+      <span className="flex items-center gap-2">
+        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activo ? 'bg-lime-500' : 'bg-slate-400'}`} />
+        <span className={`text-xs font-bold ${activo ? 'text-lime-700' : 'text-slate-600'}`}>
+          Módulo de Metas de Cortesía: {activo ? 'Activado' : 'Desactivado'}
+        </span>
+      </span>
+      <span
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${activo ? 'bg-lime-500' : 'bg-slate-300'}`}
+      >
+        <span
+          className={`inline-block h-4.5 w-4.5 transform rounded-full bg-white shadow transition ${
+            activo ? 'translate-x-6' : 'translate-x-1'
+          }`}
+          style={{ height: '1.125rem', width: '1.125rem' }}
+        />
+      </span>
+    </button>
+  );
+}
+
+// Sección "Productos Autorizados para Canje" (mejora), una por categoría —
+// checkboxes sobre el catálogo REAL del club (mismo filtro de categoría que
+// `ModalCanjearCortesia`), producto por producto o, si el producto tiene
+// variantes, variante por variante (ver `claveAutorizacionCortesia`). Es
+// puramente controlada: el Set de autorizados y el buscador viven en
+// `ModalMetasCortesia`, aquí solo se renderizan y se reportan los toggles.
+function SeccionProductosAutorizadosCortesia({ etiqueta, categoria, productos, variantesPorProducto, autorizados, onAlternar, busqueda, onBuscar }) {
+  const catalogo = useMemo(() => {
+    const filtro = busqueda.trim().toLowerCase();
+    return (productos || [])
+      .filter((p) => p.activo !== false)
+      .filter((p) => productoEsDeCategoriaCortesia(p, categoria))
+      .filter((p) => !filtro || (p.nombre || '').toLowerCase().includes(filtro))
+      .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+  }, [productos, categoria, busqueda]);
+
+  return (
+    <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+      <p className="text-xs font-bold text-slate-700">Productos Autorizados para Canje — {etiqueta}</p>
+      <p className="text-[11px] text-slate-500">
+        Solo lo que marques aquí podrá regalarse en "Otorgar/Canjear Cortesía" de {etiqueta}.
+      </p>
+      <div className="relative">
+        <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          value={busqueda}
+          onChange={(e) => onBuscar(e.target.value)}
+          placeholder={`Buscar producto de ${etiqueta}...`}
+          className={`${inputClase} py-1.5 pl-7 text-xs`}
+        />
+      </div>
+      <div className="max-h-52 space-y-1.5 overflow-y-auto pr-1">
+        {catalogo.length === 0 && (
+          <p className="py-3 text-center text-[11px] text-slate-500">Sin productos de {etiqueta} en el catálogo.</p>
+        )}
+        {catalogo.map((p) => {
+          const variantes = variantesVisiblesParaVenta(variantesPorProducto?.[p.id]);
+          if (variantes.length === 0) {
+            const clave = claveAutorizacionCortesia(p.id);
+            return (
+              <label key={p.id} className="flex cursor-pointer items-center gap-2 rounded-lg bg-white px-2.5 py-1.5 text-xs text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={autorizados.has(clave)}
+                  onChange={() => onAlternar(clave)}
+                  className="h-3.5 w-3.5 shrink-0 accent-lime-500"
+                />
+                <span className="truncate font-semibold">{p.nombre}</span>
+              </label>
+            );
+          }
+          return (
+            <div key={p.id} className="rounded-lg bg-white px-2.5 py-1.5">
+              <p className="mb-1 truncate text-[11px] font-bold text-slate-600">{p.nombre}</p>
+              <div className="space-y-1 pl-1.5">
+                {variantes.map((v) => {
+                  const clave = claveAutorizacionCortesia(p.id, v.id);
+                  return (
+                    <label key={v.id} className="flex cursor-pointer items-center gap-2 text-xs text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={autorizados.has(clave)}
+                        onChange={() => onAlternar(clave)}
+                        className="h-3.5 w-3.5 shrink-0 accent-lime-500"
+                      />
+                      <span className="truncate">{v.nombre}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[10px] font-semibold text-slate-500">
+        {autorizados.size} {autorizados.size === 1 ? 'ítem autorizado' : 'ítems autorizados'} para {etiqueta}.
+      </p>
+    </div>
+  );
+}
+
+// Modal "Editar Metas de Cortesía" (migracion_v35, ampliado con el Switch
+// Master y "Productos Autorizados para Canje", mejora): edita, por club, el
 // monto ($) que debe acumular un jugador en Pro-Shop y en Restaurante/Bar
-// para desbloquear "Otorgar/Canjear Cortesía" en la Vista 360°. Mismo
-// patrón que `ModalRangosHorarioClases` (arriba): `ModalShell` +
+// para desbloquear "Otorgar/Canjear Cortesía" en la Vista 360°, si el
+// módulo entero está Activado/Desactivado, y qué productos/variantes
+// específicos se pueden regalar en cada categoría. Mismo patrón que
+// `ModalRangosHorarioClases` (arriba): `ModalShell` +
 // `BotonSecundario`/`BotonPrimario`, valida antes de guardar y llama
 // `onGuardar?.(...)` (ya conectado a `guardarMetasCortesia` en `AppInterno`,
 // que escribe en `configuracion_club` vía `actualizarConColumnasOpcionales`)
 // seguido de `onClose()`.
-function ModalMetasCortesia({ metaProShopActual, metaBarActual, onClose, onGuardar, guardando }) {
+function ModalMetasCortesia({
+  metaProShopActual,
+  metaBarActual,
+  activoActual,
+  productosAutorizadosProShopActual,
+  productosAutorizadosBarActual,
+  productos,
+  variantesPorProducto,
+  onClose,
+  onGuardar,
+  guardando,
+}) {
   const [proShop, setProShop] = useState(() => String(metaProShopActual ?? META_CORTESIA_PROSHOP_DEFAULT));
   const [bar, setBar] = useState(() => String(metaBarActual ?? META_CORTESIA_BAR_DEFAULT));
+  const [activo, setActivo] = useState(activoActual !== false);
+  // Sanitización de IDs Huérfanos (mejora): al ABRIR este modal, se descarta
+  // de entrada cualquier clave guardada que ya no corresponda a un producto/
+  // variante vivo del catálogo (`sanitizarAutorizadosCortesia`) — así el
+  // checklist nunca "recuerda" marcado un producto que ya no existe, y si el
+  // club guarda sin tocar nada, la lista persistida en Supabase también
+  // queda limpia desde ese guardado en adelante.
+  const [autorizadosProShop, setAutorizadosProShop] = useState(
+    () => new Set(sanitizarAutorizadosCortesia(productos, variantesPorProducto, productosAutorizadosProShopActual))
+  );
+  const [autorizadosBar, setAutorizadosBar] = useState(
+    () => new Set(sanitizarAutorizadosCortesia(productos, variantesPorProducto, productosAutorizadosBarActual))
+  );
+  const [busquedaProShop, setBusquedaProShop] = useState('');
+  const [busquedaBar, setBusquedaBar] = useState('');
   const [error, setError] = useState('');
+
+  function alternarProShop(clave) {
+    setAutorizadosProShop((prev) => {
+      const siguiente = new Set(prev);
+      if (siguiente.has(clave)) siguiente.delete(clave);
+      else siguiente.add(clave);
+      return siguiente;
+    });
+  }
+  function alternarBar(clave) {
+    setAutorizadosBar((prev) => {
+      const siguiente = new Set(prev);
+      if (siguiente.has(clave)) siguiente.delete(clave);
+      else siguiente.add(clave);
+      return siguiente;
+    });
+  }
 
   async function guardar() {
     setError('');
@@ -30386,41 +30699,82 @@ function ModalMetasCortesia({ metaProShopActual, metaBarActual, onClose, onGuard
     if (!Number.isFinite(numBar) || numBar <= 0) {
       return setError('La meta de Restaurante/Bar debe ser un monto mayor a $0.');
     }
-    await onGuardar?.(numProShop, numBar);
+    await onGuardar?.({
+      metaProShop: numProShop,
+      metaBar: numBar,
+      activo,
+      productosProShop: Array.from(autorizadosProShop),
+      productosBar: Array.from(autorizadosBar),
+    });
     onClose();
   }
 
   return (
     <ModalShell
       titulo="Editar Metas de Cortesía"
-      subtitulo="Monto que debe consumir un jugador para desbloquear una Cortesía por Fidelidad"
+      subtitulo="Monto, productos autorizados y activación del Motor de Cortesías por Fidelidad"
       onClose={onClose}
       icon={Gift}
-      ancho="max-w-sm"
+      ancho="max-w-lg"
     >
       <div className="space-y-3.5">
-        <Campo label="Meta Pro-Shop ($)">
-          <input
-            type="number"
-            min="1"
-            step="1"
-            value={proShop}
-            onChange={(e) => setProShop(e.target.value)}
-            className={inputClase}
-            placeholder={String(META_CORTESIA_PROSHOP_DEFAULT)}
-          />
-        </Campo>
-        <Campo label="Meta Restaurante / Bar / Cafetería ($)">
-          <input
-            type="number"
-            min="1"
-            step="1"
-            value={bar}
-            onChange={(e) => setBar(e.target.value)}
-            className={inputClase}
-            placeholder={String(META_CORTESIA_BAR_DEFAULT)}
-          />
-        </Campo>
+        <SwitchMetasCortesia activo={activo} onCambiar={setActivo} />
+
+        {!activo && (
+          <p className="rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-[11px] text-slate-600">
+            Con el módulo Desactivado se ocultan las barras de progreso de cortesía en la Vista 360°, las insignias de
+            "🎁 Cortesía Disponible" en Smart POS y CRM, y no se puede acumular ni canjear cortesías. Las compras que
+            se hagan mientras esté Desactivado NUNCA sumarán retroactivo: al volver a Activarlo, el progreso de cada
+            jugador arranca en $0 desde ese momento. Los ajustes de abajo se guardan igual, listos para cuando lo
+            vuelvas a Activar.
+          </p>
+        )}
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Campo label="Meta Pro-Shop ($)">
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={proShop}
+              onChange={(e) => setProShop(e.target.value)}
+              className={inputClase}
+              placeholder={String(META_CORTESIA_PROSHOP_DEFAULT)}
+            />
+          </Campo>
+          <Campo label="Meta Restaurante / Bar / Cafetería ($)">
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={bar}
+              onChange={(e) => setBar(e.target.value)}
+              className={inputClase}
+              placeholder={String(META_CORTESIA_BAR_DEFAULT)}
+            />
+          </Campo>
+        </div>
+
+        <SeccionProductosAutorizadosCortesia
+          etiqueta="Pro-Shop"
+          categoria="proshop"
+          productos={productos}
+          variantesPorProducto={variantesPorProducto}
+          autorizados={autorizadosProShop}
+          onAlternar={alternarProShop}
+          busqueda={busquedaProShop}
+          onBuscar={setBusquedaProShop}
+        />
+        <SeccionProductosAutorizadosCortesia
+          etiqueta="Restaurante/Bar"
+          categoria="bar"
+          productos={productos}
+          variantesPorProducto={variantesPorProducto}
+          autorizados={autorizadosBar}
+          onAlternar={alternarBar}
+          busqueda={busquedaBar}
+          onBuscar={setBusquedaBar}
+        />
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
@@ -30719,20 +31073,38 @@ function DetalleIndicadorCHS({ indKey, perfil, onAbrirCanjeCortesia, canjeandoCa
 // es Pro-Shop). Reutiliza `ModalSeleccionarVariante` (idéntico componente
 // que usa Smart POS para elegir variante) cuando el producto elegido sí
 // tiene variantes — nunca se reinventa ese flujo.
-function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPorProducto, procesando, onConfirmar, onClose }) {
+function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPorProducto, productosAutorizados, procesando, onConfirmar, onClose }) {
   const [busqueda, setBusqueda] = useState('');
   const [error, setError] = useState('');
   const [productoParaVariante, setProductoParaVariante] = useState(null);
 
   const etiquetaCategoria = categoria === 'bar' ? 'Restaurante/Bar' : 'Pro-Shop';
+  // Productos Autorizados para Canje (mejora): esta lista YA viene filtrada
+  // por categoría desde `ModalMetasCortesia`, pero puede traer IDs de
+  // productos/variantes que ya se borraron o desactivaron del catálogo desde
+  // que se guardó — `sanitizarAutorizadosCortesia` (Sanitización de IDs
+  // Huérfanos, mejora) descarta esos en caliente ANTES de construir el Set,
+  // así nunca se intenta mostrar ni procesar un producto extinto. Se usa
+  // para: (a) recortar el catálogo a SOLO lo autorizado, y (b) recortar las
+  // variantes que se ofrecen de cada producto (ver
+  // `elegirProducto`/`ModalSeleccionarVariante` abajo) — nunca se reutiliza
+  // `variantesVisiblesParaVenta` a secas aquí, porque eso mostraría TODAS
+  // las variantes del producto, autorizadas o no.
+  const autorizadosSet = useMemo(
+    () => new Set(sanitizarAutorizadosCortesia(productos, variantesPorProducto, productosAutorizados)),
+    [productos, variantesPorProducto, productosAutorizados]
+  );
+  const hayAlgoAutorizado = autorizadosSet.size > 0;
   const catalogo = useMemo(() => {
+    if (!hayAlgoAutorizado) return [];
     const filtro = busqueda.trim().toLowerCase();
     return (productos || [])
       .filter((p) => p.activo !== false)
-      .filter((p) => (categoria === 'bar' ? p.categoria === 'Cafetería/Bar' : p.categoria !== 'Cafetería/Bar'))
+      .filter((p) => productoEsDeCategoriaCortesia(p, categoria))
+      .filter((p) => productoAutorizadoParaCortesia(p, variantesPorProducto?.[p.id], autorizadosSet))
       .filter((p) => !filtro || (p.nombre || '').toLowerCase().includes(filtro))
       .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
-  }, [productos, categoria, busqueda]);
+  }, [productos, categoria, busqueda, variantesPorProducto, autorizadosSet, hayAlgoAutorizado]);
 
   async function confirmar(producto, variante) {
     setError('');
@@ -30743,8 +31115,8 @@ function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPo
   }
 
   function elegirProducto(producto) {
-    const variantes = variantesVisiblesParaVenta(variantesPorProducto?.[producto.id]);
-    if (variantes.length > 0) {
+    const variantesAutorizadas = variantesAutorizadasParaCortesia(producto, variantesPorProducto?.[producto.id], autorizadosSet);
+    if (variantesAutorizadas.length > 0) {
       setProductoParaVariante(producto);
     } else {
       confirmar(producto, null);
@@ -30765,45 +31137,59 @@ function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPo
           <span className="font-bold">{jugador.nombre}</span>, se descuenta el stock real y el Kardex, y el progreso de{' '}
           {etiquetaCategoria} vuelve a $0 para el próximo ciclo.
         </p>
-        <input
-          value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
-          placeholder={`Buscar producto de ${etiquetaCategoria}...`}
-          className={inputClase}
-        />
+        {hayAlgoAutorizado && (
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder={`Buscar producto de ${etiquetaCategoria}...`}
+            className={inputClase}
+          />
+        )}
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
-        <div className="max-h-80 space-y-1.5 overflow-y-auto pr-1">
-          {catalogo.map((p) => {
-            const variantesNormalizadas = variantesPorProducto?.[p.id] || [];
-            const agotado = productoEstaAgotado(p, variantesNormalizadas);
-            return (
-              <button
-                key={p.id}
-                type="button"
-                disabled={procesando || agotado}
-                onClick={() => elegirProducto(p)}
-                className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2.5 text-left text-xs font-semibold text-slate-800 transition hover:border-amber-400/50 hover:bg-slate-100/80 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <span className="min-w-0 truncate">
-                  {p.nombre}
-                  {variantesNormalizadas.length > 0 && <span className="ml-1.5 text-[10px] font-normal text-slate-500">({variantesNormalizadas.length} variantes)</span>}
-                </span>
-                <span className="shrink-0 text-[10px] font-semibold text-slate-500">
-                  {procesando ? <Loader2 size={13} className="animate-spin" /> : agotado ? 'Agotado' : p.stock != null ? `${p.stock} disp.` : ''}
-                </span>
-              </button>
-            );
-          })}
-          {catalogo.length === 0 && (
-            <p className="py-6 text-center text-xs text-slate-500">Sin productos de {etiquetaCategoria} en el catálogo.</p>
-          )}
-        </div>
+        {!hayAlgoAutorizado ? (
+          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-8 text-center text-xs text-slate-500">
+            No hay productos autorizados para cortesía en esta categoría. Asígnalos en la configuración de Metas de
+            Cortesía.
+          </p>
+        ) : (
+          <div className="max-h-80 space-y-1.5 overflow-y-auto pr-1">
+            {catalogo.map((p) => {
+              const variantesNormalizadas = variantesPorProducto?.[p.id] || [];
+              const variantesAutorizadas = variantesAutorizadasParaCortesia(p, variantesNormalizadas, autorizadosSet);
+              const agotado = productoEstaAgotado(p, variantesNormalizadas);
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  disabled={procesando || agotado}
+                  onClick={() => elegirProducto(p)}
+                  className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2.5 text-left text-xs font-semibold text-slate-800 transition hover:border-amber-400/50 hover:bg-slate-100/80 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <span className="min-w-0 truncate">
+                    {p.nombre}
+                    {variantesAutorizadas.length > 0 && (
+                      <span className="ml-1.5 text-[10px] font-normal text-slate-500">
+                        ({variantesAutorizadas.length} {variantesAutorizadas.length === 1 ? 'variante autorizada' : 'variantes autorizadas'})
+                      </span>
+                    )}
+                  </span>
+                  <span className="shrink-0 text-[10px] font-semibold text-slate-500">
+                    {procesando ? <Loader2 size={13} className="animate-spin" /> : agotado ? 'Agotado' : p.stock != null ? `${p.stock} disp.` : ''}
+                  </span>
+                </button>
+              );
+            })}
+            {catalogo.length === 0 && (
+              <p className="py-6 text-center text-xs text-slate-500">Ningún producto autorizado de {etiquetaCategoria} coincide con tu búsqueda.</p>
+            )}
+          </div>
+        )}
       </div>
 
       {productoParaVariante && (
         <ModalSeleccionarVariante
           producto={productoParaVariante}
-          variantes={variantesVisiblesParaVenta(variantesPorProducto?.[productoParaVariante.id])}
+          variantes={variantesAutorizadasParaCortesia(productoParaVariante, variantesPorProducto?.[productoParaVariante.id], autorizadosSet)}
           onClose={() => setProductoParaVariante(null)}
           onSeleccionar={(variante) => {
             const producto = productoParaVariante;
@@ -30828,6 +31214,8 @@ function ModalPerfilJugadorCRM({
   upsertProducto,
   upsertVarianteProducto,
   onCortesiaOtorgada,
+  productosAutorizadosCortesiaProShop,
+  productosAutorizadosCortesiaBar,
 }) {
   const mostrarToast = useToast();
   const [editandoTelefono, setEditandoTelefono] = useState(false);
@@ -31134,6 +31522,7 @@ function ModalPerfilJugadorCRM({
         meta={canjeCategoria === 'bar' ? perfil.cortesiaBar?.meta : perfil.cortesiaProShop?.meta}
         productos={productos}
         variantesPorProducto={variantesPorProducto}
+        productosAutorizados={canjeCategoria === 'bar' ? productosAutorizadosCortesiaBar : productosAutorizadosCortesiaProShop}
         procesando={canjeando}
         onConfirmar={confirmarCanjeCortesia}
         onClose={() => setCanjeCategoria(null)}
@@ -31175,6 +31564,10 @@ function ModuloJugadores({
   upsertVarianteProducto,
   metaCortesiaProShop,
   metaCortesiaBar,
+  cortesiasActivas,
+  cortesiasActivadasDesde,
+  productosAutorizadosCortesiaProShop,
+  productosAutorizadosCortesiaBar,
   onGuardarMetasCortesia,
   guardandoMetasCortesia,
   onEstadoCortesiasCambio,
@@ -31237,6 +31630,10 @@ function ModuloJugadores({
           upsertVarianteProducto={upsertVarianteProducto}
           metaCortesiaProShop={metaCortesiaProShop}
           metaCortesiaBar={metaCortesiaBar}
+          cortesiasActivas={cortesiasActivas}
+          cortesiasActivadasDesde={cortesiasActivadasDesde}
+          productosAutorizadosCortesiaProShop={productosAutorizadosCortesiaProShop}
+          productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
           onGuardarMetasCortesia={onGuardarMetasCortesia}
           guardandoMetasCortesia={guardandoMetasCortesia}
           onEstadoCortesiasCambio={onEstadoCortesiasCambio}
@@ -37355,6 +37752,23 @@ function AppInterno() {
   const metasCortesiaLocalIniciales = leerMetasCortesiaLocal();
   const [metaCortesiaProShop, setMetaCortesiaProShop] = useState(metasCortesiaLocalIniciales.proShop ?? null);
   const [metaCortesiaBar, setMetaCortesiaBar] = useState(metasCortesiaLocalIniciales.bar ?? null);
+  // Switch Master ON/OFF (mejora): `true` por defecto — un club que nunca
+  // abrió "Metas de Cortesía" sigue viendo el motor funcionando igual que
+  // antes de esta mejora.
+  const [cortesiasActivas, setCortesiasActivas] = useState(metasCortesiaLocalIniciales.activo !== false);
+  // Productos Autorizados para Canje (mejora), por categoría — listas de
+  // "claves de autorización" (ver `claveAutorizacionCortesia`); vacío = el
+  // club todavía no autorizó nada en esa categoría.
+  const [productosAutorizadosCortesiaProShop, setProductosAutorizadosCortesiaProShop] = useState(
+    metasCortesiaLocalIniciales.productosProShop || []
+  );
+  const [productosAutorizadosCortesiaBar, setProductosAutorizadosCortesiaBar] = useState(metasCortesiaLocalIniciales.productosBar || []);
+  // Blindaje "sin acumulados fantasma" (mejora): ISO string de la última vez
+  // que el switch pasó de Desactivado a Activado — `null` si nunca se ha
+  // desactivado. Ver `guardarMetasCortesia` (dónde se actualiza, SOLO en esa
+  // transición exacta) y `perfiles` en `DirectorioJugadoresCRM` (dónde se usa
+  // como piso adicional del gasto acumulado).
+  const [cortesiasActivadasDesde, setCortesiasActivadasDesde] = useState(metasCortesiaLocalIniciales.activadaDesde ?? null);
   const [guardandoMetasCortesia, setGuardandoMetasCortesia] = useState(false);
 
   // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): mapa LIVIANO
@@ -37777,17 +38191,34 @@ function AppInterno() {
           setRangosHorarioClases(data.rangos_horario_clases);
           guardarRangosHorarioClasesLocal(data.rangos_horario_clases);
         }
-        // Metas del Motor de Cortesías (migracion_v35) — mismo `select('*')`
-        // de arriba, sin consulta nueva: en un proyecto viejo sin la
-        // migración, ambas vienen `undefined` y el CRM cae a
-        // `META_CORTESIA_*_DEFAULT` (ver `DirectorioJugadoresCRM`).
-        if (data.meta_cortesia_proshop != null || data.meta_cortesia_bar != null) {
+        // Metas del Motor de Cortesías (migracion_v35, ampliado con el Switch
+        // Master y "Productos Autorizados para Canje", mejora) — mismo
+        // `select('*')` de arriba, sin consulta nueva: en un proyecto viejo
+        // sin ninguna de estas migraciones, todas vienen `undefined` y el CRM
+        // cae a `META_CORTESIA_*_DEFAULT` + módulo Activado + sin productos
+        // autorizados todavía (ver `DirectorioJugadoresCRM`).
+        if (
+          data.meta_cortesia_proshop != null ||
+          data.meta_cortesia_bar != null ||
+          data.cortesias_activas != null ||
+          data.cortesias_activadas_desde != null ||
+          data.productos_autorizados_cortesia_proshop != null ||
+          data.productos_autorizados_cortesia_bar != null
+        ) {
           const nuevasMetas = {
             proShop: data.meta_cortesia_proshop != null ? Number(data.meta_cortesia_proshop) : null,
             bar: data.meta_cortesia_bar != null ? Number(data.meta_cortesia_bar) : null,
+            activo: data.cortesias_activas != null ? data.cortesias_activas !== false : true,
+            productosProShop: Array.isArray(data.productos_autorizados_cortesia_proshop) ? data.productos_autorizados_cortesia_proshop : [],
+            productosBar: Array.isArray(data.productos_autorizados_cortesia_bar) ? data.productos_autorizados_cortesia_bar : [],
+            activadaDesde: data.cortesias_activadas_desde || null,
           };
           setMetaCortesiaProShop(nuevasMetas.proShop);
           setMetaCortesiaBar(nuevasMetas.bar);
+          setCortesiasActivas(nuevasMetas.activo);
+          setProductosAutorizadosCortesiaProShop(nuevasMetas.productosProShop);
+          setProductosAutorizadosCortesiaBar(nuevasMetas.productosBar);
+          setCortesiasActivadasDesde(nuevasMetas.activadaDesde);
           guardarMetasCortesiaLocal(nuevasMetas);
         }
       }
@@ -37828,24 +38259,64 @@ function AppInterno() {
   );
 
   // Guarda las Metas del Motor de Cortesías (Pro-Shop / Restaurante-Bar,
-  // migracion_v35) — mismo criterio de Sincronización Silenciosa que
-  // `guardarRangosHorarioClases` arriba: estado en vivo + respaldo local
-  // SIEMPRE, Supabase best effort, flujo y toast propios.
+  // migracion_v35, ampliado con el Switch Master ON/OFF y "Productos
+  // Autorizados para Canje", mejora) — mismo criterio de Sincronización
+  // Silenciosa que `guardarRangosHorarioClases` arriba: estado en vivo +
+  // respaldo local SIEMPRE, Supabase best effort, flujo y toast propios.
+  // Recibe UN SOLO objeto de configuración (`ModalMetasCortesia` ya junta
+  // los 5 campos en un solo guardado) en vez de argumentos posicionales,
+  // para no ir arrastrando una firma cada vez más larga.
   const guardarMetasCortesia = useCallback(
-    async (nuevaMetaProShop, nuevaMetaBar) => {
-      const proShop = Number(nuevaMetaProShop) > 0 ? Number(nuevaMetaProShop) : null;
-      const bar = Number(nuevaMetaBar) > 0 ? Number(nuevaMetaBar) : null;
+    async (nuevaConfig) => {
+      const proShop = Number(nuevaConfig?.metaProShop) > 0 ? Number(nuevaConfig.metaProShop) : null;
+      const bar = Number(nuevaConfig?.metaBar) > 0 ? Number(nuevaConfig.metaBar) : null;
+      const activo = nuevaConfig?.activo !== false;
+      const productosProShop = Array.isArray(nuevaConfig?.productosProShop) ? nuevaConfig.productosProShop : [];
+      const productosBar = Array.isArray(nuevaConfig?.productosBar) ? nuevaConfig.productosBar : [];
+      // Blindaje "sin acumulados fantasma" (mejora, regla de negocio
+      // EXPLÍCITA y sin ambigüedad): el piso de acumulación
+      // (`cortesiasActivadasDesde`) SOLO se mueve a "ahora mismo" en la
+      // transición EXACTA de Desactivado -> Activado (`cortesiasActivas`,
+      // el valor ANTES de este guardado, era `false`, y el nuevo `activo`
+      // es `true`). Guardar sin tocar el switch (Activado->Activado o
+      // Desactivado->Desactivado), o simplemente editar metas/productos
+      // autorizados, NUNCA mueve este piso. Efecto en `perfiles`
+      // (`DirectorioJugadoresCRM`): el progreso de cada categoría se cuenta
+      // desde `max(última cortesía otorgada, cortesiasActivadasDesde)` — así
+      // ninguna compra hecha DURANTE el periodo Desactivado (ni antes de él)
+      // se suma retroactivamente al reactivar; el jugador arranca su
+      // siguiente ciclo en $0 desde el momento exacto de la reactivación.
+      const reactivando = activo && cortesiasActivas === false;
+      const activadaDesde = reactivando ? new Date().toISOString() : cortesiasActivadasDesde;
       setGuardandoMetasCortesia(true);
       setMetaCortesiaProShop(proShop);
       setMetaCortesiaBar(bar);
-      guardarMetasCortesiaLocal({ proShop, bar });
+      setCortesiasActivas(activo);
+      setCortesiasActivadasDesde(activadaDesde);
+      setProductosAutorizadosCortesiaProShop(productosProShop);
+      setProductosAutorizadosCortesiaBar(productosBar);
+      guardarMetasCortesiaLocal({ proShop, bar, activo, productosProShop, productosBar, activadaDesde });
       try {
         if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión — no se puede guardar en Supabase todavía.');
         const { error } = await actualizarConColumnasOpcionales(
           'configuracion_club',
           CLUB_ACTIVO_ID,
-          { meta_cortesia_proshop: proShop, meta_cortesia_bar: bar },
-          ['meta_cortesia_proshop', 'meta_cortesia_bar']
+          {
+            meta_cortesia_proshop: proShop,
+            meta_cortesia_bar: bar,
+            cortesias_activas: activo,
+            cortesias_activadas_desde: activadaDesde,
+            productos_autorizados_cortesia_proshop: productosProShop,
+            productos_autorizados_cortesia_bar: productosBar,
+          },
+          [
+            'meta_cortesia_proshop',
+            'meta_cortesia_bar',
+            'cortesias_activas',
+            'cortesias_activadas_desde',
+            'productos_autorizados_cortesia_proshop',
+            'productos_autorizados_cortesia_bar',
+          ]
         );
         if (error) throw error;
       } catch (err) {
@@ -37854,10 +38325,17 @@ function AppInterno() {
         // migrar, red), se reintentará solo con el próximo guardado.
         console.warn('[Directorio & CRM] No se pudieron guardar las Metas de Cortesía en Supabase — se guardaron en modo local.', err);
       }
-      mostrarToast({ titulo: 'Metas de Cortesía actualizadas', detalle: 'La Vista 360° de cada jugador ya usa las metas nuevas.' });
+      mostrarToast({
+        titulo: 'Metas de Cortesía actualizadas',
+        detalle: reactivando
+          ? 'Módulo reactivado: el progreso de cada jugador arranca en $0 desde ahora — las compras de mientras estuvo desactivado no cuentan.'
+          : activo
+          ? 'La Vista 360° de cada jugador ya usa las metas y los productos autorizados nuevos.'
+          : 'El Módulo de Metas de Cortesía quedó Desactivado para todo el club.',
+      });
       setGuardandoMetasCortesia(false);
     },
-    [mostrarToast]
+    [mostrarToast, cortesiasActivas, cortesiasActivadasDesde]
   );
 
   // Guarda Nombre/Logo del Club: SIEMPRE actualiza el estado en vivo y el
@@ -39102,6 +39580,8 @@ function AppInterno() {
                 onActualizarCortesiasDisponibles={setCortesiasDisponiblesPorJugador}
                 metaCortesiaProShop={metaCortesiaProShop}
                 metaCortesiaBar={metaCortesiaBar}
+                productosAutorizadosCortesiaProShop={productosAutorizadosCortesiaProShop}
+                productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
                 pagoAAbrirEnPOS={pagoAAbrirEnPOS}
                 onPagoAAbrirEnPOSConsumido={() => setPagoAAbrirEnPOS(null)}
                 onCortesiaCanjeada={limpiarAlertasCortesia}
@@ -39177,6 +39657,10 @@ function AppInterno() {
                 upsertVarianteProducto={upsertVarianteProducto}
                 metaCortesiaProShop={metaCortesiaProShop}
                 metaCortesiaBar={metaCortesiaBar}
+                cortesiasActivas={cortesiasActivas}
+                cortesiasActivadasDesde={cortesiasActivadasDesde}
+                productosAutorizadosCortesiaProShop={productosAutorizadosCortesiaProShop}
+                productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
                 onGuardarMetasCortesia={guardarMetasCortesia}
                 guardandoMetasCortesia={guardandoMetasCortesia}
                 onEstadoCortesiasCambio={setCortesiasDisponiblesPorJugador}
