@@ -4324,6 +4324,18 @@ function Toolbar({
           >
             <CalendarDays size={14} /> Cronograma
           </button>
+          {/* Nueva Vista de Calendario Mensual — el submodo "día" (drill-down
+              tras dar clic en una casilla) también se marca aquí como
+              "Calendario" activo; un clic directo en este botón siempre
+              regresa a la cuadrícula del mes (no se queda atorado en el día). */}
+          <button
+            onClick={() => onCambiarVista('calendario')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+              vista === 'calendario' || vista === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <CalendarRange size={14} /> Calendario
+          </button>
         </div>
         {!soloLectura && (
           <BotonPrimario onClick={onNuevaCancha} className="whitespace-nowrap">
@@ -4392,6 +4404,157 @@ function EmptyState({ onNuevaCancha }) {
     </div>
   );
 }
+
+/* ============================================================================
+ * CALENDARIO MENSUAL — vista compartida (Parrilla Operativa y Academia &
+ * Clínicas): cuadrícula del mes completo con badges de lo agendado cada día
+ * + clic en un día = "Zoom a Día" (drill-down a la línea de tiempo por
+ * horas/canchas — ver `VistaCronograma`, reutilizada tal cual en ambos
+ * módulos para ese drill-down, así el día detallado se ve y funciona
+ * IDÉNTICO al Cronograma que el club ya conoce).
+ * ==========================================================================*/
+
+const NOMBRES_MES_CALENDARIO = [
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+];
+const DIAS_SEMANA_CALENDARIO = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
+// `anio`/`mes` (mes 0-indexado, igual que `Date.prototype.getMonth`) + día →
+// 'YYYY-MM-DD', mismo formato que el resto de la app (`hoyISO`/`sumarDia`).
+function fechaISODesdePartes(anio, mes, dia) {
+  return `${anio}-${pad2(mes + 1)}-${pad2(dia)}`;
+}
+
+// Navegación de mes (± delta) con acarreo de año correcto (ej. diciembre + 1
+// mes = enero del año siguiente; enero − 1 mes = diciembre del anterior) —
+// mismo criterio aritmético que `sumarDia`, pero a nivel mes.
+function sumarMeses(anio, mes, delta) {
+  const total = mes + delta;
+  const anioNuevo = anio + Math.floor(total / 12);
+  const mesNuevo = ((total % 12) + 12) % 12;
+  return { anio: anioNuevo, mes: mesNuevo };
+}
+
+// Componente 100% genérico — no sabe nada de reservas ni de clases. Solo
+// dibuja la cuadrícula (encabezado de días, flechas ← Mes Anterior/Mes
+// Siguiente →, casillas 1..28/29/30/31 correctamente alineadas al día de la
+// semana en que arranca el mes) y delega en 2 props los datos reales de
+// cada módulo que lo usa:
+//   - `eventosPorDia`: mapa `'YYYY-MM-DD' -> { [claveTipo]: cantidad }`.
+//   - `tiposLeyenda`: qué claves de ese mapa mostrar como badge, con qué
+//     etiqueta/color (Parrilla Operativa: reservas/clases/retas-torneos por
+//     `estado`; Academia & Clínicas: clases grupales/privadas por
+//     `tipo_clase`) — así un solo componente cubre los 2 lugares que pidió
+//     el club sin duplicar la cuadrícula ni la lógica de navegación.
+function CalendarioMensual({ anio, mes, onCambiarMes, onDiaClick, eventosPorDia, tiposLeyenda, fechaHoy }) {
+  const celdas = useMemo(() => {
+    const primerDia = new Date(anio, mes, 1);
+    const offsetInicio = primerDia.getDay(); // 0 = domingo
+    const totalDiasMes = new Date(anio, mes + 1, 0).getDate();
+    const lista = [];
+    for (let i = 0; i < offsetInicio; i++) lista.push(null);
+    for (let d = 1; d <= totalDiasMes; d++) lista.push(d);
+    while (lista.length % 7 !== 0) lista.push(null);
+    return lista;
+  }, [anio, mes]);
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => onCambiarMes(-1)}
+          className="rounded-lg border border-slate-300 bg-slate-100 p-2 text-slate-600 hover:bg-slate-200"
+          aria-label="Mes anterior"
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <p className="text-sm font-black text-slate-900">
+          {NOMBRES_MES_CALENDARIO[mes]} {anio}
+        </p>
+        <button
+          type="button"
+          onClick={() => onCambiarMes(1)}
+          className="rounded-lg border border-slate-300 bg-slate-100 p-2 text-slate-600 hover:bg-slate-200"
+          aria-label="Mes siguiente"
+        >
+          <ChevronRight size={16} />
+        </button>
+      </div>
+
+      {tiposLeyenda && tiposLeyenda.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-3 border-b border-slate-100 pb-3">
+          {tiposLeyenda.map((t) => (
+            <span key={t.key} className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500">
+              <span className={`h-2 w-2 rounded-full ${t.dot}`} /> {t.label}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-7 gap-1 sm:gap-1.5">
+        {DIAS_SEMANA_CALENDARIO.map((d) => (
+          <div key={d} className="py-1 text-center text-[10px] font-black uppercase tracking-wide text-slate-400">
+            {d}
+          </div>
+        ))}
+        {celdas.map((dia, idx) => {
+          if (dia === null) return <div key={`vacio-${idx}`} />;
+          const fechaCelda = fechaISODesdePartes(anio, mes, dia);
+          const eventos = eventosPorDia?.[fechaCelda];
+          const esHoy = fechaCelda === fechaHoy;
+          const hayEventos = eventos && Object.values(eventos).some((n) => n > 0);
+          return (
+            <button
+              key={fechaCelda}
+              type="button"
+              onClick={() => onDiaClick(fechaCelda)}
+              className={`flex min-h-[64px] flex-col items-start gap-1 rounded-xl border p-1.5 text-left transition hover:border-lime-400/60 hover:bg-lime-400/5 sm:min-h-[78px] ${
+                esHoy ? 'border-lime-400 bg-lime-400/10' : 'border-slate-200 bg-slate-50'
+              }`}
+            >
+              <span className={`text-[11px] font-black ${esHoy ? 'text-lime-600' : 'text-slate-700'}`}>{dia}</span>
+              {hayEventos && (
+                <div className="flex flex-wrap gap-1">
+                  {tiposLeyenda.map((t) => {
+                    const n = eventos?.[t.key] || 0;
+                    if (!n) return null;
+                    return (
+                      <span
+                        key={t.key}
+                        className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-black ${t.badge}`}
+                      >
+                        {n}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Leyenda/categorías del Calendario Mensual de la Parrilla Operativa —
+// `reservas` ya trae TODOS los tipos de bloqueo en la misma tabla
+// (`estado`: normal / 'Clase' / 'Torneo' / 'Reta'), así que basta con
+// clasificar por ese campo, sin necesitar ninguna prop nueva del módulo.
+const LEYENDA_CALENDARIO_PARRILLA = [
+  { key: 'reserva', label: 'Reservas', dot: 'bg-sky-400', badge: 'bg-sky-400/15 text-sky-600' },
+  { key: 'clase', label: 'Clases', dot: 'bg-lime-400', badge: 'bg-lime-400/15 text-lime-600' },
+  { key: 'evento', label: 'Retas/Torneos', dot: 'bg-violet-400', badge: 'bg-violet-400/15 text-violet-600' },
+];
+
+// Leyenda del Calendario Mensual de Academia & Clínicas — clasifica
+// `academia_clases` por `tipo_clase` (ver `TIPOS_CLASE_ACADEMIA`).
+const LEYENDA_CALENDARIO_ACADEMIA = [
+  { key: 'grupal', label: 'Clases Grupales', dot: 'bg-lime-400', badge: 'bg-lime-400/15 text-lime-600' },
+  { key: 'privada', label: 'Clases Privadas', dot: 'bg-amber-400', badge: 'bg-amber-400/15 text-amber-600' },
+];
 
 /* ============================================================================
  * MODAL: OPERADOR / TURNO
@@ -5991,6 +6154,20 @@ function ModuloParrillaOperativa({
   const [busqueda, setBusqueda] = useState('');
   const [filtroEstatus, setFiltroEstatus] = useState('todos');
   const [fechaSeleccionada, setFechaSeleccionada] = useState(hoyISO());
+  // Nueva Vista de Calendario Mensual (drill-down a día): mes que se está
+  // viendo en la cuadrícula (independiente de `fechaSeleccionada`, que es la
+  // que usan Tarjetas/Cronograma) + el submodo 'dia', que reutiliza
+  // `VistaCronograma` tal cual sobre `fechaSeleccionada` cuando el operador
+  // da clic en una casilla del mes.
+  const [calendarioMes, setCalendarioMes] = useState(() => {
+    const hoy = new Date();
+    return { anio: hoy.getFullYear(), mes: hoy.getMonth() };
+  });
+  const cambiarMesCalendario = (delta) => setCalendarioMes((prev) => sumarMeses(prev.anio, prev.mes, delta));
+  const irADiaCalendario = (fechaISOClic) => {
+    setFechaSeleccionada(fechaISOClic);
+    setVista('dia');
+  };
 
   const [modalNuevaCancha, setModalNuevaCancha] = useState(false);
   const [modalCambiarFoto, setModalCambiarFoto] = useState(null); // cancha
@@ -6104,6 +6281,24 @@ function ModuloParrillaOperativa({
     });
   }, [canchas, busqueda, filtroEstatus, reservas]);
 
+  // Calendario Mensual — contador por día del mes que se está viendo,
+  // clasificado por `estado` (mismo campo que ya distingue reserva normal /
+  // 'Clase' / 'Torneo' / 'Reta' en toda la parrilla — ver `esBloqueoEvento`).
+  // Filtrado al mes visible (no a TODAS las reservas históricas) por
+  // eficiencia — se recalcula solo al cambiar de mes o al llegar datos nuevos.
+  const eventosPorDiaParrilla = useMemo(() => {
+    const mapa = {};
+    const prefijoMes = `${calendarioMes.anio}-${pad2(calendarioMes.mes + 1)}-`;
+    reservas.forEach((r) => {
+      if (!r.fecha || !r.fecha.startsWith(prefijoMes) || r.estado === 'Cancelada') return;
+      const dia = mapa[r.fecha] || (mapa[r.fecha] = { reserva: 0, clase: 0, evento: 0 });
+      if (r.estado === 'Clase') dia.clase += 1;
+      else if (r.estado === 'Torneo' || r.estado === 'Reta') dia.evento += 1;
+      else dia.reserva += 1;
+    });
+    return mapa;
+  }, [reservas, calendarioMes]);
+
   /* ---------------- Render ---------------- */
 
   return (
@@ -6165,6 +6360,50 @@ function ModuloParrillaOperativa({
               soloLectura={permisos?.soloLecturaParrilla === true}
             />
           ))}
+        </div>
+      ) : vista === 'calendario' ? (
+        <CalendarioMensual
+          anio={calendarioMes.anio}
+          mes={calendarioMes.mes}
+          onCambiarMes={cambiarMesCalendario}
+          onDiaClick={irADiaCalendario}
+          eventosPorDia={eventosPorDiaParrilla}
+          tiposLeyenda={LEYENDA_CALENDARIO_PARRILLA}
+          fechaHoy={hoyISO()}
+        />
+      ) : vista === 'dia' ? (
+        <div className="space-y-5">
+          {/* Interacción "Zoom a Día": botón claro de regreso a la
+              cuadrícula del mes + la misma línea de tiempo por horas/canchas
+              (`VistaCronograma`) que ya usa "Cronograma", ahora enfocada en
+              el día que se seleccionó desde el Calendario. */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setVista('calendario')}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-200"
+            >
+              <ChevronLeft size={14} /> Volver al Mes
+            </button>
+            <p className="text-xs font-bold text-slate-500">{formatoFechaLarga(fechaSeleccionada)}</p>
+          </div>
+          <VistaCronograma
+            canchas={canchasFiltradas}
+            reservas={reservas}
+            fechaSeleccionada={fechaSeleccionada}
+            onSlotClick={
+              permisos?.soloLecturaParrilla === true
+                ? undefined
+                : (cancha, hora) => setModalNuevaReserva({ cancha, hora, fecha: fechaSeleccionada })
+            }
+            onReservaClick={(reserva) =>
+              setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
+            }
+            bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
+            horaAperturaMin={horaAperturaMin}
+            horaCierreMin={horaCierreMin}
+          />
+          <HeatmapOcupacion modo="semana" filas={heatmapCronograma.filas} celdas={heatmapCronograma.celdas} />
         </div>
       ) : (
         <div className="space-y-5">
@@ -25688,8 +25927,35 @@ function RadarEvaluacion({ valores, size = 240 }) {
   });
   const puntosValorTexto = puntosValor.map((p) => p.join(',')).join(' ');
 
+  // Fix "Paredes" (y cualquier otra etiqueta lateral) recortada (bug
+  // reportado, más notorio desde que el radar pasó de 6 a 8 ejes —
+  // "Paredes" quedó justo en el vértice de la derecha pura, ángulo 0°): el
+  // `viewBox` viejo (`0 0 size size`) terminaba EXACTO donde el texto de los
+  // vértices laterales empieza a dibujarse, así que cualquier etiqueta un
+  // poco larga se salía del área visible y el navegador la recortaba sin
+  // avisar. Dos cambios, juntos:
+  //   1) `viewBox` con margen extra a los lados (`padX`) y arriba/abajo
+  //      (`padY`) — el contenido (círculos/líneas/polígono) NO se mueve, se
+  //      dibuja exactamente igual que antes sobre el mismo `centro`; solo se
+  //      amplía el "lienzo" visible alrededor para que el texto tenga dónde
+  //      crecer.
+  //   2) `textAnchor` dinámico según el signo del coseno del ángulo de cada
+  //      eje: los vértices de la mitad DERECHA (`cosA > 0.35`) anclan el
+  //      texto por su inicio (crece hacia la derecha, alejándose del
+  //      polígono); los de la mitad IZQUIERDA (`cosA < -0.35`) anclan por su
+  //      final (crece hacia la izquierda); los casi verticales (arriba/abajo,
+  //      `cosA` cerca de 0) se quedan centrados como antes. Así cada
+  //      etiqueta solo necesita margen de UN lado, nunca de los dos.
+  const padX = 46;
+  const padY = 26;
+
   return (
-    <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto w-full max-w-[280px]" role="img" aria-label="Skill Radar Chart">
+    <svg
+      viewBox={`${-padX} ${-padY} ${size + padX * 2} ${size + padY * 2}`}
+      className="mx-auto w-full max-w-[280px]"
+      role="img"
+      aria-label="Skill Radar Chart"
+    >
       {anillos.map((f) => (
         <polygon
           key={f}
@@ -25709,8 +25975,20 @@ function RadarEvaluacion({ valores, size = 240 }) {
       ))}
       {EJES_EVALUACION.map((eje, i) => {
         const [x, y] = puntoEn(i, 1.22);
+        const cosA = Math.cos(angulo(i));
+        const anchor = cosA > 0.35 ? 'start' : cosA < -0.35 ? 'end' : 'middle';
+        const xConRespiro = x + (anchor === 'start' ? 3 : anchor === 'end' ? -3 : 0);
         return (
-          <text key={eje.key} x={x} y={y} textAnchor="middle" dominantBaseline="middle" fill="#475569" fontSize="9" fontWeight="700">
+          <text
+            key={eje.key}
+            x={xConRespiro}
+            y={y}
+            textAnchor={anchor}
+            dominantBaseline="middle"
+            fill="#475569"
+            fontSize="9"
+            fontWeight="700"
+          >
             {eje.corto}
           </text>
         );
@@ -28881,6 +29159,25 @@ function ModuloAcademiaClinicas({
   // (cancha/hora) sobre la que se dio clic para prellenar "Nueva Clase".
   const [fechaCronograma, setFechaCronograma] = useState(hoyISO());
   const [celdaParaNuevaClase, setCeldaParaNuevaClase] = useState(null); // { canchaId, fecha, horaInicio }
+  // Nueva Vista de Calendario Mensual con Drill-Down a Día (Parrilla de
+  // Clases): 'cronograma' = comportamiento de siempre (tarjetas + línea de
+  // tiempo por hora/cancha de HOY de `fechaCronograma`, sin cambios);
+  // 'calendario' = cuadrícula del mes; 'dia' = drill-down tras dar clic en
+  // una casilla — reutiliza el MISMO bloque de Cronograma de siempre
+  // (`VistaCronograma` + `manejarClicCeldaLibre`/`manejarClicReservaCronograma`,
+  // que ya leen `fechaCronograma`), solo que ahora esa fecha la puso el
+  // Calendario en vez del selector manual.
+  const [modoParrillaClases, setModoParrillaClases] = useState('cronograma');
+  const [calendarioMesAcademia, setCalendarioMesAcademia] = useState(() => {
+    const hoy = new Date();
+    return { anio: hoy.getFullYear(), mes: hoy.getMonth() };
+  });
+  const cambiarMesCalendarioAcademia = (delta) =>
+    setCalendarioMesAcademia((prev) => sumarMeses(prev.anio, prev.mes, delta));
+  const irADiaCalendarioAcademia = (fechaISOClic) => {
+    setFechaCronograma(fechaISOClic);
+    setModoParrillaClases('dia');
+  };
   // Clase Privada / Personalizada desde Solicitudes: la fila completa de
   // `academia_solicitudes` que originó el clic en "Crear Clase" — precarga
   // el alumno/tipo/horario en `ModalNuevaClase` y, al guardar, marca esa
@@ -28904,6 +29201,22 @@ function ModuloAcademiaClinicas({
   // lado). Ver Item 5 (Botón Manual de Archivado).
   const todasLasClasesAcademia = useMemo(() => academiaClases || [], [academiaClases]);
   const clasesActivas = useMemo(() => todasLasClasesAcademia.filter((c) => c.estado !== 'cancelada'), [todasLasClasesAcademia]);
+
+  // Calendario Mensual de la Parrilla de Clases — contador por día del mes
+  // que se está viendo, clasificado por `tipo_clase` (grupal/privada, ver
+  // `TIPOS_CLASE_ACADEMIA`). Filtrado al mes visible por eficiencia, igual
+  // que `eventosPorDiaParrilla` de la Parrilla Operativa.
+  const eventosPorDiaAcademia = useMemo(() => {
+    const mapa = {};
+    const prefijoMes = `${calendarioMesAcademia.anio}-${pad2(calendarioMesAcademia.mes + 1)}-`;
+    clasesActivas.forEach((c) => {
+      if (!c.fecha || !c.fecha.startsWith(prefijoMes)) return;
+      const dia = mapa[c.fecha] || (mapa[c.fecha] = { grupal: 0, privada: 0 });
+      if (c.tipo_clase === 'privada') dia.privada += 1;
+      else dia.grupal += 1;
+    });
+    return mapa;
+  }, [clasesActivas, calendarioMesAcademia]);
 
   // Reloj vivo del módulo — recalcula el Bloqueo Automático por Horario
   // (badge "Clase Iniciada" de `TarjetaClaseAcademia`, ver
@@ -29346,7 +29659,33 @@ function ModuloAcademiaClinicas({
           })}
         </div>
         {subvista === 'operativa' && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Nueva Vista de Calendario Mensual — mismo criterio que el
+                conmutador Tarjetas/Cronograma/Calendario de la Parrilla
+                Operativa: "Cronograma" cubre tanto el modo de siempre como
+                el submodo 'dia' (drill-down), así el botón se queda
+                marcado como activo mientras el operador esté en cualquiera
+                de los dos. */}
+            <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
+              <button
+                type="button"
+                onClick={() => setModoParrillaClases('cronograma')}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                  modoParrillaClases !== 'calendario' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <CalendarDays size={14} /> Cronograma
+              </button>
+              <button
+                type="button"
+                onClick={() => setModoParrillaClases('calendario')}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                  modoParrillaClases === 'calendario' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <CalendarRange size={14} /> Calendario
+              </button>
+            </div>
             <BotonSecundario onClick={() => setModalRangosHorario(true)} className="px-3 py-1.5 text-xs">
               <Clock size={14} /> Horarios Habilitados
               {(rangosHorarioClases || []).length > 0 && (
@@ -29365,113 +29704,143 @@ function ModuloAcademiaClinicas({
       {subvista === 'operativa' && (
         <div className="space-y-4">
           {!tablaAcademiaExiste && <BannerTablaFaltante tabla="academia_clases (corre migracion_v16_academia_creditos.sql)" />}
-          {todasLasClasesAcademia.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
-              <button
-                type="button"
-                onClick={() => setFiltroClase('activas')}
-                className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroClase === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                Activas
-              </button>
-              <button
-                type="button"
-                onClick={() => setFiltroClase('archivadas')}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroClase === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <Archive size={11} /> Archivadas
-                {clasesArchivadas.length > 0 && (
-                  <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-600">
-                    {clasesArchivadas.length}
-                  </span>
-                )}
-              </button>
-            </div>
-          )}
-          {loadingSesiones && clasesVisibles.length === 0 ? (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {[0, 1, 2].map((i) => (
-                <div key={i} className="h-32 animate-pulse rounded-2xl bg-white" />
-              ))}
-            </div>
-          ) : clasesVisibles.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-14 text-center text-slate-500">
-              <GraduationCap size={26} />
-              <p className="text-sm font-semibold">
-                {filtroClase === 'archivadas' ? 'No hay clases archivadas.' : 'Todavía no hay clases creadas.'}
-              </p>
-              <p className="text-xs">
-                {filtroClase === 'archivadas'
-                  ? 'Las clases que archives aparecerán aquí, sin perder alumnos, pagos ni asistencia.'
-                  : 'Da clic en una celda libre del Cronograma de abajo (o "Nueva Clase") para armar su parrilla y bloquear la cancha automáticamente.'}
-              </p>
-            </div>
-          ) : (
-            // Acceso rápido: todas las clases visibles según el filtro de
-            // arriba, sin importar el día que se esté viendo en el
-            // Cronograma de abajo — clic abre la misma ficha
-            // (roster/asistencia/ajustes) que un clic sobre su bloqueo en
-            // el Cronograma.
-            <div className="flex gap-3 overflow-x-auto pb-1">
-              {clasesVisibles.map((c) => (
-                <div key={c.id} className="w-64 shrink-0">
-                  <TarjetaClaseAcademia
-                    clase={c}
-                    cancha={canchasPorId[c.cancha_id]}
-                    alumnosActivos={alumnosActivosPorClase[c.id] || []}
-                    onVerDetalle={() => setClaseSeleccionadaId(c.id)}
-                    iniciadaHoy={claseYaInicioHoy(c, new Date(tickAcademia))}
-                    // Visual de "Archivada" = archivado MANUAL (botón) O
-                    // AUTOMÁTICO por tiempo ya concluido — para que la
-                    // tarjeta se vea consistente con la pestaña en la que
-                    // está parada (ver `clasesArchivadas` arriba).
-                    archivado={c.archivado === true || (c.estado !== 'cancelada' && claseYaConcluyoHoy(c, new Date(tickAcademia)))}
-                    onArchivar={archivarClase}
-                    actualizandoArchivo={actualizandoArchivoClaseId === c.id}
-                    puedeEliminarDefinitivo={Boolean(permisos?.puedeEliminarClaseAcademia)}
-                    onEliminarDefinitivo={setClaseAEliminarDefinitivo}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
 
-          {/* Cronograma interactivo por Cancha × Hora — MISMO componente que
-              el Cronograma de la Parrilla Operativa principal
-              (`VistaCronograma`), con TODAS las reservas del día (no solo
-              clases) para que el operador vea la disponibilidad real antes
-              de dar clic en una celda libre y crear una clase ahí mismo. */}
-          <div className="flex items-center justify-between gap-2">
-            <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
-              <CalendarClock size={13} /> Cronograma — disponibilidad de canchas
-            </p>
-            {/* AJUSTE UX: selector de fecha manual → calendario desplegable
-                interactivo (mismo componente `SelectorFechaCompacto` que ya
-                usan ERP/Egresos/P&L: clic en cualquier parte del chip abre
-                el calendario nativo — `showPicker()` — en vez de forzar a
-                teclear los dígitos de la fecha a mano). */}
-            <SelectorFechaCompacto value={fechaCronograma} onChange={setFechaCronograma} tamano="amplio" />
-          </div>
-          <VistaCronograma
-            canchas={canchas}
-            reservas={reservas}
-            fechaSeleccionada={fechaCronograma}
-            onSlotClick={manejarClicCeldaLibre}
-            onReservaClick={manejarClicReservaCronograma}
-            horaAperturaMin={horaAperturaMinAcademia}
-            horaCierreMin={horaCierreMinAcademia}
-          />
-          {/* "Mapa de Calor - Saturación de Cupos": vive AQUÍ, justo debajo
-              del cronograma de la Parrilla de Clases. Se quitó la copia que
-              existía en Analytics → pestaña "KPIs Coaches" (antes "Coaches
-              & Mapa de Calor") a pedido del club, para que esa pestaña se
-              quedara enfocada en la tabla de KPIs por Coach — esta es ahora
-              la ÚNICA vista del Heat Map en todo el módulo. */}
-          <HeatmapAcademia clases={clasesActivas} alumnosPorClase={alumnosActivosPorClase} />
+          {modoParrillaClases === 'calendario' ? (
+            // Nueva Vista de Calendario Mensual — cuadrícula del mes con
+            // badges de Clases Grupales/Privadas por día (ver
+            // `eventosPorDiaAcademia`). Clic en un día = "Zoom a Día".
+            <CalendarioMensual
+              anio={calendarioMesAcademia.anio}
+              mes={calendarioMesAcademia.mes}
+              onCambiarMes={cambiarMesCalendarioAcademia}
+              onDiaClick={irADiaCalendarioAcademia}
+              eventosPorDia={eventosPorDiaAcademia}
+              tiposLeyenda={LEYENDA_CALENDARIO_ACADEMIA}
+              fechaHoy={hoyISO()}
+            />
+          ) : (
+            <>
+              {modoParrillaClases === 'dia' && (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setModoParrillaClases('calendario')}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-200"
+                  >
+                    <ChevronLeft size={14} /> Volver al Mes
+                  </button>
+                  <p className="text-xs font-bold text-slate-500">{formatoFechaLarga(fechaCronograma)}</p>
+                </div>
+              )}
+              {todasLasClasesAcademia.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
+                  <button
+                    type="button"
+                    onClick={() => setFiltroClase('activas')}
+                    className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
+                      filtroClase === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    Activas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFiltroClase('archivadas')}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
+                      filtroClase === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    <Archive size={11} /> Archivadas
+                    {clasesArchivadas.length > 0 && (
+                      <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-600">
+                        {clasesArchivadas.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+              )}
+              {loadingSesiones && clasesVisibles.length === 0 ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {[0, 1, 2].map((i) => (
+                    <div key={i} className="h-32 animate-pulse rounded-2xl bg-white" />
+                  ))}
+                </div>
+              ) : clasesVisibles.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-14 text-center text-slate-500">
+                  <GraduationCap size={26} />
+                  <p className="text-sm font-semibold">
+                    {filtroClase === 'archivadas' ? 'No hay clases archivadas.' : 'Todavía no hay clases creadas.'}
+                  </p>
+                  <p className="text-xs">
+                    {filtroClase === 'archivadas'
+                      ? 'Las clases que archives aparecerán aquí, sin perder alumnos, pagos ni asistencia.'
+                      : 'Da clic en una celda libre del Cronograma de abajo (o "Nueva Clase") para armar su parrilla y bloquear la cancha automáticamente.'}
+                  </p>
+                </div>
+              ) : (
+                // Acceso rápido: todas las clases visibles según el filtro de
+                // arriba, sin importar el día que se esté viendo en el
+                // Cronograma de abajo — clic abre la misma ficha
+                // (roster/asistencia/ajustes) que un clic sobre su bloqueo en
+                // el Cronograma.
+                <div className="flex gap-3 overflow-x-auto pb-1">
+                  {clasesVisibles.map((c) => (
+                    <div key={c.id} className="w-64 shrink-0">
+                      <TarjetaClaseAcademia
+                        clase={c}
+                        cancha={canchasPorId[c.cancha_id]}
+                        alumnosActivos={alumnosActivosPorClase[c.id] || []}
+                        onVerDetalle={() => setClaseSeleccionadaId(c.id)}
+                        iniciadaHoy={claseYaInicioHoy(c, new Date(tickAcademia))}
+                        // Visual de "Archivada" = archivado MANUAL (botón) O
+                        // AUTOMÁTICO por tiempo ya concluido — para que la
+                        // tarjeta se vea consistente con la pestaña en la que
+                        // está parada (ver `clasesArchivadas` arriba).
+                        archivado={c.archivado === true || (c.estado !== 'cancelada' && claseYaConcluyoHoy(c, new Date(tickAcademia)))}
+                        onArchivar={archivarClase}
+                        actualizandoArchivo={actualizandoArchivoClaseId === c.id}
+                        puedeEliminarDefinitivo={Boolean(permisos?.puedeEliminarClaseAcademia)}
+                        onEliminarDefinitivo={setClaseAEliminarDefinitivo}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Cronograma interactivo por Cancha × Hora — MISMO componente que
+                  el Cronograma de la Parrilla Operativa principal
+                  (`VistaCronograma`), con TODAS las reservas del día (no solo
+                  clases) para que el operador vea la disponibilidad real antes
+                  de dar clic en una celda libre y crear una clase ahí mismo. */}
+              <div className="flex items-center justify-between gap-2">
+                <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+                  <CalendarClock size={13} /> Cronograma — disponibilidad de canchas
+                </p>
+                {/* AJUSTE UX: selector de fecha manual → calendario desplegable
+                    interactivo (mismo componente `SelectorFechaCompacto` que ya
+                    usan ERP/Egresos/P&L: clic en cualquier parte del chip abre
+                    el calendario nativo — `showPicker()` — en vez de forzar a
+                    teclear los dígitos de la fecha a mano). */}
+                <SelectorFechaCompacto value={fechaCronograma} onChange={setFechaCronograma} tamano="amplio" />
+              </div>
+              <VistaCronograma
+                canchas={canchas}
+                reservas={reservas}
+                fechaSeleccionada={fechaCronograma}
+                onSlotClick={manejarClicCeldaLibre}
+                onReservaClick={manejarClicReservaCronograma}
+                horaAperturaMin={horaAperturaMinAcademia}
+                horaCierreMin={horaCierreMinAcademia}
+              />
+              {/* "Mapa de Calor - Saturación de Cupos": vive AQUÍ, justo debajo
+                  del cronograma de la Parrilla de Clases. Se quitó la copia que
+                  existía en Analytics → pestaña "KPIs Coaches" (antes "Coaches
+                  & Mapa de Calor") a pedido del club, para que esa pestaña se
+                  quedara enfocada en la tabla de KPIs por Coach — esta es ahora
+                  la ÚNICA vista del Heat Map en todo el módulo. */}
+              <HeatmapAcademia clases={clasesActivas} alumnosPorClase={alumnosActivosPorClase} />
+            </>
+          )}
         </div>
       )}
 
