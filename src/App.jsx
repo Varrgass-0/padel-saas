@@ -845,6 +845,7 @@ import {
   LogOut,
   Moon,
   Sun,
+  Timer,
 } from 'lucide-react';
 
 /* ============================================================================
@@ -2878,7 +2879,39 @@ const LS_KEY_CLUB_CONFIG = 'smashpadel_club_config_v1';
 // Horario de Operación del Club (item 4, migracion_v31) — mismos límites de
 // respaldo que `HORA_INICIO_MIN`/`HORA_FIN_MIN` (06:00–24:00), formateados
 // como texto porque así viaja `configuracion_club.hora_apertura`/`hora_cierre`.
-const CONFIG_CLUB_DEFAULT = { nombre: '', logoUrl: '', horaApertura: '06:00', horaCierre: '24:00' };
+// Duración de Bloques/Turnos (Configuración del Club → "Reservas &
+// Academia", migracion_v42) — minutos por default de cada reserva de cancha
+// nueva (Parrilla Operativa/Portal) y de cada clase (Portal → "Solicitar
+// Clase"). 60 min es el comportamiento histórico de siempre, así que un club
+// que nunca toca este ajuste no ve ningún cambio.
+const CONFIG_CLUB_DEFAULT = {
+  nombre: '',
+  logoUrl: '',
+  horaApertura: '06:00',
+  horaCierre: '24:00',
+  duracionReservaMinutos: 60,
+  duracionClaseMinutos: 60,
+};
+// Opciones fijas del selector de "Duración de Bloques/Turnos" — 60/90/120
+// min, tal como se pidió (1h / 1h30 / 2h).
+const OPCIONES_DURACION_BLOQUE = [
+  { value: 60, label: '60 min (1 hora)' },
+  { value: 90, label: '90 min (1 hora 30 min)' },
+  { value: 120, label: '120 min (2 horas)' },
+];
+// Lee la duración configurada (minutos) desde CUALQUIER objeto que la traiga
+// — mismo criterio "tolerante" que `minutosOperacionDelClub`: camelCase
+// (`configClub` del panel interno) o snake_case (`club` del Portal, tal cual
+// viene de Supabase) — con respaldo a 60 min si el club no lo ha configurado
+// o el valor guardado es inválido.
+function duracionesBloqueDelClub(fuente) {
+  const reservaCruda = Number(fuente?.duracionReservaMinutos ?? fuente?.duracion_reserva_minutos);
+  const claseCruda = Number(fuente?.duracionClaseMinutos ?? fuente?.duracion_clase_minutos);
+  return {
+    reservaMin: Number.isFinite(reservaCruda) && reservaCruda > 0 ? reservaCruda : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
+    claseMin: Number.isFinite(claseCruda) && claseCruda > 0 ? claseCruda : CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
+  };
+}
 // FIX ClubOS (Filtrado Estricto): `claveLocalPorClub` (definida más abajo,
 // pero una `function` con hoisting — se puede llamar aquí sin problema)
 // mete el `club_id` activo en la llave de `localStorage`. Sin esto, un
@@ -2898,6 +2931,8 @@ function leerConfigClubLocal() {
       logoUrl: parsed.logoUrl || '',
       horaApertura: parsed.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura,
       horaCierre: parsed.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
+      duracionReservaMinutos: Number(parsed.duracionReservaMinutos) > 0 ? Number(parsed.duracionReservaMinutos) : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
+      duracionClaseMinutos: Number(parsed.duracionClaseMinutos) > 0 ? Number(parsed.duracionClaseMinutos) : CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
     };
   } catch (_e) {
     return { ...CONFIG_CLUB_DEFAULT };
@@ -3062,13 +3097,17 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
     // Club" → pestaña "General", `SeccionGeneralClub`) — pero
     // `guardarConfigClub` en `AppInterno` escribe el objeto de configuración
     // COMPLETO en cada guardado (nunca columnas sueltas), así que aquí se
-    // reenvían las horas TAL CUAL están en `configActual` para no pisarlas
-    // con el valor por defecto cada vez que se guarda solo nombre/logo.
+    // reenvían las horas (y, mismo criterio, la Duración de Bloques/Turnos —
+    // migracion_v42, editable desde "Configuración del Club" → "Reservas &
+    // Academia") TAL CUAL están en `configActual`, para no pisarlas con el
+    // valor por defecto cada vez que se guarda solo nombre/logo.
     const nuevaConfig = {
       nombre: nombre.trim(),
       logoUrl: logoUrl.trim() || configActual.logoUrl || '',
       horaApertura: configActual.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura,
       horaCierre: configActual.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
+      duracionReservaMinutos: configActual.duracionReservaMinutos || CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
+      duracionClaseMinutos: configActual.duracionClaseMinutos || CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
     };
     onClose();
     await onGuardar?.(nuevaConfig);
@@ -5518,6 +5557,11 @@ function ModalNuevaReserva({
   jugadoresPorId,
   horaAperturaMin = HORA_INICIO_MIN,
   horaCierreMin = HORA_FIN_MIN,
+  // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
+  // Academia", migracion_v42) — antes el default de Hora Fin sumaba 60 min
+  // fijos a Hora Inicio; ahora usa la duración configurada por el club (60
+  // min de respaldo si nunca se configuró, mismo comportamiento de siempre).
+  duracionReservaMinutos = 60,
 }) {
   const toast = useToast();
   const canchasDisponibles = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
@@ -5537,7 +5581,7 @@ function ModalNuevaReserva({
   const [horaInicio, setHoraInicio] = useState(() => horaInicial || minutosAHora(Math.min(Math.max(9 * 60, horaAperturaMin), horaCierreMin - 30)));
   const [horaFin, setHoraFin] = useState(() => {
     const base = parseHoraAMinutos(horaInicial) ?? Math.max(9 * 60, horaAperturaMin);
-    return minutosAHora(Math.min(base + 60, horaCierreMin));
+    return minutosAHora(Math.min(base + duracionReservaMinutos, horaCierreMin));
   });
   // Opciones de hora completas del `<select>` — mismo rango de Horario de
   // Operación del Club que pinta la Parrilla/Cronograma (item 4), en pasos
@@ -6289,6 +6333,11 @@ function ModuloParrillaOperativa({
   // rango que el club configuró (`ModalConfigClub`), con respaldo a ese
   // mismo límite fijo si el club no ha configurado nada todavía.
   const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(configClub);
+  // Duración de Bloques/Turnos (migracion_v42) — el cálculo automático de
+  // Hora Fin en "Nueva Reserva" respeta la duración que el club configuró
+  // (`Configuración del Club` → "Reservas & Academia"), con respaldo a 60
+  // min si nunca se configuró.
+  const { reservaMin: duracionReservaMinutos } = duracionesBloqueDelClub(configClub);
   const [vista, setVista] = useState('tarjetas');
   const [busqueda, setBusqueda] = useState('');
   const [filtroEstatus, setFiltroEstatus] = useState('todos');
@@ -6586,6 +6635,7 @@ function ModuloParrillaOperativa({
           jugadoresPorId={jugadoresPorId}
           horaAperturaMin={horaAperturaMin}
           horaCierreMin={horaCierreMin}
+          duracionReservaMinutos={duracionReservaMinutos}
           onCreada={(reserva, cancha) => {
             upsertReserva(reserva);
             onReservaParaCobro?.(reserva, cancha);
@@ -31303,39 +31353,6 @@ function DirectorioJugadoresCRM({
   );
 }
 
-// Interruptor Master ON/OFF del Módulo de Metas de Cortesía (mejora): texto
-// y color siempre en español y siempre visible — verde "Activado", gris
-// "Desactivado". Puramente controlado (`activo`/`onCambiar`), sin estado
-// propio, para que `ModalMetasCortesia` sea la única fuente de verdad.
-function SwitchMetasCortesia({ activo, onCambiar }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onCambiar(!activo)}
-      className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition ${
-        activo ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
-      }`}
-    >
-      <span className="flex items-center gap-2">
-        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activo ? 'bg-lime-500' : 'bg-slate-400'}`} />
-        <span className={`text-xs font-bold ${activo ? 'text-lime-700' : 'text-slate-600'}`}>
-          Módulo de Metas de Cortesía: {activo ? 'Activado' : 'Desactivado'}
-        </span>
-      </span>
-      <span
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${activo ? 'bg-lime-500' : 'bg-slate-300'}`}
-      >
-        <span
-          className={`inline-block h-4.5 w-4.5 transform rounded-full bg-white shadow transition ${
-            activo ? 'translate-x-6' : 'translate-x-1'
-          }`}
-          style={{ height: '1.125rem', width: '1.125rem' }}
-        />
-      </span>
-    </button>
-  );
-}
-
 // Sección "Productos Autorizados para Canje" (mejora), una por categoría —
 // checkboxes sobre el catálogo REAL del club (mismo filtro de categoría que
 // `ModalCanjearCortesia`), producto por producto o, si el producto tiene
@@ -31442,7 +31459,12 @@ function ModalMetasCortesia({
 }) {
   const [proShop, setProShop] = useState(() => String(metaProShopActual ?? META_CORTESIA_PROSHOP_DEFAULT));
   const [bar, setBar] = useState(() => String(metaBarActual ?? META_CORTESIA_BAR_DEFAULT));
-  const [activo, setActivo] = useState(activoActual !== false);
+  // Estandarización de UI (refactor): el Switch Master ON/OFF ya NO se edita
+  // aquí — se sacó a la tarjeta principal de "Configuración del Club" →
+  // "Jugadores & Fidelización" (`SeccionJugadoresFidelizacion`), con el
+  // mismo diseño que el switch de Add-ons. Este modal solo LEE `activoActual`
+  // (prop) para reenviarlo sin tocar en `guardar()` y para el aviso de abajo
+  // — nunca lo edita.
   // Sanitización de IDs Huérfanos (mejora): al ABRIR este modal, se descarta
   // de entrada cualquier clave guardada que ya no corresponda a un producto/
   // variante vivo del catálogo (`sanitizarAutorizadosCortesia`) — así el
@@ -31489,7 +31511,7 @@ function ModalMetasCortesia({
     await onGuardar?.({
       metaProShop: numProShop,
       metaBar: numBar,
-      activo,
+      activo: activoActual !== false,
       productosProShop: Array.from(autorizadosProShop),
       productosBar: Array.from(autorizadosBar),
     });
@@ -31499,15 +31521,13 @@ function ModalMetasCortesia({
   return (
     <ModalShell
       titulo="Editar Metas de Cortesía"
-      subtitulo="Monto, productos autorizados y activación del Motor de Cortesías por Fidelidad"
+      subtitulo="Monto y productos autorizados para el Motor de Cortesías por Fidelidad"
       onClose={onClose}
       icon={Gift}
       ancho="max-w-lg"
     >
       <div className="space-y-3.5">
-        <SwitchMetasCortesia activo={activo} onCambiar={setActivo} />
-
-        {!activo && (
+        {activoActual === false && (
           <p className="rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-[11px] text-slate-600">
             Con el módulo Desactivado se ocultan las barras de progreso de cortesía en la Vista 360°, las insignias de
             "🎁 Cortesía Disponible" en Smart POS y CRM, y no se puede acumular ni canjear cortesías. Las compras que
@@ -33030,6 +33050,13 @@ function normalizarFilaClub(fila, tabla) {
     // migración (`fila.hora_apertura`/`hora_cierre` vienen `undefined`).
     hora_apertura: fila.hora_apertura || '06:00',
     hora_cierre: fila.hora_cierre || '24:00',
+    // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
+    // Academia", migracion_v42) — mismo respaldo que el resto: un proyecto
+    // sin la migración trae `undefined` y el Portal cae a 60 min de siempre
+    // (ver `duracionesBloqueDelClub`, usado tanto por "Reservar Cancha" como
+    // por "Solicitar Clase").
+    duracion_reserva_minutos: Number(fila.duracion_reserva_minutos) > 0 ? Number(fila.duracion_reserva_minutos) : 60,
+    duracion_clase_minutos: Number(fila.duracion_clase_minutos) > 0 ? Number(fila.duracion_clase_minutos) : 60,
     // Configuración del Club → Add-ons (módulo nuevo) — mismo respaldo que
     // el resto de columnas opcionales de esta función: un proyecto sin la
     // migración simplemente trae `undefined`/`[]` y el Portal no muestra
@@ -33047,11 +33074,11 @@ function normalizarFilaClub(fila, tabla) {
 /* ============================================================================
  * MÓDULO: CONFIGURACIÓN DEL CLUB (nuevo) — visible solo para Admin/
  * Propietario (ver `NAV_MODULOS`/`PERMISOS_POR_ROL`, mismo candado de rol
- * que ya usa "Personalizar Club" en el Sidebar). Sistema de pestañas: solo
- * "Portal & Tienda Web" tiene contenido real por ahora — el resto
- * (General, Reservas & Canchas, Pagos & Facturación) son pestañas futuras,
- * ya en el selector para que el club sepa que vienen, con un estado
- * "Próximamente" en vez de esconderlas del todo.
+ * que ya usa "Personalizar Club" en el Sidebar). Sistema de pestañas:
+ * "Portal & Tienda Web", "General", "Jugadores & Fidelización" y "Reservas &
+ * Academia" ya tienen contenido real — solo "Pagos & Facturación" sigue
+ * como pestaña futura, con un estado "Próximamente" en vez de esconderla
+ * del todo.
  * ==========================================================================*/
 
 const TABS_CONFIGURACION_CLUB = [
@@ -33149,6 +33176,9 @@ function ModuloConfiguracionClub({
           rangosHorarioClases={rangosHorarioClases}
           onGuardarRangosHorarioClases={onGuardarRangosHorarioClases}
           guardandoRangosHorarioClases={guardandoRangosHorarioClases}
+          configClub={configClub}
+          onGuardarConfigClub={onGuardarConfigClub}
+          guardandoConfigClub={guardandoConfigClub}
         />
       ) : (
         <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white py-16 text-center text-slate-500">
@@ -33197,6 +33227,11 @@ function SeccionGeneralClub({ configClub, onGuardarConfigClub, guardandoConfigCl
       logoUrl: config.logoUrl,
       horaApertura,
       horaCierre,
+      // Duración de Bloques/Turnos (migracion_v42) — este componente no la
+      // edita, se reenvía TAL CUAL para no pisarla (`guardarConfigClub`
+      // escribe el objeto completo en cada guardado).
+      duracionReservaMinutos: config.duracionReservaMinutos,
+      duracionClaseMinutos: config.duracionClaseMinutos,
     });
   }
 
@@ -33264,6 +33299,22 @@ function SeccionJugadoresFidelizacion({
   const [mostrarModalMetas, setMostrarModalMetas] = useState(false);
   const activo = cortesiasActivas !== false;
 
+  // Estandarización de UI (refactor): el Switch Master ON/OFF salió del
+  // modal "Editar Metas de Cortesía" y se puso aquí, en la tarjeta
+  // principal — MISMO diseño/contenedor/estilo que el switch de Add-ons
+  // (`SeccionPortalTiendaWeb`/`alternarHabilitado`). Reenvía el resto de la
+  // configuración (metas/productos autorizados) SIN TOCAR, porque
+  // `guardarMetasCortesia` escribe el objeto completo en cada guardado.
+  function alternarActivo() {
+    onGuardarMetasCortesia?.({
+      metaProShop: metaCortesiaProShop,
+      metaBar: metaCortesiaBar,
+      activo: !activo,
+      productosProShop: productosAutorizadosCortesiaProShop,
+      productosBar: productosAutorizadosCortesiaBar,
+    });
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -33277,14 +33328,43 @@ function SeccionJugadoresFidelizacion({
           el club.
         </p>
 
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
+        <button
+          type="button"
+          onClick={alternarActivo}
+          disabled={guardandoMetasCortesia}
+          className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            activo ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activo ? 'bg-lime-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${activo ? 'text-lime-700' : 'text-slate-600'}`}>
+              Motor de Cortesías por Fidelidad: {activo ? 'Activado' : 'Desactivado'}
+            </span>
+          </span>
+          <span
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
+              activo ? 'bg-lime-500' : 'bg-slate-300'
+            }`}
+          >
+            <span
+              className={`inline-block h-4.5 w-4.5 transform rounded-full bg-white shadow transition ${
+                activo ? 'translate-x-6' : 'translate-x-1'
+              }`}
+              style={{ height: '1.125rem', width: '1.125rem' }}
+            />
+          </span>
+        </button>
+
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
           <div className="min-w-0">
             <p className="text-xs font-bold text-slate-700">
-              Motor de Cortesías: <span className={activo ? 'text-lime-600' : 'text-slate-500'}>{activo ? 'Activado' : 'Desactivado'}</span>
-            </p>
-            <p className="mt-0.5 truncate text-[11px] text-slate-500">
               Meta Pro-Shop: {formatoMoneda(Number(metaCortesiaProShop) || META_CORTESIA_PROSHOP_DEFAULT)} · Meta
               Restaurante/Bar: {formatoMoneda(Number(metaCortesiaBar) || META_CORTESIA_BAR_DEFAULT)}
+            </p>
+            <p className="mt-0.5 truncate text-[11px] text-slate-500">
+              {(productosAutorizadosCortesiaProShop || []).length} producto(s) autorizados en Pro-Shop ·{' '}
+              {(productosAutorizadosCortesiaBar || []).length} en Restaurante/Bar.
             </p>
           </div>
           <BotonSecundario onClick={() => setMostrarModalMetas(true)} className="shrink-0 px-3 py-1.5 text-xs">
@@ -33318,11 +33398,49 @@ function SeccionJugadoresFidelizacion({
 // `onGuardarRangosHorarioClases` → `guardarRangosHorarioClases` en
 // `AppInterno`, misma columna `configuracion_club.rangos_horario_clases`) —
 // solo cambió DE DÓNDE se dispara el modal.
-function SeccionReservasAcademia({ empleados, rangosHorarioClases, onGuardarRangosHorarioClases, guardandoRangosHorarioClases }) {
+function SeccionReservasAcademia({
+  empleados,
+  rangosHorarioClases,
+  onGuardarRangosHorarioClases,
+  guardandoRangosHorarioClases,
+  configClub,
+  onGuardarConfigClub,
+  guardandoConfigClub,
+}) {
   const [modalRangosHorario, setModalRangosHorario] = useState(false);
   // Mismo criterio que `ModuloAcademiaClinicas`/`ModalNuevaClase`/`ModalDetalleClase`.
   const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
   const totalBloques = (rangosHorarioClases || []).length;
+
+  // Duración de Bloques/Turnos (migracion_v42) — mismo criterio que
+  // `SeccionGeneralClub`: estado local editable + `useEffect` para
+  // resincronizar si `configClub` llega/cambia después de montar, y
+  // `onGuardarConfigClub` (→ `guardarConfigClub` en `AppInterno`) reenvía
+  // SIEMPRE nombre/logo/horario TAL CUAL están en `configClub`, porque ese
+  // callback escribe el objeto de configuración completo en cada guardado.
+  const config = configClub || CONFIG_CLUB_DEFAULT;
+  const [duracionReservaMinutos, setDuracionReservaMinutos] = useState(
+    config.duracionReservaMinutos || CONFIG_CLUB_DEFAULT.duracionReservaMinutos
+  );
+  const [duracionClaseMinutos, setDuracionClaseMinutos] = useState(
+    config.duracionClaseMinutos || CONFIG_CLUB_DEFAULT.duracionClaseMinutos
+  );
+
+  useEffect(() => {
+    setDuracionReservaMinutos(config.duracionReservaMinutos || CONFIG_CLUB_DEFAULT.duracionReservaMinutos);
+    setDuracionClaseMinutos(config.duracionClaseMinutos || CONFIG_CLUB_DEFAULT.duracionClaseMinutos);
+  }, [config.duracionReservaMinutos, config.duracionClaseMinutos]);
+
+  async function guardarDuraciones() {
+    await onGuardarConfigClub?.({
+      nombre: config.nombre,
+      logoUrl: config.logoUrl,
+      horaApertura: config.horaApertura,
+      horaCierre: config.horaCierre,
+      duracionReservaMinutos,
+      duracionClaseMinutos,
+    });
+  }
 
   return (
     <div className="space-y-4">
@@ -33348,6 +33466,72 @@ function SeccionReservasAcademia({ empleados, rangosHorarioClases, onGuardarRang
           <BotonSecundario onClick={() => setModalRangosHorario(true)} className="shrink-0 px-3 py-1.5 text-xs">
             <Clock size={13} /> Editar Horarios
           </BotonSecundario>
+        </div>
+      </div>
+
+      {/* Duración de Bloques/Turnos (migracion_v42) — impacta el cálculo
+          automático de hora final en "Nueva Reserva" (Parrilla Operativa,
+          `ModalNuevaReserva`) y los intervalos que genera el Portal en
+          "Reservar Cancha"/"Solicitar Clase" (`ModalReservarCancha`/
+          `ModalSolicitarClase`, sincronizados vía Realtime de
+          `configuracion_club` como el resto de esta pantalla). */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <Timer size={16} className="text-lime-500" />
+          <h3 className="text-sm font-black text-slate-900">Duración de Bloques / Turnos</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Duración por default de cada reserva de cancha y de cada clase — ajusta el cálculo automático de hora final
+          en la Parrilla Operativa y los intervalos disponibles en el Portal de Jugadores.
+        </p>
+
+        <div className="space-y-3.5">
+          <div>
+            <p className="mb-1.5 text-xs font-bold text-slate-700">Duración de Reservas de Cancha</p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {OPCIONES_DURACION_BLOQUE.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => setDuracionReservaMinutos(o.value)}
+                  className={`rounded-xl border px-3 py-2.5 text-left text-xs font-bold transition ${
+                    duracionReservaMinutos === o.value
+                      ? 'border-lime-400 bg-lime-400/10 text-lime-700'
+                      : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-1.5 text-xs font-bold text-slate-700">Duración de Clases</p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {OPCIONES_DURACION_BLOQUE.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => setDuracionClaseMinutos(o.value)}
+                  className={`rounded-xl border px-3 py-2.5 text-left text-xs font-bold transition ${
+                    duracionClaseMinutos === o.value
+                      ? 'border-lime-400 bg-lime-400/10 text-lime-700'
+                      : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 flex justify-end">
+          <BotonPrimario onClick={guardarDuraciones} disabled={guardandoConfigClub}>
+            {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Guardar duración
+          </BotonPrimario>
         </div>
       </div>
 
@@ -37503,15 +37687,21 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   }, [academiaClases, rangosHorario]);
 
   // Horas completas del día — Horario de Operación del Club (item 4,
-  // `minutosOperacionDelClub`), mismo rango que "Reservar Cancha", en pasos
-  // de 60 min (nunca 30). Respaldo a `HORA_INICIO_MIN`/`HORA_FIN_MIN` si el
-  // club no configuró nada.
+  // `minutosOperacionDelClub`), mismo rango que "Reservar Cancha". Respaldo a
+  // `HORA_INICIO_MIN`/`HORA_FIN_MIN` si el club no configuró nada.
   const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(club);
+  // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
+  // Academia", migracion_v42) — el paso entre horarios de inicio y la
+  // duración de cada bloque de clase ya NO son 60 min fijos: salen de
+  // `club.duracion_clase_minutos`, sincronizado en tiempo real vía Realtime
+  // de `configuracion_club` (mismo mecanismo que `rangos_horario_clases`).
+  // Respaldo a 60 min si el club nunca lo configuró.
+  const { claseMin: duracionClaseMinutos } = duracionesBloqueDelClub(club);
   const horasDelDia = useMemo(() => {
     const horas = [];
-    for (let m = horaAperturaMin; m + 60 <= horaCierreMin; m += 60) horas.push(m);
+    for (let m = horaAperturaMin; m + duracionClaseMinutos <= horaCierreMin; m += duracionClaseMinutos) horas.push(m);
     return horas;
-  }, [horaAperturaMin, horaCierreMin]);
+  }, [horaAperturaMin, horaCierreMin, duracionClaseMinutos]);
   const esHoy = fecha === hoyISO();
   // CONFIGURACIÓN DE HORARIOS DE CLASE DEL CLUB (item 2): antes de resolver
   // ocupación de cancha, se revisa si la hora siquiera cae dentro de algún
@@ -37522,7 +37712,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
     const ahoraMin = minutosAhora();
     return horasDelDia.map((m) => {
       const hIni = minutosAHora(m);
-      const hFin = minutosAHora(m + 60);
+      const hFin = minutosAHora(m + duracionClaseMinutos);
       const pasado = esHoy && m < ahoraMin;
       if (!horaDentroDeRangosClase(hIni, hFin, rangosHorario)) {
         return { horaInicio: hIni, horaFin: hFin, pasado, tipo: 'fuera_horario', coachesNombres: [] };
@@ -37539,7 +37729,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       const estado = estadoOcupacionAgregado(canchasActivas, fecha, hIni, hFin, reservas, academiaClases, coachPreferido, coachesDelBloque);
       return { horaInicio: hIni, horaFin: hFin, pasado, ...estado };
     });
-  }, [horasDelDia, canchasActivas, fecha, reservas, academiaClases, esHoy, rangosHorario, coachPreferido]);
+  }, [horasDelDia, canchasActivas, fecha, reservas, academiaClases, esHoy, rangosHorario, coachPreferido, duracionClaseMinutos]);
 
   // Filtrado de Horas Pasadas (item 4): si la hora seleccionada deja de ser
   // elegible (cambió la fecha, o ya pasó/se ocupó), se limpia sola en vez
@@ -38391,7 +38581,13 @@ const TURNOS_RESERVA_PORTAL = [
 function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, productosAddOns, variantesPorProducto, saldoWallet, onClose, onConfirmar }) {
   const [fecha, setFecha] = useState(hoyISO());
   const [turnoFiltro, setTurnoFiltro] = useState('todos');
-  const [duracionHoras, setDuracionHoras] = useState(1);
+  // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
+  // Academia", migracion_v42) — la duración PRESELECCIONADA al abrir este
+  // modal ahora sale de `club.duracion_reserva_minutos` (sincronizado en
+  // tiempo real vía Realtime de `configuracion_club`, igual que
+  // `addons_habilitados`/rangos de horario) en vez del 1h fijo de siempre;
+  // el jugador sigue pudiendo cambiarla a mano en el selector de Duración.
+  const [duracionHoras, setDuracionHoras] = useState(() => duracionesBloqueDelClub(club).reservaMin / 60);
   const [horaInicio, setHoraInicio] = useState('');
   const [addons, setAddons] = useState([]);
   const [addonParaVariante, setAddonParaVariante] = useState(null);
@@ -39754,7 +39950,14 @@ function AppInterno() {
       if (error) throw error;
       if (data) {
         setConfiguracionClubId(data.id);
-        if (data.nombre != null || data.logo_url != null || data.hora_apertura != null || data.hora_cierre != null) {
+        if (
+          data.nombre != null ||
+          data.logo_url != null ||
+          data.hora_apertura != null ||
+          data.hora_cierre != null ||
+          data.duracion_reserva_minutos != null ||
+          data.duracion_clase_minutos != null
+        ) {
           const nuevaConfig = {
             nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
             logoUrl: data.logo_url || '',
@@ -39764,6 +39967,11 @@ function AppInterno() {
             // límite fijo de siempre (`CONFIG_CLUB_DEFAULT`).
             horaApertura: data.hora_apertura || CONFIG_CLUB_DEFAULT.horaApertura,
             horaCierre: data.hora_cierre || CONFIG_CLUB_DEFAULT.horaCierre,
+            // Duración de Bloques/Turnos (migracion_v42) — mismo criterio:
+            // proyecto sin la migración → `undefined` → cae a 60 min de
+            // siempre (`CONFIG_CLUB_DEFAULT`).
+            duracionReservaMinutos: Number(data.duracion_reserva_minutos) > 0 ? Number(data.duracion_reserva_minutos) : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
+            duracionClaseMinutos: Number(data.duracion_clase_minutos) > 0 ? Number(data.duracion_clase_minutos) : CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
           };
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
@@ -40004,6 +40212,10 @@ function AppInterno() {
         // Horario de Operación del Club (item 4, migracion_v31).
         horaApertura: nuevaConfig.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura,
         horaCierre: nuevaConfig.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
+        // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
+        // Academia", migracion_v42).
+        duracionReservaMinutos: Number(nuevaConfig.duracionReservaMinutos) > 0 ? Number(nuevaConfig.duracionReservaMinutos) : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
+        duracionClaseMinutos: Number(nuevaConfig.duracionClaseMinutos) > 0 ? Number(nuevaConfig.duracionClaseMinutos) : CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
       };
       setGuardandoConfigClub(true);
       setConfigClub(limpia);
@@ -40015,16 +40227,22 @@ function AppInterno() {
           logo_url: limpia.logoUrl || null,
           hora_apertura: limpia.horaApertura,
           hora_cierre: limpia.horaCierre,
+          duracion_reserva_minutos: limpia.duracionReservaMinutos,
+          duracion_clase_minutos: limpia.duracionClaseMinutos,
         };
         // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo
-        // (como antes de este cambio): `hora_apertura`/`hora_cierre` son
-        // columnas NUEVAS (migracion_v31) — sin este reintento tolerante, un
-        // proyecto que no haya corrido la migración vería fallar TODO el
-        // guardado (incluyendo nombre/logo, que sí existen desde siempre)
-        // por 2 columnas que ni siquiera se están mostrando en pantalla.
+        // (como antes de este cambio): `hora_apertura`/`hora_cierre`/
+        // `duracion_reserva_minutos`/`duracion_clase_minutos` son columnas
+        // NUEVAS (migracion_v31/migracion_v42) — sin este reintento
+        // tolerante, un proyecto que no haya corrido la migración vería
+        // fallar TODO el guardado (incluyendo nombre/logo, que sí existen
+        // desde siempre) por columnas que ni siquiera se están mostrando en
+        // pantalla.
         const { error } = await actualizarConColumnasOpcionales('configuracion_club', CLUB_ACTIVO_ID, campos, [
           'hora_apertura',
           'hora_cierre',
+          'duracion_reserva_minutos',
+          'duracion_clase_minutos',
         ]);
         if (error) throw error;
         setConfiguracionClubId(CLUB_ACTIVO_ID);
