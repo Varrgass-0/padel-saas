@@ -1907,7 +1907,7 @@ const PERMISOS_POR_ROL = {
     soloLecturaParrilla: true,
     soloLecturaInventario: false,
     // Evaluación de Nivel y Progreso de Jugadores: el Coach es quien
-    // califica los 6 ejes técnicos y asigna el Nivel Oficial en el
+    // califica los 8 ejes técnicos y asigna el Nivel Oficial en el
     // Expediente Deportivo (Academia → Alumnos).
     puedeEvaluarJugadores: true,
     // El Coach programa/gestiona clases pero no puede borrarlas
@@ -2320,6 +2320,31 @@ function formatoFechaLarga(fechaISO) {
   } catch (_e) {
     return fechaISO;
   }
+}
+
+// Fix "Invalid Date" en el Historial de Observaciones del Expediente
+// Deportivo (mejora): `formatoFechaLarga` (arriba) está hecho para fechas
+// PURAS "YYYY-MM-DD" (reservas, etc.) — su `.split('-')` a mano truena en
+// silencio sobre un timestamp COMPLETO como `evaluaciones_jugador.fecha`/
+// `created_at` (`timestamptz`, ej. "2026-09-14T18:23:45.123Z"): el `split`
+// nunca lanza excepción (así que el `catch` de `formatoFechaLarga` nunca se
+// activa), pero `Number("14T18:23:45...")` da `NaN`, y
+// `new Date(NaN,NaN,NaN).toLocaleDateString(...)` regresa literal el string
+// "Invalid Date" — el bug reportado. Esta función SÍ sabe leer un timestamp
+// completo (usa `new Date(...)` directo, que entiende tanto ISO completo
+// como solo-fecha) y lee, en este orden de preferencia, el primer campo de
+// fecha que la observación traiga: `created_at` (`timestamptz` real de
+// Supabase) → `fecha_evaluacion` (por si algún día se renombra la columna)
+// → `fecha` (columna actual). Si no hay NINGÚN valor utilizable, o el que
+// sea que traiga no parsea a una fecha válida, cae a "ahora mismo" — nunca
+// se le muestra al club/jugador la palabra "Invalid" en ningún idioma.
+// Formato de salida corto tipo "14 sep 2026" (a pedido), no el largo con
+// día de la semana que usa `formatoFechaLarga` para reservas.
+function formatoFechaObservacion(obs) {
+  const crudo = obs?.created_at || obs?.fecha_evaluacion || obs?.fecha || null;
+  const fecha = crudo != null ? new Date(crudo) : new Date();
+  const fechaValida = fecha instanceof Date && !Number.isNaN(fecha.getTime()) ? fecha : new Date();
+  return fechaValida.toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 // "Agosto 2026" a partir de cualquier fecha "YYYY-MM-DD" dentro de ese mes —
@@ -25576,16 +25601,29 @@ const NIVELES_ACADEMIA = ['Principiante', 'Intermedio', 'Avanzado'];
  * ya cubre la trazabilidad si el jugador o el coach se llegaran a borrar.
  * ==========================================================================*/
 
-// Los 6 ejes técnicos del Skill Radar Chart — MISMO ORDEN siempre (columnas
+// Los 8 ejes técnicos del Skill Radar Chart — MISMO ORDEN siempre (columnas
 // de `evaluaciones_jugador`, ejes del radar, y campos del formulario de
 // calificación del Coach), para no tener que reordenar nada en 3 lugares
 // distintos si algún día cambia el criterio pedagógico.
+//
+// Independización de Métricas (mejora, migracion_v40): antes "Derecha" y
+// "Revés" compartían un solo eje combinado (`derecha_reves`), igual que
+// "Saque" y "Resto" (`saque_resto`) — ahora cada uno califica por separado,
+// de 1 a 10, con su propio slider/vértice del radar. Las evaluaciones VIEJAS
+// (guardadas antes de este cambio) no tienen forma de "adivinar" el valor
+// individual real de cada mitad — `migracion_v40_ejes_evaluacion_independientes.sql`
+// hace un backfill que copia el valor combinado de esas filas viejas a AMBOS
+// ejes nuevos (p. ej. `derecha = reves = derecha_reves`), así el historial
+// sigue mostrando un valor razonable en vez de quedar en blanco — nunca se
+// inventa una diferencia entre Derecha/Revés que no se capturó en su momento.
 const EJES_EVALUACION = [
-  { key: 'derecha_reves', label: 'Derecha/Revés', corto: 'Derecha/Revés' },
+  { key: 'derecha', label: 'Derecha', corto: 'Derecha' },
+  { key: 'reves', label: 'Revés', corto: 'Revés' },
   { key: 'paredes', label: 'Paredes', corto: 'Paredes' },
   { key: 'ataque_red', label: 'Ataque en Red', corto: 'Ataque Red' },
   { key: 'tactica', label: 'Táctica', corto: 'Táctica' },
-  { key: 'saque_resto', label: 'Saque/Resto', corto: 'Saque/Resto' },
+  { key: 'saque', label: 'Saque', corto: 'Saque' },
+  { key: 'resto', label: 'Resto', corto: 'Resto' },
   { key: 'fisico', label: 'Físico', corto: 'Físico' },
 ];
 
@@ -25593,7 +25631,7 @@ const EJES_EVALUACION = [
 // formulario del Coach, sin inventar una escala nueva.
 const ESCALA_MAX_EVALUACION = 10;
 
-// Promedio general de los 6 ejes (redondeado a 1 decimal) — `null` si algún
+// Promedio general de los 8 ejes (redondeado a 1 decimal) — `null` si algún
 // eje todavía no tiene valor capturado (evita mostrar/guardar un promedio a
 // medias mientras el Coach sigue llenando el formulario).
 function calcularPromedioEjes(valoresPorEje) {
@@ -25745,7 +25783,7 @@ function ModalPerfilDeportivoJugador({ evaluaciones, loading, onClose }) {
                     <div key={ev.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
                       <div className="flex items-center justify-between gap-2">
                         <p className="text-[11px] font-bold text-slate-600">{ev.coach_nombre || 'Coach'}</p>
-                        <p className="text-[10px] text-slate-500">{formatoFechaLarga(ev.fecha || ev.created_at)}</p>
+                        <p className="text-[10px] text-slate-500">{formatoFechaObservacion(ev)}</p>
                       </div>
                       {ev.nivel_asignado && (
                         <span
@@ -25771,8 +25809,8 @@ function ModalPerfilDeportivoJugador({ evaluaciones, loading, onClose }) {
 
 // Panel de Gestión — Expediente Deportivo de un alumno (abierto desde la
 // pestaña "Alumnos" de Academia & Clínicas): el Coach/Propietario califica
-// los 6 ejes técnicos, ve el Skill Radar Chart resultante en vivo, escribe
-// una nota pedagógica y asigna el Nivel Oficial — cada "Guardar Evaluación"
+// los 8 ejes técnicos, ve el Skill Radar Chart resultante en vivo, escribe
+// una observación y asigna el Nivel Oficial — cada "Guardar Evaluación"
 // crea una fila NUEVA en `evaluaciones_jugador` (nunca edita una vieja, ver
 // nota del bloque de arriba), así que el historial de progreso queda
 // intacto. `puedeEvaluar` (de `permisos.puedeEvaluarJugadores` — solo
@@ -25884,7 +25922,7 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
               </div>
             </Campo>
 
-            <Campo label="Nota pedagógica (opcional)">
+            <Campo label="Observaciones del Coach (opcional)">
               <textarea
                 value={comentarios}
                 onChange={(e) => setComentarios(e.target.value)}
@@ -25919,7 +25957,7 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
                   <div key={ev.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-[11px] font-bold text-slate-600">{ev.coach_nombre || 'Coach'}</p>
-                      <p className="text-[10px] text-slate-500">{formatoFechaLarga(ev.fecha || ev.created_at)}</p>
+                      <p className="text-[10px] text-slate-500">{formatoFechaObservacion(ev)}</p>
                     </div>
                     {ev.nivel_asignado && (
                       <span
@@ -38783,11 +38821,13 @@ function AppInterno() {
       jugador_nombre: jugadorNombre || null,
       coach_id: operador.id != null ? String(operador.id) : null,
       coach_nombre: operador.nombre || null,
-      derecha_reves: ejes.derecha_reves ?? null,
+      derecha: ejes.derecha ?? null,
+      reves: ejes.reves ?? null,
       paredes: ejes.paredes ?? null,
       ataque_red: ejes.ataque_red ?? null,
       tactica: ejes.tactica ?? null,
-      saque_resto: ejes.saque_resto ?? null,
+      saque: ejes.saque ?? null,
+      resto: ejes.resto ?? null,
       fisico: ejes.fisico ?? null,
       promedio,
       nivel_asignado: nivelAsignado || null,
@@ -38795,15 +38835,22 @@ function AppInterno() {
       fecha: new Date().toISOString(),
     };
     // Arquitectura Flexible: `jugador_nombre`/`coach_id`/`coach_nombre`/
-    // `comentarios` se reintentan sin la columna si el club todavía no ha
-    // vuelto a correr una versión más reciente de la migración con esos
-    // campos — los 6 ejes + `nivel_asignado`/`promedio`/`fecha` son
-    // obligatorios porque son el corazón del Expediente Deportivo.
+    // `comentarios` (de siempre) + `derecha`/`reves`/`saque`/`resto`
+    // (mejora: Independización de Métricas, migracion_v40 — reemplazan a los
+    // ejes combinados viejos `derecha_reves`/`saque_resto`) se reintentan
+    // sin la columna si el club todavía no ha corrido esa migración —
+    // `paredes`/`ataque_red`/`tactica`/`fisico`/`nivel_asignado`/`promedio`/
+    // `fecha` siguen siendo obligatorios porque son el corazón del
+    // Expediente Deportivo desde la migración original (v37).
     const { data, error } = await insertarConColumnasOpcionales('evaluaciones_jugador', payloadCompleto, [
       'jugador_nombre',
       'coach_id',
       'coach_nombre',
       'comentarios',
+      'derecha',
+      'reves',
+      'saque',
+      'resto',
     ]);
     if (error) {
       console.warn('[Evaluaciones] No se pudo guardar la evaluación en Supabase.', error);
