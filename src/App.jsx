@@ -3025,12 +3025,6 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
 
   const [nombre, setNombre] = useState(configActual.nombre || '');
   const [logoUrl, setLogoUrl] = useState(configActual.logoUrl || '');
-  // Horario de Operación del Club (item 4, migracion_v31): apertura/cierre
-  // dinámicos que reemplazan el límite fijo 06:00–24:00 en la Parrilla
-  // Operativa/Cronograma y en los selectores de hora de "Solicitar Clase",
-  // "Nueva Reserva" y las reservas del Portal.
-  const [horaApertura, setHoraApertura] = useState(configActual.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
-  const [horaCierre, setHoraCierre] = useState(configActual.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
   const [error, setError] = useState('');
 
   const logoPreview = logoUrl;
@@ -3063,15 +3057,18 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
       setError('El nombre del club es obligatorio.');
       return;
     }
-    if ((parseHoraAMinutos(horaCierre) ?? 0) <= (parseHoraAMinutos(horaApertura) ?? 0)) {
-      setError('La Hora de Cierre debe ser posterior a la Hora de Apertura.');
-      return;
-    }
+    // Horario de Operación del Club (item 4, migracion_v31): este modal ya
+    // NO edita Hora de Apertura/Cierre (refactor — ver "Configuración del
+    // Club" → pestaña "General", `SeccionGeneralClub`) — pero
+    // `guardarConfigClub` en `AppInterno` escribe el objeto de configuración
+    // COMPLETO en cada guardado (nunca columnas sueltas), así que aquí se
+    // reenvían las horas TAL CUAL están en `configActual` para no pisarlas
+    // con el valor por defecto cada vez que se guarda solo nombre/logo.
     const nuevaConfig = {
       nombre: nombre.trim(),
       logoUrl: logoUrl.trim() || configActual.logoUrl || '',
-      horaApertura,
-      horaCierre,
+      horaApertura: configActual.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura,
+      horaCierre: configActual.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
     };
     onClose();
     await onGuardar?.(nuevaConfig);
@@ -3120,34 +3117,6 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
               <span className="text-[10px] text-slate-400">Sin logo</span>
             )}
           </div>
-        </div>
-
-        {/* Horario de Operación del Club (item 4, migracion_v31): estas 2
-            horas completas reemplazan el límite fijo 06:00–24:00 en toda la
-            app — Parrilla Operativa, Cronograma (Academia incluida) y los
-            selectores de "Solicitar Clase"/"Nueva Reserva"/reservas del
-            Portal. Reutiliza las mismas opciones de hora completa
-            (`OPCIONES_HORA_COMPLETA_ACADEMIA`) que ya usa "Horarios
-            Habilitados para Clases". */}
-        <div className="grid grid-cols-2 gap-4">
-          <Campo label="Hora de Apertura">
-            <select value={horaApertura} onChange={(e) => setHoraApertura(e.target.value)} className={inputClase}>
-              {OPCIONES_HORA_COMPLETA_ACADEMIA.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
-          </Campo>
-          <Campo label="Hora de Cierre">
-            <select value={horaCierre} onChange={(e) => setHoraCierre(e.target.value)} className={inputClase}>
-              {OPCIONES_HORA_COMPLETA_ACADEMIA.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
-          </Campo>
         </div>
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
@@ -29391,7 +29360,10 @@ function ModuloAcademiaClinicas({
   const { aperturaMin: horaAperturaMinAcademia, cierreMin: horaCierreMinAcademia } = minutosOperacionDelClub(configClub);
   const [subvista, setSubvista] = useState('operativa');
   const [modalNuevaClase, setModalNuevaClase] = useState(false);
-  const [modalRangosHorario, setModalRangosHorario] = useState(false);
+  // Refactor (Centralización de Ajustes): "Horarios Habilitados" (botón +
+  // `ModalRangosHorarioClases`) se movió a "Configuración del Club" →
+  // pestaña "Reservas & Academia" (`SeccionReservasAcademia`) — ya no vive
+  // aquí, para evitar duplicidad.
   const [claseSeleccionadaId, setClaseSeleccionadaId] = useState(null);
   // Eliminar Clase Definitivamente (item 1) disparada directo desde la
   // tarjeta (`TarjetaClaseAcademia`), sin pasar primero por el detalle —
@@ -29931,14 +29903,6 @@ function ModuloAcademiaClinicas({
                 <CalendarRange size={14} /> Calendario
               </button>
             </div>
-            <BotonSecundario onClick={() => setModalRangosHorario(true)} className="px-3 py-1.5 text-xs">
-              <Clock size={14} /> Horarios Habilitados
-              {(rangosHorarioClases || []).length > 0 && (
-                <span className="rounded-full bg-lime-400/15 px-1.5 py-0.5 text-[9px] font-black text-lime-400">
-                  {rangosHorarioClases.length}
-                </span>
-              )}
-            </BotonSecundario>
             <BotonPrimario onClick={() => setModalNuevaClase(true)} className="px-3 py-1.5 text-xs">
               <Plus size={14} /> Nueva Clase
             </BotonPrimario>
@@ -30317,16 +30281,6 @@ function ModuloAcademiaClinicas({
               setSolicitudParaNuevaClase(null);
             }
           }}
-        />
-      )}
-
-      {modalRangosHorario && (
-        <ModalRangosHorarioClases
-          rangos={rangosHorarioClases}
-          coaches={coachesDisponiblesModulo}
-          onClose={() => setModalRangosHorario(false)}
-          onGuardar={onGuardarRangosHorarioClases}
-          guardando={guardandoRangosHorarioClases}
         />
       )}
 
@@ -31151,10 +31105,13 @@ function DirectorioJugadoresCRM({
   const [soloRiesgo, setSoloRiesgo] = useState(false);
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [sincronizando, setSincronizando] = useState(false);
-  // Modal "Editar Metas de Cortesía" (migracion_v35): edita
-  // `configuracion_club.meta_cortesia_proshop`/`meta_cortesia_bar` — ver
-  // botón junto a "Sincronizar" y `ModalMetasCortesia` más abajo.
-  const [mostrarModalMetas, setMostrarModalMetas] = useState(false);
+  // Refactor (Centralización de Ajustes): "Metas de Cortesía" (botón +
+  // `ModalMetasCortesia`) se movió a "Configuración del Club" → pestaña
+  // "Jugadores & Fidelización" (`SeccionJugadoresFidelizacion`) — ya no vive
+  // aquí, para evitar duplicidad. `metaCortesiaProShop`/`metaCortesiaBar`/
+  // `productosAutorizadosCortesiaProShop`/`productosAutorizadosCortesiaBar`
+  // siguen llegando como props porque `ModalPerfilJugadorCRM` (abajo) los
+  // sigue necesitando para el flujo de Canjear Cortesía por jugador.
   const mostrarToast = useToast();
 
   // Botón "Sincronizar": no solo refresca `jugadores`/`reservas`/`canchas`
@@ -31281,14 +31238,6 @@ function DirectorioJugadoresCRM({
           >
             <RefreshCw size={12} className={sincronizando ? 'animate-spin' : ''} /> {sincronizando ? 'Sincronizando…' : 'Sincronizar'}
           </button>
-          <button
-            type="button"
-            onClick={() => setMostrarModalMetas(true)}
-            title="Define el monto que debe consumir un jugador en Pro-Shop y en Restaurante/Bar para tener derecho a una Cortesía por Fidelidad"
-            className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600 transition hover:text-slate-900"
-          >
-            <Gift size={12} /> Metas de Cortesía
-          </button>
         </div>
       </div>
 
@@ -31350,20 +31299,6 @@ function DirectorioJugadoresCRM({
         />
       )}
 
-      {mostrarModalMetas && (
-        <ModalMetasCortesia
-          metaProShopActual={metaCortesiaProShop}
-          metaBarActual={metaCortesiaBar}
-          activoActual={cortesiasActivas}
-          productosAutorizadosProShopActual={productosAutorizadosCortesiaProShop}
-          productosAutorizadosBarActual={productosAutorizadosCortesiaBar}
-          productos={productos}
-          variantesPorProducto={variantesPorProducto}
-          onClose={() => setMostrarModalMetas(false)}
-          onGuardar={onGuardarMetasCortesia}
-          guardando={guardandoMetasCortesia}
-        />
-      )}
     </div>
   );
 }
@@ -33122,11 +33057,47 @@ function normalizarFilaClub(fila, tabla) {
 const TABS_CONFIGURACION_CLUB = [
   { value: 'portal', label: 'Portal & Tienda Web', icon: ShoppingBag },
   { value: 'general', label: 'General', icon: Settings2 },
-  { value: 'reservas', label: 'Reservas & Canchas', icon: LayoutGrid },
+  { value: 'jugadores', label: 'Jugadores & Fidelización', icon: Gift },
+  { value: 'reservas', label: 'Reservas & Academia', icon: LayoutGrid },
   { value: 'pagos', label: 'Pagos & Facturación', icon: CreditCard },
 ];
 
-function ModuloConfiguracionClub({ productos, addonsHabilitados, productosAddonsIds, onGuardarAddonsConfig, guardandoAddonsConfig }) {
+// Centralización de Ajustes (refactor): `ModuloConfiguracionClub` pasa a ser
+// el único punto de entrada para 3 ajustes que ANTES vivían dispersos en
+// otros módulos — Horario de Apertura/Cierre (antes en "Personalizar Club",
+// ver `Sidebar`/`ModalConfigClub`), Metas de Cortesía (antes en Jugadores →
+// Directorio & CRM, ver `DirectorioJugadoresCRM`) y Horarios Habilitados
+// para Clases (antes en Academia & Clínicas, ver `ModuloAcademiaClinicas`).
+// REGLA DE ORO de este refactor: NINGUNA de las 3 secciones nuevas
+// (`SeccionGeneralClub`/`SeccionJugadoresFidelizacion`/`SeccionReservasAcademia`)
+// inventa estado, validación o llamada a Supabase propia — cada una recibe
+// exactamente el mismo estado/props/callback (`onGuardarConfigClub` →
+// `guardarConfigClub`, `onGuardarMetasCortesia` → `guardarMetasCortesia`,
+// `onGuardarRangosHorarioClases` → `guardarRangosHorarioClases`, todos en
+// `AppInterno`) que ya usaban sus ubicaciones anteriores — solo se movió la
+// vista/botón que los dispara, nunca la lógica de fondo.
+function ModuloConfiguracionClub({
+  productos,
+  variantesPorProducto,
+  addonsHabilitados,
+  productosAddonsIds,
+  onGuardarAddonsConfig,
+  guardandoAddonsConfig,
+  configClub,
+  onGuardarConfigClub,
+  guardandoConfigClub,
+  empleados,
+  rangosHorarioClases,
+  onGuardarRangosHorarioClases,
+  guardandoRangosHorarioClases,
+  metaCortesiaProShop,
+  metaCortesiaBar,
+  cortesiasActivas,
+  productosAutorizadosCortesiaProShop,
+  productosAutorizadosCortesiaBar,
+  onGuardarMetasCortesia,
+  guardandoMetasCortesia,
+}) {
   const [tab, setTab] = useState('portal');
   const tabActual = TABS_CONFIGURACION_CLUB.find((t) => t.value === tab);
 
@@ -33158,6 +33129,27 @@ function ModuloConfiguracionClub({ productos, addonsHabilitados, productosAddons
           onGuardarAddonsConfig={onGuardarAddonsConfig}
           guardandoAddonsConfig={guardandoAddonsConfig}
         />
+      ) : tab === 'general' ? (
+        <SeccionGeneralClub configClub={configClub} onGuardarConfigClub={onGuardarConfigClub} guardandoConfigClub={guardandoConfigClub} />
+      ) : tab === 'jugadores' ? (
+        <SeccionJugadoresFidelizacion
+          productos={productos}
+          variantesPorProducto={variantesPorProducto}
+          metaCortesiaProShop={metaCortesiaProShop}
+          metaCortesiaBar={metaCortesiaBar}
+          cortesiasActivas={cortesiasActivas}
+          productosAutorizadosCortesiaProShop={productosAutorizadosCortesiaProShop}
+          productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
+          onGuardarMetasCortesia={onGuardarMetasCortesia}
+          guardandoMetasCortesia={guardandoMetasCortesia}
+        />
+      ) : tab === 'reservas' ? (
+        <SeccionReservasAcademia
+          empleados={empleados}
+          rangosHorarioClases={rangosHorarioClases}
+          onGuardarRangosHorarioClases={onGuardarRangosHorarioClases}
+          guardandoRangosHorarioClases={guardandoRangosHorarioClases}
+        />
       ) : (
         <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white py-16 text-center text-slate-500">
           <Wrench size={26} />
@@ -33171,6 +33163,207 @@ function ModuloConfiguracionClub({ productos, addonsHabilitados, productosAddons
   );
 }
 
+// Pestaña "General" — Horario de Apertura y Cierre del Club (antes vivía
+// dentro del modal "Personalizar Club", ver `ModalConfigClub` en `Sidebar`).
+// Reutiliza EXACTAMENTE el mismo estado/callback que ya existía
+// (`configClub`/`onGuardarConfigClub` → `guardarConfigClub` en `AppInterno`,
+// misma tabla `configuracion_club`, mismas columnas `hora_apertura`/
+// `hora_cierre`) — aquí solo se manda el par de horas actualizado, siempre
+// junto con `nombre`/`logoUrl` SIN TOCAR (tal como ya están en `configClub`),
+// porque `guardarConfigClub` escribe el objeto de configuración completo en
+// cada guardado, nunca columnas sueltas.
+function SeccionGeneralClub({ configClub, onGuardarConfigClub, guardandoConfigClub }) {
+  const config = configClub || CONFIG_CLUB_DEFAULT;
+  const [horaApertura, setHoraApertura] = useState(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
+  const [horaCierre, setHoraCierre] = useState(config.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
+  const [error, setError] = useState('');
+
+  // Sincroniza los selectores si `configClub` llega/cambia después de montar
+  // este componente (ej. la primera carga desde Supabase todavía no había
+  // respondido cuando se abrió esta pestaña).
+  useEffect(() => {
+    setHoraApertura(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
+    setHoraCierre(config.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
+  }, [config.horaApertura, config.horaCierre]);
+
+  async function guardar() {
+    setError('');
+    if ((parseHoraAMinutos(horaCierre) ?? 0) <= (parseHoraAMinutos(horaApertura) ?? 0)) {
+      setError('La Hora de Cierre debe ser posterior a la Hora de Apertura.');
+      return;
+    }
+    await onGuardarConfigClub?.({
+      nombre: config.nombre,
+      logoUrl: config.logoUrl,
+      horaApertura,
+      horaCierre,
+    });
+  }
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="mb-1 flex items-center gap-2">
+        <Clock size={16} className="text-lime-500" />
+        <h3 className="text-sm font-black text-slate-900">Horario de Apertura y Cierre</h3>
+      </div>
+      <p className="mb-3 text-xs text-slate-500">
+        Define el rango de operación del club — reemplaza el límite fijo en la Parrilla Operativa, el Cronograma de
+        Academia y los selectores de hora de "Solicitar Clase"/"Nueva Reserva"/reservas del Portal.
+      </p>
+
+      <div className="grid grid-cols-2 gap-4">
+        <Campo label="Hora de Apertura">
+          <select value={horaApertura} onChange={(e) => setHoraApertura(e.target.value)} className={inputClase}>
+            {OPCIONES_HORA_COMPLETA_ACADEMIA.map((h) => (
+              <option key={h} value={h}>
+                {h}
+              </option>
+            ))}
+          </select>
+        </Campo>
+        <Campo label="Hora de Cierre">
+          <select value={horaCierre} onChange={(e) => setHoraCierre(e.target.value)} className={inputClase}>
+            {OPCIONES_HORA_COMPLETA_ACADEMIA.map((h) => (
+              <option key={h} value={h}>
+                {h}
+              </option>
+            ))}
+          </select>
+        </Campo>
+      </div>
+
+      {error && <p className="mt-3 text-xs font-semibold text-rose-400">{error}</p>}
+
+      <div className="mt-4 flex justify-end">
+        <BotonPrimario onClick={guardar} disabled={guardandoConfigClub}>
+          {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+          Guardar horario
+        </BotonPrimario>
+      </div>
+    </div>
+  );
+}
+
+// Pestaña "Jugadores & Fidelización" — Metas de Cortesía (antes vivía como
+// botón/modal arriba del Directorio & CRM, ver `DirectorioJugadoresCRM`).
+// Reutiliza EXACTAMENTE el mismo estado/callback/modal que ya existían
+// (`ModalMetasCortesia`, `onGuardarMetasCortesia` → `guardarMetasCortesia`
+// en `AppInterno`, misma tabla `configuracion_club`) — solo cambió DE DÓNDE
+// se dispara el modal.
+function SeccionJugadoresFidelizacion({
+  productos,
+  variantesPorProducto,
+  metaCortesiaProShop,
+  metaCortesiaBar,
+  cortesiasActivas,
+  productosAutorizadosCortesiaProShop,
+  productosAutorizadosCortesiaBar,
+  onGuardarMetasCortesia,
+  guardandoMetasCortesia,
+}) {
+  const [mostrarModalMetas, setMostrarModalMetas] = useState(false);
+  const activo = cortesiasActivas !== false;
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <Gift size={16} className="text-lime-500" />
+          <h3 className="text-sm font-black text-slate-900">Metas de Cortesía</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Define el monto que debe consumir un jugador en Pro-Shop y en Restaurante/Bar para tener derecho a una
+          Cortesía por Fidelidad, qué productos se pueden regalar, y si el Motor de Cortesías está activo para todo
+          el club.
+        </p>
+
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-slate-700">
+              Motor de Cortesías: <span className={activo ? 'text-lime-600' : 'text-slate-500'}>{activo ? 'Activado' : 'Desactivado'}</span>
+            </p>
+            <p className="mt-0.5 truncate text-[11px] text-slate-500">
+              Meta Pro-Shop: {formatoMoneda(Number(metaCortesiaProShop) || META_CORTESIA_PROSHOP_DEFAULT)} · Meta
+              Restaurante/Bar: {formatoMoneda(Number(metaCortesiaBar) || META_CORTESIA_BAR_DEFAULT)}
+            </p>
+          </div>
+          <BotonSecundario onClick={() => setMostrarModalMetas(true)} className="shrink-0 px-3 py-1.5 text-xs">
+            <Gift size={13} /> Editar Metas
+          </BotonSecundario>
+        </div>
+      </div>
+
+      {mostrarModalMetas && (
+        <ModalMetasCortesia
+          metaProShopActual={metaCortesiaProShop}
+          metaBarActual={metaCortesiaBar}
+          activoActual={cortesiasActivas}
+          productosAutorizadosProShopActual={productosAutorizadosCortesiaProShop}
+          productosAutorizadosBarActual={productosAutorizadosCortesiaBar}
+          productos={productos}
+          variantesPorProducto={variantesPorProducto}
+          onClose={() => setMostrarModalMetas(false)}
+          onGuardar={onGuardarMetasCortesia}
+          guardando={guardandoMetasCortesia}
+        />
+      )}
+    </div>
+  );
+}
+
+// Pestaña "Reservas & Academia" — Horarios Habilitados para Clases (antes
+// vivía como botón/modal arriba del Cronograma de Academia & Clínicas, ver
+// `ModuloAcademiaClinicas`). Reutiliza EXACTAMENTE el mismo estado/callback/
+// modal que ya existían (`ModalRangosHorarioClases`,
+// `onGuardarRangosHorarioClases` → `guardarRangosHorarioClases` en
+// `AppInterno`, misma columna `configuracion_club.rangos_horario_clases`) —
+// solo cambió DE DÓNDE se dispara el modal.
+function SeccionReservasAcademia({ empleados, rangosHorarioClases, onGuardarRangosHorarioClases, guardandoRangosHorarioClases }) {
+  const [modalRangosHorario, setModalRangosHorario] = useState(false);
+  // Mismo criterio que `ModuloAcademiaClinicas`/`ModalNuevaClase`/`ModalDetalleClase`.
+  const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
+  const totalBloques = (rangosHorarioClases || []).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <Clock size={16} className="text-lime-500" />
+          <h3 className="text-sm font-black text-slate-900">Horarios Habilitados para Clases</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Bloques de horario (ej. 07:00–10:00) en los que el Portal permite "Solicitar Clase" — con coach asignado
+          opcional por bloque. Sin bloques configurados, no hay restricción de horario.
+        </p>
+
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-slate-700">
+              {totalBloques} {totalBloques === 1 ? 'bloque configurado' : 'bloques configurados'}
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              {totalBloques === 0 ? 'Sin restricción de horario — cualquier hora dentro del horario del club se puede solicitar.' : 'El Portal solo deja elegir horas dentro de estos bloques.'}
+            </p>
+          </div>
+          <BotonSecundario onClick={() => setModalRangosHorario(true)} className="shrink-0 px-3 py-1.5 text-xs">
+            <Clock size={13} /> Editar Horarios
+          </BotonSecundario>
+        </div>
+      </div>
+
+      {modalRangosHorario && (
+        <ModalRangosHorarioClases
+          rangos={rangosHorarioClases}
+          coaches={coachesDisponibles}
+          onClose={() => setModalRangosHorario(false)}
+          onGuardar={onGuardarRangosHorarioClases}
+          guardando={guardandoRangosHorarioClases}
+        />
+      )}
+    </div>
+  );
+}
+
 // Pestaña "Portal & Tienda Web" — hoy solo trae Add-ons (Switch Master
 // ON/OFF + curación de productos de Pro-Shop), pero vive en su propia
 // sección para que sea fácil sumarle más ajustes del Portal más adelante
@@ -33178,14 +33371,17 @@ function ModuloConfiguracionClub({ productos, addonsHabilitados, productosAddons
 function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsIds, onGuardarAddonsConfig, guardandoAddonsConfig }) {
   const [modalSeleccion, setModalSeleccion] = useState(false);
 
-  const productosProShop = useMemo(
-    () => (productos || []).filter((p) => p.categoria === 'Pro-Shop' && p.activo !== false),
-    [productos]
-  );
+  // Ampliación Multi-Categoría (refactor): antes esta franja solo curaba
+  // Pro-Shop — ahora el club puede elegir Add-ons de CUALQUIER categoría del
+  // catálogo (Pro-Shop, Restaurante/Bar, Rentas/Servicios), no solo
+  // artículos. El filtro por categoría en sí vive DENTRO del modal
+  // (`ModalSeleccionProductosAddons`, tabs `CATEGORIAS_PRODUCTO`); aquí solo
+  // se deja pasar el catálogo completo (activo) para que el modal decida.
+  const productosParaAddons = useMemo(() => (productos || []).filter((p) => p.activo !== false), [productos]);
   const productosSeleccionados = useMemo(() => {
     const set = new Set((productosAddonsIds || []).map((id) => String(id)));
-    return productosProShop.filter((p) => set.has(String(p.id)));
-  }, [productosProShop, productosAddonsIds]);
+    return productosParaAddons.filter((p) => set.has(String(p.id)));
+  }, [productosParaAddons, productosAddonsIds]);
 
   function alternarHabilitado() {
     onGuardarAddonsConfig?.({ habilitados: !addonsHabilitados, productosIds: productosAddonsIds });
@@ -33204,9 +33400,9 @@ function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsI
           <h3 className="text-sm font-black text-slate-900">Add-ons del Portal</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
-          Los Add-ons son productos del Pro-Shop que se destacan como sugerencia rápida para el jugador durante el
-          pago en el Portal (reserva de cancha y Tienda) — ideal para promover overgrips, pelotas o cualquier
-          producto de alta rotación.
+          Los Add-ons son productos o servicios del catálogo — de cualquier categoría (Pro-Shop, Restaurante/Bar,
+          Rentas/Servicios) — que se destacan como sugerencia rápida para el jugador durante el pago en el Portal
+          (reserva de cancha y Tienda). Ideal para promover overgrips, bebidas, snacks o renta de equipo.
         </p>
 
         <button
@@ -33256,7 +33452,7 @@ function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsI
 
       {modalSeleccion && (
         <ModalSeleccionProductosAddons
-          productos={productosProShop}
+          productos={productosParaAddons}
           seleccionadosIniciales={productosAddonsIds}
           guardando={guardandoAddonsConfig}
           onClose={() => setModalSeleccion(false)}
@@ -33275,13 +33471,19 @@ function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsI
 function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guardando, onClose, onGuardar }) {
   const [seleccionados, setSeleccionados] = useState(() => new Set((seleccionadosIniciales || []).map((id) => String(id))));
   const [busqueda, setBusqueda] = useState('');
+  // Filtro/Tabs por Categoría (refactor Multi-Categoría) — mismo `value` que
+  // `CATEGORIAS_PRODUCTO` ('todos' | 'Pro-Shop' | 'Cafetería/Bar' | 'Rentas'),
+  // reutilizado tal cual para que las etiquetas/iconos queden idénticos al
+  // resto de la app (POS, Inventario).
+  const [categoriaFiltro, setCategoriaFiltro] = useState('todos');
 
   const catalogo = useMemo(() => {
     const filtro = busqueda.trim().toLowerCase();
     return (productos || [])
+      .filter((p) => categoriaFiltro === 'todos' || p.categoria === categoriaFiltro)
       .filter((p) => !filtro || (p.nombre || '').toLowerCase().includes(filtro))
       .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
-  }, [productos, busqueda]);
+  }, [productos, busqueda, categoriaFiltro]);
 
   function alternar(id) {
     setSeleccionados((prev) => {
@@ -33296,28 +33498,47 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
   return (
     <ModalShell
       titulo="Elegir Productos para Add-ons"
-      subtitulo="Del catálogo de Pro-Shop — se muestran como sugerencia rápida en el checkout del Portal"
+      subtitulo="De todo el catálogo — Pro-Shop, Restaurante/Bar y Rentas — se muestran como sugerencia rápida en el checkout del Portal"
       onClose={onClose}
       icon={ShoppingBag}
       ancho="max-w-lg"
     >
       <div className="space-y-3">
+        <div className="flex flex-wrap gap-1 rounded-lg border border-slate-300 bg-slate-100 p-1">
+          {CATEGORIAS_PRODUCTO.map((c) => {
+            const Icon = c.icon;
+            return (
+              <button
+                key={c.value}
+                type="button"
+                onClick={() => setCategoriaFiltro(c.value)}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                  categoriaFiltro === c.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Icon size={13} /> {c.label}
+              </button>
+            );
+          })}
+        </div>
+
         <div className="relative">
           <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar producto de Pro-Shop..."
+            placeholder="Buscar producto o servicio..."
             className={`${inputClase} pl-9`}
           />
         </div>
 
         <div className="max-h-80 space-y-1.5 overflow-y-auto pr-1">
           {catalogo.length === 0 && (
-            <p className="py-8 text-center text-xs text-slate-500">Sin productos de Pro-Shop en el catálogo.</p>
+            <p className="py-8 text-center text-xs text-slate-500">Sin productos en esta categoría.</p>
           )}
           {catalogo.map((p) => {
             const marcado = seleccionados.has(String(p.id));
+            const catMeta = CATEGORIA_META[p.categoria];
             return (
               <label
                 key={p.id}
@@ -33341,6 +33562,11 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
                   <p className="truncate text-xs font-bold text-slate-900">{p.nombre}</p>
                   <p className="text-[11px] text-slate-500">{formatoMoneda(Number(p.precio) || 0)}</p>
                 </div>
+                {categoriaFiltro === 'todos' && catMeta && (
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ${catMeta.badge}`}>
+                    {catMeta.label}
+                  </span>
+                )}
               </label>
             );
           })}
@@ -41200,10 +41426,25 @@ function AppInterno() {
               // guardado en localStorage de una sesión anterior con otro rol).
               <ModuloConfiguracionClub
                 productos={productos}
+                variantesPorProducto={variantesPorProducto}
                 addonsHabilitados={addonsHabilitados}
                 productosAddonsIds={productosAddonsIds}
                 onGuardarAddonsConfig={guardarAddonsConfig}
                 guardandoAddonsConfig={guardandoAddonsConfig}
+                configClub={configClub}
+                onGuardarConfigClub={guardarConfigClub}
+                guardandoConfigClub={guardandoConfigClub}
+                empleados={empleados}
+                rangosHorarioClases={rangosHorarioClases}
+                onGuardarRangosHorarioClases={guardarRangosHorarioClases}
+                guardandoRangosHorarioClases={guardandoRangosHorarioClases}
+                metaCortesiaProShop={metaCortesiaProShop}
+                metaCortesiaBar={metaCortesiaBar}
+                cortesiasActivas={cortesiasActivas}
+                productosAutorizadosCortesiaProShop={productosAutorizadosCortesiaProShop}
+                productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
+                onGuardarMetasCortesia={guardarMetasCortesia}
+                guardandoMetasCortesia={guardandoMetasCortesia}
               />
             ) : null}
           </main>
