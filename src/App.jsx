@@ -1586,6 +1586,33 @@ function opcionesHoraEnRango(aperturaMin, cierreMin, pasoMin = SLOT_MIN) {
   return horas;
 }
 
+// Alinea un horario (en minutos) al múltiplo válido más cercano por abajo de
+// `pasoMin`, a partir de `aperturaMin` — usado por "Nueva Reserva" (Duración
+// de Bloques/Turnos, migracion_v42): un horario propuesto que NO caiga
+// exacto en un múltiplo de la duración configurada (ej. el Cronograma pasa
+// horas cada `SLOT_MIN` = 30 min, pero el club configuró bloques de 60/90/120)
+// se recorta hacia abajo al bloque válido más cercano, así el `<select>` de
+// Hora Inicio siempre arranca en una opción que de verdad existe en su lista.
+function alinearABloque(min, aperturaMin, pasoMin) {
+  if (min === null || min === undefined || !Number.isFinite(min)) return aperturaMin;
+  const offset = Math.max(0, min - aperturaMin);
+  return aperturaMin + Math.floor(offset / pasoMin) * pasoMin;
+}
+
+// Lista de horarios de inicio válidos (en MINUTOS, sin formatear) dentro de
+// un rango — mismo criterio que `opcionesHoraEnRango`, pero exigiendo que
+// el bloque completo (`inicio + pasoMin`) quepa antes del cierre, para que
+// nunca se ofrezca un horario de inicio cuyo bloque se pase del Horario de
+// Operación del Club. Usada por "Nueva Reserva" (Duración de Bloques/
+// Turnos, migracion_v42) tanto para las opciones del `<select>` como para
+// alinear su valor inicial — así los dos SIEMPRE quedan en sincronía, aún
+// cuando el rango total no sea múltiplo exacto de `pasoMin`.
+function minutosBloquesEnRango(aperturaMin, cierreMin, pasoMin) {
+  const lista = [];
+  for (let m = aperturaMin; m + pasoMin <= cierreMin; m += pasoMin) lista.push(m);
+  return lista;
+}
+
 const ESTADOS_PAGO = [
   { value: 'pagado', label: 'Pagado', tone: 'emerald' },
   { value: 'pendiente', label: 'Pendiente (Cobro en Recepción)', tone: 'amber' },
@@ -5575,19 +5602,43 @@ function ModalNuevaReserva({
   const [telefono, setTelefono] = useState('');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [fecha, setFecha] = useState(fechaInicial || hoyISO());
-  // Selectores desplegables de Hora Inicio/Fin (item 2) dentro del Horario de
-  // Operación del Club (item 4, `horaAperturaMin`/`horaCierreMin`) — el
-  // default de 9:00am se recorta al rango del club si éste abre más tarde.
-  const [horaInicio, setHoraInicio] = useState(() => horaInicial || minutosAHora(Math.min(Math.max(9 * 60, horaAperturaMin), horaCierreMin - 30)));
-  const [horaFin, setHoraFin] = useState(() => {
-    const base = parseHoraAMinutos(horaInicial) ?? Math.max(9 * 60, horaAperturaMin);
-    return minutosAHora(Math.min(base + duracionReservaMinutos, horaCierreMin));
+  // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
+  // Academia", migracion_v42, corrección de consistencia): Hora Inicio ya
+  // NO se elige entre franjas genéricas de 30 min (`SLOT_MIN`) — las
+  // opciones del selector ahora son múltiplos exactos de
+  // `duracionReservaMinutos` a partir de la apertura del club, y Hora Fin
+  // deja de ser un segundo `<select>` editable: se FIJA sola sumando
+  // `duracionReservaMinutos` a la Hora Inicio elegida, para que nunca pueda
+  // armarse una reserva con una duración distinta a la que el club
+  // configuró. `horaInicial` puede venir del Cronograma (celdas cada 30 min,
+  // `SLOT_MIN`) — `alinearABloque` la recorta hacia abajo al múltiplo válido
+  // más cercano para que el valor inicial del `<select>` siempre exista
+  // entre las opciones generadas.
+  const [horaInicio, setHoraInicio] = useState(() => {
+    const deseada = parseHoraAMinutos(horaInicial) ?? Math.max(9 * 60, horaAperturaMin);
+    const bloques = minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionReservaMinutos);
+    if (bloques.length === 0) return minutosAHora(horaAperturaMin);
+    const alineada = alinearABloque(deseada, horaAperturaMin, duracionReservaMinutos);
+    return minutosAHora(Math.min(alineada, bloques[bloques.length - 1]));
   });
-  // Opciones de hora completas del `<select>` — mismo rango de Horario de
-  // Operación del Club que pinta la Parrilla/Cronograma (item 4), en pasos
-  // de 30 min (`SLOT_MIN`, igual resolución que la cuadrícula de la Parrilla
-  // Operativa) en vez de los `<input type="time">` manuales de antes (item 2).
-  const opcionesHora = useMemo(() => opcionesHoraEnRango(horaAperturaMin, horaCierreMin, SLOT_MIN), [horaAperturaMin, horaCierreMin]);
+  // Opciones de Hora Inicio — múltiplos exactos de `duracionReservaMinutos`
+  // dentro del Horario de Operación del Club (item 4), nunca los 30 min
+  // genéricos de siempre (`SLOT_MIN`, que solo sigue usando la cuadrícula
+  // visual del Cronograma, no este formulario). Misma fuente
+  // (`minutosBloquesEnRango`) que el valor inicial de arriba, para que el
+  // `<select>` controlado nunca quede en un valor fuera de sus propias
+  // opciones.
+  const opcionesHoraInicio = useMemo(() => {
+    return minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionReservaMinutos).map(minutosAHora);
+  }, [horaAperturaMin, horaCierreMin, duracionReservaMinutos]);
+  // Hora Fin — derivada, nunca editable a mano: Hora Inicio + duración
+  // configurada por el club, recortada al cierre del club como último
+  // respaldo defensivo.
+  const horaFin = useMemo(() => {
+    const ini = parseHoraAMinutos(horaInicio);
+    if (ini === null) return '';
+    return minutosAHora(Math.min(ini + duracionReservaMinutos, horaCierreMin));
+  }, [horaInicio, duracionReservaMinutos, horaCierreMin]);
   const [monto, setMonto] = useState('');
   const [montoTocado, setMontoTocado] = useState(false);
   const [guardando, setGuardando] = useState(false);
@@ -5766,25 +5817,25 @@ function ModalNuevaReserva({
             <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
           </Campo>
           {/* Selectores desplegables de Hora Inicio/Fin (item 2, Turno
-              nuevo): reemplazan los `<input type="time">` manuales por
-              `<select>` con horas completas en pasos de 30 min, dentro del
-              Horario de Operación del Club configurado (item 4). */}
+              nuevo; corrección de consistencia migracion_v42): Hora Inicio
+              ofrece únicamente múltiplos de `duracionReservaMinutos` —
+              nunca los 30 min genéricos de antes — dentro del Horario de
+              Operación del Club configurado (item 4). Hora Fin ya NO es un
+              `<select>` editable: se fija sola sumando la duración
+              configurada, así ninguna reserva puede quedar con una
+              duración distinta a la que el club definió. */}
           <Campo label="Hora inicio">
             <select value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase}>
-              {opcionesHora.map((h) => (
+              {opcionesHoraInicio.map((h) => (
                 <option key={h} value={h}>
                   {h}
                 </option>
               ))}
             </select>
           </Campo>
-          <Campo label="Hora fin">
-            <select value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase}>
-              {opcionesHora.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
+          <Campo label={`Hora fin (${duracionReservaMinutos} min, automática)`}>
+            <select value={horaFin} disabled className={`${inputClase} cursor-not-allowed opacity-70`}>
+              <option value={horaFin}>{horaFin}</option>
             </select>
           </Campo>
         </div>
@@ -33966,10 +34017,17 @@ function estadoOcupacionAgregado(canchasActivas, fecha, horaInicio, horaFin, res
 // de una lista. Mismo `buscarSolapeEnCancha` que ya usa el panel interno de
 // la Parrilla, así el Portal nunca deja reservar un horario que el
 // mostrador ya considera ocupado, y viceversa.
-function franjasDelDiaConEstado(canchaId, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin = HORA_INICIO_MIN, horaCierreMin = HORA_FIN_MIN) {
+function franjasDelDiaConEstado(canchaId, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin = HORA_INICIO_MIN, horaCierreMin = HORA_FIN_MIN, pasoMin) {
   const duracionMin = Math.round((Number(duracionHoras) || 1) * 60);
+  // Duración de Bloques/Turnos (migracion_v42, corrección de consistencia):
+  // el paso entre horas de inicio ya NO es 60 min fijo — sale de
+  // `pasoMin` (la duración que el club configuró) para que la cuadrícula
+  // nunca ofrezca fracciones de tiempo que se solapen entre sí. Respaldo a
+  // la propia `duracionMin` (comportamiento histórico: un paso = la
+  // duración elegida) si no se pasa `pasoMin` explícito.
+  const paso = Number(pasoMin) > 0 ? Number(pasoMin) : duracionMin;
   const franjas = [];
-  for (let inicio = horaAperturaMin; inicio + duracionMin <= horaCierreMin; inicio += 60) {
+  for (let inicio = horaAperturaMin; inicio + duracionMin <= horaCierreMin; inicio += paso) {
     const horaInicio = minutosAHora(inicio);
     const horaFin = minutosAHora(inicio + duracionMin);
     const { tipo, coachNombre } = estadoOcupacionCanchaSlot(canchaId, fecha, horaInicio, horaFin, reservas, academiaClases);
@@ -38582,12 +38640,25 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   const [fecha, setFecha] = useState(hoyISO());
   const [turnoFiltro, setTurnoFiltro] = useState('todos');
   // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
-  // Academia", migracion_v42) — la duración PRESELECCIONADA al abrir este
-  // modal ahora sale de `club.duracion_reserva_minutos` (sincronizado en
+  // Academia", migracion_v42, corrección de consistencia): la duración de
+  // la reserva ya NO es una elección libre del jugador — es un valor
+  // DERIVADO, FIJO, de `club.duracion_reserva_minutos` (sincronizado en
   // tiempo real vía Realtime de `configuracion_club`, igual que
-  // `addons_habilitados`/rangos de horario) en vez del 1h fijo de siempre;
-  // el jugador sigue pudiendo cambiarla a mano en el selector de Duración.
-  const [duracionHoras, setDuracionHoras] = useState(() => duracionesBloqueDelClub(club).reservaMin / 60);
+  // `addons_habilitados`/rangos de horario). Se calcula en cada render
+  // (nunca `useState`) para que un cambio del club en vivo se refleje sin
+  // esperar a que el jugador vuelva a abrir el modal.
+  const duracionReservaMinutos = duracionesBloqueDelClub(club).reservaMin;
+  const duracionHoras = duracionReservaMinutos / 60;
+  // El selector de Duración solo debe ofrecer la opción que coincide EXACTO
+  // con la regla del club (ej. si `duracion_reserva_minutos === 60`, jamás
+  // se deben mostrar "1.5 horas"/"2 horas") — nunca las 3 opciones fijas de
+  // `DURACIONES_RENTA` sin filtrar. Respaldo defensivo a la lista completa
+  // si por cualquier motivo no hubiera ningún match exacto (nunca debería
+  // pasar: la configuración solo guarda 60/90/120).
+  const duracionesPermitidas = useMemo(() => {
+    const exactas = DURACIONES_RENTA.filter((d) => Math.round(d.horas * 60) === duracionReservaMinutos);
+    return exactas.length > 0 ? exactas : DURACIONES_RENTA;
+  }, [duracionReservaMinutos]);
   const [horaInicio, setHoraInicio] = useState('');
   const [addons, setAddons] = useState([]);
   const [addonParaVariante, setAddonParaVariante] = useState(null);
@@ -38608,8 +38679,22 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   // deshabilitados/marcados, en vez de simplemente hacerlos desaparecer de
   // un <select>.
   const franjasBase = useMemo(
-    () => franjasDelDiaConEstado(cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin),
-    [cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin]
+    () =>
+      franjasDelDiaConEstado(
+        cancha.id,
+        fecha,
+        duracionHoras,
+        reservas,
+        academiaClases,
+        horaAperturaMin,
+        horaCierreMin,
+        // Duración de Bloques/Turnos (migracion_v42, corrección de
+        // consistencia): el paso entre tarjetas de hora sigue el bloque
+        // configurado por el club (antes siempre 60 min fijos), así nunca
+        // se ofrecen fracciones de tiempo que se solapen entre sí.
+        duracionReservaMinutos
+      ),
+    [cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, duracionReservaMinutos]
   );
   // OPTIMIZACIÓN DE HORARIOS: cuando la fecha elegida es HOY, cualquier
   // franja cuya hora de inicio ya pasó se marca `pasado` (distinto de
@@ -38633,10 +38718,11 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   const franjasLibres = useMemo(() => franjas.filter((f) => !f.ocupado && !f.pasado), [franjas]);
 
   // INDICADOR DE DEMANDA/OCUPACIÓN — Ocupación diaria de ESTA cancha, para
-  // ESTA fecha y duración elegidas: Slots Reservados / Slots Totales del
-  // Día * 100 (usa `franjas`, el mismo cálculo de 30 en 30 minutos que ya
-  // pinta la cuadrícula de horarios de abajo, así que el % siempre
-  // coincide con lo que el jugador ve marcado como "Reservado"/"Pasado").
+  // ESTA fecha y duración configuradas: Slots Reservados / Slots Totales del
+  // Día * 100 (usa `franjas`, el mismo cálculo por bloques de
+  // `duracionReservaMinutos` que ya pinta la cuadrícula de horarios de
+  // abajo, así que el % siempre coincide con lo que el jugador ve marcado
+  // como "Reservado"/"Pasado").
   const ocupacionPct = franjas.length > 0 ? Math.round((franjas.filter((f) => f.ocupado).length / franjas.length) * 100) : 0;
   const demanda =
     ocupacionPct >= 80
@@ -38778,8 +38864,13 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
             </div>
           </Campo>
           <Campo label="Duración">
-            <select value={duracionHoras} onChange={(e) => setDuracionHoras(Number(e.target.value))} className={inputClase}>
-              {DURACIONES_RENTA.map((d) => (
+            {/* Duración de Bloques/Turnos (migracion_v42, corrección de
+                consistencia): ya NO es una elección libre — el club definió
+                una duración fija (`duracionReservaMinutos`), así que el
+                selector solo ofrece esa opción y se deshabilita (nunca deja
+                elegir "1.5 horas"/"2 horas" si el club fijó 60 min). */}
+            <select value={duracionHoras} disabled={duracionesPermitidas.length <= 1} className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-70`}>
+              {duracionesPermitidas.map((d) => (
                 <option key={d.horas} value={d.horas}>
                   {d.label}
                 </option>
