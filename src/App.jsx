@@ -1772,7 +1772,7 @@ ROLES_POR_VALOR.caja = ROLES_POR_VALOR.recepcion;
 // Todos los módulos existen bajo estas mismas claves de `moduloActivo` — ver
 // `NAV_MODULOS`/`MODULOS_META` más abajo, donde se agregó 'seguridad' y,
 // después, 'academia' (Academia & Clínicas).
-const TODOS_LOS_MODULOS = ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'];
+const TODOS_LOS_MODULOS = ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad', 'configuracion'];
 
 // Matriz de permisos por rol. `modulos: 'todos'` es azúcar para
 // `TODOS_LOS_MODULOS` (Owner) en vez de listarlos a mano.
@@ -2798,6 +2798,13 @@ const NAV_MODULOS = [
   { id: 'academia', label: 'Academia & Clínicas', labelCorto: 'Academia', icon: GraduationCap },
   { id: 'jugadores', label: 'Jugadores', labelCorto: 'Jugadores', icon: Users },
   { id: 'seguridad', label: 'Control & Seguridad', labelCorto: 'Seguridad', icon: ShieldAlert },
+  // Módulo "Configuración del Club" (nuevo): solo Owner lo tiene en su
+  // `modulos` (ver `PERMISOS_POR_ROL.owner.modulos: 'todos'` y
+  // `TODOS_LOS_MODULOS` arriba) — ningún otro rol lo agrega a su arreglo
+  // explícito, así que ni Manager ni el resto lo ven en el Sidebar, mismo
+  // candado de "visible solo para Admin/Propietario" que ya usa el engrane
+  // de "Personalizar Club" (`operador?.rol === 'owner'`, ver `Sidebar`).
+  { id: 'configuracion', label: 'Configuración del Club', labelCorto: 'Configuración', icon: Settings2 },
 ];
 
 // Navegación Reordenable: el ORDEN preferido de las pestañas/módulos
@@ -2968,6 +2975,39 @@ function leerMetasCortesiaLocal() {
 function guardarMetasCortesiaLocal(metas) {
   try {
     localStorage.setItem(claveLocalPorClub(LS_KEY_METAS_CORTESIA), JSON.stringify(metas || METAS_CORTESIA_DEFAULT_LOCAL));
+  } catch (_e) {
+    /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
+  }
+}
+
+// Configuración del Club → Portal & Tienda Web → Add-ons (módulo nuevo):
+// respaldo/caché local, mismo criterio exacto que `LS_KEY_METAS_CORTESIA`
+// arriba (flujo de guardado independiente, Sincronización Silenciosa,
+// Supabase best effort). `habilitados` (Switch Master ON/OFF de la sección
+// completa de Add-ons en el Portal): por defecto `true` — un club que nunca
+// toca este interruptor no pierde nada nuevo (aunque en la práctica la
+// sección no muestra nada hasta que además cure `productosIds`, ver
+// `productosAddOns` en `PortalPublicoJugadores`). `productosIds`: arreglo de
+// ids (string) de `productos.id` que el club marcó como Add-on desde
+// `ModalSeleccionProductosAddons` — vacío = todavía no se curó nada.
+const LS_KEY_ADDONS_CONFIG = 'smashpadel_addons_config_v1';
+const ADDONS_CONFIG_DEFAULT_LOCAL = { habilitados: true, productosIds: [] };
+function leerAddonsConfigLocal() {
+  try {
+    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_ADDONS_CONFIG));
+    const parsed = crudo ? JSON.parse(crudo) : null;
+    if (!parsed || typeof parsed !== 'object') return { ...ADDONS_CONFIG_DEFAULT_LOCAL };
+    return {
+      habilitados: parsed.habilitados !== false,
+      productosIds: Array.isArray(parsed.productosIds) ? parsed.productosIds.map((id) => String(id)) : [],
+    };
+  } catch (_e) {
+    return { ...ADDONS_CONFIG_DEFAULT_LOCAL };
+  }
+}
+function guardarAddonsConfigLocal(config) {
+  try {
+    localStorage.setItem(claveLocalPorClub(LS_KEY_ADDONS_CONFIG), JSON.stringify(config || ADDONS_CONFIG_DEFAULT_LOCAL));
   } catch (_e) {
     /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
   }
@@ -3469,6 +3509,7 @@ const MODULOS_META = {
   academia: { titulo: 'Academia & Clínicas', subtitulo: 'Clases, alumnos, asistencia y retención' },
   jugadores: { titulo: 'Jugadores (CRM)', subtitulo: 'Ranking del club y clasificación por categoría' },
   seguridad: { titulo: 'Control & Seguridad', subtitulo: 'Empleados, roles, arqueos y Log de Actividad' },
+  configuracion: { titulo: 'Configuración del Club', subtitulo: 'Portal & Tienda Web, y ajustes generales del club' },
 };
 
 // Rediseño de Header (a petición del club, para resolver el problema de
@@ -8243,7 +8284,19 @@ function ModalNuevoProducto({
     setSubcategoria(nuevaSubcategoria);
     if (esSubcategoriaAlimentos(categoria, nuevaSubcategoria)) setManejaStock(false);
   }
-  const [imagenUrl, setImagenUrl] = useState(producto?.imagen_url || '');
+  // Soporte para Múltiples Imágenes (mejora): `productos.imagenes` es el
+  // arreglo NUEVO (texto[]) — un producto viejo que todavía no tiene esa
+  // columna (o la tiene vacía) arranca con su única `imagen_url` de siempre
+  // como la primera/única foto del arreglo, así editar un producto viejo
+  // nunca se ve como si hubiera "perdido" su foto. La PRIMERA imagen del
+  // arreglo sigue siendo la "portada" — se sigue guardando también en
+  // `imagen_url` (ver `guardar()`) para que las ~6 tarjetas/miniaturas del
+  // resto de la app (POS, Inventario, Kardex, carrito del Portal) que solo
+  // conocen `imagen_url` no necesiten tocarse.
+  const [imagenes, setImagenes] = useState(() => {
+    if (Array.isArray(producto?.imagenes) && producto.imagenes.length > 0) return producto.imagenes.filter(Boolean);
+    return producto?.imagen_url ? [producto.imagen_url] : [];
+  });
   const [guardando, setGuardando] = useState(false);
   const [eliminando, setEliminando] = useState(false);
   const [confirmarEliminar, setConfirmarEliminar] = useState(false);
@@ -8307,15 +8360,28 @@ function ModalNuevoProducto({
     setVariantes((prev) => prev.filter((v) => v.id !== id));
   }
 
-  const imagenPreview = imagenUrl;
-
   // Manejo Universal de Imágenes: `SelectorArchivoImagen` sube el archivo al
   // bucket `app-media` de Supabase Storage (ver `uploadMedia`) y entrega
   // aquí la URL pública resultante — nunca un base64/blob local, para que la
   // foto del producto se vea igual en Mac, iPad o cualquier navegador.
+  // Múltiples Imágenes: cada subida AGREGA una foto más al arreglo (nunca
+  // reemplaza las anteriores) — el admin repite "Subir archivo" tantas
+  // veces como fotos quiera para ropa/accesorios con varios ángulos.
   function onImagenSubida(url) {
     setError('');
-    setImagenUrl(url);
+    setImagenes((prev) => [...prev, url]);
+  }
+  function quitarImagen(idx) {
+    setImagenes((prev) => prev.filter((_, i) => i !== idx));
+  }
+  function moverImagenAPortada(idx) {
+    setImagenes((prev) => {
+      if (idx <= 0 || idx >= prev.length) return prev;
+      const copia = [...prev];
+      const [elegida] = copia.splice(idx, 1);
+      copia.unshift(elegida);
+      return copia;
+    });
   }
 
   async function guardar() {
@@ -8330,7 +8396,12 @@ function ModalNuevoProducto({
     setGuardando(true);
     setError('');
 
-    const imagen = imagenUrl.trim();
+    // Portada = primera imagen del arreglo (ver `moverImagenAPortada`) —
+    // sigue viajando también en `imagen_url` (columna vieja, singular) para
+    // que el resto de la app (tarjetas de POS/Inventario, Kardex, carrito
+    // del Portal) siga mostrando una miniatura sin tener que leer el
+    // arreglo nuevo.
+    const imagen = imagenes[0] || '';
 
     // FIX DEFINITIVO de variantes: el arreglo JSONB completo se arma aquí,
     // en memoria, a partir de las filas visibles en pantalla — filas vacías
@@ -8394,18 +8465,29 @@ function ModalNuevoProducto({
       disponible,
       variantes: variantesJSONB,
     };
-    // La imagen solo se sobrescribe si el admin pegó una URL o subió un
-    // archivo nuevo; así editar otros campos no borra la foto existente.
+    // `imagen_url` (portada, columna vieja) solo se sobrescribe si quedó al
+    // menos una imagen en el arreglo — así quitar TODAS las fotos y guardar
+    // no deja, sin querer, la miniatura vieja de POS/Inventario/Kardex
+    // apuntando a una URL que el admin acaba de borrar de la galería, pero
+    // tampoco la "limpia" a la fuerza (esas tarjetas siguen funcionando con
+    // lo último que tenían). `imagenes` (arreglo nuevo) SIEMPRE se escribe
+    // tal cual quedó en pantalla, vacío incluido — es la fuente de verdad de
+    // la Galería del Portal.
     if (imagen) campos.imagen_url = imagen;
+    campos.imagenes = imagenes;
 
-    // Arquitectura Flexible: `subcategoria` es una columna nueva — un
-    // proyecto de Supabase que todavía no corrió esa migración no debe
-    // tronar el alta/edición completa del producto por ella, solo se
-    // reintenta sin esa columna puntual (ver `insertarConColumnasOpcionales`/
-    // `actualizarConColumnasOpcionales`).
+    // Arquitectura Flexible: `subcategoria`/`imagenes` son columnas nuevas —
+    // un proyecto de Supabase que todavía no corrió esas migraciones no debe
+    // tronar el alta/edición completa del producto por ellas, solo se
+    // reintenta sin las columnas puntuales que falten (ver
+    // `insertarConColumnasOpcionales`/`actualizarConColumnasOpcionales`).
     const { data, error: err } = editando
-      ? await actualizarConColumnasOpcionales('productos', producto.id, campos, ['subcategoria'])
-      : await insertarConColumnasOpcionales('productos', { ...campos, imagen_url: imagen || null, activo: true }, ['subcategoria']);
+      ? await actualizarConColumnasOpcionales('productos', producto.id, campos, ['subcategoria', 'imagenes'])
+      : await insertarConColumnasOpcionales(
+          'productos',
+          { ...campos, imagen_url: imagen || null, activo: true },
+          ['subcategoria', 'imagenes']
+        );
 
     setGuardando(false);
 
@@ -8653,31 +8735,62 @@ function ModalNuevoProducto({
 
         <div className="space-y-2">
           <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-            {editando ? 'Cambiar imagen (opcional)' : 'Imagen del producto'}
+            Imágenes del producto {imagenes.length > 0 && `(${imagenes.length})`}
           </span>
-          {/* Subida limpia por archivo, ÚNICAMENTE — se quitó el campo de
-              pegar una URL/link de texto. */}
+          <p className="text-[11px] text-slate-500">
+            Sube una o varias fotos — ideal para ropa y accesorios con varios ángulos. La primera es la portada: se
+            usa como miniatura en POS, Inventario y el carrito del Portal.
+          </p>
+          {/* Múltiples Imágenes (mejora): cada "Subir archivo" AGREGA una
+              miniatura más a la galería de abajo — nunca reemplaza a las
+              anteriores (ver `onImagenSubida`). Subida limpia por archivo,
+              ÚNICAMENTE — se quitó el campo de pegar una URL/link de texto. */}
           <SelectorArchivoImagen carpeta="productos" onSubida={onImagenSubida} />
-        </div>
-
-        <div>
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Vista previa</span>
-          <div className="h-32 overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
-            {imagenPreview ? (
-              <img
-                src={imagenPreview}
-                alt="Vista previa"
-                className="h-full w-full object-cover"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                }}
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-400">
-                Sin imagen todavía — se usará una de referencia por categoría
-              </div>
-            )}
-          </div>
+          {imagenes.length > 0 ? (
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {imagenes.map((url, idx) => (
+                <div key={`${url}-${idx}`} className="group relative h-20 overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
+                  <img
+                    src={url}
+                    alt={`Imagen ${idx + 1}`}
+                    className="h-full w-full object-cover"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
+                  />
+                  {idx === 0 && (
+                    <span className="absolute left-1 top-1 rounded bg-lime-400 px-1.5 py-0.5 text-[9px] font-black text-slate-950">
+                      Portada
+                    </span>
+                  )}
+                  <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 bg-slate-950/60 px-1 py-1 opacity-0 transition group-hover:opacity-100">
+                    {idx !== 0 && (
+                      <button
+                        type="button"
+                        onClick={() => moverImagenAPortada(idx)}
+                        title="Usar como portada"
+                        className="rounded bg-white/90 p-1 text-slate-700 hover:bg-white"
+                      >
+                        <Star size={11} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => quitarImagen(idx)}
+                      title="Quitar imagen"
+                      className="rounded bg-white/90 p-1 text-rose-500 hover:bg-white"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex h-20 items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-center text-[11px] text-slate-400">
+              Sin imágenes todavía — se usará una de referencia por categoría
+            </div>
+          )}
         </div>
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
@@ -32982,8 +33095,273 @@ function normalizarFilaClub(fila, tabla) {
     // migración (`fila.hora_apertura`/`hora_cierre` vienen `undefined`).
     hora_apertura: fila.hora_apertura || '06:00',
     hora_cierre: fila.hora_cierre || '24:00',
+    // Configuración del Club → Add-ons (módulo nuevo) — mismo respaldo que
+    // el resto de columnas opcionales de esta función: un proyecto sin la
+    // migración simplemente trae `undefined`/`[]` y el Portal no muestra
+    // nada en la sección de Add-ons (ver `productosAddOns` más abajo).
+    // `addons_habilitados` respalda a `true` (Arquitectura Flexible: el
+    // Switch Master en sí nunca bloquea nada por accidente), la curación de
+    // `productos_addons_ids` es la que de verdad decide si hay algo que
+    // mostrar.
+    addons_habilitados: fila.addons_habilitados !== false,
+    productos_addons_ids: Array.isArray(fila.productos_addons_ids) ? fila.productos_addons_ids.map((id) => String(id)) : [],
     _tabla: tabla,
   };
+}
+
+/* ============================================================================
+ * MÓDULO: CONFIGURACIÓN DEL CLUB (nuevo) — visible solo para Admin/
+ * Propietario (ver `NAV_MODULOS`/`PERMISOS_POR_ROL`, mismo candado de rol
+ * que ya usa "Personalizar Club" en el Sidebar). Sistema de pestañas: solo
+ * "Portal & Tienda Web" tiene contenido real por ahora — el resto
+ * (General, Reservas & Canchas, Pagos & Facturación) son pestañas futuras,
+ * ya en el selector para que el club sepa que vienen, con un estado
+ * "Próximamente" en vez de esconderlas del todo.
+ * ==========================================================================*/
+
+const TABS_CONFIGURACION_CLUB = [
+  { value: 'portal', label: 'Portal & Tienda Web', icon: ShoppingBag },
+  { value: 'general', label: 'General', icon: Settings2 },
+  { value: 'reservas', label: 'Reservas & Canchas', icon: LayoutGrid },
+  { value: 'pagos', label: 'Pagos & Facturación', icon: CreditCard },
+];
+
+function ModuloConfiguracionClub({ productos, addonsHabilitados, productosAddonsIds, onGuardarAddonsConfig, guardandoAddonsConfig }) {
+  const [tab, setTab] = useState('portal');
+  const tabActual = TABS_CONFIGURACION_CLUB.find((t) => t.value === tab);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-1 rounded-lg border border-slate-300 bg-slate-100 p-1">
+        {TABS_CONFIGURACION_CLUB.map((t) => {
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.value}
+              type="button"
+              onClick={() => setTab(t.value)}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+                tab === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Icon size={14} /> {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === 'portal' ? (
+        <SeccionPortalTiendaWeb
+          productos={productos}
+          addonsHabilitados={addonsHabilitados}
+          productosAddonsIds={productosAddonsIds}
+          onGuardarAddonsConfig={onGuardarAddonsConfig}
+          guardandoAddonsConfig={guardandoAddonsConfig}
+        />
+      ) : (
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white py-16 text-center text-slate-500">
+          <Wrench size={26} />
+          <p className="text-sm font-bold text-slate-600">Próximamente</p>
+          <p className="max-w-sm text-xs">
+            La pestaña "{tabActual?.label}" todavía no tiene ajustes — se habilita en una próxima actualización.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Pestaña "Portal & Tienda Web" — hoy solo trae Add-ons (Switch Master
+// ON/OFF + curación de productos de Pro-Shop), pero vive en su propia
+// sección para que sea fácil sumarle más ajustes del Portal más adelante
+// (ej. banners, mensajes de bienvenida) sin reordenar `ModuloConfiguracionClub`.
+function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsIds, onGuardarAddonsConfig, guardandoAddonsConfig }) {
+  const [modalSeleccion, setModalSeleccion] = useState(false);
+
+  const productosProShop = useMemo(
+    () => (productos || []).filter((p) => p.categoria === 'Pro-Shop' && p.activo !== false),
+    [productos]
+  );
+  const productosSeleccionados = useMemo(() => {
+    const set = new Set((productosAddonsIds || []).map((id) => String(id)));
+    return productosProShop.filter((p) => set.has(String(p.id)));
+  }, [productosProShop, productosAddonsIds]);
+
+  function alternarHabilitado() {
+    onGuardarAddonsConfig?.({ habilitados: !addonsHabilitados, productosIds: productosAddonsIds });
+  }
+
+  function guardarSeleccion(nuevosIds) {
+    onGuardarAddonsConfig?.({ habilitados: addonsHabilitados, productosIds: nuevosIds });
+    setModalSeleccion(false);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <ShoppingBag size={16} className="text-lime-500" />
+          <h3 className="text-sm font-black text-slate-900">Add-ons del Portal</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Los Add-ons son productos del Pro-Shop que se destacan como sugerencia rápida para el jugador durante el
+          pago en el Portal (reserva de cancha y Tienda) — ideal para promover overgrips, pelotas o cualquier
+          producto de alta rotación.
+        </p>
+
+        <button
+          type="button"
+          onClick={alternarHabilitado}
+          disabled={guardandoAddonsConfig}
+          className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            addonsHabilitados ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addonsHabilitados ? 'bg-lime-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${addonsHabilitados ? 'text-lime-700' : 'text-slate-600'}`}>
+              Sección de Add-ons en el Portal: {addonsHabilitados ? 'Activada' : 'Desactivada'}
+            </span>
+          </span>
+          <span
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
+              addonsHabilitados ? 'bg-lime-500' : 'bg-slate-300'
+            }`}
+          >
+            <span
+              className={`inline-block h-4.5 w-4.5 transform rounded-full bg-white shadow transition ${
+                addonsHabilitados ? 'translate-x-6' : 'translate-x-1'
+              }`}
+              style={{ height: '1.125rem', width: '1.125rem' }}
+            />
+          </span>
+        </button>
+
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-slate-700">
+              {productosSeleccionados.length} {productosSeleccionados.length === 1 ? 'producto elegido' : 'productos elegidos'}
+            </p>
+            <p className="mt-0.5 truncate text-[11px] text-slate-500">
+              {productosSeleccionados.length === 0
+                ? 'Todavía no eliges ningún producto — la sección no mostrará nada en el Portal hasta que elijas al menos uno.'
+                : productosSeleccionados.map((p) => p.nombre).join(', ')}
+            </p>
+          </div>
+          <BotonSecundario onClick={() => setModalSeleccion(true)} className="shrink-0 px-3 py-1.5 text-xs">
+            <Search size={13} /> Elegir productos
+          </BotonSecundario>
+        </div>
+      </div>
+
+      {modalSeleccion && (
+        <ModalSeleccionProductosAddons
+          productos={productosProShop}
+          seleccionadosIniciales={productosAddonsIds}
+          guardando={guardandoAddonsConfig}
+          onClose={() => setModalSeleccion(false)}
+          onGuardar={guardarSeleccion}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal "Elegir Productos para Add-ons" — checkboxes con buscador sobre el
+// catálogo REAL de Pro-Shop del club, mismo patrón visual que
+// `SeccionProductosAutorizadosCortesia` (CRM/Fidelización), pero a nivel
+// PRODUCTO (no variante — `productos_addons_ids` es un `text[]` simple de
+// ids de producto, tal como se pidió).
+function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guardando, onClose, onGuardar }) {
+  const [seleccionados, setSeleccionados] = useState(() => new Set((seleccionadosIniciales || []).map((id) => String(id))));
+  const [busqueda, setBusqueda] = useState('');
+
+  const catalogo = useMemo(() => {
+    const filtro = busqueda.trim().toLowerCase();
+    return (productos || [])
+      .filter((p) => !filtro || (p.nombre || '').toLowerCase().includes(filtro))
+      .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+  }, [productos, busqueda]);
+
+  function alternar(id) {
+    setSeleccionados((prev) => {
+      const siguiente = new Set(prev);
+      const clave = String(id);
+      if (siguiente.has(clave)) siguiente.delete(clave);
+      else siguiente.add(clave);
+      return siguiente;
+    });
+  }
+
+  return (
+    <ModalShell
+      titulo="Elegir Productos para Add-ons"
+      subtitulo="Del catálogo de Pro-Shop — se muestran como sugerencia rápida en el checkout del Portal"
+      onClose={onClose}
+      icon={ShoppingBag}
+      ancho="max-w-lg"
+    >
+      <div className="space-y-3">
+        <div className="relative">
+          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar producto de Pro-Shop..."
+            className={`${inputClase} pl-9`}
+          />
+        </div>
+
+        <div className="max-h-80 space-y-1.5 overflow-y-auto pr-1">
+          {catalogo.length === 0 && (
+            <p className="py-8 text-center text-xs text-slate-500">Sin productos de Pro-Shop en el catálogo.</p>
+          )}
+          {catalogo.map((p) => {
+            const marcado = seleccionados.has(String(p.id));
+            return (
+              <label
+                key={p.id}
+                className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2 transition ${
+                  marcado ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <input type="checkbox" checked={marcado} onChange={() => alternar(p.id)} className="h-4 w-4 shrink-0 accent-lime-500" />
+                <div className="h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-slate-100">
+                  <img
+                    src={p.imagen_url || fallbackImagenProducto(p)}
+                    onError={(e) => {
+                      e.currentTarget.onerror = null;
+                      e.currentTarget.src = fallbackImagenProducto(p);
+                    }}
+                    alt={p.nombre}
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-bold text-slate-900">{p.nombre}</p>
+                  <p className="text-[11px] text-slate-500">{formatoMoneda(Number(p.precio) || 0)}</p>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+
+        <p className="text-[11px] font-semibold text-slate-500">
+          {seleccionados.size} {seleccionados.size === 1 ? 'producto elegido' : 'productos elegidos'}.
+        </p>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose} disabled={guardando}>
+            Cancelar
+          </BotonSecundario>
+          <BotonPrimario onClick={() => onGuardar(Array.from(seleccionados))} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Guardar selección
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
 }
 
 /* ============================================================================
@@ -33440,6 +33818,14 @@ function PortalPublicoJugadores({ clubSlug }) {
   const [carritoTienda, setCarritoTienda] = useState([]);
   const [modalCarritoAbierto, setModalCarritoAbierto] = useState(false);
   const [productoParaVariantePortal, setProductoParaVariantePortal] = useState(null); // { producto, destino: 'tienda'|'addon' }
+  // Modal de Galería/Detalle (Experiencia en el Portal, req. 4) — al hacer
+  // clic en una tarjeta de la Tienda, en vez de ir directo a variantes o al
+  // carrito, se abre este modal con carrusel de `producto.imagenes`,
+  // selector de variante inline y stock — ideal para ropa/accesorios con
+  // varias fotos. `productoParaVariantePortal` (arriba) sigue existiendo tal
+  // cual para el flujo de Add-ons dentro de "Reservar Cancha" (`destino:
+  // 'addon'`), que no cambia.
+  const [productoParaGaleriaPortal, setProductoParaGaleriaPortal] = useState(null);
 
   // Reserva de cancha con Add-ons — modal interactivo (ver requerimiento
   // "RESERVA DE CANCHAS (+ ADD-ONS DE CONSUMO)").
@@ -33785,13 +34171,25 @@ function PortalPublicoJugadores({ clubSlug }) {
     () => productos.filter((p) => p.categoria === 'Pro-Shop' && p.disponible !== false && p.recibido !== false),
     [productos]
   );
-  const productosAddOns = useMemo(
-    () =>
-      productos.filter(
-        (p) => (p.categoria === 'Pro-Shop' || p.categoria === 'Cafetería/Bar') && p.disponible !== false && p.recibido !== false
-      ),
-    [productos]
-  );
+  // Add-ons Curados (Configuración del Club → "Portal & Tienda Web", módulo
+  // nuevo) — esta franja ANTES mostraba TODO el catálogo de Pro-Shop/Bar sin
+  // filtrar, tanto en "Reservar Cancha" como (ahora también) en el carrito
+  // de la Tienda; ahora el club cura a mano, desde `ModuloConfiguracionClub`,
+  // EXACTAMENTE qué productos aparecen como sugerencia rápida
+  // (`club.productos_addons_ids`), y el Switch Master
+  // (`club.addons_habilitados`) puede apagar la sección entera sin borrar la
+  // curación ya guardada. `addons_habilitados` respalda a `true`
+  // (Arquitectura Flexible: el switch en sí nunca bloquea nada por
+  // accidente), pero `productos_addons_ids` nace vacío — así que hasta que
+  // el club no cure al menos un producto, esta franja sencillamente no
+  // tiene nada que mostrar (antes tenía TODO el catálogo; ahora es opt-in
+  // por diseño, tal como se pidió).
+  const productosAddOns = useMemo(() => {
+    if (club?.addons_habilitados === false) return [];
+    const idsCurados = new Set((club?.productos_addons_ids || []).map((id) => String(id)));
+    if (idsCurados.size === 0) return [];
+    return productos.filter((p) => idsCurados.has(String(p.id)) && p.disponible !== false && p.recibido !== false);
+  }, [productos, club?.addons_habilitados, club?.productos_addons_ids]);
 
   const canchasPorId = useMemo(() => {
     const mapa = {};
@@ -34844,6 +35242,24 @@ function PortalPublicoJugadores({ clubSlug }) {
     mostrarToast({ titulo: 'Agregado al carrito', detalle: nombreArticulo });
   }
 
+  // Bloque Add-ons en Checkout (req. 4, mitad Tienda) — mismo criterio que
+  // el clic directo de la cuadrícula de Tienda: si el producto sugerido
+  // tiene variantes, hay que elegir una primero. Como el selector de
+  // variante (`ModalSeleccionarVariante`) y el carrito (`ModalCarritoTienda`)
+  // usan el mismo `ModalShell` a z-50, se cierra el carrito ANTES de abrir
+  // el selector para que no queden dos modales apilados — `agregarAlCarritoPortal`
+  // ya reabre el carrito solo después de agregar, así el jugador vuelve
+  // exactamente a donde estaba.
+  function agregarSugeridoDesdeCarrito(producto) {
+    const variantes = variantesPorProductoPortal[producto.id] || [];
+    if (variantes.length > 0) {
+      setModalCarritoAbierto(false);
+      setProductoParaVariantePortal({ producto, destino: 'tienda' });
+    } else {
+      agregarAlCarritoPortal(producto);
+    }
+  }
+
   function cambiarCantidadCarritoPortal(itemId, delta) {
     setCarritoTienda((prev) =>
       prev
@@ -35484,7 +35900,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                           key={p.id}
                           type="button"
                           disabled={sinStock}
-                          onClick={() => (tieneVariantes ? setProductoParaVariantePortal({ producto: p, destino: 'tienda' }) : agregarAlCarritoPortal(p))}
+                          onClick={() => setProductoParaGaleriaPortal(p)}
                           className="overflow-hidden rounded-2xl border border-slate-200 bg-white/50 text-left backdrop-blur-sm transition hover:border-violet-400/30 hover:bg-white/70 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           <div className="h-20 w-full bg-slate-100">
@@ -36156,6 +36572,18 @@ function PortalPublicoJugadores({ clubSlug }) {
           />
         )}
 
+        {productoParaGaleriaPortal && (
+          <ModalGaleriaProducto
+            producto={productoParaGaleriaPortal}
+            variantes={variantesPorProductoPortal[productoParaGaleriaPortal.id] || []}
+            onClose={() => setProductoParaGaleriaPortal(null)}
+            onAgregar={(variante) => {
+              agregarAlCarritoPortal(productoParaGaleriaPortal, variante);
+              setProductoParaGaleriaPortal(null);
+            }}
+          />
+        )}
+
         {modalCarritoAbierto && (
           <ModalCarritoTienda
             carrito={carritoTienda}
@@ -36166,6 +36594,9 @@ function PortalPublicoJugadores({ clubSlug }) {
             onClose={() => setModalCarritoAbierto(false)}
             onRequerirIdentificacion={() => setModalIdentificacion(true)}
             onConfirmar={confirmarCheckoutTienda}
+            productosAddOns={productosAddOns}
+            variantesPorProducto={variantesPorProductoPortal}
+            onAgregarSugerido={agregarSugeridoDesdeCarrito}
           />
         )}
 
@@ -37453,8 +37884,149 @@ function ModalElegirPago({ monto, saldoWallet, concepto, onClose, onConfirmar })
   );
 }
 
+// Modal de Galería/Detalle (Experiencia en el Portal, req. 4) — se abre al
+// hacer clic en cualquier tarjeta de la Tienda: carrusel grande sobre
+// `producto.imagenes` (arreglo nuevo, ver `ModalNuevoProducto`/multi-imagen),
+// con fallback a la portada única `imagen_url`/`fallbackImagenProducto` para
+// productos que todavía no tienen el arreglo cargado. Si el producto tiene
+// variantes, exige elegir una (igual criterio que `ModalSeleccionarVariante`,
+// pero inline en vez de un segundo modal encima) antes de habilitar "Agregar
+// al carrito" — así nunca se agrega un artículo de talla/color ambiguo.
+function ModalGaleriaProducto({ producto, variantes, onClose, onAgregar }) {
+  const galeria = useMemo(() => {
+    if (Array.isArray(producto?.imagenes) && producto.imagenes.length > 0) return producto.imagenes;
+    return [producto?.imagen_url || fallbackImagenProducto(producto)];
+  }, [producto]);
+  const [indice, setIndice] = useState(0);
+  const listaVariantes = variantes || [];
+  const [varianteId, setVarianteId] = useState(listaVariantes.length === 1 ? listaVariantes[0].id : null);
+  const varianteElegida = listaVariantes.find((v) => v.id === varianteId) || null;
+  const manejaStockProducto = !productoIgnoraStockRigido(producto);
+  const sinStock = productoEstaAgotado(producto, listaVariantes);
+  const stockVarianteElegida = varianteElegida && manejaStockProducto && varianteElegida.stock != null ? Number(varianteElegida.stock) : null;
+  const varianteSinStock = stockVarianteElegida != null && stockVarianteElegida <= 0;
+  const faltaElegirVariante = listaVariantes.length > 0 && !varianteElegida;
+  const precioMostrado = varianteElegida
+    ? varianteElegida.precio != null
+      ? Number(varianteElegida.precio)
+      : Number(producto?.precio) || 0
+    : null;
+
+  function irA(delta) {
+    setIndice((prev) => (prev + delta + galeria.length) % galeria.length);
+  }
+
+  return (
+    <ModalShell titulo={producto?.nombre || 'Producto'} subtitulo="Tienda Pro-Shop" onClose={onClose} icon={ShoppingCart} ancho="max-w-lg">
+      <div className="space-y-4">
+        <div className="relative overflow-hidden rounded-2xl bg-slate-100">
+          <img
+            src={galeria[indice]}
+            onError={(e) => {
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = fallbackImagenProducto(producto);
+            }}
+            alt={producto?.nombre}
+            className="h-64 w-full object-cover sm:h-80"
+          />
+          {galeria.length > 1 && (
+            <>
+              <button
+                type="button"
+                onClick={() => irA(-1)}
+                className="absolute left-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-white/80 text-slate-700 shadow-sm backdrop-blur-sm hover:bg-white"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={() => irA(1)}
+                className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-white/80 text-slate-700 shadow-sm backdrop-blur-sm hover:bg-white"
+              >
+                <ChevronRight size={18} />
+              </button>
+              <div className="absolute inset-x-0 bottom-2 flex items-center justify-center gap-1.5">
+                {galeria.map((_, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setIndice(i)}
+                    className={`h-1.5 rounded-full transition-all ${i === indice ? 'w-4 bg-white' : 'w-1.5 bg-white/60'}`}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xl font-black text-violet-400">
+            {precioMostrado != null ? formatoMoneda(precioMostrado) : textoPrecioConVariantes(producto, listaVariantes)}
+          </p>
+          {sinStock && <span className="rounded-full bg-rose-400/10 px-2.5 py-1 text-[11px] font-bold text-rose-400 ring-1 ring-rose-400/30">Agotado</span>}
+        </div>
+
+        {listaVariantes.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Elige una opción</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {listaVariantes.map((v) => {
+                const stockV = manejaStockProducto && v.stock != null ? Number(v.stock) : null;
+                const agotadaV = stockV != null && stockV <= 0;
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    disabled={agotadaV}
+                    onClick={() => setVarianteId(v.id)}
+                    className={`flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                      varianteId === v.id ? 'border-violet-400 bg-violet-400/10' : 'border-slate-300 bg-slate-100 hover:border-violet-400/40'
+                    }`}
+                  >
+                    <span className="text-xs font-bold text-slate-900">{v.nombre}</span>
+                    {stockV != null && (
+                      <span className={`text-[10px] font-semibold ${agotadaV ? 'text-rose-400' : stockV <= 3 ? 'text-amber-400' : 'text-slate-500'}`}>
+                        {agotadaV ? 'Agotado' : stockV <= 3 ? `¡Quedan ${stockV}!` : `${stockV} disp.`}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {producto?.descripcion && <p className="text-sm text-slate-600">{producto.descripcion}</p>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+          <BotonPrimario
+            onClick={() => onAgregar(varianteElegida)}
+            disabled={sinStock || faltaElegirVariante || varianteSinStock}
+          >
+            <ShoppingCart size={15} />
+            Agregar al carrito
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 // Tienda (Pro-Shop) — revisión del carrito del Portal + checkout con Wallet.
-function ModalCarritoTienda({ carrito, total, saldoWallet, jugador, onCambiarCantidad, onClose, onRequerirIdentificacion, onConfirmar }) {
+function ModalCarritoTienda({
+  carrito,
+  total,
+  saldoWallet,
+  jugador,
+  onCambiarCantidad,
+  onClose,
+  onRequerirIdentificacion,
+  onConfirmar,
+  productosAddOns = [],
+  variantesPorProducto = {},
+  onAgregarSugerido,
+}) {
   const [metodo, setMetodo] = useState(saldoWallet > 0 ? 'wallet' : 'recepcion');
   const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
   const [enviando, setEnviando] = useState(false);
@@ -37504,6 +38076,38 @@ function ModalCarritoTienda({ carrito, total, saldoWallet, jugador, onCambiarCan
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Bloque Add-ons en Checkout (req. 4, mitad Tienda) — mismo criterio
+            que la franja "Para ti" de `ModalReservarCancha`: `productosAddOns`
+            ya llega curado + apagado por Switch Master desde Configuración
+            del Club, así que la franja entera se oculta cuando no hay nada
+            que sugerir. Con variantes, `onAgregarSugerido` cierra este modal
+            y abre el selector de variante — `agregarAlCarritoPortal` reabre
+            el carrito solo al terminar. */}
+        {carrito.length > 0 && productosAddOns.length > 0 && (
+          <div className="border-t border-slate-200 pt-3">
+            <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Para ti</p>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {productosAddOns.map((p) => {
+                const variantes = variantesPorProducto[p.id] || [];
+                const sinStock = productoEstaAgotado(p, variantes);
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    disabled={sinStock}
+                    onClick={() => onAgregarSugerido(p)}
+                    className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-lime-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-300"
+                  >
+                    <span className="text-[11px] font-bold text-slate-800">{p.nombre}</span>
+                    <span className="text-[11px] font-semibold text-lime-400">{textoPrecioConVariantes(p, variantes)}</span>
+                    {sinStock && <span className="text-[10px] font-bold text-rose-400">Agotado</span>}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -37833,48 +38437,55 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           )}
         </Campo>
 
-        <div>
-          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Para ti</p>
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {productosAddOns.map((p) => {
-              const variantes = variantesPorProducto[p.id] || [];
-              const sinStock = productoEstaAgotado(p, variantes);
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  disabled={sinStock}
-                  onClick={() => (variantes.length > 0 ? setAddonParaVariante(p) : agregarAddon(p))}
-                  className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-lime-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-300"
-                >
-                  <span className="text-[11px] font-bold text-slate-800">{p.nombre}</span>
-                  <span className="text-[11px] font-semibold text-lime-400">{textoPrecioConVariantes(p, variantes)}</span>
-                  {sinStock && <span className="text-[10px] font-bold text-rose-400">Agotado</span>}
-                </button>
-              );
-            })}
-            {productosAddOns.length === 0 && <p className="text-xs text-slate-500">Sin adicionales disponibles.</p>}
-          </div>
-          {addons.length > 0 && (
-            <div className="mt-2 space-y-1.5">
-              {addons.map((a) => (
-                <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-100/60 px-3 py-1.5">
-                  <span className="text-xs text-slate-600">
-                    {a.cantidad}× {a.nombre}
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <button type="button" onClick={() => cambiarCantidadAddon(a.id, -1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-200 text-slate-600">
-                      <Minus size={10} />
-                    </button>
-                    <button type="button" onClick={() => cambiarCantidadAddon(a.id, 1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-200 text-slate-600">
-                      <Plus size={10} />
-                    </button>
-                  </div>
-                </div>
-              ))}
+        {/* Bloque Add-ons en Checkout (mejora): antes esta franja "Para ti"
+            SIEMPRE se mostraba con TODO el catálogo — ahora `productosAddOns`
+            ya viene curado + apagado por Switch Master desde Configuración
+            del Club (ver el comentario de su `useMemo` arriba), así que la
+            franja entera se oculta cuando no hay nada que sugerir en vez de
+            mostrar un aviso de "Sin adicionales disponibles". */}
+        {productosAddOns.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Para ti</p>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {productosAddOns.map((p) => {
+                const variantes = variantesPorProducto[p.id] || [];
+                const sinStock = productoEstaAgotado(p, variantes);
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    disabled={sinStock}
+                    onClick={() => (variantes.length > 0 ? setAddonParaVariante(p) : agregarAddon(p))}
+                    className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-lime-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-300"
+                  >
+                    <span className="text-[11px] font-bold text-slate-800">{p.nombre}</span>
+                    <span className="text-[11px] font-semibold text-lime-400">{textoPrecioConVariantes(p, variantes)}</span>
+                    {sinStock && <span className="text-[10px] font-bold text-rose-400">Agotado</span>}
+                  </button>
+                );
+              })}
             </div>
-          )}
-        </div>
+            {addons.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                {addons.map((a) => (
+                  <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-100/60 px-3 py-1.5">
+                    <span className="text-xs text-slate-600">
+                      {a.cantidad}× {a.nombre}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button type="button" onClick={() => cambiarCantidadAddon(a.id, -1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-200 text-slate-600">
+                        <Minus size={10} />
+                      </button>
+                      <button type="button" onClick={() => cambiarCantidadAddon(a.id, 1)} className="flex h-5 w-5 items-center justify-center rounded bg-slate-200 text-slate-600">
+                        <Plus size={10} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {!jugador && (
           <div className="grid grid-cols-2 gap-3">
@@ -38510,6 +39121,15 @@ function AppInterno() {
   const [cortesiasActivadasDesde, setCortesiasActivadasDesde] = useState(metasCortesiaLocalIniciales.activadaDesde ?? null);
   const [guardandoMetasCortesia, setGuardandoMetasCortesia] = useState(false);
 
+  // Configuración del Club → "Portal & Tienda Web" → Add-ons (módulo nuevo):
+  // misma fila de `configuracion_club`, mismo criterio de flujo
+  // independiente que `rangosHorarioClases`/`metaCortesia*` arriba. Ver
+  // `LS_KEY_ADDONS_CONFIG` para el detalle de cada campo.
+  const addonsConfigLocalInicial = leerAddonsConfigLocal();
+  const [addonsHabilitados, setAddonsHabilitados] = useState(addonsConfigLocalInicial.habilitados);
+  const [productosAddonsIds, setProductosAddonsIds] = useState(addonsConfigLocalInicial.productosIds);
+  const [guardandoAddonsConfig, setGuardandoAddonsConfig] = useState(false);
+
   // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): mapa LIVIANO
   // `{ [jugadorId]: { bar, proshop } }` de qué jugadores tienen ALGUNA
   // cortesía lista para canjear — `DirectorioJugadoresCRM` (Directorio &
@@ -38960,6 +39580,20 @@ function AppInterno() {
           setCortesiasActivadasDesde(nuevasMetas.activadaDesde);
           guardarMetasCortesiaLocal(nuevasMetas);
         }
+        // Configuración del Club → Add-ons (módulo nuevo) — mismo
+        // `select('*')` de arriba, sin consulta nueva: en un proyecto que
+        // todavía no corrió la migración de estas 2 columnas, ambas vienen
+        // `undefined` y el Portal simplemente no muestra la sección (ver
+        // `productosAddOns` en `PortalPublicoJugadores`).
+        if (data.addons_habilitados != null || data.productos_addons_ids != null) {
+          const nuevaAddonsConfig = {
+            habilitados: data.addons_habilitados !== false,
+            productosIds: Array.isArray(data.productos_addons_ids) ? data.productos_addons_ids.map((id) => String(id)) : [],
+          };
+          setAddonsHabilitados(nuevaAddonsConfig.habilitados);
+          setProductosAddonsIds(nuevaAddonsConfig.productosIds);
+          guardarAddonsConfigLocal(nuevaAddonsConfig);
+        }
       }
     } catch (err) {
       if (!esErrorTablaInexistente(err) && !opts.silencioso) {
@@ -38993,6 +39627,46 @@ function AppInterno() {
       }
       mostrarToast({ titulo: 'Horarios Habilitados actualizados', detalle: 'El Portal ya solo deja elegir horas dentro de estos bloques.' });
       setGuardandoRangosHorarioClases(false);
+    },
+    [mostrarToast]
+  );
+
+  // Guarda la Configuración de Add-ons (Configuración del Club → "Portal &
+  // Tienda Web", módulo nuevo) — mismo criterio de Sincronización Silenciosa
+  // que `guardarRangosHorarioClases` arriba: estado en vivo + respaldo local
+  // SIEMPRE, Supabase best effort, flujo y toast propios. Recibe UN SOLO
+  // objeto (`{ habilitados, productosIds }`, ya armado por
+  // `ModuloConfiguracionClub`) en vez de argumentos posicionales.
+  const guardarAddonsConfig = useCallback(
+    async (nuevaConfig) => {
+      const habilitados = nuevaConfig?.habilitados !== false;
+      const productosIds = Array.isArray(nuevaConfig?.productosIds) ? nuevaConfig.productosIds.map((id) => String(id)) : [];
+      setGuardandoAddonsConfig(true);
+      setAddonsHabilitados(habilitados);
+      setProductosAddonsIds(productosIds);
+      guardarAddonsConfigLocal({ habilitados, productosIds });
+      try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión — no se puede guardar en Supabase todavía.');
+        const { error } = await actualizarConColumnasOpcionales(
+          'configuracion_club',
+          CLUB_ACTIVO_ID,
+          { addons_habilitados: habilitados, productos_addons_ids: productosIds },
+          ['addons_habilitados', 'productos_addons_ids']
+        );
+        if (error) throw error;
+      } catch (err) {
+        // Sincronización Silenciosa: la config ya se aplicó de forma
+        // optimista arriba — si Supabase no la acepta todavía (columnas sin
+        // migrar, red), se reintentará sola con el próximo guardado.
+        console.warn('[Configuración del Club] No se pudo guardar la configuración de Add-ons en Supabase — se guardó en modo local.', err);
+      }
+      mostrarToast({
+        titulo: 'Add-ons actualizados',
+        detalle: habilitados
+          ? `El Portal ya muestra ${productosIds.length} producto(s) como Add-on.`
+          : 'La sección de Add-ons quedó desactivada en el Portal.',
+      });
+      setGuardandoAddonsConfig(false);
     },
     [mostrarToast]
   );
@@ -40515,6 +41189,21 @@ function AppInterno() {
                 loadingLogActividad={loadingLogActividad}
                 errorLogActividad={errorLogActividad}
                 cargarLogActividad={cargarLogActividad}
+              />
+            ) : moduloActivo === 'configuracion' && operador?.rol === 'owner' ? (
+              // Segundo candado (defensa de respaldo, mismo criterio que
+              // `ModalConfigClub` en `Sidebar`): aunque el Sidebar ya solo le
+              // muestra este módulo a Owner (`NAV_MODULOS`/`permisos.modulos`),
+              // el render en sí vuelve a exigir el rol — así ningún otro rol
+              // llega a montarlo aunque `moduloActivo` quedara en
+              // 'configuracion' por alguna otra vía (ej. orden de navegación
+              // guardado en localStorage de una sesión anterior con otro rol).
+              <ModuloConfiguracionClub
+                productos={productos}
+                addonsHabilitados={addonsHabilitados}
+                productosAddonsIds={productosAddonsIds}
+                onGuardarAddonsConfig={guardarAddonsConfig}
+                guardandoAddonsConfig={guardandoAddonsConfig}
               />
             ) : null}
           </main>
