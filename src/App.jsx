@@ -4557,6 +4557,135 @@ const LEYENDA_CALENDARIO_ACADEMIA = [
 ];
 
 /* ============================================================================
+ * VISTA AGENDA / LISTA DIARIA POR HORAS — reemplaza el "Zoom a Día" anterior
+ * (que reutilizaba `VistaCronograma`, así que el drill-down se SEGUÍA
+ * viendo/sintiendo exactamente como la pestaña Cronograma; el club pidió
+ * explícitamente una vista de lista real). Se usa TAL CUAL desde Parrilla
+ * Operativa y desde Academia & Clínicas — ambas le pasan su propio arreglo
+ * de `reservas` del día (que YA incluye los bloqueos de Clase/Torneo/Reta,
+ * ver `crearBloqueoParrilla`/`ESTATUS_META`) y su propio `onReservaClick`
+ * para abrir la ficha correspondiente de cada módulo, así que un solo
+ * componente cubre los 2 lugares sin duplicar la agrupación por hora.
+ * ==========================================================================*/
+
+// Tipo de evento + estilo (mismo criterio de color que ya usa el Cronograma
+// en `FilaCronograma`, para que Agenda y Cronograma se lean como el mismo
+// lenguaje visual aunque la estructura sea distinta: lista vs. parrilla).
+function tipoEventoDeReserva(estado) {
+  if (estado === 'Torneo') return { label: 'Torneo', meta: ESTATUS_META.torneo };
+  if (estado === 'Reta') return { label: 'Reta', meta: ESTATUS_META.reta };
+  if (estado === 'Clase') return { label: 'Clase', meta: ESTATUS_META.clase };
+  return { label: 'Reserva', meta: ESTATUS_META.reservada };
+}
+
+// Tarjeta de un evento dentro de un bloque de hora de la Agenda: Tipo,
+// Cliente/Jugador, Cancha asignada y Estado (Pagado/Pendiente) — clic abre
+// el detalle/gestión vía `onClick` (lo decide cada módulo que la use).
+function TarjetaEventoAgenda({ reserva, canchasPorId, onClick }) {
+  const { label, meta } = tipoEventoDeReserva(reserva.estado);
+  const cancha = canchasPorId?.[reserva.cancha_id];
+  return (
+    <button
+      type="button"
+      onClick={() => onClick?.(reserva)}
+      className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left transition hover:border-lime-400/40 hover:bg-slate-100/60"
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${meta.badge}`}>{label}</span>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-bold text-slate-900">{reserva.jugador_nombre || 'Jugador'}</p>
+          <p className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-slate-500">
+            <MapPin size={11} className="shrink-0" /> {cancha?.nombre || 'Cancha'}
+            <span className="text-slate-400">·</span>
+            {formatoHora12(reserva.hora_inicio)}–{formatoHora12(reserva.hora_fin)}
+          </p>
+        </div>
+      </div>
+      <span
+        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+          reserva.estado_pago === 'pagado'
+            ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+            : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
+        }`}
+      >
+        {reserva.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+      </span>
+    </button>
+  );
+}
+
+// Cuerpo de la Agenda: un bloque por cada hora en punto entre apertura y
+// cierre del club (`horaAperturaMin`/`horaCierreMin`, mismo respaldo
+// 06:00–24:00 que el resto de la parrilla — ver `minutosOperacionDelClub`),
+// cada uno con sus eventos ordenados cronológicamente o el estado sobrio
+// "Sin eventos programados" cuando no hay nada agendado en esa hora.
+function VistaAgendaDia({
+  fecha,
+  canchasPorId,
+  reservas,
+  horaAperturaMin = HORA_INICIO_MIN,
+  horaCierreMin = HORA_FIN_MIN,
+  onReservaClick,
+}) {
+  const eventosDelDia = useMemo(
+    () => (reservas || []).filter((r) => r.fecha === fecha && r.estado !== 'Cancelada'),
+    [reservas, fecha]
+  );
+
+  const horasBloque = useMemo(() => {
+    const horas = [];
+    for (let m = horaAperturaMin; m < horaCierreMin; m += 60) horas.push(m);
+    if (horas.length === 0) horas.push(horaAperturaMin);
+    return horas;
+  }, [horaAperturaMin, horaCierreMin]);
+
+  const eventosPorHora = useMemo(() => {
+    const mapa = {};
+    horasBloque.forEach((h) => (mapa[h] = []));
+    eventosDelDia.forEach((r) => {
+      const iniMin = parseHoraAMinutos(r.hora_inicio);
+      if (iniMin === null) return;
+      // El evento cae en el bloque de la hora en punto igual o
+      // inmediatamente ANTERIOR a su hora de inicio real (ej. 09:30 cae en
+      // el bloque de las 09:00) — así una clase/reserva a media hora nunca
+      // desaparece de la lista, siempre aterriza en algún bloque visible.
+      let claveBloque = horasBloque[0];
+      for (const h of horasBloque) {
+        if (h <= iniMin) claveBloque = h;
+        else break;
+      }
+      if (mapa[claveBloque]) mapa[claveBloque].push(r);
+    });
+    Object.values(mapa).forEach((lista) =>
+      lista.sort((a, b) => (a.hora_inicio || '').localeCompare(b.hora_inicio || ''))
+    );
+    return mapa;
+  }, [eventosDelDia, horasBloque]);
+
+  return (
+    <div className="space-y-2">
+      {horasBloque.map((h) => {
+        const eventos = eventosPorHora[h] || [];
+        return (
+          <div key={h} className="flex gap-3 rounded-2xl border border-slate-200 bg-white p-3">
+            <div className="w-16 shrink-0 pt-0.5 text-right text-xs font-black text-slate-400">{minutosAHora(h)}</div>
+            <div className="min-w-0 flex-1 space-y-1.5 border-l border-slate-100 pl-3">
+              {eventos.length === 0 ? (
+                <p className="py-1 text-xs font-medium text-slate-400">Sin eventos programados</p>
+              ) : (
+                eventos.map((r) => (
+                  <TarjetaEventoAgenda key={r.id} reserva={r} canchasPorId={canchasPorId} onClick={onReservaClick} />
+                ))
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============================================================================
  * MODAL: OPERADOR / TURNO
  * ==========================================================================*/
 
@@ -6372,38 +6501,27 @@ function ModuloParrillaOperativa({
           fechaHoy={hoyISO()}
         />
       ) : vista === 'dia' ? (
-        <div className="space-y-5">
-          {/* Interacción "Zoom a Día": botón claro de regreso a la
-              cuadrícula del mes + la misma línea de tiempo por horas/canchas
-              (`VistaCronograma`) que ya usa "Cronograma", ahora enfocada en
-              el día que se seleccionó desde el Calendario. */}
+        <div className="space-y-4">
+          {/* Interacción "Zoom a Día": Agenda/Lista diaria por horas — a
+              propósito NO es `VistaCronograma` (esa es la pestaña
+              "Cronograma"; el club pidió explícitamente que el Calendario
+              llevara a una vista de LISTA, no a la parrilla horizontal). */}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => setVista('calendario')}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-200"
-            >
-              <ChevronLeft size={14} /> Volver al Mes
-            </button>
-            <p className="text-xs font-bold text-slate-500">{formatoFechaLarga(fechaSeleccionada)}</p>
+            <BotonPrimario onClick={() => setVista('calendario')} className="px-3 py-1.5 text-xs">
+              <ChevronLeft size={14} /> Volver al Calendario
+            </BotonPrimario>
+            <p className="text-sm font-bold text-slate-900">Agenda del {formatoFechaLarga(fechaSeleccionada)}</p>
           </div>
-          <VistaCronograma
-            canchas={canchasFiltradas}
+          <VistaAgendaDia
+            fecha={fechaSeleccionada}
+            canchasPorId={canchasPorId}
             reservas={reservas}
-            fechaSeleccionada={fechaSeleccionada}
-            onSlotClick={
-              permisos?.soloLecturaParrilla === true
-                ? undefined
-                : (cancha, hora) => setModalNuevaReserva({ cancha, hora, fecha: fechaSeleccionada })
-            }
+            horaAperturaMin={horaAperturaMin}
+            horaCierreMin={horaCierreMin}
             onReservaClick={(reserva) =>
               setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
             }
-            bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
-            horaAperturaMin={horaAperturaMin}
-            horaCierreMin={horaCierreMin}
           />
-          <HeatmapOcupacion modo="semana" filas={heatmapCronograma.filas} celdas={heatmapCronograma.celdas} />
         </div>
       ) : (
         <div className="space-y-5">
@@ -25910,7 +26028,7 @@ const NIVEL_OFICIAL_META = {
 // logo/íconos en `<svg>`): un anillo por cada 25/50/75/100% de
 // `ESCALA_MAX_EVALUACION`, una línea por eje desde el centro, el polígono de
 // valores relleno en lima, y la etiqueta corta de cada eje en su vértice.
-function RadarEvaluacion({ valores, size = 240 }) {
+function RadarEvaluacion({ valores, size = 280 }) {
   const centro = size / 2;
   const radioMax = size / 2 - 34;
   const n = EJES_EVALUACION.length;
@@ -25946,13 +26064,25 @@ function RadarEvaluacion({ valores, size = 240 }) {
   //      final (crece hacia la izquierda); los casi verticales (arriba/abajo,
   //      `cosA` cerca de 0) se quedan centrados como antes. Así cada
   //      etiqueta solo necesita margen de UN lado, nunca de los dos.
-  const padX = 46;
-  const padY = 26;
+  //
+  // AJUSTE (2do turno): el fix de arriba, dejado con el `size` original
+  // (240) y el contenedor CSS tal cual (`max-w-[280px]`), terminaba
+  // ENCOGIENDO el octágono a simple vista — el `viewBox` creció para darle
+  // márgen al texto, pero el contenedor en pantalla se quedó del mismo
+  // tamaño, así que el octágono (que sigue ocupando la misma fracción fija
+  // del `viewBox`) pasó a verse más chico dentro de ese mismo espacio. La
+  // corrección NO es la de arriba (`padX`/`padY`) — es subir `size` (240→280,
+  // ver default del parámetro) Y agrandar el contenedor CSS en proporción
+  // (`max-w-[280px]` → `max-w-[440px]`), para que el octágono en sí se
+  // dibuje TAN GRANDE o más que antes del fix de recorte, con el `padX`/
+  // `padY` como espacio EXTRA alrededor (no restado de su tamaño).
+  const padX = 64;
+  const padY = 30;
 
   return (
     <svg
       viewBox={`${-padX} ${-padY} ${size + padX * 2} ${size + padY * 2}`}
-      className="mx-auto w-full max-w-[280px]"
+      className="mx-auto w-full max-w-[440px]"
       role="img"
       aria-label="Skill Radar Chart"
     >
@@ -29662,16 +29792,16 @@ function ModuloAcademiaClinicas({
           <div className="flex flex-wrap items-center gap-2">
             {/* Nueva Vista de Calendario Mensual — mismo criterio que el
                 conmutador Tarjetas/Cronograma/Calendario de la Parrilla
-                Operativa: "Cronograma" cubre tanto el modo de siempre como
-                el submodo 'dia' (drill-down), así el botón se queda
-                marcado como activo mientras el operador esté en cualquiera
-                de los dos. */}
+                Operativa: "Calendario" cubre tanto la cuadrícula del mes
+                como el submodo 'dia' (la Agenda de un día, a la que solo se
+                llega dando clic en una casilla del mes), así el botón se
+                queda marcado como activo en cualquiera de los dos. */}
             <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
               <button
                 type="button"
                 onClick={() => setModoParrillaClases('cronograma')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                  modoParrillaClases !== 'calendario' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  modoParrillaClases === 'cronograma' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <CalendarDays size={14} /> Cronograma
@@ -29680,7 +29810,9 @@ function ModuloAcademiaClinicas({
                 type="button"
                 onClick={() => setModoParrillaClases('calendario')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                  modoParrillaClases === 'calendario' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  modoParrillaClases === 'calendario' || modoParrillaClases === 'dia'
+                    ? 'bg-lime-400 text-slate-950'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <CalendarRange size={14} /> Calendario
@@ -29718,20 +29850,31 @@ function ModuloAcademiaClinicas({
               tiposLeyenda={LEYENDA_CALENDARIO_ACADEMIA}
               fechaHoy={hoyISO()}
             />
+          ) : modoParrillaClases === 'dia' ? (
+            // Interacción "Zoom a Día": Agenda/Lista diaria por horas — a
+            // propósito NO es `VistaCronograma` (esa es la que ya se ve en
+            // el modo "Cronograma" de siempre; el club pidió explícitamente
+            // que el Calendario llevara a una vista de LISTA, no a la
+            // parrilla horizontal). Usa `fechaCronograma` porque
+            // `irADiaCalendarioAcademia` la deja apuntando al día elegido.
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <BotonPrimario onClick={() => setModoParrillaClases('calendario')} className="px-3 py-1.5 text-xs">
+                  <ChevronLeft size={14} /> Volver al Calendario
+                </BotonPrimario>
+                <p className="text-sm font-bold text-slate-900">Agenda del {formatoFechaLarga(fechaCronograma)}</p>
+              </div>
+              <VistaAgendaDia
+                fecha={fechaCronograma}
+                canchasPorId={canchasPorId}
+                reservas={reservas}
+                horaAperturaMin={horaAperturaMinAcademia}
+                horaCierreMin={horaCierreMinAcademia}
+                onReservaClick={manejarClicReservaCronograma}
+              />
+            </div>
           ) : (
             <>
-              {modoParrillaClases === 'dia' && (
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setModoParrillaClases('calendario')}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-200"
-                  >
-                    <ChevronLeft size={14} /> Volver al Mes
-                  </button>
-                  <p className="text-xs font-bold text-slate-500">{formatoFechaLarga(fechaCronograma)}</p>
-                </div>
-              )}
               {todasLasClasesAcademia.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
                   <button
