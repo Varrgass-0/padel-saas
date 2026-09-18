@@ -2749,24 +2749,39 @@ function useToast() {
   return React.useContext(ToastContext);
 }
 
+// Rediseño Dark Premium (a pedido): reemplaza el naranja/rosa oscuro de
+// siempre por una tarjeta uniforme `bg-slate-900`/`border-slate-700`/
+// `text-white` de alto contraste — igual en los 3 `tono` (antes cada uno
+// tenía su propio fondo de color, incluida la variante "ok" en blanco, que
+// desentonaba con el resto). El tono ya no se distingue por el fondo sino
+// por un acento sutil (icono + borde izquierdo de 4px), así sigue siendo
+// obvio a simple vista si el aviso es un error, una advertencia o una
+// confirmación, sin volver a los fondos de color de antes.
+const ACENTO_TOAST = {
+  error: { borde: 'border-l-rose-500', icono: AlertTriangle, color: 'text-rose-400' },
+  aviso: { borde: 'border-l-amber-500', icono: Info, color: 'text-amber-400' },
+  ok: { borde: 'border-l-lime-500', icono: CheckCircle2, color: 'text-lime-400' },
+};
+
 function ToastHost({ toasts }) {
   return (
     <div className="fixed bottom-5 right-5 z-[100] flex w-full max-w-sm flex-col gap-2">
-      {toasts.map((t) => (
-        <div
-          key={t.id}
-          className={`animate-[fadeIn_0.2s_ease] rounded-xl border px-4 py-3 shadow-2xl backdrop-blur-sm ${
-            t.tono === 'error'
-              ? 'border-rose-500/30 bg-rose-950/90 text-rose-100'
-              : t.tono === 'aviso'
-              ? 'border-amber-500/30 bg-amber-950/90 text-amber-100'
-              : 'border-lime-500/30 bg-white/95 text-slate-900'
-          }`}
-        >
-          <p className="text-sm font-semibold">{t.titulo}</p>
-          {t.detalle && <p className="mt-0.5 text-xs text-slate-600">{t.detalle}</p>}
-        </div>
-      ))}
+      {toasts.map((t) => {
+        const acento = ACENTO_TOAST[t.tono] || ACENTO_TOAST.ok;
+        const Icono = acento.icono;
+        return (
+          <div
+            key={t.id}
+            className={`flex items-start gap-2.5 animate-[fadeIn_0.2s_ease] rounded-xl border border-slate-700 ${acento.borde} border-l-4 bg-slate-900 px-4 py-3 text-white shadow-2xl backdrop-blur-sm`}
+          >
+            <Icono size={16} className={`mt-0.5 shrink-0 ${acento.color}`} />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-white">{t.titulo}</p>
+              {t.detalle && <p className="mt-0.5 text-xs text-slate-300">{t.detalle}</p>}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -3254,7 +3269,7 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
     >
       <div className="space-y-4">
         <Campo label="Nombre del club">
-          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Pádel Club Mexico" />
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} />
         </Campo>
 
         <div className="space-y-2">
@@ -4992,7 +5007,6 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                 value={nombreNuevo}
                 onChange={(e) => setNombreNuevo(e.target.value)}
                 className={inputClase}
-                placeholder="Ej. Juan Pérez"
                 autoFocus
               />
             </Campo>
@@ -5412,7 +5426,7 @@ function ModalNuevaCancha({ onClose, onCreada }) {
     <ModalShell titulo="Nueva Cancha" subtitulo="Agrega una cancha a tu parrilla operativa" onClose={onClose} icon={Plus}>
       <div className="space-y-4">
         <Campo label="Nombre de la cancha">
-          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Cancha Central" />
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} />
         </Campo>
         <Campo label="Precio por hora (MXN)">
           <input
@@ -6371,7 +6385,6 @@ function DetalleReserva({
               value={motivoCancelacion}
               onChange={(e) => setMotivoCancelacion(e.target.value)}
               className={inputClase}
-              placeholder="Ej. Cliente no se presentó, cambio de fecha a petición del jugador..."
             />
           </Campo>
 
@@ -8406,7 +8419,6 @@ function ModalDevolucionPOS({ productos, onClose, onRegistrar }) {
                 value={motivo}
                 onChange={(e) => setMotivo(e.target.value)}
                 className={inputClase}
-                placeholder="Ej. Pedido equivocado, producto en mal estado..."
               />
             </Campo>
           </>
@@ -8731,7 +8743,7 @@ function ModalNuevoProducto({
     >
       <div className="space-y-4">
         <Campo label="Nombre del producto">
-          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Pelotas Head Padel x3" />
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} />
         </Campo>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -9393,7 +9405,6 @@ function ModalMotivoObligatorio({ titulo, subtitulo, textoBoton = 'Confirmar', o
             disabled={guardando}
             autoFocus
             className={`${inputClase} min-h-[90px] resize-y`}
-            placeholder="Ej. Pedido duplicado por error, cliente canceló antes de que llegara la orden..."
           />
         </Campo>
         <div className="flex justify-end gap-2 pt-1">
@@ -18316,7 +18327,6 @@ function ModuloContabilidadCompras({
                   <Campo label="Concepto">
                     <input
                       type="text"
-                      placeholder="Ej. Pelotas Head, recibo de luz..."
                       value={formEgreso.concepto}
                       onChange={(e) => setFormEgreso((f) => ({ ...f, concepto: e.target.value }))}
                       className={inputClase}
@@ -18528,7 +18538,6 @@ function ModuloContabilidadCompras({
                                 <Campo label="Nombre de la variante">
                                   <input
                                     type="text"
-                                    placeholder="Ej. Wilson Pro"
                                     value={formEgreso.nuevaVarianteNombre}
                                     onChange={(e) => setFormEgreso((f) => ({ ...f, nuevaVarianteNombre: e.target.value }))}
                                     className={inputClase}
@@ -18628,7 +18637,6 @@ function ModuloContabilidadCompras({
                             <Campo label="Nombre del producto">
                               <input
                                 type="text"
-                                placeholder="Ej. Overgrips Tourna"
                                 value={nuevoProductoForm.nombre}
                                 onChange={(e) => setNuevoProductoForm((f) => ({ ...f, nombre: e.target.value }))}
                                 className={inputClase}
@@ -18757,7 +18765,7 @@ function ModuloContabilidadCompras({
                                   ejemplo/formato. */}
                               <div className="grid grid-cols-5 gap-2 px-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">
                                 <span className="col-span-2">Nombre</span>
-                                <span>Precio</span>
+                                <span>Precio de Venta</span>
                                 <span>Costo</span>
                                 <span>Stock</span>
                               </div>
@@ -18765,7 +18773,6 @@ function ModuloContabilidadCompras({
                                 <div key={v.id} className="grid grid-cols-5 items-center gap-2">
                                   <input
                                     type="text"
-                                    placeholder="Ej. Victoria"
                                     value={v.nombre}
                                     onChange={(e) => actualizarFilaVarianteNuevoProducto(v.id, 'nombre', e.target.value)}
                                     className={`${inputClase} col-span-2`}
@@ -19030,7 +19037,6 @@ function ModuloContabilidadCompras({
               <Campo label="Nombre">
                 <input
                   type="text"
-                  placeholder="Ej. Distribuidora Padel MX"
                   value={formProveedor.nombre}
                   onChange={(e) => setFormProveedor((f) => ({ ...f, nombre: e.target.value }))}
                   className={inputClase}
@@ -19039,7 +19045,6 @@ function ModuloContabilidadCompras({
               <Campo label="Categoría">
                 <input
                   type="text"
-                  placeholder="Ej. Insumos, Mantenimiento..."
                   value={formProveedor.categoria}
                   onChange={(e) => setFormProveedor((f) => ({ ...f, categoria: e.target.value }))}
                   className={inputClase}
@@ -22882,7 +22887,6 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
               value={nombre}
               onChange={(e) => setNombre(e.target.value)}
               className={inputClase}
-              placeholder="Ej. Copa Primavera 2026"
               autoFocus
             />
           </Campo>
@@ -23918,7 +23922,6 @@ function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
           value={valor.texto}
           onChange={(e) => onChange({ ...valor, texto: e.target.value })}
           className={`${inputClase} text-xs`}
-          placeholder="Ej. Pedro / Luis"
         />
       ) : (
         <div className="grid grid-cols-2 gap-2">
@@ -24135,7 +24138,6 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
                 value={numParejas}
                 onChange={(e) => cambiarNumeroPersonalizado(e.target.value)}
                 className={`${inputClase} w-24 text-xs`}
-                placeholder="Ej. 12"
                 autoFocus
               />
             )}
@@ -29608,7 +29610,6 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando }) {
           <input
             value={nombre}
             onChange={(e) => setNombre(e.target.value)}
-            placeholder='Ej. "Tardes - Horario Pico"'
             className={inputClase}
           />
         </Campo>
@@ -32859,7 +32860,7 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
     >
       <div className="space-y-4">
         <Campo label="Nombre">
-          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Ej. Juan Pérez" />
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} />
         </Campo>
         <Campo label="Rol" hint="Define qué módulos y acciones puede usar al ficharse.">
           <div className="grid grid-cols-2 gap-1.5">
@@ -34152,10 +34153,10 @@ function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsI
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
           <ShoppingBag size={16} className="text-lime-500" />
-          <h3 className="text-sm font-black text-slate-900">Add-ons del Portal</h3>
+          <h3 className="text-sm font-black text-slate-900">Quick Sell del Portal</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
-          Los Add-ons son productos o servicios del catálogo — de cualquier categoría (Pro-Shop, Restaurante/Bar,
+          Los Quick Sell son productos o servicios del catálogo — de cualquier categoría (Pro-Shop, Restaurante/Bar,
           Rentas/Servicios) — que se destacan como sugerencia rápida para el jugador durante el pago en el Portal
           (reserva de cancha y Tienda). Ideal para promover overgrips, bebidas, snacks o renta de equipo.
         </p>
@@ -34171,7 +34172,7 @@ function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsI
           <span className="flex items-center gap-2">
             <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addonsHabilitados ? 'bg-lime-500' : 'bg-slate-400'}`} />
             <span className={`text-xs font-bold ${addonsHabilitados ? 'text-lime-700' : 'text-slate-600'}`}>
-              Sección de Add-ons en el Portal: {addonsHabilitados ? 'Activada' : 'Desactivada'}
+              Sección de Quick Sell en el Portal: {addonsHabilitados ? 'Activada' : 'Desactivada'}
             </span>
           </span>
           <span
@@ -34252,7 +34253,7 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
 
   return (
     <ModalShell
-      titulo="Elegir Productos para Add-ons"
+      titulo="Elegir Productos para Quick Sell"
       subtitulo="De todo el catálogo — Pro-Shop, Restaurante/Bar y Rentas — se muestran como sugerencia rápida en el checkout del Portal"
       onClose={onClose}
       icon={ShoppingBag}
@@ -34744,6 +34745,16 @@ function PortalPublicoJugadores({ clubSlug }) {
     setToasts((prev) => [...prev, { id, titulo, detalle, tono }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4200);
   }, []);
+
+  // Modo Oscuro (Toggle Theme) — mismo hook que ya usa el panel interno
+  // (`TopHeader`), preferencia GLOBAL del dispositivo (`LS_KEY_TEMA_CLUBOS`,
+  // no por club/jugador), así que un dispositivo que ya tenía Modo Oscuro
+  // activado desde el panel interno abre el Portal ya en oscuro, y
+  // viceversa. Ver `useTemaClubOS`/`aplicarClaseTemaClubOS` (alternan la
+  // clase `dark` en `<html>`, el mismo ancestro que envuelve tanto al Portal
+  // como al panel interno) y la hoja `CSS_MODO_OSCURO_CLUBOS` (cerca del
+  // inicio del archivo) que aplica los overrides.
+  const [temaPortal, alternarTemaPortal] = useTemaClubOS();
 
   const [club, setClub] = useState(null);
   const [cargandoClub, setCargandoClub] = useState(true);
@@ -36757,7 +36768,7 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   if (cargandoClub) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-white to-slate-100 text-slate-500">
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500">
         <Loader2 size={22} className="animate-spin" />
       </div>
     );
@@ -36765,7 +36776,7 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   if (!club) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-50 via-white to-slate-100 px-6 text-center text-slate-500">
+      <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-slate-50 px-6 text-center text-slate-500">
         <MapPin size={28} className="text-slate-400" />
         <p className="text-lg font-bold text-slate-800">Club no encontrado</p>
         <p className="max-w-sm text-sm">No encontramos ningún club en esta dirección. Verifica el enlace con tu club.</p>
@@ -36775,7 +36786,7 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   return (
     <ToastContext.Provider value={mostrarToast}>
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 text-slate-900">
+      <div className="min-h-screen bg-slate-50 text-slate-900">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-slate-50/70 px-4 py-3.5 backdrop-blur-xl">
           <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
@@ -36791,18 +36802,27 @@ function PortalPublicoJugadores({ clubSlug }) {
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Portal de jugadores</p>
               </div>
             </div>
-            {jugador ? (
-              <button
-                onClick={cerrarSesionPortal}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/60 px-2.5 py-1.5 text-xs font-bold text-slate-600 backdrop-blur hover:text-slate-900"
-              >
-                <User size={13} /> {jugador.nombre.split(' ')[0]}
-              </button>
-            ) : (
-              <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
-                <User size={13} /> Identificarme
-              </BotonPrimario>
-            )}
+            {/* Modo Oscuro (Toggle Theme) — mismo botón/hook que ya usa el
+                panel interno (`useTemaClubOS`/`BotonTemaClubOS`, ambos
+                module-scope, sin props/estado nuevo que inventar). Va
+                justo a la izquierda del saludo/perfil del jugador (o del
+                botón "Identificarme" cuando todavía no se ha identificado),
+                dentro del mismo grupo de la derecha del header. */}
+            <div className="flex items-center gap-1.5">
+              <BotonTemaClubOS tema={temaPortal} onAlternar={alternarTemaPortal} />
+              {jugador ? (
+                <button
+                  onClick={cerrarSesionPortal}
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/60 px-2.5 py-1.5 text-xs font-bold text-slate-600 backdrop-blur hover:text-slate-900"
+                >
+                  <User size={13} /> {jugador.nombre.split(' ')[0]}
+                </button>
+              ) : (
+                <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
+                  <User size={13} /> Identificarme
+                </BotonPrimario>
+              )}
+            </div>
           </div>
         </header>
 
@@ -38525,7 +38545,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                       : bloqueado
                       ? `cursor-not-allowed opacity-60 ${estilo.clases}`
                       : seleccionado
-                      ? 'border-lime-400 bg-lime-400/25 text-lime-300'
+                      ? 'border-2 border-lime-500 ring-2 ring-lime-500/40 bg-lime-400/25 text-lime-300'
                       : `${estilo.clases} hover:brightness-110`
                   }`}
                 >
@@ -39490,7 +39510,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                       bloqueado
                         ? `cursor-not-allowed opacity-60 ${estilo.clases}`
                         : seleccionado
-                        ? 'border-lime-400/60 bg-lime-400/15'
+                        ? 'border-2 border-lime-500 ring-2 ring-lime-500/40 bg-lime-400/15'
                         : `${estilo.clases} hover:brightness-110`
                     }`}
                   >
@@ -40896,10 +40916,10 @@ function AppInterno() {
         console.warn('[Configuración del Club] No se pudo guardar la configuración de Add-ons en Supabase — se guardó en modo local.', err);
       }
       mostrarToast({
-        titulo: 'Add-ons actualizados',
+        titulo: 'Quick Sell actualizado',
         detalle: habilitados
-          ? `El Portal ya muestra ${productosIds.length} producto(s) como Add-on.`
-          : 'La sección de Add-ons quedó desactivada en el Portal.',
+          ? `El Portal ya muestra ${productosIds.length} producto(s) como Quick Sell.`
+          : 'La sección de Quick Sell quedó desactivada en el Portal.',
       });
       setGuardandoAddonsConfig(false);
     },
@@ -42932,7 +42952,6 @@ function ClubAuthScreen({ onAutenticado }) {
                     <input
                       type="text"
                       className={`${inputClase} pl-9`}
-                      placeholder="Ej. Pádel Club Mexico"
                       value={nombreClub}
                       onChange={(e) => setNombreClub(e.target.value)}
                     />
@@ -43330,7 +43349,6 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
                   <input
                     type="text"
                     className={`${inputClase} pl-9`}
-                    placeholder="Ej. Pádel Club Mexico"
                     value={nombreClub}
                     onChange={(e) => setNombreClub(e.target.value)}
                   />
