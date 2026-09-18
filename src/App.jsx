@@ -3161,6 +3161,59 @@ function guardarMetasCortesiaLocal(metas) {
   }
 }
 
+// Cortesías por Frecuencia de Actividad (Configuración del Club →
+// "Jugadores & Fidelización", migracion_v46) — SEGUNDO Motor de Cortesías,
+// independiente del de gasto (`LS_KEY_METAS_CORTESIA` arriba): premia
+// CANTIDAD de eventos completados (reservas/retas/torneos/clases) en vez de
+// pesos gastados. Mismo criterio exacto de respaldo local + Sincronización
+// Silenciosa que el resto de `configuracion_club`. `activo`: a diferencia
+// del motor de gasto (que arranca `true` por compatibilidad con clubes que
+// ya lo tenían encendido), este es un módulo NUEVO — arranca `false`,
+// ningún club lo ve activo hasta que lo prenda a propósito. `activadaDesde`:
+// mismo Blindaje "sin acumulados fantasma" que `activadaDesde` del motor de
+// gasto — ver `guardarCortesiasFrecuencia`/`perfiles` en
+// `DirectorioJugadoresCRM`. Cada categoría guarda `meta` (número de eventos)
+// y `premio` (texto libre que describe la recompensa, ej. "1 hora gratis" —
+// no hay un motor de descuento automático genérico en la app, el staff la
+// aplica a mano al cobrar, ver `otorgarCortesiaFrecuenciaCRM`).
+const LS_KEY_CORTESIAS_FRECUENCIA = 'smashpadel_cortesias_frecuencia_v1';
+const CORTESIAS_FRECUENCIA_DEFAULT_LOCAL = {
+  activo: false,
+  activadaDesde: null,
+  reservas: { meta: null, premio: '' },
+  retas: { meta: null, premio: '' },
+  torneos: { meta: null, premio: '' },
+  clases: { meta: null, premio: '' },
+};
+function leerCortesiasFrecuenciaLocal() {
+  try {
+    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_CORTESIAS_FRECUENCIA));
+    const parsed = crudo ? JSON.parse(crudo) : null;
+    if (!parsed || typeof parsed !== 'object') return { ...CORTESIAS_FRECUENCIA_DEFAULT_LOCAL };
+    const categoria = (c) => ({
+      meta: parsed?.[c]?.meta ?? null,
+      premio: typeof parsed?.[c]?.premio === 'string' ? parsed[c].premio : '',
+    });
+    return {
+      activo: parsed.activo === true,
+      activadaDesde: typeof parsed.activadaDesde === 'string' ? parsed.activadaDesde : null,
+      reservas: categoria('reservas'),
+      retas: categoria('retas'),
+      torneos: categoria('torneos'),
+      clases: categoria('clases'),
+    };
+  } catch (_e) {
+    return { ...CORTESIAS_FRECUENCIA_DEFAULT_LOCAL };
+  }
+}
+function guardarCortesiasFrecuenciaLocal(config) {
+  try {
+    localStorage.setItem(claveLocalPorClub(LS_KEY_CORTESIAS_FRECUENCIA), JSON.stringify(config || CORTESIAS_FRECUENCIA_DEFAULT_LOCAL));
+  } catch (_e) {
+    /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
+  }
+}
+
 // Configuración del Club → Portal & Tienda Web → Add-ons (módulo nuevo):
 // respaldo/caché local, mismo criterio exacto que `LS_KEY_METAS_CORTESIA`
 // arriba (flujo de guardado independiente, Sincronización Silenciosa,
@@ -14643,6 +14696,64 @@ async function otorgarCortesiaCRM({
   return { ok: true, error: null, venta, registro };
 }
 
+// Otorga una Cortesía por Frecuencia de Actividad (Vista 360° → "Cortesías
+// por Frecuencia de Actividad", migracion_v46) — SEGUNDO motor de
+// cortesías, independiente del de gasto (`otorgarCortesiaCRM` arriba). A
+// diferencia de ese, aquí la recompensa es un texto libre configurado por
+// el club (ej. "1 hora gratis", "10% de descuento") que el staff aplica A
+// MANO al momento de cobrar — no hay un producto/servicio genérico que
+// comprar ni stock que descontar, así que no hace falta ni el ticket
+// $0.00 ni el paso 3 de Kardex de `otorgarCortesiaCRM`. El ÚNICO paso real
+// es, por tanto, el mismo REQUISITO INDISPENSABLE que ahí es el paso 1: el
+// registro en `cortesias_otorgadas` es lo que de verdad reinicia el
+// progreso a 0 (ver `calcularProgresoCortesiaFrecuencia`/`perfiles` en
+// `DirectorioJugadoresCRM`) — si este INSERT falla, la función regresa
+// `ok: false` y NO pasa nada más: la barra NO se reinicia, no hay "éxito a
+// medias".
+//
+// Reutiliza la MISMA tabla `cortesias_otorgadas` (esquema ESTRICTO de 4
+// columnas de negocio: `club_id`, `jugador_id` texto, `categoria`,
+// `monto_meta` — ver el comentario junto a `otorgarCortesiaCRM`), con
+// valores de `categoria` nuevos y exclusivos de este motor
+// ('frecuencia_reservas'/'frecuencia_retas'/'frecuencia_torneos'/
+// 'frecuencia_clases') para nunca chocar con 'proshop'/'bar'. Misma
+// lección aprendida del bug `jugador_id uuid` vs `bigint`
+// (migracion_v36_fix_absoluto_text): SIEMPRE `String(jugador.id).trim()`,
+// nunca el id crudo.
+async function otorgarCortesiaFrecuenciaCRM({ jugador, categoria, metaAplicada }) {
+  const CATEGORIAS_FRECUENCIA_VALIDAS = new Set([
+    'frecuencia_reservas',
+    'frecuencia_retas',
+    'frecuencia_torneos',
+    'frecuencia_clases',
+  ]);
+  if (!jugador?.id || !CATEGORIAS_FRECUENCIA_VALIDAS.has(categoria)) {
+    return { ok: false, error: new Error('Faltan datos del jugador o la categoría para otorgar la cortesía.'), registro: null };
+  }
+  if (!CLUB_ACTIVO_ID) {
+    return { ok: false, error: new Error('No hay un club activo en esta sesión — no se puede otorgar la cortesía todavía.'), registro: null };
+  }
+  const payloadCortesia = {
+    club_id: Number(CLUB_ACTIVO_ID),
+    jugador_id: String(jugador.id).trim(),
+    categoria: String(categoria).trim(),
+    monto_meta: Number(metaAplicada) || null,
+  };
+  const { data: registro, error: errorRegistro } = await supabase
+    .from('cortesias_otorgadas')
+    .insert(payloadCortesia)
+    .select()
+    .single();
+  if (errorRegistro) {
+    console.error(
+      `[CRM] No se pudo registrar la Cortesía por Frecuencia en cortesias_otorgadas — el canje se abortó por completo, la barra de progreso NO se reinicia. ${detalleErrorSupabase(errorRegistro)}.`,
+      errorRegistro
+    );
+    return { ok: false, error: errorRegistro, registro: null };
+  }
+  return { ok: true, error: null, registro };
+}
+
 // Edición manual de UNA variante dentro de `productos.variantes` — mismo
 // criterio de búsqueda flexible que `descontarStockVariante`, pero sin
 // descontar: sobrescribe los campos que traiga `cambios` (precio,
@@ -21653,6 +21764,37 @@ function calcularProgresoCortesia(comprasPOS, categoriaCompras, desdeMs, meta) {
     gastoActual: gastoDesdeUltimoCanje,
     meta,
     lista: meta > 0 && gastoDesdeUltimoCanje >= meta,
+  };
+}
+
+// Motor de Cortesías por Frecuencia de Actividad (migracion_v46) — GEMELO
+// de `calcularProgresoCortesia` de arriba, pero CONTANDO EVENTOS en vez de
+// sumar pesos: la meta es "N reservas/retas/torneos/clases completadas",
+// no un monto. Mismo "Cálculo por Ciclos" (SOLO eventos con fecha
+// posterior a `desdeMs`, que el llamador ya resuelve como
+// `max(última cortesía de esa categoría, cortesias_frecuencia_activadas_desde)`
+// — mismo Blindaje "sin acumulados fantasma" que el motor de gasto).
+// `fechasEventosMs` ya viene filtrado por el llamador (`perfiles` en
+// `DirectorioJugadoresCRM`) para EXCLUIR cualquier evento con costo $0 —
+// mismo criterio explícito "nunca evaluar sobre una transacción de $0" que
+// ya exige `calcularProgresoCortesia`, para que una recompensa ya
+// canjeada (una reserva/inscripción comp'eada a $0) nunca cuente como un
+// nuevo evento hacia el SIGUIENTE ciclo.
+//
+// Reutiliza a propósito el nombre de campo `gastoActual` (en vez de, p.
+// ej., `cantidadActual`) aunque aquí sea una cuenta de eventos, no pesos:
+// así el efecto de notificación "meta alcanzada" (`evaluarCortesiaTimeoutRef`
+// en `DirectorioJugadoresCRM`) y `BarraProgresoCortesia` no necesitan
+// ninguna rama especial para distinguir "cortesía de gasto" de "cortesía
+// de frecuencia" — el mismo contrato `{ progreso, gastoActual, meta, lista }`
+// sirve para las dos.
+function calcularProgresoCortesiaFrecuencia(fechasEventosMs, desdeMs, meta) {
+  const eventosDesdeUltimoCanje = (fechasEventosMs || []).filter((ts) => Number.isFinite(ts) && ts > desdeMs).length;
+  return {
+    progreso: Math.min(eventosDesdeUltimoCanje, meta),
+    gastoActual: eventosDesdeUltimoCanje,
+    meta,
+    lista: meta > 0 && eventosDesdeUltimoCanje >= meta,
   };
 }
 
@@ -31557,6 +31699,18 @@ function DirectorioJugadoresCRM({
   guardandoMetasCortesia,
   onEstadoCortesiasCambio,
   onCortesiaCanjeada,
+  cortesiasFrecuenciaActivas,
+  cortesiasFrecuenciaActivadasDesde,
+  metaFrecuenciaReservas,
+  premioFrecuenciaReservas,
+  metaFrecuenciaRetas,
+  premioFrecuenciaRetas,
+  metaFrecuenciaTorneos,
+  premioFrecuenciaTorneos,
+  metaFrecuenciaClases,
+  premioFrecuenciaClases,
+  onGuardarCortesiasFrecuencia,
+  guardandoCortesiasFrecuencia,
 }) {
   // Switch Master ON/OFF del Módulo de Metas de Cortesía (mejora): `true` por
   // defecto — SOLO se apaga cuando el club lo desactivó explícitamente
@@ -31573,6 +31727,21 @@ function DirectorioJugadoresCRM({
     const ts = new Date(cortesiasActivadasDesde).getTime();
     return Number.isFinite(ts) ? ts : 0;
   }, [cortesiasActivadasDesde]);
+
+  // Motor de Cortesías por Frecuencia de Actividad (migracion_v46) — switch
+  // Master INDEPENDIENTE del de gasto (arriba): a diferencia de ese, aquí el
+  // default es `false` (opt-in EXPLÍCITO, `=== true` en vez de `!== false`)
+  // porque un club que nunca configuró metas de frecuencia no debe empezar a
+  // mostrar barras de progreso/notificaciones de la nada. Mismo "piso
+  // anti-acumulados-fantasma" que `cortesiasActivadasDesdeMs`, en su propia
+  // columna (`cortesias_frecuencia_activadas_desde`) para que jamás se
+  // pisen entre sí los dos motores.
+  const cortesiasFrecuenciaActivasEfectivo = cortesiasFrecuenciaActivas === true;
+  const cortesiasFrecuenciaActivadasDesdeMs = useMemo(() => {
+    if (!cortesiasFrecuenciaActivadasDesde) return 0;
+    const ts = new Date(cortesiasFrecuenciaActivadasDesde).getTime();
+    return Number.isFinite(ts) ? ts : 0;
+  }, [cortesiasFrecuenciaActivadasDesde]);
 
   /* ---- Ventas históricas (Smart POS): fuente única para Pro-Shop/Cafetería.
    * Mismo patrón tolerante que `ModuloAnalyticsBI.cargarVentasRango`
@@ -31892,6 +32061,51 @@ function DirectorioJugadoresCRM({
           (p) => torneoIdsJugador.has(p.torneo_id) && p.estado === 'jugado' && partidoIncluyeJugador(p, nom)
         );
 
+        /* --- Motor de Cortesías por Frecuencia de Actividad (migracion_v46):
+         * 4 listas de timestamps (ms), una por categoría — cada evento
+         * CUMPLIDO y REALMENTE COBRADO (nunca uno gratis/$0, ver "Exclusión
+         * de $0" pedida explícitamente) de este jugador. Se recalculan aquí
+         * mismo, dentro del `perfiles` useMemo, reutilizando exactamente las
+         * mismas variables ya derivadas arriba para el resto de la Vista
+         * 360° — ningún cruce ni consulta nueva.
+         *   - Reservas de Cancha: `propiasActivas` (no canceladas) que ya se
+         *     jugaron (`fecha <= hoy`) Y de verdad se cobraron
+         *     (`estado_pago === 'pagado'` Y `monto_total > 0`).
+         *   - Retas: `inscripcionesAsistidas` (asistencia confirmada) con
+         *     `monto > 0`, cruzadas a la fecha real de la reta.
+         *   - Torneos: `participacionesPagadas` con `monto > 0`, cruzadas a
+         *     `fecha_inicio` del torneo.
+         *   - Clases/Academia: asistencias reales (`asistio === true`) cuya
+         *     inscripción en `academia_alumnos` tuvo costo (`monto > 0`) —
+         *     `alumnoIdsConCostoJ` excluye clases de cortesía/beca para que
+         *     nunca autoalimenten su propia recompensa.
+         */
+        const fechaAMs = (f) => {
+          const ts = f ? new Date(`${f}T12:00:00`).getTime() : NaN;
+          return Number.isFinite(ts) ? ts : null;
+        };
+        const fechasFrecuenciaReservas = propiasActivas
+          .filter((r) => r.estado_pago === 'pagado' && (Number(r.monto_total) || 0) > 0 && r.fecha && r.fecha <= hoyISOStr)
+          .map((r) => fechaAMs(r.fecha))
+          .filter((ts) => ts !== null);
+        const fechasFrecuenciaRetas = inscripcionesAsistidas
+          .filter((i) => (Number(i.monto) || 0) > 0)
+          .map((i) => (retas || []).find((r) => r.id === i.reta_id)?.fecha)
+          .filter((f) => f && f <= hoyISOStr)
+          .map(fechaAMs)
+          .filter((ts) => ts !== null);
+        const fechasFrecuenciaTorneos = participacionesPagadas
+          .filter((p) => (Number(p.monto) || 0) > 0)
+          .map((p) => (torneos || []).find((t) => t.id === p.torneo_id)?.fecha_inicio)
+          .filter((f) => f && f <= hoyISOStr)
+          .map(fechaAMs)
+          .filter((ts) => ts !== null);
+        const alumnoIdsConCostoJ = new Set(alumnosDeJ.filter((a) => (Number(a.monto) || 0) > 0).map((a) => a.id));
+        const fechasFrecuenciaClases = (academiaAsistencias || [])
+          .filter((a) => alumnoIdsConCostoJ.has(a.alumno_id) && a.asistio === true && a.fecha && a.fecha <= hoyISOStr)
+          .map((a) => fechaAMs(a.fecha))
+          .filter((ts) => ts !== null);
+
         /* --- Última actividad real (Recencia) y ritmo habitual de visitas --- */
         const fechasEventos = [
           ...propiasActivas.filter((r) => r.fecha && r.fecha <= hoyISOStr).map((r) => r.fecha),
@@ -32021,6 +32235,45 @@ function DirectorioJugadoresCRM({
           ? calcularProgresoCortesia(comprasPOS, 'Pro-Shop', desdeProShopMs, metaProShopEfectiva)
           : null;
 
+        // 1.c) Motor de Cortesías por Frecuencia de Actividad (migracion_v46)
+        // — SEGUNDO motor, independiente del de gasto de arriba, pero MISMO
+        // patrón exacto de "Cálculo por Ciclos": el piso de conteo de cada
+        // categoría es `Math.max(última cortesía DE ESA categoría en
+        // `cortesias_otorgadas` [reutilizando `cortesPorCategoria`, ya
+        // genérico sobre cualquier `categoria`], `cortesiasFrecuenciaActivadasDesdeMs`)`
+        // — así que redimir una cortesía O reactivar el switch nunca
+        // "regala" eventos de un ciclo ya cerrado, exactamente la misma
+        // garantía que ya tenía el motor de gasto. Cada barra es `null`
+        // (no se muestra) salvo que el switch de frecuencia esté Activado
+        // Y el club haya configurado una meta > 0 para esa categoría en
+        // particular — un club puede activar el switch y solo configurar,
+        // por ejemplo, Reservas, sin que las otras 3 categorías aparezcan a
+        // medias.
+        const desdeFrecuenciaReservasMs = Math.max(cortesPorCategoria.get('frecuencia_reservas') || 0, cortesiasFrecuenciaActivadasDesdeMs);
+        const desdeFrecuenciaRetasMs = Math.max(cortesPorCategoria.get('frecuencia_retas') || 0, cortesiasFrecuenciaActivadasDesdeMs);
+        const desdeFrecuenciaTorneosMs = Math.max(cortesPorCategoria.get('frecuencia_torneos') || 0, cortesiasFrecuenciaActivadasDesdeMs);
+        const desdeFrecuenciaClasesMs = Math.max(cortesPorCategoria.get('frecuencia_clases') || 0, cortesiasFrecuenciaActivadasDesdeMs);
+        const metaFrecuenciaReservasEfectiva = Number(metaFrecuenciaReservas) > 0 ? Number(metaFrecuenciaReservas) : 0;
+        const metaFrecuenciaRetasEfectiva = Number(metaFrecuenciaRetas) > 0 ? Number(metaFrecuenciaRetas) : 0;
+        const metaFrecuenciaTorneosEfectiva = Number(metaFrecuenciaTorneos) > 0 ? Number(metaFrecuenciaTorneos) : 0;
+        const metaFrecuenciaClasesEfectiva = Number(metaFrecuenciaClases) > 0 ? Number(metaFrecuenciaClases) : 0;
+        const cortesiaFrecuenciaReservas =
+          cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaReservasEfectiva > 0
+            ? calcularProgresoCortesiaFrecuencia(fechasFrecuenciaReservas, desdeFrecuenciaReservasMs, metaFrecuenciaReservasEfectiva)
+            : null;
+        const cortesiaFrecuenciaRetas =
+          cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaRetasEfectiva > 0
+            ? calcularProgresoCortesiaFrecuencia(fechasFrecuenciaRetas, desdeFrecuenciaRetasMs, metaFrecuenciaRetasEfectiva)
+            : null;
+        const cortesiaFrecuenciaTorneos =
+          cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaTorneosEfectiva > 0
+            ? calcularProgresoCortesiaFrecuencia(fechasFrecuenciaTorneos, desdeFrecuenciaTorneosMs, metaFrecuenciaTorneosEfectiva)
+            : null;
+        const cortesiaFrecuenciaClases =
+          cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaClasesEfectiva > 0
+            ? calcularProgresoCortesiaFrecuencia(fechasFrecuenciaClases, desdeFrecuenciaClasesMs, metaFrecuenciaClasesEfectiva)
+            : null;
+
         // 2) Torneos/Retas: eventos combinados (inscripción o participación).
         const eventosTorneoRetas = [
           ...inscripcionesValidas.map((i) => {
@@ -32142,6 +32395,10 @@ function DirectorioJugadoresCRM({
           productoFavoritoBar,
           cortesiaBar,
           cortesiaProShop,
+          cortesiaFrecuenciaReservas,
+          cortesiaFrecuenciaRetas,
+          cortesiaFrecuenciaTorneos,
+          cortesiaFrecuenciaClases,
           eventosTorneoRetas,
           historialCanchas,
           canchaPreferida,
@@ -32171,6 +32428,12 @@ function DirectorioJugadoresCRM({
     cortesiasActivasEfectivo,
     cortesiasActivadasDesdeMs,
     cortesiasOtorgadas,
+    cortesiasFrecuenciaActivasEfectivo,
+    cortesiasFrecuenciaActivadasDesdeMs,
+    metaFrecuenciaReservas,
+    metaFrecuenciaRetas,
+    metaFrecuenciaTorneos,
+    metaFrecuenciaClases,
   ]);
 
   // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): reporta hacia
@@ -32250,6 +32513,10 @@ function DirectorioJugadoresCRM({
       perfilesAsentados.forEach((p) => {
         actual.set(`${p.id}:bar`, Boolean(p.cortesiaBar?.lista));
         actual.set(`${p.id}:proshop`, Boolean(p.cortesiaProShop?.lista));
+        actual.set(`${p.id}:frecuencia_reservas`, Boolean(p.cortesiaFrecuenciaReservas?.lista));
+        actual.set(`${p.id}:frecuencia_retas`, Boolean(p.cortesiaFrecuenciaRetas?.lista));
+        actual.set(`${p.id}:frecuencia_torneos`, Boolean(p.cortesiaFrecuenciaTorneos?.lista));
+        actual.set(`${p.id}:frecuencia_clases`, Boolean(p.cortesiaFrecuenciaClases?.lista));
       });
 
       if (anterior) {
@@ -32257,6 +32524,18 @@ function DirectorioJugadoresCRM({
           [
             { categoria: 'proshop', datos: p.cortesiaProShop, etiqueta: 'Pro-Shop' },
             { categoria: 'bar', datos: p.cortesiaBar, etiqueta: 'Restaurant-Bar' },
+            // Motor de Cortesías por Frecuencia de Actividad (migracion_v46)
+            // — MISMO patrón de notificación/debounce/candado de $0 que las
+            // dos categorías de gasto de arriba, ningún código nuevo aparte
+            // de sumar estas 4 entradas a la lista que este `forEach` ya
+            // recorre; `gastoActual` aquí es un CONTEO de eventos (ver
+            // `calcularProgresoCortesiaFrecuencia`), pero el candado
+            // `Number(datos?.gastoActual) > 0` sigue siendo exactamente la
+            // guarda correcta: un jugador con 0 eventos nunca notifica.
+            { categoria: 'frecuencia_reservas', datos: p.cortesiaFrecuenciaReservas, etiqueta: 'Reservas de Cancha' },
+            { categoria: 'frecuencia_retas', datos: p.cortesiaFrecuenciaRetas, etiqueta: 'Retas' },
+            { categoria: 'frecuencia_torneos', datos: p.cortesiaFrecuenciaTorneos, etiqueta: 'Torneos' },
+            { categoria: 'frecuencia_clases', datos: p.cortesiaFrecuenciaClases, etiqueta: 'Clases/Academia' },
           ].forEach(({ categoria, datos, etiqueta }) => {
             const clave = `${p.id}:${categoria}`;
             // Doble candado, explícito, contra el caso "$0 no cuenta":
@@ -32458,6 +32737,11 @@ function DirectorioJugadoresCRM({
           upsertVarianteProducto={upsertVarianteProducto}
           productosAutorizadosCortesiaProShop={productosAutorizadosCortesiaProShop}
           productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
+          cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivasEfectivo}
+          premioFrecuenciaReservas={premioFrecuenciaReservas}
+          premioFrecuenciaRetas={premioFrecuenciaRetas}
+          premioFrecuenciaTorneos={premioFrecuenciaTorneos}
+          premioFrecuenciaClases={premioFrecuenciaClases}
           onCortesiaOtorgada={(resultado) => {
             // FIX DE SEGURIDAD CRÍTICO (Reset Inmediato del Progreso): la
             // barra no espera a que `cargarCortesiasOtorgadas()` vaya y
@@ -32470,7 +32754,18 @@ function DirectorioJugadoresCRM({
             // el mismo ciclo de render y la barra pasa a $0/$Meta al
             // instante, sin esperar ninguna vuelta de red.
             setCortesiasOtorgadas((prev) => [resultado.registro, ...prev]);
-            mostrarToast({ titulo: '¡Cortesía entregada!', detalle: 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.' });
+            // Cortesías por Frecuencia de Actividad (migracion_v46) no
+            // generan ticket ni descuentan stock — solo reinician el
+            // contador (ver `otorgarCortesiaFrecuenciaCRM`, 1 solo paso), así
+            // que el toast lo dice explícitamente en vez de mencionar un
+            // ticket/stock que aquí nunca existió.
+            const esCortesiaFrecuencia = String(resultado?.registro?.categoria || '').startsWith('frecuencia_');
+            mostrarToast({
+              titulo: '¡Cortesía entregada!',
+              detalle: esCortesiaFrecuencia
+                ? 'Progreso reiniciado — aplica la recompensa manualmente al cobrar.'
+                : 'Ticket en $0.00 generado, stock descontado y progreso reiniciado.',
+            });
             // Limpieza de notificaciones zombi: borra/lee todas las alertas
             // "meta alcanzada" de este jugador+categoría para que no sigan
             // apareciendo como pendientes en el Centro de Alertas.
@@ -32734,6 +33029,132 @@ function ModalMetasCortesia({
   );
 }
 
+// Modal de configuración del Motor de Cortesías por Frecuencia de Actividad
+// (migracion_v46) — MISMO template que `ModalMetasCortesia` de arriba, pero
+// con 4 categorías (Reservas/Retas/Torneos/Clases) en vez de 2, y meta =
+// CANTIDAD de eventos (no dinero) + recompensa = texto libre (no hay
+// selector de producto: no hay stock que reservar para "1 hora gratis").
+// El switch Master ON/OFF vive en la tarjeta de `SeccionJugadoresFidelizacion`
+// (mismo criterio que el motor de gasto) — este modal solo LEE `activoActual`
+// para reenviarlo sin tocar en `guardar()`, nunca lo edita aquí.
+function ModalCortesiasFrecuencia({
+  activoActual,
+  metaReservasActual,
+  premioReservasActual,
+  metaRetasActual,
+  premioRetasActual,
+  metaTorneosActual,
+  premioTorneosActual,
+  metaClasesActual,
+  premioClasesActual,
+  onClose,
+  onGuardar,
+  guardando,
+}) {
+  const [reservasMeta, setReservasMeta] = useState(() => (metaReservasActual != null ? String(metaReservasActual) : ''));
+  const [reservasPremio, setReservasPremio] = useState(premioReservasActual || '');
+  const [retasMeta, setRetasMeta] = useState(() => (metaRetasActual != null ? String(metaRetasActual) : ''));
+  const [retasPremio, setRetasPremio] = useState(premioRetasActual || '');
+  const [torneosMeta, setTorneosMeta] = useState(() => (metaTorneosActual != null ? String(metaTorneosActual) : ''));
+  const [torneosPremio, setTorneosPremio] = useState(premioTorneosActual || '');
+  const [clasesMeta, setClasesMeta] = useState(() => (metaClasesActual != null ? String(metaClasesActual) : ''));
+  const [clasesPremio, setClasesPremio] = useState(premioClasesActual || '');
+  const [error, setError] = useState('');
+
+  const FILAS = [
+    { key: 'reservas', etiqueta: 'Reservas de Cancha', meta: reservasMeta, setMeta: setReservasMeta, premio: reservasPremio, setPremio: setReservasPremio, ejemplo: '10' },
+    { key: 'retas', etiqueta: 'Retas', meta: retasMeta, setMeta: setRetasMeta, premio: retasPremio, setPremio: setRetasPremio, ejemplo: '5' },
+    { key: 'torneos', etiqueta: 'Torneos', meta: torneosMeta, setMeta: setTorneosMeta, premio: torneosPremio, setPremio: setTorneosPremio, ejemplo: '3' },
+    { key: 'clases', etiqueta: 'Clases / Academia', meta: clasesMeta, setMeta: setClasesMeta, premio: clasesPremio, setPremio: setClasesPremio, ejemplo: '8' },
+  ];
+
+  async function guardar() {
+    setError('');
+    // Validación suave: una categoría con premio de texto pero sin meta (o
+    // viceversa) es casi seguro un olvido del club, no una configuración a
+    // medias intencional — se avisa antes de guardar en vez de guardar algo
+    // incompleto en silencio.
+    for (const fila of FILAS) {
+      const tieneMeta = fila.meta.trim() !== '' && Number(fila.meta) > 0;
+      const tienePremio = fila.premio.trim() !== '';
+      if (tieneMeta !== tienePremio) {
+        return setError(`Completa tanto la meta como la recompensa de "${fila.etiqueta}" (o deja ambas vacías para desactivar solo esa categoría).`);
+      }
+    }
+    await onGuardar?.({
+      activo: activoActual === true,
+      reservasMeta,
+      reservasPremio,
+      retasMeta,
+      retasPremio,
+      torneosMeta,
+      torneosPremio,
+      clasesMeta,
+      clasesPremio,
+    });
+    onClose();
+  }
+
+  return (
+    <ModalShell
+      titulo="Editar Metas de Frecuencia"
+      subtitulo="Meta de eventos cumplidos y recompensa por categoría"
+      onClose={onClose}
+      icon={Gift}
+      ancho="max-w-lg"
+    >
+      <div className="space-y-3.5">
+        {activoActual !== true && (
+          <p className="rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-[11px] text-slate-600">
+            Con el módulo Desactivado no se muestran barras de progreso ni notificaciones de frecuencia en la Vista
+            360°. Los ajustes de abajo se guardan igual, listos para cuando lo actives.
+          </p>
+        )}
+
+        <div className="space-y-3">
+          {FILAS.map((fila) => (
+            <div key={fila.key} className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+              <p className="mb-2 text-xs font-bold text-slate-700">{fila.etiqueta}</p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <Campo label={`Meta (ej. ${fila.ejemplo})`}>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={fila.meta}
+                    onChange={(e) => fila.setMeta(e.target.value)}
+                    className={inputClase}
+                    placeholder={fila.ejemplo}
+                  />
+                </Campo>
+                <Campo label="Recompensa">
+                  <input
+                    type="text"
+                    value={fila.premio}
+                    onChange={(e) => fila.setPremio(e.target.value)}
+                    className={inputClase}
+                    placeholder="Ej. 1 hora gratis"
+                  />
+                </Campo>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Guardar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos }) {
   const metaSeg = SEGMENTO_META[perfil.segmento];
   const SegIcon = metaSeg.icon;
@@ -32813,8 +33234,15 @@ function EstadoVacioHistorial({ mensaje }) {
 // `DetalleConsumoPOS`, abajo). Candado de Seguridad (item 3): el botón de
 // canje SOLO existe cuando `lista` (100%+) — antes de eso se ve un badge de
 // bloqueado, nunca un botón deshabilitado que invite a intentarlo.
-function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, canjeando }) {
+// `comoConteo` (migracion_v46, Cortesías por Frecuencia de Actividad):
+// `false`/omitido (default, motor de GASTO de siempre) muestra
+// "$progreso/$meta" con `formatoMoneda`; `true` (motor de FRECUENCIA)
+// muestra el conteo de eventos tal cual ("3/10"), sin formatear como
+// dinero — mismo componente, mismo contrato `{progreso, meta, lista}` para
+// los dos motores (ver `calcularProgresoCortesiaFrecuencia`).
+function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, canjeando, comoConteo }) {
   const pct = meta > 0 ? Math.min(100, Math.round((progreso / meta) * 100)) : 0;
+  const formatearValor = (n) => (comoConteo ? `${Math.round(Number(n) || 0)}` : formatoMoneda(n));
   return (
     <div className="space-y-1 rounded-lg bg-white px-2.5 py-2">
       <div className="flex items-center justify-between gap-2 text-[11px]">
@@ -32822,7 +33250,7 @@ function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, can
           <Gift size={12} className={lista ? 'text-amber-300' : 'text-slate-500'} /> {etiqueta}
         </span>
         <span className="font-bold text-slate-500">
-          {formatoMoneda(progreso)}/{formatoMoneda(meta)}
+          {formatearValor(progreso)}/{formatearValor(meta)}
         </span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
@@ -33160,6 +33588,11 @@ function ModalPerfilJugadorCRM({
   onCortesiaOtorgada,
   productosAutorizadosCortesiaProShop,
   productosAutorizadosCortesiaBar,
+  cortesiasFrecuenciaActivas,
+  premioFrecuenciaReservas,
+  premioFrecuenciaRetas,
+  premioFrecuenciaTorneos,
+  premioFrecuenciaClases,
 }) {
   const mostrarToast = useToast();
   const [editandoTelefono, setEditandoTelefono] = useState(false);
@@ -33176,6 +33609,17 @@ function ModalPerfilJugadorCRM({
   // este modal nunca necesita re-validar el 100% por su cuenta.
   const [canjeCategoria, setCanjeCategoria] = useState(null);
   const [canjeando, setCanjeando] = useState(false);
+
+  // Cortesías por Frecuencia de Actividad (migracion_v46, Candado + Canje):
+  // MISMO criterio de candado que arriba — el botón de "Otorgar/Canjear
+  // Cortesía" de `BarraProgresoCortesia` solo existe cuando `lista: true`
+  // (calculado en `perfiles`), así que este modal tampoco necesita
+  // re-validar el 100% por su cuenta. Confirmación intermedia SIN selector
+  // de producto (a diferencia del motor de gasto) porque la recompensa es
+  // texto libre ("1 hora gratis", "10% desc.") sin stock que descontar — el
+  // staff la aplica manualmente al cobrar, después de confirmar aquí.
+  const [categoriaFrecuenciaAConfirmar, setCategoriaFrecuenciaAConfirmar] = useState(null);
+  const [canjeandoFrecuencia, setCanjeandoFrecuencia] = useState(false);
 
   async function guardarTelefono() {
     setGuardando(true);
@@ -33251,6 +33695,59 @@ function ModalPerfilJugadorCRM({
       });
     }
     return resultado;
+  }
+
+  // Etiqueta de cada categoría de frecuencia + su recompensa configurada
+  // (texto libre, prop por categoría — ver `guardarCortesiasFrecuencia` en
+  // `AppInterno`). Ambos vivos en un solo lugar para que la barra, el badge
+  // "Bloqueado" y el modal de confirmación siempre muestren exactamente el
+  // mismo texto.
+  const ETIQUETA_FRECUENCIA = {
+    frecuencia_reservas: 'Reservas de Cancha',
+    frecuencia_retas: 'Retas',
+    frecuencia_torneos: 'Torneos',
+    frecuencia_clases: 'Clases/Academia',
+  };
+  const premioFrecuenciaPorCategoria = {
+    frecuencia_reservas: premioFrecuenciaReservas,
+    frecuencia_retas: premioFrecuenciaRetas,
+    frecuencia_torneos: premioFrecuenciaTorneos,
+    frecuencia_clases: premioFrecuenciaClases,
+  };
+  const datosFrecuenciaPorCategoria = {
+    frecuencia_reservas: perfil.cortesiaFrecuenciaReservas,
+    frecuencia_retas: perfil.cortesiaFrecuenciaRetas,
+    frecuencia_torneos: perfil.cortesiaFrecuenciaTorneos,
+    frecuencia_clases: perfil.cortesiaFrecuenciaClases,
+  };
+
+  // Confirma el canje de una Cortesía por Frecuencia de Actividad — REQUISITO
+  // INDISPENSABLE (único paso, ver `otorgarCortesiaFrecuenciaCRM`): el INSERT
+  // en `cortesias_otorgadas` en sí, que es lo único que de verdad reinicia el
+  // ciclo. Si falla, no pasa nada más (a diferencia del motor de gasto, aquí
+  // no hay ticket ni stock que revertir).
+  async function confirmarCortesiaFrecuencia() {
+    if (canjeandoFrecuencia) return;
+    const categoria = categoriaFrecuenciaAConfirmar;
+    if (!categoria) return;
+    const meta = datosFrecuenciaPorCategoria[categoria]?.meta;
+    setCanjeandoFrecuencia(true);
+    const resultado = await otorgarCortesiaFrecuenciaCRM({
+      jugador: { id: perfil.id, nombre: perfil.nombre },
+      categoria,
+      metaAplicada: meta,
+    });
+    setCanjeandoFrecuencia(false);
+    if (resultado.ok) {
+      setCategoriaFrecuenciaAConfirmar(null);
+      onCortesiaOtorgada?.(resultado);
+    } else {
+      mostrarToast({
+        titulo: 'No se pudo otorgar la cortesía',
+        detalle: detalleErrorSupabase(resultado.error) || 'Revisa la consola para el detalle exacto.',
+        tono: 'error',
+      });
+    }
   }
 
   return (
@@ -33438,6 +33935,39 @@ function ModalPerfilJugadorCRM({
           </>
         )}
 
+        {/* Cortesías por Frecuencia de Actividad (migracion_v46) — FUERA del
+         * `if (puedeVerMontos === false)` de arriba a propósito: son conteos
+         * de eventos, no cifras en pesos, así que TODOS los roles (incluido
+         * Coach/Recepción-Caja/Restaurante-Bar) pueden verla y usarla, no
+         * solo quien puede ver montos. Se oculta por completo si el club no
+         * activó el switch o si ninguna categoría tiene barra que mostrar
+         * (las 4 vienen en `null` desde `perfiles` cuando el switch está
+         * Desactivado o esa categoría no tiene meta configurada). */}
+        {cortesiasFrecuenciaActivas &&
+          Object.keys(ETIQUETA_FRECUENCIA).some((cat) => datosFrecuenciaPorCategoria[cat]) && (
+            <div>
+              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
+                <Gift size={15} className="text-lime-400" /> Cortesías por Frecuencia de Actividad
+              </h3>
+              <div className="space-y-2">
+                {Object.keys(ETIQUETA_FRECUENCIA)
+                  .filter((cat) => datosFrecuenciaPorCategoria[cat])
+                  .map((cat) => (
+                    <BarraProgresoCortesia
+                      key={cat}
+                      etiqueta={`${ETIQUETA_FRECUENCIA[cat]}${premioFrecuenciaPorCategoria[cat] ? ` · ${premioFrecuenciaPorCategoria[cat]}` : ''}`}
+                      progreso={datosFrecuenciaPorCategoria[cat].progreso}
+                      meta={datosFrecuenciaPorCategoria[cat].meta}
+                      lista={datosFrecuenciaPorCategoria[cat].lista}
+                      onCanjear={() => setCategoriaFrecuenciaAConfirmar(cat)}
+                      canjeando={canjeandoFrecuencia && categoriaFrecuenciaAConfirmar === cat}
+                      comoConteo
+                    />
+                  ))}
+              </div>
+            </div>
+          )}
+
         <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/60 p-3">
           <h3 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-500">
             <TrendingDown size={13} /> Motor Anti-Churn — plantilla sugerida
@@ -33471,6 +34001,42 @@ function ModalPerfilJugadorCRM({
         onConfirmar={confirmarCanjeCortesia}
         onClose={() => setCanjeCategoria(null)}
       />
+    )}
+    {categoriaFrecuenciaAConfirmar && (
+      // Confirmación LIGERA (sin selector de producto, a diferencia de
+      // `ModalCanjearCortesia`) — la recompensa es texto libre que el staff
+      // aplica manualmente al cobrar (ver comentario de scoping en
+      // `otorgarCortesiaFrecuenciaCRM`: no existe un motor genérico de
+      // descuentos en el checkout de Smart POS/Portal para auto-aplicarla).
+      <ModalShell
+        titulo="Otorgar Cortesía"
+        subtitulo={`${perfil.nombre} · ${ETIQUETA_FRECUENCIA[categoriaFrecuenciaAConfirmar]}`}
+        onClose={() => setCategoriaFrecuenciaAConfirmar(null)}
+        ancho="max-w-md"
+        icon={Gift}
+      >
+        <div className="space-y-4">
+          <div className="rounded-xl border border-amber-300 bg-amber-50 p-3">
+            <p className="text-xs font-semibold text-amber-700">Recompensa configurada</p>
+            <p className="mt-1 text-sm font-bold text-slate-900">
+              {premioFrecuenciaPorCategoria[categoriaFrecuenciaAConfirmar] || 'Sin descripción — revisa la configuración del club.'}
+            </p>
+          </div>
+          <p className="text-xs text-slate-500">
+            Esto registra el canje y reinicia el contador de {ETIQUETA_FRECUENCIA[categoriaFrecuenciaAConfirmar]} a 0 de inmediato. La
+            recompensa NO se aplica sola — el staff la otorga manualmente al cobrar (ej. cortesía de 1 hora, % de descuento).
+          </p>
+          <div className="flex justify-end gap-2">
+            <BotonSecundario onClick={() => setCategoriaFrecuenciaAConfirmar(null)} disabled={canjeandoFrecuencia}>
+              Regresar
+            </BotonSecundario>
+            <BotonPrimario onClick={confirmarCortesiaFrecuencia} disabled={canjeandoFrecuencia}>
+              {canjeandoFrecuencia ? <Loader2 size={15} className="animate-spin" /> : <Gift size={15} />}
+              Sí, otorgar cortesía
+            </BotonPrimario>
+          </div>
+        </div>
+      </ModalShell>
     )}
     </>
   );
@@ -33516,6 +34082,18 @@ function ModuloJugadores({
   guardandoMetasCortesia,
   onEstadoCortesiasCambio,
   onCortesiaCanjeada,
+  cortesiasFrecuenciaActivas,
+  cortesiasFrecuenciaActivadasDesde,
+  metaFrecuenciaReservas,
+  premioFrecuenciaReservas,
+  metaFrecuenciaRetas,
+  premioFrecuenciaRetas,
+  metaFrecuenciaTorneos,
+  premioFrecuenciaTorneos,
+  metaFrecuenciaClases,
+  premioFrecuenciaClases,
+  onGuardarCortesiasFrecuencia,
+  guardandoCortesiasFrecuencia,
 }) {
   const [subvista, setSubvista] = useState('crm');
   const subvistas = [
@@ -33582,6 +34160,18 @@ function ModuloJugadores({
           guardandoMetasCortesia={guardandoMetasCortesia}
           onEstadoCortesiasCambio={onEstadoCortesiasCambio}
           onCortesiaCanjeada={onCortesiaCanjeada}
+          cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivas}
+          cortesiasFrecuenciaActivadasDesde={cortesiasFrecuenciaActivadasDesde}
+          metaFrecuenciaReservas={metaFrecuenciaReservas}
+          premioFrecuenciaReservas={premioFrecuenciaReservas}
+          metaFrecuenciaRetas={metaFrecuenciaRetas}
+          premioFrecuenciaRetas={premioFrecuenciaRetas}
+          metaFrecuenciaTorneos={metaFrecuenciaTorneos}
+          premioFrecuenciaTorneos={premioFrecuenciaTorneos}
+          metaFrecuenciaClases={metaFrecuenciaClases}
+          premioFrecuenciaClases={premioFrecuenciaClases}
+          onGuardarCortesiasFrecuencia={onGuardarCortesiasFrecuencia}
+          guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
         />
       )}
 
@@ -34271,6 +34861,17 @@ function ModuloConfiguracionClub({
   productosAutorizadosCortesiaBar,
   onGuardarMetasCortesia,
   guardandoMetasCortesia,
+  cortesiasFrecuenciaActivas,
+  metaFrecuenciaReservas,
+  premioFrecuenciaReservas,
+  metaFrecuenciaRetas,
+  premioFrecuenciaRetas,
+  metaFrecuenciaTorneos,
+  premioFrecuenciaTorneos,
+  metaFrecuenciaClases,
+  premioFrecuenciaClases,
+  onGuardarCortesiasFrecuencia,
+  guardandoCortesiasFrecuencia,
   tarifasHorarios,
   onGuardarTarifaHorario,
   guardandoTarifaHorario,
@@ -34328,6 +34929,17 @@ function ModuloConfiguracionClub({
           productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
           onGuardarMetasCortesia={onGuardarMetasCortesia}
           guardandoMetasCortesia={guardandoMetasCortesia}
+          cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivas}
+          metaFrecuenciaReservas={metaFrecuenciaReservas}
+          premioFrecuenciaReservas={premioFrecuenciaReservas}
+          metaFrecuenciaRetas={metaFrecuenciaRetas}
+          premioFrecuenciaRetas={premioFrecuenciaRetas}
+          metaFrecuenciaTorneos={metaFrecuenciaTorneos}
+          premioFrecuenciaTorneos={premioFrecuenciaTorneos}
+          metaFrecuenciaClases={metaFrecuenciaClases}
+          premioFrecuenciaClases={premioFrecuenciaClases}
+          onGuardarCortesiasFrecuencia={onGuardarCortesiasFrecuencia}
+          guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
         />
       ) : tab === 'reservas' ? (
         <SeccionReservasAcademia
@@ -34728,9 +35340,45 @@ function SeccionJugadoresFidelizacion({
   productosAutorizadosCortesiaBar,
   onGuardarMetasCortesia,
   guardandoMetasCortesia,
+  cortesiasFrecuenciaActivas,
+  metaFrecuenciaReservas,
+  premioFrecuenciaReservas,
+  metaFrecuenciaRetas,
+  premioFrecuenciaRetas,
+  metaFrecuenciaTorneos,
+  premioFrecuenciaTorneos,
+  metaFrecuenciaClases,
+  premioFrecuenciaClases,
+  onGuardarCortesiasFrecuencia,
+  guardandoCortesiasFrecuencia,
 }) {
   const [mostrarModalMetas, setMostrarModalMetas] = useState(false);
   const activo = cortesiasActivas !== false;
+  const [mostrarModalFrecuencia, setMostrarModalFrecuencia] = useState(false);
+  // A diferencia del motor de gasto (arriba, `!== false` — activo por
+  // default para no interrumpir clubes que ya lo tenían andando), este
+  // motor es opt-in EXPLÍCITO: `=== true`, mismo criterio que
+  // `cortesiasFrecuenciaActivasEfectivo` en `DirectorioJugadoresCRM`.
+  const activoFrecuencia = cortesiasFrecuenciaActivas === true;
+
+  // Switch Master del motor de FRECUENCIA — mismo patrón que `alternarActivo`
+  // de arriba (reenvía el resto de la configuración SIN TOCAR, porque
+  // `guardarCortesiasFrecuencia` escribe el objeto completo en cada
+  // guardado), pero en su propia columna/callback: los dos switches nunca
+  // se pisan entre sí.
+  function alternarActivoFrecuencia() {
+    onGuardarCortesiasFrecuencia?.({
+      activo: !activoFrecuencia,
+      reservasMeta: metaFrecuenciaReservas,
+      reservasPremio: premioFrecuenciaReservas,
+      retasMeta: metaFrecuenciaRetas,
+      retasPremio: premioFrecuenciaRetas,
+      torneosMeta: metaFrecuenciaTorneos,
+      torneosPremio: premioFrecuenciaTorneos,
+      clasesMeta: metaFrecuenciaClases,
+      clasesPremio: premioFrecuenciaClases,
+    });
+  }
 
   // Estandarización de UI (refactor): el Switch Master ON/OFF salió del
   // modal "Editar Metas de Cortesía" y se puso aquí, en la tarjeta
@@ -34818,6 +35466,86 @@ function SeccionJugadoresFidelizacion({
           onClose={() => setMostrarModalMetas(false)}
           onGuardar={onGuardarMetasCortesia}
           guardando={guardandoMetasCortesia}
+        />
+      )}
+
+      {/* Cortesías por Frecuencia de Actividad (migracion_v46) — tarjeta
+       * HERMANA de "Metas de Cortesía" de arriba, motor completamente
+       * independiente (switch propio, sus propias 4 metas + 4 recompensas)
+       * pero mismo patrón de diseño exacto. */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <Gift size={16} className="text-lime-500" />
+          <h3 className="text-sm font-black text-slate-900">Cortesías por Frecuencia de Actividad</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Premia a un jugador por CANTIDAD de eventos cumplidos (reservas jugadas, retas, torneos o clases tomadas),
+          no por gasto — define la meta de eventos y la recompensa por categoría. Independiente del Motor de
+          Cortesías por Fidelidad de arriba.
+        </p>
+
+        <button
+          type="button"
+          onClick={alternarActivoFrecuencia}
+          disabled={guardandoCortesiasFrecuencia}
+          className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            activoFrecuencia ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activoFrecuencia ? 'bg-lime-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${activoFrecuencia ? 'text-lime-700' : 'text-slate-600'}`}>
+              Cortesías por Frecuencia de Actividad: {activoFrecuencia ? 'Activado' : 'Desactivado'}
+            </span>
+          </span>
+          <span
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
+              activoFrecuencia ? 'bg-lime-500' : 'bg-slate-300'
+            }`}
+          >
+            <span
+              className={`inline-block h-4.5 w-4.5 transform rounded-full bg-white shadow transition ${
+                activoFrecuencia ? 'translate-x-6' : 'translate-x-1'
+              }`}
+              style={{ height: '1.125rem', width: '1.125rem' }}
+            />
+          </span>
+        </button>
+
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-slate-700">
+              {[
+                metaFrecuenciaReservas ? `Reservas: ${metaFrecuenciaReservas}` : null,
+                metaFrecuenciaRetas ? `Retas: ${metaFrecuenciaRetas}` : null,
+                metaFrecuenciaTorneos ? `Torneos: ${metaFrecuenciaTorneos}` : null,
+                metaFrecuenciaClases ? `Clases: ${metaFrecuenciaClases}` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ') || 'Sin categorías configuradas todavía'}
+            </p>
+            <p className="mt-0.5 truncate text-[11px] text-slate-500">Meta de eventos por categoría · toca "Editar Metas" para la recompensa.</p>
+          </div>
+          <BotonSecundario onClick={() => setMostrarModalFrecuencia(true)} className="shrink-0 px-3 py-1.5 text-xs">
+            <Gift size={13} /> Editar Metas
+          </BotonSecundario>
+        </div>
+      </div>
+
+      {mostrarModalFrecuencia && (
+        <ModalCortesiasFrecuencia
+          activoActual={cortesiasFrecuenciaActivas}
+          metaReservasActual={metaFrecuenciaReservas}
+          premioReservasActual={premioFrecuenciaReservas}
+          metaRetasActual={metaFrecuenciaRetas}
+          premioRetasActual={premioFrecuenciaRetas}
+          metaTorneosActual={metaFrecuenciaTorneos}
+          premioTorneosActual={premioFrecuenciaTorneos}
+          metaClasesActual={metaFrecuenciaClases}
+          premioClasesActual={premioFrecuenciaClases}
+          onClose={() => setMostrarModalFrecuencia(false)}
+          onGuardar={onGuardarCortesiasFrecuencia}
+          guardando={guardandoCortesiasFrecuencia}
         />
       )}
     </div>
@@ -41159,6 +41887,28 @@ function AppInterno() {
   const [cortesiasActivadasDesde, setCortesiasActivadasDesde] = useState(metasCortesiaLocalIniciales.activadaDesde ?? null);
   const [guardandoMetasCortesia, setGuardandoMetasCortesia] = useState(false);
 
+  // Cortesías por Frecuencia de Actividad (Configuración del Club →
+  // "Jugadores & Fidelización", migracion_v46) — SEGUNDO Motor de
+  // Cortesías, independiente del de gasto de arriba. `null` en una meta =
+  // el club no configuró esa categoría todavía (sin default numérico: a
+  // diferencia del motor de gasto, aquí no hay un "10 reservas" razonable
+  // para inventar por el club). `activo` arranca `false` — módulo nuevo,
+  // nadie lo ve activo hasta que el club lo prenda a propósito.
+  const cortesiasFrecuenciaLocalIniciales = leerCortesiasFrecuenciaLocal();
+  const [cortesiasFrecuenciaActivas, setCortesiasFrecuenciaActivas] = useState(cortesiasFrecuenciaLocalIniciales.activo === true);
+  const [cortesiasFrecuenciaActivadasDesde, setCortesiasFrecuenciaActivadasDesde] = useState(
+    cortesiasFrecuenciaLocalIniciales.activadaDesde ?? null
+  );
+  const [metaFrecuenciaReservas, setMetaFrecuenciaReservas] = useState(cortesiasFrecuenciaLocalIniciales.reservas.meta ?? null);
+  const [premioFrecuenciaReservas, setPremioFrecuenciaReservas] = useState(cortesiasFrecuenciaLocalIniciales.reservas.premio || '');
+  const [metaFrecuenciaRetas, setMetaFrecuenciaRetas] = useState(cortesiasFrecuenciaLocalIniciales.retas.meta ?? null);
+  const [premioFrecuenciaRetas, setPremioFrecuenciaRetas] = useState(cortesiasFrecuenciaLocalIniciales.retas.premio || '');
+  const [metaFrecuenciaTorneos, setMetaFrecuenciaTorneos] = useState(cortesiasFrecuenciaLocalIniciales.torneos.meta ?? null);
+  const [premioFrecuenciaTorneos, setPremioFrecuenciaTorneos] = useState(cortesiasFrecuenciaLocalIniciales.torneos.premio || '');
+  const [metaFrecuenciaClases, setMetaFrecuenciaClases] = useState(cortesiasFrecuenciaLocalIniciales.clases.meta ?? null);
+  const [premioFrecuenciaClases, setPremioFrecuenciaClases] = useState(cortesiasFrecuenciaLocalIniciales.clases.premio || '');
+  const [guardandoCortesiasFrecuencia, setGuardandoCortesiasFrecuencia] = useState(false);
+
   // Configuración del Club → "Portal & Tienda Web" → Add-ons (módulo nuevo):
   // misma fila de `configuracion_club`, mismo criterio de flujo
   // independiente que `rangosHorarioClases`/`metaCortesia*` arriba. Ver
@@ -41944,6 +42694,102 @@ function AppInterno() {
       setGuardandoMetasCortesia(false);
     },
     [mostrarToast, cortesiasActivas, cortesiasActivadasDesde]
+  );
+
+  // Cortesías por Frecuencia de Actividad (Configuración del Club →
+  // "Jugadores & Fidelización", migracion_v46) — mismo criterio exacto de
+  // Sincronización Silenciosa y Blindaje "sin acumulados fantasma" que
+  // `guardarMetasCortesia` arriba (piso `cortesiasFrecuenciaActivadasDesde`
+  // SOLO se mueve a "ahora mismo" en la transición EXACTA
+  // Desactivado -> Activado), pero como motor INDEPENDIENTE — su propio
+  // switch, sus propias 4 columnas de meta y sus propias 4 de recompensa
+  // en `configuracion_club`, nunca comparte fila de guardado con el motor
+  // de gasto (para que editar uno nunca reescriba de más el otro).
+  // Recibe UN SOLO objeto de configuración (`ModalCortesiasFrecuencia` ya
+  // junta los 9 campos en un solo guardado), mismo criterio que
+  // `guardarMetasCortesia`.
+  const guardarCortesiasFrecuencia = useCallback(
+    async (nuevaConfig) => {
+      const numOrNull = (v) => (Number(v) > 0 ? Number(v) : null);
+      const activo = nuevaConfig?.activo === true;
+      const reservasMeta = numOrNull(nuevaConfig?.reservasMeta);
+      const reservasPremio = (nuevaConfig?.reservasPremio || '').trim();
+      const retasMeta = numOrNull(nuevaConfig?.retasMeta);
+      const retasPremio = (nuevaConfig?.retasPremio || '').trim();
+      const torneosMeta = numOrNull(nuevaConfig?.torneosMeta);
+      const torneosPremio = (nuevaConfig?.torneosPremio || '').trim();
+      const clasesMeta = numOrNull(nuevaConfig?.clasesMeta);
+      const clasesPremio = (nuevaConfig?.clasesPremio || '').trim();
+      // Blindaje "sin acumulados fantasma" — ver el comentario extenso de
+      // `guardarMetasCortesia`, idéntico razonamiento: el piso solo se
+      // mueve en la transición exacta `false -> true` del switch, nunca al
+      // solo editar metas/recompensas con el switch quieto.
+      const reactivando = activo && cortesiasFrecuenciaActivas === false;
+      const activadaDesde = reactivando ? new Date().toISOString() : cortesiasFrecuenciaActivadasDesde;
+      setGuardandoCortesiasFrecuencia(true);
+      setCortesiasFrecuenciaActivas(activo);
+      setCortesiasFrecuenciaActivadasDesde(activadaDesde);
+      setMetaFrecuenciaReservas(reservasMeta);
+      setPremioFrecuenciaReservas(reservasPremio);
+      setMetaFrecuenciaRetas(retasMeta);
+      setPremioFrecuenciaRetas(retasPremio);
+      setMetaFrecuenciaTorneos(torneosMeta);
+      setPremioFrecuenciaTorneos(torneosPremio);
+      setMetaFrecuenciaClases(clasesMeta);
+      setPremioFrecuenciaClases(clasesPremio);
+      guardarCortesiasFrecuenciaLocal({
+        activo,
+        activadaDesde,
+        reservas: { meta: reservasMeta, premio: reservasPremio },
+        retas: { meta: retasMeta, premio: retasPremio },
+        torneos: { meta: torneosMeta, premio: torneosPremio },
+        clases: { meta: clasesMeta, premio: clasesPremio },
+      });
+      try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión — no se puede guardar en Supabase todavía.');
+        const { error } = await actualizarConColumnasOpcionales(
+          'configuracion_club',
+          CLUB_ACTIVO_ID,
+          {
+            cortesias_frecuencia_activas: activo,
+            cortesias_frecuencia_activadas_desde: activadaDesde,
+            meta_frecuencia_reservas: reservasMeta,
+            premio_frecuencia_reservas: reservasPremio || null,
+            meta_frecuencia_retas: retasMeta,
+            premio_frecuencia_retas: retasPremio || null,
+            meta_frecuencia_torneos: torneosMeta,
+            premio_frecuencia_torneos: torneosPremio || null,
+            meta_frecuencia_clases: clasesMeta,
+            premio_frecuencia_clases: clasesPremio || null,
+          },
+          [
+            'cortesias_frecuencia_activas',
+            'cortesias_frecuencia_activadas_desde',
+            'meta_frecuencia_reservas',
+            'premio_frecuencia_reservas',
+            'meta_frecuencia_retas',
+            'premio_frecuencia_retas',
+            'meta_frecuencia_torneos',
+            'premio_frecuencia_torneos',
+            'meta_frecuencia_clases',
+            'premio_frecuencia_clases',
+          ]
+        );
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Jugadores & Fidelización] No se pudieron guardar las Cortesías por Frecuencia en Supabase — se guardaron en modo local.', err);
+      }
+      mostrarToast({
+        titulo: 'Cortesías por Frecuencia de Actividad actualizadas',
+        detalle: reactivando
+          ? 'Módulo reactivado: el progreso de cada jugador arranca en 0 desde ahora — los eventos de mientras estuvo desactivado no cuentan.'
+          : activo
+          ? 'La Vista 360° de cada jugador ya usa las metas y recompensas nuevas.'
+          : 'El módulo de Cortesías por Frecuencia quedó Desactivado para todo el club.',
+      });
+      setGuardandoCortesiasFrecuencia(false);
+    },
+    [mostrarToast, cortesiasFrecuenciaActivas, cortesiasFrecuenciaActivadasDesde]
   );
 
   // Guarda Nombre/Logo del Club: SIEMPRE actualiza el estado en vivo y el
@@ -43309,6 +44155,18 @@ function AppInterno() {
                 guardandoMetasCortesia={guardandoMetasCortesia}
                 onEstadoCortesiasCambio={setCortesiasDisponiblesPorJugador}
                 onCortesiaCanjeada={limpiarAlertasCortesia}
+                cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivas}
+                cortesiasFrecuenciaActivadasDesde={cortesiasFrecuenciaActivadasDesde}
+                metaFrecuenciaReservas={metaFrecuenciaReservas}
+                premioFrecuenciaReservas={premioFrecuenciaReservas}
+                metaFrecuenciaRetas={metaFrecuenciaRetas}
+                premioFrecuenciaRetas={premioFrecuenciaRetas}
+                metaFrecuenciaTorneos={metaFrecuenciaTorneos}
+                premioFrecuenciaTorneos={premioFrecuenciaTorneos}
+                metaFrecuenciaClases={metaFrecuenciaClases}
+                premioFrecuenciaClases={premioFrecuenciaClases}
+                onGuardarCortesiasFrecuencia={guardarCortesiasFrecuencia}
+                guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
               />
             ) : moduloActivo === 'torneos' ? (
               <ModuloTorneosRetas
@@ -43441,6 +44299,17 @@ function AppInterno() {
                 productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
                 onGuardarMetasCortesia={guardarMetasCortesia}
                 guardandoMetasCortesia={guardandoMetasCortesia}
+                cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivas}
+                metaFrecuenciaReservas={metaFrecuenciaReservas}
+                premioFrecuenciaReservas={premioFrecuenciaReservas}
+                metaFrecuenciaRetas={metaFrecuenciaRetas}
+                premioFrecuenciaRetas={premioFrecuenciaRetas}
+                metaFrecuenciaTorneos={metaFrecuenciaTorneos}
+                premioFrecuenciaTorneos={premioFrecuenciaTorneos}
+                metaFrecuenciaClases={metaFrecuenciaClases}
+                premioFrecuenciaClases={premioFrecuenciaClases}
+                onGuardarCortesiasFrecuencia={guardarCortesiasFrecuencia}
+                guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
                 tarifasHorarios={tarifasHorarios}
                 onGuardarTarifaHorario={guardarTarifaHorario}
                 guardandoTarifaHorario={guardandoTarifaHorario}
