@@ -17677,46 +17677,45 @@ function ModuloContabilidadCompras({
           const recibidoNuevaVariante = formEgreso.estatusRecepcion === 'recibido';
           const nombreParaKardex = `${productoExistenteSeleccionado.nombre} — ${nombreNuevaVariante}`;
 
-          // Recepción Parcial (migracion_v45): si la compra nace 🟡
-          // Pendiente, el stock de la variante nueva YA NO se escribe de
-          // inmediato — nace en 0 y solo se aplica, ítem por ítem, desde el
-          // modal "Confirmar Recepción de Mercancía" (mismo criterio que
-          // los otros 2 orígenes de compra, ver migración). 🟢 Recibido en
-          // Club sigue aplicando el stock de una vez, exactamente igual que
-          // siempre.
-          const resultado = await agregarVarianteNuevaEnJSONB({
-            productoId: productoExistenteSeleccionado.id,
-            nombre: nombreNuevaVariante,
-            precio: precioVenta,
-            costoUnitario: costoUnitarioCompra,
-            stockInicial: recibidoNuevaVariante ? cantidad : 0,
-            imagenUrl: formEgreso.nuevaVarianteImagenUrl,
-            recibido: recibidoNuevaVariante,
-            upsertProducto,
-          });
-          if (!resultado.ok) throw resultado.error || new Error('No se pudo crear la nueva variante.');
-
-          // Si el producto padre venía oculto (`recibido: false` de una
-          // compra pendiente anterior todavía sin confirmar), agregarle
-          // una variante nueva no debe dejarlo oculto para siempre — mismo
-          // criterio de "abrir la cortina" que el resto del módulo. Esto
-          // NUNCA afecta a las demás variantes, que ya vivían fuera de
-          // este flag.
-          if (recibidoNuevaVariante && productoExistenteSeleccionado.recibido === false) {
-            await actualizarConColumnasOpcionales('productos', productoExistenteSeleccionado.id, { recibido: true }, ['recibido']);
-            upsertProducto({ id: productoExistenteSeleccionado.id, recibido: true });
-          }
-
-          // El movimiento de Kardex ('entrada') solo se registra si el
-          // stock de verdad se aplicó ahora mismo (🟢 Recibido) — si quedó
-          // 🟡 Pendiente (stock en 0), el kardex real se registra hasta que
-          // se confirme la recepción desde el modal (ver
-          // `confirmarRecepcionParcial`), para no dejar un movimiento de
-          // entrada fantasma antes de que la mercancía exista de verdad.
+          // Cero Creación en Catálogo mientras la Compra esté Pendiente: si
+          // la compra nace 🟢 Recibida en Club, la variante se crea de
+          // inmediato exactamente igual que siempre. Si nace 🟡 Pendiente,
+          // la variante NO se crea en `productos.variantes` todavía — su
+          // definición completa (nombre/precio/costo/imagen) vive
+          // ÚNICAMENTE dentro de `items_recepcion` hasta que el operador la
+          // reciba (parcial o total) desde el modal "Confirmar Recepción de
+          // Mercancía" (ver `confirmarRecepcionParcial`, que es quien de
+          // verdad la inserta con el stock ya confirmado). Así nunca
+          // aparece en Inventario/POS/Portal antes de tiempo.
+          let varianteIdCreada = null;
           if (recibidoNuevaVariante) {
+            const resultado = await agregarVarianteNuevaEnJSONB({
+              productoId: productoExistenteSeleccionado.id,
+              nombre: nombreNuevaVariante,
+              precio: precioVenta,
+              costoUnitario: costoUnitarioCompra,
+              stockInicial: cantidad,
+              imagenUrl: formEgreso.nuevaVarianteImagenUrl,
+              recibido: true,
+              upsertProducto,
+            });
+            if (!resultado.ok) throw resultado.error || new Error('No se pudo crear la nueva variante.');
+            varianteIdCreada = resultado.variante?.id || null;
+
+            // Si el producto padre venía oculto (`recibido: false` de una
+            // compra pendiente anterior todavía sin confirmar), agregarle
+            // una variante nueva no debe dejarlo oculto para siempre —
+            // mismo criterio de "abrir la cortina" que el resto del
+            // módulo. Esto NUNCA afecta a las demás variantes, que ya
+            // vivían fuera de este flag.
+            if (productoExistenteSeleccionado.recibido === false) {
+              await actualizarConColumnasOpcionales('productos', productoExistenteSeleccionado.id, { recibido: true }, ['recibido']);
+              upsertProducto({ id: productoExistenteSeleccionado.id, recibido: true });
+            }
+
             await insertarMovimientoKardex({
               producto_id: productoExistenteSeleccionado.id,
-              variante_id: resultado.variante?.id || null,
+              variante_id: varianteIdCreada,
               producto_nombre: nombreParaKardex,
               tipo_movimiento: 'entrada',
               cantidad,
@@ -17731,22 +17730,34 @@ function ModuloContabilidadCompras({
           vinculo = {
             estatus_recepcion: formEgreso.estatusRecepcion,
             producto_id: productoExistenteSeleccionado.id,
-            variante_id: resultado.variante?.id || null,
+            variante_id: varianteIdCreada,
             variante_nombre: nombreNuevaVariante,
             cantidad_unidades: cantidad,
             producto_nombre: nombreParaKardex,
             requiere_suma_stock: false,
-            // Recepción Parcial (migracion_v45): detalle por ítem — la
-            // variante nueva arranca con `cantidad_recibida` en 0 salvo que
-            // ya haya nacido 🟢 Recibida de una vez (ver arriba).
+            // Recepción Parcial (migracion_v45): detalle por ítem — si
+            // quedó 🟡 Pendiente, `pendiente_creacion: true` le dice a
+            // `confirmarRecepcionParcial` que esta variante TODAVÍA NO
+            // EXISTE en el catálogo y debe crearla (con el stock que se
+            // confirme) en vez de solo sumarle stock a una que ya existe;
+            // los campos `*_creacion` cargan todo lo necesario para esa
+            // alta diferida.
             items_recepcion: [
               {
                 producto_id: productoExistenteSeleccionado.id,
-                variante_id: resultado.variante?.id || null,
+                variante_id: varianteIdCreada,
                 variante_nombre: nombreNuevaVariante,
                 nombre: nombreParaKardex,
                 cantidad_pedida: cantidad,
                 cantidad_recibida: recibidoNuevaVariante ? cantidad : 0,
+                ...(recibidoNuevaVariante
+                  ? {}
+                  : {
+                      pendiente_creacion: true,
+                      precio_creacion: precioVenta,
+                      costo_unitario_creacion: costoUnitarioCompra,
+                      imagen_url_creacion: formEgreso.nuevaVarianteImagenUrl || null,
+                    }),
               },
             ],
           };
@@ -17904,24 +17915,21 @@ function ModuloContabilidadCompras({
         // `montoCalculadoProducto`) — se reutilizan aquí tal cual para que
         // lo que el operador vio en pantalla sea EXACTAMENTE lo que se
         // guarda, sin recalcular por separado.
-        // Recepción Parcial (migracion_v45): `recibidoInmediato` decide si
-        // el stock se escribe de una vez (🟢 Recibido en Club, igual que
-        // siempre) o nace en 0 (🟡 Pendiente — el stock real solo se aplica
-        // ítem por ítem desde el modal "Confirmar Recepción de
-        // Mercancía"). IMPORTANTE: esto NO afecta `stockCalculadoNuevoProducto`
-        // ni `montoCalculadoProducto` — el Monto Total de la compra sigue
+        // Cero Creación en Catálogo mientras la Compra esté Pendiente:
+        // `recibidoInmediato` decide si el producto (y sus variantes) se
+        // crean AHORA MISMO en `productos` (🟢 Recibido en Club, igual que
+        // siempre) o si NO SE CREA NADA TODAVÍA (🟡 Pendiente — ni el
+        // producto ni sus variantes existen en la base de datos hasta que
+        // el operador confirme una recepción real, parcial o total, desde
+        // el modal "Confirmar Recepción de Mercancía"; ver
+        // `confirmarRecepcionParcial`, que es quien de verdad los inserta
+        // con SOLO el stock que se está confirmando en ese momento).
+        // IMPORTANTE: esto NO afecta `stockCalculadoNuevoProducto` ni
+        // `montoCalculadoProducto` — el Monto Total de la compra sigue
         // calculándose SIEMPRE con las cantidades PEDIDAS (lo que el
         // operador tecleó), nunca con lo ya recibido, para no alterar el
         // registro del gasto en P&L.
         const recibidoInmediato = formEgreso.estatusRecepcion === 'recibido';
-        const variantesJSONB = variantesNuevoProductoConDatos.map((v) => ({
-          id: v.id,
-          nombre: v.nombre.trim(),
-          precio: v.precio === '' ? null : Number(v.precio),
-          costo_unitario: v.costoUnitario === '' ? null : Number(v.costoUnitario),
-          stock: recibidoInmediato ? (v.stock === '' ? 0 : Number(v.stock) || 0) : 0,
-          activo: true,
-        }));
         const stockTotal = stockCalculadoNuevoProducto;
 
         // Precio "de catálogo" del producto padre cuando hay variantes: el
@@ -17931,78 +17939,123 @@ function ModuloContabilidadCompras({
         // para su badge "Desde $X" cuando un producto se vende en varias
         // presentaciones. Sin variantes, el campo del producto sigue siendo
         // la única fuente, igual que siempre.
-        const preciosVariantesNuevoProducto = variantesJSONB.filter((v) => v.precio != null).map((v) => v.precio);
+        const preciosVariantesNuevoProducto = variantesNuevoProductoConDatos
+          .map((v) => (v.precio === '' ? null : Number(v.precio)))
+          .filter((p) => p != null);
         const precioProductoPadre =
           variantesNuevoProductoConDatos.length > 0
             ? preciosVariantesNuevoProducto.length > 0
               ? Math.min(...preciosVariantesNuevoProducto)
               : 0
             : Number(nuevoProductoForm.precio);
+        const categoriaNuevoProducto = nuevoProductoForm.categoriaPOS;
+        const costoUnitarioProductoPadre = nuevoProductoForm.costo === '' ? null : Number(nuevoProductoForm.costo);
+        const imagenUrlNuevoProducto = nuevoProductoForm.imagenUrl.trim() || null;
+        const nombreNuevoProducto = nuevoProductoForm.nombre.trim();
 
-        // Recepción Parcial (migracion_v45): el stock (del producto o de
-        // cada variante) SOLO se escribe de una vez si la compra nace 🟢
-        // Recibida — si nace 🟡 Pendiente, nace en 0 y se aplica ítem por
-        // ítem desde el modal conforme llegan entregas reales (parciales o
-        // completas). La visibilidad la sigue controlando ÚNICAMENTE
-        // `recibido` (Filtro Doble en POS/Portal, ver
-        // `ModuloSmartPOS`/`PortalPublicoJugadores`).
-        const nuevoProductoPayload = {
-          nombre: nuevoProductoForm.nombre.trim(),
-          categoria: nuevoProductoForm.categoriaPOS,
-          precio: precioProductoPadre,
-          costo_unitario: nuevoProductoForm.costo === '' ? null : Number(nuevoProductoForm.costo),
-          maneja_stock: true,
-          stock: recibidoInmediato ? stockTotal : 0,
-          disponible: true,
-          activo: true,
-          variantes: variantesJSONB,
-          imagen_url: nuevoProductoForm.imagenUrl.trim() || null,
-          recibido: recibidoInmediato,
-        };
-        const { data: productoCreado, error: errProducto } = await insertarConColumnasOpcionales('productos', nuevoProductoPayload, [
-          'recibido',
-        ]);
-        if (errProducto) throw errProducto;
-        upsertProducto(productoCreado);
+        let productoCreado = null;
+        let itemsRecepcionNuevoProducto;
 
-        // Recepción Parcial (migracion_v45): un ítem POR VARIANTE (si el
-        // producto nace con variantes — ej. varias presentaciones de un
-        // mismo producto dadas de alta juntas desde esta compra) o un solo
-        // ítem para el producto sin variantes — cada uno con su propia
-        // `cantidad_pedida` (lo que se tecleó) y `cantidad_recibida` (0 si
-        // quedó 🟡 Pendiente, completa si nació 🟢 Recibida), para que el
-        // modal de recepción pueda recibir cada variante por separado.
-        const itemsRecepcionNuevoProducto =
-          variantesJSONB.length > 0
-            ? variantesJSONB.map((v, idx) => {
-                const pedida = Number(variantesNuevoProductoConDatos[idx]?.stock) || 0;
-                return {
-                  producto_id: productoCreado.id,
-                  variante_id: v.id,
-                  variante_nombre: v.nombre,
-                  nombre: `${productoCreado.nombre} — ${v.nombre}`,
-                  cantidad_pedida: pedida,
-                  cantidad_recibida: recibidoInmediato ? pedida : 0,
-                };
-              })
-            : [
-                {
-                  producto_id: productoCreado.id,
+        if (recibidoInmediato) {
+          // 🟢 Recibido en Club: se crea de inmediato con el stock real
+          // completo — comportamiento sin cambios.
+          const variantesJSONB = variantesNuevoProductoConDatos.map((v) => ({
+            id: v.id,
+            nombre: v.nombre.trim(),
+            precio: v.precio === '' ? null : Number(v.precio),
+            costo_unitario: v.costoUnitario === '' ? null : Number(v.costoUnitario),
+            stock: v.stock === '' ? 0 : Number(v.stock) || 0,
+            activo: true,
+          }));
+          const nuevoProductoPayload = {
+            nombre: nombreNuevoProducto,
+            categoria: categoriaNuevoProducto,
+            precio: precioProductoPadre,
+            costo_unitario: costoUnitarioProductoPadre,
+            maneja_stock: true,
+            stock: stockTotal,
+            disponible: true,
+            activo: true,
+            variantes: variantesJSONB,
+            imagen_url: imagenUrlNuevoProducto,
+            recibido: true,
+          };
+          const { data, error: errProducto } = await insertarConColumnasOpcionales('productos', nuevoProductoPayload, ['recibido']);
+          if (errProducto) throw errProducto;
+          productoCreado = data;
+          upsertProducto(productoCreado);
+
+          itemsRecepcionNuevoProducto =
+            variantesJSONB.length > 0
+              ? variantesJSONB.map((v, idx) => {
+                  const pedida = Number(variantesNuevoProductoConDatos[idx]?.stock) || 0;
+                  return {
+                    producto_id: productoCreado.id,
+                    variante_id: v.id,
+                    variante_nombre: v.nombre,
+                    nombre: `${productoCreado.nombre} — ${v.nombre}`,
+                    cantidad_pedida: pedida,
+                    cantidad_recibida: pedida,
+                  };
+                })
+              : [
+                  {
+                    producto_id: productoCreado.id,
+                    variante_id: null,
+                    variante_nombre: null,
+                    nombre: productoCreado.nombre,
+                    cantidad_pedida: stockTotal,
+                    cantidad_recibida: stockTotal,
+                  },
+                ];
+        } else {
+          // 🟡 Pendiente de Recepción: NO se inserta nada en `productos`
+          // todavía — la definición completa del producto y de cada
+          // variante vive únicamente dentro de `items_recepcion`
+          // (`pendiente_creacion: true` + campos `*_creacion`), a la
+          // espera de que `confirmarRecepcionParcial` los dé de alta de
+          // verdad con el stock que se vaya confirmando.
+          itemsRecepcionNuevoProducto =
+            variantesNuevoProductoConDatos.length > 0
+              ? variantesNuevoProductoConDatos.map((v) => ({
+                  producto_id: null,
                   variante_id: null,
-                  variante_nombre: null,
-                  nombre: productoCreado.nombre,
-                  cantidad_pedida: stockTotal,
-                  cantidad_recibida: recibidoInmediato ? stockTotal : 0,
-                },
-              ];
+                  variante_nombre: v.nombre.trim(),
+                  nombre: `${nombreNuevoProducto} — ${v.nombre.trim()}`,
+                  cantidad_pedida: v.stock === '' ? 0 : Number(v.stock) || 0,
+                  cantidad_recibida: 0,
+                  pendiente_creacion: true,
+                  producto_nombre_creacion: nombreNuevoProducto,
+                  categoria_creacion: categoriaNuevoProducto,
+                  precio_creacion: v.precio === '' ? null : Number(v.precio),
+                  costo_unitario_creacion: v.costoUnitario === '' ? null : Number(v.costoUnitario),
+                  imagen_url_creacion: imagenUrlNuevoProducto,
+                }))
+              : [
+                  {
+                    producto_id: null,
+                    variante_id: null,
+                    variante_nombre: null,
+                    nombre: nombreNuevoProducto,
+                    cantidad_pedida: stockTotal,
+                    cantidad_recibida: 0,
+                    pendiente_creacion: true,
+                    producto_nombre_creacion: nombreNuevoProducto,
+                    categoria_creacion: categoriaNuevoProducto,
+                    precio_creacion: precioProductoPadre,
+                    costo_unitario_creacion: costoUnitarioProductoPadre,
+                    imagen_url_creacion: imagenUrlNuevoProducto,
+                  },
+                ];
+        }
 
         vinculo = {
           estatus_recepcion: formEgreso.estatusRecepcion,
-          producto_id: productoCreado.id,
+          producto_id: productoCreado?.id || null,
           variante_id: null,
           variante_nombre: null,
           cantidad_unidades: stockTotal,
-          producto_nombre: productoCreado.nombre,
+          producto_nombre: productoCreado?.nombre || nombreNuevoProducto,
           requiere_suma_stock: false,
           items_recepcion: itemsRecepcionNuevoProducto,
         };
@@ -18144,6 +18197,15 @@ function ModuloContabilidadCompras({
       await actualizarConColumnasOpcionales('productos', productoId, { recibido: true }, ['recibido']);
       upsertProducto({ id: productoId, recibido: true });
     };
+    // Cero Creación en Catálogo mientras la Compra esté Pendiente: si esta
+    // MISMA confirmación crea el producto nuevo a partir de la primera
+    // variante con captura > 0 (ver rama `pendiente_creacion` abajo), las
+    // DEMÁS variantes de esa misma compra que todavía no se capturen en
+    // esta ronda deben "enterarse" del `producto_id` real recién creado
+    // (para que la próxima confirmación solo tenga que agregarles su
+    // variante, no crear el producto otra vez) — se guarda aquí para
+    // reutilizarse en la pasada de propagación al final.
+    let productoNuevoIdCreado = null;
 
     const itemsActualizados = [];
     try {
@@ -18153,6 +18215,9 @@ function ModuloContabilidadCompras({
         const cantidadRecibidaItem = Number(item.cantidad_recibida) || 0;
         const pendienteItem = Math.max(0, cantidadPedidaItem - cantidadRecibidaItem);
         let nuevaCantidadRecibida = cantidadRecibidaItem;
+        let productoIdFinal = item.producto_id || null;
+        let varianteIdFinal = item.variante_id || null;
+        let pendienteCreacionFinal = item.pendiente_creacion || false;
 
         if (item.stock_ya_aplicado) {
           // Legacy: el stock físico ya está en inventario desde el alta —
@@ -18172,6 +18237,139 @@ function ModuloContabilidadCompras({
             }
             await abrirCortinaProducto(item.producto_id);
             nuevaCantidadRecibida = cantidadPedidaItem;
+          }
+        } else if (item.pendiente_creacion) {
+          // Cero Creación en Catálogo mientras la Compra esté Pendiente:
+          // este ítem NO existe todavía en `productos` — se crea AQUÍ, de
+          // una vez, con ÚNICAMENTE el stock que se está confirmando en
+          // este momento (nunca con el pedido completo).
+          const capturado = Math.max(0, Math.min(Number(cantidadesCapturadas?.[idx]) || 0, pendienteItem));
+          if (capturado > 0) {
+            if (item.producto_id) {
+              // El producto padre YA existe (era un producto existente al
+              // que se le está dando de alta una variante nueva, o es otra
+              // variante de un "producto nuevo" cuyo `producto_id` ya se
+              // conocía de una confirmación anterior) — solo falta crear
+              // ESTA variante, con el stock recién confirmado.
+              const resultado = await agregarVarianteNuevaEnJSONB({
+                productoId: item.producto_id,
+                nombre: item.variante_nombre,
+                precio: item.precio_creacion,
+                costoUnitario: item.costo_unitario_creacion,
+                stockInicial: capturado,
+                imagenUrl: item.imagen_url_creacion,
+                recibido: true,
+                upsertProducto,
+              });
+              if (resultado.ok) {
+                varianteIdFinal = resultado.variante?.id || null;
+                pendienteCreacionFinal = false;
+                nuevaCantidadRecibida = cantidadRecibidaItem + capturado;
+                await abrirCortinaProducto(item.producto_id);
+                await insertarMovimientoKardex({
+                  producto_id: item.producto_id,
+                  variante_id: varianteIdFinal,
+                  producto_nombre: item.nombre,
+                  tipo_movimiento: 'entrada',
+                  cantidad: capturado,
+                  stock_anterior: 0,
+                  stock_nuevo: capturado,
+                  motivo: `Confirmación de recepción — ${compra.concepto || 'Compra'}`,
+                  operador: operador?.nombre,
+                  costo_unitario: item.costo_unitario_creacion || null,
+                });
+              }
+            } else if (productoNuevoIdCreado) {
+              // El producto padre todavía no existía al empezar esta
+              // llamada, pero OTRA variante de esta MISMA compra ya lo
+              // creó unas líneas arriba (mismo `for`) — solo falta
+              // agregarle esta variante nueva.
+              const resultado = await agregarVarianteNuevaEnJSONB({
+                productoId: productoNuevoIdCreado,
+                nombre: item.variante_nombre,
+                precio: item.precio_creacion,
+                costoUnitario: item.costo_unitario_creacion,
+                stockInicial: capturado,
+                imagenUrl: item.imagen_url_creacion,
+                recibido: true,
+                upsertProducto,
+              });
+              if (resultado.ok) {
+                productoIdFinal = productoNuevoIdCreado;
+                varianteIdFinal = resultado.variante?.id || null;
+                pendienteCreacionFinal = false;
+                nuevaCantidadRecibida = cantidadRecibidaItem + capturado;
+                await insertarMovimientoKardex({
+                  producto_id: productoNuevoIdCreado,
+                  variante_id: varianteIdFinal,
+                  producto_nombre: item.nombre,
+                  tipo_movimiento: 'entrada',
+                  cantidad: capturado,
+                  stock_anterior: 0,
+                  stock_nuevo: capturado,
+                  motivo: `Confirmación de recepción — ${compra.concepto || 'Compra'}`,
+                  operador: operador?.nombre,
+                  costo_unitario: item.costo_unitario_creacion || null,
+                });
+              }
+            } else {
+              // Alta Diferida REAL: ni el producto ni ninguna de sus
+              // variantes existen todavía — se crea el producto justo
+              // ahora, con solo esta variante (o como producto simple, si
+              // nunca tuvo variantes) y solo el stock confirmado. El resto
+              // de las variantes de esta compra (si las hay) se quedan
+              // pendientes hasta que se reciban por su cuenta — ver la
+              // pasada de propagación después de este `for`.
+              const nuevoProductoPayload = {
+                nombre: item.producto_nombre_creacion || item.nombre,
+                categoria: item.categoria_creacion || null,
+                precio: item.precio_creacion ?? 0,
+                costo_unitario: item.variante_nombre ? null : item.costo_unitario_creacion,
+                maneja_stock: true,
+                stock: item.variante_nombre ? 0 : capturado,
+                disponible: true,
+                activo: true,
+                variantes: item.variante_nombre
+                  ? [
+                      {
+                        id: idLocal('variante'),
+                        nombre: item.variante_nombre,
+                        precio: item.precio_creacion,
+                        costo_unitario: item.costo_unitario_creacion,
+                        stock: capturado,
+                        activo: true,
+                      },
+                    ]
+                  : [],
+                imagen_url: item.imagen_url_creacion || null,
+                recibido: true,
+              };
+              const { data: productoCreado, error: errProducto } = await insertarConColumnasOpcionales(
+                'productos',
+                nuevoProductoPayload,
+                ['recibido']
+              );
+              if (!errProducto && productoCreado) {
+                upsertProducto(productoCreado);
+                productoNuevoIdCreado = productoCreado.id;
+                productoIdFinal = productoCreado.id;
+                varianteIdFinal = item.variante_nombre ? productoCreado.variantes?.[0]?.id || null : null;
+                pendienteCreacionFinal = false;
+                nuevaCantidadRecibida = cantidadRecibidaItem + capturado;
+                await insertarMovimientoKardex({
+                  producto_id: productoCreado.id,
+                  variante_id: varianteIdFinal,
+                  producto_nombre: item.nombre,
+                  tipo_movimiento: 'entrada',
+                  cantidad: capturado,
+                  stock_anterior: 0,
+                  stock_nuevo: capturado,
+                  motivo: `Confirmación de recepción — ${compra.concepto || 'Compra'}`,
+                  operador: operador?.nombre,
+                  costo_unitario: item.costo_unitario_creacion || null,
+                });
+              }
+            }
           }
         } else {
           const capturado = Math.max(0, Math.min(Number(cantidadesCapturadas?.[idx]) || 0, pendienteItem));
@@ -18229,23 +18427,41 @@ function ModuloContabilidadCompras({
           }
         }
 
-        itemsActualizados.push({ ...item, cantidad_recibida: nuevaCantidadRecibida });
+        itemsActualizados.push({
+          ...item,
+          producto_id: productoIdFinal,
+          variante_id: varianteIdFinal,
+          pendiente_creacion: pendienteCreacionFinal,
+          cantidad_recibida: nuevaCantidadRecibida,
+        });
       }
 
-      const totalPedido = itemsActualizados.reduce((s, it) => s + (Number(it.cantidad_pedida) || 0), 0);
-      const totalRecibido = itemsActualizados.reduce((s, it) => s + (Number(it.cantidad_recibida) || 0), 0);
+      // Propagación: cualquier ítem de esta compra que SIGA pendiente de
+      // crearse (`pendiente_creacion: true`, no se capturó nada en esta
+      // ronda) pero cuyo producto padre SÍ se acaba de crear en esta misma
+      // llamada (otra variante hermana lo disparó) "se entera" del
+      // `producto_id` real — así la próxima confirmación solo agrega su
+      // variante en vez de intentar crear el producto de nuevo.
+      const itemsActualizadosFinal = productoNuevoIdCreado
+        ? itemsActualizados.map((it) =>
+            it.pendiente_creacion && !it.producto_id ? { ...it, producto_id: productoNuevoIdCreado } : it
+          )
+        : itemsActualizados;
+
+      const totalPedido = itemsActualizadosFinal.reduce((s, it) => s + (Number(it.cantidad_pedida) || 0), 0);
+      const totalRecibido = itemsActualizadosFinal.reduce((s, it) => s + (Number(it.cantidad_recibida) || 0), 0);
       const nuevoEstatus =
         totalPedido > 0 && totalRecibido >= totalPedido ? 'recibido' : totalRecibido > 0 ? 'parcial' : compra.estatus_recepcion;
 
       const { error } = await actualizarConColumnasOpcionales(
         'compras_gastos',
         compra.id,
-        { estatus_recepcion: nuevoEstatus, items_recepcion: itemsActualizados },
+        { estatus_recepcion: nuevoEstatus, items_recepcion: itemsActualizadosFinal },
         ['items_recepcion']
       );
       if (error) throw error;
       setEgresos((prev) =>
-        prev.map((g) => (g.id === compra.id ? { ...g, estatus_recepcion: nuevoEstatus, items_recepcion: itemsActualizados } : g))
+        prev.map((g) => (g.id === compra.id ? { ...g, estatus_recepcion: nuevoEstatus, items_recepcion: itemsActualizadosFinal } : g))
       );
       mostrarToast({
         titulo: nuevoEstatus === 'recibido' ? 'Recepción completa confirmada' : 'Recepción parcial registrada',
@@ -18480,6 +18696,48 @@ function ModuloContabilidadCompras({
     }).`;
   }
 
+  // Limpieza de "cascarones" (requisito #3, Cero Registros Basura): un
+  // producto "Alta Diferida" con VARIAS variantes puede quedar a medias al
+  // cancelar — ej. se recibió la variante "Rojo" (y por eso el producto SÍ
+  // llegó a crearse) pero "Azul" nunca se confirmó (nunca existió como
+  // fila). Al cancelar, `revertirStockItemCompra` puede eliminar "Rojo" por
+  // completo (stock cae a 0, sin ventas) y dejar al producto padre con
+  // `variantes: []` — una fila fantasma, sin variantes ni stock, que de
+  // todos modos aparecería en Inventario/POS/Portal. Esta función revisa
+  // el producto DESPUÉS de la reversión y, si quedó sin ninguna variante,
+  // elimina también la fila del producto (mismo criterio tuvoVentas/
+  // DELETE-con-fallback-a-inactivo que usa `revertirStockItemCompra`).
+  async function limpiarProductoSiSinVariantes(productoId) {
+    if (!productoId) return;
+    const producto = (productos || []).find((p) => String(p.id) === String(productoId));
+    if (!producto) return;
+    // Nunca tuvo variantes (es un producto simple, no "de variantes") — no
+    // aplica esta limpieza, su propio stock ya se revirtió arriba si hacía
+    // falta.
+    if (!Array.isArray(producto.variantes) || producto.variantes.length > 0) return;
+    // El producto sigue teniendo stock propio (no nació solo como
+    // contenedor de variantes) — no se toca.
+    if ((Number(producto.stock) || 0) > 0) return;
+    const tuvoVentas = await productoTuvoVentasRegistradas(productoId, null);
+    if (tuvoVentas) return;
+    await eliminarKardexDeProducto(productoId);
+    const { error: errDelete } = await supabase.from('productos').delete().eq('id', productoId);
+    if (!errDelete) {
+      quitarProductoLocal?.(productoId);
+      return;
+    }
+    const { error: errInactivo } = await actualizarConColumnasOpcionales(
+      'productos',
+      productoId,
+      { activo: false, disponible: false },
+      []
+    );
+    if (!errInactivo) {
+      upsertProducto({ id: productoId, activo: false, disponible: false });
+      quitarProductoLocal?.(productoId);
+    }
+  }
+
   // En todos los casos: `compras_gastos.estatus_recepcion = 'cancelada'`
   // (con badge rojo/gris en el Historial, y excluido de
   // `egresosEnRango`/P&L, ver ese `useMemo`) + registro en el Log de
@@ -18510,6 +18768,14 @@ function ModuloContabilidadCompras({
           notas.push(await revertirStockItemCompra(compra, item));
         }
         notaInventario = notas.join(' ');
+
+        // Cero Registros Basura: si algún producto quedó sin ninguna
+        // variante tras la reversión de arriba (ver comentario de
+        // `limpiarProductoSiSinVariantes`), se termina de eliminar aquí.
+        const productosIdsUnicos = [...new Set(items.map((it) => it.producto_id).filter(Boolean).map(String))];
+        for (const pid of productosIdsUnicos) {
+          await limpiarProductoSiSinVariantes(pid);
+        }
       }
 
       // `estatus_recepcion` a secas (sin columnas opcionales) — ya sabemos
