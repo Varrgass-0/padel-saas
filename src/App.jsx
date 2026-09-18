@@ -850,6 +850,35 @@ import {
 } from 'lucide-react';
 
 /* ============================================================================
+ * FEATURE FLAGS — FASE BETA (piloto de 3 meses en club piloto)
+ * ==========================================================================*/
+// Banderas booleanas para OCULTAR temporalmente ciertos componentes
+// visuales durante la Beta, sin tocar el backend: ningún handler, estado,
+// llamada a Supabase, columna ni tabla se borra por esto — solo se
+// condiciona el JSX que los renderiza. Terminada la Beta, cada bandera se
+// puede volver a poner en `true` (o borrarse del todo) para restaurar la
+// funcionalidad visible sin tocar nada más.
+//
+// Portal de Jugadores — Métodos de pago (ver `SelectorMetodoPagoPortal`):
+// durante la Beta el Portal solo debe ofrecer pago presencial ("Pagar en el
+// club", antes "Pagar en Recepción" — el cambio de texto es solo visual, la
+// clave interna sigue siendo `'recepcion'`).
+const SHOW_BETA_PORTAL_PAGO_WALLET = false;
+const SHOW_BETA_PORTAL_PAGO_TARJETA = false;
+// Configuración del Club → Jugadores y Fidelización: oculta la tarjeta de
+// "Cortesías por Frecuencia de Actividad" (migracion_v46/v47) — el motor,
+// su estado y sus llamadas a Supabase se quedan intactos, solo no se
+// muestra el bloque ni se abre su modal de configuración.
+const SHOW_BETA_CORTESIAS_FRECUENCIA = false;
+// Analytics BI y Contabilidad y Compras: oculta el botón "Exportar Reporte".
+const SHOW_BETA_EXPORTAR_REPORTES = false;
+// Smart POS: oculta "Cerrar Turno / Arqueo" y "Devolución" (los handlers,
+// modales y tablas de respaldo — `cierres_caja`, devoluciones de stock —
+// siguen funcionando si se reactiva la bandera).
+const SHOW_BETA_POS_CIERRE_ARQUEO = false;
+const SHOW_BETA_POS_DEVOLUCION = false;
+
+/* ============================================================================
  * MODO OSCURO / MODO CLARO — TOGGLE DE TEMA (QLUB OS)
  * ==========================================================================*/
 // Preferencia GLOBAL del dispositivo (no por club/operador): se guarda tal
@@ -13355,12 +13384,14 @@ function ModuloSmartPOS({
                 <Plus size={15} /> Nuevo Producto
               </BotonPrimario>
             )}
-            {permisos?.puedeRegistrarDevolucionPOS && (
+            {/* Beta: botones ocultos — `registrarDevolucion`/`ModalDevolucionPOS`
+                y `ModalArqueo`/el guardado de cierre de caja no se tocan. */}
+            {SHOW_BETA_POS_DEVOLUCION && permisos?.puedeRegistrarDevolucionPOS && (
               <BotonSecundario onClick={() => setModalDevolucion(true)} className="whitespace-nowrap">
                 <RefreshCw size={15} /> Devolución
               </BotonSecundario>
             )}
-            {permisos?.puedeCerrarTurnoCaja !== false && (
+            {SHOW_BETA_POS_CIERRE_ARQUEO && permisos?.puedeCerrarTurnoCaja !== false && (
               <BotonSecundario onClick={() => setModalArqueo(true)} className="whitespace-nowrap">
                 <Calculator size={15} /> Cerrar Turno / Arqueo
               </BotonSecundario>
@@ -16347,9 +16378,13 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
         <p className="text-xs font-semibold text-slate-500">
           Mostrando: <span className="text-slate-900">{etiqueta}</span>
         </p>
-        <BotonSecundario onClick={onExportar} className="whitespace-nowrap">
-          <Download size={15} /> Exportar Reporte
-        </BotonSecundario>
+        {/* Beta: botón de exportar oculto — `onExportar`/la generación del CSV
+            no se tocan, solo el botón que los dispara. */}
+        {SHOW_BETA_EXPORTAR_REPORTES && (
+          <BotonSecundario onClick={onExportar} className="whitespace-nowrap">
+            <Download size={15} /> Exportar Reporte
+          </BotonSecundario>
+        )}
       </div>
     </div>
   );
@@ -19780,9 +19815,12 @@ function ModuloContabilidadCompras({
               <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
                 <History size={16} className="text-lime-400" /> Historial de Compras & Gastos
               </h3>
-              <BotonSecundario onClick={exportarEgresosCSV} disabled={egresos.length === 0} className="text-xs">
-                <Download size={14} /> Exportar Reporte (.CSV)
-              </BotonSecundario>
+              {/* Beta: botón de exportar oculto — `exportarEgresosCSV` no se toca. */}
+              {SHOW_BETA_EXPORTAR_REPORTES && (
+                <BotonSecundario onClick={exportarEgresosCSV} disabled={egresos.length === 0} className="text-xs">
+                  <Download size={14} /> Exportar Reporte (.CSV)
+                </BotonSecundario>
+              )}
             </div>
             {loadingEgresos ? (
               <div className="h-40 animate-pulse rounded-xl bg-slate-100/60" />
@@ -20169,9 +20207,12 @@ function ModuloContabilidadCompras({
               <p className="text-xs font-semibold text-slate-500">
                 Mostrando: <span className="text-slate-900">{rangoPnl.etiqueta}</span>
               </p>
-              <BotonSecundario onClick={exportarPnlCSV} className="text-xs">
-                <Download size={14} /> Exportar Reporte (.CSV)
-              </BotonSecundario>
+              {/* Beta: botón de exportar oculto — `exportarPnlCSV` no se toca. */}
+              {SHOW_BETA_EXPORTAR_REPORTES && (
+                <BotonSecundario onClick={exportarPnlCSV} className="text-xs">
+                  <Download size={14} /> Exportar Reporte (.CSV)
+                </BotonSecundario>
+              )}
             </div>
           </div>
 
@@ -35799,7 +35840,13 @@ function SeccionJugadoresFidelizacion({
       {/* Cortesías por Frecuencia de Actividad (migracion_v46) — tarjeta
        * HERMANA de "Metas de Cortesía" de arriba, motor completamente
        * independiente (switch propio, sus propias 4 metas + 4 recompensas)
-       * pero mismo patrón de diseño exacto. */}
+       * pero mismo patrón de diseño exacto.
+       * Beta: tarjeta + modal ocultos tras SHOW_BETA_CORTESIAS_FRECUENCIA —
+       * el motor (switch, metas, recompensas, Supabase) sigue funcionando
+       * por completo si ya estaba activado antes de la Beta, solo no se
+       * puede ver ni tocar desde esta pantalla mientras la bandera esté en
+       * `false`. */}
+      {SHOW_BETA_CORTESIAS_FRECUENCIA && (
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
           <Gift size={16} className="text-lime-500" />
@@ -35866,8 +35913,9 @@ function SeccionJugadoresFidelizacion({
           </BotonSecundario>
         </div>
       </div>
+      )}
 
-      {mostrarModalFrecuencia && (
+      {SHOW_BETA_CORTESIAS_FRECUENCIA && mostrarModalFrecuencia && (
         <ModalCortesiasFrecuencia
           activoActual={cortesiasFrecuenciaActivas}
           metaReservasActual={metaFrecuenciaReservas}
@@ -40721,7 +40769,11 @@ function SelectorMetodoPagoPortal({
   } text-left font-bold text-slate-900 transition disabled:cursor-not-allowed disabled:opacity-40`;
   return (
     <div className="space-y-2">
-      {mostrarWallet && (
+      {/* Beta: Wallet/Monedero y Tarjeta ocultos — solo queda pago
+          presencial. `mostrarWallet` (según haya jugador/saldo) se queda
+          intacto y vuelve a mandar en cuanto SHOW_BETA_PORTAL_PAGO_WALLET
+          regrese a `true`. */}
+      {mostrarWallet && SHOW_BETA_PORTAL_PAGO_WALLET && (
         <button
           type="button"
           onClick={() => onCambiarMetodo('wallet')}
@@ -40740,18 +40792,24 @@ function SelectorMetodoPagoPortal({
         className={`${claseBoton} ${metodo === 'recepcion' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-300 bg-slate-100'}`}
       >
         <span className="flex items-center gap-2">
-          <Banknote size={chico ? 14 : 15} className="text-slate-500" /> Pagar en Recepción
+          {/* Beta: texto visible renombrado de "Pagar en Recepción" a "Pagar
+              en el club" — la clave interna (`onCambiarMetodo('recepcion')`,
+              el valor `metodo === 'recepcion'` que se guarda en Supabase)
+              NO cambia. */}
+          <Banknote size={chico ? 14 : 15} className="text-slate-500" /> Pagar en el club
         </span>
       </button>
-      <button
-        type="button"
-        onClick={() => onCambiarMetodo('tarjeta')}
-        className={`${claseBoton} ${metodo === 'tarjeta' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-300 bg-slate-100'}`}
-      >
-        <span className="flex items-center gap-2">
-          <CreditCard size={chico ? 14 : 15} className="text-slate-500" /> Pagar con Tarjeta (Débito/Crédito)
-        </span>
-      </button>
+      {SHOW_BETA_PORTAL_PAGO_TARJETA && (
+        <button
+          type="button"
+          onClick={() => onCambiarMetodo('tarjeta')}
+          className={`${claseBoton} ${metodo === 'tarjeta' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-300 bg-slate-100'}`}
+        >
+          <span className="flex items-center gap-2">
+            <CreditCard size={chico ? 14 : 15} className="text-slate-500" /> Pagar con Tarjeta (Débito/Crédito)
+          </span>
+        </button>
+      )}
 
       {metodo === 'wallet' && (
         <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-xs text-slate-500">
@@ -40808,7 +40866,7 @@ function SelectorMetodoPagoPortal({
 // Wallet" liquida el concepto de una vez; si no alcanza, cubre lo que
 // pueda y dice cuánto queda pendiente en recepción.
 function ModalElegirPago({ monto, saldoWallet, concepto, onClose, onConfirmar }) {
-  const [metodo, setMetodo] = useState(saldoWallet > 0 ? 'wallet' : 'recepcion');
+  const [metodo, setMetodo] = useState(SHOW_BETA_PORTAL_PAGO_WALLET && saldoWallet > 0 ? 'wallet' : 'recepcion');
   const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
   const [enviando, setEnviando] = useState(false);
   const { montoWallet, montoRestante } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
@@ -40990,7 +41048,7 @@ function ModalCarritoTienda({
   variantesPorProducto = {},
   onAgregarSugerido,
 }) {
-  const [metodo, setMetodo] = useState(saldoWallet > 0 ? 'wallet' : 'recepcion');
+  const [metodo, setMetodo] = useState(SHOW_BETA_PORTAL_PAGO_WALLET && saldoWallet > 0 ? 'wallet' : 'recepcion');
   const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
   const [enviando, setEnviando] = useState(false);
   const { montoWallet, montoRestante } = repartirPagoConWallet(total, saldoWallet, metodo === 'wallet');
@@ -41171,7 +41229,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   const [horaInicio, setHoraInicio] = useState('');
   const [addons, setAddons] = useState([]);
   const [addonParaVariante, setAddonParaVariante] = useState(null);
-  const [metodo, setMetodo] = useState(saldoWallet > 0 ? 'wallet' : 'recepcion');
+  const [metodo, setMetodo] = useState(SHOW_BETA_PORTAL_PAGO_WALLET && saldoWallet > 0 ? 'wallet' : 'recepcion');
   const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
   const [nombre, setNombre] = useState(jugador?.nombre || '');
   const [telefono, setTelefono] = useState(jugador?.telefono || '');
@@ -43392,6 +43450,60 @@ function AppInterno() {
       supabase.removeChannel(canal);
     };
   }, [cargarAcademiaClases, cargarAcademiaAlumnos, cargarAcademiaAsistencias]);
+
+  /* ---------------- Beta: Tiempo Real global + revalidación por foco ----------------
+     Preparación para la fase Beta de 3 meses en club piloto: además de los
+     canales Realtime ya existentes por módulo (cada uno atado a su propio
+     `cargar<X>({silencioso:true})`), agregamos AQUÍ un canal GLOBAL — vive en
+     `AppInterno`, que siempre está montado sin importar la pestaña activa —
+     que refresca el dataset compartido (`cargarDatos`: canchas/reservas/
+     jugadores + Academia) ante cualquier cambio en las tablas clave que pidió
+     el negocio: `reservas`, `kardex`, `academia_alumnos`, y — OJO — en este
+     esquema de Supabase NO existe una tabla `pagos` (se verificó, cero
+     resultados), así que la interpretamos como `ventas`, que es la tabla real
+     de transacciones/cobros del POS y Portal.
+     Esto es intencionalmente redundante con los canales `parrilla-operativa`
+     (reservas) y `academia` (academia_alumnos) de arriba — no los reemplaza,
+     nunca se quitan — el valor agregado real es que ahora un cambio en
+     `ventas`/`kardex` (que antes solo refrescaba el módulo local que los
+     escuchaba, ej. Smart POS o ERP) TAMBIÉN dispara un refresco del dataset
+     global, así que si el usuario está en otra pestaña cuando llega el
+     cambio, no hace falta F5 al volver a Reservas/Academia. */
+  const refrescarDatosGlobalBeta = useCallback(() => {
+    cargarDatos({ silencioso: true });
+    cargarAcademiaAlumnos({ silencioso: true });
+    cargarAcademiaAsistencias({ silencioso: true });
+  }, [cargarDatos, cargarAcademiaAlumnos, cargarAcademiaAsistencias]);
+
+  useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return undefined;
+    const canal = supabase
+      .channel(`beta-realtime-global_${CLUB_ACTIVO_ID}`)
+      .on('postgres_changes', canalClubFiltro('reservas'), refrescarDatosGlobalBeta)
+      .on('postgres_changes', canalClubFiltro('ventas'), refrescarDatosGlobalBeta) // "pagos" del pedido → no existe esa tabla, es `ventas`
+      .on('postgres_changes', canalClubFiltro('kardex'), refrescarDatosGlobalBeta)
+      .on('postgres_changes', canalClubFiltro('academia_alumnos'), refrescarDatosGlobalBeta)
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [refrescarDatosGlobalBeta]);
+
+  useEffect(() => {
+    // Revalidación al volver a la pestaña/ventana (ademas del listener local
+    // ya existente en el dashboard de ERP/Kardex, que se queda intacto — este
+    // es GLOBAL y cubre cualquier pestaña de la app).
+    const alVolverElFoco = () => refrescarDatosGlobalBeta();
+    const alCambiarVisibilidad = () => {
+      if (document.visibilityState === 'visible') refrescarDatosGlobalBeta();
+    };
+    window.addEventListener('focus', alVolverElFoco);
+    document.addEventListener('visibilitychange', alCambiarVisibilidad);
+    return () => {
+      window.removeEventListener('focus', alVolverElFoco);
+      document.removeEventListener('visibilitychange', alCambiarVisibilidad);
+    };
+  }, [refrescarDatosGlobalBeta]);
 
   /* ---------------- Evaluación de Nivel y Progreso de Jugadores ---------------- */
   // `evaluaciones_jugador` (migracion_v37) — una fila por calificación, ver
