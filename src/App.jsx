@@ -3162,28 +3162,82 @@ function guardarMetasCortesiaLocal(metas) {
 }
 
 // Cortesías por Frecuencia de Actividad (Configuración del Club →
-// "Jugadores & Fidelización", migracion_v46) — SEGUNDO Motor de Cortesías,
-// independiente del de gasto (`LS_KEY_METAS_CORTESIA` arriba): premia
-// CANTIDAD de eventos completados (reservas/retas/torneos/clases) en vez de
-// pesos gastados. Mismo criterio exacto de respaldo local + Sincronización
-// Silenciosa que el resto de `configuracion_club`. `activo`: a diferencia
-// del motor de gasto (que arranca `true` por compatibilidad con clubes que
-// ya lo tenían encendido), este es un módulo NUEVO — arranca `false`,
-// ningún club lo ve activo hasta que lo prenda a propósito. `activadaDesde`:
-// mismo Blindaje "sin acumulados fantasma" que `activadaDesde` del motor de
-// gasto — ver `guardarCortesiasFrecuencia`/`perfiles` en
-// `DirectorioJugadoresCRM`. Cada categoría guarda `meta` (número de eventos)
-// y `premio` (texto libre que describe la recompensa, ej. "1 hora gratis" —
-// no hay un motor de descuento automático genérico en la app, el staff la
-// aplica a mano al cobrar, ver `otorgarCortesiaFrecuenciaCRM`).
+// "Jugadores & Fidelización", migracion_v46/v47) — SEGUNDO Motor de
+// Cortesías, independiente del de gasto (`LS_KEY_METAS_CORTESIA` arriba):
+// premia CANTIDAD de eventos completados (reservas/retas/torneos/clases) en
+// vez de pesos gastados. Mismo criterio exacto de respaldo local +
+// Sincronización Silenciosa que el resto de `configuracion_club`. `activo`:
+// a diferencia del motor de gasto (que arranca `true` por compatibilidad
+// con clubes que ya lo tenían encendido), este es un módulo NUEVO — arranca
+// `false`, ningún club lo ve activo hasta que lo prenda a propósito.
+// `activadaDesde`: mismo Blindaje "sin acumulados fantasma" que
+// `activadaDesde` del motor de gasto — ver
+// `guardarCortesiasFrecuencia`/`perfiles` en `DirectorioJugadoresCRM`.
+//
+// RECOMPENSA ESTRUCTURADA (migracion_v47, reemplaza el texto libre de
+// v46): cada categoría guarda `meta` (número de eventos) y una recompensa de
+// DOS campos — `tipo` ('GRATIS' | 'DESCUENTO_PORCENTAJE') y `valor` (0-100,
+// el % exacto: 100 para "gratis") — elegida de un `<select>` con opciones
+// FIJAS por categoría (`OPCIONES_RECOMPENSA_FRECUENCIA`, abajo), nunca texto
+// libre. Se guarda el número exacto para que, cuando el staff redima la
+// cortesía en la Vista 360°, ese `valor` ya esté listo para pasarse directo
+// como argumento de descuento al flujo de cobro de POS/Portal el día que
+// exista ese motor genérico (hoy el staff lo sigue aplicando a mano al
+// cobrar, ver `otorgarCortesiaFrecuenciaCRM` — no hay integración
+// automática con el checkout todavía).
 const LS_KEY_CORTESIAS_FRECUENCIA = 'smashpadel_cortesias_frecuencia_v1';
+const TIPO_RECOMPENSA_GRATIS = 'GRATIS';
+const TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE = 'DESCUENTO_PORCENTAJE';
+// Unidad textual con la que se arma la etiqueta de cada recompensa (Vista
+// 360°/selects) — "gratis" para el 100%, "descuento" para el resto.
+const UNIDAD_RECOMPENSA_FRECUENCIA = {
+  frecuencia_reservas: { gratis: 'Hora', descuento: 'Próxima Reserva' },
+  frecuencia_retas: { gratis: 'Inscripción', descuento: 'Próxima Inscripción' },
+  frecuencia_torneos: { gratis: 'Inscripción', descuento: 'Próxima Inscripción' },
+  frecuencia_clases: { gratis: 'Clase', descuento: 'Próxima Clase' },
+};
+// Opciones FIJAS del `<select>` de recompensa en `ModalCortesiasFrecuencia`
+// — una lista curada por categoría (a pedido explícito: nada de texto
+// libre). Clave = categoría larga (mismo `categoria` que usa
+// `cortesias_otorgadas`/`ETIQUETA_FRECUENCIA`).
+const OPCIONES_RECOMPENSA_FRECUENCIA = {
+  frecuencia_reservas: [
+    { tipo: TIPO_RECOMPENSA_GRATIS, valor: 100, etiqueta: '1 Hora gratis (100%)' },
+    { tipo: TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE, valor: 50, etiqueta: '50% de descuento' },
+    { tipo: TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE, valor: 25, etiqueta: '25% de descuento' },
+  ],
+  frecuencia_retas: [
+    { tipo: TIPO_RECOMPENSA_GRATIS, valor: 100, etiqueta: '1 Inscripción gratis (100%)' },
+    { tipo: TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE, valor: 50, etiqueta: '50% de descuento' },
+  ],
+  frecuencia_torneos: [
+    { tipo: TIPO_RECOMPENSA_GRATIS, valor: 100, etiqueta: '1 Inscripción gratis (100%)' },
+    { tipo: TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE, valor: 50, etiqueta: '50% de descuento' },
+    { tipo: TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE, valor: 20, etiqueta: '20% de descuento' },
+  ],
+  frecuencia_clases: [
+    { tipo: TIPO_RECOMPENSA_GRATIS, valor: 100, etiqueta: '1 Clase gratis (100%)' },
+    { tipo: TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE, valor: 50, etiqueta: '50% de descuento' },
+  ],
+};
+// Etiqueta de despliegue (Vista 360°, tarjeta de configuración): ej. "1 Hora
+// gratis" o "20% Descuento Próxima Inscripción". `categoria` es la forma
+// larga ('frecuencia_reservas'...). Regresa '' si falta cualquier dato —
+// nunca revienta si todavía no se ha configurado nada.
+function etiquetaRecompensaFrecuencia(categoria, tipo, valor) {
+  const unidad = UNIDAD_RECOMPENSA_FRECUENCIA[categoria];
+  if (!unidad || !tipo || valor === null || valor === undefined) return '';
+  if (tipo === TIPO_RECOMPENSA_GRATIS) return `1 ${unidad.gratis} gratis`;
+  if (tipo === TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE) return `${Math.round(Number(valor)) || 0}% Descuento ${unidad.descuento}`;
+  return '';
+}
 const CORTESIAS_FRECUENCIA_DEFAULT_LOCAL = {
   activo: false,
   activadaDesde: null,
-  reservas: { meta: null, premio: '' },
-  retas: { meta: null, premio: '' },
-  torneos: { meta: null, premio: '' },
-  clases: { meta: null, premio: '' },
+  reservas: { meta: null, tipo: null, valor: null },
+  retas: { meta: null, tipo: null, valor: null },
+  torneos: { meta: null, tipo: null, valor: null },
+  clases: { meta: null, tipo: null, valor: null },
 };
 function leerCortesiasFrecuenciaLocal() {
   try {
@@ -3192,7 +3246,8 @@ function leerCortesiasFrecuenciaLocal() {
     if (!parsed || typeof parsed !== 'object') return { ...CORTESIAS_FRECUENCIA_DEFAULT_LOCAL };
     const categoria = (c) => ({
       meta: parsed?.[c]?.meta ?? null,
-      premio: typeof parsed?.[c]?.premio === 'string' ? parsed[c].premio : '',
+      tipo: typeof parsed?.[c]?.tipo === 'string' ? parsed[c].tipo : null,
+      valor: Number.isFinite(Number(parsed?.[c]?.valor)) && parsed?.[c]?.valor !== null ? Number(parsed[c].valor) : null,
     });
     return {
       activo: parsed.activo === true,
@@ -31702,13 +31757,17 @@ function DirectorioJugadoresCRM({
   cortesiasFrecuenciaActivas,
   cortesiasFrecuenciaActivadasDesde,
   metaFrecuenciaReservas,
-  premioFrecuenciaReservas,
+  recompensaTipoFrecuenciaReservas,
+  recompensaValorFrecuenciaReservas,
   metaFrecuenciaRetas,
-  premioFrecuenciaRetas,
+  recompensaTipoFrecuenciaRetas,
+  recompensaValorFrecuenciaRetas,
   metaFrecuenciaTorneos,
-  premioFrecuenciaTorneos,
+  recompensaTipoFrecuenciaTorneos,
+  recompensaValorFrecuenciaTorneos,
   metaFrecuenciaClases,
-  premioFrecuenciaClases,
+  recompensaTipoFrecuenciaClases,
+  recompensaValorFrecuenciaClases,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
 }) {
@@ -32738,10 +32797,14 @@ function DirectorioJugadoresCRM({
           productosAutorizadosCortesiaProShop={productosAutorizadosCortesiaProShop}
           productosAutorizadosCortesiaBar={productosAutorizadosCortesiaBar}
           cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivasEfectivo}
-          premioFrecuenciaReservas={premioFrecuenciaReservas}
-          premioFrecuenciaRetas={premioFrecuenciaRetas}
-          premioFrecuenciaTorneos={premioFrecuenciaTorneos}
-          premioFrecuenciaClases={premioFrecuenciaClases}
+          recompensaTipoFrecuenciaReservas={recompensaTipoFrecuenciaReservas}
+          recompensaValorFrecuenciaReservas={recompensaValorFrecuenciaReservas}
+          recompensaTipoFrecuenciaRetas={recompensaTipoFrecuenciaRetas}
+          recompensaValorFrecuenciaRetas={recompensaValorFrecuenciaRetas}
+          recompensaTipoFrecuenciaTorneos={recompensaTipoFrecuenciaTorneos}
+          recompensaValorFrecuenciaTorneos={recompensaValorFrecuenciaTorneos}
+          recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
+          recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
           onCortesiaOtorgada={(resultado) => {
             // FIX DE SEGURIDAD CRÍTICO (Reset Inmediato del Progreso): la
             // barra no espera a que `cargarCortesiasOtorgadas()` vaya y
@@ -33029,68 +33092,132 @@ function ModalMetasCortesia({
   );
 }
 
+// Codifica/decodifica la opción elegida en el `<select>` de recompensa como
+// un solo string `"TIPO:VALOR"` (el `value` nativo de `<option>` solo puede
+// ser texto) — así el cambio de selección entrega de una sola vez el par
+// `{tipo, valor}` completo, nunca un campo suelto a medio llenar.
+function claveOpcionRecompensa(tipo, valor) {
+  return tipo && valor !== null && valor !== undefined ? `${tipo}:${valor}` : '';
+}
+function decodificarOpcionRecompensa(clave) {
+  if (!clave) return { tipo: null, valor: null };
+  const [tipo, valorTxt] = clave.split(':');
+  const valor = Number(valorTxt);
+  return { tipo: tipo || null, valor: Number.isFinite(valor) ? valor : null };
+}
+
 // Modal de configuración del Motor de Cortesías por Frecuencia de Actividad
-// (migracion_v46) — MISMO template que `ModalMetasCortesia` de arriba, pero
-// con 4 categorías (Reservas/Retas/Torneos/Clases) en vez de 2, y meta =
-// CANTIDAD de eventos (no dinero) + recompensa = texto libre (no hay
-// selector de producto: no hay stock que reservar para "1 hora gratis").
-// El switch Master ON/OFF vive en la tarjeta de `SeccionJugadoresFidelizacion`
-// (mismo criterio que el motor de gasto) — este modal solo LEE `activoActual`
-// para reenviarlo sin tocar en `guardar()`, nunca lo edita aquí.
+// (migracion_v46/v47) — MISMO template que `ModalMetasCortesia` de arriba,
+// pero con 4 categorías (Reservas/Retas/Torneos/Clases) en vez de 2, y meta =
+// CANTIDAD de eventos (no dinero). Recompensa ESTRUCTURADA (migracion_v47,
+// reemplaza el texto libre de v46): un `<select>` con las opciones FIJAS de
+// `OPCIONES_RECOMPENSA_FRECUENCIA` por categoría — nunca texto libre, nunca
+// un valor inventado por el club. El switch Master ON/OFF vive en la
+// tarjeta de `SeccionJugadoresFidelizacion` (mismo criterio que el motor de
+// gasto) — este modal solo LEE `activoActual` para reenviarlo sin tocar en
+// `guardar()`, nunca lo edita aquí.
 function ModalCortesiasFrecuencia({
   activoActual,
   metaReservasActual,
-  premioReservasActual,
+  recompensaTipoReservasActual,
+  recompensaValorReservasActual,
   metaRetasActual,
-  premioRetasActual,
+  recompensaTipoRetasActual,
+  recompensaValorRetasActual,
   metaTorneosActual,
-  premioTorneosActual,
+  recompensaTipoTorneosActual,
+  recompensaValorTorneosActual,
   metaClasesActual,
-  premioClasesActual,
+  recompensaTipoClasesActual,
+  recompensaValorClasesActual,
   onClose,
   onGuardar,
   guardando,
 }) {
   const [reservasMeta, setReservasMeta] = useState(() => (metaReservasActual != null ? String(metaReservasActual) : ''));
-  const [reservasPremio, setReservasPremio] = useState(premioReservasActual || '');
+  const [reservasRecompensa, setReservasRecompensa] = useState(claveOpcionRecompensa(recompensaTipoReservasActual, recompensaValorReservasActual));
   const [retasMeta, setRetasMeta] = useState(() => (metaRetasActual != null ? String(metaRetasActual) : ''));
-  const [retasPremio, setRetasPremio] = useState(premioRetasActual || '');
+  const [retasRecompensa, setRetasRecompensa] = useState(claveOpcionRecompensa(recompensaTipoRetasActual, recompensaValorRetasActual));
   const [torneosMeta, setTorneosMeta] = useState(() => (metaTorneosActual != null ? String(metaTorneosActual) : ''));
-  const [torneosPremio, setTorneosPremio] = useState(premioTorneosActual || '');
+  const [torneosRecompensa, setTorneosRecompensa] = useState(claveOpcionRecompensa(recompensaTipoTorneosActual, recompensaValorTorneosActual));
   const [clasesMeta, setClasesMeta] = useState(() => (metaClasesActual != null ? String(metaClasesActual) : ''));
-  const [clasesPremio, setClasesPremio] = useState(premioClasesActual || '');
+  const [clasesRecompensa, setClasesRecompensa] = useState(claveOpcionRecompensa(recompensaTipoClasesActual, recompensaValorClasesActual));
   const [error, setError] = useState('');
 
   const FILAS = [
-    { key: 'reservas', etiqueta: 'Reservas de Cancha', meta: reservasMeta, setMeta: setReservasMeta, premio: reservasPremio, setPremio: setReservasPremio, ejemplo: '10' },
-    { key: 'retas', etiqueta: 'Retas', meta: retasMeta, setMeta: setRetasMeta, premio: retasPremio, setPremio: setRetasPremio, ejemplo: '5' },
-    { key: 'torneos', etiqueta: 'Torneos', meta: torneosMeta, setMeta: setTorneosMeta, premio: torneosPremio, setPremio: setTorneosPremio, ejemplo: '3' },
-    { key: 'clases', etiqueta: 'Clases / Academia', meta: clasesMeta, setMeta: setClasesMeta, premio: clasesPremio, setPremio: setClasesPremio, ejemplo: '8' },
+    {
+      key: 'reservas',
+      categoriaLarga: 'frecuencia_reservas',
+      etiqueta: 'Reservas de Cancha',
+      meta: reservasMeta,
+      setMeta: setReservasMeta,
+      recompensa: reservasRecompensa,
+      setRecompensa: setReservasRecompensa,
+      ejemplo: '10',
+    },
+    {
+      key: 'retas',
+      categoriaLarga: 'frecuencia_retas',
+      etiqueta: 'Retas',
+      meta: retasMeta,
+      setMeta: setRetasMeta,
+      recompensa: retasRecompensa,
+      setRecompensa: setRetasRecompensa,
+      ejemplo: '5',
+    },
+    {
+      key: 'torneos',
+      categoriaLarga: 'frecuencia_torneos',
+      etiqueta: 'Torneos',
+      meta: torneosMeta,
+      setMeta: setTorneosMeta,
+      recompensa: torneosRecompensa,
+      setRecompensa: setTorneosRecompensa,
+      ejemplo: '3',
+    },
+    {
+      key: 'clases',
+      categoriaLarga: 'frecuencia_clases',
+      etiqueta: 'Clases / Academia',
+      meta: clasesMeta,
+      setMeta: setClasesMeta,
+      recompensa: clasesRecompensa,
+      setRecompensa: setClasesRecompensa,
+      ejemplo: '8',
+    },
   ];
 
   async function guardar() {
     setError('');
-    // Validación suave: una categoría con premio de texto pero sin meta (o
-    // viceversa) es casi seguro un olvido del club, no una configuración a
-    // medias intencional — se avisa antes de guardar en vez de guardar algo
-    // incompleto en silencio.
+    // Validación suave: una categoría con recompensa elegida pero sin meta
+    // (o viceversa) es casi seguro un olvido del club, no una configuración
+    // a medias intencional — se avisa antes de guardar en vez de guardar
+    // algo incompleto en silencio.
     for (const fila of FILAS) {
       const tieneMeta = fila.meta.trim() !== '' && Number(fila.meta) > 0;
-      const tienePremio = fila.premio.trim() !== '';
-      if (tieneMeta !== tienePremio) {
+      const tieneRecompensa = fila.recompensa !== '';
+      if (tieneMeta !== tieneRecompensa) {
         return setError(`Completa tanto la meta como la recompensa de "${fila.etiqueta}" (o deja ambas vacías para desactivar solo esa categoría).`);
       }
     }
+    const reservasDecod = decodificarOpcionRecompensa(reservasRecompensa);
+    const retasDecod = decodificarOpcionRecompensa(retasRecompensa);
+    const torneosDecod = decodificarOpcionRecompensa(torneosRecompensa);
+    const clasesDecod = decodificarOpcionRecompensa(clasesRecompensa);
     await onGuardar?.({
       activo: activoActual === true,
       reservasMeta,
-      reservasPremio,
+      reservasTipo: reservasDecod.tipo,
+      reservasValor: reservasDecod.valor,
       retasMeta,
-      retasPremio,
+      retasTipo: retasDecod.tipo,
+      retasValor: retasDecod.valor,
       torneosMeta,
-      torneosPremio,
+      torneosTipo: torneosDecod.tipo,
+      torneosValor: torneosDecod.valor,
       clasesMeta,
-      clasesPremio,
+      clasesTipo: clasesDecod.tipo,
+      clasesValor: clasesDecod.valor,
     });
     onClose();
   }
@@ -33128,13 +33255,14 @@ function ModalCortesiasFrecuencia({
                   />
                 </Campo>
                 <Campo label="Recompensa">
-                  <input
-                    type="text"
-                    value={fila.premio}
-                    onChange={(e) => fila.setPremio(e.target.value)}
-                    className={inputClase}
-                    placeholder="Ej. 1 hora gratis"
-                  />
+                  <select value={fila.recompensa} onChange={(e) => fila.setRecompensa(e.target.value)} className={inputClase}>
+                    <option value="">Selecciona una recompensa…</option>
+                    {OPCIONES_RECOMPENSA_FRECUENCIA[fila.categoriaLarga].map((opcion) => (
+                      <option key={claveOpcionRecompensa(opcion.tipo, opcion.valor)} value={claveOpcionRecompensa(opcion.tipo, opcion.valor)}>
+                        {opcion.etiqueta}
+                      </option>
+                    ))}
+                  </select>
                 </Campo>
               </div>
             </div>
@@ -33589,10 +33717,14 @@ function ModalPerfilJugadorCRM({
   productosAutorizadosCortesiaProShop,
   productosAutorizadosCortesiaBar,
   cortesiasFrecuenciaActivas,
-  premioFrecuenciaReservas,
-  premioFrecuenciaRetas,
-  premioFrecuenciaTorneos,
-  premioFrecuenciaClases,
+  recompensaTipoFrecuenciaReservas,
+  recompensaValorFrecuenciaReservas,
+  recompensaTipoFrecuenciaRetas,
+  recompensaValorFrecuenciaRetas,
+  recompensaTipoFrecuenciaTorneos,
+  recompensaValorFrecuenciaTorneos,
+  recompensaTipoFrecuenciaClases,
+  recompensaValorFrecuenciaClases,
 }) {
   const mostrarToast = useToast();
   const [editandoTelefono, setEditandoTelefono] = useState(false);
@@ -33697,23 +33829,31 @@ function ModalPerfilJugadorCRM({
     return resultado;
   }
 
-  // Etiqueta de cada categoría de frecuencia + su recompensa configurada
-  // (texto libre, prop por categoría — ver `guardarCortesiasFrecuencia` en
-  // `AppInterno`). Ambos vivos en un solo lugar para que la barra, el badge
-  // "Bloqueado" y el modal de confirmación siempre muestren exactamente el
-  // mismo texto.
+  // Etiqueta de cada categoría de frecuencia + su recompensa configurada.
+  // Ambos vivos en un solo lugar para que la barra, el badge "Bloqueado" y
+  // el modal de confirmación siempre muestren exactamente el mismo texto.
+  // RECOMPENSA ESTRUCTURADA (migracion_v47): `tipo`/`valor` (nunca texto
+  // libre, ver `OPCIONES_RECOMPENSA_FRECUENCIA`) se arman en la etiqueta
+  // legible con `etiquetaRecompensaFrecuencia` (función de módulo, mismo
+  // criterio en todos los lugares que la muestran).
   const ETIQUETA_FRECUENCIA = {
     frecuencia_reservas: 'Reservas de Cancha',
     frecuencia_retas: 'Retas',
     frecuencia_torneos: 'Torneos',
     frecuencia_clases: 'Clases/Academia',
   };
-  const premioFrecuenciaPorCategoria = {
-    frecuencia_reservas: premioFrecuenciaReservas,
-    frecuencia_retas: premioFrecuenciaRetas,
-    frecuencia_torneos: premioFrecuenciaTorneos,
-    frecuencia_clases: premioFrecuenciaClases,
+  const recompensaFrecuenciaPorCategoria = {
+    frecuencia_reservas: { tipo: recompensaTipoFrecuenciaReservas, valor: recompensaValorFrecuenciaReservas },
+    frecuencia_retas: { tipo: recompensaTipoFrecuenciaRetas, valor: recompensaValorFrecuenciaRetas },
+    frecuencia_torneos: { tipo: recompensaTipoFrecuenciaTorneos, valor: recompensaValorFrecuenciaTorneos },
+    frecuencia_clases: { tipo: recompensaTipoFrecuenciaClases, valor: recompensaValorFrecuenciaClases },
   };
+  const etiquetaRecompensaPorCategoria = Object.fromEntries(
+    Object.keys(ETIQUETA_FRECUENCIA).map((cat) => [
+      cat,
+      etiquetaRecompensaFrecuencia(cat, recompensaFrecuenciaPorCategoria[cat].tipo, recompensaFrecuenciaPorCategoria[cat].valor),
+    ])
+  );
   const datosFrecuenciaPorCategoria = {
     frecuencia_reservas: perfil.cortesiaFrecuenciaReservas,
     frecuencia_retas: perfil.cortesiaFrecuenciaRetas,
@@ -33955,7 +34095,7 @@ function ModalPerfilJugadorCRM({
                   .map((cat) => (
                     <BarraProgresoCortesia
                       key={cat}
-                      etiqueta={`${ETIQUETA_FRECUENCIA[cat]}${premioFrecuenciaPorCategoria[cat] ? ` · ${premioFrecuenciaPorCategoria[cat]}` : ''}`}
+                      etiqueta={`${ETIQUETA_FRECUENCIA[cat]}${etiquetaRecompensaPorCategoria[cat] ? ` · ${etiquetaRecompensaPorCategoria[cat]}` : ''}`}
                       progreso={datosFrecuenciaPorCategoria[cat].progreso}
                       meta={datosFrecuenciaPorCategoria[cat].meta}
                       lista={datosFrecuenciaPorCategoria[cat].lista}
@@ -34004,10 +34144,12 @@ function ModalPerfilJugadorCRM({
     )}
     {categoriaFrecuenciaAConfirmar && (
       // Confirmación LIGERA (sin selector de producto, a diferencia de
-      // `ModalCanjearCortesia`) — la recompensa es texto libre que el staff
-      // aplica manualmente al cobrar (ver comentario de scoping en
-      // `otorgarCortesiaFrecuenciaCRM`: no existe un motor genérico de
-      // descuentos en el checkout de Smart POS/Portal para auto-aplicarla).
+      // `ModalCanjearCortesia`) — la recompensa es estructurada
+      // (`tipo`/`valor`, migracion_v47, elegida de un <select> con opciones
+      // fijas) pero el staff la sigue aplicando manualmente al cobrar (ver
+      // comentario de scoping en `otorgarCortesiaFrecuenciaCRM`: no existe
+      // todavía un motor genérico de descuentos en el checkout de Smart
+      // POS/Portal que la aplique solo).
       <ModalShell
         titulo="Otorgar Cortesía"
         subtitulo={`${perfil.nombre} · ${ETIQUETA_FRECUENCIA[categoriaFrecuenciaAConfirmar]}`}
@@ -34019,8 +34161,13 @@ function ModalPerfilJugadorCRM({
           <div className="rounded-xl border border-amber-300 bg-amber-50 p-3">
             <p className="text-xs font-semibold text-amber-700">Recompensa configurada</p>
             <p className="mt-1 text-sm font-bold text-slate-900">
-              {premioFrecuenciaPorCategoria[categoriaFrecuenciaAConfirmar] || 'Sin descripción — revisa la configuración del club.'}
+              {etiquetaRecompensaPorCategoria[categoriaFrecuenciaAConfirmar] || 'Sin recompensa configurada — revisa la configuración del club.'}
             </p>
+            {recompensaFrecuenciaPorCategoria[categoriaFrecuenciaAConfirmar]?.tipo === TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE && (
+              <p className="mt-1 text-[11px] text-amber-700">
+                Descuento a aplicar en el cobro: {recompensaFrecuenciaPorCategoria[categoriaFrecuenciaAConfirmar]?.valor}%.
+              </p>
+            )}
           </div>
           <p className="text-xs text-slate-500">
             Esto registra el canje y reinicia el contador de {ETIQUETA_FRECUENCIA[categoriaFrecuenciaAConfirmar]} a 0 de inmediato. La
@@ -34085,13 +34232,17 @@ function ModuloJugadores({
   cortesiasFrecuenciaActivas,
   cortesiasFrecuenciaActivadasDesde,
   metaFrecuenciaReservas,
-  premioFrecuenciaReservas,
+  recompensaTipoFrecuenciaReservas,
+  recompensaValorFrecuenciaReservas,
   metaFrecuenciaRetas,
-  premioFrecuenciaRetas,
+  recompensaTipoFrecuenciaRetas,
+  recompensaValorFrecuenciaRetas,
   metaFrecuenciaTorneos,
-  premioFrecuenciaTorneos,
+  recompensaTipoFrecuenciaTorneos,
+  recompensaValorFrecuenciaTorneos,
   metaFrecuenciaClases,
-  premioFrecuenciaClases,
+  recompensaTipoFrecuenciaClases,
+  recompensaValorFrecuenciaClases,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
 }) {
@@ -34163,13 +34314,17 @@ function ModuloJugadores({
           cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivas}
           cortesiasFrecuenciaActivadasDesde={cortesiasFrecuenciaActivadasDesde}
           metaFrecuenciaReservas={metaFrecuenciaReservas}
-          premioFrecuenciaReservas={premioFrecuenciaReservas}
+          recompensaTipoFrecuenciaReservas={recompensaTipoFrecuenciaReservas}
+          recompensaValorFrecuenciaReservas={recompensaValorFrecuenciaReservas}
           metaFrecuenciaRetas={metaFrecuenciaRetas}
-          premioFrecuenciaRetas={premioFrecuenciaRetas}
+          recompensaTipoFrecuenciaRetas={recompensaTipoFrecuenciaRetas}
+          recompensaValorFrecuenciaRetas={recompensaValorFrecuenciaRetas}
           metaFrecuenciaTorneos={metaFrecuenciaTorneos}
-          premioFrecuenciaTorneos={premioFrecuenciaTorneos}
+          recompensaTipoFrecuenciaTorneos={recompensaTipoFrecuenciaTorneos}
+          recompensaValorFrecuenciaTorneos={recompensaValorFrecuenciaTorneos}
           metaFrecuenciaClases={metaFrecuenciaClases}
-          premioFrecuenciaClases={premioFrecuenciaClases}
+          recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
+          recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
           onGuardarCortesiasFrecuencia={onGuardarCortesiasFrecuencia}
           guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
         />
@@ -34863,13 +35018,17 @@ function ModuloConfiguracionClub({
   guardandoMetasCortesia,
   cortesiasFrecuenciaActivas,
   metaFrecuenciaReservas,
-  premioFrecuenciaReservas,
+  recompensaTipoFrecuenciaReservas,
+  recompensaValorFrecuenciaReservas,
   metaFrecuenciaRetas,
-  premioFrecuenciaRetas,
+  recompensaTipoFrecuenciaRetas,
+  recompensaValorFrecuenciaRetas,
   metaFrecuenciaTorneos,
-  premioFrecuenciaTorneos,
+  recompensaTipoFrecuenciaTorneos,
+  recompensaValorFrecuenciaTorneos,
   metaFrecuenciaClases,
-  premioFrecuenciaClases,
+  recompensaTipoFrecuenciaClases,
+  recompensaValorFrecuenciaClases,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
   tarifasHorarios,
@@ -34931,13 +35090,17 @@ function ModuloConfiguracionClub({
           guardandoMetasCortesia={guardandoMetasCortesia}
           cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivas}
           metaFrecuenciaReservas={metaFrecuenciaReservas}
-          premioFrecuenciaReservas={premioFrecuenciaReservas}
+          recompensaTipoFrecuenciaReservas={recompensaTipoFrecuenciaReservas}
+          recompensaValorFrecuenciaReservas={recompensaValorFrecuenciaReservas}
           metaFrecuenciaRetas={metaFrecuenciaRetas}
-          premioFrecuenciaRetas={premioFrecuenciaRetas}
+          recompensaTipoFrecuenciaRetas={recompensaTipoFrecuenciaRetas}
+          recompensaValorFrecuenciaRetas={recompensaValorFrecuenciaRetas}
           metaFrecuenciaTorneos={metaFrecuenciaTorneos}
-          premioFrecuenciaTorneos={premioFrecuenciaTorneos}
+          recompensaTipoFrecuenciaTorneos={recompensaTipoFrecuenciaTorneos}
+          recompensaValorFrecuenciaTorneos={recompensaValorFrecuenciaTorneos}
           metaFrecuenciaClases={metaFrecuenciaClases}
-          premioFrecuenciaClases={premioFrecuenciaClases}
+          recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
+          recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
           onGuardarCortesiasFrecuencia={onGuardarCortesiasFrecuencia}
           guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
         />
@@ -35342,13 +35505,17 @@ function SeccionJugadoresFidelizacion({
   guardandoMetasCortesia,
   cortesiasFrecuenciaActivas,
   metaFrecuenciaReservas,
-  premioFrecuenciaReservas,
+  recompensaTipoFrecuenciaReservas,
+  recompensaValorFrecuenciaReservas,
   metaFrecuenciaRetas,
-  premioFrecuenciaRetas,
+  recompensaTipoFrecuenciaRetas,
+  recompensaValorFrecuenciaRetas,
   metaFrecuenciaTorneos,
-  premioFrecuenciaTorneos,
+  recompensaTipoFrecuenciaTorneos,
+  recompensaValorFrecuenciaTorneos,
   metaFrecuenciaClases,
-  premioFrecuenciaClases,
+  recompensaTipoFrecuenciaClases,
+  recompensaValorFrecuenciaClases,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
 }) {
@@ -35370,13 +35537,17 @@ function SeccionJugadoresFidelizacion({
     onGuardarCortesiasFrecuencia?.({
       activo: !activoFrecuencia,
       reservasMeta: metaFrecuenciaReservas,
-      reservasPremio: premioFrecuenciaReservas,
+      reservasTipo: recompensaTipoFrecuenciaReservas,
+      reservasValor: recompensaValorFrecuenciaReservas,
       retasMeta: metaFrecuenciaRetas,
-      retasPremio: premioFrecuenciaRetas,
+      retasTipo: recompensaTipoFrecuenciaRetas,
+      retasValor: recompensaValorFrecuenciaRetas,
       torneosMeta: metaFrecuenciaTorneos,
-      torneosPremio: premioFrecuenciaTorneos,
+      torneosTipo: recompensaTipoFrecuenciaTorneos,
+      torneosValor: recompensaValorFrecuenciaTorneos,
       clasesMeta: metaFrecuenciaClases,
-      clasesPremio: premioFrecuenciaClases,
+      clasesTipo: recompensaTipoFrecuenciaClases,
+      clasesValor: recompensaValorFrecuenciaClases,
     });
   }
 
@@ -35516,15 +35687,23 @@ function SeccionJugadoresFidelizacion({
           <div className="min-w-0">
             <p className="text-xs font-bold text-slate-700">
               {[
-                metaFrecuenciaReservas ? `Reservas: ${metaFrecuenciaReservas}` : null,
-                metaFrecuenciaRetas ? `Retas: ${metaFrecuenciaRetas}` : null,
-                metaFrecuenciaTorneos ? `Torneos: ${metaFrecuenciaTorneos}` : null,
-                metaFrecuenciaClases ? `Clases: ${metaFrecuenciaClases}` : null,
+                metaFrecuenciaReservas
+                  ? `Reservas: ${metaFrecuenciaReservas} (${etiquetaRecompensaFrecuencia('frecuencia_reservas', recompensaTipoFrecuenciaReservas, recompensaValorFrecuenciaReservas) || 'sin recompensa'})`
+                  : null,
+                metaFrecuenciaRetas
+                  ? `Retas: ${metaFrecuenciaRetas} (${etiquetaRecompensaFrecuencia('frecuencia_retas', recompensaTipoFrecuenciaRetas, recompensaValorFrecuenciaRetas) || 'sin recompensa'})`
+                  : null,
+                metaFrecuenciaTorneos
+                  ? `Torneos: ${metaFrecuenciaTorneos} (${etiquetaRecompensaFrecuencia('frecuencia_torneos', recompensaTipoFrecuenciaTorneos, recompensaValorFrecuenciaTorneos) || 'sin recompensa'})`
+                  : null,
+                metaFrecuenciaClases
+                  ? `Clases: ${metaFrecuenciaClases} (${etiquetaRecompensaFrecuencia('frecuencia_clases', recompensaTipoFrecuenciaClases, recompensaValorFrecuenciaClases) || 'sin recompensa'})`
+                  : null,
               ]
                 .filter(Boolean)
                 .join(' · ') || 'Sin categorías configuradas todavía'}
             </p>
-            <p className="mt-0.5 truncate text-[11px] text-slate-500">Meta de eventos por categoría · toca "Editar Metas" para la recompensa.</p>
+            <p className="mt-0.5 truncate text-[11px] text-slate-500">Meta de eventos y recompensa por categoría · toca "Editar Metas" para cambiarlas.</p>
           </div>
           <BotonSecundario onClick={() => setMostrarModalFrecuencia(true)} className="shrink-0 px-3 py-1.5 text-xs">
             <Gift size={13} /> Editar Metas
@@ -35536,13 +35715,17 @@ function SeccionJugadoresFidelizacion({
         <ModalCortesiasFrecuencia
           activoActual={cortesiasFrecuenciaActivas}
           metaReservasActual={metaFrecuenciaReservas}
-          premioReservasActual={premioFrecuenciaReservas}
+          recompensaTipoReservasActual={recompensaTipoFrecuenciaReservas}
+          recompensaValorReservasActual={recompensaValorFrecuenciaReservas}
           metaRetasActual={metaFrecuenciaRetas}
-          premioRetasActual={premioFrecuenciaRetas}
+          recompensaTipoRetasActual={recompensaTipoFrecuenciaRetas}
+          recompensaValorRetasActual={recompensaValorFrecuenciaRetas}
           metaTorneosActual={metaFrecuenciaTorneos}
-          premioTorneosActual={premioFrecuenciaTorneos}
+          recompensaTipoTorneosActual={recompensaTipoFrecuenciaTorneos}
+          recompensaValorTorneosActual={recompensaValorFrecuenciaTorneos}
           metaClasesActual={metaFrecuenciaClases}
-          premioClasesActual={premioFrecuenciaClases}
+          recompensaTipoClasesActual={recompensaTipoFrecuenciaClases}
+          recompensaValorClasesActual={recompensaValorFrecuenciaClases}
           onClose={() => setMostrarModalFrecuencia(false)}
           onGuardar={onGuardarCortesiasFrecuencia}
           guardando={guardandoCortesiasFrecuencia}
@@ -41888,25 +42071,34 @@ function AppInterno() {
   const [guardandoMetasCortesia, setGuardandoMetasCortesia] = useState(false);
 
   // Cortesías por Frecuencia de Actividad (Configuración del Club →
-  // "Jugadores & Fidelización", migracion_v46) — SEGUNDO Motor de
+  // "Jugadores & Fidelización", migracion_v46/v47) — SEGUNDO Motor de
   // Cortesías, independiente del de gasto de arriba. `null` en una meta =
   // el club no configuró esa categoría todavía (sin default numérico: a
   // diferencia del motor de gasto, aquí no hay un "10 reservas" razonable
   // para inventar por el club). `activo` arranca `false` — módulo nuevo,
-  // nadie lo ve activo hasta que el club lo prenda a propósito.
+  // nadie lo ve activo hasta que el club lo prenda a propósito. Recompensa
+  // ESTRUCTURADA (migracion_v47, reemplaza el texto libre de v46): dos
+  // estados por categoría — `recompensaTipoFrecuencia<Categoria>`
+  // ('GRATIS' | 'DESCUENTO_PORCENTAJE') y `recompensaValorFrecuencia<Categoria>`
+  // (0-100), elegidos de un <select> con opciones fijas
+  // (`OPCIONES_RECOMPENSA_FRECUENCIA`) — nunca texto libre.
   const cortesiasFrecuenciaLocalIniciales = leerCortesiasFrecuenciaLocal();
   const [cortesiasFrecuenciaActivas, setCortesiasFrecuenciaActivas] = useState(cortesiasFrecuenciaLocalIniciales.activo === true);
   const [cortesiasFrecuenciaActivadasDesde, setCortesiasFrecuenciaActivadasDesde] = useState(
     cortesiasFrecuenciaLocalIniciales.activadaDesde ?? null
   );
   const [metaFrecuenciaReservas, setMetaFrecuenciaReservas] = useState(cortesiasFrecuenciaLocalIniciales.reservas.meta ?? null);
-  const [premioFrecuenciaReservas, setPremioFrecuenciaReservas] = useState(cortesiasFrecuenciaLocalIniciales.reservas.premio || '');
+  const [recompensaTipoFrecuenciaReservas, setRecompensaTipoFrecuenciaReservas] = useState(cortesiasFrecuenciaLocalIniciales.reservas.tipo ?? null);
+  const [recompensaValorFrecuenciaReservas, setRecompensaValorFrecuenciaReservas] = useState(cortesiasFrecuenciaLocalIniciales.reservas.valor ?? null);
   const [metaFrecuenciaRetas, setMetaFrecuenciaRetas] = useState(cortesiasFrecuenciaLocalIniciales.retas.meta ?? null);
-  const [premioFrecuenciaRetas, setPremioFrecuenciaRetas] = useState(cortesiasFrecuenciaLocalIniciales.retas.premio || '');
+  const [recompensaTipoFrecuenciaRetas, setRecompensaTipoFrecuenciaRetas] = useState(cortesiasFrecuenciaLocalIniciales.retas.tipo ?? null);
+  const [recompensaValorFrecuenciaRetas, setRecompensaValorFrecuenciaRetas] = useState(cortesiasFrecuenciaLocalIniciales.retas.valor ?? null);
   const [metaFrecuenciaTorneos, setMetaFrecuenciaTorneos] = useState(cortesiasFrecuenciaLocalIniciales.torneos.meta ?? null);
-  const [premioFrecuenciaTorneos, setPremioFrecuenciaTorneos] = useState(cortesiasFrecuenciaLocalIniciales.torneos.premio || '');
+  const [recompensaTipoFrecuenciaTorneos, setRecompensaTipoFrecuenciaTorneos] = useState(cortesiasFrecuenciaLocalIniciales.torneos.tipo ?? null);
+  const [recompensaValorFrecuenciaTorneos, setRecompensaValorFrecuenciaTorneos] = useState(cortesiasFrecuenciaLocalIniciales.torneos.valor ?? null);
   const [metaFrecuenciaClases, setMetaFrecuenciaClases] = useState(cortesiasFrecuenciaLocalIniciales.clases.meta ?? null);
-  const [premioFrecuenciaClases, setPremioFrecuenciaClases] = useState(cortesiasFrecuenciaLocalIniciales.clases.premio || '');
+  const [recompensaTipoFrecuenciaClases, setRecompensaTipoFrecuenciaClases] = useState(cortesiasFrecuenciaLocalIniciales.clases.tipo ?? null);
+  const [recompensaValorFrecuenciaClases, setRecompensaValorFrecuenciaClases] = useState(cortesiasFrecuenciaLocalIniciales.clases.valor ?? null);
   const [guardandoCortesiasFrecuencia, setGuardandoCortesiasFrecuencia] = useState(false);
 
   // Configuración del Club → "Portal & Tienda Web" → Add-ons (módulo nuevo):
@@ -42711,15 +42903,26 @@ function AppInterno() {
   const guardarCortesiasFrecuencia = useCallback(
     async (nuevaConfig) => {
       const numOrNull = (v) => (Number(v) > 0 ? Number(v) : null);
+      // Recompensa ESTRUCTURADA (migracion_v47): `tipo`/`valor` llegan ya
+      // elegidos de una de las opciones fijas de `OPCIONES_RECOMPENSA_FRECUENCIA`
+      // (`ModalCortesiasFrecuencia`), nunca texto libre — aquí solo se
+      // sanea el tipo contra el enum conocido y el valor a un número 0-100
+      // (o `null` si la categoría se dejó sin recompensa).
+      const tipoOrNull = (v) => (v === TIPO_RECOMPENSA_GRATIS || v === TIPO_RECOMPENSA_DESCUENTO_PORCENTAJE ? v : null);
+      const valorOrNull = (v) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Math.max(0, Math.min(100, Number(v))) : null);
       const activo = nuevaConfig?.activo === true;
       const reservasMeta = numOrNull(nuevaConfig?.reservasMeta);
-      const reservasPremio = (nuevaConfig?.reservasPremio || '').trim();
+      const reservasTipo = tipoOrNull(nuevaConfig?.reservasTipo);
+      const reservasValor = valorOrNull(nuevaConfig?.reservasValor);
       const retasMeta = numOrNull(nuevaConfig?.retasMeta);
-      const retasPremio = (nuevaConfig?.retasPremio || '').trim();
+      const retasTipo = tipoOrNull(nuevaConfig?.retasTipo);
+      const retasValor = valorOrNull(nuevaConfig?.retasValor);
       const torneosMeta = numOrNull(nuevaConfig?.torneosMeta);
-      const torneosPremio = (nuevaConfig?.torneosPremio || '').trim();
+      const torneosTipo = tipoOrNull(nuevaConfig?.torneosTipo);
+      const torneosValor = valorOrNull(nuevaConfig?.torneosValor);
       const clasesMeta = numOrNull(nuevaConfig?.clasesMeta);
-      const clasesPremio = (nuevaConfig?.clasesPremio || '').trim();
+      const clasesTipo = tipoOrNull(nuevaConfig?.clasesTipo);
+      const clasesValor = valorOrNull(nuevaConfig?.clasesValor);
       // Blindaje "sin acumulados fantasma" — ver el comentario extenso de
       // `guardarMetasCortesia`, idéntico razonamiento: el piso solo se
       // mueve en la transición exacta `false -> true` del switch, nunca al
@@ -42730,20 +42933,24 @@ function AppInterno() {
       setCortesiasFrecuenciaActivas(activo);
       setCortesiasFrecuenciaActivadasDesde(activadaDesde);
       setMetaFrecuenciaReservas(reservasMeta);
-      setPremioFrecuenciaReservas(reservasPremio);
+      setRecompensaTipoFrecuenciaReservas(reservasTipo);
+      setRecompensaValorFrecuenciaReservas(reservasValor);
       setMetaFrecuenciaRetas(retasMeta);
-      setPremioFrecuenciaRetas(retasPremio);
+      setRecompensaTipoFrecuenciaRetas(retasTipo);
+      setRecompensaValorFrecuenciaRetas(retasValor);
       setMetaFrecuenciaTorneos(torneosMeta);
-      setPremioFrecuenciaTorneos(torneosPremio);
+      setRecompensaTipoFrecuenciaTorneos(torneosTipo);
+      setRecompensaValorFrecuenciaTorneos(torneosValor);
       setMetaFrecuenciaClases(clasesMeta);
-      setPremioFrecuenciaClases(clasesPremio);
+      setRecompensaTipoFrecuenciaClases(clasesTipo);
+      setRecompensaValorFrecuenciaClases(clasesValor);
       guardarCortesiasFrecuenciaLocal({
         activo,
         activadaDesde,
-        reservas: { meta: reservasMeta, premio: reservasPremio },
-        retas: { meta: retasMeta, premio: retasPremio },
-        torneos: { meta: torneosMeta, premio: torneosPremio },
-        clases: { meta: clasesMeta, premio: clasesPremio },
+        reservas: { meta: reservasMeta, tipo: reservasTipo, valor: reservasValor },
+        retas: { meta: retasMeta, tipo: retasTipo, valor: retasValor },
+        torneos: { meta: torneosMeta, tipo: torneosTipo, valor: torneosValor },
+        clases: { meta: clasesMeta, tipo: clasesTipo, valor: clasesValor },
       });
       try {
         if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión — no se puede guardar en Supabase todavía.');
@@ -42754,25 +42961,33 @@ function AppInterno() {
             cortesias_frecuencia_activas: activo,
             cortesias_frecuencia_activadas_desde: activadaDesde,
             meta_frecuencia_reservas: reservasMeta,
-            premio_frecuencia_reservas: reservasPremio || null,
+            recompensa_tipo_frecuencia_reservas: reservasTipo,
+            recompensa_valor_frecuencia_reservas: reservasValor,
             meta_frecuencia_retas: retasMeta,
-            premio_frecuencia_retas: retasPremio || null,
+            recompensa_tipo_frecuencia_retas: retasTipo,
+            recompensa_valor_frecuencia_retas: retasValor,
             meta_frecuencia_torneos: torneosMeta,
-            premio_frecuencia_torneos: torneosPremio || null,
+            recompensa_tipo_frecuencia_torneos: torneosTipo,
+            recompensa_valor_frecuencia_torneos: torneosValor,
             meta_frecuencia_clases: clasesMeta,
-            premio_frecuencia_clases: clasesPremio || null,
+            recompensa_tipo_frecuencia_clases: clasesTipo,
+            recompensa_valor_frecuencia_clases: clasesValor,
           },
           [
             'cortesias_frecuencia_activas',
             'cortesias_frecuencia_activadas_desde',
             'meta_frecuencia_reservas',
-            'premio_frecuencia_reservas',
+            'recompensa_tipo_frecuencia_reservas',
+            'recompensa_valor_frecuencia_reservas',
             'meta_frecuencia_retas',
-            'premio_frecuencia_retas',
+            'recompensa_tipo_frecuencia_retas',
+            'recompensa_valor_frecuencia_retas',
             'meta_frecuencia_torneos',
-            'premio_frecuencia_torneos',
+            'recompensa_tipo_frecuencia_torneos',
+            'recompensa_valor_frecuencia_torneos',
             'meta_frecuencia_clases',
-            'premio_frecuencia_clases',
+            'recompensa_tipo_frecuencia_clases',
+            'recompensa_valor_frecuencia_clases',
           ]
         );
         if (error) throw error;
@@ -44158,13 +44373,17 @@ function AppInterno() {
                 cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivas}
                 cortesiasFrecuenciaActivadasDesde={cortesiasFrecuenciaActivadasDesde}
                 metaFrecuenciaReservas={metaFrecuenciaReservas}
-                premioFrecuenciaReservas={premioFrecuenciaReservas}
+                recompensaTipoFrecuenciaReservas={recompensaTipoFrecuenciaReservas}
+                recompensaValorFrecuenciaReservas={recompensaValorFrecuenciaReservas}
                 metaFrecuenciaRetas={metaFrecuenciaRetas}
-                premioFrecuenciaRetas={premioFrecuenciaRetas}
+                recompensaTipoFrecuenciaRetas={recompensaTipoFrecuenciaRetas}
+                recompensaValorFrecuenciaRetas={recompensaValorFrecuenciaRetas}
                 metaFrecuenciaTorneos={metaFrecuenciaTorneos}
-                premioFrecuenciaTorneos={premioFrecuenciaTorneos}
+                recompensaTipoFrecuenciaTorneos={recompensaTipoFrecuenciaTorneos}
+                recompensaValorFrecuenciaTorneos={recompensaValorFrecuenciaTorneos}
                 metaFrecuenciaClases={metaFrecuenciaClases}
-                premioFrecuenciaClases={premioFrecuenciaClases}
+                recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
+                recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
                 onGuardarCortesiasFrecuencia={guardarCortesiasFrecuencia}
                 guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
               />
@@ -44301,13 +44520,17 @@ function AppInterno() {
                 guardandoMetasCortesia={guardandoMetasCortesia}
                 cortesiasFrecuenciaActivas={cortesiasFrecuenciaActivas}
                 metaFrecuenciaReservas={metaFrecuenciaReservas}
-                premioFrecuenciaReservas={premioFrecuenciaReservas}
+                recompensaTipoFrecuenciaReservas={recompensaTipoFrecuenciaReservas}
+                recompensaValorFrecuenciaReservas={recompensaValorFrecuenciaReservas}
                 metaFrecuenciaRetas={metaFrecuenciaRetas}
-                premioFrecuenciaRetas={premioFrecuenciaRetas}
+                recompensaTipoFrecuenciaRetas={recompensaTipoFrecuenciaRetas}
+                recompensaValorFrecuenciaRetas={recompensaValorFrecuenciaRetas}
                 metaFrecuenciaTorneos={metaFrecuenciaTorneos}
-                premioFrecuenciaTorneos={premioFrecuenciaTorneos}
+                recompensaTipoFrecuenciaTorneos={recompensaTipoFrecuenciaTorneos}
+                recompensaValorFrecuenciaTorneos={recompensaValorFrecuenciaTorneos}
                 metaFrecuenciaClases={metaFrecuenciaClases}
-                premioFrecuenciaClases={premioFrecuenciaClases}
+                recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
+                recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
                 onGuardarCortesiasFrecuencia={guardarCortesiasFrecuencia}
                 guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
                 tarifasHorarios={tarifasHorarios}
