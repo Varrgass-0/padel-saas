@@ -9227,7 +9227,7 @@ function ModalNuevoProducto({
 
 /* ---------------- Ticket / Recibo digital ---------------- */
 
-function ModalTicket({ venta, onClose }) {
+function ModalTicket({ venta, onClose, nombreClub }) {
   // Generación e Impresión de Tickets Individuales (mejora — Dividir Cuenta
   // con CRM): `ticketActivo` es `null` (ticket General: todos los
   // artículos, total completo — igual que siempre) o el índice dentro de
@@ -9290,7 +9290,14 @@ function ModalTicket({ venta, onClose }) {
 
       <div id="ticket-imprimible" className="space-y-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 font-mono text-xs text-slate-800">
         <div className="text-center">
-          <p className="text-sm font-black tracking-wide text-slate-900">SMASH PÁDEL CLUB</p>
+          {/* Nombre del club en el ticket — antes decía "SMASH PÁDEL CLUB" fijo
+              (roto para cualquier OTRO club que use ClubOS); ahora lee
+              `configuracion_club.nombre` (prop `nombreClub`, mismo fallback a
+              "ClubOS" que ya usa el resto de la app cuando el club todavía no
+              lo capturó). `uppercase` (CSS) en vez de escribirlo en
+              mayúsculas a mano, para que se vea igual sin importar cómo el
+              club haya escrito su nombre. */}
+          <p className="text-sm font-black uppercase tracking-wide text-slate-900">{nombreClub || 'ClubOS'}</p>
           <p className="text-slate-500">
             {formatoFechaLarga(venta.fecha)} · {venta.horaEmision}
           </p>
@@ -10724,6 +10731,7 @@ function ModuloSmartPOS({
   pagoAAbrirEnPOS,
   onPagoAAbrirEnPOSConsumido,
   onCortesiaCanjeada,
+  nombreClub,
 }) {
   const mostrarToast = useToast();
 
@@ -13782,7 +13790,7 @@ function ModuloSmartPOS({
         />
       )}
 
-      {ventaFinalizada && <ModalTicket venta={ventaFinalizada} onClose={() => setVentaFinalizada(null)} />}
+      {ventaFinalizada && <ModalTicket venta={ventaFinalizada} onClose={() => setVentaFinalizada(null)} nombreClub={nombreClub} />}
 
       {grupoALiquidar && (
         <ModalLiquidarCuenta
@@ -44580,6 +44588,11 @@ function AppInterno() {
                 pagoAAbrirEnPOS={pagoAAbrirEnPOS}
                 onPagoAAbrirEnPOSConsumido={() => setPagoAAbrirEnPOS(null)}
                 onCortesiaCanjeada={limpiarAlertasCortesia}
+                // Ticket de Venta (ModalTicket): nombre real del club activo
+                // en vez de "Smash Pádel Club" fijo — mismo patrón/fallback a
+                // "ClubOS" que ya usa el resto de la app (ver `nombreClubExport`
+                // en Analytics BI/Contabilidad).
+                nombreClub={(configClub?.nombre || '').trim() || 'ClubOS'}
               />
             ) : moduloActivo === 'erp' ? (
               <ModuloERPInventario
