@@ -2998,6 +2998,14 @@ const CONFIG_CLUB_DEFAULT = {
   duracionReservaMinutos: 60,
   duracionClaseMinutos: 60,
   tarifaBaseHora: 0,
+  // Switch ON/OFF de "Tarifas y Franjas Horarias" (Configuración del Club →
+  // General) — `true` por defecto (Arquitectura Flexible: un club que nunca
+  // toca este ajuste sigue viendo el comportamiento de siempre, franjas
+  // aplicadas si las configuró). En OFF, `calcularPrecioReserva` deja de
+  // consultar las franjas (usa siempre la Tarifa Base/precio de cancha) pero
+  // las franjas y sus precios NUNCA se tocan/borran — quedan intactas en
+  // Supabase/estado para cuando el club vuelva a encenderlo.
+  tarifasHabilitadas: true,
 };
 // Opciones fijas del selector de "Duración de Bloques/Turnos" — 60/90/120
 // min, tal como se pidió (1h / 1h30 / 2h).
@@ -3041,6 +3049,7 @@ function leerConfigClubLocal() {
       duracionReservaMinutos: Number(parsed.duracionReservaMinutos) > 0 ? Number(parsed.duracionReservaMinutos) : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
       duracionClaseMinutos: Number(parsed.duracionClaseMinutos) > 0 ? Number(parsed.duracionClaseMinutos) : CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
       tarifaBaseHora: Number(parsed.tarifaBaseHora) > 0 ? Number(parsed.tarifaBaseHora) : CONFIG_CLUB_DEFAULT.tarifaBaseHora,
+      tarifasHabilitadas: parsed.tarifasHabilitadas !== false,
     };
   } catch (_e) {
     return { ...CONFIG_CLUB_DEFAULT };
@@ -3249,6 +3258,10 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
       // "Tarifas y Franjas Horarias") — mismo criterio que las líneas de
       // arriba: este modal no la edita, se reenvía TAL CUAL para no pisarla.
       tarifaBaseHora: configActual.tarifaBaseHora || CONFIG_CLUB_DEFAULT.tarifaBaseHora,
+      // Switch ON/OFF de "Tarifas y Franjas Horarias" — este modal no lo
+      // edita (ver "Configuración del Club" → "General" →
+      // `SeccionTarifasFranjas`), se reenvía TAL CUAL para no pisarlo.
+      tarifasHabilitadas: configActual.tarifasHabilitadas !== false,
     };
     onClose();
     await onGuardar?.(nuevaConfig);
@@ -5709,6 +5722,11 @@ function ModalNuevaReserva({
   // (`configuracion_club.tarifa_base_hora`, `0` = "sin Tarifa Base propia").
   tarifasHorarios = [],
   tarifaBaseHora = 0,
+  // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora) — `true` por
+  // defecto (Activado, comportamiento de siempre). En OFF, `tarifasDelDia`
+  // se queda vacía a propósito para que `calcularPrecioReserva` caiga
+  // siempre a `tarifaBaseHora`/precio de cancha, SIN tocar `tarifasHorarios`.
+  tarifasHabilitadas = true,
 }) {
   const toast = useToast();
   const canchasDisponibles = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
@@ -5789,9 +5807,10 @@ function ModalNuevaReserva({
   // la `fecha` elegida (`Date.prototype.getDay()`, mismo criterio que
   // `diaSemanaDeFecha`).
   const tarifasDelDia = useMemo(() => {
+    if (!tarifasHabilitadas) return [];
     const dow = fecha ? new Date(`${fecha}T12:00:00`).getDay() : null;
     return dow === null ? [] : tarifasActivasDelDia(tarifasHorarios, dow);
-  }, [tarifasHorarios, fecha]);
+  }, [tarifasHorarios, fecha, tarifasHabilitadas]);
 
   // Monto = franja de "Tarifas y Franjas Horarias" que cubra por completo el
   // bloque de Hora Inicio–Hora Fin (si hay una configurada para esa hora y
@@ -6829,6 +6848,7 @@ function ModuloParrillaOperativa({
           duracionReservaMinutos={duracionReservaMinutos}
           tarifasHorarios={tarifasHorarios}
           tarifaBaseHora={Number(configClub?.tarifaBaseHora) || 0}
+          tarifasHabilitadas={configClub?.tarifasHabilitadas !== false}
           onCreada={(reserva, cancha) => {
             upsertReserva(reserva);
             onReservaParaCobro?.(reserva, cancha);
@@ -17077,8 +17097,8 @@ function ModuloContabilidadCompras({
             id: `${r.id}-addon-${i}`,
             idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
             hora: r.hora_inicio || '—',
-            concepto: `${a?.nombre || 'Add-on'} — ${etiquetaReserva}`,
-            canal: 'Tienda Web (add-on de reserva)',
+            concepto: `${a?.nombre || 'Quick Sell'} — ${etiquetaReserva}`,
+            canal: 'Tienda Web (Quick Sell de reserva)',
             metodoPago: r.metodo_pago || '—',
             monto: Number(a?.subtotal) || 0,
           }));
@@ -17088,8 +17108,8 @@ function ModuloContabilidadCompras({
             id: `${r.id}-addons`,
             idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
             hora: r.hora_inicio || '—',
-            concepto: `Add-ons — ${etiquetaReserva}`,
-            canal: 'Tienda Web (add-on de reserva)',
+            concepto: `Quick Sell — ${etiquetaReserva}`,
+            canal: 'Tienda Web (Quick Sell de reserva)',
             metodoPago: r.metodo_pago || '—',
             monto: Number(r.monto_addons) || 0,
           },
@@ -33403,6 +33423,11 @@ function normalizarFilaClub(fila, tabla) {
     // precio/hora normal de cada cancha (`precioPorHoraDeCancha`), mismo
     // criterio que el resto de columnas opcionales de esta función.
     tarifa_base_hora: Number(fila.tarifa_base_hora) > 0 ? Number(fila.tarifa_base_hora) : 0,
+    // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora) — mismo
+    // respaldo tolerante que `addons_habilitados`: un proyecto sin la
+    // columna trae `undefined` y el Portal sigue aplicando las franjas
+    // (Activado) tal como siempre.
+    tarifas_habilitadas: fila.tarifas_habilitadas !== false,
     // Configuración del Club → Add-ons (módulo nuevo) — mismo respaldo que
     // el resto de columnas opcionales de esta función: un proyecto sin la
     // migración simplemente trae `undefined`/`[]` y el Portal no muestra
@@ -33600,6 +33625,7 @@ function SeccionGeneralClub({
       duracionReservaMinutos: config.duracionReservaMinutos,
       duracionClaseMinutos: config.duracionClaseMinutos,
       tarifaBaseHora: config.tarifaBaseHora,
+      tarifasHabilitadas: config.tarifasHabilitadas !== false,
     });
   }
 
@@ -33690,6 +33716,13 @@ function SeccionTarifasFranjas({
   const [modalTarifa, setModalTarifa] = useState(null); // null = cerrado, {} = nueva, {...} = editar
   const [tarifaParaEliminar, setTarifaParaEliminar] = useState(null);
   const [eliminando, setEliminando] = useState(false);
+  // Switch ON/OFF (mejora) — `true` = "Activado" (comportamiento de
+  // siempre). En OFF, el club deja de cobrar diferenciado por franja SIN
+  // borrar nada: las franjas y la Tarifa Base de abajo se quedan
+  // guardadas/visibles tal cual, solo se dejan de APLICAR al calcular el
+  // monto de una reserva (ver `tarifasDelDia` en `ModalNuevaReserva` y
+  // `ModalReservarCancha`, que devuelven `[]` cuando este switch está OFF).
+  const tarifasHabilitadas = config.tarifasHabilitadas !== false;
 
   useEffect(() => {
     setTarifaBaseHora(config.tarifaBaseHora > 0 ? String(config.tarifaBaseHora) : '');
@@ -33704,6 +33737,24 @@ function SeccionTarifasFranjas({
       duracionReservaMinutos: config.duracionReservaMinutos,
       duracionClaseMinutos: config.duracionClaseMinutos,
       tarifaBaseHora: Number(tarifaBaseHora) > 0 ? Number(tarifaBaseHora) : 0,
+      tarifasHabilitadas,
+    });
+  }
+
+  // MISMO diseño/contenedor/estilo que el switch de Quick Sell/Metas de
+  // Cortesía (`SeccionJugadoresFidelizacion`/`alternarActivo`) — a pedido
+  // explícito del club, para que todos los Switch Master de "Configuración
+  // del Club" se vean idénticos.
+  async function alternarTarifasHabilitadas() {
+    await onGuardarConfigClub?.({
+      nombre: config.nombre,
+      logoUrl: config.logoUrl,
+      horaApertura: config.horaApertura,
+      horaCierre: config.horaCierre,
+      duracionReservaMinutos: config.duracionReservaMinutos,
+      duracionClaseMinutos: config.duracionClaseMinutos,
+      tarifaBaseHora: config.tarifaBaseHora,
+      tarifasHabilitadas: !tarifasHabilitadas,
     });
   }
 
@@ -33729,6 +33780,40 @@ function SeccionTarifasFranjas({
           la Parrilla Operativa y el Portal de Jugadores aplican la franja correspondiente automáticamente al
           calcular el monto de cada reserva.
         </p>
+
+        <button
+          type="button"
+          onClick={alternarTarifasHabilitadas}
+          disabled={guardandoConfigClub}
+          className={`mb-4 flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            tarifasHabilitadas ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${tarifasHabilitadas ? 'bg-lime-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${tarifasHabilitadas ? 'text-lime-700' : 'text-slate-600'}`}>
+              Cobro Diferenciado por Franja Horaria: {tarifasHabilitadas ? 'Activado' : 'Desactivado'}
+            </span>
+          </span>
+          <span
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
+              tarifasHabilitadas ? 'bg-lime-500' : 'bg-slate-300'
+            }`}
+          >
+            <span
+              className={`inline-block h-4.5 w-4.5 transform rounded-full bg-white shadow transition ${
+                tarifasHabilitadas ? 'translate-x-6' : 'translate-x-1'
+              }`}
+              style={{ height: '1.125rem', width: '1.125rem' }}
+            />
+          </span>
+        </button>
+        {!tarifasHabilitadas && (
+          <p className="mb-4 rounded-lg border border-dashed border-slate-300 bg-slate-100/40 px-3 py-2.5 text-[11px] text-slate-500">
+            Desactivado — todas las reservas usan la Tarifa Base/Estándar (o el precio/hora de cada cancha). La
+            Tarifa Base y las franjas de abajo se quedan guardadas tal cual para cuando vuelvas a activarlo.
+          </p>
+        )}
 
         <div className="mb-4 flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3 sm:flex-row sm:items-end sm:gap-3">
           <div className="flex-1">
@@ -34011,6 +34096,13 @@ function SeccionReservasAcademia({
       horaCierre: config.horaCierre,
       duracionReservaMinutos,
       duracionClaseMinutos,
+      // Tarifa Base/Estándar y Switch ON/OFF de "Tarifas y Franjas Horarias"
+      // (migracion_v43/mejora) — esta sección no las edita, se reenvían TAL
+      // CUAL para no pisarlas (`guardarConfigClub` escribe el objeto de
+      // configuración completo en cada guardado; omitirlas aquí las
+      // resetearía a su valor por defecto en cada "Guardar duración").
+      tarifaBaseHora: config.tarifaBaseHora,
+      tarifasHabilitadas: config.tarifasHabilitadas !== false,
     });
   }
 
@@ -38473,8 +38565,8 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
           label="Horario"
           hint={
             coachPreferido
-              ? 'Verde = disponible con ese coach, ámbar = coach ocupado o no asignado a ese turno, gris = sin cancha libre.'
-              : 'Verde = disponible (con el coach del turno, si tiene uno asignado), gris = sin cancha libre, azul = clase con coach, morado = torneo/reta.'
+              ? 'Blanco = disponible con ese coach, gris = no disponible (coach ocupado, no asignado a ese turno o sin cancha libre).'
+              : 'Blanco = disponible (con el coach del turno, si tiene uno asignado), gris = no disponible (sin cancha libre, clase o torneo/reta). Borde verde lima = tu horario elegido.'
           }
         >
           <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
@@ -38531,22 +38623,19 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                   disabled={bloqueado}
                   onClick={() => setHoraInicio(s.horaInicio)}
                   title={`${formatoHora12(s.horaInicio)} – ${formatoHora12(s.horaFin)} · ${etiquetaCompleta}`}
+                  // Rediseño de Contraste Total (Task 2, mismo criterio que
+                  // "Reservar Cancha"): disponible = blanco + texto oscuro de
+                  // alto contraste (nunca fondos verdes/azules/morados tenues
+                  // que encimen la letra); pasado/no disponible/ocupado = un
+                  // único gris opaco + texto tenue, inhabilitado; seleccionado
+                  // = SOLO borde/ring verde lima grueso, conservando el mismo
+                  // fondo claro que "disponible" para legibilidad total.
                   className={`flex min-h-[58px] flex-col items-center justify-center gap-0.5 overflow-hidden rounded-lg border px-1.5 py-2 text-center transition ${
-                    // FIX DE ESTILO (Pasado): antes, una hora YA TRANSCURRIDA
-                    // de HOY que seguía siendo `tipo: 'disponible'` (cancha
-                    // libre) heredaba las clases Verdes de `estilo.clases`
-                    // con solo `opacity-60` encima — se veía Verde apagado en
-                    // vez de Gris. El Verde ahora es EXCLUSIVO de horarios
-                    // futuros y disponibles: cualquier slot `pasado` fuerza
-                    // el mismo estilo Gris/Deshabilitado que "Fuera de
-                    // Horario", sin importar su `tipo` real.
-                    s.pasado
-                      ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500'
-                      : bloqueado
-                      ? `cursor-not-allowed opacity-60 ${estilo.clases}`
+                    bloqueado || s.pasado
+                      ? 'cursor-not-allowed border-slate-200 bg-slate-200/60 text-slate-400'
                       : seleccionado
-                      ? 'border-2 border-lime-500 ring-2 ring-lime-500/40 bg-lime-400/25 text-lime-300'
-                      : `${estilo.clases} hover:brightness-110`
+                      ? 'border-2 border-lime-500 ring-2 ring-lime-500/30 bg-white text-slate-900 font-semibold'
+                      : 'border-slate-200 bg-white text-slate-900 font-semibold hover:border-lime-400/50'
                   }`}
                 >
                   <span className="block w-full truncate text-[11px] font-bold leading-tight">{formatoHora12(s.horaInicio)}</span>
@@ -39205,17 +39294,37 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   // (nunca `useState`) para que un cambio del club en vivo se refleje sin
   // esperar a que el jugador vuelva a abrir el modal.
   const duracionReservaMinutos = duracionesBloqueDelClub(club).reservaMin;
-  const duracionHoras = duracionReservaMinutos / 60;
-  // El selector de Duración solo debe ofrecer la opción que coincide EXACTO
-  // con la regla del club (ej. si `duracion_reserva_minutos === 60`, jamás
-  // se deben mostrar "1.5 horas"/"2 horas") — nunca las 3 opciones fijas de
-  // `DURACIONES_RENTA` sin filtrar. Respaldo defensivo a la lista completa
-  // si por cualquier motivo no hubiera ningún match exacto (nunca debería
-  // pasar: la configuración solo guarda 60/90/120).
+  // Extensión Opción 2 Horas (mejora): cuando el club fijó su bloque base en
+  // 60 min (1 hora), el jugador SÍ puede elegir entre "1 hora" (1 bloque) y
+  // "2 horas" (2 bloques consecutivos de 60 min) — para cualquier OTRA
+  // duración base (90/120 min) se mantiene el comportamiento de siempre: una
+  // sola opción fija, sin selector real (nunca se ofrecen "1.5 horas"/"2
+  // horas" sueltas fuera de este caso).
+  const permiteDosHoras = duracionReservaMinutos === 60;
+  // El selector de Duración solo debe ofrecer "1 hora"/"2 horas" cuando
+  // `permiteDosHoras` — para cualquier otra regla del club (ej.
+  // `duracion_reserva_minutos === 90`) sigue ofreciendo ÚNICAMENTE la
+  // opción que coincide EXACTO (jamás "1.5 horas"/"2 horas" sueltas).
+  // Respaldo defensivo a la lista completa si por cualquier motivo no
+  // hubiera ningún match exacto (nunca debería pasar: la configuración solo
+  // guarda 60/90/120).
   const duracionesPermitidas = useMemo(() => {
+    if (permiteDosHoras) return DURACIONES_RENTA.filter((d) => d.horas === 1 || d.horas === 2);
     const exactas = DURACIONES_RENTA.filter((d) => Math.round(d.horas * 60) === duracionReservaMinutos);
     return exactas.length > 0 ? exactas : DURACIONES_RENTA;
-  }, [duracionReservaMinutos]);
+  }, [duracionReservaMinutos, permiteDosHoras]);
+  // Duración ELEGIDA por el jugador (en horas) — por defecto, la duración
+  // base del club (1 bloque). Solo es de verdad editable cuando
+  // `permiteDosHoras` (el `<select>` de abajo se deshabilita cuando
+  // `duracionesPermitidas.length <= 1`, igual que antes).
+  const [duracionHoras, setDuracionHoras] = useState(duracionReservaMinutos / 60);
+  useEffect(() => {
+    // Si cambia la duración base del club en vivo (Realtime de
+    // `configuracion_club`), o si el jugador tenía elegidas "2 horas" y el
+    // club deja de ofrecer esa opción, resincroniza a la duración base —
+    // nunca deja seleccionada una duración que ya no es válida.
+    setDuracionHoras((actual) => (duracionesPermitidas.some((d) => d.horas === actual) ? actual : duracionReservaMinutos / 60));
+  }, [duracionReservaMinutos, duracionesPermitidas]);
   const [horaInicio, setHoraInicio] = useState('');
   const [addons, setAddons] = useState([]);
   const [addonParaVariante, setAddonParaVariante] = useState(null);
@@ -39301,21 +39410,47 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
     setTurnoFiltro('todos');
   }, [fecha]);
 
+  // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora, Configuración del
+  // Club → General) — `true` por defecto (Activado). En OFF, `tarifasDelDia`
+  // se queda vacía A PROPÓSITO para que `calcularPrecioReserva`/
+  // `precioDelBloque` caigan siempre a la Tarifa Base/precio de cancha, SIN
+  // tocar `tarifasHorarios` (las franjas siguen intactas en Supabase/estado
+  // para cuando el club vuelva a encenderlo).
+  const tarifasHabilitadas = club?.tarifas_habilitadas !== false;
   // Tarifas Dinámicas por Franja Horaria (Peak & Off-Peak Pricing,
   // migracion_v43) — solo las franjas activas para el día de la semana de la
   // `fecha` elegida, mismo criterio que `ModalNuevaReserva`.
   const tarifasDelDia = useMemo(() => {
+    if (!tarifasHabilitadas) return [];
     const dow = fecha ? new Date(`${fecha}T12:00:00`).getDay() : null;
     return dow === null ? [] : tarifasActivasDelDia(tarifasHorarios, dow);
-  }, [tarifasHorarios, fecha]);
+  }, [tarifasHorarios, fecha, tarifasHabilitadas]);
   // Tarifa Base efectiva: la del club (`club.tarifa_base_hora`) si la
   // configuró, o si no, el precio/hora normal de la cancha — EXACTAMENTE el
   // comportamiento de siempre para un club que nunca toca "Tarifas y
   // Franjas Horarias".
   const precioBaseEfectivo = Number(club?.tarifa_base_hora) > 0 ? Number(club.tarifa_base_hora) : precioPorHoraDeCancha(cancha);
-  const costoCancha = horaInicio
-    ? calcularPrecioReserva(horaInicio, duracionReservaMinutos, tarifasDelDia, precioBaseEfectivo)
-    : Math.round(duracionHoras * precioBaseEfectivo * 100) / 100;
+  // Extensión Opción 2 Horas — precio total de un bloque que empieza a
+  // `hora`, respetando la duración ELEGIDA (`duracionHoras`): con 2 horas es
+  // la SUMA de 2 tarifas horarias INDEPENDIENTES (cada hora puede caer en
+  // una franja distinta) — nunca un solo `calcularPrecioReserva` de 120 min,
+  // que solo aplicaría precio si UNA franja cubriera el bloque completo y
+  // ocultaría un precio mixto entre 2 franjas (o entre una franja y la
+  // Tarifa Base).
+  function precioDelBloque(hora) {
+    if (permiteDosHoras && duracionHoras === 2) {
+      const horaSegunda = minutosAHora((parseHoraAMinutos(hora) || 0) + 60);
+      return (
+        Math.round(
+          (calcularPrecioReserva(hora, 60, tarifasDelDia, precioBaseEfectivo) +
+            calcularPrecioReserva(horaSegunda, 60, tarifasDelDia, precioBaseEfectivo)) *
+            100
+        ) / 100
+      );
+    }
+    return calcularPrecioReserva(hora, Math.round(duracionHoras * 60), tarifasDelDia, precioBaseEfectivo);
+  }
+  const costoCancha = horaInicio ? precioDelBloque(horaInicio) : Math.round(duracionHoras * precioBaseEfectivo * 100) / 100;
   const addonsSubtotal = Math.round(addons.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100;
   const total = Math.round((costoCancha + addonsSubtotal) * 100) / 100;
   const { montoWallet, montoRestante } = repartirPagoConWallet(total, saldoWallet, metodo === 'wallet' && !!jugador);
@@ -39435,12 +39570,24 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
             </div>
           </Campo>
           <Campo label="Duración">
-            {/* Duración de Bloques/Turnos (migracion_v42, corrección de
-                consistencia): ya NO es una elección libre — el club definió
-                una duración fija (`duracionReservaMinutos`), así que el
-                selector solo ofrece esa opción y se deshabilita (nunca deja
-                elegir "1.5 horas"/"2 horas" si el club fijó 60 min). */}
-            <select value={duracionHoras} disabled={duracionesPermitidas.length <= 1} className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-70`}>
+            {/* Duración de Bloques/Turnos (migracion_v42) + Extensión Opción
+                2 Horas (mejora): cuando el club fijó su bloque base en 90 o
+                120 min sigue sin ser una elección libre — el selector ofrece
+                solo esa opción y se deshabilita (nunca deja elegir "1.5
+                horas" suelta). Cuando el bloque base es 60 min
+                (`permiteDosHoras`), el jugador SÍ puede elegir entre "1
+                hora" y "2 horas" (2 bloques consecutivos) — `setHoraInicio`
+                se limpia al cambiar para forzar a re-elegir un horario ya
+                validado contra la nueva duración. */}
+            <select
+              value={duracionHoras}
+              onChange={(e) => {
+                setDuracionHoras(Number(e.target.value));
+                setHoraInicio('');
+              }}
+              disabled={duracionesPermitidas.length <= 1}
+              className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-70`}
+            >
               {duracionesPermitidas.map((d) => (
                 <option key={d.horas} value={d.horas}>
                   {d.label}
@@ -39450,7 +39597,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           </Campo>
         </div>
 
-        <Campo label="Hora" hint="Verde = disponible, gris = reservado, azul = clase con coach, morado = torneo/reta.">
+        <Campo label="Hora" hint="Blanco = disponible, gris = no disponible (reservado, clase o torneo/reta), borde verde lima = tu horario elegido.">
           {/* INDICADOR DE DEMANDA/OCUPACIÓN — % de horarios de ESTA cancha,
               ESTA fecha y duración ya reservados hoy (Slots Reservados /
               Slots Totales del Día * 100). Insignia roja/amarilla/verde
@@ -39495,10 +39642,12 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 // enriquece la etiqueta/color de por qué está ocupada).
                 const estilo = ESTILO_OCUPACION_SLOT[f.tipo] || ESTILO_OCUPACION_SLOT.disponible;
                 const etiqueta = f.pasado ? 'Pasado' : f.tipo === 'clase' ? `Clase${f.coachNombre ? ` · ${f.coachNombre}` : ''}` : estilo.etiqueta;
-                // Tarifas Dinámicas por Franja Horaria (migracion_v43) — precio
-                // de ESTA hora puntual, para que el jugador vea de un vistazo
-                // cuáles horarios son Horario Pico antes de elegir uno.
-                const precioSlot = calcularPrecioReserva(f.horaInicio, duracionReservaMinutos, tarifasDelDia, precioBaseEfectivo);
+                // Tarifas Dinámicas por Franja Horaria (migracion_v43) —
+                // precio TOTAL de este bloque (respeta la duración ELEGIDA,
+                // 1 o 2 horas — ver `precioDelBloque`), para que el jugador
+                // vea de un vistazo cuáles horarios son Horario Pico antes de
+                // elegir uno.
+                const precioSlot = precioDelBloque(f.horaInicio);
                 return (
                   <button
                     key={f.horaInicio}
@@ -39506,23 +39655,32 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                     disabled={bloqueado}
                     onClick={() => setHoraInicio(f.horaInicio)}
                     title={bloqueado ? etiqueta : `${formatoHora12(f.horaInicio)} – ${formatoHora12(f.horaFin)} · ${formatoMoneda(precioSlot)}`}
+                    // Rediseño de Contraste Total (Task 2): fondo blanco limpio +
+                    // texto oscuro de alto contraste para horarios disponibles
+                    // (nunca fondos verdes/tenues que encimen la letra), gris
+                    // opaco + texto tenue para pasados/no disponibles, y el
+                    // horario SELECCIONADO se distingue SOLO con un borde/ring
+                    // verde lima grueso — conserva el mismo fondo claro que
+                    // "disponible" para que coach/precio/horario se sigan
+                    // leyendo perfectamente (ver `CSS_MODO_OSCURO_CLUBOS`: en
+                    // Modo Oscuro `bg-white`/`text-slate-900` ya se traducen
+                    // automáticamente a un fondo tipo `slate-800` con texto
+                    // claro, sin necesitar clases `dark:` aparte).
                     className={`flex flex-col items-center gap-0.5 rounded-lg border px-1.5 py-2 text-center transition ${
                       bloqueado
-                        ? `cursor-not-allowed opacity-60 ${estilo.clases}`
+                        ? 'cursor-not-allowed border-slate-200 bg-slate-200/60 text-slate-400'
                         : seleccionado
-                        ? 'border-2 border-lime-500 ring-2 ring-lime-500/40 bg-lime-400/15'
-                        : `${estilo.clases} hover:brightness-110`
+                        ? 'border-2 border-lime-500 ring-2 ring-lime-500/30 bg-white text-slate-900 font-semibold'
+                        : 'border-slate-200 bg-white text-slate-900 font-semibold hover:border-lime-400/50'
                     }`}
                   >
-                    <span className={`text-[11px] font-bold ${bloqueado ? 'line-through' : seleccionado ? 'text-lime-400' : ''}`}>
+                    <span className={`text-[11px] font-bold ${bloqueado ? 'line-through' : ''}`}>
                       {formatoHora12(f.horaInicio)}
                     </span>
                     {bloqueado ? (
                       <span className="truncate text-[9px] font-semibold">{etiqueta}</span>
                     ) : (
-                      <span className={`truncate text-[9px] font-bold ${seleccionado ? 'text-lime-400' : 'text-slate-500'}`}>
-                        {formatoMoneda(precioSlot)}
-                      </span>
+                      <span className="truncate text-[9px] font-bold text-slate-500">{formatoMoneda(precioSlot)}</span>
                     )}
                   </button>
                 );
@@ -40639,7 +40797,8 @@ function AppInterno() {
           data.hora_cierre != null ||
           data.duracion_reserva_minutos != null ||
           data.duracion_clase_minutos != null ||
-          data.tarifa_base_hora != null
+          data.tarifa_base_hora != null ||
+          data.tarifas_habilitadas != null
         ) {
           const nuevaConfig = {
             nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
@@ -40660,6 +40819,11 @@ function AppInterno() {
             // `undefined` → cae a `0` ("sin Tarifa Base propia", usa el
             // precio/hora normal de cada cancha).
             tarifaBaseHora: Number(data.tarifa_base_hora) > 0 ? Number(data.tarifa_base_hora) : CONFIG_CLUB_DEFAULT.tarifaBaseHora,
+            // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora) — mismo
+            // criterio que `addons_habilitados`: un proyecto sin la columna
+            // trae `undefined` y este respaldo lo deja en `true` (Activado),
+            // el comportamiento de siempre.
+            tarifasHabilitadas: data.tarifas_habilitadas !== false,
           };
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
@@ -41044,6 +41208,11 @@ function AppInterno() {
         // (eso le impediría al club volver a dejarlo en blanco una vez
         // capturado) — solo se limpia a número o `0`.
         tarifaBaseHora: Number(nuevaConfig.tarifaBaseHora) > 0 ? Number(nuevaConfig.tarifaBaseHora) : 0,
+        // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora) — `false`
+        // solo si se manda explícitamente `false`; cualquier otro valor
+        // (incluido `undefined`, de un caller que todavía no lo reenvía)
+        // se guarda como `true` (Activado, comportamiento de siempre).
+        tarifasHabilitadas: nuevaConfig.tarifasHabilitadas !== false,
       };
       setGuardandoConfigClub(true);
       setConfigClub(limpia);
@@ -41058,6 +41227,7 @@ function AppInterno() {
           duracion_reserva_minutos: limpia.duracionReservaMinutos,
           duracion_clase_minutos: limpia.duracionClaseMinutos,
           tarifa_base_hora: limpia.tarifaBaseHora,
+          tarifas_habilitadas: limpia.tarifasHabilitadas,
         };
         // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo
         // (como antes de este cambio): `hora_apertura`/`hora_cierre`/
@@ -41073,6 +41243,7 @@ function AppInterno() {
           'duracion_reserva_minutos',
           'duracion_clase_minutos',
           'tarifa_base_hora',
+          'tarifas_habilitadas',
         ]);
         if (error) throw error;
         setConfiguracionClubId(CLUB_ACTIVO_ID);
