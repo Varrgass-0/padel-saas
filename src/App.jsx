@@ -18707,10 +18707,29 @@ function ModuloContabilidadCompras({
   // el producto DESPUÉS de la reversión y, si quedó sin ninguna variante,
   // elimina también la fila del producto (mismo criterio tuvoVentas/
   // DELETE-con-fallback-a-inactivo que usa `revertirStockItemCompra`).
+  //
+  // FIX (renglón huérfano con stock 0 tras cancelar): esta función corre
+  // justo después de que `revertirStockItemCompra` llamó
+  // `eliminarVarianteEnJSONB` (que ya actualizó `productos.variantes` en
+  // Supabase de verdad). Pero leerlo de vuelta desde el arreglo `productos`
+  // del estado de React (`upsertProducto`/`setProductos`) es una carrera:
+  // React no vuelve a renderizar SÍNCRONAMENTE dentro de la misma función
+  // `async`, así que el cierre (`closure`) de `productos` que tiene esta
+  // función todavía apunta a la versión VIEJA (con la variante que se
+  // acaba de borrar todavía en el arreglo) — la validación de abajo veía
+  // `variantes.length > 0` (falso positivo) y se salía sin limpiar nada,
+  // dejando el producto padre visible con stock 0. Se corrige leyendo el
+  // producto DIRECTO de Supabase (misma "BD como única fuente de verdad"
+  // que usan `agregarVarianteNuevaEnJSONB`/`eliminarVarianteEnJSONB`) en
+  // vez de confiar en el estado de React.
   async function limpiarProductoSiSinVariantes(productoId) {
     if (!productoId) return;
-    const producto = (productos || []).find((p) => String(p.id) === String(productoId));
-    if (!producto) return;
+    const { data: producto, error: errProducto } = await supabase
+      .from('productos')
+      .select('id, nombre, variantes, stock, activo, disponible')
+      .eq('id', productoId)
+      .maybeSingle();
+    if (errProducto || !producto) return;
     // Nunca tuvo variantes (es un producto simple, no "de variantes") — no
     // aplica esta limpieza, su propio stock ya se revirtió arriba si hacía
     // falta.
