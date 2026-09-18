@@ -1047,6 +1047,12 @@ html.dark [class~="text-slate-800"],
 html.dark [class~="hover:text-slate-900"]:hover,
 html.dark [class~="hover:text-slate-800"]:hover { color: #f8fafc; }
 
+/* Logo QLUB OS — letras "Q"/"L"/"U"/"B" (ver LogoQlubOS): en Modo Claro usan
+   la clase fill-slate-800 (#0f172a, igual que antes); en Modo Oscuro se
+   pisan a un gris casi blanco para que no se pierdan sobre el fondo oscuro
+   (#0b1329). "O"/"S" siguen en verde lima fijo, sin regla aquí — no cambian. */
+html.dark [class~="fill-slate-800"] { fill: #f1f5f9; }
+
 html.dark [class~="text-slate-700"],
 html.dark [class~="text-slate-600"],
 html.dark [class~="text-slate-500"],
@@ -1099,31 +1105,36 @@ const LogoQlubOS = ({ className = 'w-auto h-8' }) => (
     <svg width="240" height="65" viewBox="0 0 320 85" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
       {/* QLUBOS — contornos reales de Poppins Bold vía fontTools/SVGPathPen
           (mismo método/familia que "RUN YOUR CLUB." abajo, ver comentario de
-          cabecera). "Q"/"L"/"U"/"B" en `#0f172a`, "O"/"S" en `#a3e635`
-          (`lime-400`, idéntico al verde de `BotonPrimario`). */}
+          cabecera). "O"/"S" en `#a3e635` (`lime-400`, idéntico al verde de
+          `BotonPrimario`) — SIN CAMBIOS.
+          "Q"/"L"/"U"/"B" AJUSTE Modo Oscuro: antes `fill="#0f172a"` fijo, que
+          se volvía invisible sobre el fondo oscuro (`#0b1329`, ver
+          `CSS_MODO_OSCURO_CLUBOS`). Ahora usan la clase Tailwind
+          `fill-slate-800` (mismo `#0f172a` en Modo Claro) en vez del atributo
+          `fill` fijo, para que la hoja de Modo Oscuro pueda pisarla —
+          exactamente el mismo patrón `[class~="..."]` que ya usa el resto del
+          texto de la app (ver `text-slate-800` ahí abajo). */}
+      <g className="fill-slate-800">
       <path
         transform="translate(7.43 68.68) scale(0.077896 -0.077896)"
         d="M562 -120 472 1Q432 -7 394 -7Q295 -7 212.5 39.0Q130 85 81.5 167.5Q33 250 33 353Q33 456 81.5 538.0Q130 620 212.5 666.0Q295 712 394 712Q493 712 575.5 666.0Q658 620 705.5 538.0Q753 456 753 353Q753 263 716.5 188.5Q680 114 615 65L769 -120ZM394 149Q478 149 528.5 205.0Q579 261 579 353Q579 446 528.5 501.5Q478 557 394 557Q309 557 258.5 502.0Q208 447 208 353Q208 260 258.5 204.5Q309 149 394 149Z"
-        fill="#0f172a"
       />
       {/* L */}
       <path
         transform="translate(68.81 68.68) scale(0.077896 -0.077896)"
         d="M233 132H457V0H62V702H233Z"
-        fill="#0f172a"
       />
       {/* U */}
       <path
         transform="translate(105.97 68.68) scale(0.077896 -0.077896)"
         d="M230 702V282Q230 219 261.0 185.0Q292 151 352 151Q412 151 444.0 185.0Q476 219 476 282V702H647V283Q647 189 607.0 124.0Q567 59 499.5 26.0Q432 -7 349 -7Q266 -7 200.5 25.5Q135 58 97.0 123.5Q59 189 59 283V702Z"
-        fill="#0f172a"
       />
       {/* B */}
       <path
         transform="translate(160.88 68.68) scale(0.077896 -0.077896)"
         d="M622 191Q622 103 560.5 51.5Q499 0 389 0H62V702H378Q485 702 545.5 653.0Q606 604 606 520Q606 458 573.5 417.0Q541 376 487 360Q548 347 585.0 299.5Q622 252 622 191ZM233 418H345Q387 418 409.5 436.5Q432 455 432 491Q432 527 409.5 546.0Q387 565 345 565H233ZM449 214Q449 251 424.5 272.0Q400 293 357 293H233V138H359Q402 138 425.5 157.5Q449 177 449 214Z"
-        fill="#0f172a"
       />
+      </g>
       {/* O VERDE */}
       <path
         transform="translate(212.22 68.68) scale(0.077896 -0.077896)"
@@ -34877,30 +34888,41 @@ function ModuloControlSeguridad({
     });
   }, [logActividad, filtroTipoLog, busquedaLog]);
 
+  // Beta: la pestaña "Cortes de Caja" se oculta junto con Arqueos/Cierres de
+  // turno en Smart POS (misma bandera `SHOW_BETA_POS_CIERRE_ARQUEO`) — se
+  // filtra del arreglo en vez de solo condicionar su render, así el botón ni
+  // siquiera aparece en la barra de pestañas.
   const SUBVISTAS = [
     { value: 'empleados', label: 'Empleados', icon: Users },
-    { value: 'cortes', label: 'Cortes de Caja', icon: Calculator },
+    ...(SHOW_BETA_POS_CIERRE_ARQUEO ? [{ value: 'cortes', label: 'Cortes de Caja', icon: Calculator }] : []),
     { value: 'log', label: 'Log de Actividad', icon: History },
   ];
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className={SHOW_BETA_POS_CIERRE_ARQUEO ? 'grid grid-cols-2 gap-3 sm:grid-cols-4' : 'grid grid-cols-2 gap-3'}>
         <MetricCard icon={Users} etiqueta="Empleados" valor={empleadosOrdenados.length} sub={`${ROLES.length} roles disponibles`} tono="lime" />
-        <MetricCard
-          icon={Calculator}
-          etiqueta="Cortes Pendientes de Aprobar"
-          valor={cortesPendientesAprobar}
-          sub={`${cierresOrdenados.length} registrados en total`}
-          tono="sky"
-        />
-        <MetricCard
-          icon={AlertTriangle}
-          etiqueta="Cortes con Diferencia"
-          valor={cortesConDiferencia}
-          sub="Sobrantes o faltantes notificados"
-          tono="amber"
-        />
+        {/* Beta: tarjetas de Cortes de Caja ocultas — `cortesPendientesAprobar`/
+            `cortesConDiferencia` se siguen calculando arriba (no se tocan),
+            solo no se muestran mientras dure la Beta. */}
+        {SHOW_BETA_POS_CIERRE_ARQUEO && (
+          <MetricCard
+            icon={Calculator}
+            etiqueta="Cortes Pendientes de Aprobar"
+            valor={cortesPendientesAprobar}
+            sub={`${cierresOrdenados.length} registrados en total`}
+            tono="sky"
+          />
+        )}
+        {SHOW_BETA_POS_CIERRE_ARQUEO && (
+          <MetricCard
+            icon={AlertTriangle}
+            etiqueta="Cortes con Diferencia"
+            valor={cortesConDiferencia}
+            sub="Sobrantes o faltantes notificados"
+            tono="amber"
+          />
+        )}
         <MetricCard icon={History} etiqueta="Eventos en el Log" valor={logActividad.length} sub="Cancelaciones, descuentos, ediciones..." tono="violet" />
       </div>
 
