@@ -21843,14 +21843,49 @@ function calcularProgresoCortesia(comprasPOS, categoriaCompras, desdeMs, meta) {
 // ninguna rama especial para distinguir "cortesía de gasto" de "cortesía
 // de frecuencia" — el mismo contrato `{ progreso, gastoActual, meta, lista }`
 // sirve para las dos.
-function calcularProgresoCortesiaFrecuencia(fechasEventosMs, desdeMs, meta) {
+// `debugEtiqueta` (opcional): CONSOLA DE DEPURACIÓN TEMPORAL — cuando el
+// llamador manda una etiqueta (`perfiles` en `DirectorioJugadoresCRM` solo
+// la manda para el jugador que está abierto en la Vista 360°, nunca para
+// los ~cientos de jugadores del roster en cada recálculo), imprime cuántos
+// registros trajo la consulta de esa categoría y cuántos caen dentro del
+// ciclo actual — para diagnosticar en vivo por qué una barra se queda en
+// 0/Meta pese a actividad real (¿no encontró registros? ¿los encontró pero
+// son de ANTES del último canje/reactivación?). Quitar una vez confirmado
+// el conteo en producción.
+function calcularProgresoCortesiaFrecuencia(fechasEventosMs, desdeMs, meta, debugEtiqueta) {
   const eventosDesdeUltimoCanje = (fechasEventosMs || []).filter((ts) => Number.isFinite(ts) && ts > desdeMs).length;
-  return {
+  const resultado = {
     progreso: Math.min(eventosDesdeUltimoCanje, meta),
     gastoActual: eventosDesdeUltimoCanje,
     meta,
     lista: meta > 0 && eventosDesdeUltimoCanje >= meta,
   };
+  if (debugEtiqueta) {
+    console.log('[Frecuencia Debug]', debugEtiqueta, {
+      registrosEncontrados: (fechasEventosMs || []).length,
+      eventosDentroDelCicloActual: eventosDesdeUltimoCanje,
+      desde: desdeMs ? new Date(desdeMs).toISOString() : '(sin piso — nunca canjeada/reactivada)',
+      meta,
+      lista: resultado.lista,
+    });
+  }
+  return resultado;
+}
+
+// Motor de Cortesías por Frecuencia de Actividad — tolerancia de texto en
+// el estado de pago (a pedido explícito, FIX de conteo en 0 pese a
+// actividad real cobrada): además de `'pagado'` (el valor canónico que
+// escribe toda la app en `reservas`/`reta_inscripciones`/
+// `torneo_participantes`/`academia_alumnos`), acepta variaciones comunes de
+// texto que un registro pueda traer por otra vía — mayúsculas, o palabras
+// distintas con el mismo significado ('completado', 'confirmado').
+// Comparación insensible a mayúsculas/espacios. SOLO se usa en el Motor de
+// Frecuencia — `inscripcionEstaPagada`/`estadoPagoInscripcion` (arriba) NO
+// se tocan, siguen siendo la fuente de verdad estricta para LTV/
+// Contabilidad ya verificada en producción.
+const ESTADOS_PAGO_EXITOSOS_FRECUENCIA = new Set(['pagado', 'completado', 'confirmado']);
+function pagoExitosoFrecuencia(valor) {
+  return ESTADOS_PAGO_EXITOSOS_FRECUENCIA.has(String(valor ?? '').trim().toLowerCase());
 }
 
 // Productos/Variantes Autorizados para Canje (mejora): antes, el modal de
@@ -31908,6 +31943,30 @@ function DirectorioJugadoresCRM({
     return mapa;
   }, [reservas, bloqueosMaestroTorneoIds]);
 
+  // Motor de Cortesías por Frecuencia de Actividad — FIX (conteo en 0/1 pese
+  // a actividad real): `reservas` NO tiene columna de teléfono propia (a
+  // diferencia de `reta_inscripciones`/`torneo_participantes`), así que el
+  // único respaldo posible cuando una reserva no trae `jugador_id` (ej.
+  // "Nueva Reserva" capturada a mano por Staff sin vincular la cuenta del
+  // jugador) es su `jugador_nombre` normalizado — mismo criterio EXACTO de
+  // respaldo por nombre que ya usan Retas/Torneos (`claveNombre`). Se
+  // precomputa aquí (mapa, O(n)) en vez de filtrar `reservas` completo
+  // dentro del `.map` por jugador de `perfiles` (evita convertir un O(n) en
+  // O(n·m) con muchos jugadores). Las reservas YA enlazadas por
+  // `jugador_id` (`reservasPorJugador`, arriba) NUNCA se duplican desde
+  // aquí — `perfiles` filtra explícitamente `r.jugador_id !== j.id` al
+  // consumir este mapa.
+  const reservasPorNombreNormalizado = useMemo(() => {
+    const mapa = {};
+    reservas.forEach((r) => {
+      if (bloqueosMaestroTorneoIds?.has(r.id)) return;
+      const clave = claveNombre(r.jugador_nombre);
+      if (!clave) return;
+      (mapa[clave] = mapa[clave] || []).push(r);
+    });
+    return mapa;
+  }, [reservas, bloqueosMaestroTorneoIds]);
+
   // Reservas por id (enlace directo `venta.reserva_id`) y por cancha+fecha
   // (para inferir el "ocupante principal" cuando la venta no trae una
   // reserva puntual enlazada) — ambos alimentan `resolverJugadorIdVentaCancha`.
@@ -31953,6 +32012,15 @@ function DirectorioJugadoresCRM({
       });
     return mapa;
   }, [ventasHistoricas, reservasPorId, reservasPorCanchaFecha]);
+
+  // Consola de Depuración TEMPORAL del Motor de Frecuencia (ver
+  // `calcularProgresoCortesiaFrecuencia`): un `ref` (no un dependency de
+  // `perfiles`, a propósito — así abrir/cerrar la Vista 360° NUNCA fuerza un
+  // recálculo del roster completo) que se actualiza solo, vía el `useEffect`
+  // de abajo, con el `jugadorSeleccionadoId` más reciente — `perfiles` lo
+  // lee en cada recálculo para saber a qué jugador (si acaso) le toca
+  // imprimir el debug de esta vuelta.
+  const jugadorSeleccionadoIdDebugRef = useRef(null);
 
   /* ---- Perfil 360° por jugador: LTV interconectado + insumos crudos del CHS ---- */
   const perfiles = useMemo(() => {
@@ -32123,47 +32191,108 @@ function DirectorioJugadoresCRM({
         /* --- Motor de Cortesías por Frecuencia de Actividad (migracion_v46):
          * 4 listas de timestamps (ms), una por categoría — cada evento
          * CUMPLIDO y REALMENTE COBRADO (nunca uno gratis/$0, ver "Exclusión
-         * de $0" pedida explícitamente) de este jugador. Se recalculan aquí
-         * mismo, dentro del `perfiles` useMemo, reutilizando exactamente las
-         * mismas variables ya derivadas arriba para el resto de la Vista
-         * 360° — ningún cruce ni consulta nueva.
-         *   - Reservas de Cancha: `propiasActivas` (no canceladas) que ya se
-         *     jugaron (`fecha <= hoy`) Y de verdad se cobraron
-         *     (`estado_pago === 'pagado'` Y `monto_total > 0`).
-         *   - Retas: `inscripcionesAsistidas` (asistencia confirmada) con
-         *     `monto > 0`, cruzadas a la fecha real de la reta.
-         *   - Torneos: `participacionesPagadas` con `monto > 0`, cruzadas a
-         *     `fecha_inicio` del torneo.
-         *   - Clases/Academia: asistencias reales (`asistio === true`) cuya
-         *     inscripción en `academia_alumnos` tuvo costo (`monto > 0`) —
-         *     `alumnoIdsConCostoJ` excluye clases de cortesía/beca para que
-         *     nunca autoalimenten su propia recompensa.
+         * de $0" pedida explícitamente) de este jugador.
+         *
+         * FIX (conteo en 0/1 pese a actividad real — reporte del club):
+         * había DOS bugs de mapeo distintos, uno por categoría:
+         *   1) Reservas se cruzaban SOLO por `jugador_id` exacto
+         *      (`propiasActivas`) — una reserva capturada a mano por Staff
+         *      sin vincular la cuenta del jugador (`jugador_id` nulo) nunca
+         *      contaba, aunque sí apareciera con su nombre. Ahora también
+         *      cruza por `jugador_nombre` normalizado
+         *      (`reservasPorNombreNormalizado`, precomputado arriba) —
+         *      mismo respaldo que ya usan Retas/Torneos (`reservas` no
+         *      tiene columna de teléfono propia).
+         *   2) Retas usaba `inscripcionesAsistidas` (`estado === 'confirmado'`
+         *      EXACTO) — pero `estado` es una columna OPCIONAL en el INSERT
+         *      (ver `inscripcionOcupaLugar`, el mismo FIX DE RAÍZ ya
+         *      aplicado en Mesa de Control/Portal): una inscripción real,
+         *      pagada, recién hecha, con `estado` ausente nunca contaba.
+         *      Ahora usa el mismo criterio NEGATIVO tolerante
+         *      (`inscripcionOcupaLugar`: todo lo que NO esté
+         *      cancelado/retenido) sobre `inscripcionesJ`, que YA cruza por
+         *      teléfono/nombre — exactamente la misma fuente que alimenta
+         *      la tarjeta de "Participación en Comunidad".
+         *   3) Las 4 categorías comparaban el estado de pago con
+         *      `=== 'pagado'` a secas — ahora usan `pagoExitosoFrecuencia`
+         *      (tolerante a mayúsculas y a 'completado'/'confirmado' como
+         *      sinónimos de pagado).
+         *   4) Clases/Academia cruzaba SOLO por `jugador_id`
+         *      (`alumnosDeJ`) — ahora también por teléfono/nombre
+         *      (`academia_alumnos` sí tiene ambas columnas), vía
+         *      `alumnosFrecuenciaJ`.
          */
         const fechaAMs = (f) => {
           const ts = f ? new Date(`${f}T12:00:00`).getTime() : NaN;
           return Number.isFinite(ts) ? ts : null;
         };
-        const fechasFrecuenciaReservas = propiasActivas
-          .filter((r) => r.estado_pago === 'pagado' && (Number(r.monto_total) || 0) > 0 && r.fecha && r.fecha <= hoyISOStr)
+        // 1) Reservas de Cancha — `propiasActivas` (enlace exacto por
+        // `jugador_id`, ya calculado arriba) + respaldo por nombre SOLO para
+        // reservas SIN `jugador_id` vinculado (`!r.jugador_id`) — nunca se
+        // "roba" por nombre una reserva que ya pertenece de verdad a otro
+        // jugador con `jugador_id` propio, para no inflar el conteo de un
+        // jugador con la actividad de un tocayo.
+        const reservasPorNombreJ = (reservasPorNombreNormalizado[nom] || []).filter((r) => !r.jugador_id && r.estado !== 'Cancelada');
+        const reservasFrecuenciaJ = [...propiasActivas, ...reservasPorNombreJ];
+        const fechasFrecuenciaReservas = reservasFrecuenciaJ
+          .filter((r) => pagoExitosoFrecuencia(r.estado_pago) && (Number(r.monto_total) || 0) > 0 && r.fecha && r.fecha <= hoyISOStr)
           .map((r) => fechaAMs(r.fecha))
           .filter((ts) => ts !== null);
-        const fechasFrecuenciaRetas = inscripcionesAsistidas
+        // 2) Retas — `inscripcionesJ` (ya cruzada por teléfono/nombre, misma
+        // fuente que "Participación en Comunidad") + `inscripcionOcupaLugar`
+        // (tolerante a `estado` ausente) en vez de `estado === 'confirmado'`
+        // estricto.
+        const inscripcionesFrecuenciaJ = inscripcionesJ.filter(
+          (i) => pagoExitosoFrecuencia(estadoPagoInscripcion(i)) && inscripcionOcupaLugar(i)
+        );
+        const fechasFrecuenciaRetas = inscripcionesFrecuenciaJ
           .filter((i) => (Number(i.monto) || 0) > 0)
           .map((i) => (retas || []).find((r) => r.id === i.reta_id)?.fecha)
           .filter((f) => f && f <= hoyISOStr)
           .map(fechaAMs)
           .filter((ts) => ts !== null);
-        const fechasFrecuenciaTorneos = participacionesPagadas
+        // 3) Torneos — `participacionesJ` (ya cruzada por teléfono/nombre);
+        // `torneo_participantes` no tiene columna `estado` propia (cancelar
+        // borra la fila), así que no hace falta un `inscripcionOcupaLugar`
+        // equivalente aquí — solo tolerancia de texto en el pago.
+        const participacionesFrecuenciaJ = participacionesJ.filter((p) => pagoExitosoFrecuencia(estadoPagoInscripcion(p)));
+        const fechasFrecuenciaTorneos = participacionesFrecuenciaJ
           .filter((p) => (Number(p.monto) || 0) > 0)
           .map((p) => (torneos || []).find((t) => t.id === p.torneo_id)?.fecha_inicio)
           .filter((f) => f && f <= hoyISOStr)
           .map(fechaAMs)
           .filter((ts) => ts !== null);
-        const alumnoIdsConCostoJ = new Set(alumnosDeJ.filter((a) => (Number(a.monto) || 0) > 0).map((a) => a.id));
+        // 4) Clases/Academia — `alumnosDeJ` (enlace exacto por `jugador_id`,
+        // ya calculado arriba) + respaldo por teléfono/nombre SOLO para
+        // inscripciones SIN `jugador_id` vinculado (`academia_alumnos` sí
+        // tiene ambas columnas propias) — mismo criterio de no "robar" por
+        // nombre la actividad de un jugador que ya tiene su propio enlace.
+        const alumnosFrecuenciaJ = [
+          ...alumnosDeJ,
+          ...(academiaAlumnos || []).filter(
+            (a) => !a.jugador_id && !alumnoIdsJ.has(a.id) && ((tel && claveTelefono(a.telefono) === tel) || claveNombre(a.nombre) === nom)
+          ),
+        ];
+        const alumnoIdsConCostoJ = new Set(
+          alumnosFrecuenciaJ.filter((a) => (Number(a.monto) || 0) > 0 && pagoExitosoFrecuencia(estadoPagoInscripcion(a))).map((a) => a.id)
+        );
         const fechasFrecuenciaClases = (academiaAsistencias || [])
           .filter((a) => alumnoIdsConCostoJ.has(a.alumno_id) && a.asistio === true && a.fecha && a.fecha <= hoyISOStr)
           .map((a) => fechaAMs(a.fecha))
           .filter((ts) => ts !== null);
+        // Consola de Depuración TEMPORAL (ver `calcularProgresoCortesiaFrecuencia`
+        // más abajo, donde se imprime): solo se activa para el jugador que
+        // está abierto en la Vista 360° en este momento — nunca para el
+        // resto del roster.
+        const frecuenciaDebugActivo = String(j.id) === String(jugadorSeleccionadoIdDebugRef.current ?? '');
+        if (frecuenciaDebugActivo) {
+          console.log('[Frecuencia Debug]', `${j.nombre} (#${j.id}) — registros encontrados por tabla`, {
+            reservas: { totalMatch: reservasFrecuenciaJ.length, pagadasYFuturasExcluidas: fechasFrecuenciaReservas.length },
+            retas: { totalMatch: inscripcionesFrecuenciaJ.length, pagadasYFuturasExcluidas: fechasFrecuenciaRetas.length },
+            torneos: { totalMatch: participacionesFrecuenciaJ.length, pagadasYFuturasExcluidas: fechasFrecuenciaTorneos.length },
+            clases: { totalMatch: alumnosFrecuenciaJ.length, asistenciasConCosto: fechasFrecuenciaClases.length },
+          });
+        }
 
         /* --- Última actividad real (Recencia) y ritmo habitual de visitas --- */
         const fechasEventos = [
@@ -32318,19 +32447,39 @@ function DirectorioJugadoresCRM({
         const metaFrecuenciaClasesEfectiva = Number(metaFrecuenciaClases) > 0 ? Number(metaFrecuenciaClases) : 0;
         const cortesiaFrecuenciaReservas =
           cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaReservasEfectiva > 0
-            ? calcularProgresoCortesiaFrecuencia(fechasFrecuenciaReservas, desdeFrecuenciaReservasMs, metaFrecuenciaReservasEfectiva)
+            ? calcularProgresoCortesiaFrecuencia(
+                fechasFrecuenciaReservas,
+                desdeFrecuenciaReservasMs,
+                metaFrecuenciaReservasEfectiva,
+                frecuenciaDebugActivo && `${j.nombre} · Reservas de Cancha`
+              )
             : null;
         const cortesiaFrecuenciaRetas =
           cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaRetasEfectiva > 0
-            ? calcularProgresoCortesiaFrecuencia(fechasFrecuenciaRetas, desdeFrecuenciaRetasMs, metaFrecuenciaRetasEfectiva)
+            ? calcularProgresoCortesiaFrecuencia(
+                fechasFrecuenciaRetas,
+                desdeFrecuenciaRetasMs,
+                metaFrecuenciaRetasEfectiva,
+                frecuenciaDebugActivo && `${j.nombre} · Retas`
+              )
             : null;
         const cortesiaFrecuenciaTorneos =
           cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaTorneosEfectiva > 0
-            ? calcularProgresoCortesiaFrecuencia(fechasFrecuenciaTorneos, desdeFrecuenciaTorneosMs, metaFrecuenciaTorneosEfectiva)
+            ? calcularProgresoCortesiaFrecuencia(
+                fechasFrecuenciaTorneos,
+                desdeFrecuenciaTorneosMs,
+                metaFrecuenciaTorneosEfectiva,
+                frecuenciaDebugActivo && `${j.nombre} · Torneos`
+              )
             : null;
         const cortesiaFrecuenciaClases =
           cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaClasesEfectiva > 0
-            ? calcularProgresoCortesiaFrecuencia(fechasFrecuenciaClases, desdeFrecuenciaClasesMs, metaFrecuenciaClasesEfectiva)
+            ? calcularProgresoCortesiaFrecuencia(
+                fechasFrecuenciaClases,
+                desdeFrecuenciaClasesMs,
+                metaFrecuenciaClasesEfectiva,
+                frecuenciaDebugActivo && `${j.nombre} · Clases/Academia`
+              )
             : null;
 
         // 2) Torneos/Retas: eventos combinados (inscripción o participación).
@@ -32472,6 +32621,7 @@ function DirectorioJugadoresCRM({
   }, [
     jugadoresPorId,
     reservasPorJugador,
+    reservasPorNombreNormalizado,
     ventasPorJugadorId,
     productosPorId,
     canchasPorId,
@@ -32629,6 +32779,12 @@ function DirectorioJugadoresCRM({
   const [filtroSegmento, setFiltroSegmento] = useState('todos');
   const [soloRiesgo, setSoloRiesgo] = useState(false);
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
+  // Mantiene `jugadorSeleccionadoIdDebugRef` (declarado junto a `perfiles`,
+  // arriba) al día — ver el comentario de ese `ref` para el porqué de usar
+  // un `ref` y no un dependency directo del `useMemo`.
+  useEffect(() => {
+    jugadorSeleccionadoIdDebugRef.current = jugadorSeleccionadoId;
+  }, [jugadorSeleccionadoId]);
   const [sincronizando, setSincronizando] = useState(false);
   // Refactor (Centralización de Ajustes): "Metas de Cortesía" (botón +
   // `ModalMetasCortesia`) se movió a "Configuración del Club" → pestaña
