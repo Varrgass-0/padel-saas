@@ -846,6 +846,7 @@ import {
   Moon,
   Sun,
   Timer,
+  Copy,
 } from 'lucide-react';
 
 /* ============================================================================
@@ -17214,7 +17215,14 @@ function ModuloContabilidadCompras({
     nuevaVarianteNombre: '',
     nuevaVariantePrecio: '',
     nuevaVarianteImagenUrl: '',
-    estatusRecepcion: 'recibido', // 'pendiente' 🟡 | 'recibido' 🟢 — obligatorio en modo 'producto'
+    // Estatus de Recepción sin Selección Predeterminada (mejora): arranca
+    // vacío A PROPÓSITO (ninguno de los 2 botones queda marcado) — obliga al
+    // operador a elegir manualmente "Pendiente de Recepción" o "Recibido en
+    // Club" antes de poder registrar la compra (ver la validación
+    // `esModoCompraProducto && !formEgreso.estatusRecepcion` en
+    // `registrarEgreso`, que ya existía pero se quedaba "muda" mientras este
+    // valor arrancaba en 'recibido').
+    estatusRecepcion: '', // '' (sin elegir) | 'pendiente' 🟡 | 'recibido' 🟢 — obligatorio en modo 'producto'
   };
   function estadoInicialNuevoProductoForm(categoriaGasto) {
     return {
@@ -17242,6 +17250,13 @@ function ModuloContabilidadCompras({
   // Comanda" en `ModalLiquidarCuenta`).
   const [cancelandoCompraId, setCancelandoCompraId] = useState(null);
   const [compraParaCancelarId, setCompraParaCancelarId] = useState(null);
+  // Doble Confirmación (mejora, Control Interno): "Sí, cancelar compra" en
+  // `ModalMotivoObligatorio` ya NO ejecuta `cancelarCompra` de inmediato —
+  // solo guarda `{ compra, motivo }` aquí y cierra el modal de motivo, para
+  // abrir esta SEGUNDA ventana de seguridad (ver JSX más abajo). La
+  // cancelación de verdad (con la reversión de stock/P&L) solo corre si el
+  // operador confirma también aquí — "Regresar" descarta sin tocar nada.
+  const [confirmacionCancelacionCompra, setConfirmacionCancelacionCompra] = useState(null); // { compra, motivo } | null
   // Fix de Duplicación de Egresos: `guardandoEgreso` (state de React) NO
   // alcanza por sí solo para bloquear un doble clic — se actualiza de forma
   // asíncrona, así que dos clics casi simultáneos pueden leer AMBOS
@@ -17279,7 +17294,7 @@ function ModuloContabilidadCompras({
       nuevaVarianteNombre: '',
       nuevaVariantePrecio: '',
       nuevaVarianteImagenUrl: '',
-      estatusRecepcion: 'recibido',
+      estatusRecepcion: '',
     }));
     setNuevoProductoForm(estadoInicialNuevoProductoForm(nuevaCategoria));
   }
@@ -17298,6 +17313,26 @@ function ModuloContabilidadCompras({
   }
   function eliminarFilaVarianteNuevoProducto(id) {
     setNuevoProductoForm((prev) => ({ ...prev, variantes: prev.variantes.filter((v) => v.id !== id) }));
+  }
+  // Homologación / Copia Rápida (mejora): toma Precio de Venta, Costo y
+  // Stock de la PRIMERA variante de la lista y los replica al resto —
+  // nunca toca el Nombre (cada variante necesita el suyo propio, único) ni
+  // la propia primera fila. Sigue siendo editable después: es solo un
+  // punto de partida rápido para compras con variantes homogéneas (ej.
+  // mismo precio/costo/stock para "Chica"/"Mediana"/"Grande"), no un
+  // candado — el operador puede corregir cualquier fila individual después
+  // de copiar.
+  function copiarPrimeraVarianteATodas() {
+    setNuevoProductoForm((prev) => {
+      const [primera] = prev.variantes;
+      if (!primera) return prev;
+      return {
+        ...prev,
+        variantes: prev.variantes.map((v, i) =>
+          i === 0 ? v : { ...v, precio: primera.precio, costoUnitario: primera.costoUnitario, stock: primera.stock }
+        ),
+      };
+    });
   }
 
   const productoExistenteSeleccionado = useMemo(
@@ -18764,15 +18799,33 @@ function ModuloContabilidadCompras({
                         </div>
 
                         <div>
-                          <div className="mb-1.5 flex items-center justify-between">
+                          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Variantes (opcional)</span>
-                            <button
-                              type="button"
-                              onClick={agregarFilaVarianteNuevoProducto}
-                              className="inline-flex items-center gap-1 text-xs font-bold text-lime-400 hover:text-lime-300"
-                            >
-                              <Plus size={13} /> Agregar variante
-                            </button>
+                            <div className="flex items-center gap-3">
+                              {/* Homologación / Copia Rápida (mejora): solo
+                                  tiene sentido con 2+ variantes en pantalla y
+                                  la primera ya con datos capturados — copia
+                                  Precio/Costo/Stock de esa primera fila al
+                                  resto (nunca el Nombre), quedando editable
+                                  fila por fila después. */}
+                              {nuevoProductoForm.variantes.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={copiarPrimeraVarianteATodas}
+                                  title="Aplica el Precio de Venta, Costo y Stock de la primera variante al resto de la lista — puedes seguir editando cada fila después."
+                                  className="inline-flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-lime-400"
+                                >
+                                  <Copy size={13} /> Copiar Precio, Costo y Stock a todas las variantes
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={agregarFilaVarianteNuevoProducto}
+                                className="inline-flex items-center gap-1 text-xs font-bold text-lime-400 hover:text-lime-300"
+                              >
+                                <Plus size={13} /> Agregar variante
+                              </button>
+                            </div>
                           </div>
                           {nuevoProductoForm.variantes.length > 0 && (
                             <div className="space-y-2">
@@ -19039,10 +19092,60 @@ function ModuloContabilidadCompras({
                   subtitulo={`${compraACancelar.concepto || 'Compra'} · ${formatoMoneda(Number(compraACancelar.monto) || 0)} · Revierte el stock ya sumado (si aplica) y descuenta el gasto del P&L`}
                   textoBoton="Sí, cancelar compra"
                   onClose={() => setCompraParaCancelarId(null)}
-                  onConfirmar={(motivo) => cancelarCompra(compraACancelar, motivo)}
+                  // Doble Confirmación (mejora): "Sí, cancelar compra" ya NO
+                  // dispara `cancelarCompra` — solo guarda el motivo ya
+                  // capturado y abre la segunda ventana de seguridad (más
+                  // abajo). `return true` cierra ESTE modal de motivo (mismo
+                  // contrato de siempre), sin haber tocado stock/P&L todavía.
+                  onConfirmar={(motivo) => {
+                    setConfirmacionCancelacionCompra({ compra: compraACancelar, motivo });
+                    return true;
+                  }}
                 />
               );
             })()}
+
+          {confirmacionCancelacionCompra && (
+            <ModalShell
+              titulo="Confirmar Cancelación"
+              subtitulo={confirmacionCancelacionCompra.compra.concepto || 'Compra'}
+              onClose={() => setConfirmacionCancelacionCompra(null)}
+              icon={AlertTriangle}
+              ancho="max-w-sm"
+            >
+              <div className="space-y-4">
+                <div className="flex items-start gap-2 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2.5 text-xs font-semibold text-rose-300">
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                  ¿Estás seguro de cancelar esta compra? Se revertirá el gasto en P&L y el stock (si aplica).
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <BotonSecundario
+                    onClick={() => setConfirmacionCancelacionCompra(null)}
+                    disabled={cancelandoCompraId === confirmacionCancelacionCompra.compra.id}
+                  >
+                    Regresar
+                  </BotonSecundario>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const { compra, motivo } = confirmacionCancelacionCompra;
+                      const ok = await cancelarCompra(compra, motivo);
+                      if (ok) setConfirmacionCancelacionCompra(null);
+                    }}
+                    disabled={cancelandoCompraId === confirmacionCancelacionCompra.compra.id}
+                    className="inline-flex items-center gap-2 rounded-lg bg-rose-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {cancelandoCompraId === confirmacionCancelacionCompra.compra.id ? (
+                      <Loader2 size={15} className="animate-spin" />
+                    ) : (
+                      <Ban size={15} />
+                    )}
+                    Sí, confirmar cancelación
+                  </button>
+                </div>
+              </div>
+            </ModalShell>
+          )}
         </div>
       )}
 
