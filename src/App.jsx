@@ -1889,6 +1889,10 @@ const PERMISOS_POR_ROL = {
     // Owner/Manager ("administradores y coordinadores"), ver
     // `eliminarClaseDefinitivamente` en `ModuloAcademiaClinicas`.
     puedeEliminarClaseAcademia: true,
+    // Motor de Cortesías CRM (Vista 360° → "Consumo Secundario" + Favoritos
+    // + botón "Otorgar/Canjear Cortesía"): independiente de `puedeVerMontos`
+    // — Owner siempre puede.
+    puedeGestionarCortesias: true,
   },
   manager: {
     modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'],
@@ -1912,6 +1916,7 @@ const PERMISOS_POR_ROL = {
     // Manager = "coordinador" del club en esta matriz de roles — también
     // puede eliminar una clase definitivamente.
     puedeEliminarClaseAcademia: true,
+    puedeGestionarCortesias: true,
   },
   recepcion: {
     // "Recepción/Caja": Parrilla Operativa, Smart POS, Jugadores
@@ -1934,6 +1939,13 @@ const PERMISOS_POR_ROL = {
     soloLecturaInventario: false,
     puedeEvaluarJugadores: false,
     puedeEliminarClaseAcademia: false,
+    // Recepción/Caja YA podía otorgar cortesías desde el atajo rápido de
+    // Smart POS (insignia "Cortesía Disponible" al cobrar) — este flag
+    // habilita el mismo motor también dentro de la Vista 360° del Jugador
+    // (sección "Consumo Secundario": progreso Pro-Shop/Bar + Favoritos +
+    // botón "Otorgar/Canjear Cortesía"), sin exponerle el resto de cifras
+    // de `puedeVerMontos` (Gasto Total Histórico, Nivel de Fidelidad $).
+    puedeGestionarCortesias: true,
   },
   bar: {
     // "Restaurante/Bar": Smart POS (filtrado por defecto a la pestaña
@@ -1956,6 +1968,7 @@ const PERMISOS_POR_ROL = {
     soloLecturaInventario: true,
     puedeEvaluarJugadores: false,
     puedeEliminarClaseAcademia: false,
+    puedeGestionarCortesias: false,
   },
   coach: {
     // Academia & Clínicas (crear/programar clases) + Torneos & Retas
@@ -1982,6 +1995,9 @@ const PERMISOS_POR_ROL = {
     // El Coach programa/gestiona clases pero no puede borrarlas
     // definitivamente — solo Owner/Manager.
     puedeEliminarClaseAcademia: false,
+    // El Coach no maneja caja/mostrador — no le corresponde otorgar
+    // cortesías de consumo (eso es de Recepción/Caja al cobrar).
+    puedeGestionarCortesias: false,
   },
   contador: {
     // Rol de solo lectura/exportación: ÚNICAMENTE Contabilidad & Compras,
@@ -2011,6 +2027,10 @@ const PERMISOS_POR_ROL = {
     soloLecturaInventario: true,
     puedeEvaluarJugadores: false,
     puedeEliminarClaseAcademia: false,
+    // El Contador no tiene el módulo 'jugadores' habilitado (ver `modulos`
+    // arriba) — nunca llega a la Vista 360°, pero se deja el flag explícito
+    // por consistencia con el resto de la matriz de roles.
+    puedeGestionarCortesias: false,
   },
 };
 
@@ -10607,7 +10627,7 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
           <option value={30}>Últimos 30 días</option>
         </select>
       </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className={`grid grid-cols-1 gap-3 ${filtroCategoria ? '' : 'sm:grid-cols-2'}`}>
         <div className="rounded-xl border border-slate-200 bg-white p-3">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Top 5 Más Vendidos (unidades)</p>
           {cargando ? (
@@ -10630,13 +10650,24 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
             </ol>
           )}
         </div>
-        <MetricCard
-          icon={Star}
-          etiqueta="Categoría Estrella"
-          valor={categoriaEstrella ? etiquetaCategoriaProducto(categoriaEstrella[0]) : '—'}
-          sub={categoriaEstrella ? `${categoriaEstrella[1]} unidades vendidas · ${dias} días` : 'Sin ventas en el periodo'}
-          tono="amber"
-        />
+        {/* Visibilidad de "Categoría Estrella" en el POS: con una pestaña de
+            categoría específica activa (`filtroCategoria` viene de
+            `categoriaActiva` en Smart POS — ver el caller), el Top 5 de
+            arriba YA está acotado a esa sola categoría, así que "Categoría
+            Estrella" siempre sería trivialmente esa misma categoría — un
+            dato redundante que solo aporta algo en "Todos"
+            (`filtroCategoria` null), donde de verdad compite más de una
+            categoría por el primer lugar. Se oculta en vez de mostrar un
+            dato obvio, y el Top 5 usa el ancho completo en su lugar. */}
+        {!filtroCategoria && (
+          <MetricCard
+            icon={Star}
+            etiqueta="Categoría Estrella"
+            valor={categoriaEstrella ? etiquetaCategoriaProducto(categoriaEstrella[0]) : '—'}
+            sub={categoriaEstrella ? `${categoriaEstrella[1]} unidades vendidas · ${dias} días` : 'Sin ventas en el periodo'}
+            tono="amber"
+          />
+        )}
       </div>
     </div>
   );
@@ -34415,7 +34446,13 @@ function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPo
       ancho="max-w-lg"
     >
       <div className="space-y-3">
-        <p className="rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-xs text-amber-200">
+        {/* Corrección de Contraste: el texto descriptivo amarillo claro
+            (`text-amber-200` sobre `bg-amber-400/5`, casi blanco) era casi
+            ilegible sobre el fondo claro de este modal. `bg-emerald-50` +
+            `border-emerald-200` + `text-emerald-900` da contraste AA de
+            sobra manteniendo el tono "positivo" (cortesía/regalo) del
+            aviso. */}
+        <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
           Elige el producto del catálogo que se le entrega. Se genera un ticket en $0.00 en Smart POS a nombre de{' '}
           <span className="font-bold">{jugador.nombre}</span>, se descuenta el stock real y el Kardex, y el progreso de{' '}
           {etiquetaCategoria} vuelve a $0 para el próximo ciclo.
@@ -34747,39 +34784,64 @@ function ModalPerfilJugadorCRM({
           // y "Nivel de Fidelidad" (cuyos indicadores expandibles sí muestran
           // montos, ver `DetalleIndicadorCHS`) por un resumen puramente
           // operativo: reservas, visitas y asistencias a Academia.
-          <div>
-            <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
-              <CalendarClock size={15} className="text-lime-400" /> Actividad del Jugador
-            </h3>
-            <div className="grid grid-cols-3 gap-2">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
-                <p className="text-xl font-black text-lime-400">{perfil.historialCanchas?.length || 0}</p>
-                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reservas</p>
+          <>
+            <div>
+              <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
+                <CalendarClock size={15} className="text-lime-400" /> Actividad del Jugador
+              </h3>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
+                  <p className="text-xl font-black text-lime-400">{perfil.historialCanchas?.length || 0}</p>
+                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reservas</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
+                  <p className="text-xl font-black text-lime-400">{perfil.visitasPropias || 0}</p>
+                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Visitas</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
+                  <p className="text-xl font-black text-lime-400">{perfil.clasesAcademiaTomadas || 0}</p>
+                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Asistencias Academia</p>
+                </div>
               </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
-                <p className="text-xl font-black text-lime-400">{perfil.visitasPropias || 0}</p>
-                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Visitas</p>
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
-                <p className="text-xl font-black text-lime-400">{perfil.clasesAcademiaTomadas || 0}</p>
-                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Asistencias Academia</p>
-              </div>
+              {(perfil.canchaPreferida || perfil.horarioFavorito) && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {perfil.canchaPreferida && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-300 ring-1 ring-sky-400/30">
+                      <MapPin size={11} /> Cancha preferida: {perfil.canchaPreferida.nombre}
+                    </span>
+                  )}
+                  {perfil.horarioFavorito && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11px] font-bold text-violet-300 ring-1 ring-violet-400/30">
+                      <Clock size={11} /> Horario favorito: {perfil.horarioFavorito.rango}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
-            {(perfil.canchaPreferida || perfil.horarioFavorito) && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {perfil.canchaPreferida && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-300 ring-1 ring-sky-400/30">
-                    <MapPin size={11} /> Cancha preferida: {perfil.canchaPreferida.nombre}
-                  </span>
-                )}
-                {perfil.horarioFavorito && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11px] font-bold text-violet-300 ring-1 ring-violet-400/30">
-                    <Clock size={11} /> Horario favorito: {perfil.horarioFavorito.rango}
-                  </span>
-                )}
+
+            {/* Permisos de Cortesías y Favoritos para Recepción/Caja: fuera
+                del resumen operativo de arriba, pero DENTRO de esta misma
+                rama (`puedeVerMontos === false`) — solo se agrega cuando el
+                rol además tiene `puedeGestionarCortesias` (Recepción/Caja,
+                NO Restaurante/Bar ni Coach). Reutiliza tal cual
+                `DetalleConsumoPOS` (Favoritos + barras de Progreso de
+                Cortesía + botón "Otorgar/Canjear Cortesía") — el MISMO
+                componente y el MISMO flujo de canje que ya usan Owner/
+                Manager, sin exponerle a Recepción ninguna otra cifra de
+                `puedeVerMontos` (Gasto Total Histórico, Nivel de Fidelidad). */}
+            {permisos?.puedeGestionarCortesias && (
+              <div>
+                <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
+                  <Gift size={15} className="text-lime-400" /> Consumo Secundario
+                </h3>
+                <DetalleConsumoPOS
+                  perfil={perfil}
+                  onAbrirCanjeCortesia={setCanjeCategoria}
+                  canjeandoCategoria={canjeando ? canjeCategoria : null}
+                />
               </div>
             )}
-          </div>
+          </>
         ) : (
           <>
             <div>
