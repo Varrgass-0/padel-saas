@@ -784,6 +784,7 @@ import {
   ShoppingCart,
   ShoppingBag,
   Coffee,
+  Utensils,
   Package,
   Link2,
   Divide,
@@ -2710,6 +2711,18 @@ function idGrupoPareja() {
   return `pareja-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// Mismo criterio que `idGrupoPareja` (arriba), para un caso distinto: marca
+// con un mismo token todas las filas de `ventas` que nace UNA sola "Dividir
+// Cuenta" (`registrarVenta`/`liquidarCuentaDividida`, guardado en
+// `detalles.split_bill_grupo_id`) — así el KDS de Restaurante/Bar
+// (`TableroKDSRestauranteBar`) puede volver a juntarlas en una sola tarjeta
+// y sumar de vuelta las cantidades fraccionadas por el split de PAGO a las
+// unidades REALES a preparar, en vez de mostrar cada fracción por separado.
+function idGrupoSplitBill() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `split-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 // Clave de AGRUPACIÓN de una fila de `torneo_participantes` para "¿esta fila
 // es la MISMA pareja que esta otra?" — usada por `duplasConfirmadasTorneo`
 // para armar los enfrentamientos del cuadro SIN enfrentar nunca a una pareja
@@ -3741,7 +3754,20 @@ function Sidebar({
             </button>
           )}
           {modulosVisibles.map((m, idx) => {
-            const Icon = m.icon;
+            // Personalización del Menú por Rol (Restaurante/Bar): el módulo
+            // 'pos' (Smart POS) se muestra como "Comandas" con un ícono de
+            // Utensils SOLO para este rol — ver `TableroKDSRestauranteBar`,
+            // que reemplaza la interfaz de Venta Directa dentro de ese mismo
+            // módulo cuando `permisos?.rol === 'bar'` (ver `ModuloSmartPOS`).
+            // Es un override de PRESENTACIÓN aquí adentro nada más —
+            // `NAV_MODULOS` (compartido también con `AppInterno` para el
+            // orden guardado en `localStorage`) nunca se muta, así que el
+            // resto de roles con acceso a Smart POS (Owner, Manager,
+            // Recepción/Caja) siguen viendo "Smart POS" con su ícono de
+            // carrito de siempre, sin ningún cambio.
+            const esPosComoBar = m.id === 'pos' && permisos?.rol === 'bar';
+            const Icon = esPosComoBar ? Utensils : m.icon;
+            const label = esPosComoBar ? 'Comandas' : m.label;
             if (modoReordenar) {
               return (
                 <div
@@ -3758,7 +3784,7 @@ function Sidebar({
                 >
                   <GripVertical size={14} className="shrink-0 cursor-grab text-slate-400 active:cursor-grabbing" />
                   <Icon size={16} className="shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">{m.label}</span>
+                  <span className="min-w-0 flex-1 truncate">{label}</span>
                   <div className="flex shrink-0 flex-col">
                     <button
                       type="button"
@@ -3786,11 +3812,11 @@ function Sidebar({
               <button
                 key={m.id}
                 onClick={() => ir(m.id)}
-                title={colapsado ? m.label : undefined}
+                title={colapsado ? label : undefined}
                 className={`${itemBase} ${moduloActivo === m.id ? itemActivo : itemInactivo} ${colapsado ? 'lg:justify-center lg:px-2' : ''}`}
               >
                 <Icon size={17} className="shrink-0" />
-                <span className={colapsado ? 'lg:hidden' : ''}>{m.label}</span>
+                <span className={colapsado ? 'lg:hidden' : ''}>{label}</span>
               </button>
             );
           })}
@@ -10844,20 +10870,36 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
  * `postgres_changes` de `ventas` (mismo patrón/helper `canalClubFiltro` que
  * "Cuentas Abiertas") para que una comanda nueva aparezca sola, sin recargar.
  */
-function origenLabelVentaKDS(venta, canchasPorId) {
-  const cancha = venta?.cancha_id ? canchasPorId[venta.cancha_id] : null;
+// Origen de una TARJETA del KDS — ahora recibe el GRUPO completo de filas de
+// `ventas` que la componen (una sola, o varias si viene de "Dividir Cuenta",
+// ver `gruposComandaKDS` en `TableroKDSRestauranteBar`). El `cancha_id` es
+// SIEMPRE el mismo en todas las filas de un mismo grupo dividido (tanto
+// `registrarVenta` como `liquidarCuentaDividida` lo calculan UNA sola vez
+// antes del loop de participantes), así que basta con leerlo de la primera.
+// El nombre del cliente sí puede variar por fila (cada participante capturó
+// el suyo al dividir) — se listan los distintos, con "+N" si son varios.
+function origenLabelGrupoKDS(ventas, canchasPorId) {
+  const primera = ventas[0];
+  const cancha = primera?.cancha_id ? canchasPorId[primera.cancha_id] : null;
   if (cancha) return cancha.nombre;
-  const nombreCliente = (venta?.detalles?.jugador_nombre || '').trim();
-  return nombreCliente ? `Restaurante - ${nombreCliente}` : 'Restaurante / Barra';
+  const nombres = [...new Set(ventas.map((v) => (v?.detalles?.jugador_nombre || '').trim()).filter(Boolean))];
+  if (nombres.length === 0) return 'Restaurante / Barra';
+  if (nombres.length === 1) return `Restaurante - ${nombres[0]}`;
+  return `Restaurante - ${nombres[0]} +${nombres.length - 1}`;
 }
 
-function TarjetaComandaKDS({ venta, itemsBar, origenLabel, esCancha, ahora, activa, marcando, onMarcarListo }) {
-  const ts = obtenerTimestampVenta(venta);
+function TarjetaComandaKDS({ ventas, itemsBar, origenLabel, esCancha, ahora, activa, marcando, onMarcarListo }) {
+  // Hora del pedido = la fila MÁS ANTIGUA del grupo (todas las filas de un
+  // "Dividir Cuenta" se insertan casi al mismo instante, pero se toma la
+  // más antigua para no acortar el tiempo transcurrido "Hace N min").
+  const timestamps = ventas.map((v) => obtenerTimestampVenta(v)).filter(Boolean);
+  const ts = timestamps.length > 0 ? new Date(Math.min(...timestamps.map((d) => d.getTime()))) : null;
   const minutos = ts ? Math.max(0, Math.floor((ahora - ts.getTime()) / 60000)) : null;
   const urgente = activa && minutos != null && minutos >= 15;
   const atencion = activa && minutos != null && minutos >= 7 && minutos < 15;
   const horaPedido = ts ? ts.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : '—';
-  const listoEn = venta?.detalles?.kds_marcado_en ? new Date(venta.detalles.kds_marcado_en) : null;
+  const marcadosEn = ventas.map((v) => (v?.detalles?.kds_marcado_en ? new Date(v.detalles.kds_marcado_en) : null)).filter(Boolean);
+  const listoEn = marcadosEn.length > 0 ? new Date(Math.max(...marcadosEn.map((d) => d.getTime()))) : null;
 
   return (
     <div
@@ -10967,55 +11009,120 @@ function TableroKDSRestauranteBar({ productos, canchas, variantesPorProducto, op
   // sus artículos (p. ej. la línea de "Renta cancha" de una cuenta abierta)
   // se filtran fuera de `itemsBar` para que la tarjeta solo liste lo que de
   // verdad le toca preparar a Restaurante/Bar.
-  const comandasConItemsBar = useMemo(() => {
-    return (comandas || [])
-      .map((v) => {
-        const itemsBar = (Array.isArray(v?.detalles?.items) ? v.detalles.items : []).filter((it) => {
-          if (it.tipo !== 'producto' || !(Number(it.cantidad) > 0)) return false;
-          return productosPorId[it.producto_id]?.categoria === 'Cafetería/Bar';
-        });
-        return { venta: v, itemsBar };
-      })
-      .filter((c) => c.itemsBar.length > 0);
-  }, [comandas, productosPorId]);
+  //
+  // Corrección de cantidades fraccionadas: cuando una cuenta se divide
+  // (`registrarVenta` con `pagosDivididos`, o "Dividir Cuenta" en
+  // `liquidarCuentaDividida`), cada participante recibe su propia fila en
+  // `ventas` con las cantidades de cada artículo prorrateadas según lo que
+  // le toca pagar (p. ej. 0.5x si dos personas comparten una orden). Esa
+  // fracción es correcta para el cobro pero NO para la cocina/barra, que
+  // necesita ver la unidad entera a preparar. Todas las filas nacidas de un
+  // mismo split comparten `detalles.split_bill_grupo_id` (ver
+  // `idGrupoSplitBill`); las que no vienen de un split (venta directa, o una
+  // cuenta abierta liquidada sin dividir) no tienen esa clave y cada una
+  // forma su propio grupo de 1 fila. Agrupamos por esa clave y sumamos las
+  // cantidades de cada artículo (mismo producto + variante) de vuelta a su
+  // total real — la suma de las fracciones de todos los participantes de un
+  // mismo split siempre reconstruye el entero original, porque
+  // `repartirCentavos` garantiza que los montos de los participantes suman
+  // exactamente el total del ticket.
+  const gruposComandaKDS = useMemo(() => {
+    const gruposPorClave = new Map();
+    for (const v of comandas || []) {
+      const itemsBar = (Array.isArray(v?.detalles?.items) ? v.detalles.items : []).filter((it) => {
+        if (it.tipo !== 'producto' || !(Number(it.cantidad) > 0)) return false;
+        return productosPorId[it.producto_id]?.categoria === 'Cafetería/Bar';
+      });
+      if (itemsBar.length === 0) continue;
+      const claveGrupo = v?.detalles?.split_bill_grupo_id ? `split:${v.detalles.split_bill_grupo_id}` : `venta:${v.id}`;
+      if (!gruposPorClave.has(claveGrupo)) gruposPorClave.set(claveGrupo, { clave: claveGrupo, ventas: [], itemsBar: [] });
+      const grupo = gruposPorClave.get(claveGrupo);
+      grupo.ventas.push(v);
+      grupo.itemsBar.push(...itemsBar);
+    }
+    return Array.from(gruposPorClave.values()).map((grupo) => {
+      // Consolida por producto+variante (mismo criterio que `clave` en la
+      // línea ~10650) sumando cantidades y redondeando al entero más cercano
+      // — el redondeo solo absorbe el margen de punto flotante del
+      // prorrateo, no altera la cantidad real preparada.
+      const itemsPorClave = new Map();
+      for (const it of grupo.itemsBar) {
+        const claveItem = it.variante_id ? `v:${it.variante_id}` : `p:${it.producto_id}`;
+        const existente = itemsPorClave.get(claveItem);
+        if (existente) {
+          existente.cantidad += Number(it.cantidad) || 0;
+        } else {
+          itemsPorClave.set(claveItem, { ...it, cantidad: Number(it.cantidad) || 0 });
+        }
+      }
+      const itemsConsolidados = Array.from(itemsPorClave.values()).map((it) => ({ ...it, cantidad: Math.max(1, Math.round(it.cantidad)) }));
+      const primera = grupo.ventas[0];
+      const listo = grupo.ventas.every((v) => v?.detalles?.kds_estado === 'listo');
+      return {
+        clave: grupo.clave,
+        ventas: grupo.ventas,
+        itemsBar: itemsConsolidados,
+        listo,
+        origenLabel: origenLabelGrupoKDS(grupo.ventas, canchasPorId),
+        esCancha: Boolean(primera?.cancha_id && canchasPorId[primera.cancha_id]),
+      };
+    });
+  }, [comandas, productosPorId, canchasPorId]);
 
   const activas = useMemo(
     () =>
-      comandasConItemsBar
-        .filter((c) => (c.venta?.detalles?.kds_estado || 'pendiente') !== 'listo')
-        .sort((a, b) => (obtenerTimestampVenta(a.venta)?.getTime() || 0) - (obtenerTimestampVenta(b.venta)?.getTime() || 0)),
-    [comandasConItemsBar]
+      gruposComandaKDS
+        .filter((g) => !g.listo)
+        .sort(
+          (a, b) =>
+            (obtenerTimestampVenta(a.ventas[0])?.getTime() || 0) - (obtenerTimestampVenta(b.ventas[0])?.getTime() || 0)
+        ),
+    [gruposComandaKDS]
   );
   const historial = useMemo(
     () =>
-      comandasConItemsBar
-        .filter((c) => c.venta?.detalles?.kds_estado === 'listo')
-        .sort((a, b) => (obtenerTimestampVenta(b.venta)?.getTime() || 0) - (obtenerTimestampVenta(a.venta)?.getTime() || 0)),
-    [comandasConItemsBar]
+      gruposComandaKDS
+        .filter((g) => g.listo)
+        .sort(
+          (a, b) =>
+            (obtenerTimestampVenta(b.ventas[0])?.getTime() || 0) - (obtenerTimestampVenta(a.ventas[0])?.getTime() || 0)
+        ),
+    [gruposComandaKDS]
   );
 
   // Marcar como Listo / Despachar: UPDATE puramente aditivo sobre
   // `detalles` (se conserva todo lo que ya traía — items, jugador_id, etc. —
   // solo se agregan las 3 claves nuevas). Nunca toca `estado_pago`/`total`,
   // así que el cobro/liquidación de Recepción no se entera ni le importa.
-  async function marcarComoListo(venta) {
-    setMarcandoId(venta.id);
-    const detallesActualizados = {
-      ...(venta.detalles || {}),
-      kds_estado: 'listo',
-      kds_marcado_en: new Date().toISOString(),
-      kds_marcado_por: operador?.nombre || null,
-    };
-    const { error: errUpdate } = await supabase.from('ventas').update({ detalles: detallesActualizados }).eq('id', venta.id);
+  // Cuando el grupo viene de una cuenta dividida trae VARIAS filas de
+  // `ventas` (una por participante) — se actualizan todas juntas para que
+  // el grupo completo pase a "Listo" de una sola vez.
+  async function marcarComoListo(grupo) {
+    setMarcandoId(grupo.clave);
+    const marcadoEn = new Date().toISOString();
+    const resultados = await Promise.all(
+      grupo.ventas.map(async (venta) => {
+        const detallesActualizados = {
+          ...(venta.detalles || {}),
+          kds_estado: 'listo',
+          kds_marcado_en: marcadoEn,
+          kds_marcado_por: operador?.nombre || null,
+        };
+        const { error: errUpdate } = await supabase.from('ventas').update({ detalles: detallesActualizados }).eq('id', venta.id);
+        return { id: venta.id, detallesActualizados, errUpdate };
+      })
+    );
     setMarcandoId(null);
-    if (errUpdate) {
-      mostrarToast({ titulo: 'No se pudo marcar la comanda', detalle: errUpdate.message, tono: 'error' });
+    const conError = resultados.find((r) => r.errUpdate);
+    if (conError) {
+      mostrarToast({ titulo: 'No se pudo marcar la comanda', detalle: conError.errUpdate.message, tono: 'error' });
       return;
     }
     // Sincronización Silenciosa: refleja el cambio de inmediato en pantalla
     // sin esperar a que el canal Realtime confirme el UPDATE de vuelta.
-    setComandas((prev) => prev.map((v) => (v.id === venta.id ? { ...v, detalles: detallesActualizados } : v)));
-    mostrarToast({ titulo: 'Comanda despachada', detalle: origenLabelVentaKDS(venta, canchasPorId) });
+    const detallesPorId = new Map(resultados.map((r) => [r.id, r.detallesActualizados]));
+    setComandas((prev) => prev.map((v) => (detallesPorId.has(v.id) ? { ...v, detalles: detallesPorId.get(v.id) } : v)));
+    mostrarToast({ titulo: 'Comanda despachada', detalle: grupo.origenLabel });
   }
 
   const lista = vista === 'activas' ? activas : historial;
@@ -11088,17 +11195,17 @@ function TableroKDSRestauranteBar({ productos, canchas, variantesPorProducto, op
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {lista.map(({ venta, itemsBar }) => (
+          {lista.map((grupo) => (
             <TarjetaComandaKDS
-              key={venta.id}
-              venta={venta}
-              itemsBar={itemsBar}
-              origenLabel={origenLabelVentaKDS(venta, canchasPorId)}
-              esCancha={Boolean(venta.cancha_id && canchasPorId[venta.cancha_id])}
+              key={grupo.clave}
+              ventas={grupo.ventas}
+              itemsBar={grupo.itemsBar}
+              origenLabel={grupo.origenLabel}
+              esCancha={grupo.esCancha}
               ahora={ahora}
               activa={vista === 'activas'}
-              marcando={marcandoId === venta.id}
-              onMarcarListo={() => marcarComoListo(venta)}
+              marcando={marcandoId === grupo.clave}
+              onMarcarListo={() => marcarComoListo(grupo)}
             />
           ))}
         </div>
@@ -12516,6 +12623,12 @@ function ModuloSmartPOS({
     // la comanda REAPARECERÍA como pendiente de preparar aunque ya se sirvió
     // — se detecta aquí, UNA sola vez, y se copia a cada fila nueva.
     const kdsEstadoPrevio = (grupo.ventas || []).some((v) => v?.detalles?.kds_estado === 'listo') ? 'listo' : null;
+    // KDS Restaurante/Bar — Bug de Decimales (fix, mismo criterio que
+    // `registrarVenta`): estas filas también llevan cantidades PROPORCIONALES
+    // al pago de cada quien, no las unidades reales — `splitBillGrupoId`
+    // deja que `TableroKDSRestauranteBar` las consolide de vuelta a una sola
+    // tarjeta con cantidades enteras.
+    const splitBillGrupoId = idGrupoSplitBill();
     for (let i = 0; i < pagosDivididos.length; i++) {
       const p = pagosDivididos[i];
       if (!(p.monto > 0)) continue;
@@ -12552,6 +12665,7 @@ function ModuloSmartPOS({
           split_bill: true,
           split_bill_parte: i + 1,
           split_bill_total_partes: pagosDivididos.length,
+          split_bill_grupo_id: splitBillGrupoId,
           ...(kdsEstadoPrevio ? { kds_estado: kdsEstadoPrevio } : {}),
         },
         estado_pago: 'pagado',
@@ -13510,6 +13624,19 @@ function ModuloSmartPOS({
       // descuento de stock + Kardex de abajo sigue corriendo UNA sola vez
       // sobre el `comanda` real, exactamente igual que antes — no depende de
       // cuántas filas de `ventas` haya.
+      //
+      // KDS Restaurante/Bar — Bug de Decimales (fix): cada fila de abajo
+      // lleva su copia PROPORCIONAL de los artículos (línea de arriba), con
+      // cantidades fraccionadas como 0.5×/0.25× — correctas para el ingreso/
+      // CRM por jugador, pero SIN SENTIDO para la cocina/barra, que necesita
+      // preparar unidades enteras. `idGrupoSplitBill()` marca con el MISMO
+      // token las N filas que nacen de ESTE "Finalizar Venta" dividido, para
+      // que `TableroKDSRestauranteBar` las vuelva a juntar en una sola
+      // tarjeta y sume las fracciones de vuelta a la cantidad real (la suma
+      // de las N fracciones siempre reconstruye el entero original, ya que
+      // `repartirCentavos` en `ModalDividirCuenta` garantiza que los montos
+      // de todos los participantes sumen exactamente el total).
+      const splitBillGrupoId = idGrupoSplitBill();
       for (let i = 0; i < pagosDivididos.length; i++) {
         const p = pagosDivididos[i];
         const fraccion = total > 0 ? p.monto / total : 1 / pagosDivididos.length;
@@ -13555,6 +13682,7 @@ function ModuloSmartPOS({
             split_bill: true,
             split_bill_parte: i + 1,
             split_bill_total_partes: pagosDivididos.length,
+            split_bill_grupo_id: splitBillGrupoId,
           },
           estado_pago: estadoPago,
         });
