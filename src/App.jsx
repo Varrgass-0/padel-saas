@@ -1921,9 +1921,14 @@ const PERMISOS_POR_ROL = {
   },
   recepcion: {
     // "Recepción/Caja": Parrilla Operativa, Smart POS, Jugadores
-    // (Directorio), Torneos y Academia (flujos de inscripción) — SIN
-    // montos en Analytics, SIN Contabilidad, SIN ERP.
-    modulos: ['parrilla', 'pos', 'torneos', 'academia', 'jugadores'],
+    // (Directorio) y Academia (flujos de inscripción) — SIN montos en
+    // Analytics, SIN Contabilidad, SIN ERP. El módulo "Torneos & Retas" se
+    // oculta por completo (no está en esta lista): Recepción sigue pudiendo
+    // inscribir/cobrar una Reta o Torneo desde el panel "Inscripción
+    // Torneo/Reta" de Smart POS (gated por 'pos', no por 'torneos'), solo
+    // deja de ver la pantalla dedicada con Mesa de Control/gestión de
+    // eventos, que no le corresponde.
+    modulos: ['parrilla', 'pos', 'academia', 'jugadores'],
     puedeCancelarReservas: true,
     puedeReprogramarReservas: true,
     puedeAplicarDescuentoManual: false,
@@ -14655,6 +14660,42 @@ async function unidadesVendidasPorProductoRango(inicio, fin) {
   return { porProducto, porVariante };
 }
 
+// Desglose línea por línea de "Ventas del Día"/"Ventas del Mes" (Tarjetas
+// Interactivas de ERP & Inventario, ver `ModalDesgloseVentas`): mismas filas
+// y mismo rango que `unidadesVendidasKardex`/`unidadesVendidasPorProductoRango`
+// (kardex.salida_venta) pero SIN agregar — se listan una por una para que el
+// modal muestre fecha/hora, producto, variante y cantidad de cada movimiento.
+async function detalleVentasKardexRango(inicio, fin) {
+  const { data, error } = await conClubId(supabase.from('kardex').select('*'))
+    .eq('tipo_movimiento', 'salida_venta')
+    .gte('created_at', inicio.toISOString())
+    .lt('created_at', fin.toISOString())
+    .order('created_at', { ascending: false });
+  if (error) return { data: [], error };
+  return { data: data || [], error: null };
+}
+
+// Resuelve producto/variante de una fila de kardex contra el catálogo VIVO
+// (`productosPorId`/`variantesPorProducto`) — si el producto ya se eliminó
+// del catálogo, cae al nombre compuesto que el propio kardex guardó al
+// momento de la venta (`producto_nombre`, ej. "Overgrips — Bombarder Tacky",
+// ver `insertarMovimientoKardex`), separando producto/variante por el mismo
+// separador " — " que usa ese guardado. Mismo criterio de respaldo que
+// `TablaKardex` (`nombrePorProductoId[...] || mov.producto_nombre || '...'`),
+// solo que aquí se necesitan producto y variante en columnas separadas.
+function resolverNombresKardex(mov, productosPorId, variantesPorProducto) {
+  const producto = productosPorId?.[mov.producto_id];
+  if (producto) {
+    const variante = mov.variante_id ? (variantesPorProducto?.[mov.producto_id] || []).find((v) => v.id === mov.variante_id) : null;
+    return { producto: producto.nombre, variante: variante?.nombre || null };
+  }
+  if (mov.producto_nombre && mov.producto_nombre.includes(' — ')) {
+    const [p, v] = mov.producto_nombre.split(' — ');
+    return { producto: p || 'Producto eliminado', variante: v || null };
+  }
+  return { producto: mov.producto_nombre || 'Producto eliminado', variante: null };
+}
+
 // Si el producto no tiene `tiempo_entrega_dias` cargado (o la columna no
 // existe en Supabase todavía — ver nota de esquema arriba), se asume este
 // valor por defecto para la Alerta de Reabastecimiento.
@@ -16492,6 +16533,57 @@ function ModalAlertasReordenDesglose({ items, onClose }) {
   );
 }
 
+// Tarjetas Interactivas de Ventas ("Ventas del Día"/"Ventas del Mes" de ERP &
+// Inventario): al hacer clic abren este desglose línea por línea (fecha/hora,
+// producto, variante, cantidad) de todo lo que salió por venta en ese
+// periodo — misma fuente que las propias tarjetas (`kardex.salida_venta`,
+// ver `detalleVentasKardexRango`), disponible para cualquier rol con acceso
+// a Inventario (Owner/Manager la ven junto a las cifras en $; Restaurante/Bar
+// y Contador, que ya ven Inventario en solo lectura, la usan sin exponer
+// ningún monto — el desglose nunca incluye precio/costo, solo cantidades).
+function ModalDesgloseVentas({ titulo, subtitulo, lineas, cargando, error, onReintentar, onClose }) {
+  return (
+    <ModalShell titulo={titulo} subtitulo={subtitulo} onClose={onClose} icon={ShoppingCart} ancho="max-w-2xl">
+      {cargando ? (
+        <div className="space-y-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="h-10 animate-pulse rounded-xl bg-slate-100" />
+          ))}
+        </div>
+      ) : error ? (
+        <ErrorBanner mensaje={error} onReintentar={onReintentar} />
+      ) : lineas.length === 0 ? (
+        <p className="py-6 text-center text-xs text-slate-500">Sin ventas de productos registradas en este periodo.</p>
+      ) : (
+        <div className="max-h-[60vh] overflow-x-auto overflow-y-auto rounded-xl border border-slate-200">
+          <table className="w-full min-w-[520px] text-left text-xs">
+            <thead className="sticky top-0 bg-white">
+              <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-2.5">Fecha/Hora</th>
+                <th className="px-3 py-2.5">Producto</th>
+                <th className="px-3 py-2.5">Variante</th>
+                <th className="px-3 py-2.5 text-right">Cantidad</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lineas.map((l, i) => (
+                <tr key={i} className="border-b border-slate-200/70 last:border-0 hover:bg-slate-100/30">
+                  <td className="whitespace-nowrap px-3 py-2.5 text-slate-500">
+                    {l.fecha ? new Date(l.fecha).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                  </td>
+                  <td className="px-3 py-2.5 font-semibold text-slate-900">{l.producto}</td>
+                  <td className="px-3 py-2.5 text-slate-500">{l.variante || '—'}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-bold text-slate-800">{l.cantidad}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
 function ModuloERPInventario({
   productos,
   loadingProductos,
@@ -16511,10 +16603,29 @@ function ModuloERPInventario({
   // valor/margen, columnas de costo) como los botones de alta/edición
   // (Nuevo Producto, edición inline de costo/mínimo).
   const soloLectura = permisos?.soloLecturaInventario === true;
+  // Ajustes puntuales de Inventario para el rol 'bar' (Restaurante/Bar) —
+  // deliberadamente NO se reutiliza `soloLectura` para estos dos (también es
+  // `true` para 'contador', que sí debe seguir viendo el Kardex completo y
+  // el catálogo entero para conciliar compras): ambos se gatean solo por rol.
+  const esRolBar = permisos?.rol === 'bar';
   const [vista, setVista] = useState('catalogo'); // 'catalogo' | 'kardex'
   const [busqueda, setBusqueda] = useState('');
   const [categoriaFiltro, setCategoriaFiltro] = useState('todos');
+  // Filtrado Estricto de Categoría (rol 'bar'): el catálogo SIEMPRE se
+  // muestra acotado a "Cafetería/Bar" — nunca Pro-Shop ni Rentas — sin
+  // importar lo que traiga `categoriaFiltro` (el selector de categoría ni
+  // siquiera se renderiza para este rol, ver JSX abajo).
+  const categoriaEfectiva = esRolBar ? 'Cafetería/Bar' : categoriaFiltro;
   const [modalAlertasReorden, setModalAlertasReorden] = useState(false);
+  // Tarjetas Interactivas de Ventas ("Ventas del Día"/"Ventas del Mes"):
+  // `modalDesglose` guarda solo título/subtítulo (o `null` si está cerrado);
+  // las líneas viven aparte para poder mostrar el esqueleto de carga antes
+  // de que la consulta a `kardex` regrese.
+  const [modalDesglose, setModalDesglose] = useState(null);
+  const [desgloseLineas, setDesgloseLineas] = useState([]);
+  const [desgloseCargando, setDesgloseCargando] = useState(false);
+  const [desgloseError, setDesgloseError] = useState('');
+  const [desgloseRangoActivo, setDesgloseRangoActivo] = useState(null);
 
   const [kardex, setKardex] = useState([]);
   const [loadingKardex, setLoadingKardex] = useState(true);
@@ -16585,6 +16696,62 @@ function ModuloERPInventario({
   useEffect(() => {
     cargarVentasMes();
   }, [cargarVentasMes]);
+
+  // Tarjetas Interactivas de Ventas: reconstruye el MISMO rango
+  // [inicio, fin) que ya calculan `cargarVentasDia`/`cargarVentasMes` para el
+  // picker de fecha que corresponda, pero en vez de agregar unidades/monto
+  // trae el desglose línea por línea (`detalleVentasKardexRango`) para el
+  // modal. `productosPorId` resuelve nombre de producto/variante contra el
+  // catálogo vivo (ver `resolverNombresKardex`).
+  const productosPorId = useMemo(() => Object.fromEntries((productos || []).map((p) => [p.id, p])), [productos]);
+
+  const cargarLineasDesglose = useCallback(
+    async (inicio, fin) => {
+      setDesgloseCargando(true);
+      setDesgloseError('');
+      const { data, error } = await detalleVentasKardexRango(inicio, fin);
+      if (error) {
+        setDesgloseError(error.message || 'No se pudo cargar el desglose de ventas.');
+        setDesgloseLineas([]);
+      } else {
+        setDesgloseLineas(
+          data.map((mov) => {
+            const { producto, variante } = resolverNombresKardex(mov, productosPorId, variantesPorProducto);
+            return { fecha: mov.created_at, producto, variante, cantidad: Math.abs(Number(mov.cantidad) || 0) };
+          })
+        );
+      }
+      setDesgloseCargando(false);
+    },
+    [productosPorId, variantesPorProducto]
+  );
+
+  function abrirDesgloseVentas(periodo) {
+    const esDia = periodo === 'dia';
+    const fechaBase = (esDia ? fechaVentasDia : fechaVentasMes) || hoyISO();
+    let inicio, fin, titulo, subtitulo;
+    if (esDia) {
+      const [y, m, d] = fechaBase.split('-').map(Number);
+      inicio = new Date(y, m - 1, d, 0, 0, 0, 0);
+      fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
+      titulo = 'Ventas del Día';
+      subtitulo = formatoFechaLarga(fechaBase);
+    } else {
+      const [y, m] = fechaBase.split('-').map(Number);
+      inicio = new Date(y, m - 1, 1, 0, 0, 0, 0);
+      fin = new Date(y, m, 1, 0, 0, 0, 0);
+      titulo = 'Ventas del Mes';
+      subtitulo = etiquetaMesDeFecha(fechaBase);
+    }
+    setModalDesglose({ titulo, subtitulo });
+    setDesgloseRangoActivo({ inicio, fin });
+    cargarLineasDesglose(inicio, fin);
+  }
+
+  function reintentarDesgloseVentas() {
+    if (!desgloseRangoActivo) return;
+    cargarLineasDesglose(desgloseRangoActivo.inicio, desgloseRangoActivo.fin);
+  }
 
   const cargarVentasPorProductoSemana = useCallback(async () => {
     const fin = new Date();
@@ -16737,9 +16904,9 @@ function ModuloERPInventario({
   const productosFiltrados = useMemo(() => {
     return productos
       .filter((p) => p.activo !== false && p.eliminado !== true)
-      .filter((p) => (categoriaFiltro === 'todos' ? true : p.categoria === categoriaFiltro))
+      .filter((p) => (categoriaEfectiva === 'todos' ? true : p.categoria === categoriaEfectiva))
       .filter((p) => (busqueda.trim() ? p.nombre?.toLowerCase().includes(busqueda.trim().toLowerCase()) : true));
-  }, [productos, categoriaFiltro, busqueda]);
+  }, [productos, categoriaEfectiva, busqueda]);
 
   /* ---------------- Mutaciones ---------------- */
 
@@ -16837,10 +17004,27 @@ function ModuloERPInventario({
           tono={kpis.alertasReorden > 0 ? 'rose' : 'lime'}
           onClick={kpis.alertasReorden > 0 ? () => setModalAlertasReorden(true) : undefined}
         />
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        {/* Tarjetas Interactivas de Ventas: clic (fuera del selector de
+            fecha, que detiene la propagación) abre `ModalDesgloseVentas` con
+            el desglose línea por línea del periodo — disponible para
+            cualquier rol, ver `abrirDesgloseVentas`. */}
+        <div
+          className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-lime-400/50 hover:bg-slate-100/60"
+          onClick={() => abrirDesgloseVentas('dia')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              abrirDesgloseVentas('dia');
+            }
+          }}
+        >
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ventas del Día</span>
-            <SelectorFechaCompacto value={fechaVentasDia} onChange={setFechaVentasDia} />
+            <span onClick={(e) => e.stopPropagation()}>
+              <SelectorFechaCompacto value={fechaVentasDia} onChange={setFechaVentasDia} />
+            </span>
           </div>
           {soloLectura ? (
             <p className="mt-2 text-2xl font-black text-slate-900">{ventasDia.unidades} u.</p>
@@ -16850,11 +17034,25 @@ function ModuloERPInventario({
               <p className="mt-0.5 text-[11px] text-slate-500">{ventasDia.unidades} unidades vendidas</p>
             </>
           )}
+          <p className="mt-1 text-[10px] font-semibold text-slate-400">Clic para ver el desglose</p>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div
+          className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-lime-400/50 hover:bg-slate-100/60"
+          onClick={() => abrirDesgloseVentas('mes')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              abrirDesgloseVentas('mes');
+            }
+          }}
+        >
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ventas del Mes</span>
-            <SelectorFechaCompacto value={fechaVentasMes} onChange={setFechaVentasMes} />
+            <span onClick={(e) => e.stopPropagation()}>
+              <SelectorFechaCompacto value={fechaVentasMes} onChange={setFechaVentasMes} />
+            </span>
           </div>
           {soloLectura ? (
             <p className="mt-2 text-2xl font-black text-slate-900">
@@ -16866,6 +17064,7 @@ function ModuloERPInventario({
               <p className="mt-0.5 text-[11px] text-slate-500">{ventasMes.unidades} unidades vendidas · {etiquetaMesDeFecha(fechaVentasMes)}</p>
             </>
           )}
+          <p className="mt-1 text-[10px] font-semibold text-slate-400">Clic para ver el desglose</p>
         </div>
       </div>
 
@@ -16890,14 +17089,21 @@ function ModuloERPInventario({
             >
               <Package size={14} /> Catálogo
             </button>
-            <button
-              onClick={() => setVista('kardex')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                vista === 'kardex' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <History size={14} /> Kardex
-            </button>
+            {/* Ocultar Kardex (rol 'bar'): el toggle ni siquiera se
+                renderiza — no solo se deshabilita — para que no quede
+                accesible desde el teclado tampoco. Si `vista` ya estaba en
+                'kardex' (p. ej. un cambio de rol en caliente), el efecto de
+                abajo la regresa sola a 'catalogo'. */}
+            {!esRolBar && (
+              <button
+                onClick={() => setVista('kardex')}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                  vista === 'kardex' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <History size={14} /> Kardex
+              </button>
+            )}
           </div>
           {vista === 'catalogo' && (
             <>
@@ -16910,13 +17116,18 @@ function ModuloERPInventario({
                   className={`${inputClase} w-48 pl-9`}
                 />
               </div>
-              <select value={categoriaFiltro} onChange={(e) => setCategoriaFiltro(e.target.value)} className={`${inputClase} w-40`}>
-                {CATEGORIAS_PRODUCTO.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
+              {/* Filtrado Estricto de Categoría (rol 'bar'): el selector no
+                  se muestra — `categoriaEfectiva` ya fuerza "Cafetería/Bar"
+                  sin importar el estado interno de `categoriaFiltro`. */}
+              {!esRolBar && (
+                <select value={categoriaFiltro} onChange={(e) => setCategoriaFiltro(e.target.value)} className={`${inputClase} w-40`}>
+                  {CATEGORIAS_PRODUCTO.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              )}
             </>
           )}
         </div>
@@ -16924,7 +17135,7 @@ function ModuloERPInventario({
 
       {errorProductos && <ErrorBanner mensaje={errorProductos} onReintentar={() => cargarProductos()} />}
 
-      {vista === 'catalogo' ? (
+      {vista === 'catalogo' || esRolBar ? (
         loadingProductos ? (
           <SkeletonProductos />
         ) : productos.length === 0 ? (
@@ -16950,6 +17161,18 @@ function ModuloERPInventario({
 
       {modalAlertasReorden && (
         <ModalAlertasReordenDesglose items={kpis.detalleAlertas} onClose={() => setModalAlertasReorden(false)} />
+      )}
+
+      {modalDesglose && (
+        <ModalDesgloseVentas
+          titulo={modalDesglose.titulo}
+          subtitulo={modalDesglose.subtitulo}
+          lineas={desgloseLineas}
+          cargando={desgloseCargando}
+          error={desgloseError}
+          onReintentar={reintentarDesgloseVentas}
+          onClose={() => setModalDesglose(null)}
+        />
       )}
     </>
   );
@@ -26713,12 +26936,20 @@ function ModalMarcadorReta({ reta, confirmados, onClose, onGuardar, guardando })
 
 /* ---------------- Mesa de Control (CRM) ---------------- */
 
-function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
+function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo, puedeVerMontos = true }) {
   // Filtro superior: 'todos' | 'reta:<id>' | 'torneo:<id>'. Los 3 indicadores
   // y el directorio de abajo se recalculan sobre el evento elegido — nunca
   // se filtra en el servidor, todo viene ya cargado por el módulo principal.
   const [eventoFiltro, setEventoFiltro] = useState('todos');
   const [tipoFiltro, idFiltro] = eventoFiltro === 'todos' ? [null, null] : eventoFiltro.split(':');
+  // Tarjetas Interactivas de la Mesa de Control: 'todos' | 'pendientes' —
+  // filtro adicional (independiente de `eventoFiltro`, se combinan) que el
+  // Directorio de Participantes de abajo aplica cuando el operador hace clic
+  // en "Total de Participantes" (limpia a 'todos') o en "Jugadores
+  // Pendientes de Pago" (solo visible para roles sin `puedeVerMontos`, ver
+  // abajo — deja el Directorio mostrando únicamente a quienes no han
+  // liquidado su inscripción).
+  const [filtroDirectorio, setFiltroDirectorio] = useState('todos');
 
   const opcionesEvento = useMemo(() => {
     const retasOpts = retas.map((r) => ({
@@ -26741,17 +26972,21 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
 
   const resumen = useMemo(() => {
     const cobradoRetas = inscripcionesFiltradas.filter((i) => inscripcionEstaPagada(i)).reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
-    const pendienteRetas = inscripcionesFiltradas
-      .filter((i) => !inscripcionEstaPagada(i) && estadoPagoInscripcion(i) != null)
-      .reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
+    const pendientesRetas = inscripcionesFiltradas.filter((i) => !inscripcionEstaPagada(i) && estadoPagoInscripcion(i) != null);
     const cobradoTorneos = participantesFiltrados.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
-    const pendienteTorneos = participantesFiltrados
-      .filter((p) => !inscripcionEstaPagada(p) && estadoPagoInscripcion(p) != null)
-      .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+    const pendientesTorneos = participantesFiltrados.filter((p) => !inscripcionEstaPagada(p) && estadoPagoInscripcion(p) != null);
+    const pendienteRetas = pendientesRetas.reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
+    const pendienteTorneos = pendientesTorneos.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
     return {
       cobrado: cobradoRetas + cobradoTorneos,
       pendiente: pendienteRetas + pendienteTorneos,
       totalParticipantes: inscripcionesFiltradas.length + participantesFiltrados.length,
+      // Jugadores Pendientes de Pago (tarjeta del rol Coach, sin montos): el
+      // CONTEO de las mismas filas que ya alimentan `pendiente` arriba, no un
+      // cálculo aparte — ambas tarjetas siempre reflejan exactamente el mismo
+      // conjunto de inscripciones, solo que una lo suma en $ y la otra los
+      // cuenta.
+      jugadoresPendientesPago: pendientesRetas.length + pendientesTorneos.length,
     };
   }, [inscripcionesFiltradas, participantesFiltrados]);
 
@@ -26783,12 +27018,27 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
     return [...filasRetas, ...filasTorneos];
   }, [inscripcionesFiltradas, retas, participantesFiltrados, torneos]);
 
+  // Aplica el filtro de las tarjetas interactivas sobre el directorio ya
+  // filtrado por evento — mismo criterio de "pendiente" que `resumen`
+  // arriba (`estadoPago` conocido y distinto de 'pagado'; una fila sin
+  // status registrado en absoluto no cuenta como pendiente, igual que en
+  // `resumen.jugadoresPendientesPago`).
+  const directorioFiltrado = useMemo(() => {
+    if (filtroDirectorio !== 'pendientes') return directorio;
+    return directorio.filter((f) => f.estadoPago != null && f.estadoPago !== 'pagado');
+  }, [directorio, filtroDirectorio]);
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-          <ClipboardList size={16} className="text-lime-400" /> Desglose Financiero por Evento
-        </h3>
+        {/* Roles sin `puedeVerMontos` (Coach) nunca ven esta cabecera ni
+            ninguna cifra en $ de esta pantalla — el selector de evento sigue
+            disponible para todos, solo cambia el encabezado que lo acompaña. */}
+        {puedeVerMontos && (
+          <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+            <ClipboardList size={16} className="text-lime-400" /> Desglose Financiero por Evento
+          </h3>
+        )}
         <div className="flex items-center gap-1.5">
           <Filter size={13} className="shrink-0 text-slate-500" />
           <select value={eventoFiltro} onChange={(e) => setEventoFiltro(e.target.value)} className={`${inputClase} sm:w-72`}>
@@ -26802,19 +27052,61 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <MetricCard icon={Wallet} etiqueta="Monto Cobrado" valor={formatoMoneda(resumen.cobrado)} sub="Retas + Torneos" tono="emerald" />
-        <MetricCard icon={AlertTriangle} etiqueta="Pendiente por Cobrar" valor={formatoMoneda(resumen.pendiente)} sub="Retas + Torneos" tono="amber" />
-        <MetricCard icon={Users} etiqueta="Total de Participantes" valor={resumen.totalParticipantes} sub="Inscritos activos" tono="violet" />
+      <div className={`grid grid-cols-1 gap-3 ${puedeVerMontos ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
+        {puedeVerMontos && (
+          <MetricCard icon={Wallet} etiqueta="Monto Cobrado" valor={formatoMoneda(resumen.cobrado)} sub="Retas + Torneos" tono="emerald" />
+        )}
+        {puedeVerMontos ? (
+          <MetricCard icon={AlertTriangle} etiqueta="Pendiente por Cobrar" valor={formatoMoneda(resumen.pendiente)} sub="Retas + Torneos" tono="amber" />
+        ) : (
+          <MetricCard
+            icon={AlertTriangle}
+            etiqueta="Jugadores Pendientes de Pago"
+            valor={resumen.jugadoresPendientesPago}
+            sub="Sin liquidar su inscripción"
+            tono="amber"
+            onClick={() => setFiltroDirectorio((prev) => (prev === 'pendientes' ? 'todos' : 'pendientes'))}
+            activo={filtroDirectorio === 'pendientes'}
+          />
+        )}
+        <MetricCard
+          icon={Users}
+          etiqueta="Total de Participantes"
+          valor={resumen.totalParticipantes}
+          sub="Inscritos activos"
+          tono="violet"
+          onClick={() => setFiltroDirectorio('todos')}
+          activo={filtroDirectorio === 'todos'}
+        />
       </div>
 
       <div>
-        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
-          <ClipboardList size={16} className="text-lime-400" /> Directorio de Participantes
-        </h3>
-        {directorio.length === 0 ? (
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+            <ClipboardList size={16} className="text-lime-400" /> Directorio de Participantes
+            {filtroDirectorio === 'pendientes' && (
+              <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-500 ring-1 ring-amber-400/30">
+                Pendientes de pago
+              </span>
+            )}
+          </h3>
+          {filtroDirectorio === 'pendientes' && (
+            <button
+              type="button"
+              onClick={() => setFiltroDirectorio('todos')}
+              className="text-[11px] font-bold text-slate-500 underline decoration-dotted transition hover:text-slate-800"
+            >
+              Ver todos
+            </button>
+          )}
+        </div>
+        {directorioFiltrado.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 py-12 text-center text-sm text-slate-500">
-            {eventoFiltro === 'todos' ? 'Todavía no hay participantes registrados.' : 'Sin participantes registrados para este evento.'}
+            {filtroDirectorio === 'pendientes'
+              ? 'Nadie pendiente de pago' + (eventoFiltro === 'todos' ? '.' : ' para este evento.')
+              : eventoFiltro === 'todos'
+              ? 'Todavía no hay participantes registrados.'
+              : 'Sin participantes registrados para este evento.'}
           </div>
         ) : (
           <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
@@ -26829,7 +27121,7 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo }) {
                 </tr>
               </thead>
               <tbody>
-                {directorio.map((f) => (
+                {directorioFiltrado.map((f) => (
                   <tr key={f.id} className="border-b border-slate-200/70 last:border-0">
                     <td className="px-3 py-2.5 font-bold text-slate-900">{f.nombre}</td>
                     <td className="px-3 py-2.5 text-slate-500">
@@ -26911,6 +27203,7 @@ function ModuloTorneosRetas({
   rankingJugadores,
   setRankingJugadores,
   jugadoresPorId,
+  permisos,
 }) {
   const mostrarToast = useToast();
   const [subvista, setSubvista] = useState('retas'); // 'retas' | 'torneos' | 'control'
@@ -28251,7 +28544,13 @@ function ModuloTorneosRetas({
       )}
 
       {subvista === 'control' && (
-        <MesaDeControl retas={retas} inscripciones={inscripciones} torneos={torneos} participantesTorneo={participantesTorneo} />
+        <MesaDeControl
+          retas={retas}
+          inscripciones={inscripciones}
+          torneos={torneos}
+          participantesTorneo={participantesTorneo}
+          puedeVerMontos={permisos?.puedeVerMontos !== false}
+        />
       )}
 
       {modalNuevaReta && (
@@ -46048,6 +46347,7 @@ function AppInterno() {
                 rankingJugadores={rankingJugadores}
                 setRankingJugadores={setRankingJugadores}
                 jugadoresPorId={jugadoresPorId}
+                permisos={permisos}
               />
             ) : moduloActivo === 'academia' ? (
               <ModuloAcademiaClinicas
