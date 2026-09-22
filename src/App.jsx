@@ -2554,13 +2554,35 @@ function ramaDeReta(reta) {
 // ese cobro asume el pago de ambos lugares — el subtotal/total real es
 // `precio × 2`, no el precio de un solo jugador. FIX de "el cobro de pareja
 // nueva/registrada no duplicaba el monto" reportado en producción.
+// Descuentos por Pronto Pago (Early Bird) — Nuevo Torneo: `torneo.descuentos_pronto_pago`
+// es un arreglo opcional de reglas `{ fecha_inicio, fecha_fin, porcentaje }`
+// capturado en "Descuentos por Pronto Pago" del modal "Nuevo Torneo" (ver
+// `ModalNuevoTorneo`). Esta función busca, entre las reglas cuyo rango de
+// fechas cubre HOY (`fechaISO`, por defecto la fecha real del dispositivo),
+// la que ofrezca el MAYOR descuento — así, si dos rangos llegaran a
+// traslaparse por error de captura del operador, siempre gana el más
+// favorable para el jugador en vez de aplicar el primero que se encuentre
+// en el arreglo. Devuelve 0 (sin descuento) si no hay ninguna regla vigente
+// hoy, si el torneo no tiene ninguna regla capturada, o si la columna
+// todavía no existe en este proyecto de Supabase (arreglo `undefined`) —
+// en cualquiera de esos casos se cobra el precio de lista normal.
+function descuentoProntoPagoVigente(torneo, fechaISO = hoyISO()) {
+  const reglas = Array.isArray(torneo?.descuentos_pronto_pago) ? torneo.descuentos_pronto_pago : [];
+  const vigentes = reglas.filter((r) => r?.fecha_inicio && r?.fecha_fin && fechaISO >= r.fecha_inicio && fechaISO <= r.fecha_fin);
+  if (vigentes.length === 0) return 0;
+  const maxPorcentaje = Math.max(...vigentes.map((r) => Number(r.porcentaje) || 0));
+  return Math.min(100, Math.max(0, maxPorcentaje));
+}
+
 function montoInscripcionTorneo(torneo, pareja) {
   const precioBase = Number(torneo?.precio) || 0;
   const incluyePareja = pareja?.modo === 'registrada' || pareja?.modo === 'nueva';
-  if (incluyePareja && torneo?.unidad_precio === 'jugador') {
-    return precioBase * 2;
-  }
-  return precioBase;
+  const precioConPareja = incluyePareja && torneo?.unidad_precio === 'jugador' ? precioBase * 2 : precioBase;
+  // El descuento se aplica sobre el total YA calculado (precio de pareja
+  // incluido, si aplica) — un torneo "por jugador" con 15% de pronto pago le
+  // descuenta el 15% al total de la dupla, no solo a un lugar.
+  const descuentoPct = descuentoProntoPagoVigente(torneo);
+  return descuentoPct > 0 ? Math.round(precioConPareja * (1 - descuentoPct / 100)) : precioConPareja;
 }
 
 // Estado de pago real de una fila de `reta_inscripciones`/
@@ -23881,6 +23903,15 @@ function TarjetaTorneo({
         </span>
         <span className="flex items-center gap-1.5">
           <DollarSign size={11} /> {formatoMoneda(torneo.precio)}/{torneo.unidad_precio === 'jugador' ? 'jugador' : 'pareja'}
+          {/* Descuentos por Pronto Pago: si hoy cae dentro de una regla
+              vigente, se avisa aquí mismo (mismo cálculo que usa el cobro
+              real, `descuentoProntoPagoVigente`) para que el operador no se
+              sorprenda si el registro cobra menos que el precio de lista. */}
+          {descuentoProntoPagoVigente(torneo) > 0 && (
+            <span className="rounded-full bg-lime-400/10 px-1.5 py-0.5 text-[9px] font-bold text-lime-400 ring-1 ring-lime-400/30">
+              -{descuentoProntoPagoVigente(torneo)}% hoy
+            </span>
+          )}
         </span>
         <span className="flex items-center gap-1.5">
           <Users size={11} /> {participantes.length} inscritos
@@ -23959,7 +23990,7 @@ function TarjetaTorneo({
   );
 }
 
-function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
+function ModalNuevoTorneo({ canchas, reservas, torneos, onClose, onCreado }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
 
@@ -23974,6 +24005,40 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
   const [categoriaRama, setCategoriaRama] = useState(RAMAS_JUEGO[0]);
   const [categoriaNivel, setCategoriaNivel] = useState('');
   const [categorias, setCategorias] = useState([]);
+  // Categorías/Niveles Dinámicos y Personalizables: el campo de Nivel de
+  // arriba ya NO es un <select> cerrado a `NIVELES_FUERZA` — es un texto
+  // libre con sugerencias (`<datalist>`, ver el JSX de abajo). Las
+  // sugerencias combinan los niveles "clásicos" con TODOS los niveles que el
+  // club ya haya usado alguna vez en cualquier torneo (activo o archivado) —
+  // sin agregar ninguna columna ni tabla nueva: como `torneo.categorias` ya
+  // se guarda tal cual como texto libre, basta con leer los torneos que ya
+  // están cargados en memoria (`torneos`, prop) para que cualquier nivel que
+  // un operador escriba una vez quede disponible como sugerencia rápida en
+  // el próximo torneo, de este club, automáticamente.
+  const nivelesSugeridos = useMemo(() => {
+    const historicos = (torneos || [])
+      .flatMap((t) => (Array.isArray(t.categorias) ? t.categorias : []))
+      .map((c) => (c?.nivel || '').trim())
+      .filter(Boolean);
+    return Array.from(new Set([...NIVELES_FUERZA, ...historicos]));
+  }, [torneos]);
+
+  // Descuentos por Pronto Pago (Early Bird) — arreglo opcional de reglas
+  // `{ fechaInicio, fechaFin, porcentaje }` (nombres en camelCase mientras
+  // viven en el formulario; se traducen a snake_case al guardar, ver
+  // `guardar()`). Vacío por default: un torneo sin ninguna regla capturada
+  // simplemente cobra `precio` de lista todo el tiempo, sin cambiar nada del
+  // comportamiento actual.
+  const [descuentosProntoPago, setDescuentosProntoPago] = useState([]);
+  function agregarDescuento() {
+    setDescuentosProntoPago((prev) => [...prev, { fechaInicio: fechaInicio, fechaFin: fechaInicio, porcentaje: '10' }]);
+  }
+  function actualizarDescuento(idx, campo, valor) {
+    setDescuentosProntoPago((prev) => prev.map((d, i) => (i === idx ? { ...d, [campo]: valor } : d)));
+  }
+  function quitarDescuento(idx) {
+    setDescuentosProntoPago((prev) => prev.filter((_, i) => i !== idx));
+  }
 
   const [bloqueos, setBloqueos] = useState([{ canchaId: canchasActivas[0]?.id || '', fecha: hoyISO(), horaInicio: '08:00', horaFin: '12:00' }]);
 
@@ -23981,8 +24046,8 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
   const [error, setError] = useState('');
 
   function agregarCategoria() {
-    if (!categoriaNivel) return;
-    setCategorias((prev) => [...prev, { rama: categoriaRama, nivel: categoriaNivel }]);
+    if (!categoriaNivel.trim()) return;
+    setCategorias((prev) => [...prev, { rama: categoriaRama, nivel: categoriaNivel.trim() }]);
     setCategoriaNivel('');
   }
   function quitarCategoria(idx) {
@@ -24016,6 +24081,24 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
       }
     }
 
+    // Descuentos por Pronto Pago: una fila totalmente vacía se ignora en
+    // silencio (el operador le dio "+ Agregar descuento" y se arrepintió),
+    // pero una fila a medio llenar sí bloquea el guardado — mejor avisar
+    // ahora que dejar una regla incompleta que nunca aplique de verdad.
+    for (const d of descuentosProntoPago) {
+      if (!d.fechaInicio && !d.fechaFin && !d.porcentaje) continue;
+      if (!d.fechaInicio || !d.fechaFin) {
+        return setError('Cada Descuento por Pronto Pago necesita fecha de inicio y fecha de fin.');
+      }
+      if (d.fechaFin < d.fechaInicio) {
+        return setError('En Descuentos por Pronto Pago, la fecha de fin no puede ser anterior a la fecha de inicio.');
+      }
+      const pct = Number(d.porcentaje);
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+        return setError('El porcentaje de cada Descuento por Pronto Pago debe ser mayor a 0 y hasta 100.');
+      }
+    }
+
     setGuardando(true);
     setError('');
 
@@ -24025,6 +24108,15 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
     // migrado con otro nombre de columna. Si de todos modos falta alguna
     // columna, el catch de abajo cae a modo local en vez de bloquear al
     // operador con una pantalla roja.
+    // Descuentos por Pronto Pago: se traducen de camelCase (estado del
+    // formulario) a snake_case (columna de Supabase) y se descartan las
+    // filas vacías que el operador haya dejado a medias sin llenar (ya se
+    // validó arriba que ninguna quedó a MEDIO llenar, solo puede haber
+    // filas completamente vacías).
+    const descuentosValidos = descuentosProntoPago
+      .filter((d) => d.fechaInicio && d.fechaFin && d.porcentaje)
+      .map((d) => ({ fecha_inicio: d.fechaInicio, fecha_fin: d.fechaFin, porcentaje: Number(d.porcentaje) || 0 }));
+
     const payloadTorneo = withClubId({
       nombre: nombre.trim(),
       categorias,
@@ -24036,6 +24128,13 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
       reglas: reglaPuntuacion,
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin || fechaInicio,
+      // Descuentos por Pronto Pago (Early Bird, columna nueva y opcional —
+      // ver migracion_v50): arreglo de reglas `{fecha_inicio, fecha_fin,
+      // porcentaje}` que `descuentoProntoPagoVigente`/`montoInscripcionTorneo`
+      // leen para aplicar el precio reducido solo, automáticamente, durante
+      // el registro de parejas — sin tocar `precio` (el precio de lista
+      // sigue siendo la fuente de verdad, el descuento se calcula al vuelo).
+      descuentos_pronto_pago: descuentosValidos,
       bloqueos: [],
       estado: 'planeación',
       // NOTA: `archivado` NO se manda en el insert a propósito — si la
@@ -24058,6 +24157,7 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
       'formato_juego',
       'reglas',
       'fecha_fin',
+      'descuentos_pronto_pago',
     ]);
 
     if (!errTorneo && data) {
@@ -24197,11 +24297,39 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
                 </option>
               ))}
             </select>
-            <SelectorNivel value={categoriaNivel} onChange={setCategoriaNivel} className={`${inputClase} w-auto`} />
+            {/* Categorías/Niveles Dinámicos y Personalizables: texto libre
+                con sugerencias (`<datalist>`) en vez del `<select>` cerrado
+                de `SelectorNivel` — el administrador puede escribir
+                cualquier nombre de nivel ("Suma 3", "Suma 2", "1ª Fuerza",
+                lo que use su club) y no queda limitado a la lista fija.
+                Las sugerencias se arman solas con `nivelesSugeridos` (ver
+                arriba) — ya incluyen los niveles clásicos MÁS cualquier
+                nivel que el club haya escrito antes en otro torneo. */}
+            <input
+              list="niveles-torneo-sugerencias"
+              value={categoriaNivel}
+              onChange={(e) => setCategoriaNivel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  agregarCategoria();
+                }
+              }}
+              placeholder="Ej. Suma 3, 1ª Fuerza…"
+              className={`${inputClase} w-auto`}
+            />
+            <datalist id="niveles-torneo-sugerencias">
+              {nivelesSugeridos.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
             <BotonSecundario onClick={agregarCategoria}>
               <Plus size={14} /> Agregar
             </BotonSecundario>
           </div>
+          <p className="mt-1 text-[11px] text-slate-400">
+            Escribe el nombre del nivel que use tu club — se sugiere solo en tus próximos torneos.
+          </p>
           {categorias.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {categorias.map((c, i) => (
@@ -24217,6 +24345,58 @@ function ModalNuevoTorneo({ canchas, reservas, onClose, onCreado }) {
               ))}
             </div>
           )}
+        </div>
+
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <Percent size={12} /> Descuentos por Pronto Pago
+              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold normal-case tracking-normal text-slate-500">
+                Opcional
+              </span>
+            </span>
+            <button type="button" onClick={agregarDescuento} className="text-[11px] font-bold text-lime-400 hover:underline">
+              + Agregar descuento
+            </button>
+          </div>
+          {/* Módulo de Descuentos por Inscripción Anticipada (Early Bird):
+              cada fila es una regla independiente `{fechaInicio, fechaFin,
+              porcentaje}` — se pueden agregar cuantas se quieran (p.ej. "20%
+              el primer mes, 10% el segundo"). Se guardan tal cual en
+              `torneos.descuentos_pronto_pago` y `montoInscripcionTorneo`
+              (usada en TODO el flujo de cobro, panel y Portal) las lee solas
+              para aplicar el precio reducido según la fecha del día — el
+              operador no tiene que hacer nada más al momento del registro. */}
+          <div className="space-y-2">
+            {descuentosProntoPago.map((d, idx) => (
+              <div
+                key={idx}
+                className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2.5 sm:grid-cols-[1fr_1fr_0.7fr_auto]"
+              >
+                <SelectorFechaClick value={d.fechaInicio} onChange={(v) => actualizarDescuento(idx, 'fechaInicio', v)} compact />
+                <SelectorFechaClick value={d.fechaFin} onChange={(v) => actualizarDescuento(idx, 'fechaFin', v)} compact />
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={d.porcentaje}
+                    onChange={(e) => actualizarDescuento(idx, 'porcentaje', e.target.value)}
+                    className={`${inputClase} pr-6 text-xs`}
+                  />
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400">%</span>
+                </div>
+                <button onClick={() => quitarDescuento(idx)} className="flex items-center justify-center text-slate-500 hover:text-rose-400">
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+            {descuentosProntoPago.length === 0 && (
+              <p className="text-[11px] text-slate-500">
+                Sin descuentos configurados — el torneo cobra el precio de lista completo todo el tiempo.
+              </p>
+            )}
+          </div>
         </div>
 
         <div>
@@ -24485,7 +24665,12 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
   const [correo, setCorreo] = useState('');
   const [nivel, setNivel] = useState('');
   const [categoria, setCategoria] = useState(torneo.categorias?.[0] ? `${torneo.categorias[0].rama} ${torneo.categorias[0].nivel}` : '');
-  const [monto, setMonto] = useState(String(torneo.precio ?? 0));
+  // Precio sugerido: si hoy cae dentro de una regla de "Descuentos por
+  // Pronto Pago" vigente (ver `montoInscripcionTorneo`/
+  // `descuentoProntoPagoVigente`), el monto ya nace con el precio reducido
+  // — el operador puede editarlo a mano de todos modos, esto solo evita que
+  // tenga que calcular el descuento en la cabeza.
+  const [monto, setMonto] = useState(String(montoInscripcionTorneo(torneo, null) || 0));
   const [estadoPago, setEstadoPago] = useState('pendiente');
   // Método de Pago (item 1, migracion_v32) — solo aplica si se registra YA
   // pagado aquí mismo (si queda "Pendiente", se cobra después en Smart POS).
@@ -27266,6 +27451,7 @@ function ModuloTorneosRetas({
         <ModalNuevoTorneo
           canchas={canchas}
           reservas={reservas}
+          torneos={torneos}
           onClose={() => setModalNuevoTorneo(false)}
           onCreado={(torneo) => {
             setTorneos((prev) => [...prev, torneo]);
@@ -38440,7 +38626,11 @@ function PortalPublicoJugadores({ clubSlug }) {
     } else if (Array.isArray(evento.categorias) && evento.categorias.length > 0) {
       setEventoParaInscribir({ tipo: 'torneo-categoria', evento });
     } else {
-      setFlujoPago({ tipo: 'torneo', evento, categoria: null, monto: Number(evento.precio) || 0 });
+      // Descuentos por Pronto Pago: este atajo (tarjeta → pago directo, sin
+      // pasar por el modal de detalle) también debe cobrar el precio
+      // reducido si hay una regla vigente hoy — `montoInscripcionTorneo`
+      // sin pareja no duplica nada, solo aplica el % si corresponde.
+      setFlujoPago({ tipo: 'torneo', evento, categoria: null, monto: montoInscripcionTorneo(evento, null) });
     }
   }
 
@@ -39253,8 +39443,16 @@ function PortalPublicoJugadores({ clubSlug }) {
                           </div>
                         )}
                         <div className="mt-3 flex items-center justify-between gap-2">
-                          <p className="text-sm font-bold text-lime-400">
-                            {formatoMoneda(t.precio)} / {t.unidad_precio || 'pareja'}
+                          <p className="flex items-center gap-1.5 text-sm font-bold text-lime-400">
+                            {formatoMoneda(montoInscripcionTorneo(t, null))} / {t.unidad_precio || 'pareja'}
+                            {/* Descuentos por Pronto Pago: aviso visible desde el listado, no
+                                solo al abrir el detalle — así el jugador ya sabe el precio real
+                                antes de dar clic. */}
+                            {descuentoProntoPagoVigente(t) > 0 && (
+                              <span className="rounded-full bg-lime-400/10 px-1.5 py-0.5 text-[9px] font-bold text-lime-400 ring-1 ring-lime-400/30">
+                                -{descuentoProntoPagoVigente(t)}%
+                              </span>
+                            )}
                           </p>
                           <span className="flex items-center gap-2">
                             {buscandoPareja > 0 && (
@@ -39690,7 +39888,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                     setModalIdentificacion(false);
                     return;
                   }
-                  setFlujoPago({ tipo: 'torneo', evento: t, categoria: null, monto: Number(t.precio) || 0 });
+                  setFlujoPago({ tipo: 'torneo', evento: t, categoria: null, monto: montoInscripcionTorneo(t, null) });
                 } else if (eventoParaInscribir.tipo === 'academia') {
                   const c = eventoParaInscribir.evento;
                   const tipoPago = eventoParaInscribir.tipoPago;
@@ -39710,7 +39908,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             onClose={() => setEventoParaInscribir(null)}
             onElegir={(categoria) => {
               const t = eventoParaInscribir.evento;
-              setFlujoPago({ tipo: 'torneo', evento: t, categoria, monto: Number(t.precio) || 0 });
+              setFlujoPago({ tipo: 'torneo', evento: t, categoria, monto: montoInscripcionTorneo(t, null) });
               setEventoParaInscribir(null);
             }}
           />
@@ -40200,7 +40398,14 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
   const parejaPreview =
     modoPareja === 'registrada' || modoPareja === 'nueva' ? { modo: modoPareja } : null;
   const montoAPagar = montoInscripcionTorneo(torneo, parejaPreview);
-  const seDuplicaPorPareja = montoAPagar !== (Number(torneo.precio) || 0);
+  // Descuentos por Pronto Pago: precio de lista YA con el % de hoy aplicado
+  // (sin duplicar por pareja) — se muestra tachado el precio original de
+  // `torneo.precio` cuando hay un descuento vigente. `seDuplicaPorPareja` se
+  // calcula de forma explícita (no comparando montos) para no confundirse
+  // con la variación que ahora también puede meter un descuento activo.
+  const precioListaConDescuento = montoInscripcionTorneo(torneo, null);
+  const descuentoPctVigente = descuentoProntoPagoVigente(torneo);
+  const seDuplicaPorPareja = Boolean(parejaPreview) && torneo?.unidad_precio === 'jugador';
 
   return (
     <ModalShell titulo={torneo.nombre} subtitulo="Detalle del torneo" onClose={onClose} icon={Trophy} ancho="max-w-lg">
@@ -40211,12 +40416,21 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
             {formatoFechaLarga(torneo.fecha_inicio)}
             {torneo.fecha_fin && torneo.fecha_fin !== torneo.fecha_inicio ? ` — ${formatoFechaLarga(torneo.fecha_fin)}` : ''}
           </p>
-          <p className="mt-2 text-lg font-black text-lime-400">
-            {formatoMoneda(torneo.precio)} <span className="text-xs font-semibold text-slate-500">/ {torneo.unidad_precio || 'pareja'}</span>
+          <p className="mt-2 flex flex-wrap items-center gap-2 text-lg font-black text-lime-400">
+            {formatoMoneda(precioListaConDescuento)}{' '}
+            <span className="text-xs font-semibold text-slate-500">/ {torneo.unidad_precio || 'pareja'}</span>
+            {descuentoPctVigente > 0 && (
+              <span className="rounded-full bg-lime-400/10 px-1.5 py-0.5 text-[10px] font-bold text-lime-400 ring-1 ring-lime-400/30">
+                -{descuentoPctVigente}% pronto pago
+              </span>
+            )}
           </p>
+          {descuentoPctVigente > 0 && (
+            <p className="text-xs text-slate-400 line-through">{formatoMoneda(torneo.precio)}</p>
+          )}
           {seDuplicaPorPareja && (
             <p className="mt-1 text-xs font-bold text-amber-400">
-              Total a pagar con tu pareja: {formatoMoneda(montoAPagar)} ({formatoMoneda(torneo.precio)} × 2)
+              Total a pagar con tu pareja: {formatoMoneda(montoAPagar)} ({formatoMoneda(precioListaConDescuento)} × 2)
             </p>
           )}
           {(torneo.reglas || torneo.regla_puntuacion) && (
