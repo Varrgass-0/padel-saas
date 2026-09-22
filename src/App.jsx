@@ -11755,6 +11755,14 @@ function ModuloSmartPOS({
     setLiquidandoClave(grupo.clave);
     let error = null;
     let totalCobrado = grupo.total;
+    // FIX — Ticket de Venta al liquidar Cuentas Abiertas: a diferencia de
+    // `registrarVenta` (Venta Directa), esta función no abría
+    // `ModalTicket` al terminar — el cobro se guardaba bien en Supabase,
+    // pero Recepción se quedaba sin comprobante para imprimir/entregar.
+    // `ticketData` se arma con los mismos datos que YA calcula cada rama de
+    // abajo (nunca se recalcula nada del cobro) y solo se usa DESPUÉS de
+    // confirmar que no hubo error, justo antes de `setGrupoALiquidar(null)`.
+    let ticketData = null;
     if (grupo.ventas.length > 0) {
       // EDICIÓN ANTES DE COBRAR: `itemsFinales` (si `ModalLiquidarCuenta` lo
       // mandó) trae la lista YA editada por el cajero — con cantidades
@@ -11822,6 +11830,22 @@ function ModuloSmartPOS({
           });
         }
       }
+      // Datos del ticket (rama "cuenta con tickets existentes" —
+      // consolidados en `ventaPrincipal`): mismo formato que ya usa
+      // `ModalTicket`/`registrarVenta` (folio, items, total, método,
+      // cambio) para que se vea IGUAL que un cobro de Venta Directa.
+      ticketData = {
+        folio: (ventaPrincipal?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        fecha: hoyISO(),
+        horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+        operadorNombre: operador?.nombre || 'Operador',
+        turnoLabel: turno?.label || '',
+        items: itemsParaGuardar,
+        total: totalCobrado,
+        metodoPago,
+        pagosDivididos: null,
+        cambio,
+      };
     } else if (grupo.reserva) {
       // Ticket nuevo (nunca existió uno ligado a esta reserva): se arma con
       // el desglose REAL — la línea de la cancha (fija, nunca editable) +
@@ -11886,11 +11910,29 @@ function ModuloSmartPOS({
         },
         estado_pago: 'pagado',
       });
-      ({ error } = await supabase.from('ventas').insert(payloadVentaLiquidacion));
+      // `.select().single()` (agregado para el ticket, ver FIX arriba):
+      // pide de vuelta la fila recién insertada SOLO para tener su `id` de
+      // verdad en el folio del ticket — el INSERT en sí (lo que de verdad
+      // guarda el cobro) es exactamente el mismo de siempre. Si el
+      // proyecto no tiene permiso RLS de SELECT tras el INSERT, el cobro
+      // NO se pierde: se reintenta con un INSERT liso (igual que ya hace
+      // `insertarVentaConReintentos` en Venta Directa) y el ticket usa un
+      // folio local en vez del id real de Supabase.
+      let dataInsertada = null;
+      ({ data: dataInsertada, error } = await supabase.from('ventas').insert(payloadVentaLiquidacion).select().single());
       if (error && esErrorColumnaInexistente(error)) {
         delete payloadVentaLiquidacion.es_reserva;
         delete payloadVentaLiquidacion.origen;
-        ({ error } = await supabase.from('ventas').insert(payloadVentaLiquidacion));
+        ({ data: dataInsertada, error } = await supabase.from('ventas').insert(payloadVentaLiquidacion).select().single());
+      }
+      if (error && esErrorPermisoRLS(error)) {
+        const { error: errorSoloInsert } = await supabase.from('ventas').insert(payloadVentaLiquidacion);
+        if (!errorSoloInsert) {
+          dataInsertada = { id: idLocal('venta'), ...payloadVentaLiquidacion };
+          error = null;
+        } else {
+          error = errorSoloInsert;
+        }
       }
       // DESCUENTO DE INVENTARIO al cobrar: esto SOLO corre en esta rama (el
       // ticket se está creando apenas ahora). Si ya existía un ticket
@@ -11908,6 +11950,20 @@ function ModuloSmartPOS({
           variantesPorProducto,
         });
       }
+      // Datos del ticket (rama "ticket nuevo" — reserva que aún no tenía
+      // ningún cobro ligado): mismo formato que la otra rama de arriba.
+      ticketData = {
+        folio: (dataInsertada?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        fecha: hoyISO(),
+        horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+        operadorNombre: operador?.nombre || 'Operador',
+        turnoLabel: turno?.label || '',
+        items: filasItems,
+        total: totalCobrado,
+        metodoPago,
+        pagosDivididos: null,
+        cambio,
+      };
     }
     setLiquidandoClave(null);
     if (error) {
@@ -11958,6 +12014,10 @@ function ModuloSmartPOS({
       titulo: 'Cuenta liquidada',
       detalle: `${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(totalCobrado)}${cambio > 0 ? ` · Cambio: ${formatoMoneda(cambio)}` : ''}`,
     });
+    // FIX: abre el mismo `ModalTicket` que usa Venta Directa — antes esta
+    // función solo mostraba el toast de arriba y cerraba el modal de
+    // Liquidar Cuenta, sin comprobante para imprimir/entregar al cliente.
+    if (ticketData) setVentaFinalizada(ticketData);
     setGrupoALiquidar(null);
     cargarCuentasAbiertas({ silencioso: true });
     return true;
@@ -12083,6 +12143,13 @@ function ModuloSmartPOS({
 
     let errorGeneral = null;
     let algunaGuardada = false;
+    // FIX — Ticket de Venta al Dividir Cuenta desde Cuentas Abiertas: mismo
+    // problema que en `liquidarCuenta` (ver su comentario "FIX" arriba) —
+    // esta función tampoco abría `ModalTicket`. `ticketsIndividuales` usa
+    // EXACTAMENTE el mismo formato que ya arma `registrarVenta` en su rama
+    // de `pagosDivididos` (Dividir Cuenta de Venta Directa), para que
+    // `ModalTicket` muestre el mismo selector "General"/por jugador.
+    const ticketsIndividuales = [];
     for (let i = 0; i < pagosDivididos.length; i++) {
       const p = pagosDivididos[i];
       if (!(p.monto > 0)) continue;
@@ -12122,11 +12189,28 @@ function ModuloSmartPOS({
         },
         estado_pago: 'pagado',
       });
-      let { error } = await supabase.from('ventas').insert(payloadParticipante);
+      // `.select().single()` (agregado para el ticket, mismo criterio que
+      // en `liquidarCuenta`): el INSERT que de verdad guarda el cobro de
+      // esta parte es idéntico a siempre — solo se pide la fila de vuelta
+      // para tener su `id` real en el folio, con el mismo respaldo RLS que
+      // ya usa `insertarVentaConReintentos` si ese `.select()` no tiene
+      // permiso (el cobro no se pierde, el folio queda local).
+      let dataParticipante = null;
+      let error = null;
+      ({ data: dataParticipante, error } = await supabase.from('ventas').insert(payloadParticipante).select().single());
       if (error && esErrorColumnaInexistente(error)) {
         delete payloadParticipante.es_reserva;
         delete payloadParticipante.origen;
-        ({ error } = await supabase.from('ventas').insert(payloadParticipante));
+        ({ data: dataParticipante, error } = await supabase.from('ventas').insert(payloadParticipante).select().single());
+      }
+      if (error && esErrorPermisoRLS(error)) {
+        const { error: errorSoloInsert } = await supabase.from('ventas').insert(payloadParticipante);
+        if (!errorSoloInsert) {
+          dataParticipante = { id: idLocal('venta'), ...payloadParticipante };
+          error = null;
+        } else {
+          error = errorSoloInsert;
+        }
       }
       if (error) {
         console.error(
@@ -12137,6 +12221,15 @@ function ModuloSmartPOS({
         continue;
       }
       algunaGuardada = true;
+      ticketsIndividuales.push({
+        folio: (dataParticipante?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        jugadorNombre: (p.jugadorNombre || '').trim() || `Jugador ${i + 1}`,
+        jugadorId: jugadorIdParticipante,
+        items: itemsParticipante,
+        total: p.monto,
+        metodoPago: p.metodo,
+        cambio: p.cambio || 0,
+      });
     }
 
     if (!algunaGuardada) {
@@ -12192,6 +12285,25 @@ function ModuloSmartPOS({
 
     setLiquidandoDividido(false);
     mostrarToast({ titulo: 'Cuenta dividida y cobrada', detalle: `${grupo.cancha?.nombre || 'Venta General'} · ${formatoMoneda(totalRef)}` });
+    // FIX: abre `ModalTicket` con el desglose por jugador — mismo formato
+    // "General"/por jugador que ya usa Dividir Cuenta en Venta Directa
+    // (ver `registrarVenta`, rama `pagosDivididos`, y `ModalTicket`).
+    if (ticketsIndividuales.length > 0) {
+      const cambioTotal = pagosDivididos.reduce((acc, p) => acc + (p.cambio || 0), 0);
+      setVentaFinalizada({
+        folio: ticketsIndividuales[0].folio,
+        fecha: hoyISO(),
+        horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+        operadorNombre: operador?.nombre || 'Operador',
+        turnoLabel: turno?.label || '',
+        items: itemsParaGuardarBase,
+        total: totalRef,
+        metodoPago: 'dividido',
+        pagosDivididos,
+        ticketsIndividuales,
+        cambio: cambioTotal,
+      });
+    }
     cargarCuentasAbiertas({ silencioso: true });
     return { ok: true };
   }
