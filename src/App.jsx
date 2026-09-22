@@ -7653,6 +7653,11 @@ function ComandaPanel({
   onLimpiar,
   onDividirCuenta,
   onAccionPrincipal,
+  // "Abrir Cuenta Sin Cancha" (Mesa / Barra / Cliente que no está jugando):
+  // mismo `estadoPago: 'pendiente'` que ya usa "Agregar a la Cuenta" con
+  // cancha vinculada, pero SIN pedir ninguna cancha — ver
+  // `abrirCuentaSinCancha` en `ModuloSmartPOS`.
+  onAbrirCuentaSinCancha,
   registrandoVenta,
   roster = [],
   onAsignarJugador,
@@ -7943,6 +7948,21 @@ function ComandaPanel({
           <p className="flex items-center gap-1.5 rounded-lg bg-sky-400/10 px-2.5 py-2 text-[11px] font-semibold text-sky-300 ring-1 ring-sky-400/20">
             <Info size={12} /> Se suma como pendiente a esa cancha; se cobra después, junto con la reserva.
           </p>
+        )}
+
+        {/* Abrir Cuenta Sin Cancha (mejora): equivalente a "Agregar a la
+            Cuenta" pero para clientes que NO están jugando (restaurante/bar,
+            o jugadores que ya liberaron la cancha pero se quedan a
+            consumir) — deja la comanda como Cuenta Abierta pendiente,
+            identificada por el Cliente capturado arriba, sin exigir ninguna
+            cancha. Solo tiene sentido sin "Vincular a Cancha" (ese caso ya
+            tiene su propio botón "Agregar a la Cuenta" de arriba) y sin
+            roster activo (Split Bill de una cancha en curso, que se cobra
+            distinto, por jugador). */}
+        {!canchaVinculadaId && !hayRoster && onAbrirCuentaSinCancha && (
+          <BotonSecundario onClick={onAbrirCuentaSinCancha} disabled={vacio || registrandoVenta} className="w-full">
+            <Coffee size={14} /> Abrir Cuenta Sin Cancha (Mesa / Barra)
+          </BotonSecundario>
         )}
       </div>
     </div>
@@ -9452,8 +9472,19 @@ function TarjetaCuentaAbierta({ grupo, onLiquidar, liquidando }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-900">
-            <MapPin size={14} className="shrink-0 text-sky-400" />
-            {grupo.cancha?.nombre || 'Venta General (sin cancha)'}
+            {/* Restaurante / Bar / Sin Cancha (mejora): una Cuenta Abierta
+                que nunca tuvo cancha vinculada (ver "Abrir Cuenta Sin
+                Cancha" en `ComandaPanel`) se distingue con su propio
+                ícono/etiqueta en vez del genérico "Venta General (sin
+                cancha)" que ya usan otros orígenes sin cancha (p. ej. Tienda
+                Web del Portal) — así Recepción identifica de un vistazo que
+                es una mesa/cliente de barra, no un error de captura. */}
+            {grupo.cancha ? (
+              <MapPin size={14} className="shrink-0 text-sky-400" />
+            ) : (
+              <Coffee size={14} className="shrink-0 text-amber-400" />
+            )}
+            {grupo.cancha?.nombre || (grupo.sinCancha ? 'Restaurante / Bar (Sin Cancha)' : 'Venta General (sin cancha)')}
           </p>
           <p className="mt-1 flex items-center gap-1.5 truncate text-xs font-semibold text-slate-500">
             <Users size={12} className="shrink-0" />
@@ -9911,11 +9942,17 @@ function ModalLiquidarCuenta({
   // Venta Directa del carrito principal — una sola interfaz para los tres
   // tipos, ver `onDividirCuenta`), así que aquí solo se decide si el botón
   // se muestra y se le entrega el `total`/`items` vigentes al momento.
+  // "Abrir Cuenta Sin Cancha" (mejora): antes esta condición solo cubría
+  // Cuentas Abiertas CON cancha, reservas pendientes, o compras de Tienda
+  // Web — una Cuenta Abierta de mostrador SIN cancha (`grupo.cancha` null,
+  // `grupo.reserva` null, origen POS normal) se quedaba sin botón "Dividir
+  // Cuenta". Ahora CUALQUIER grupo con ticket(s) reales en `ventas`
+  // (`grupo.ventas.length > 0`) puede dividirse — ya no depende del origen
+  // — para que el mismo flujo de `liquidarCuentaDividida` esté disponible
+  // exactamente igual con o sin cancha vinculada.
   const puedeDividir =
     Boolean(onDividirCuenta) &&
-    (Boolean(grupo.reserva) ||
-      Boolean(grupo.cancha) ||
-      (Array.isArray(grupo.ventas) && grupo.ventas.some((v) => esOrigenPortalWeb(v?.origen))));
+    (Boolean(grupo.reserva) || Boolean(grupo.cancha) || (Array.isArray(grupo.ventas) && grupo.ventas.length > 0));
 
   function disminuirCantidad(key) {
     setItems((prev) => prev.map((it) => (it._key === key && it.editable && it.cantidad > 1 ? { ...it, cantidad: it.cantidad - 1 } : it)));
@@ -11570,7 +11607,27 @@ function ModuloSmartPOS({
     );
     const mapa = new Map();
     cuentasSinReservasDePortal.forEach((v) => {
-      const clave = v.cancha_id ? `${v.cancha_id}::${v.reserva_id || 'sin-reserva'}` : `sin-cancha::${v.id}`;
+      let clave;
+      if (v.cancha_id) {
+        clave = `${v.cancha_id}::${v.reserva_id || 'sin-reserva'}`;
+      } else {
+        // Cuenta Abierta SIN Cancha ("Abrir Cuenta Sin Cancha" — Mesa/Barra/
+        // Cliente que no está jugando): a diferencia de una cancha
+        // vinculada (que agrupa por `cancha_id`), aquí no hay ningún id de
+        // cancha/reserva que sirva de "sesión" — se agrupa por CLIENTE en
+        // su lugar, para que varias rondas de consumo del MISMO cliente
+        // (cada una su propia fila en `ventas`, ver `registrarVenta`) caigan
+        // en UNA sola tarjeta en vez de una por cada "Abrir Cuenta". Prioridad:
+        // `jugador_id` del CRM (más confiable, ver `resolverJugadorId`) y,
+        // si no se resolvió ninguno, el nombre normalizado (sin acentos/
+        // mayúsculas, ver `claveNombre`) — una venta totalmente anónima (sin
+        // nombre, caso que `onAccionPrincipal`/`abrirCuentaSinCancha` ya no
+        // deberían dejar pasar) cae de vuelta a una tarjeta por venta, igual
+        // que antes.
+        const jugadorId = v?.detalles?.jugador_id;
+        const nombreNormalizado = claveNombre(v?.detalles?.jugador_nombre || '');
+        clave = jugadorId ? `sin-cancha::jugador::${jugadorId}` : nombreNormalizado ? `sin-cancha::nombre::${nombreNormalizado}` : `sin-cancha::${v.id}`;
+      }
       if (!mapa.has(clave)) {
         const cancha = v.cancha_id ? canchas.find((c) => c.id === v.cancha_id) || null : null;
         const reserva = v.reserva_id ? reservas.find((r) => r.id === v.reserva_id) || null : null;
@@ -11582,6 +11639,11 @@ function ModuloSmartPOS({
           total: 0,
           items: {}, // nombre → { cantidad, subtotal }
           clienteNombre: '',
+          // Restaurante / Bar / Sin Cancha (mejora): distingue en la tarjeta
+          // (`TarjetaCuentaAbierta`) una Cuenta Abierta que nunca tuvo cancha
+          // vinculada de una Venta General "sin cancha" cualquiera — solo se
+          // usa para elegir la etiqueta/ícono, nunca para el cobro en sí.
+          sinCancha: !v.cancha_id,
         });
       }
       const grupo = mapa.get(clave);
@@ -13436,7 +13498,15 @@ function ModuloSmartPOS({
 
     setRegistrandoVenta(false);
 
-    const detalleToast = canchaVinculadaId ? `Se sumó a ${canchaVinculada?.nombre || 'la cancha'}.` : formatoMoneda(total);
+    // "Abrir Cuenta Sin Cancha" (mejora): el mismo `registrarVenta` que ya
+    // usa "Agregar a la Cuenta" también arma esta cuenta abierta cuando no
+    // hay `canchaVinculadaId` — el toast distingue ese caso (por nombre del
+    // cliente, no por cancha) del de una Venta Directa cobrada de verdad.
+    const detalleToast = canchaVinculadaId
+      ? `Se sumó a ${canchaVinculada?.nombre || 'la cancha'}.`
+      : estadoPago === 'pendiente'
+      ? `Cuenta abierta a nombre de ${clienteNombre.trim() || 'cliente sin nombre'}.`
+      : formatoMoneda(total);
     const ticket =
       estadoPago === 'pagado'
         ? {
@@ -13461,7 +13531,10 @@ function ModuloSmartPOS({
         : null;
 
     limpiarComanda();
-    mostrarToast({ titulo: canchaVinculadaId ? 'Consumo agregado a la cuenta' : 'Venta registrada', detalle: detalleToast });
+    mostrarToast({
+      titulo: canchaVinculadaId ? 'Consumo agregado a la cuenta' : estadoPago === 'pendiente' ? 'Cuenta abierta creada' : 'Venta registrada',
+      detalle: detalleToast,
+    });
     if (ticket) setVentaFinalizada(ticket);
     return { ok: true, venta: data };
   }
@@ -13494,6 +13567,33 @@ function ModuloSmartPOS({
     } else {
       setModalCobro(true);
     }
+  }
+
+  // Abrir Cuenta Sin Cancha (Mesa / Barra / Cliente que no está jugando):
+  // MISMA llamada a `registrarVenta` que ya usa "Agregar a la Cuenta" con
+  // cancha vinculada (`estadoPago: 'pendiente'`, sin método de pago
+  // todavía) — la única diferencia es que aquí NUNCA se manda
+  // `canchaVinculadaId` (siempre vacío en este botón, ver `ComandaPanel`).
+  // Reutiliza tal cual el resto del pipeline ya existente: la fila nueva en
+  // `ventas` cae en "Cuentas Abiertas / Comandas Activas"
+  // (`gruposCuentasAbiertas`, agrupada por cliente cuando no hay cancha) y
+  // se liquida/divide después con las MISMAS `liquidarCuenta`/
+  // `liquidarCuentaDividida` ya corregidas para mostrar el ticket. Misma
+  // validación de "Nombre y Apellido" que `onAccionPrincipal` — aquí es
+  // TODAVÍA más importante, porque el nombre del cliente es la única forma
+  // de identificar/agrupar esta cuenta sin cancha.
+  function abrirCuentaSinCancha() {
+    if (comanda.length === 0) return;
+    const partesNombreCliente = clienteNombre.trim().split(/\s+/).filter(Boolean);
+    if (partesNombreCliente.length < 2) {
+      mostrarToast({
+        titulo: 'Faltan los datos del cliente',
+        detalle: 'Captura Nombre y Apellido antes de abrir la cuenta.',
+        tono: 'aviso',
+      });
+      return;
+    }
+    registrarVenta({ metodoPago: null, estadoPago: 'pendiente' });
   }
 
   // Control Interno — "Aplicación de descuentos manuales" / "Ediciones de
@@ -13866,6 +13966,7 @@ function ModuloSmartPOS({
           onLimpiar={limpiarComanda}
           onDividirCuenta={() => setModalDividir(true)}
           onAccionPrincipal={onAccionPrincipal}
+          onAbrirCuentaSinCancha={abrirCuentaSinCancha}
           registrandoVenta={registrandoVenta}
           roster={roster}
           onAsignarJugador={asignarItemAJugador}
