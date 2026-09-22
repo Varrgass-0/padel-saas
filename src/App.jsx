@@ -4967,23 +4967,35 @@ function tipoEventoDeReserva(estado) {
 // Tarjeta de un evento dentro de un bloque de hora de la Agenda: Tipo,
 // Cliente/Jugador, Cancha asignada y Estado (Pagado/Pendiente) — clic abre
 // el detalle/gestión vía `onClick` (lo decide cada módulo que la use).
-function TarjetaEventoAgenda({ reserva, canchasPorId, onClick }) {
+function TarjetaEventoAgenda({ reserva, canchasPorId, onClick, continuacion = false }) {
   const { label, meta } = tipoEventoDeReserva(reserva.estado);
   const cancha = canchasPorId?.[reserva.cancha_id];
   return (
     <button
       type="button"
       onClick={() => onClick?.(reserva)}
-      className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left transition hover:border-lime-400/40 hover:bg-slate-100/60"
+      // Renderizado Continuo de Horarios: en los bloques de hora que un
+      // evento largo solo ATRAVIESA (no donde empieza de verdad, ver
+      // `VistaAgendaDia`), la tarjeta se ve ligeramente atenuada y marcada
+      // "· continúa" — sigue siendo clicleable (misma reserva real) pero
+      // deja clarísimo cuál bloque es el de inicio real del evento.
+      className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition hover:border-lime-400/40 hover:bg-slate-100/60 ${
+        continuacion ? 'border-slate-100 bg-slate-50/70' : 'border-slate-200 bg-white'
+      }`}
     >
       <div className="flex min-w-0 items-center gap-3">
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${meta.badge}`}>{label}</span>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${meta.badge} ${continuacion ? 'opacity-60' : ''}`}>
+          {label}
+        </span>
         <div className="min-w-0">
-          <p className="truncate text-sm font-bold text-slate-900">{reserva.jugador_nombre || 'Jugador'}</p>
+          <p className={`truncate text-sm font-bold text-slate-900 ${continuacion ? 'opacity-70' : ''}`}>
+            {reserva.jugador_nombre || 'Jugador'}
+          </p>
           <p className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-slate-500">
             <MapPin size={11} className="shrink-0" /> {cancha?.nombre || 'Cancha'}
             <span className="text-slate-400">·</span>
             {formatoHora12(reserva.hora_inicio)}–{formatoHora12(reserva.hora_fin)}
+            {continuacion && <span className="text-slate-400"> · continúa</span>}
           </p>
         </div>
       </div>
@@ -5025,25 +5037,33 @@ function VistaAgendaDia({
     return horas;
   }, [horaAperturaMin, horaCierreMin]);
 
+  // Renderizado Continuo de Horarios: antes, un evento largo (ej. Torneo de
+  // 08:00 a 12:00) solo se guardaba en el bloque de su `hora_inicio` (08:00)
+  // y desaparecía de los bloques 09:00/10:00/11:00 que también ocupa —
+  // parecía que la cancha quedaba libre esas horas cuando en realidad seguía
+  // bloqueada. Ahora cada evento se agrega a TODOS los bloques de hora con
+  // los que su rango [iniMin, finMin) se traslapa, no solo al primero —
+  // `esInicio` marca cuál de esos bloques es el de arranque real (para que
+  // `TarjetaEventoAgenda` distinga visualmente la tarjeta "completa" de sus
+  // continuaciones, ver su comentario). Un evento sin `hora_fin` válida (o
+  // con `hora_fin <= hora_inicio`, dato incompleto) cae de vuelta al
+  // criterio anterior: se trata como de una sola hora.
   const eventosPorHora = useMemo(() => {
     const mapa = {};
     horasBloque.forEach((h) => (mapa[h] = []));
     eventosDelDia.forEach((r) => {
       const iniMin = parseHoraAMinutos(r.hora_inicio);
       if (iniMin === null) return;
-      // El evento cae en el bloque de la hora en punto igual o
-      // inmediatamente ANTERIOR a su hora de inicio real (ej. 09:30 cae en
-      // el bloque de las 09:00) — así una clase/reserva a media hora nunca
-      // desaparece de la lista, siempre aterriza en algún bloque visible.
-      let claveBloque = horasBloque[0];
-      for (const h of horasBloque) {
-        if (h <= iniMin) claveBloque = h;
-        else break;
-      }
-      if (mapa[claveBloque]) mapa[claveBloque].push(r);
+      const finMinCruda = parseHoraAMinutos(r.hora_fin);
+      const finMin = finMinCruda !== null && finMinCruda > iniMin ? finMinCruda : iniMin + 60;
+      horasBloque.forEach((h) => {
+        if (iniMin < h + 60 && finMin > h) {
+          mapa[h].push({ reserva: r, esInicio: iniMin >= h && iniMin < h + 60 });
+        }
+      });
     });
     Object.values(mapa).forEach((lista) =>
-      lista.sort((a, b) => (a.hora_inicio || '').localeCompare(b.hora_inicio || ''))
+      lista.sort((a, b) => (a.reserva.hora_inicio || '').localeCompare(b.reserva.hora_inicio || ''))
     );
     return mapa;
   }, [eventosDelDia, horasBloque]);
@@ -5059,8 +5079,14 @@ function VistaAgendaDia({
               {eventos.length === 0 ? (
                 <p className="py-1 text-xs font-medium text-slate-400">Sin eventos programados</p>
               ) : (
-                eventos.map((r) => (
-                  <TarjetaEventoAgenda key={r.id} reserva={r} canchasPorId={canchasPorId} onClick={onReservaClick} />
+                eventos.map(({ reserva: r, esInicio }) => (
+                  <TarjetaEventoAgenda
+                    key={`${r.id}-${h}`}
+                    reserva={r}
+                    canchasPorId={canchasPorId}
+                    onClick={onReservaClick}
+                    continuacion={!esInicio}
+                  />
                 ))
               )}
             </div>
@@ -23019,6 +23045,63 @@ function idsBloqueosDeReta(reta) {
 
 /* ---------------- Retas Abiertas ---------------- */
 
+// Confirmación de Borrado Lógico (Soft Delete) con Motivo obligatorio —
+// compartida por `TarjetaReta` y `TarjetaTorneo` para que "Eliminar
+// Reta"/"Eliminar Torneo" tengan EXACTAMENTE el mismo flujo y la misma
+// apariencia. Corrección de contraste: la versión anterior de este panel
+// (en ambas tarjetas) usaba `bg-rose-950/20` + `text-rose-200` — colores
+// pensados para una tarjeta OSCURA — sobre las tarjetas claras
+// (`bg-white`) de este proyecto, lo que dejaba el texto casi invisible
+// (rosa muy claro sobre un fondo casi blanco). Ahora usa `bg-rose-50` +
+// `text-rose-700`, el mismo criterio claro-sobre-claro que ya usa el resto
+// de la interfaz, con contraste AA de sobra. El motivo es obligatorio: el
+// botón "Confirmar" se queda deshabilitado hasta que el operador escriba
+// algo — se guarda junto con `deleted_at` para log/Analytics (ver
+// `eliminarRetaVisualmente`/`eliminarTorneoVisualmente`).
+function ConfirmarEliminacionVisual({ mensaje, eliminando, onCancelar, onConfirmar }) {
+  const [motivo, setMotivo] = useState('');
+  const motivoValido = motivo.trim().length > 0;
+  return (
+    <div className="mt-2 w-full space-y-2 rounded-lg border border-rose-300 bg-rose-50 p-2.5">
+      <p className="text-[11px] font-semibold text-rose-700">{mensaje}</p>
+      <div>
+        <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-rose-600">
+          Motivo de eliminación <span className="text-rose-500">*</span>
+        </label>
+        <textarea
+          autoFocus
+          value={motivo}
+          onChange={(e) => setMotivo(e.target.value)}
+          disabled={eliminando}
+          rows={2}
+          placeholder="Ej. Duplicada por error, el club canceló el evento…"
+          className="w-full rounded-lg border border-rose-300 bg-white px-2.5 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-rose-400 focus:outline-none disabled:opacity-50"
+        />
+      </div>
+      <div className="flex justify-end gap-1.5">
+        <button
+          type="button"
+          onClick={onCancelar}
+          disabled={eliminando}
+          className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          onClick={() => onConfirmar(motivo.trim())}
+          disabled={eliminando || !motivoValido}
+          title={!motivoValido ? 'Indica el motivo de eliminación' : undefined}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {eliminando ? <Loader2 size={12} className="animate-spin" /> : <EyeOff size={12} />}
+          Confirmar
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TarjetaReta({
   reta,
   cancha,
@@ -23249,34 +23332,15 @@ function TarjetaReta({
       )}
 
       {confirmarEliminarVisual ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
-          <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
-            ¿Eliminar "{reta.nombre}" de la interfaz? Sus inscripciones, pagos y asistencia se conservan intactos para
-            reportes/Analytics — solo deja de verse aquí.
-          </p>
-          <div className="flex shrink-0 gap-1.5">
-            <button
-              type="button"
-              onClick={() => setConfirmarEliminarVisual(false)}
-              disabled={eliminandoVisual}
-              className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
-            >
-              Cancelar
-            </button>
-            <button
-              type="button"
-              onClick={() => onEliminarVisual?.(reta)}
-              disabled={eliminandoVisual}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
-            >
-              {eliminandoVisual ? <Loader2 size={12} className="animate-spin" /> : <EyeOff size={12} />}
-              Confirmar
-            </button>
-          </div>
-        </div>
+        <ConfirmarEliminacionVisual
+          mensaje={`¿Eliminar "${reta.nombre}" de la interfaz? Sus inscripciones, pagos y asistencia se conservan intactos para reportes/Analytics — solo deja de verse aquí.`}
+          eliminando={eliminandoVisual}
+          onCancelar={() => setConfirmarEliminarVisual(false)}
+          onConfirmar={(motivo) => onEliminarVisual?.(reta, motivo)}
+        />
       ) : confirmarEliminar ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
-          <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-300 bg-rose-50 p-2.5">
+          <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-700">
             ¿Eliminar "{reta.nombre}" para siempre? No tiene inscritos, así que esto no se puede deshacer.
           </p>
           <div className="flex shrink-0 gap-1.5">
@@ -23840,6 +23904,8 @@ function TarjetaTorneo({
   actualizandoArchivo,
   onEliminarDefinitivo,
   eliminando,
+  onEliminarVisual,
+  eliminandoVisual,
 }) {
   const recaudado = participantes.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
   const pendiente = participantes
@@ -23851,6 +23917,13 @@ function TarjetaTorneo({
   // única forma de "quitarlo de en medio" sin perder registros.
   const puedeEliminarse = participantes.length === 0;
   const [confirmarEliminar, setConfirmarEliminar] = useState(false);
+  // Borrado Lógico (Soft Delete) — "Eliminar Torneo": mismo criterio que
+  // "Eliminar Reta" en `TarjetaReta` — oculta el torneo de AMBOS tabs
+  // (Activos y Archivados) escribiendo `deleted_at` + `motivo_eliminacion`,
+  // sin tocar participantes/pagos/puntos de Ranking, que siguen intactos
+  // para reportes/Analytics. No exige estar archivado ni tener cero
+  // participantes (a diferencia de "Eliminar Definitivamente").
+  const [confirmarEliminarVisual, setConfirmarEliminarVisual] = useState(false);
 
   return (
     <div className={`rounded-2xl border p-4 ${archivado ? 'border-slate-200/60 bg-white/50 opacity-80' : 'border-slate-200 bg-white'}`}>
@@ -23933,36 +24006,16 @@ function TarjetaTorneo({
         <ClipboardList size={15} /> Gestionar Torneo
       </BotonPrimario>
 
-      {!confirmarEliminar ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => onArchivar?.(torneo, !archivado)}
-            disabled={actualizandoArchivo}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {actualizandoArchivo ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : archivado ? (
-              <ArchiveRestore size={12} />
-            ) : (
-              <Archive size={12} />
-            )}
-            {archivado ? 'Restaurar' : 'Archivar'}
-          </button>
-          {archivado && puedeEliminarse && (
-            <button
-              type="button"
-              onClick={() => setConfirmarEliminar(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
-            >
-              <Trash size={12} /> Eliminar Definitivamente
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
-          <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
+      {confirmarEliminarVisual ? (
+        <ConfirmarEliminacionVisual
+          mensaje={`¿Eliminar "${torneo.nombre}" de la interfaz? Sus participantes, pagos y puntos de Ranking se conservan intactos para reportes/Analytics — solo deja de verse aquí.`}
+          eliminando={eliminandoVisual}
+          onCancelar={() => setConfirmarEliminarVisual(false)}
+          onConfirmar={(motivo) => onEliminarVisual?.(torneo, motivo)}
+        />
+      ) : confirmarEliminar ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-300 bg-rose-50 p-2.5">
+          <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-700">
             ¿Eliminar "{torneo.nombre}" para siempre? No tiene participantes ni ingresos, así que esto no se puede deshacer.
           </p>
           <div className="flex shrink-0 gap-1.5">
@@ -23984,6 +24037,46 @@ function TarjetaTorneo({
               Confirmar
             </button>
           </div>
+        </div>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onArchivar?.(torneo, !archivado)}
+            disabled={actualizandoArchivo}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {actualizandoArchivo ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : archivado ? (
+              <ArchiveRestore size={12} />
+            ) : (
+              <Archive size={12} />
+            )}
+            {archivado ? 'Restaurar' : 'Archivar'}
+          </button>
+          {/* Borrado Lógico (Soft Delete) — "Eliminar Torneo": a diferencia
+              de "Eliminar Definitivamente" (abajo), NO exige que esté
+              archivado ni que tenga cero participantes — solo oculta la
+              tarjeta (`deleted_at`), los datos históricos siguen intactos. */}
+          <button
+            type="button"
+            onClick={() => setConfirmarEliminarVisual(true)}
+            disabled={eliminandoVisual}
+            title="Quita el Torneo de la interfaz sin borrar participantes/pagos — se conservan para reportes"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <EyeOff size={12} /> Eliminar Torneo
+          </button>
+          {archivado && puedeEliminarse && (
+            <button
+              type="button"
+              onClick={() => setConfirmarEliminar(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
+            >
+              <Trash size={12} /> Eliminar Definitivamente
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -26229,9 +26322,12 @@ function ModuloTorneosRetas({
     return mapa;
   }, [participantesTorneo]);
 
-  const torneosArchivados = useMemo(() => torneos.filter((t) => t.archivado === true), [torneos]);
+  // Borrado Lógico (Soft Delete): un torneo con `deleted_at` queda fuera de
+  // AMBOS tabs — mismo criterio que `retasVisibles`/`retasArchivadas` en
+  // Retas (ver `eliminarTorneoVisualmente`).
+  const torneosArchivados = useMemo(() => torneos.filter((t) => !t.deleted_at && t.archivado === true), [torneos]);
   const torneosVisibles = useMemo(
-    () => torneos.filter((t) => (filtroTorneo === 'archivados' ? t.archivado === true : t.archivado !== true)),
+    () => torneos.filter((t) => !t.deleted_at && (filtroTorneo === 'archivados' ? t.archivado === true : t.archivado !== true)),
     [torneos, filtroTorneo]
   );
 
@@ -26299,6 +26395,42 @@ function ModuloTorneosRetas({
     mostrarToast({
       titulo: archivar ? 'Torneo archivado' : 'Torneo restaurado',
       detalle: archivar ? `${torneo.nombre} ya no aparece en Activos.` : `${torneo.nombre} vuelve a Activos.`,
+    });
+  }
+
+  // Borrado Lógico (Soft Delete) — "Eliminar Torneo": mismo criterio que
+  // `eliminarRetaVisualmente` — oculta el torneo de AMBOS tabs (Activos y
+  // Archivados) escribiendo `deleted_at` + `motivo_eliminacion` (columnas
+  // nuevas y opcionales, ver migracion_v51), sin tocar participantes, pagos
+  // ni puntos ya sumados al Ranking. Los bloqueos de Parrilla NO se
+  // cancelan aquí a propósito — el torneo sigue "vivo" para efectos de
+  // horario/cobro, solo deja de listarse en esta pantalla; usa "Archivar" o
+  // "Eliminar Definitivamente" si además quieres liberar las canchas.
+  const [eliminandoVisualTorneoId, setEliminandoVisualTorneoId] = useState(null);
+  async function eliminarTorneoVisualmente(torneo, motivo) {
+    const ahoraISO = new Date().toISOString();
+    const motivoLimpio = (motivo || '').trim();
+    setEliminandoVisualTorneoId(torneo.id);
+    setTorneos((prev) => prev.map((t) => (t.id === torneo.id ? { ...t, deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio } : t)));
+    if (torneo._local) {
+      guardarRegistroLocal(LS_KEY_TORNEOS_LOCAL, { ...torneo, deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio });
+    } else {
+      try {
+        const { error } = await actualizarConColumnasOpcionales(
+          'torneos',
+          torneo.id,
+          { deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio },
+          ['deleted_at', 'motivo_eliminacion']
+        );
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Torneos & Retas] No se pudo guardar "deleted_at"/"motivo_eliminacion" en Supabase — se aplica solo en esta sesión.', err);
+      }
+    }
+    setEliminandoVisualTorneoId(null);
+    mostrarToast({
+      titulo: 'Torneo eliminado',
+      detalle: `${torneo.nombre} ya no aparece en la interfaz — sus participantes y pagos se conservan para reportes.`,
     });
   }
 
@@ -26433,18 +26565,33 @@ function ModuloTorneosRetas({
   // horario/cobro, solo deja de listarse en esta pantalla; usa "Archivar" o
   // "Eliminar Definitivamente" si además quieres liberar la cancha.
   const [eliminandoVisualRetaId, setEliminandoVisualRetaId] = useState(null);
-  async function eliminarRetaVisualmente(reta) {
+  // `motivo` (obligatorio, capturado en `ConfirmarEliminacionVisual`) se
+  // guarda en `motivo_eliminacion` — columna nueva y opcional (ver
+  // migracion_v51), junto a `deleted_at`, para que quede registro de POR
+  // QUÉ se ocultó la reta en log/Analytics, sin depender de que el
+  // operador lo recuerde después. `actualizarConColumnasOpcionales` (en vez
+  // del `.update()` directo que usaba antes) reintenta sin la columna que
+  // falte — si el proyecto todavía no corrió la migración de alguna de las
+  // dos, la que sí exista se guarda igual, en vez de fallar el update
+  // completo por la que falta.
+  async function eliminarRetaVisualmente(reta, motivo) {
     const ahoraISO = new Date().toISOString();
+    const motivoLimpio = (motivo || '').trim();
     setEliminandoVisualRetaId(reta.id);
-    setRetas((prev) => prev.map((r) => (r.id === reta.id ? { ...r, deleted_at: ahoraISO } : r)));
+    setRetas((prev) => prev.map((r) => (r.id === reta.id ? { ...r, deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio } : r)));
     if (reta._local) {
-      guardarRegistroLocal(LS_KEY_RETAS_LOCAL, { ...reta, deleted_at: ahoraISO });
+      guardarRegistroLocal(LS_KEY_RETAS_LOCAL, { ...reta, deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio });
     } else {
       try {
-        const { error } = await supabase.from('retas').update({ deleted_at: ahoraISO }).eq('id', reta.id);
+        const { error } = await actualizarConColumnasOpcionales(
+          'retas',
+          reta.id,
+          { deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio },
+          ['deleted_at', 'motivo_eliminacion']
+        );
         if (error) throw error;
       } catch (err) {
-        console.warn('[Torneos & Retas] No se pudo guardar "deleted_at" en Supabase — se aplica solo en esta sesión.', err);
+        console.warn('[Torneos & Retas] No se pudo guardar "deleted_at"/"motivo_eliminacion" en Supabase — se aplica solo en esta sesión.', err);
       }
     }
     setEliminandoVisualRetaId(null);
@@ -27403,6 +27550,8 @@ function ModuloTorneosRetas({
                   actualizandoArchivo={actualizandoArchivoId === torneo.id}
                   onEliminarDefinitivo={eliminarTorneoDefinitivo}
                   eliminando={eliminandoTorneoId === torneo.id}
+                  onEliminarVisual={eliminarTorneoVisualmente}
+                  eliminandoVisual={eliminandoVisualTorneoId === torneo.id}
                 />
               ))}
             </div>
@@ -37659,7 +37808,10 @@ function PortalPublicoJugadores({ clubSlug }) {
       ),
     [retas, tickPortal]
   );
-  const torneosActivos = useMemo(() => torneos.filter((t) => t.archivado !== true && t.estado !== 'finalizado'), [torneos]);
+  const torneosActivos = useMemo(
+    () => torneos.filter((t) => !t.deleted_at && t.archivado !== true && t.estado !== 'finalizado'),
+    [torneos]
+  );
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   // OCULTAMIENTO INMEDIATO AL INICIAR LA CLASE: una clase desaparece del
   // catálogo público en cuanto `archivado === true`, O su `fecha + hora_fin`
