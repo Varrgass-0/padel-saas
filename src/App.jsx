@@ -10812,6 +10812,301 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
   );
 }
 
+/* ---------------- KDS Restaurante/Bar (Kitchen Display System) ----------------
+ * Vista EXCLUSIVA para el rol "Restaurante/Bar" (`permisos?.rol === 'bar'`,
+ * ver `ModuloSmartPOS` más abajo, justo antes de su `return` principal):
+ * reemplaza POR COMPLETO la interfaz de Venta Directa de Smart POS (catálogo,
+ * comanda manual, botones de cobro, pestañas "Cuentas Abiertas"/"Cuentas
+ * Pendientes") con un tablero de preparación — el operador de barra/cocina ya
+ * no cobra ni arma comandas aquí, solo VE lo que Recepción/Caja ya cargó
+ * desde el POS principal (o desde una cuenta abierta de cancha) y lo marca
+ * "Listo" cuando termina de prepararlo.
+ *
+ * NUNCA toca `estado_pago`/`total`/`items` de la venta — el único campo que
+ * escribe es `detalles.kds_estado` (clave NUEVA dentro del jsonb `detalles`
+ * que YA existe en `ventas`, así que esto NO necesita ninguna migración SQL:
+ * misma Arquitectura Flexible que el resto del proyecto). El cobro/
+ * liquidación de Recepción (`registrarVenta`/`liquidarCuenta`/
+ * `liquidarCuentaDividida`) sigue funcionando exactamente igual sin importar
+ * si esta pantalla existe o no — ninguna de esas funciones lee ni depende de
+ * `kds_estado` para decidir nada del pago.
+ *
+ * FUENTE DE DATOS: a diferencia de "Cuentas Abiertas" (`cuentasAbiertas` en
+ * `ModuloSmartPOS`, que solo trae `estado_pago: 'pendiente'`), aquí hacen
+ * falta TAMBIÉN los tickets que ya se cobraron de inmediato (alguien pide y
+ * paga un café en el momento, sin dejarlo en cuenta abierta) — así que se
+ * consulta TODO `ventas` del día de hoy (cualquier `estado_pago`) con
+ * `consultarVentasEnRango` (mismo helper robusto que ya usa
+ * `AnalyticsOperativosSinMontos`, con su propio respaldo si `created_at`
+ * todavía no existe) y se filtra en el cliente a solo los tickets con AL
+ * MENOS un artículo de categoría 'Cafetería/Bar' (cruce contra `productos`,
+ * igual criterio que el Top 5 de arriba). Se resuscribe a
+ * `postgres_changes` de `ventas` (mismo patrón/helper `canalClubFiltro` que
+ * "Cuentas Abiertas") para que una comanda nueva aparezca sola, sin recargar.
+ */
+function origenLabelVentaKDS(venta, canchasPorId) {
+  const cancha = venta?.cancha_id ? canchasPorId[venta.cancha_id] : null;
+  if (cancha) return cancha.nombre;
+  const nombreCliente = (venta?.detalles?.jugador_nombre || '').trim();
+  return nombreCliente ? `Restaurante - ${nombreCliente}` : 'Restaurante / Barra';
+}
+
+function TarjetaComandaKDS({ venta, itemsBar, origenLabel, esCancha, ahora, activa, marcando, onMarcarListo }) {
+  const ts = obtenerTimestampVenta(venta);
+  const minutos = ts ? Math.max(0, Math.floor((ahora - ts.getTime()) / 60000)) : null;
+  const urgente = activa && minutos != null && minutos >= 15;
+  const atencion = activa && minutos != null && minutos >= 7 && minutos < 15;
+  const horaPedido = ts ? ts.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : '—';
+  const listoEn = venta?.detalles?.kds_marcado_en ? new Date(venta.detalles.kds_marcado_en) : null;
+
+  return (
+    <div
+      className={`rounded-2xl border bg-white p-4 shadow-sm ${
+        urgente ? 'border-rose-300 ring-1 ring-rose-200' : atencion ? 'border-amber-300' : 'border-slate-200'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-900">
+            {esCancha ? <MapPin size={14} className="shrink-0 text-sky-400" /> : <Coffee size={14} className="shrink-0 text-amber-400" />}
+            {origenLabel}
+          </p>
+          <p className="mt-1 flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+            <Clock size={11} className="shrink-0" />
+            {horaPedido}
+            {activa && minutos != null && (
+              <span className={`font-black ${urgente ? 'text-rose-500' : atencion ? 'text-amber-500' : 'text-slate-400'}`}>
+                · Hace {minutos < 1 ? '<1' : minutos} min
+              </span>
+            )}
+          </p>
+        </div>
+        {!activa && (
+          <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-full bg-lime-400/10 px-2 py-0.5 text-[10px] font-bold text-lime-500 ring-1 ring-lime-400/30">
+            <CheckCircle2 size={11} className="mr-1" />
+            Listo{listoEn ? ` · ${listoEn.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}` : ''}
+          </span>
+        )}
+      </div>
+
+      <ul className="mt-3 space-y-1.5 rounded-xl bg-slate-50 px-3 py-2.5">
+        {itemsBar.map((it, i) => (
+          <li key={i} className="flex items-start gap-2 text-xs">
+            <span className="mt-0.5 flex h-5 min-w-[22px] shrink-0 items-center justify-center rounded-md bg-amber-400/15 px-1 text-[11px] font-black text-amber-600">
+              {it.cantidad}×
+            </span>
+            <span className="font-semibold text-slate-800">
+              {it.nombre}
+              {(it.variante_nombre || it.varianteNombre) ? ` (${it.variante_nombre || it.varianteNombre})` : ''}
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      {activa && (
+        <BotonPrimario onClick={onMarcarListo} disabled={marcando} className="mt-3 w-full">
+          {marcando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+          Marcar como Listo / Despachar
+        </BotonPrimario>
+      )}
+    </div>
+  );
+}
+
+function TableroKDSRestauranteBar({ productos, canchas, variantesPorProducto, operador }) {
+  const mostrarToast = useToast();
+  const [vista, setVista] = useState('activas'); // 'activas' | 'historial'
+  const [comandas, setComandas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+  const [marcandoId, setMarcandoId] = useState(null);
+  // Reloj puramente visual — solo para que "Hace N min" avance sin depender
+  // de que llegue un evento Realtime; nunca dispara ningún fetch.
+  const [ahora, setAhora] = useState(() => Date.now());
+
+  const productosPorId = useMemo(() => Object.fromEntries((productos || []).map((p) => [p.id, p])), [productos]);
+  const canchasPorId = useMemo(() => Object.fromEntries((canchas || []).map((c) => [c.id, c])), [canchas]);
+
+  const cargarComandas = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setCargando(true);
+    setError('');
+    const inicio = new Date(`${hoyISO()}T00:00:00`);
+    const fin = new Date(inicio.getTime() + 24 * 60 * 60 * 1000);
+    const { data, error: err } = await consultarVentasEnRango(inicio, fin);
+    if (err) {
+      setError(err.message || 'No se pudieron cargar las comandas.');
+      setComandas([]);
+    } else {
+      setComandas(data || []);
+    }
+    setCargando(false);
+  }, []);
+
+  useEffect(() => {
+    cargarComandas();
+  }, [cargarComandas]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('kds-restaurante-bar')
+      .on('postgres_changes', canalClubFiltro('ventas'), () => cargarComandas({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarComandas]);
+
+  useEffect(() => {
+    const id = setInterval(() => setAhora(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Cruce con `productos` (igual criterio que `AnalyticsOperativosSinMontos`):
+  // un ticket entra al tablero si trae AL MENOS un artículo cuyo
+  // `producto_id` resuelva a `categoria === 'Cafetería/Bar'` — el resto de
+  // sus artículos (p. ej. la línea de "Renta cancha" de una cuenta abierta)
+  // se filtran fuera de `itemsBar` para que la tarjeta solo liste lo que de
+  // verdad le toca preparar a Restaurante/Bar.
+  const comandasConItemsBar = useMemo(() => {
+    return (comandas || [])
+      .map((v) => {
+        const itemsBar = (Array.isArray(v?.detalles?.items) ? v.detalles.items : []).filter((it) => {
+          if (it.tipo !== 'producto' || !(Number(it.cantidad) > 0)) return false;
+          return productosPorId[it.producto_id]?.categoria === 'Cafetería/Bar';
+        });
+        return { venta: v, itemsBar };
+      })
+      .filter((c) => c.itemsBar.length > 0);
+  }, [comandas, productosPorId]);
+
+  const activas = useMemo(
+    () =>
+      comandasConItemsBar
+        .filter((c) => (c.venta?.detalles?.kds_estado || 'pendiente') !== 'listo')
+        .sort((a, b) => (obtenerTimestampVenta(a.venta)?.getTime() || 0) - (obtenerTimestampVenta(b.venta)?.getTime() || 0)),
+    [comandasConItemsBar]
+  );
+  const historial = useMemo(
+    () =>
+      comandasConItemsBar
+        .filter((c) => c.venta?.detalles?.kds_estado === 'listo')
+        .sort((a, b) => (obtenerTimestampVenta(b.venta)?.getTime() || 0) - (obtenerTimestampVenta(a.venta)?.getTime() || 0)),
+    [comandasConItemsBar]
+  );
+
+  // Marcar como Listo / Despachar: UPDATE puramente aditivo sobre
+  // `detalles` (se conserva todo lo que ya traía — items, jugador_id, etc. —
+  // solo se agregan las 3 claves nuevas). Nunca toca `estado_pago`/`total`,
+  // así que el cobro/liquidación de Recepción no se entera ni le importa.
+  async function marcarComoListo(venta) {
+    setMarcandoId(venta.id);
+    const detallesActualizados = {
+      ...(venta.detalles || {}),
+      kds_estado: 'listo',
+      kds_marcado_en: new Date().toISOString(),
+      kds_marcado_por: operador?.nombre || null,
+    };
+    const { error: errUpdate } = await supabase.from('ventas').update({ detalles: detallesActualizados }).eq('id', venta.id);
+    setMarcandoId(null);
+    if (errUpdate) {
+      mostrarToast({ titulo: 'No se pudo marcar la comanda', detalle: errUpdate.message, tono: 'error' });
+      return;
+    }
+    // Sincronización Silenciosa: refleja el cambio de inmediato en pantalla
+    // sin esperar a que el canal Realtime confirme el UPDATE de vuelta.
+    setComandas((prev) => prev.map((v) => (v.id === venta.id ? { ...v, detalles: detallesActualizados } : v)));
+    mostrarToast({ titulo: 'Comanda despachada', detalle: origenLabelVentaKDS(venta, canchasPorId) });
+  }
+
+  const lista = vista === 'activas' ? activas : historial;
+
+  return (
+    <div className="space-y-4">
+      <AnalyticsOperativosSinMontos
+        productos={productos}
+        variantesPorProducto={variantesPorProducto}
+        filtroCategoria="Cafetería/Bar"
+        titulo="Top 5 Más Vendidos (Restaurante/Bar)"
+      />
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
+          <button
+            onClick={() => setVista('activas')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+              vista === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Coffee size={14} /> Comandas Activas
+            {activas.length > 0 && (
+              <span
+                className={`ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-black ${
+                  vista === 'activas' ? 'bg-slate-50 text-lime-400' : 'bg-rose-500 text-rose-50'
+                }`}
+              >
+                {activas.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setVista('historial')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
+              vista === 'historial' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <History size={14} /> Historial de Hoy
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={() => cargarComandas()}
+          className="inline-flex items-center gap-1.5 self-start text-[11px] font-semibold text-slate-500 transition hover:text-slate-800 sm:self-auto"
+        >
+          <RefreshCw size={12} /> Actualizar
+        </button>
+      </div>
+
+      {error ? (
+        <ErrorBanner mensaje={error} onReintentar={() => cargarComandas()} />
+      ) : cargando ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-48 animate-pulse rounded-2xl bg-white" />
+          ))}
+        </div>
+      ) : lista.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 py-16 text-center">
+          <Coffee size={26} className="text-slate-300" />
+          <p className="text-sm font-semibold text-slate-500">
+            {vista === 'activas' ? 'Sin comandas pendientes de preparar.' : 'Nada despachado todavía hoy.'}
+          </p>
+          <p className="text-xs text-slate-400">
+            {vista === 'activas'
+              ? 'Se llenan solas en cuanto Recepción agrega un consumo de Restaurante/Bar en Smart POS o a una cuenta de cancha.'
+              : 'Las comandas marcadas "Listo" aparecen aquí, de la más reciente a la más antigua.'}
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {lista.map(({ venta, itemsBar }) => (
+            <TarjetaComandaKDS
+              key={venta.id}
+              venta={venta}
+              itemsBar={itemsBar}
+              origenLabel={origenLabelVentaKDS(venta, canchasPorId)}
+              esCancha={Boolean(venta.cancha_id && canchasPorId[venta.cancha_id])}
+              ahora={ahora}
+              activa={vista === 'activas'}
+              marcando={marcandoId === venta.id}
+              onMarcarListo={() => marcarComoListo(venta)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // `productos` vive levantado en App() (igual que `canchas`/`reservas`) para
 // que el catálogo se comparta en vivo con `ModuloERPInventario` sin depender
 // de que Realtime esté habilitado en Supabase — ver props recibidas abajo.
@@ -12212,6 +12507,15 @@ function ModuloSmartPOS({
     // de `pagosDivididos` (Dividir Cuenta de Venta Directa), para que
     // `ModalTicket` muestre el mismo selector "General"/por jugador.
     const ticketsIndividuales = [];
+    // KDS Restaurante/Bar — preserva `kds_estado` al dividir (mejora): esta
+    // función BORRA las filas originales de `grupo.ventas` (más abajo) y las
+    // reemplaza por una fila nueva POR JUGADOR — si alguna de las originales
+    // ya la había marcado "Listo" el tablero de Restaurante/Bar
+    // (`TableroKDSRestauranteBar`/`marcarComoListo`, que solo escribe
+    // `detalles.kds_estado`), esa marca se perdería al recrear las filas y
+    // la comanda REAPARECERÍA como pendiente de preparar aunque ya se sirvió
+    // — se detecta aquí, UNA sola vez, y se copia a cada fila nueva.
+    const kdsEstadoPrevio = (grupo.ventas || []).some((v) => v?.detalles?.kds_estado === 'listo') ? 'listo' : null;
     for (let i = 0; i < pagosDivididos.length; i++) {
       const p = pagosDivididos[i];
       if (!(p.monto > 0)) continue;
@@ -12248,6 +12552,7 @@ function ModuloSmartPOS({
           split_bill: true,
           split_bill_parte: i + 1,
           split_bill_total_partes: pagosDivididos.length,
+          ...(kdsEstadoPrevio ? { kds_estado: kdsEstadoPrevio } : {}),
         },
         estado_pago: 'pagado',
       });
@@ -13650,6 +13955,20 @@ function ModuloSmartPOS({
     mostrarToast({ titulo: 'Devolución registrada', detalle: `${producto.nombre}: ${stockAnterior} → ${stockNuevo}` });
     onRegistrarAuditoria?.('devolucion_pos', { producto: producto.nombre, cantidad, motivo });
     return true;
+  }
+
+  // KDS Restaurante/Bar (mejora estructural de UX): este rol ya NO ve la
+  // interfaz de Venta Directa de Smart POS (catálogo, comanda manual, cobro,
+  // Cuentas Abiertas/Pendientes) — todos los hooks de arriba (`cuentasAbiertas`,
+  // sus canales Realtime, etc.) siguen corriendo igual que para cualquier
+  // otro rol (nunca se saltan condicionalmente — Reglas de los Hooks), pero
+  // se ignoran aquí abajo: el `return` de este rol sale ANTES de llegar al
+  // JSX de Venta Directa, con un tablero de preparación completamente
+  // aparte (`TableroKDSRestauranteBar`, ver su comentario de cabecera justo
+  // arriba de `ModuloSmartPOS`). El resto de roles con acceso a Smart POS
+  // (Owner, Manager, Recepción/Caja) no se ven afectados en absoluto.
+  if (permisos?.rol === 'bar') {
+    return <TableroKDSRestauranteBar productos={productos} canchas={canchas} variantesPorProducto={variantesPorProducto} operador={operador} />;
   }
 
   return (
