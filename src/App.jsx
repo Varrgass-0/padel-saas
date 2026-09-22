@@ -2381,6 +2381,18 @@ function eventoYaInicio(fechaISO, horaStr, ahoraMs = Date.now()) {
   return t !== null && t <= ahoraMs;
 }
 
+// true si `fechaISO`+`horaFinStr` ya pasó respecto a `ahoraMs` (por defecto
+// el reloj real) — Auto-Archivado por Fecha/Hora Vencida de Retas: en cuanto
+// el reloj real supera la `hora_fin` de la reta, se considera concluida y
+// pasa SOLA al tab "Archivadas" (ver `retasVisibles`/`retasArchivadas` en
+// `AppInterno` y el badge "Archivada" de `TarjetaReta`) sin que el operador
+// tenga que archivarla a mano ni escribir nada en Supabase — es un cálculo
+// 100% derivado en el cliente, mismo criterio que `eventoYaInicio`.
+function eventoYaTermino(fechaISO, horaStr, ahoraMs = Date.now()) {
+  const t = timestampEvento(fechaISO, horaStr);
+  return t !== null && t <= ahoraMs;
+}
+
 // Ids de reservas que son el "Bloqueo Maestro" de un Torneo: el apartado
 // general de cancha (ej. 7:00–15:00) que se crea al dar de alta el torneo
 // (`torneo.bloqueos`), ANTES de programar partidos individuales desde
@@ -22967,11 +22979,28 @@ async function crearBloqueoParrilla({ canchaId, fecha, horaInicio, horaFin, esta
   return supabase.from('reservas').insert(payload).select().single();
 }
 
+// Multiselección de Canchas al Abrir Reta (ver `ModalNuevaReta`): una Reta
+// puede bloquear VARIAS canchas a la vez, cada una con su propio bloqueo en
+// `reservas`. `reserva_bloqueo_id` (columna vieja, ya existía) se sigue
+// llenando con el bloqueo de la PRIMERA cancha seleccionada, por
+// compatibilidad con todo el código que ya lo lee como un id suelto
+// (Analytics BI, este mismo archivo). `reserva_bloqueo_ids` (columna nueva y
+// opcional, ver migracion_v49) guarda el arreglo COMPLETO. Esta función
+// junta ambas fuentes en una sola lista sin duplicados, para que
+// renombrar/eliminar una Reta actúe sobre TODOS los bloqueos, no solo el
+// primero — y sigue funcionando tal cual con Retas viejas de una sola
+// cancha (`reserva_bloqueo_ids` ausente/vacío, se queda solo el id suelto).
+function idsBloqueosDeReta(reta) {
+  const ids = [reta?.reserva_bloqueo_id, ...(Array.isArray(reta?.reserva_bloqueo_ids) ? reta.reserva_bloqueo_ids : [])].filter(Boolean);
+  return Array.from(new Set(ids));
+}
+
 /* ---------------- Retas Abiertas ---------------- */
 
 function TarjetaReta({
   reta,
   cancha,
+  canchasAdicionales,
   inscritos,
   onInscribir,
   onCancelarInscripcion,
@@ -22982,6 +23011,8 @@ function TarjetaReta({
   actualizandoArchivo,
   onEliminarDefinitivo,
   eliminando,
+  onEliminarVisual,
+  eliminandoVisual,
   onCargarMarcador,
   ahoraMs,
 }) {
@@ -22989,18 +23020,35 @@ function TarjetaReta({
   const lugaresDisponibles = Math.max(0, CUPOS_RETA - confirmados.length);
   const completa = lugaresDisponibles === 0;
   const archivado = reta.archivado === true;
+  // Auto-Archivado por Fecha/Hora Vencida: además del archivado manual, una
+  // reta se considera concluida en cuanto pasa su `hora_fin` — mismo cálculo
+  // que ya usa `retasVisibles`/`retasArchivadas` en `AppInterno` para
+  // moverla sola al tab Archivadas. `archivadaEfectiva` es la que maneja lo
+  // VISUAL de esta tarjeta (badge, opacidad); el botón Archivar/Restaurar
+  // sigue leyendo el `archivado` crudo de la base de datos, sin cambios —
+  // "Archivar" sobre una reta ya vencida simplemente persiste en Supabase lo
+  // que la interfaz ya venía mostrando sola.
+  const vencidaPorTiempo = eventoYaTermino(reta.fecha, reta.hora_fin, ahoraMs);
+  const archivadaEfectiva = archivado || vencidaPorTiempo;
   // Bloqueo Automático por Horario: en cuanto el reloj real alcanza/supera
   // `hora_inicio` de la reta, se deja de poder inscribir jugadores nuevos
-  // (badge "En curso / Bloqueada") — una reta archivada no necesita este
-  // badge aparte, ya trae el suyo propio.
+  // (badge "En curso / Bloqueada") — una reta ya concluida (archivada a mano
+  // o vencida por tiempo) no necesita este badge aparte, ya trae el suyo.
   const iniciada = !archivado && eventoYaInicio(reta.fecha, reta.hora_inicio, ahoraMs);
   const tieneMarcador = Boolean(reta.ganador && (reta.sets || []).length > 0);
   const ganadorTexto = reta.ganador === 'pareja1' ? reta.pareja1 : reta.ganador === 'pareja2' ? reta.pareja2 : '';
-  // Eliminación Definitiva: solo se ofrece si la reta no tiene inscritos que
-  // proteger — de lo contrario, Archivar es la única forma de "quitarla de
-  // en medio" sin perder registros (mismo criterio que Torneos).
+  // Eliminación Definitiva (borrado FÍSICO, `DELETE` real): solo se ofrece si
+  // la reta no tiene inscritos que proteger — de lo contrario, Archivar es
+  // la única forma de "quitarla de en medio" sin perder registros (mismo
+  // criterio que Torneos). Distinta de "Eliminar Reta" (Borrado Lógico, ver
+  // `onEliminarVisual`), que SÍ se ofrece siempre, tenga o no inscritos.
   const puedeEliminarse = inscritos.length === 0;
   const [confirmarEliminar, setConfirmarEliminar] = useState(false);
+  // Borrado Lógico (Soft Delete) — "Eliminar Reta": oculta la tarjeta de la
+  // interfaz (`deleted_at`) sin tocar inscripciones/pagos/asistencia, para
+  // que Analytics y reportes históricos sigan viéndolos. Confirmación propia
+  // e independiente de `confirmarEliminar` (Eliminación Definitiva).
+  const [confirmarEliminarVisual, setConfirmarEliminarVisual] = useState(false);
 
   // Nombre Personalizado de Retas: editable en cualquier momento desde la
   // propia tarjeta, no solo al crearla.
@@ -23014,7 +23062,7 @@ function TarjetaReta({
   }
 
   return (
-    <div className={`rounded-2xl border p-4 ${archivado ? 'border-slate-200/60 bg-white/50 opacity-80' : 'border-slate-200 bg-white'}`}>
+    <div className={`rounded-2xl border p-4 ${archivadaEfectiva ? 'border-slate-200/60 bg-white/50 opacity-80' : 'border-slate-200 bg-white'}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           {editandoNombre ? (
@@ -23061,8 +23109,12 @@ function TarjetaReta({
               </button>
             </p>
           )}
-          <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
-            <MapPin size={11} className="shrink-0 text-slate-500" /> {cancha?.nombre || 'Cancha'} · {formatoFechaLarga(reta.fecha)} ·{' '}
+          <p
+            className="mt-1 flex items-center gap-1.5 text-xs text-slate-500"
+            title={canchasAdicionales?.length > 0 ? [cancha?.nombre, ...canchasAdicionales.map((c) => c.nombre)].filter(Boolean).join(', ') : undefined}
+          >
+            <MapPin size={11} className="shrink-0 text-slate-500" /> {cancha?.nombre || 'Cancha'}
+            {canchasAdicionales?.length > 0 && ` +${canchasAdicionales.length} más`} · {formatoFechaLarga(reta.fecha)} ·{' '}
             {formatoHora12(reta.hora_inicio)}–{formatoHora12(reta.hora_fin)}
           </p>
         </div>
@@ -23074,12 +23126,15 @@ function TarjetaReta({
           >
             {completa ? 'Completa' : `Quedan ${lugaresDisponibles}/${CUPOS_RETA}`}
           </span>
-          {archivado && (
-            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
+          {archivadaEfectiva && (
+            <span
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500"
+              title={!archivado && vencidaPorTiempo ? 'Archivada automáticamente — ya pasó su hora de fin' : undefined}
+            >
               <Archive size={9} /> Archivada
             </span>
           )}
-          {iniciada && (
+          {iniciada && !archivadaEfectiva && (
             <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-400 ring-1 ring-amber-400/30">
               <Lock size={9} /> En curso / Bloqueada
             </span>
@@ -23171,34 +23226,33 @@ function TarjetaReta({
         </BotonPrimario>
       )}
 
-      {!confirmarEliminar ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => onArchivar?.(reta, !archivado)}
-            disabled={actualizandoArchivo}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {actualizandoArchivo ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : archivado ? (
-              <ArchiveRestore size={12} />
-            ) : (
-              <Archive size={12} />
-            )}
-            {archivado ? 'Restaurar' : 'Archivar'}
-          </button>
-          {archivado && puedeEliminarse && (
+      {confirmarEliminarVisual ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
+          <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
+            ¿Eliminar "{reta.nombre}" de la interfaz? Sus inscripciones, pagos y asistencia se conservan intactos para
+            reportes/Analytics — solo deja de verse aquí.
+          </p>
+          <div className="flex shrink-0 gap-1.5">
             <button
               type="button"
-              onClick={() => setConfirmarEliminar(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
+              onClick={() => setConfirmarEliminarVisual(false)}
+              disabled={eliminandoVisual}
+              className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
             >
-              <Trash size={12} /> Eliminar Definitivamente
+              Cancelar
             </button>
-          )}
+            <button
+              type="button"
+              onClick={() => onEliminarVisual?.(reta)}
+              disabled={eliminandoVisual}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
+            >
+              {eliminandoVisual ? <Loader2 size={12} className="animate-spin" /> : <EyeOff size={12} />}
+              Confirmar
+            </button>
+          </div>
         </div>
-      ) : (
+      ) : confirmarEliminar ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
           <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
             ¿Eliminar "{reta.nombre}" para siempre? No tiene inscritos, así que esto no se puede deshacer.
@@ -23223,6 +23277,46 @@ function TarjetaReta({
             </button>
           </div>
         </div>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onArchivar?.(reta, !archivado)}
+            disabled={actualizandoArchivo}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {actualizandoArchivo ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : archivado ? (
+              <ArchiveRestore size={12} />
+            ) : (
+              <Archive size={12} />
+            )}
+            {archivado ? 'Restaurar' : 'Archivar'}
+          </button>
+          {/* Borrado Lógico (Soft Delete) — "Eliminar Reta": a diferencia de
+              "Eliminar Definitivamente" (abajo), NO exige que esté archivada
+              ni que tenga cero inscritos — solo oculta la tarjeta
+              (`deleted_at`), los datos históricos siguen intactos. */}
+          <button
+            type="button"
+            onClick={() => setConfirmarEliminarVisual(true)}
+            disabled={eliminandoVisual}
+            title="Quita la Reta de la interfaz sin borrar sus inscripciones/pagos — se conservan para reportes"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <EyeOff size={12} /> Eliminar Reta
+          </button>
+          {archivado && puedeEliminarse && (
+            <button
+              type="button"
+              onClick={() => setConfirmarEliminar(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
+            >
+              <Trash size={12} /> Eliminar Definitivamente
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -23231,7 +23325,19 @@ function TarjetaReta({
 function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
-  const [canchaId, setCanchaId] = useState(canchasActivas[0]?.id || '');
+  // Multiselección de Canchas al Abrir Reta: el operador puede marcar una,
+  // varias o TODAS las canchas activas — cada una recibe su propio bloqueo
+  // "RETA ABIERTA" en la Parrilla (ver `guardar()` más abajo y
+  // `crearBloqueoParrilla`/`idsBloqueosDeReta`). Arranca con la primera
+  // cancha activa ya marcada para no forzar al operador a tocar nada si
+  // solo quiere abrir en una sola cancha, como antes.
+  const [canchaIdsSeleccionadas, setCanchaIdsSeleccionadas] = useState(() => (canchasActivas[0] ? [canchasActivas[0].id] : []));
+  function toggleCancha(id) {
+    setCanchaIdsSeleccionadas((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+  function toggleTodasLasCanchas() {
+    setCanchaIdsSeleccionadas((prev) => (prev.length === canchasActivas.length ? [] : canchasActivas.map((c) => c.id)));
+  }
   const [fecha, setFecha] = useState(hoyISO());
   const [horaInicio, setHoraInicio] = useState('19:00');
   const [horaFin, setHoraFin] = useState('20:30');
@@ -23258,16 +23364,25 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
   }, [nombreAutomatico, nombreTocado]);
 
   async function guardar() {
-    if (!canchaId) return setError('Selecciona una cancha.');
+    if (canchaIdsSeleccionadas.length === 0) return setError('Selecciona al menos una cancha.');
     if (!fecha || !horaInicio || !horaFin) return setError('Completa fecha y horario.');
     const ini = parseHoraAMinutos(horaInicio);
     const fin = parseHoraAMinutos(horaFin);
     if (ini === null || fin === null || fin <= ini) return setError('La hora de fin debe ser posterior a la de inicio.');
-    if (haySolapeEnCancha(reservas, canchaId, fecha, horaInicio, horaFin)) {
-      return setError('Esa cancha ya tiene una reserva u otro bloqueo en ese horario.');
+    // Multiselección de Canchas: se revisa el choque de horario EN CADA
+    // cancha marcada por separado (una reta de 3 canchas puede tener libres
+    // 2 y ocupada 1) — si cualquiera choca, se avisa con el nombre de la(s)
+    // cancha(s) en conflicto y no se guarda nada, para no dejar la reta a
+    // medias (bloqueada en unas canchas sí y en otras no).
+    const canchasEnConflicto = canchaIdsSeleccionadas
+      .filter((id) => haySolapeEnCancha(reservas, id, fecha, horaInicio, horaFin))
+      .map((id) => canchasActivas.find((c) => c.id === id)?.nombre || `Cancha ${id}`);
+    if (canchasEnConflicto.length > 0) {
+      return setError(`${canchasEnConflicto.join(', ')} ya tiene${canchasEnConflicto.length > 1 ? 'n' : ''} una reserva u otro bloqueo en ese horario.`);
     }
     setGuardando(true);
     setError('');
+    const canchaId = canchaIdsSeleccionadas[0];
 
     // Mapeo defensivo de columnas: distintos proyectos de Supabase pueden
     // tener este módulo migrado con nombres de columna distintos (`nivel`
@@ -23288,6 +23403,11 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
     const payloadReta = withClubId({
       nombre: nombre.trim() || nombreAutomatico,
       cancha_id: canchaId,
+      // `cancha_ids` (columna nueva y opcional, ver migracion_v49): guarda
+      // el arreglo COMPLETO de canchas seleccionadas. `cancha_id` (columna
+      // vieja) sigue siendo solo la PRIMERA, para no romper nada de lo que
+      // ya lee `cancha_id` como un id suelto (Analytics BI, `TarjetaReta`).
+      cancha_ids: canchaIdsSeleccionadas,
       fecha,
       hora_inicio: horaInicio,
       hora_fin: horaFin,
@@ -23323,6 +23443,7 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
       'precio',
       'costo',
       'tolerancia_horas',
+      'cancha_ids',
     ]);
 
     if (!errReta && data) {
@@ -23357,24 +23478,46 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
     // 'RETA ABIERTA' y solo se corregía si el operador la renombraba después
     // (ver `renombrarReta`), dejando el nombre genérico en toda reta recién
     // creada.
-    const { data: bloqueo, error: errBloqueo } = await crearBloqueoParrilla({
-      canchaId,
-      fecha,
-      horaInicio,
-      horaFin,
-      estado: 'Reta',
-      etiqueta: retaCreada.nombre || nombre.trim() || nombreAutomatico,
-    });
+    // Multiselección de Canchas: se crea UN bloqueo por cada cancha
+    // marcada, todos en paralelo — así "RETA ABIERTA" ocupa el horario en
+    // TODAS las canchas seleccionadas, no solo la primera.
+    const resultadosBloqueo = await Promise.all(
+      canchaIdsSeleccionadas.map((id) =>
+        crearBloqueoParrilla({
+          canchaId: id,
+          fecha,
+          horaInicio,
+          horaFin,
+          estado: 'Reta',
+          etiqueta: retaCreada.nombre || nombre.trim() || nombreAutomatico,
+        })
+      )
+    );
+    const bloqueosCreados = resultadosBloqueo.filter((r) => !r.error && r.data).map((r) => r.data);
+    const idsBloqueosCreados = bloqueosCreados.map((b) => b.id);
 
-    if (!errBloqueo && bloqueo) {
+    if (idsBloqueosCreados.length > 0) {
       if (!modoLocal) {
-        await supabase.from('retas').update({ reserva_bloqueo_id: bloqueo.id }).eq('id', retaCreada.id);
+        // `actualizarConColumnasOpcionales` (Arquitectura Flexible): si el
+        // proyecto todavía no corrió migracion_v49 y `reserva_bloqueo_ids`
+        // no existe como columna, el UPDATE reintenta sin ella — nunca se
+        // pierde `reserva_bloqueo_id` (la columna vieja, siempre presente)
+        // por culpa de la nueva.
+        await actualizarConColumnasOpcionales(
+          'retas',
+          retaCreada.id,
+          { reserva_bloqueo_id: idsBloqueosCreados[0], reserva_bloqueo_ids: idsBloqueosCreados },
+          ['reserva_bloqueo_ids']
+        );
       }
-      retaCreada.reserva_bloqueo_id = bloqueo.id;
-    } else {
+      retaCreada.reserva_bloqueo_id = idsBloqueosCreados[0];
+      retaCreada.reserva_bloqueo_ids = idsBloqueosCreados;
+    }
+    if (idsBloqueosCreados.length < canchaIdsSeleccionadas.length) {
       // Sincronización Silenciosa: la reta ya quedó creada — solo se
-      // registra en consola para diagnóstico.
-      console.warn('[Torneos & Retas] Reta creada, pero no se bloqueó el horario en la Parrilla.', errBloqueo);
+      // registra en consola para diagnóstico si alguna(s) cancha(s) no se
+      // pudieron bloquear en la Parrilla.
+      console.warn('[Torneos & Retas] Reta creada, pero no se pudo bloquear el horario en todas las canchas seleccionadas.', resultadosBloqueo);
     }
 
     setGuardando(false);
@@ -23383,9 +23526,10 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
     // mostrar además "Reta Abierta creada" encima confundiría al operador
     // haciéndole creer que todo salió bien.
     if (!modoLocal) {
-      toast({ titulo: 'Reta Abierta creada', detalle: `${formatoFechaLarga(fecha)} · ${formatoHora12(horaInicio)}` });
+      const sufijoCanchas = canchaIdsSeleccionadas.length > 1 ? ` · ${canchaIdsSeleccionadas.length} canchas` : '';
+      toast({ titulo: 'Reta Abierta creada', detalle: `${formatoFechaLarga(fecha)} · ${formatoHora12(horaInicio)}${sufijoCanchas}` });
     }
-    onCreada(retaCreada, bloqueo || null);
+    onCreada(retaCreada, bloqueosCreados);
     onClose();
   }
 
@@ -23403,25 +23547,45 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
             placeholder={nombreAutomatico}
           />
         </Campo>
+        <Campo label="Canchas" hint="Marca una, varias o todas — la Reta bloquea el horario en cada cancha que selecciones.">
+          {canchasActivas.length === 0 ? (
+            <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">Sin canchas activas</p>
+          ) : (
+            <div className="space-y-1.5 rounded-lg border border-slate-200 bg-white p-2.5">
+              <label className="flex cursor-pointer items-center gap-2 border-b border-slate-100 pb-1.5 text-xs font-bold text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={canchaIdsSeleccionadas.length === canchasActivas.length}
+                  onChange={toggleTodasLasCanchas}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                Seleccionar todas
+              </label>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 sm:grid-cols-3">
+                {canchasActivas.map((c) => (
+                  <label key={c.id} className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={canchaIdsSeleccionadas.includes(c.id)}
+                      onChange={() => toggleCancha(c.id)}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    {c.nombre}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        </Campo>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Campo label="Cancha">
-            <select value={canchaId} onChange={(e) => setCanchaId(e.target.value)} className={inputClase}>
-              {canchasActivas.length === 0 && <option value="">Sin canchas activas</option>}
-              {canchasActivas.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.nombre}
-                </option>
-              ))}
-            </select>
-          </Campo>
           <Campo label="Fecha">
             <SelectorFechaClick value={fecha} onChange={setFecha} />
           </Campo>
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Campo label="Hora inicio">
             <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
           </Campo>
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Campo label="Hora fin">
             <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
           </Campo>
@@ -23451,14 +23615,15 @@ function ModalNuevaReta({ canchas, reservas, onClose, onCreada }) {
 
         <p className="flex items-start gap-1.5 rounded-lg bg-fuchsia-400/10 px-3 py-2 text-xs font-semibold text-fuchsia-300 ring-1 ring-fuchsia-400/20">
           <Lock size={13} className="mt-0.5 shrink-0" /> Al guardar, el horario se bloquea automáticamente en la Parrilla Operativa como "RETA
-          ABIERTA" — nadie más podrá reservar esa cancha en ese bloque.
+          ABIERTA" en {canchaIdsSeleccionadas.length > 1 ? `las ${canchaIdsSeleccionadas.length} canchas seleccionadas` : 'esa cancha'} — nadie
+          más podrá reservarla{canchaIdsSeleccionadas.length > 1 ? 'n' : ''} en ese bloque.
         </p>
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar} disabled={guardando || canchasActivas.length === 0}>
+          <BotonPrimario onClick={guardar} disabled={guardando || canchasActivas.length === 0 || canchaIdsSeleccionadas.length === 0}>
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <Swords size={15} />}
             Abrir Reta
           </BotonPrimario>
@@ -25818,10 +25983,20 @@ function ModuloTorneosRetas({
     return mapa;
   }, [inscripciones]);
 
-  const retasArchivadas = useMemo(() => retas.filter((r) => r.archivado === true), [retas]);
+  // Auto-Archivado por Fecha/Hora Vencida + Borrado Lógico: una reta cuenta
+  // como "concluida" (pasa al tab Archivadas) si el operador la archivó a
+  // mano (`archivado === true`) O si ya pasó su `hora_fin` respecto al
+  // reloj real (`eventoYaTermino`, evaluado contra `ahoraMsRetas`, que
+  // avanza solo cada 30s — así una reta se mueve de Activas a Archivadas
+  // sola, sin recargar la página). En ambos casos, una reta con
+  // `deleted_at` (Borrado Lógico, ver `eliminarRetaVisualmente`) queda
+  // fuera de AMBOS tabs — sus inscripciones/pagos siguen intactos en
+  // Supabase para reportes, solo deja de listarse en la interfaz.
+  const retaConcluida = useCallback((r) => r.archivado === true || eventoYaTermino(r.fecha, r.hora_fin, ahoraMsRetas), [ahoraMsRetas]);
+  const retasArchivadas = useMemo(() => retas.filter((r) => !r.deleted_at && retaConcluida(r)), [retas, retaConcluida]);
   const retasVisibles = useMemo(
-    () => retas.filter((r) => (filtroReta === 'archivadas' ? r.archivado === true : r.archivado !== true)),
-    [retas, filtroReta]
+    () => retas.filter((r) => !r.deleted_at && (filtroReta === 'archivadas' ? retaConcluida(r) : !retaConcluida(r))),
+    [retas, filtroReta, retaConcluida]
   );
 
   // Política de Cancelación y Retención: cancelar dentro de la ventana de
@@ -25996,17 +26171,26 @@ function ModuloTorneosRetas({
     // reflejaba jamás en la Parrilla, ni con recarga. `upsertReserva` (mismo
     // setter que usa Realtime) actualiza el estado en memoria de inmediato,
     // así que la tarjeta de la cancha cambia de nombre sin esperar recarga.
-    if (reta.reserva_bloqueo_id) {
+    // Multiselección de Canchas: renombra el bloqueo de CADA cancha
+    // vinculada (`idsBloqueosDeReta`, unión de `reserva_bloqueo_id` +
+    // `reserva_bloqueo_ids` — ver comentario de esa función), no solo el
+    // primero, para que ninguna cancha se quede mostrando el nombre viejo.
+    const idsBloqueosRenombrar = idsBloqueosDeReta(reta);
+    if (idsBloqueosRenombrar.length > 0) {
       try {
-        const { data, error: errBloqueo } = await supabase
-          .from('reservas')
-          .update({ jugador_nombre: nuevoNombre })
-          .eq('id', reta.reserva_bloqueo_id)
-          .select()
-          .single();
-        if (!errBloqueo && data) upsertReserva?.(data);
+        await Promise.all(
+          idsBloqueosRenombrar.map(async (id) => {
+            const { data, error: errBloqueo } = await supabase
+              .from('reservas')
+              .update({ jugador_nombre: nuevoNombre })
+              .eq('id', id)
+              .select()
+              .single();
+            if (!errBloqueo && data) upsertReserva?.(data);
+          })
+        );
       } catch (_e) {
-        /* best effort — el nombre de la reta ya quedó actualizado, solo el bloqueo de Parrilla no se pudo sincronizar */
+        /* best effort — el nombre de la reta ya quedó actualizado, solo el/los bloqueo(s) de Parrilla no se pudieron sincronizar */
       }
     }
     if (reta._local) {
@@ -26053,10 +26237,43 @@ function ModuloTorneosRetas({
     });
   }
 
+  // Borrado Lógico (Soft Delete) — "Eliminar Reta": a diferencia de
+  // `archivarReta` (que solo mueve la reta al tab Archivadas) y de
+  // `eliminarRetaDefinitivo` (que la borra físicamente), esto la quita de
+  // AMBOS tabs escribiendo `deleted_at` — mismo criterio de tolerancia total
+  // que `archivado` (columna nueva y opcional, ver migracion_v49: si
+  // todavía no existe en tu Supabase, el ocultamiento queda aplicado solo
+  // en esta sesión, nunca bloquea al operador). Los bloqueos de Parrilla NO
+  // se cancelan aquí a propósito — la Reta sigue "viva" para efectos de
+  // horario/cobro, solo deja de listarse en esta pantalla; usa "Archivar" o
+  // "Eliminar Definitivamente" si además quieres liberar la cancha.
+  const [eliminandoVisualRetaId, setEliminandoVisualRetaId] = useState(null);
+  async function eliminarRetaVisualmente(reta) {
+    const ahoraISO = new Date().toISOString();
+    setEliminandoVisualRetaId(reta.id);
+    setRetas((prev) => prev.map((r) => (r.id === reta.id ? { ...r, deleted_at: ahoraISO } : r)));
+    if (reta._local) {
+      guardarRegistroLocal(LS_KEY_RETAS_LOCAL, { ...reta, deleted_at: ahoraISO });
+    } else {
+      try {
+        const { error } = await supabase.from('retas').update({ deleted_at: ahoraISO }).eq('id', reta.id);
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Torneos & Retas] No se pudo guardar "deleted_at" en Supabase — se aplica solo en esta sesión.', err);
+      }
+    }
+    setEliminandoVisualRetaId(null);
+    mostrarToast({
+      titulo: 'Reta eliminada',
+      detalle: `${reta.nombre} ya no aparece en la interfaz — sus inscripciones y pagos se conservan para reportes.`,
+    });
+  }
+
   // Eliminación Definitiva de Retas: SOLO se ofrece (ver `TarjetaReta`) cuando
-  // la reta no tiene inscritos — libera de paso el bloqueo de cancha
-  // (`reserva_bloqueo_id`) que hubiera quedado, para no dejar un horario
-  // fantasma en la Parrilla.
+  // la reta no tiene inscritos — libera de paso el/los bloqueo(s) de cancha
+  // (`idsBloqueosDeReta`, TODAS las canchas de la Multiselección, no solo la
+  // primera) que hubieran quedado, para no dejar un horario fantasma en la
+  // Parrilla.
   const [eliminandoRetaId, setEliminandoRetaId] = useState(null);
   async function eliminarRetaDefinitivo(reta) {
     const tieneInscritos = (inscripcionesPorReta[reta.id] || []).length > 0;
@@ -26069,10 +26286,15 @@ function ModuloTorneosRetas({
       return;
     }
     setEliminandoRetaId(reta.id);
-    if (reta.reserva_bloqueo_id) {
+    const idsBloqueosCancelar = idsBloqueosDeReta(reta);
+    if (idsBloqueosCancelar.length > 0) {
       try {
-        await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', reta.reserva_bloqueo_id);
-        marcarReservaCancelada?.(reta.reserva_bloqueo_id);
+        await Promise.all(
+          idsBloqueosCancelar.map(async (id) => {
+            await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', id);
+            marcarReservaCancelada?.(id);
+          })
+        );
       } catch (_e) {
         /* best effort — no bloquea la eliminación de la reta por un bloqueo suelto */
       }
@@ -26907,6 +27129,10 @@ function ModuloTorneosRetas({
                   key={reta.id}
                   reta={reta}
                   cancha={canchas.find((c) => c.id === reta.cancha_id)}
+                  canchasAdicionales={(Array.isArray(reta.cancha_ids) ? reta.cancha_ids : [])
+                    .filter((id) => id !== reta.cancha_id)
+                    .map((id) => canchas.find((c) => c.id === id))
+                    .filter(Boolean)}
                   inscritos={inscripcionesPorReta[reta.id] || []}
                   onInscribir={setRetaParaInscribir}
                   onCancelarInscripcion={cancelarInscripcionReta}
@@ -26917,6 +27143,8 @@ function ModuloTorneosRetas({
                   actualizandoArchivo={actualizandoArchivoRetaId === reta.id}
                   onEliminarDefinitivo={eliminarRetaDefinitivo}
                   eliminando={eliminandoRetaId === reta.id}
+                  onEliminarVisual={eliminarRetaVisualmente}
+                  eliminandoVisual={eliminandoVisualRetaId === reta.id}
                   onCargarMarcador={setRetaMarcador}
                   ahoraMs={ahoraMsRetas}
                 />
@@ -27006,10 +27234,14 @@ function ModuloTorneosRetas({
           canchas={canchas}
           reservas={reservas}
           onClose={() => setModalNuevaReta(false)}
-          onCreada={(reta, bloqueo) => {
+          onCreada={(reta, bloqueos) => {
             setRetas((prev) => [...prev, reta]);
             if (reta._local) guardarRegistroLocal(LS_KEY_RETAS_LOCAL, reta);
-            if (bloqueo) upsertReserva?.(bloqueo);
+            // Multiselección de Canchas: `bloqueos` ahora es un arreglo (uno
+            // por cada cancha marcada en "Abrir Reta") — se refleja cada uno
+            // en el estado local de `reservas` para que la Parrilla se
+            // actualice sola en TODAS las canchas, sin esperar un refresh.
+            (bloqueos || []).forEach((b) => upsertReserva?.(b));
           }}
         />
       )}
@@ -37233,7 +37465,11 @@ function PortalPublicoJugadores({ clubSlug }) {
   const retasAbiertas = useMemo(
     () =>
       retas.filter(
-        (r) => r.archivado !== true && (r.estado || 'abierta') !== 'cancelada' && !eventoYaInicio(r.fecha, r.hora_inicio, tickPortal)
+        (r) =>
+          !r.deleted_at &&
+          r.archivado !== true &&
+          (r.estado || 'abierta') !== 'cancelada' &&
+          !eventoYaInicio(r.fecha, r.hora_inicio, tickPortal)
       ),
     [retas, tickPortal]
   );
