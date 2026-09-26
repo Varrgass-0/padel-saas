@@ -1895,6 +1895,14 @@ const PERMISOS_POR_ROL = {
     // + botón "Otorgar/Canjear Cortesía"): independiente de `puedeVerMontos`
     // — Owner siempre puede.
     puedeGestionarCortesias: true,
+    // Wallet de Jugadores/Operadores (Configuración del Club → Wallet,
+    // nuevo): quién puede cargar crédito a un Jugador o a un
+    // Operador/Colaborador desde el panel centralizado. El módulo
+    // 'configuracion' completo ya es solo-Owner hoy (ver `modulos` de
+    // `manager` más abajo, que no lo incluye), así que este flag es
+    // redundante en la práctica — se deja explícito por consistencia con el
+    // resto de la matriz y por si el módulo se abre a Manager más adelante.
+    puedeGestionarWalletOperadores: true,
   },
   manager: {
     modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'],
@@ -1919,6 +1927,7 @@ const PERMISOS_POR_ROL = {
     // puede eliminar una clase definitivamente.
     puedeEliminarClaseAcademia: true,
     puedeGestionarCortesias: true,
+    puedeGestionarWalletOperadores: true,
   },
   recepcion: {
     // "Recepción/Caja": Parrilla Operativa, Smart POS, Jugadores
@@ -1953,6 +1962,7 @@ const PERMISOS_POR_ROL = {
     // botón "Otorgar/Canjear Cortesía"), sin exponerle el resto de cifras
     // de `puedeVerMontos` (Gasto Total Histórico, Nivel de Fidelidad $).
     puedeGestionarCortesias: true,
+    puedeGestionarWalletOperadores: false,
   },
   bar: {
     // "Restaurante/Bar": Smart POS (filtrado por defecto a la pestaña
@@ -1976,6 +1986,7 @@ const PERMISOS_POR_ROL = {
     puedeEvaluarJugadores: false,
     puedeEliminarClaseAcademia: false,
     puedeGestionarCortesias: false,
+    puedeGestionarWalletOperadores: false,
   },
   coach: {
     // Academia & Clínicas (crear/programar clases) + Torneos & Retas
@@ -2005,6 +2016,7 @@ const PERMISOS_POR_ROL = {
     // El Coach no maneja caja/mostrador — no le corresponde otorgar
     // cortesías de consumo (eso es de Recepción/Caja al cobrar).
     puedeGestionarCortesias: false,
+    puedeGestionarWalletOperadores: false,
   },
   contador: {
     // Rol de solo lectura/exportación: ÚNICAMENTE Contabilidad & Compras,
@@ -2038,6 +2050,7 @@ const PERMISOS_POR_ROL = {
     // arriba) — nunca llega a la Vista 360°, pero se deja el flag explícito
     // por consistencia con el resto de la matriz de roles.
     puedeGestionarCortesias: false,
+    puedeGestionarWalletOperadores: false,
   },
 };
 
@@ -2291,6 +2304,19 @@ const METODOS_PAGO_POS = [
   // Roster, inscripciones de Retas/Torneos/Academia) sin tocar cada uno.
   { value: 'mixto', label: 'Mixto (Efvo + Tarjeta)', icon: Layers },
 ];
+
+// Wallet como método de cobro en Smart POS (nuevo, migracion_v56) —
+// DELIBERADAMENTE NO se agrega a `METODOS_PAGO_POS` de arriba: ese arreglo
+// también alimenta selects simples de Retas/Torneos/Academia/Reservas (alta
+// con cobro inmediato, sin `PasosDeCobro`) que no tienen el buscador de
+// Jugador/Operador ni el descuento atómico de saldo — agregarlo ahí
+// mostraría "Wallet" como opción en esos formularios sin que hiciera nada.
+// Wallet vive SOLO dentro de `PasosDeCobro` (Smart POS Mostrador, Cuentas
+// Abiertas, Split Bill/Roster — todo lo que ya pasa por ese componente), que
+// sí implementa el flujo completo (target Jugador/Operador, validación de
+// saldo en tiempo real, pago parcial, ajuste atómico vía
+// `ajustarWalletJugador`/`ajustarWalletOperador`).
+const METODO_WALLET_POS = { value: 'wallet', label: 'Wallet', icon: Wallet };
 
 // Etiqueta de "Método de Pago" para el Modal de Desglose del P&L (Contabilidad
 // & Compras → Estado de Resultados) — normaliza el valor CRUDO guardado en
@@ -4157,6 +4183,14 @@ function TopHeader({
   // Solo el Propietario sigue llegando al panel completo.
   const esOwner = operador.rol === 'owner';
   const [menuColaboradorAbierto, setMenuColaboradorAbierto] = useState(false);
+  // Mi Wallet (item 2, nuevo — migracion_v56): vista de autoservicio para el
+  // operador/colaborador logueado — su propio saldo y su propio historial de
+  // movimientos (recargas otorgadas por administración + consumos en el
+  // club). Solo tiene sentido si `operador.id` es un empleado real fichado
+  // (el Propietario, cuando NO ficha con su propio PIN, es un pseudo-operador
+  // con `id: null` — ver `operador` en `AppInterno` — y no tiene fila en
+  // `empleados`, así que no se le ofrece aquí).
+  const [modalMiWallet, setModalMiWallet] = useState(false);
   // Toggle de Modo Oscuro/Claro — ver `useTemaClubOS`/`BotonTemaClubOS`
   // (declarados junto a los imports): el propio hook lee/persiste en
   // `localStorage` y alterna la clase `dark` en `<html>`, así que este
@@ -4242,6 +4276,17 @@ function TopHeader({
                   {rolMeta?.label || 'Rol'} · {turno.label}
                 </p>
               </div>
+              {operador.id != null && (
+                <button
+                  onClick={() => {
+                    setMenuColaboradorAbierto(false);
+                    setModalMiWallet(true);
+                  }}
+                  className="flex w-full items-center gap-2.5 border-b border-slate-100 px-3.5 py-3 text-left text-xs font-bold text-slate-700 transition hover:bg-slate-100"
+                >
+                  <Wallet size={15} className="shrink-0 text-lime-500" /> Mi Wallet
+                </button>
+              )}
               <button
                 onClick={() => {
                   setMenuColaboradorAbierto(false);
@@ -4255,7 +4300,91 @@ function TopHeader({
           )}
         </div>
       </div>
+
+      {modalMiWallet && <ModalMiWallet operador={operador} onClose={() => setModalMiWallet(false)} />}
     </header>
+  );
+}
+
+// "Mi Wallet" (item 2, nuevo — migracion_v56) — vista de autoservicio del
+// operador/colaborador logueado: su propio saldo (`empleados.saldo_wallet`)
+// y su propio historial (`wallet_movimientos_operador`), en tiempo real
+// (recarga fresca cada vez que se abre). Solo lectura — cargar crédito es
+// exclusivo del panel de administración (Configuración del Club → Wallet →
+// `SeccionWallet`, gateado por `puedeGestionarWalletOperadores`).
+function ModalMiWallet({ operador, onClose }) {
+  const [saldo, setSaldo] = useState(0);
+  const [movimientos, setMovimientos] = useState([]);
+  const [cargando, setCargando] = useState(true);
+
+  useEffect(() => {
+    let cancelado = false;
+    async function cargar() {
+      setCargando(true);
+      const saldoFresco = await leerSaldoWalletOperadorFresco(operador.id);
+      if (cancelado) return;
+      setSaldo(saldoFresco);
+      try {
+        const { data, error } = await supabase
+          .from('wallet_movimientos_operador')
+          .select('*')
+          .eq('empleado_id', operador.id)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        if (!cancelado) setMovimientos(error ? [] : data || []);
+      } catch (e) {
+        if (!cancelado) setMovimientos([]);
+      }
+      if (!cancelado) setCargando(false);
+    }
+    cargar();
+    return () => {
+      cancelado = true;
+    };
+  }, [operador.id]);
+
+  return (
+    <ModalShell titulo="Mi Wallet" subtitulo={operador.nombre} onClose={onClose} icon={Wallet} ancho="max-w-md">
+      <div className="space-y-4">
+        <div className="rounded-xl border border-lime-400/30 bg-lime-400/10 p-4 text-center">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Saldo Disponible</p>
+          <p className="mt-1 text-2xl font-black text-lime-700">{cargando ? '…' : formatoMoneda(saldo)}</p>
+        </div>
+
+        <div>
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <History size={13} className="text-slate-500" />
+            <p className="text-xs font-bold text-slate-700">Historial de Movimientos</p>
+          </div>
+          {cargando ? (
+            <p className="flex items-center justify-center gap-1.5 py-6 text-center text-xs text-slate-500">
+              <Loader2 size={13} className="animate-spin" /> Cargando historial…
+            </p>
+          ) : movimientos.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-6 text-center text-xs text-slate-500">
+              Sin movimientos todavía.
+            </p>
+          ) : (
+            <div className="max-h-80 space-y-1.5 overflow-y-auto">
+              {movimientos.map((m) => (
+                <div key={m.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-bold text-slate-800">{m.motivo || (m.tipo === 'abono' ? 'Recarga' : 'Consumo')}</p>
+                    <p className="text-[10px] text-slate-500">
+                      {m.created_at ? new Date(m.created_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                    </p>
+                  </div>
+                  <span className={`shrink-0 text-sm font-black ${Number(m.monto) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {Number(m.monto) >= 0 ? '+' : ''}
+                    {formatoMoneda(Number(m.monto) || 0)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -8326,8 +8455,24 @@ function ComandaPanel({
 // cada fila del Split Bill: Efectivo siempre pide cuánto se recibió y
 // calcula el cambio; Tarjeta/SPEI piden una confirmación explícita antes de
 // darse por liquidados (nunca se cobran "solos" con un clic).
-function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto = false }) {
-  const [paso, setPaso] = useState('elegir'); // 'elegir' | 'efectivo' | 'confirmarTerminal' | 'mixto'
+function PasosDeCobro({
+  monto,
+  onConfirmar,
+  onCancelar,
+  deshabilitado,
+  compacto = false,
+  // Wallet como método de cobro (nuevo, migracion_v56) — todos opcionales,
+  // Arquitectura Flexible: si el llamador no pasa nada de esto, el botón
+  // "Wallet" simplemente no aparece (ver `mostrarWallet` más abajo) y este
+  // componente se comporta EXACTAMENTE como antes.
+  walletJugador, // { id, nombre } — jugador ya vinculado a esta venta/cobro, si se conoce (se preselecciona, sin buscador).
+  jugadoresDirectorio, // array del CRM, para buscar un jugador que no viene preseleccionado.
+  operadorActual, // { id, nombre } — el operador logueado, para el atajo "Cobrar de Mi Wallet".
+  empleadosDirectorio, // array de empleados activos, para buscar OTRO operador distinto al logueado.
+  referenciaTipo, // string libre para auditar en `wallet_movimientos(_operador)` qué originó el cargo (ej. 'venta_pos').
+  referenciaId,
+}) {
+  const [paso, setPaso] = useState('elegir'); // 'elegir' | 'efectivo' | 'confirmarTerminal' | 'mixto' | 'wallet'
   const [metodo, setMetodo] = useState(null);
   const [efectivoRecibido, setEfectivoRecibido] = useState('');
   // Pago Mixto (Efectivo + Tarjeta, item 1): dos montos independientes que
@@ -8336,6 +8481,21 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
   // sumar dos decimales (0.1 + 0.2 !== 0.3 en JS).
   const [montoEfectivoMixto, setMontoEfectivoMixto] = useState('');
   const [montoTarjetaMixto, setMontoTarjetaMixto] = useState('');
+
+  // Wallet como método de cobro — target (Jugador/Operador), persona
+  // seleccionada, saldo fresco, y — si el saldo no alcanza — el método para
+  // completar el resto (mismo criterio de "pago parcial" que el resto de la
+  // solicitud: Wallet + complemento en efectivo/tarjeta, o el operador puede
+  // dar "Atrás" para detener el cobro por Wallet).
+  const [walletTarget, setWalletTarget] = useState(walletJugador ? 'jugador' : 'operador');
+  const [walletPersona, setWalletPersona] = useState(walletJugador ? { id: walletJugador.id, nombre: walletJugador.nombre } : null);
+  const [walletBusqueda, setWalletBusqueda] = useState('');
+  const [walletSaldo, setWalletSaldo] = useState(0);
+  const [walletCargandoSaldo, setWalletCargandoSaldo] = useState(false);
+  const [walletMetodoComplemento, setWalletMetodoComplemento] = useState(null);
+  const [walletEfectivoComplemento, setWalletEfectivoComplemento] = useState('');
+  const [walletError, setWalletError] = useState('');
+  const [walletProcesando, setWalletProcesando] = useState(false);
 
   const cambio = Math.max(0, Math.round(((Number(efectivoRecibido) || 0) - monto) * 100) / 100);
   const alcanza = Number(efectivoRecibido) >= monto && efectivoRecibido !== '';
@@ -8348,10 +8508,84 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
   // existe en la práctica, pero por seguridad no se deja confirmar en blanco.
   const mixtoCoincide = centavosSumaMixto === centavosMonto && (montoEfectivoMixto !== '' || montoTarjetaMixto !== '');
 
+  const mostrarWallet = Boolean(
+    walletJugador || operadorActual || (jugadoresDirectorio && jugadoresDirectorio.length > 0) || (empleadosDirectorio && empleadosDirectorio.length > 0)
+  );
+
+  async function cargarSaldoWallet(persona, target) {
+    setWalletCargandoSaldo(true);
+    const saldo = target === 'jugador' ? await leerSaldoWalletFresco(persona.id) : await leerSaldoWalletOperadorFresco(persona.id);
+    setWalletSaldo(saldo);
+    setWalletCargandoSaldo(false);
+  }
+
+  useEffect(() => {
+    if (paso === 'wallet' && walletPersona) cargarSaldoWallet(walletPersona, walletTarget);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paso, walletPersona?.id, walletTarget]);
+
+  function elegirPersonaWallet(persona) {
+    setWalletError('');
+    setWalletMetodoComplemento(null);
+    setWalletEfectivoComplemento('');
+    setWalletPersona({ id: persona.id, nombre: persona.nombre });
+  }
+
+  const { montoWallet: walletMontoWallet, montoRestante: walletMontoRestante } = repartirPagoConWallet(monto, walletSaldo, true);
+  const walletPuedeConfirmar =
+    walletPersona &&
+    (walletMontoRestante <= 0 ||
+      walletMetodoComplemento === 'tarjeta' ||
+      (walletMetodoComplemento === 'efectivo' && Number(walletEfectivoComplemento) >= walletMontoRestante));
+
+  async function confirmarWallet() {
+    if (!walletPersona) return;
+    setWalletError('');
+    setWalletProcesando(true);
+    const motivo = `Cobro Smart POS${referenciaTipo ? ' · ' + referenciaTipo : ''}`;
+    const resultado =
+      walletTarget === 'jugador'
+        ? await ajustarWalletJugador({ jugadorId: walletPersona.id, monto: -walletMontoWallet, motivo, referenciaTipo, referenciaId })
+        : await ajustarWalletOperador({
+            empleadoId: walletPersona.id,
+            empleadoNombre: walletPersona.nombre,
+            monto: -walletMontoWallet,
+            motivo,
+            referenciaTipo,
+            referenciaId,
+          });
+    setWalletProcesando(false);
+    if (!resultado.ok) {
+      setWalletError('No se pudo descontar el saldo de la Wallet — inténtalo de nuevo.');
+      return;
+    }
+    const cambioWallet =
+      walletMetodoComplemento === 'efectivo' ? Math.max(0, Math.round(((Number(walletEfectivoComplemento) || 0) - walletMontoRestante) * 100) / 100) : 0;
+    onConfirmar({
+      metodo: walletMontoRestante > 0 ? 'wallet_mixto' : 'wallet',
+      cambio: cambioWallet,
+      walletObjetivo: walletTarget,
+      walletPersonaId: walletPersona.id,
+      walletPersonaNombre: walletPersona.nombre,
+      montoWallet: walletMontoWallet,
+      montoRestante: walletMontoRestante,
+      metodoComplemento: walletMetodoComplemento,
+      mixto:
+        walletMontoRestante > 0
+          ? {
+              efectivo: walletMetodoComplemento === 'efectivo' ? walletMontoRestante : 0,
+              tarjeta: walletMetodoComplemento === 'tarjeta' ? walletMontoRestante : 0,
+              wallet: walletMontoWallet,
+            }
+          : undefined,
+    });
+  }
+
   function elegir(m) {
     setMetodo(m);
     if (m === 'efectivo') setPaso('efectivo');
     else if (m === 'mixto') setPaso('mixto');
+    else if (m === 'wallet') setPaso('wallet');
     else setPaso('confirmarTerminal');
   }
 
@@ -8469,6 +8703,180 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
     );
   }
 
+  if (paso === 'wallet') {
+    const mostrarTabJugador = Boolean(walletJugador) || (jugadoresDirectorio && jugadoresDirectorio.length > 0);
+    const mostrarTabOperador = Boolean(operadorActual) || (empleadosDirectorio && empleadosDirectorio.length > 0);
+    const fuenteBusqueda = walletTarget === 'jugador' ? jugadoresDirectorio || [] : empleadosDirectorio || [];
+    const terminoBusqueda = walletBusqueda.trim().toLowerCase();
+    const resultadosBusqueda = !terminoBusqueda
+      ? []
+      : fuenteBusqueda.filter((p) => (p.nombre || '').toLowerCase().includes(terminoBusqueda)).slice(0, 8);
+    const saldoInsuficiente = walletPersona && walletMontoRestante > 0;
+
+    return (
+      <div className="space-y-2">
+        {!walletPersona ? (
+          <>
+            {mostrarTabJugador && mostrarTabOperador && (
+              <div className="flex gap-1 rounded-lg border border-slate-300 bg-slate-100 p-1">
+                {[
+                  { value: 'jugador', label: 'Jugador' },
+                  { value: 'operador', label: 'Operador' },
+                ].map((t) => (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => {
+                      setWalletTarget(t.value);
+                      setWalletBusqueda('');
+                    }}
+                    className={`flex-1 rounded-md px-2.5 py-1.5 text-[11px] font-bold transition ${
+                      walletTarget === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {walletTarget === 'operador' && operadorActual && (
+              <button
+                type="button"
+                onClick={() => elegirPersonaWallet(operadorActual)}
+                className="flex w-full items-center gap-2 rounded-lg border border-lime-400/40 bg-lime-400/10 px-3 py-2 text-left text-xs font-bold text-lime-700 transition hover:bg-lime-400/20"
+              >
+                <Wallet size={13} /> Cobrar de Mi Wallet ({operadorActual.nombre})
+              </button>
+            )}
+
+            {((walletTarget === 'jugador' && jugadoresDirectorio && jugadoresDirectorio.length > 0) ||
+              (walletTarget === 'operador' && empleadosDirectorio && empleadosDirectorio.length > 0)) && (
+              <input
+                value={walletBusqueda}
+                onChange={(e) => setWalletBusqueda(e.target.value)}
+                placeholder={walletTarget === 'jugador' ? 'Buscar jugador por nombre' : 'Buscar colaborador por nombre'}
+                className={`${inputClase} ${inputSize}`}
+                autoFocus={!operadorActual}
+              />
+            )}
+
+            {terminoBusqueda && (
+              <div className="max-h-36 space-y-1 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-1">
+                {resultadosBusqueda.length === 0 ? (
+                  <p className="p-2 text-center text-[11px] text-slate-500">Sin resultados.</p>
+                ) : (
+                  resultadosBusqueda.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => elegirPersonaWallet(p)}
+                      className="block w-full rounded-md px-2.5 py-1.5 text-left text-xs font-semibold text-slate-700 transition hover:bg-slate-200/70"
+                    >
+                      {p.nombre}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+
+            {!mostrarTabJugador && !mostrarTabOperador && (
+              <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 text-center text-[11px] text-slate-500">
+                No hay un directorio de Jugadores/Operadores disponible para buscar aquí.
+              </p>
+            )}
+
+            <div className="flex justify-end gap-1.5">{botonVolver}</div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-xs font-bold text-slate-800">{walletPersona.nombre}</p>
+                <p className="text-[10px] text-slate-500">{walletTarget === 'jugador' ? 'Wallet de Jugador' : 'Wallet de Operador'}</p>
+              </div>
+              {!walletJugador && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWalletPersona(null);
+                    setWalletMetodoComplemento(null);
+                    setWalletEfectivoComplemento('');
+                  }}
+                  className="shrink-0 text-[10px] font-bold text-slate-500 underline decoration-dotted transition hover:text-slate-800"
+                >
+                  Cambiar
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-500">Saldo disponible</span>
+              <span className="font-black text-lime-600">{walletCargandoSaldo ? '…' : formatoMoneda(walletSaldo)}</span>
+            </div>
+
+            {saldoInsuficiente && (
+              <p className="rounded-lg bg-amber-100 px-3 py-2 text-[11px] font-semibold text-amber-900 ring-1 ring-amber-300">
+                El saldo no alcanza para cubrir {formatoMoneda(monto)} — se aplicarán {formatoMoneda(walletMontoWallet)} de Wallet y faltan{' '}
+                {formatoMoneda(walletMontoRestante)} por cobrar.
+              </p>
+            )}
+
+            {walletMontoRestante > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] font-bold text-slate-600">Completar {formatoMoneda(walletMontoRestante)} con:</p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[
+                    { value: 'efectivo', label: 'Efectivo' },
+                    { value: 'tarjeta', label: 'Tarjeta' },
+                  ].map((c) => (
+                    <button
+                      key={c.value}
+                      type="button"
+                      onClick={() => setWalletMetodoComplemento(c.value)}
+                      className={`rounded-lg border px-3 py-2 text-xs font-bold transition ${
+                        walletMetodoComplemento === c.value
+                          ? 'border-lime-400 bg-lime-400/10 text-lime-700'
+                          : 'border-slate-300 bg-white text-slate-600 hover:border-lime-400/40'
+                      }`}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
+                </div>
+                {walletMetodoComplemento === 'efectivo' && (
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={walletEfectivoComplemento}
+                    onChange={(e) => setWalletEfectivoComplemento(e.target.value)}
+                    placeholder={`Mínimo ${formatoMoneda(walletMontoRestante)}`}
+                    className={`${inputClase} ${inputSize}`}
+                  />
+                )}
+              </div>
+            )}
+
+            {walletError && <p className="text-xs font-semibold text-rose-500">{walletError}</p>}
+
+            <div className="flex justify-end gap-1.5">
+              {botonVolver}
+              <button
+                onClick={confirmarWallet}
+                disabled={!walletPuedeConfirmar || walletProcesando || deshabilitado}
+                className="inline-flex items-center gap-1.5 rounded-md bg-lime-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {(walletProcesando || deshabilitado) && <Loader2 size={12} className="animate-spin" />}
+                Confirmar Cobro
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   if (paso === 'confirmarTerminal') {
     const metaMetodo = METODOS_PAGO_POS.find((m) => m.value === metodo);
     const Icon = metaMetodo?.icon || CreditCard;
@@ -8496,9 +8904,11 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
     );
   }
 
+  const metodosMostrados = mostrarWallet ? [...METODOS_PAGO_POS, METODO_WALLET_POS] : METODOS_PAGO_POS;
+
   return (
     <div className={`grid gap-1.5 ${compacto ? 'grid-cols-3' : ''}`}>
-      {METODOS_PAGO_POS.map((m) => {
+      {metodosMostrados.map((m) => {
         const Icon = m.icon;
         return compacto ? (
           <button
@@ -8527,13 +8937,28 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
   );
 }
 
-function ModalCobro({ total, onClose, onConfirmado, onDividir, registrandoVenta }) {
+function ModalCobro({
+  total,
+  onClose,
+  onConfirmado,
+  onDividir,
+  registrandoVenta,
+  walletJugador,
+  jugadoresDirectorio,
+  operadorActual,
+  empleadosDirectorio,
+}) {
   return (
     <ModalShell titulo="Cobrar" subtitulo={formatoMoneda(total)} onClose={onClose} icon={DollarSign} ancho="max-w-sm">
       <PasosDeCobro
         monto={total}
         deshabilitado={registrandoVenta}
-        onConfirmar={({ metodo, cambio, mixto }) => onConfirmado(metodo, cambio, mixto)}
+        walletJugador={walletJugador}
+        jugadoresDirectorio={jugadoresDirectorio}
+        operadorActual={operadorActual}
+        empleadosDirectorio={empleadosDirectorio}
+        referenciaTipo="venta_pos"
+        onConfirmar={(datos) => onConfirmado(datos.metodo, datos.cambio, datos.mixto, datos)}
         onCancelar={
           <button
             key="dividir"
@@ -11748,6 +12173,10 @@ function ModuloSmartPOS({
   operador,
   turno,
   permisos,
+  // Wallet como método de cobro (nuevo, migracion_v56) — directorio de
+  // colaboradores activos, para poder buscar el Wallet de OTRO operador
+  // distinto al que tiene la sesión abierta (ver `ModalCobro`/`PasosDeCobro`).
+  empleados,
   onRegistrarAuditoria,
   onGuardarCierre,
   upsertReserva,
@@ -14053,7 +14482,7 @@ function ModuloSmartPOS({
   // sueltos, que es justo lo que rompía el registro), descuenta stock (best
   // effort), crea/bloquea la reserva de Renta Exprés y limpia la comanda.
   // Solo arma el Ticket cuando la cuenta queda liquidada (estadoPago === 'pagado').
-  async function registrarVenta({ metodoPago, estadoPago = 'pagado', pagosDivididos = null, cambio = 0, mixto = null }) {
+  async function registrarVenta({ metodoPago, estadoPago = 'pagado', pagosDivididos = null, cambio = 0, mixto = null, walletInfo = null }) {
     if (comanda.length === 0) return { ok: false };
     setRegistrandoVenta(true);
 
@@ -14339,8 +14768,20 @@ function ModuloSmartPOS({
           jugador_id: clienteJugadorId,
           jugador_nombre: clienteNombre.trim() || null,
           // Pago Mixto (item 1): desglose Efectivo/Tarjeta del ticket
-          // completo — solo se llena cuando `metodoPagoParaVenta === 'mixto'`.
-          mixto: metodoPagoParaVenta === 'mixto' ? mixto : null,
+          // completo — se llena para 'mixto' y también para 'wallet_mixto'
+          // (Wallet + complemento, nuevo migracion_v56: `mixto.wallet` trae
+          // la parte cubierta con Wallet, ver `PasosDeCobro`).
+          mixto: metodoPagoParaVenta === 'mixto' || metodoPagoParaVenta === 'wallet_mixto' ? mixto : null,
+          // Wallet como método de cobro (nuevo, migracion_v56) — auditoría de
+          // A QUIÉN se le cobró vía Wallet en esta venta. El descuento de
+          // saldo YA ocurrió de forma atómica dentro de `PasosDeCobro`
+          // (`ajustarWalletJugador`/`ajustarWalletOperador`, con su propio
+          // registro en `wallet_movimientos`/`wallet_movimientos_operador`)
+          // — esto es solo para que el ticket/reporte de la venta también
+          // sepa de dónde salió el dinero.
+          wallet_objetivo: metodoPagoParaVenta === 'wallet' || metodoPagoParaVenta === 'wallet_mixto' ? walletInfo?.walletObjetivo || null : null,
+          wallet_persona_id: metodoPagoParaVenta === 'wallet' || metodoPagoParaVenta === 'wallet_mixto' ? walletInfo?.walletPersonaId || null : null,
+          wallet_persona_nombre: metodoPagoParaVenta === 'wallet' || metodoPagoParaVenta === 'wallet_mixto' ? walletInfo?.walletPersonaNombre || null : null,
         },
         estado_pago: estadoPago,
       });
@@ -15067,8 +15508,16 @@ function ModuloSmartPOS({
           total={total}
           registrandoVenta={registrandoVenta}
           onClose={() => setModalCobro(false)}
-          onConfirmado={async (metodo, cambio, mixto) => {
-            const resultado = await registrarVenta({ metodoPago: metodo, estadoPago: 'pagado', cambio: cambio || 0, mixto: mixto || null });
+          // Wallet como método de cobro (nuevo, migracion_v56): si ya hay un
+          // Cliente seleccionado del CRM para esta comanda, se preselecciona
+          // como target de Wallet (sin buscador) — si no, el operador puede
+          // buscar cualquier Jugador o cobrar de su propia Wallet.
+          walletJugador={clienteSeleccionadoId ? { id: clienteSeleccionadoId, nombre: clienteNombre } : null}
+          jugadoresDirectorio={directorioJugadoresCRM}
+          operadorActual={operador?.id != null ? operador : null}
+          empleadosDirectorio={empleados}
+          onConfirmado={async (metodo, cambio, mixto, datos) => {
+            const resultado = await registrarVenta({ metodoPago: metodo, estadoPago: 'pagado', cambio: cambio || 0, mixto: mixto || null, walletInfo: datos || null });
             if (resultado.ok) setModalCobro(false);
           }}
           onDividir={() => {
@@ -37712,9 +38161,16 @@ function normalizarFilaClub(fila, tabla) {
  * Propietario (ver `NAV_MODULOS`/`PERMISOS_POR_ROL`, mismo candado de rol
  * que ya usa "Personalizar Club" en el Sidebar). Sistema de pestañas:
  * "Portal & Tienda Web", "General", "Jugadores & Fidelización" y "Reservas &
- * Academia" ya tienen contenido real — solo "Pagos & Facturación" sigue
- * como pestaña futura, con un estado "Próximamente" en vez de esconderla
- * del todo.
+ * Academia" ya tienen contenido real.
+ *
+ * "Pagos & Facturación" (v56) — se investigó primero si ya existía un panel
+ * de Wallet oculto detrás de esta pestaña: NO — "Pagos & Facturación" era un
+ * placeholder "Próximamente" sin ningún componente propio (caía directo al
+ * estado genérico de "esta pestaña no tiene ajustes todavía"). Se reemplaza
+ * por completo por "Wallet" (`SeccionWallet`) — panel centralizado para
+ * cargar crédito y ver el historial de la Wallet de Jugadores y de la nueva
+ * Wallet de Operadores/Colaboradores. "Pagos & Facturación" desaparece del
+ * todo (no queda nada que migrar, nunca tuvo contenido real).
  * ==========================================================================*/
 
 const TABS_CONFIGURACION_CLUB = [
@@ -37722,7 +38178,7 @@ const TABS_CONFIGURACION_CLUB = [
   { value: 'general', label: 'General', icon: Settings2 },
   { value: 'jugadores', label: 'Jugadores & Fidelización', icon: Gift },
   { value: 'reservas', label: 'Reservas & Academia', icon: LayoutGrid },
-  { value: 'pagos', label: 'Pagos & Facturación', icon: CreditCard },
+  { value: 'wallet', label: 'Wallet', icon: Wallet },
 ];
 
 // Centralización de Ajustes (refactor): `ModuloConfiguracionClub` pasa a ser
@@ -37779,6 +38235,9 @@ function ModuloConfiguracionClub({
   onGuardarTarifaHorario,
   guardandoTarifaHorario,
   onEliminarTarifaHorario,
+  jugadoresPorId,
+  operador,
+  permisos,
 }) {
   const [tab, setTab] = useState('portal');
   const tabActual = TABS_CONFIGURACION_CLUB.find((t) => t.value === tab);
@@ -37858,6 +38317,8 @@ function ModuloConfiguracionClub({
           onGuardarConfigClub={onGuardarConfigClub}
           guardandoConfigClub={guardandoConfigClub}
         />
+      ) : tab === 'wallet' ? (
+        <SeccionWallet jugadoresPorId={jugadoresPorId} empleados={empleados} operador={operador} permisos={permisos} />
       ) : (
         <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white py-16 text-center text-slate-500">
           <Wrench size={26} />
@@ -38894,6 +39355,350 @@ function SeccionReservasAcademia({
   );
 }
 
+// Pestaña "Wallet" (nuevo, migracion_v56) — reemplaza a "Pagos & Facturación"
+// (que nunca tuvo contenido real, ver comentario de `TABS_CONFIGURACION_CLUB`
+// más arriba). Panel centralizado para el Dueño/Admin: buscar cualquier
+// Jugador del CRM o cualquier Colaborador/Operador, ver su saldo y su
+// historial de movimientos, y "Cargar Crédito" (recarga manual) a cualquiera
+// de las dos wallets. Usa `ajustarWalletJugador`/`ajustarWalletOperador`
+// (ajuste atómico vía función de Postgres, ver esos helpers) para que dos
+// cargas simultáneas — o una carga y un cobro de Smart POS al mismo tiempo —
+// nunca se pisen.
+const CONCEPTOS_SUGERIDOS_WALLET = ['Bono Mensual', 'Ajuste de Saldo', 'Recarga Manual'];
+const METODOS_APLICACION_WALLET = ['Efectivo', 'Transferencia', 'Cortesía/Bono', 'Ajuste Administrativo'];
+
+function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
+  const toast = useToast();
+  const [vista, setVista] = useState('jugadores'); // 'jugadores' | 'operadores'
+  const [busqueda, setBusqueda] = useState('');
+  const [personaSeleccionada, setPersonaSeleccionada] = useState(null); // { tipo: 'jugador'|'operador', id, nombre }
+  const [saldo, setSaldo] = useState(0);
+  const [movimientos, setMovimientos] = useState([]);
+  const [cargando, setCargando] = useState(false);
+  const [modalCredito, setModalCredito] = useState(false);
+  const [guardandoCredito, setGuardandoCredito] = useState(false);
+
+  const puedeGestionar = permisos?.puedeGestionarWalletOperadores !== false;
+
+  const directorioJugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+  const directorioOperadores = useMemo(() => (empleados || []).filter((e) => e.activo !== false), [empleados]);
+
+  const resultados = useMemo(() => {
+    const termino = busqueda.trim().toLowerCase();
+    const fuente = vista === 'jugadores' ? directorioJugadores : directorioOperadores;
+    const lista = !termino
+      ? fuente
+      : fuente.filter(
+          (p) => (p.nombre || '').toLowerCase().includes(termino) || (p.telefono || '').toLowerCase().includes(termino)
+        );
+    return lista.slice(0, 30);
+  }, [busqueda, vista, directorioJugadores, directorioOperadores]);
+
+  function cambiarVista(v) {
+    setVista(v);
+    setBusqueda('');
+    setPersonaSeleccionada(null);
+  }
+
+  function seleccionarPersona(persona) {
+    setPersonaSeleccionada({ tipo: vista === 'jugadores' ? 'jugador' : 'operador', id: persona.id, nombre: persona.nombre });
+  }
+
+  const cargarSaldoYMovimientos = useCallback(async (persona) => {
+    if (!persona) return;
+    setCargando(true);
+    try {
+      const saldoFresco =
+        persona.tipo === 'jugador' ? await leerSaldoWalletFresco(persona.id) : await leerSaldoWalletOperadorFresco(persona.id);
+      setSaldo(saldoFresco);
+      const tabla = persona.tipo === 'jugador' ? 'wallet_movimientos' : 'wallet_movimientos_operador';
+      const columnaId = persona.tipo === 'jugador' ? 'jugador_id' : 'empleado_id';
+      const { data, error } = await supabase.from(tabla).select('*').eq(columnaId, persona.id).order('created_at', { ascending: false }).limit(100);
+      if (error) {
+        console.error('[Wallet] Error detallado Supabase (leer historial):', error);
+        setMovimientos([]);
+      } else {
+        setMovimientos(data || []);
+      }
+    } catch (e) {
+      console.error('[Wallet] Error detallado Supabase (excepción leyendo historial):', e);
+      setMovimientos([]);
+    }
+    setCargando(false);
+  }, []);
+
+  useEffect(() => {
+    if (personaSeleccionada) cargarSaldoYMovimientos(personaSeleccionada);
+  }, [personaSeleccionada, cargarSaldoYMovimientos]);
+
+  async function confirmarCargarCredito({ monto, concepto, metodoAplicacion }) {
+    if (!personaSeleccionada || !(Number(monto) > 0)) return;
+    setGuardandoCredito(true);
+    const base = {
+      monto: Number(monto),
+      motivo: concepto.trim() || 'Recarga Manual',
+      metodoAplicacion: metodoAplicacion || null,
+      referenciaTipo: 'ajuste_admin',
+      creadoPorId: operador?.id || null,
+      creadoPorNombre: operador?.nombre || null,
+    };
+    const resultado =
+      personaSeleccionada.tipo === 'jugador'
+        ? await ajustarWalletJugador({ ...base, jugadorId: personaSeleccionada.id })
+        : await ajustarWalletOperador({ ...base, empleadoId: personaSeleccionada.id, empleadoNombre: personaSeleccionada.nombre });
+    setGuardandoCredito(false);
+    if (!resultado.ok) {
+      toast({ titulo: 'No se pudo cargar el crédito', detalle: resultado.error?.message || 'Error desconocido.', tono: 'error' });
+      return;
+    }
+    setModalCredito(false);
+    toast({ titulo: 'Crédito cargado', detalle: `${formatoMoneda(Number(monto))} agregados a la Wallet de ${personaSeleccionada.nombre}.` });
+    cargarSaldoYMovimientos(personaSeleccionada);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <Wallet size={16} className="text-lime-500" />
+          <h3 className="text-sm font-black text-slate-900">Wallet de Jugadores y Operadores</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Busca a cualquier Jugador del CRM o Colaborador/Operador del club para ver su saldo, su historial de
+          movimientos, y cargarle crédito manualmente (bonos, ajustes, recargas).
+        </p>
+
+        <div className="mb-3 flex gap-1 rounded-lg border border-slate-300 bg-slate-100 p-1">
+          {[
+            { value: 'jugadores', label: 'Wallet de Jugadores', icon: Users },
+            { value: 'operadores', label: 'Wallet de Operadores', icon: UserCog },
+          ].map((v) => {
+            const Icon = v.icon;
+            return (
+              <button
+                key={v.value}
+                type="button"
+                onClick={() => cambiarVista(v.value)}
+                className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-bold transition ${
+                  vista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Icon size={13} /> {v.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,280px)_1fr]">
+          {/* Buscador + resultados */}
+          <div className="space-y-2">
+            <div className="relative">
+              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder={vista === 'jugadores' ? 'Buscar jugador por nombre o teléfono' : 'Buscar colaborador por nombre'}
+                className={`${inputClase} pl-8`}
+              />
+            </div>
+            <div className="max-h-80 space-y-1 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/60 p-1.5">
+              {resultados.length === 0 ? (
+                <p className="p-3 text-center text-[11px] text-slate-500">
+                  {busqueda ? 'Nadie coincide con esa búsqueda.' : 'Escribe para buscar, o mira la lista completa aquí.'}
+                </p>
+              ) : (
+                resultados.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => seleccionarPersona(p)}
+                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-xs transition ${
+                      personaSeleccionada?.id === p.id ? 'bg-lime-400/15 text-lime-700' : 'text-slate-700 hover:bg-slate-200/60'
+                    }`}
+                  >
+                    <span className="min-w-0 flex-1 truncate font-bold">{p.nombre || 'Sin nombre'}</span>
+                    {vista === 'operadores' && p.rol && (
+                      <span className="shrink-0 text-[10px] font-semibold text-slate-400">{ROLES_POR_VALOR[p.rol]?.label || p.rol}</span>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Detalle de la persona seleccionada */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+            {!personaSeleccionada ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 py-10 text-center text-slate-400">
+                <Wallet size={22} />
+                <p className="text-xs">Selecciona un Jugador u Operador de la lista para ver su Wallet.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-black text-slate-900">{personaSeleccionada.nombre}</p>
+                    <p className="text-[11px] font-semibold text-slate-500">
+                      {personaSeleccionada.tipo === 'jugador' ? 'Wallet de Jugador' : 'Wallet de Operador'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Saldo Disponible</p>
+                      <p className="text-lg font-black text-lime-600">{cargando ? '…' : formatoMoneda(saldo)}</p>
+                    </div>
+                    {puedeGestionar && (
+                      <BotonPrimario onClick={() => setModalCredito(true)} className="shrink-0">
+                        <Plus size={15} /> Cargar Crédito
+                      </BotonPrimario>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <History size={13} className="text-slate-500" />
+                    <p className="text-xs font-bold text-slate-700">Historial de Movimientos</p>
+                  </div>
+                  {cargando ? (
+                    <p className="flex items-center gap-1.5 py-6 text-center text-xs text-slate-500">
+                      <Loader2 size={13} className="animate-spin" /> Cargando historial…
+                    </p>
+                  ) : movimientos.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-slate-300 bg-white py-6 text-center text-xs text-slate-500">
+                      Sin movimientos todavía.
+                    </p>
+                  ) : (
+                    <div className="max-h-72 overflow-y-auto rounded-lg border border-slate-200 bg-white">
+                      <table className="w-full text-left text-[11px]">
+                        <thead className="sticky top-0 bg-slate-100 text-[10px] uppercase tracking-wide text-slate-500">
+                          <tr>
+                            <th className="px-3 py-2">Fecha</th>
+                            <th className="px-3 py-2">Tipo</th>
+                            <th className="px-3 py-2">Concepto</th>
+                            <th className="px-3 py-2 text-right">Monto</th>
+                            <th className="px-3 py-2 text-right">Remanente</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {movimientos.map((m) => (
+                            <tr key={m.id}>
+                              <td className="whitespace-nowrap px-3 py-2 text-slate-500">
+                                {m.created_at ? new Date(m.created_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                              </td>
+                              <td className="px-3 py-2">
+                                <span
+                                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                    m.tipo === 'abono' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                                  }`}
+                                >
+                                  {m.tipo === 'abono' ? 'Recarga' : 'Consumo'}
+                                </span>
+                              </td>
+                              <td className="max-w-[160px] truncate px-3 py-2 text-slate-600">{m.motivo || '—'}</td>
+                              <td className={`whitespace-nowrap px-3 py-2 text-right font-bold ${Number(m.monto) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {Number(m.monto) >= 0 ? '+' : ''}
+                                {formatoMoneda(Number(m.monto) || 0)}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2 text-right text-slate-500">{formatoMoneda(Number(m.saldo_resultante) || 0)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {modalCredito && personaSeleccionada && (
+        <ModalCargarCreditoWallet
+          persona={personaSeleccionada}
+          guardando={guardandoCredito}
+          onClose={() => setModalCredito(false)}
+          onConfirmar={confirmarCargarCredito}
+        />
+      )}
+    </div>
+  );
+}
+
+function ModalCargarCreditoWallet({ persona, guardando, onClose, onConfirmar }) {
+  const [monto, setMonto] = useState('');
+  const [concepto, setConcepto] = useState('');
+  const [metodoAplicacion, setMetodoAplicacion] = useState(METODOS_APLICACION_WALLET[0]);
+  const [error, setError] = useState('');
+
+  function confirmar() {
+    if (!(Number(monto) > 0)) {
+      setError('Ingresa un monto mayor a 0.');
+      return;
+    }
+    setError('');
+    onConfirmar({ monto: Number(monto), concepto, metodoAplicacion });
+  }
+
+  return (
+    <ModalShell titulo="Cargar Crédito" subtitulo={persona.nombre} onClose={onClose} icon={Wallet} ancho="max-w-md">
+      <div className="space-y-3.5">
+        <Campo label="Monto (MXN)">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={monto}
+            onChange={(e) => setMonto(e.target.value)}
+            className={inputClase}
+            placeholder="0.00"
+            autoFocus
+          />
+        </Campo>
+
+        <Campo label="Concepto / Motivo" hint="Ej. Bono Mensual, Ajuste de Saldo, Recarga Manual.">
+          <input value={concepto} onChange={(e) => setConcepto(e.target.value)} className={inputClase} placeholder="Recarga Manual" />
+        </Campo>
+        <div className="flex flex-wrap gap-1.5">
+          {CONCEPTOS_SUGERIDOS_WALLET.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setConcepto(c)}
+              className="rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-600"
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+
+        <Campo label="Método de Aplicación">
+          <select value={metodoAplicacion} onChange={(e) => setMetodoAplicacion(e.target.value)} className={inputClase}>
+            {METODOS_APLICACION_WALLET.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </Campo>
+
+        {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose} disabled={guardando}>
+            Cancelar
+          </BotonSecundario>
+          <BotonPrimario onClick={confirmar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Cargar Crédito
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 // Pestaña "Portal & Tienda Web" — hoy solo trae Add-ons (Switch Master
 // ON/OFF + curación de productos de Pro-Shop), pero vive en su propia
 // sección para que sea fácil sumarle más ajustes del Portal más adelante
@@ -39341,10 +40146,9 @@ function franjasDelDiaConEstado(canchaId, fecha, duracionHoras, reservas, academ
 // Nota de seguridad deliberada: el Portal no tiene autenticación real (ver
 // comentario de `identificarse`), así que este cargo es "honor system" del
 // lado del cliente — aceptable para el alcance actual (nada bancario de
-// verdad, solo saldo interno del club). Si more adelante esto maneja dinero
-// real de terceros, este descuento debería moverse a una función de
-// Supabase (RPC) con `security definer` en vez de un UPDATE directo desde
-// el navegador.
+// verdad, solo saldo interno del club). Wallet de Operadores/Colaboradores
+// (más abajo) hereda EXACTAMENTE el mismo modelo de seguridad a propósito,
+// para no crear una inconsistencia entre las dos wallets.
 async function leerSaldoWalletFresco(jugadorId) {
   if (!jugadorId) return 0;
   try {
@@ -39360,41 +40164,140 @@ async function leerSaldoWalletFresco(jugadorId) {
   }
 }
 
+// Ajuste de saldo de Wallet — Jugador (Carga de Crédito centralizada + cargos
+// de Smart POS/Portal, migracion_v56). `monto` positivo = abono/recarga,
+// negativo = cargo/consumo.
+//
+// Atomicidad (item de seguridad explícito de la solicitud): intenta PRIMERO
+// la función de Postgres `fn_wallet_ajustar_jugador` vía `supabase.rpc(...)`
+// — un solo `UPDATE ... RETURNING` en la base de datos, sin ventana entre
+// leer y escribir, así que dos cobros/cargas simultáneas contra el mismo
+// jugador NUNCA se pisan. Si el proyecto todavía no corrió
+// `migracion_v56_wallet_operadores.sql` (la función no existe todavía),
+// cae de vuelta al patrón anterior LEER-LUEGO-ESCRIBIR — Arquitectura
+// Flexible: no atómico, pero es EXACTAMENTE el comportamiento de antes de
+// esta migración, cero regresión para un proyecto que no la haya corrido.
+async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, referenciaId, metodoAplicacion, creadoPorId, creadoPorNombre }) {
+  const delta = Number(monto) || 0;
+  if (!jugadorId || !delta) return { ok: true, saldoNuevo: null };
+  let saldoNuevo = null;
+  try {
+    const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorId, p_delta: delta });
+    if (!error) {
+      saldoNuevo = Number(data) || 0;
+    } else {
+      console.warn('[Wallet] fn_wallet_ajustar_jugador no disponible todavía (falta migracion_v56) — usando ajuste no atómico de respaldo.', error);
+      const saldoActual = await leerSaldoWalletFresco(jugadorId);
+      saldoNuevo = Math.max(0, Math.round((saldoActual + delta) * 100) / 100);
+      const { error: errUpdate } = await supabase.from('jugadores').update({ saldo_a_favor: saldoNuevo }).eq('id', jugadorId);
+      if (errUpdate) {
+        console.error('[Wallet] Error detallado Supabase (ajustar saldo_a_favor, respaldo no atómico):', errUpdate);
+        return { ok: false, error: errUpdate, saldoNuevo: null };
+      }
+    }
+  } catch (e) {
+    console.error('[Wallet] Error detallado Supabase (ajustar saldo_a_favor):', e);
+    return { ok: false, error: e, saldoNuevo: null };
+  }
+  try {
+    const { error: errMov } = await supabase.from('wallet_movimientos').insert(
+      withClubId({
+        jugador_id: jugadorId,
+        tipo: delta >= 0 ? 'abono' : 'cargo',
+        monto: delta,
+        saldo_resultante: saldoNuevo,
+        motivo: motivo || null,
+        metodo_aplicacion: metodoAplicacion || null,
+        referencia_tipo: referenciaTipo || null,
+        referencia_id: referenciaId || null,
+        creado_por_id: creadoPorId || null,
+        creado_por_nombre: creadoPorNombre || null,
+      })
+    );
+    if (errMov) console.error('[Wallet] Error detallado Supabase (insertar wallet_movimientos):', errMov);
+  } catch (eMov) {
+    console.error('[Wallet] Error detallado Supabase (excepción en wallet_movimientos, tabla probablemente no existe todavía):', eMov);
+  }
+  return { ok: true, saldoNuevo };
+}
+
+// `aplicarCargoWallet` se conserva TAL CUAL (mismo nombre/firma) porque ya
+// tiene múltiples llamadores en el Portal Web Jugador (Retas/Torneos/
+// Academia/Tienda/Reservas) — ahora es un envoltorio delgado sobre
+// `ajustarWalletJugador` para que esos cobros también queden atómicos sin
+// tocar cada call site.
 async function aplicarCargoWallet({ jugadorId, monto, motivo, referenciaTipo, referenciaId }) {
   if (!jugadorId || !(monto > 0)) return { ok: true, saldoNuevo: null };
+  return ajustarWalletJugador({ jugadorId, monto: -Math.abs(monto), motivo, referenciaTipo, referenciaId });
+}
+
+// Wallet del Operador/Colaborador (nuevo, migracion_v56) — mismo patrón que
+// la Wallet del Jugador de arriba, en `empleados.saldo_wallet` +
+// `wallet_movimientos_operador`.
+async function leerSaldoWalletOperadorFresco(empleadoId) {
+  if (!empleadoId) return 0;
   try {
-    const saldoActual = await leerSaldoWalletFresco(jugadorId);
-    const saldoNuevo = Math.max(0, Math.round((saldoActual - monto) * 100) / 100);
-    const { error: errUpdate } = await supabase.from('jugadores').update({ saldo_a_favor: saldoNuevo }).eq('id', jugadorId);
-    if (errUpdate) {
-      console.error('[Wallet] Error detallado Supabase (descontar saldo_a_favor):', errUpdate);
-      return { ok: false, error: errUpdate, saldoNuevo: null };
+    const { data, error } = await supabase.from('empleados').select('saldo_wallet').eq('id', empleadoId).maybeSingle();
+    if (error) {
+      console.error('[Wallet Operador] Error detallado Supabase (leer saldo_wallet):', error);
+      return 0;
     }
-    try {
-      const { error: errMov } = await supabase.from('wallet_movimientos').insert(
-        withClubId({
-          jugador_id: jugadorId,
-          tipo: 'cargo',
-          monto: -Math.abs(monto),
-          saldo_resultante: saldoNuevo,
-          motivo: motivo || null,
-          referencia_tipo: referenciaTipo || null,
-          referencia_id: referenciaId || null,
-        })
-      );
-      if (errMov) console.error('[Wallet] Error detallado Supabase (insertar wallet_movimientos):', errMov);
-    } catch (eMov) {
-      console.error('[Wallet] Error detallado Supabase (excepción en wallet_movimientos, tabla probablemente no existe todavía):', eMov);
-    }
-    return { ok: true, saldoNuevo };
+    return Number(data?.saldo_wallet) || 0;
   } catch (e) {
-    console.error('[Wallet] Error detallado Supabase (aplicar cargo):', e);
-    return { ok: false, error: e, saldoNuevo: null };
+    console.error('[Wallet Operador] Error detallado Supabase (leer saldo_wallet):', e);
+    return 0;
   }
 }
 
+async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo, referenciaTipo, referenciaId, metodoAplicacion, creadoPorId, creadoPorNombre }) {
+  const delta = Number(monto) || 0;
+  if (!empleadoId || !delta) return { ok: true, saldoNuevo: null };
+  let saldoNuevo = null;
+  try {
+    const { data, error } = await supabase.rpc('fn_wallet_ajustar_operador', { p_empleado_id: empleadoId, p_delta: delta });
+    if (!error) {
+      saldoNuevo = Number(data) || 0;
+    } else {
+      console.warn('[Wallet Operador] fn_wallet_ajustar_operador no disponible todavía (falta migracion_v56) — usando ajuste no atómico de respaldo.', error);
+      const saldoActual = await leerSaldoWalletOperadorFresco(empleadoId);
+      saldoNuevo = Math.max(0, Math.round((saldoActual + delta) * 100) / 100);
+      const { error: errUpdate } = await supabase.from('empleados').update({ saldo_wallet: saldoNuevo }).eq('id', empleadoId);
+      if (errUpdate) {
+        console.error('[Wallet Operador] Error detallado Supabase (ajustar saldo_wallet, respaldo no atómico):', errUpdate);
+        return { ok: false, error: errUpdate, saldoNuevo: null };
+      }
+    }
+  } catch (e) {
+    console.error('[Wallet Operador] Error detallado Supabase (ajustar saldo_wallet):', e);
+    return { ok: false, error: e, saldoNuevo: null };
+  }
+  try {
+    const { error: errMov } = await supabase.from('wallet_movimientos_operador').insert(
+      withClubId({
+        empleado_id: empleadoId,
+        empleado_nombre: empleadoNombre || null,
+        tipo: delta >= 0 ? 'abono' : 'cargo',
+        monto: delta,
+        saldo_resultante: saldoNuevo,
+        motivo: motivo || null,
+        metodo_aplicacion: metodoAplicacion || null,
+        referencia_tipo: referenciaTipo || null,
+        referencia_id: referenciaId || null,
+        creado_por_id: creadoPorId || null,
+        creado_por_nombre: creadoPorNombre || null,
+      })
+    );
+    if (errMov) console.error('[Wallet Operador] Error detallado Supabase (insertar wallet_movimientos_operador):', errMov);
+  } catch (eMov) {
+    console.error('[Wallet Operador] Error detallado Supabase (excepción en wallet_movimientos_operador, tabla probablemente no existe todavía):', eMov);
+  }
+  return { ok: true, saldoNuevo };
+}
+
 // Reparte un monto entre Wallet (hasta donde alcance el saldo) y el resto —
-// pagado en Recepción. Pura, no toca Supabase.
+// pagado en Recepción. Pura, no toca Supabase. Sirve tanto para Wallet de
+// Jugador como de Operador — el llamador decide de cuál saldo viene
+// `saldoDisponible`.
 function repartirPagoConWallet(monto, saldoDisponible, usarWallet) {
   const total = Math.round((Number(monto) || 0) * 100) / 100;
   if (!usarWallet) return { montoWallet: 0, montoRestante: total };
@@ -47473,6 +48376,7 @@ function AppInterno() {
                 operador={operador}
                 turno={turno}
                 permisos={permisos}
+                empleados={empleados}
                 onRegistrarAuditoria={registrarEventoAuditoria}
                 onGuardarCierre={crearCierreCaja}
                 upsertReserva={upsertReserva}
@@ -47777,6 +48681,9 @@ function AppInterno() {
                 onGuardarTarifaHorario={guardarTarifaHorario}
                 guardandoTarifaHorario={guardandoTarifaHorario}
                 onEliminarTarifaHorario={eliminarTarifaHorario}
+                jugadoresPorId={jugadoresPorId}
+                operador={operador}
+                permisos={permisos}
               />
             ) : null}
           </main>
