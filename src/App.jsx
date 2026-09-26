@@ -751,6 +751,7 @@ import React, {
   useCallback,
   useRef,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from './supabaseClient';
 import {
   LayoutGrid,
@@ -2962,6 +2963,138 @@ function Campo({ label, children, hint }) {
   );
 }
 
+// Combo-box de texto libre + sugerencias (reemplaza `<input list=… /><datalist>`
+// en TODO el proyecto): el navegador de iPad/iOS Safari NO dibuja el menú
+// nativo de un `<datalist>` sobre un input de texto — el atributo se acepta
+// sin error, pero la flechita/lista simplemente nunca aparece al hacer tap
+// (bug conocido y permanente de iOS Safari, no algo que se arregle con
+// `onTouchStart`/`onClick` en el input nativo). Este componente arma su
+// propio menú flotante con divs normales — 100% compatible con eventos
+// táctiles porque no depende de ninguna UI nativa del navegador.
+//
+// Overflow del Modal: `ModalShell` tiene `overflow-y-auto` en el contenedor
+// (para poder hacer scroll en formularios largos), así que un menú flotante
+// normal (`position: absolute` dentro del modal) se recortaría en cuanto
+// creciera más allá del área visible. Para evitarlo, el menú se pinta con
+// `createPortal` directo a `document.body` y `position: fixed`, calculando
+// su posición con `getBoundingClientRect()` del input — así queda SIEMPRE
+// por encima de todo (z-index alto) y nunca lo recorta ningún `overflow` de
+// ningún ancestro, sin importar cuántos modales/paneles haya en medio.
+//
+// Sigue siendo texto 100% libre: las `opciones` son solo sugerencias
+// clicables, el usuario puede escribir cualquier cosa y `onChange` se
+// dispara con cada tecleo, igual que un `<input>` normal.
+function ComboBoxTexto({ value, onChange, opciones, placeholder, className, onEnter, autoFocus }) {
+  const [abierto, setAbierto] = useState(false);
+  const [posicion, setPosicion] = useState(null);
+  const inputRef = useRef(null);
+  const listaRef = useRef(null);
+
+  const opcionesFiltradas = useMemo(() => {
+    const unicas = Array.from(new Set((opciones || []).filter(Boolean)));
+    const q = (value || '').trim().toLowerCase();
+    if (!q) return unicas;
+    return unicas.filter((o) => o.toLowerCase().includes(q));
+  }, [opciones, value]);
+
+  const actualizarPosicion = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPosicion({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 200) });
+  }, []);
+
+  function abrir() {
+    actualizarPosicion();
+    setAbierto(true);
+  }
+
+  useEffect(() => {
+    if (!abierto) return;
+    actualizarPosicion();
+    const onScrollOrResize = () => actualizarPosicion();
+    const onPuntero = (e) => {
+      if (inputRef.current?.contains(e.target)) return;
+      if (listaRef.current?.contains(e.target)) return;
+      setAbierto(false);
+    };
+    // `capture: true` en window: un scroll dentro del modal (que tiene su
+    // propio contenedor con overflow-y-auto, no el `window`) también dispara
+    // el evento en fase de captura hacia abajo desde `window`, así que esto
+    // reposiciona (o cierra) el menú aunque el scroll ocurra DENTRO del
+    // modal, no en la página completa.
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+    document.addEventListener('mousedown', onPuntero);
+    document.addEventListener('touchstart', onPuntero);
+    return () => {
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
+      document.removeEventListener('mousedown', onPuntero);
+      document.removeEventListener('touchstart', onPuntero);
+    };
+  }, [abierto, actualizarPosicion]);
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        value={value || ''}
+        onChange={(e) => {
+          onChange(e.target.value);
+          if (!abierto) abrir();
+        }}
+        onFocus={abrir}
+        onClick={abrir}
+        onTouchStart={abrir}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && onEnter) {
+            e.preventDefault();
+            onEnter();
+            setAbierto(false);
+          } else if (e.key === 'Escape') {
+            setAbierto(false);
+          }
+        }}
+        placeholder={placeholder}
+        className={className}
+        autoComplete="off"
+        autoFocus={autoFocus}
+      />
+      {abierto &&
+        posicion &&
+        opcionesFiltradas.length > 0 &&
+        createPortal(
+          <div
+            ref={listaRef}
+            style={{ position: 'fixed', top: posicion.top, left: posicion.left, width: posicion.width }}
+            className="z-[200] max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-2xl"
+          >
+            {opcionesFiltradas.map((o) => (
+              <button
+                key={o}
+                type="button"
+                // `onMouseDown` con `preventDefault` (no `onClick`): evita que
+                // el input pierda el foco (blur) ANTES de registrar el tap/clic
+                // sobre la opción — en iOS, sin esto, el blur a veces cierra el
+                // menú un instante antes de que el tap llegue al botón.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onChange(o);
+                  setAbierto(false);
+                }}
+                className="block w-full truncate px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-lime-50 active:bg-lime-100"
+              >
+                {o}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
 const inputClase =
   'w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-lime-400 focus:ring-1 focus:ring-lime-400';
 
@@ -3204,6 +3337,31 @@ function leerRangosHorarioClasesLocal() {
 function guardarRangosHorarioClasesLocal(rangos) {
   try {
     localStorage.setItem(claveLocalPorClub(LS_KEY_RANGOS_HORARIO_CLASES), JSON.stringify(rangos || []));
+  } catch (_e) {
+    /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
+  }
+}
+
+// Formatos de Juego Personalizados (Torneos → "Nuevo Torneo", migracion_v53)
+// — respaldo/caché local, mismo criterio que `LS_KEY_RANGOS_HORARIO_CLASES`
+// arriba: cuando un club escribe un Formato de Juego que no está en
+// `FORMATOS_TORNEO` (los 3 predeterminados) y crea el torneo, ese texto se
+// guarda aquí (además de intentarse en Supabase, best effort) para que la
+// próxima vez que abra "Nuevo Torneo" ya aparezca como sugerencia — incluso
+// si Supabase todavía no tiene la columna `formatos_juego_custom` migrada.
+const LS_KEY_FORMATOS_JUEGO_CUSTOM = 'smashpadel_formatos_juego_custom_v1';
+function leerFormatosJuegoCustomLocal() {
+  try {
+    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_FORMATOS_JUEGO_CUSTOM));
+    const parsed = crudo ? JSON.parse(crudo) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_e) {
+    return [];
+  }
+}
+function guardarFormatosJuegoCustomLocal(formatos) {
+  try {
+    localStorage.setItem(claveLocalPorClub(LS_KEY_FORMATOS_JUEGO_CUSTOM), JSON.stringify(formatos || []));
   } catch (_e) {
     /* localStorage no disponible (modo privado/cuota) — el cambio queda aplicado solo en esta sesión */
   }
@@ -25328,7 +25486,7 @@ function TarjetaTorneo({
   );
 }
 
-function ModalNuevoTorneo({ canchas, reservas, torneos, onClose, onCreado }) {
+function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onGuardarFormatoJuegoCustom, onClose, onCreado }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
 
@@ -25340,12 +25498,24 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, onClose, onCreado }) {
   const [formato, setFormato] = useState(FORMATOS_TORNEO[0]);
   const [reglaPuntuacion, setReglaPuntuacion] = useState(REGLAS_PUNTUACION_TORNEO[0]);
 
+  // Formato de Juego → Combo-box Dinámico: ya NO es un `<select>` cerrado a
+  // los 3 formatos de `FORMATOS_TORNEO` — el club puede escribir cualquier
+  // formato propio. Las sugerencias combinan los 3 predeterminados con TODOS
+  // los formatos personalizados que este club haya creado antes (prop
+  // `formatosJuegoCustom`, cargada desde `configuracion_club` en `AppInterno`
+  // — ver `guardarFormatoJuegoCustomNuevo`), sin duplicar si el club escribe
+  // de nuevo (con otras mayúsculas/espacios) un formato que ya existe.
+  const formatosDisponibles = useMemo(
+    () => Array.from(new Set([...FORMATOS_TORNEO, ...(formatosJuegoCustom || [])])),
+    [formatosJuegoCustom]
+  );
+
   const [categoriaRama, setCategoriaRama] = useState(RAMAS_JUEGO[0]);
   const [categoriaNivel, setCategoriaNivel] = useState('');
   const [categorias, setCategorias] = useState([]);
   // Categorías/Niveles Dinámicos y Personalizables: el campo de Nivel de
   // arriba ya NO es un <select> cerrado a `NIVELES_FUERZA` — es un texto
-  // libre con sugerencias (`<datalist>`, ver el JSX de abajo). Las
+  // libre con sugerencias vía `ComboBoxTexto` (ver el JSX de abajo). Las
   // sugerencias combinan los niveles "clásicos" con TODOS los niveles que el
   // club ya haya usado alguna vez en cualquier torneo (activo o archivado) —
   // sin agregar ninguna columna ni tabla nueva: como `torneo.categorias` ya
@@ -25439,6 +25609,14 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, onClose, onCreado }) {
 
     setGuardando(true);
     setError('');
+
+    // Formato de Juego Personalizado: si el club escribió un formato que no
+    // está entre los 3 predeterminados (ni entre los que ya tenía
+    // guardados), se registra para que la próxima vez que abra "Nuevo
+    // Torneo" ya aparezca como sugerencia — en silencio, sin bloquear ni
+    // retrasar la creación del torneo (ver `guardarFormatoJuegoCustomNuevo`
+    // en `AppInterno`, que ya deduplica y hace su propio best-effort).
+    onGuardarFormatoJuegoCustom?.(formato);
 
     // Mapeo defensivo de columnas — mismo criterio que `ModalNuevaReta`:
     // se manda `formato` (nombre corto) y también su alias largo
@@ -25604,14 +25782,22 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, onClose, onCreado }) {
               ))}
             </select>
           </Campo>
-          <Campo label="Formato de juego">
-            <select value={formato} onChange={(e) => setFormato(e.target.value)} className={inputClase}>
-              {FORMATOS_TORNEO.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
-            </select>
+          <Campo label="Formato de juego" hint="Elige uno o escribe el tuyo — se guarda para tus próximos torneos">
+            {/* Combo-box Dinámico (item 2): ya NO es un `<select>` cerrado a
+                los 3 formatos de `FORMATOS_TORNEO` — mismo componente
+                (`ComboBoxTexto`) que Categorías/Niveles más abajo. Las
+                sugerencias son `formatosDisponibles` (los 3 predeterminados +
+                los personalizados del club, ver arriba); cualquier texto que
+                el club escriba se acepta tal cual y, al crear el torneo, se
+                guarda para la próxima vez (`onGuardarFormatoJuegoCustom`, ver
+                `guardar()`). */}
+            <ComboBoxTexto
+              value={formato}
+              onChange={setFormato}
+              opciones={formatosDisponibles}
+              placeholder="Ej. Round Robin + Eliminatoria…"
+              className={inputClase}
+            />
           </Campo>
         </div>
 
@@ -25636,31 +25822,24 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, onClose, onCreado }) {
               ))}
             </select>
             {/* Categorías/Niveles Dinámicos y Personalizables: texto libre
-                con sugerencias (`<datalist>`) en vez del `<select>` cerrado
-                de `SelectorNivel` — el administrador puede escribir
-                cualquier nombre de nivel ("Suma 3", "Suma 2", "1ª Fuerza",
-                lo que use su club) y no queda limitado a la lista fija.
-                Las sugerencias se arman solas con `nivelesSugeridos` (ver
-                arriba) — ya incluyen los niveles clásicos MÁS cualquier
-                nivel que el club haya escrito antes en otro torneo. */}
-            <input
-              list="niveles-torneo-sugerencias"
+                con sugerencias — `ComboBoxTexto` (menú propio, NO el
+                `<input list=… /><datalist>` nativo de antes: iOS Safari no
+                dibuja ese menú nativo en un input de texto, así que en
+                iPad nunca se veía ninguna sugerencia, ver el componente
+                arriba) — el administrador puede escribir cualquier nombre de
+                nivel ("Suma 3", "Suma 2", "1ª Fuerza", lo que use su club) y
+                no queda limitado a la lista fija. Las sugerencias se arman
+                solas con `nivelesSugeridos` (ver arriba) — ya incluyen los
+                niveles clásicos MÁS cualquier nivel que el club haya escrito
+                antes en otro torneo. */}
+            <ComboBoxTexto
               value={categoriaNivel}
-              onChange={(e) => setCategoriaNivel(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  agregarCategoria();
-                }
-              }}
+              onChange={setCategoriaNivel}
+              opciones={nivelesSugeridos}
+              onEnter={agregarCategoria}
               placeholder="Ej. Suma 3, 1ª Fuerza…"
               className={`${inputClase} w-auto`}
             />
-            <datalist id="niveles-torneo-sugerencias">
-              {nivelesSugeridos.map((n) => (
-                <option key={n} value={n} />
-              ))}
-            </datalist>
             <BotonSecundario onClick={agregarCategoria}>
               <Plus size={14} /> Agregar
             </BotonSecundario>
@@ -27558,6 +27737,8 @@ function ModuloTorneosRetas({
   setRankingJugadores,
   jugadoresPorId,
   permisos,
+  formatosJuegoCustom,
+  onGuardarFormatoJuegoCustom,
 }) {
   const mostrarToast = useToast();
   const [subvista, setSubvista] = useState('retas'); // 'retas' | 'torneos' | 'control'
@@ -28945,6 +29126,8 @@ function ModuloTorneosRetas({
           canchas={canchas}
           reservas={reservas}
           torneos={torneos}
+          formatosJuegoCustom={formatosJuegoCustom}
+          onGuardarFormatoJuegoCustom={onGuardarFormatoJuegoCustom}
           onClose={() => setModalNuevoTorneo(false)}
           onCreado={(torneo) => {
             setTorneos((prev) => [...prev, torneo]);
@@ -44290,6 +44473,13 @@ function AppInterno() {
   const [rangosHorarioClases, setRangosHorarioClases] = useState(() => leerRangosHorarioClasesLocal());
   const [guardandoRangosHorarioClases, setGuardandoRangosHorarioClases] = useState(false);
 
+  // Formatos de Juego Personalizados (Torneos → "Nuevo Torneo",
+  // migracion_v53) — misma fila de `configuracion_club`, mismo criterio de
+  // flujo independiente que `rangosHorarioClases` de arriba: se combina con
+  // los 3 formatos predeterminados (`FORMATOS_TORNEO`) para armar las
+  // sugerencias del combo-box de "Formato de juego" en `ModalNuevoTorneo`.
+  const [formatosJuegoCustom, setFormatosJuegoCustom] = useState(() => leerFormatosJuegoCustomLocal());
+
   // Tarifas Dinámicas por Franja Horaria (Peak & Off-Peak Pricing —
   // Configuración del Club → "General", migracion_v43) — a diferencia de
   // `rangosHorarioClases`/metas de arriba, esta lista NO vive en una columna
@@ -44810,6 +45000,16 @@ function AppInterno() {
           setRangosHorarioClases(data.rangos_horario_clases);
           guardarRangosHorarioClasesLocal(data.rangos_horario_clases);
         }
+        // Formatos de Juego Personalizados (migracion_v53) — mismo
+        // `select('*')` de arriba, sin consulta nueva: en un proyecto que
+        // todavía no corrió esta migración, `data.formatos_juego_custom`
+        // viene `undefined` y el combo-box de "Formato de juego" simplemente
+        // ofrece los 3 formatos predeterminados (más lo que ya haya en el
+        // respaldo local de este navegador).
+        if (Array.isArray(data.formatos_juego_custom)) {
+          setFormatosJuegoCustom(data.formatos_juego_custom);
+          guardarFormatosJuegoCustomLocal(data.formatos_juego_custom);
+        }
         // Metas del Motor de Cortesías (migracion_v35, ampliado con el Switch
         // Master y "Productos Autorizados para Canje", mejora) — mismo
         // `select('*')` de arriba, sin consulta nueva: en un proyecto viejo
@@ -44889,6 +45089,42 @@ function AppInterno() {
       setGuardandoRangosHorarioClases(false);
     },
     [mostrarToast]
+  );
+
+  // Guarda un nuevo Formato de Juego personalizado (Torneos → "Nuevo
+  // Torneo", migracion_v53) — se invoca sola, en silencio, cuando el club
+  // crea un torneo con un formato que escribió a mano (no uno de los 3
+  // predeterminados). Mismo criterio de Sincronización Silenciosa que
+  // `guardarRangosHorarioClases` (estado en vivo + respaldo local SIEMPRE,
+  // Supabase best effort) pero SIN toast — es un guardado secundario que no
+  // debe distraer del toast real ("Torneo creado") que ya dispara `guardar()`
+  // en `ModalNuevoTorneo`, y no debe bloquear ni retrasar la creación del
+  // torneo si Supabase tarda o falla.
+  const guardarFormatoJuegoCustomNuevo = useCallback(
+    (formato) => {
+      const limpio = (formato || '').trim();
+      if (!limpio) return;
+      const yaExiste = [...FORMATOS_TORNEO, ...formatosJuegoCustom].some((f) => f.trim().toLowerCase() === limpio.toLowerCase());
+      if (yaExiste) return;
+      const nuevos = [...formatosJuegoCustom, limpio];
+      setFormatosJuegoCustom(nuevos);
+      guardarFormatosJuegoCustomLocal(nuevos);
+      (async () => {
+        try {
+          if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión — no se puede guardar en Supabase todavía.');
+          const { error } = await actualizarConColumnasOpcionales('configuracion_club', CLUB_ACTIVO_ID, { formatos_juego_custom: nuevos }, [
+            'formatos_juego_custom',
+          ]);
+          if (error) throw error;
+        } catch (err) {
+          console.warn(
+            '[Torneos & Retas] No se pudo guardar el nuevo Formato de Juego en Supabase — se guardó en modo local, seguirá sugiriéndose solo en este navegador.',
+            err
+          );
+        }
+      })();
+    },
+    [formatosJuegoCustom]
   );
 
   // Tarifas Dinámicas por Franja Horaria (Peak & Off-Peak Pricing —
@@ -46737,6 +46973,8 @@ function AppInterno() {
                 setRankingJugadores={setRankingJugadores}
                 jugadoresPorId={jugadoresPorId}
                 permisos={permisos}
+                formatosJuegoCustom={formatosJuegoCustom}
+                onGuardarFormatoJuegoCustom={guardarFormatoJuegoCustomNuevo}
               />
             ) : moduloActivo === 'academia' ? (
               <ModuloAcademiaClinicas
