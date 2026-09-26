@@ -26240,7 +26240,7 @@ function ModalGestionTorneo({
   );
 }
 
-function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgregado }) {
+function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesExistentes = [], onClose, onAgregado }) {
   const toast = useToast();
   const [nombre, setNombre] = useState('');
   const [telefono, setTelefono] = useState('');
@@ -26273,6 +26273,47 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
   const mixtoInvalido =
     estadoPago === 'pagado' && metodoPago === 'mixto' && !mixtoCoincideConMonto(Number(monto) || 0, montoEfectivoMixto, montoTarjetaMixto);
 
+  // Fix "Duplicación de Jugadores" (Mesa de Control → "Agregar
+  // Participante"): antes el directorio/autocompletado y el submit no
+  // sabían nada de quién YA está inscrito en ESTE torneo, así que un
+  // operador podía volver a agregar dos veces al mismo jugador por error.
+  // `torneo_participantes` no tiene columna `estado` (cancelar borra la
+  // fila directamente, ver comentario en `DirectorioJugadoresCRM`), así que
+  // CUALQUIER fila presente en `participantesExistentes` es, por
+  // definición, un inscrito activo de este torneo — se identifica por
+  // teléfono normalizado (siempre presente, es obligatorio en este mismo
+  // formulario) y, de respaldo, por `jugador_id` cuando la fila viene
+  // vinculada al directorio.
+  const clavesInscritas = useMemo(() => {
+    const telefonos = new Set();
+    const jugadorIds = new Set();
+    (participantesExistentes || []).forEach((p) => {
+      const tel = claveTelefono(p.telefono);
+      if (tel) telefonos.add(tel);
+      if (p.jugador_id != null) jugadorIds.add(String(p.jugador_id));
+    });
+    return { telefonos, jugadorIds };
+  }, [participantesExistentes]);
+
+  // Directorio filtrado para el autocompletado (requerimiento 1): un
+  // jugador que ya está inscrito en ESTE torneo simplemente no aparece como
+  // sugerencia — el directorio COMPLETO (`jugadores`, prop) se sigue usando
+  // tal cual para `resolverJugadorId` (crear/encontrar el expediente del
+  // CRM), que no tiene nada que ver con "ya está en este torneo". Esto es
+  // por diseño exclusivo de ESTE torneo (`participantesExistentes` solo
+  // trae las filas de `torneo.id`), así que inscribir al mismo jugador en
+  // OTRO torneo independiente no se ve afectado en nada.
+  const jugadoresDisponibles = useMemo(
+    () =>
+      jugadores.filter((j) => {
+        const tel = claveTelefono(j.telefono);
+        const yaInscritoPorTelefono = tel && clavesInscritas.telefonos.has(tel);
+        const yaInscritoPorId = j.id != null && clavesInscritas.jugadorIds.has(String(j.id));
+        return !yaInscritoPorTelefono && !yaInscritoPorId;
+      }),
+    [jugadores, clavesInscritas]
+  );
+
   async function guardar() {
     if (!nombre.trim()) return setError('Indica el nombre del participante.');
     if (mixtoInvalido) return setError('El Efectivo + Tarjeta debe sumar exactamente el monto de la inscripción.');
@@ -26280,6 +26321,18 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
     // identificador único del cliente (`resolverJugadorId`).
     const claveTelParticipante = claveTelefono(telefono);
     if (!claveTelParticipante) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio & CRM.');
+    // Requerimiento 2 — Validación al guardar: cubre tanto al operador que
+    // escribió a mano el nombre/teléfono de alguien ya inscrito (sin pasar
+    // por el autocompletado, que ya lo habría excluido) como, de respaldo,
+    // a quien sí lo seleccionó del directorio pero por algún motivo su
+    // teléfono no calzó exacto (`jugadorSeleccionadoId` contra `jugador_id`).
+    const yaInscrito =
+      clavesInscritas.telefonos.has(claveTelParticipante) ||
+      (jugadorSeleccionadoId != null && clavesInscritas.jugadorIds.has(String(jugadorSeleccionadoId)));
+    if (yaInscrito) {
+      toast({ titulo: 'El jugador ya se encuentra inscrito en este torneo', tono: 'aviso' });
+      return setError('El jugador ya se encuentra inscrito en este torneo.');
+    }
     setGuardando(true);
     setError('');
 
@@ -26402,9 +26455,9 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
   return (
     <ModalShell titulo="Agregar Participante" subtitulo={torneo.nombre} onClose={onClose} icon={UserPlus} ancho="max-w-md">
       <div className="space-y-4">
-        <Campo label="Nombre" hint="Busca en el directorio del club o escribe uno nuevo.">
+        <Campo label="Nombre" hint="Busca en el directorio del club o escribe uno nuevo. Los jugadores ya inscritos en este torneo no aparecen aquí.">
           <SelectorJugadorRegistrado
-            jugadores={jugadores}
+            jugadores={jugadoresDisponibles}
             nombre={nombre}
             onNombreChange={setNombre}
             jugadorSeleccionadoId={jugadorSeleccionadoId}
@@ -29260,6 +29313,7 @@ function ModuloTorneosRetas({
         <ModalAgregarParticipanteTorneo
           torneo={torneoGestionVivo}
           jugadores={jugadoresDirectorio}
+          participantesExistentes={participantesPorTorneo[torneoGestionVivo.id] || []}
           onClose={() => setModalAgregarParticipante(false)}
           onAgregado={(participante) => {
             setParticipantesTorneo((prev) => [...prev, participante]);
