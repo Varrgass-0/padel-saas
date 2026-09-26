@@ -8514,6 +8514,7 @@ function PasosDeCobro({
   empleadosDirectorio, // array de empleados activos, para buscar OTRO operador distinto al logueado.
   referenciaTipo, // string libre para auditar en `wallet_movimientos(_operador)` qué originó el cargo (ej. 'venta_pos').
   referenciaId,
+  referenciaDescripcion, // string libre (fix de trazabilidad, item 1) — desglose corto de la comanda/cuenta que se está cobrando (ej. "2x Renta Cancha 3, 1x Agua"), se agrega al `motivo` del movimiento de Wallet para que "Mi Wallet" muestre de qué fue el cargo, no solo "Cobro Smart POS".
 }) {
   const [paso, setPaso] = useState('elegir'); // 'elegir' | 'efectivo' | 'confirmarTerminal' | 'mixto' | 'wallet'
   const [metodo, setMetodo] = useState(null);
@@ -8585,7 +8586,7 @@ function PasosDeCobro({
     if (!walletPersona) return;
     setWalletError('');
     setWalletProcesando(true);
-    const motivo = `Cobro Smart POS${referenciaTipo ? ' · ' + referenciaTipo : ''}`;
+    const motivo = `Cobro Smart POS${referenciaTipo ? ' · ' + referenciaTipo : ''}${referenciaDescripcion ? ' — ' + referenciaDescripcion : ''}`;
     const resultado =
       walletTarget === 'jugador'
         ? await ajustarWalletJugador({ jugadorId: walletPersona.id, monto: -walletMontoWallet, motivo, referenciaTipo, referenciaId })
@@ -8613,6 +8614,17 @@ function PasosDeCobro({
       montoWallet: walletMontoWallet,
       montoRestante: walletMontoRestante,
       metodoComplemento: walletMetodoComplemento,
+      // Fix de trazabilidad (item 1): el `id` del renglón de historial ya
+      // insertado (`wallet_movimientos`/`wallet_movimientos_operador`) y en
+      // cuál de las dos tablas — el llamador (`registrarVenta`/
+      // `liquidarCuenta`), una vez que la venta ya existe de verdad, lo usa
+      // para vincular `referencia_id` a esa venta. `walletMovimientoOk`
+      // avisa si el registro de historial en sí falló (el saldo YA se
+      // descontó de cualquier forma) para poder alertar al operador en vez
+      // de dejarlo pasar en silencio.
+      walletMovimientoId: resultado.movimientoId || null,
+      walletMovimientoTabla: walletTarget === 'jugador' ? 'wallet_movimientos' : 'wallet_movimientos_operador',
+      walletMovimientoOk: resultado.movimientoOk !== false,
       mixto:
         walletMontoRestante > 0
           ? {
@@ -8990,6 +9002,7 @@ function ModalCobro({
   jugadoresDirectorio,
   operadorActual,
   empleadosDirectorio,
+  referenciaDescripcion,
 }) {
   return (
     <ModalShell titulo="Cobrar" subtitulo={formatoMoneda(total)} onClose={onClose} icon={DollarSign} ancho="max-w-sm">
@@ -9001,6 +9014,7 @@ function ModalCobro({
         operadorActual={operadorActual}
         empleadosDirectorio={empleadosDirectorio}
         referenciaTipo="venta_pos"
+        referenciaDescripcion={referenciaDescripcion}
         onConfirmar={(datos) => onConfirmado(datos.metodo, datos.cambio, datos.mixto, datos)}
         onCancelar={
           <button
@@ -10900,6 +10914,13 @@ function ModalLiquidarCuenta({
   liquidando,
   onAnular,
   onDividirCuenta,
+  // Wallet como método de cobro al Liquidar/Cobrar (item 2) — mismos
+  // props/criterio que `ModalCobro` (Venta Directa): todos opcionales,
+  // Arquitectura Flexible — sin esto, el botón "Wallet" simplemente no
+  // aparece y el modal se comporta exactamente como antes.
+  jugadoresDirectorio,
+  empleadosDirectorio,
+  operadorActual,
 }) {
   // `useState(() => ...)` — se calcula solo UNA vez, al montar (cada apertura
   // del modal es un montaje nuevo, ver el `{grupoALiquidar && (...)}` que lo
@@ -10961,6 +10982,19 @@ function ModalLiquidarCuenta({
   }
 
   const total = Math.max(0, items.reduce((acc, it) => acc + it.precio * it.cantidad, 0) + base.ajuste);
+
+  // Wallet al Liquidar/Cobrar (item 2): mismo criterio de mutua exclusión
+  // Jugador/Operador que `ComandaPanel` — `grupo.clienteOperadorId` gana si
+  // ambos existieran (no debería pasar, pero por seguridad).
+  const walletPersonaFijada = grupo.clienteOperadorId
+    ? { tipo: 'operador', id: grupo.clienteOperadorId, nombre: grupo.clienteOperadorNombre || grupo.clienteNombre || '' }
+    : grupo.jugadorId
+    ? { tipo: 'jugador', id: grupo.jugadorId, nombre: grupo.clienteNombre || '' }
+    : null;
+  // Desglose corto de la cuenta (fix de trazabilidad, item 1) — mismo
+  // criterio que `comandaResumen` en `ModuloSmartPOS`, para que el
+  // movimiento de Wallet quede con un motivo legible.
+  const referenciaDescripcionWallet = items.map((it) => `${it.cantidad}x ${it.nombre}`).join(', ').slice(0, 200);
 
   return (
     <ModalShell
@@ -11026,7 +11060,17 @@ function ModalLiquidarCuenta({
           Se cobrará como: <span className="text-slate-600">{operador.nombre}</span>
         </p>
       )}
-      <PasosDeCobro monto={total} deshabilitado={liquidando} onConfirmar={({ metodo, cambio, mixto }) => onLiquidar(metodo, cambio, items, mixto)} />
+      <PasosDeCobro
+        monto={total}
+        deshabilitado={liquidando}
+        walletPersonaFijada={walletPersonaFijada}
+        jugadoresDirectorio={jugadoresDirectorio}
+        operadorActual={operadorActual}
+        empleadosDirectorio={empleadosDirectorio}
+        referenciaTipo="liquidacion_cuenta"
+        referenciaDescripcion={referenciaDescripcionWallet}
+        onConfirmar={(datos) => onLiquidar(datos.metodo, datos.cambio, items, datos.mixto, datos)}
+      />
 
       {puedeDividir && (
         <button
@@ -12291,6 +12335,15 @@ function ModuloSmartPOS({
   // por Wallet (`ModalCobro`) preselecciona la Wallet de ESE operador.
   const [clienteOperadorId, setClienteOperadorId] = useState(null);
   const directorioJugadoresCRM = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+  // Fix de trazabilidad en Wallet (item 1): desglose corto de la comanda
+  // vigente ("2x Renta Cancha 3, 1x Agua") para que el movimiento de Wallet
+  // (`wallet_movimientos`/`wallet_movimientos_operador`) quede con un motivo
+  // legible en vez de solo "Cobro Smart POS" — ver `referenciaDescripcion`
+  // en `PasosDeCobro`/`ModalCobro`.
+  const comandaResumen = useMemo(
+    () => comanda.map((i) => `${i.cantidad}x ${i.nombre}`).join(', ').slice(0, 200),
+    [comanda]
+  );
 
   // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): estado de qué
   // categoría se está canjeando para el cliente asignado a esta comanda
@@ -13062,6 +13115,16 @@ function ModuloSmartPOS({
           total: 0,
           items: {}, // nombre → { cantidad, subtotal }
           clienteNombre: '',
+          // Wallet en Liquidar Cuenta (item 2): quién es el "cliente" de esta
+          // cuenta para poder preseleccionar su Wallet al cobrar — un
+          // Jugador del CRM (`jugadorId`) o un Operador/Colaborador
+          // (`clienteOperadorId`), mutuamente excluyentes, igual que en
+          // `ComandaPanel`. Se llenan abajo desde `detalles.jugador_id` /
+          // `detalles.cliente_operador_id` de la primera venta del grupo que
+          // los traiga.
+          jugadorId: null,
+          clienteOperadorId: null,
+          clienteOperadorNombre: '',
           // Restaurante / Bar / Sin Cancha (mejora): distingue en la tarjeta
           // (`TarjetaCuentaAbierta`) una Cuenta Abierta que nunca tuvo cancha
           // vinculada de una Venta General "sin cancha" cualquiera — solo se
@@ -13080,6 +13143,11 @@ function ModuloSmartPOS({
       // nombre vive en `detalles.jugador_nombre` de la venta, no en la
       // reserva. Se usa como respaldo (ver `TarjetaCuentaAbierta`).
       if (v?.detalles?.jugador_nombre) grupo.clienteNombre = v.detalles.jugador_nombre;
+      if (v?.detalles?.jugador_id) grupo.jugadorId = v.detalles.jugador_id;
+      if (v?.detalles?.cliente_operador_id) {
+        grupo.clienteOperadorId = v.detalles.cliente_operador_id;
+        grupo.clienteOperadorNombre = v.detalles.cliente_operador_nombre || grupo.clienteNombre || '';
+      }
       const items = v?.detalles?.items;
       if (Array.isArray(items)) {
         items.forEach((item) => {
@@ -13179,6 +13247,12 @@ function ModuloSmartPOS({
           // cada add-on en el momento del cobro (ver más abajo).
           addonsDetalle: ventasLigadas.length > 0 ? [] : Array.isArray(r.addons_detalle) ? r.addons_detalle : [],
           clienteNombre: r.jugador_nombre || '',
+          // Wallet en Liquidar Cuenta (item 2): una Reserva pendiente de pago
+          // en Recepción siempre viene de un Jugador (Portal o mostrador,
+          // nunca de un Operador) — ver `reservas.jugador_id`.
+          jugadorId: r.jugador_id || null,
+          clienteOperadorId: null,
+          clienteOperadorNombre: '',
         };
       })
       .sort((a, b) => (a.cancha?.nombre || 'zzz').localeCompare(b.cancha?.nombre || 'zzz'));
@@ -13222,6 +13296,12 @@ function ModuloSmartPOS({
           total: Number(v.total) || 0,
           items,
           clienteNombre: v?.detalles?.jugador_nombre || '',
+          // Wallet en Liquidar Cuenta (item 2): igual criterio que
+          // `gruposCuentasAbiertas` — el cliente puede ser un Jugador del
+          // CRM o (si algún día se genera desde mostrador) un Operador.
+          jugadorId: v?.detalles?.jugador_id || null,
+          clienteOperadorId: v?.detalles?.cliente_operador_id || null,
+          clienteOperadorNombre: v?.detalles?.cliente_operador_nombre || '',
         };
       })
       .sort((a, b) => (a.clienteNombre || 'zzz').localeCompare(b.clienteNombre || 'zzz'));
@@ -13236,10 +13316,18 @@ function ModuloSmartPOS({
   // `gruposReservasPendientes` arriba): en ese caso, en vez de actualizar
   // filas que no existen, INSERTA el ticket en `ventas` ya `pagado`, para
   // que el cobro quede registrado en la tabla de ingresos/ventas.
-  async function liquidarCuenta(grupo, metodoPago, cambio, itemsFinales, mixto) {
+  async function liquidarCuenta(grupo, metodoPago, cambio, itemsFinales, mixto, walletInfo = null) {
     setLiquidandoClave(grupo.clave);
     let error = null;
     let totalCobrado = grupo.total;
+    // Wallet como método de cobro al Liquidar/Cobrar (item 2): igual que en
+    // `registrarVenta`, el cargo a la Wallet (Jugador u Operador) ya ocurrió
+    // de forma atómica DENTRO de `PasosDeCobro` (`ModalLiquidarCuenta`) antes
+    // de llegar aquí — `walletInfo` solo trae los datos para auditoría
+    // (`detalles.wallet_*`) y para vincular `referencia_id` a la venta ya
+    // liquidada, más abajo.
+    const esPagoWallet = metodoPago === 'wallet' || metodoPago === 'wallet_mixto';
+    let ventaIdLiquidada = null;
     // FIX — Ticket de Venta al liquidar Cuentas Abiertas: a diferencia de
     // `registrarVenta` (Venta Directa), esta función no abría
     // `ModalTicket` al terminar — el cobro se guardaba bien en Supabase,
@@ -13288,17 +13376,24 @@ function ModuloSmartPOS({
       // DELETE de los sobrantes falla (el cobro ya quedó guardado en el
       // primero, que es la fuente de verdad de ingresos).
       const ventaPrincipal = grupo.ventas[0];
+      ventaIdLiquidada = ventaPrincipal.id;
       const detallesActualizados = {
         ...(ventaPrincipal?.detalles || {}),
         items: itemsParaGuardar,
         // Pago Mixto (item 1): desglose Efectivo/Tarjeta del cobro final.
-        mixto: metodoPago === 'mixto' ? mixto || null : null,
+        mixto: metodoPago === 'mixto' || metodoPago === 'wallet_mixto' ? mixto || null : null,
         // Trazabilidad de Operadores (item 2): quién cerró/cobró la cuenta
         // — puede ser distinto de quien la abrió (`ventaPrincipal.operador`,
         // que nunca se sobreescribe abajo) o de quien agregó cada ítem
         // (`itemsParaGuardar[].operador_nombre`).
         cerrado_por_operador_id: operador?.id || null,
         cerrado_por_operador_nombre: operador?.nombre || null,
+        // Wallet como método de cobro (item 2) — mismo criterio que
+        // `registrarVenta`: el descuento de saldo ya ocurrió, esto es solo
+        // auditoría de a quién se le cobró.
+        wallet_objetivo: esPagoWallet ? walletInfo?.walletObjetivo || null : null,
+        wallet_persona_id: esPagoWallet ? walletInfo?.walletPersonaId || null : null,
+        wallet_persona_nombre: esPagoWallet ? walletInfo?.walletPersonaNombre || null : null,
       };
       ({ error } = await supabase
         .from('ventas')
@@ -13411,9 +13506,16 @@ function ModuloSmartPOS({
           monto_cancha: montoCanchaLinea,
           monto_addons: montoAddonsFinal,
           wallet_aplicado: Number(grupo.reserva.saldo_wallet_aplicado) || 0,
-          mixto: metodoPago === 'mixto' ? mixto || null : null,
+          mixto: metodoPago === 'mixto' || metodoPago === 'wallet_mixto' ? mixto || null : null,
           cerrado_por_operador_id: operador?.id || null,
           cerrado_por_operador_nombre: operador?.nombre || null,
+          // Wallet como método de cobro AHORA, al liquidar (item 2) — distinto
+          // de `wallet_aplicado` de arriba (saldo ya descontado desde el
+          // Portal AL RESERVAR, antes de que esta cuenta llegara a
+          // Recepción). Mismo criterio de auditoría que `registrarVenta`.
+          wallet_objetivo: esPagoWallet ? walletInfo?.walletObjetivo || null : null,
+          wallet_persona_id: esPagoWallet ? walletInfo?.walletPersonaId || null : null,
+          wallet_persona_nombre: esPagoWallet ? walletInfo?.walletPersonaNombre || null : null,
         },
         estado_pago: 'pagado',
       });
@@ -13470,14 +13572,41 @@ function ModuloSmartPOS({
         metodoPago,
         pagosDivididos: null,
         cambio,
-        mixto: metodoPago === 'mixto' ? mixto || null : null,
+        mixto: metodoPago === 'mixto' || metodoPago === 'wallet_mixto' ? mixto || null : null,
       };
+      ventaIdLiquidada = dataInsertada?.id || null;
     }
     setLiquidandoClave(null);
     if (error) {
       mostrarToast({ titulo: 'No se pudo liquidar la cuenta', detalle: error.message, tono: 'error' });
       return false;
     }
+
+    // Fix de trazabilidad en Wallet (item 1, extendido a Liquidar Cuenta —
+    // item 2): mismo criterio que `registrarVenta` — el cargo a la Wallet
+    // ya ocurrió dentro de `PasosDeCobro` con `referencia_id: null` (la
+    // venta todavía no existía en ese momento); ahora que la cuenta ya
+    // quedó liquidada se vincula el movimiento a `ventaIdLiquidada` —
+    // best effort, nunca bloquea ni revierte el cobro ya hecho.
+    if (esPagoWallet && walletInfo?.walletMovimientoId) {
+      try {
+        const { error: errVinculo } = await supabase
+          .from(walletInfo.walletMovimientoTabla || (walletInfo.walletObjetivo === 'operador' ? 'wallet_movimientos_operador' : 'wallet_movimientos'))
+          .update({ referencia_id: ventaIdLiquidada })
+          .eq('id', walletInfo.walletMovimientoId);
+        if (errVinculo) console.warn('[Wallet] Cuenta liquidada, pero no se pudo vincular el movimiento de Wallet a esta venta.', errVinculo);
+      } catch (eVinculo) {
+        console.warn('[Wallet] Cuenta liquidada, pero no se pudo vincular el movimiento de Wallet a esta venta (excepción).', eVinculo);
+      }
+    }
+    if (esPagoWallet && walletInfo?.walletMovimientoOk === false) {
+      mostrarToast({
+        titulo: 'Cuenta liquidada, pero sin registrar en el historial de Wallet',
+        detalle: `El saldo de ${walletInfo.walletPersonaNombre || 'la persona'} ya se descontó, pero el movimiento no quedó guardado — revísalo manualmente.`,
+        tono: 'aviso',
+      });
+    }
+
     // Si la cuenta viene de una reserva real (Portal · "Pagar en
     // Recepción"), su propia fila en `reservas` también nace con
     // `estado_pago: 'pendiente'` (ver `confirmarReservaConAddons`) — se
@@ -14853,6 +14982,39 @@ function ModuloSmartPOS({
       return { ok: false };
     }
 
+    // Fix de trazabilidad en Wallet (item 1): el cargo a la Wallet
+    // (Jugador u Operador) ya se hizo de forma atómica DENTRO de
+    // `PasosDeCobro` — antes de este punto — porque el saldo debe validarse
+    // y descontarse ANTES de dar por buena la venta. Eso deja el registro
+    // de `wallet_movimientos`/`wallet_movimientos_operador` con
+    // `referencia_id: null` en el momento de insertarse, ya que la venta
+    // todavía no existía. Ahora que sí existe (`data.id`), se vincula aquí
+    // — best effort: si este UPDATE de "solo trazabilidad" falla, la venta
+    // YA quedó cobrada y el saldo YA se descontó, así que nunca se bloquea
+    // ni se revierte nada por esto, solo se avisa en consola. Si el propio
+    // INSERT del movimiento falló (`walletMovimientoOk === false`,
+    // `PasosDeCobro` ya lo detectó), se avisa con un toast — el saldo del
+    // Operador/Jugador SÍ se descontó, pero su "Mi Wallet" no va a mostrar
+    // este movimiento en el historial hasta que alguien lo registre a mano.
+    if ((metodoPagoParaVenta === 'wallet' || metodoPagoParaVenta === 'wallet_mixto') && walletInfo?.walletMovimientoId) {
+      try {
+        const { error: errVinculo } = await supabase
+          .from(walletInfo.walletMovimientoTabla || (walletInfo.walletObjetivo === 'operador' ? 'wallet_movimientos_operador' : 'wallet_movimientos'))
+          .update({ referencia_id: data?.id || null })
+          .eq('id', walletInfo.walletMovimientoId);
+        if (errVinculo) console.warn('[Wallet] Venta cobrada, pero no se pudo vincular el movimiento de Wallet a esta venta.', errVinculo);
+      } catch (eVinculo) {
+        console.warn('[Wallet] Venta cobrada, pero no se pudo vincular el movimiento de Wallet a esta venta (excepción).', eVinculo);
+      }
+    }
+    if ((metodoPagoParaVenta === 'wallet' || metodoPagoParaVenta === 'wallet_mixto') && walletInfo?.walletMovimientoOk === false) {
+      mostrarToast({
+        titulo: 'Venta cobrada, pero sin registrar en el historial de Wallet',
+        detalle: `El saldo de ${walletInfo.walletPersonaNombre || 'la persona'} ya se descontó, pero el movimiento no quedó guardado — revísalo manualmente.`,
+        tono: 'aviso',
+      });
+    }
+
     // Descuento de stock: best effort, en el cliente, solo para artículos tipo
     // "producto" que sí manejan inventario (ver nota de la cabecera del
     // archivo). Nunca bloquea ni revierte la venta si alguno falla. Cada
@@ -15598,6 +15760,7 @@ function ModuloSmartPOS({
           jugadoresDirectorio={directorioJugadoresCRM}
           operadorActual={operador?.id != null ? operador : null}
           empleadosDirectorio={empleados}
+          referenciaDescripcion={comandaResumen}
           onConfirmado={async (metodo, cambio, mixto, datos) => {
             const resultado = await registrarVenta({ metodoPago: metodo, estadoPago: 'pagado', cambio: cambio || 0, mixto: mixto || null, walletInfo: datos || null });
             if (resultado.ok) setModalCobro(false);
@@ -15695,7 +15858,10 @@ function ModuloSmartPOS({
           operador={operador}
           liquidando={liquidandoClave === grupoALiquidar.clave}
           onClose={() => setGrupoALiquidar(null)}
-          onLiquidar={(metodo, cambio, items, mixto) => liquidarCuenta(grupoALiquidar, metodo, cambio, items, mixto)}
+          jugadoresDirectorio={directorioJugadoresCRM}
+          empleadosDirectorio={empleados}
+          operadorActual={operador?.id != null ? operador : null}
+          onLiquidar={(metodo, cambio, items, mixto, datos) => liquidarCuenta(grupoALiquidar, metodo, cambio, items, mixto, datos)}
           onAnular={(motivo, items) => anularCuenta(grupoALiquidar, motivo, items)}
           onDividirCuenta={(grupo, items, totalGrupo) => {
             setGrupoParaDividir({ grupo, items, total: totalGrupo });
@@ -40313,26 +40479,49 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
     console.error('[Wallet] Error detallado Supabase (ajustar saldo_a_favor):', e);
     return { ok: false, error: e, saldoNuevo: null };
   }
+  // Registro de Movimiento (fix de trazabilidad): se pide de vuelta el `id`
+  // del renglón insertado (`.select('id').single()`) para que el llamador
+  // (`registrarVenta`/`liquidarCuenta`) pueda, best-effort y una vez que la
+  // venta YA existe, actualizar `referencia_id` con el id REAL de esa venta
+  // (imposible saberlo antes — la Wallet se cobra ANTES de insertar el
+  // ticket, para validar/reservar el saldo primero). `movimientoOk` viaja
+  // aparte de `ok`: el saldo YA se ajustó arriba (eso es lo que de verdad
+  // mueve el dinero, vía la función atómica de Postgres) — si namás el
+  // registro de historial falla, el cobro NO se revierte ni se bloquea
+  // (mismo criterio "best effort" del resto del archivo), pero el llamador
+  // puede avisarle al operador que el movimiento no quedó registrado.
+  let movimientoId = null;
+  let movimientoOk = true;
   try {
-    const { error: errMov } = await supabase.from('wallet_movimientos').insert(
-      withClubId({
-        jugador_id: jugadorId,
-        tipo: delta >= 0 ? 'abono' : 'cargo',
-        monto: delta,
-        saldo_resultante: saldoNuevo,
-        motivo: motivo || null,
-        metodo_aplicacion: metodoAplicacion || null,
-        referencia_tipo: referenciaTipo || null,
-        referencia_id: referenciaId || null,
-        creado_por_id: creadoPorId || null,
-        creado_por_nombre: creadoPorNombre || null,
-      })
-    );
-    if (errMov) console.error('[Wallet] Error detallado Supabase (insertar wallet_movimientos):', errMov);
+    const { data: mov, error: errMov } = await supabase
+      .from('wallet_movimientos')
+      .insert(
+        withClubId({
+          jugador_id: jugadorId,
+          tipo: delta >= 0 ? 'abono' : 'cargo',
+          monto: delta,
+          saldo_resultante: saldoNuevo,
+          motivo: motivo || null,
+          metodo_aplicacion: metodoAplicacion || null,
+          referencia_tipo: referenciaTipo || null,
+          referencia_id: referenciaId || null,
+          creado_por_id: creadoPorId || null,
+          creado_por_nombre: creadoPorNombre || null,
+        })
+      )
+      .select('id')
+      .single();
+    if (errMov) {
+      console.error('[Wallet] Error detallado Supabase (insertar wallet_movimientos):', errMov);
+      movimientoOk = false;
+    } else {
+      movimientoId = mov?.id || null;
+    }
   } catch (eMov) {
     console.error('[Wallet] Error detallado Supabase (excepción en wallet_movimientos, tabla probablemente no existe todavía):', eMov);
+    movimientoOk = false;
   }
-  return { ok: true, saldoNuevo };
+  return { ok: true, saldoNuevo, movimientoId, movimientoOk };
 }
 
 // `aplicarCargoWallet` se conserva TAL CUAL (mismo nombre/firma) porque ya
@@ -40385,27 +40574,47 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
     console.error('[Wallet Operador] Error detallado Supabase (ajustar saldo_wallet):', e);
     return { ok: false, error: e, saldoNuevo: null };
   }
+  // Registro de Movimiento (fix de trazabilidad — item 1): mismo criterio
+  // que `ajustarWalletJugador` — se pide de vuelta el `id` del renglón
+  // insertado para que `registrarVenta`/`liquidarCuenta` puedan vincular
+  // `referencia_id` a la venta REAL una vez que existe, y `movimientoOk`
+  // le avisa al llamador si el registro de historial en sí falló (el saldo
+  // de `empleados.saldo_wallet` ya se ajustó arriba de cualquier forma — eso
+  // es lo que de verdad mueve el dinero — este historial es auditoría best
+  // effort, nunca bloquea ni revierte el cobro).
+  let movimientoId = null;
+  let movimientoOk = true;
   try {
-    const { error: errMov } = await supabase.from('wallet_movimientos_operador').insert(
-      withClubId({
-        empleado_id: empleadoId,
-        empleado_nombre: empleadoNombre || null,
-        tipo: delta >= 0 ? 'abono' : 'cargo',
-        monto: delta,
-        saldo_resultante: saldoNuevo,
-        motivo: motivo || null,
-        metodo_aplicacion: metodoAplicacion || null,
-        referencia_tipo: referenciaTipo || null,
-        referencia_id: referenciaId || null,
-        creado_por_id: creadoPorId || null,
-        creado_por_nombre: creadoPorNombre || null,
-      })
-    );
-    if (errMov) console.error('[Wallet Operador] Error detallado Supabase (insertar wallet_movimientos_operador):', errMov);
+    const { data: mov, error: errMov } = await supabase
+      .from('wallet_movimientos_operador')
+      .insert(
+        withClubId({
+          empleado_id: empleadoId,
+          empleado_nombre: empleadoNombre || null,
+          tipo: delta >= 0 ? 'abono' : 'cargo',
+          monto: delta,
+          saldo_resultante: saldoNuevo,
+          motivo: motivo || null,
+          metodo_aplicacion: metodoAplicacion || null,
+          referencia_tipo: referenciaTipo || null,
+          referencia_id: referenciaId || null,
+          creado_por_id: creadoPorId || null,
+          creado_por_nombre: creadoPorNombre || null,
+        })
+      )
+      .select('id')
+      .single();
+    if (errMov) {
+      console.error('[Wallet Operador] Error detallado Supabase (insertar wallet_movimientos_operador):', errMov);
+      movimientoOk = false;
+    } else {
+      movimientoId = mov?.id || null;
+    }
   } catch (eMov) {
     console.error('[Wallet Operador] Error detallado Supabase (excepción en wallet_movimientos_operador, tabla probablemente no existe todavía):', eMov);
+    movimientoOk = false;
   }
-  return { ok: true, saldoNuevo };
+  return { ok: true, saldoNuevo, movimientoId, movimientoOk };
 }
 
 // Reparte un monto entre Wallet (hasta donde alcance el saldo) y el resto —
@@ -43183,29 +43392,16 @@ function PortalPublicoJugadores({ clubSlug }) {
                           Úsalo para pagar canchas, torneos, retas o compras en la Tienda — cubre lo que alcance, el resto se paga en recepción.
                         </p>
                       </div>
-                      <div className="rounded-2xl border border-slate-200 bg-white/50 backdrop-blur-sm">
-                        <p className="border-b border-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-500">
-                          Historial de movimientos
-                        </p>
-                        {walletMovimientos.length === 0 ? (
-                          <p className="px-4 py-8 text-center text-xs text-slate-500">Todavía no hay movimientos en tu Wallet.</p>
-                        ) : (
-                          <div className="divide-y divide-slate-200">
-                            {walletMovimientos.map((m) => (
-                              <div key={m.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
-                                <div className="min-w-0">
-                                  <p className="truncate text-xs font-semibold text-slate-800">{m.motivo || 'Movimiento de Wallet'}</p>
-                                  <p className="text-[10px] text-slate-500">{m.created_at ? new Date(m.created_at).toLocaleString('es-MX') : ''}</p>
-                                </div>
-                                <p className={`shrink-0 text-sm font-black ${Number(m.monto) < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                  {Number(m.monto) < 0 ? '−' : '+'}
-                                  {formatoMoneda(Math.abs(Number(m.monto) || 0))}
-                                </p>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                      {/* LIMPIEZA DE UI (fix): esta pestaña "Wallet" mostraba su
+                          propio "Historial de Movimientos", duplicado con la
+                          pestaña "Historial" (que ya consolida TODAS las
+                          compras/reservas/inscripciones del jugador, incluidos
+                          sus movimientos de Wallet vía `historialUnificado`).
+                          Se quita el bloque de aquí para que "Wallet" muestre
+                          exclusivamente el saldo y las instrucciones de uso —
+                          `walletMovimientos`/`cargandoWallet` se dejan tal
+                          cual (mismo fetch de siempre) por si otra vista los
+                          necesita más adelante. */}
                     </div>
                   )}
                 </div>
