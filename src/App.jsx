@@ -40574,6 +40574,16 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
       saldoNuevo = Math.max(0, Math.round((saldoActual + delta) * 100) / 100);
       const { error: errUpdate } = await supabase.from('empleados').update({ saldo_wallet: saldoNuevo }).eq('id', empleadoId);
       if (errUpdate) {
+        // Este SÍ bloquea el cobro por Wallet (a propósito, no es un "best
+        // effort" como el registro de historial de abajo): esto es lo que
+        // de verdad mueve el dinero — si no se pudo confirmar el ajuste de
+        // saldo, más vale detener el checkout y que el cajero elija otro
+        // método, a dejar pasar la venta pensando que se cobró por Wallet
+        // cuando en realidad no se descontó nada. Si el código es 22P02
+        // ("invalid input syntax for type uuid"), el payload de este UPDATE
+        // (`{ saldo_wallet, eq('id', empleadoId) }`) no trae ningún uuid
+        // armado a mano — ver `migracion_v59_debug_triggers_and_fk.sql` para
+        // revisar si hay un TRIGGER en `empleados` disparándose aquí mismo.
         console.error('[Wallet Operador] Error detallado Supabase (ajustar saldo_wallet, respaldo no atómico):', errUpdate);
         return { ok: false, error: errUpdate, saldoNuevo: null };
       }
