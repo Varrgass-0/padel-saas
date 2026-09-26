@@ -4207,6 +4207,7 @@ function TopHeader({
   }, [menuColaboradorAbierto]);
 
   return (
+    <>
     <header className="sticky top-0 z-20 grid grid-cols-3 items-center gap-2 border-b border-slate-200 bg-slate-50/95 px-3 py-2 backdrop-blur sm:px-6">
       {/* Izquierda: botón de menú (solo mobile/iPad — abre el Sidebar como
           drawer; en desktop el Sidebar ya está fijo/visible y este botón se
@@ -4300,9 +4301,20 @@ function TopHeader({
           )}
         </div>
       </div>
-
-      {modalMiWallet && <ModalMiWallet operador={operador} onClose={() => setModalMiWallet(false)} />}
     </header>
+    {/* FIX DE UI — "Mi Wallet" se renderizaba como una barra recortada en la
+        parte superior en vez de un modal centrado: `ModalShell` usa
+        `position: fixed` (relativo al viewport), pero el `<header>` de
+        arriba tiene `backdrop-blur` (`backdrop-filter`), que por
+        especificación CSS crea su PROPIO "containing block" para
+        descendientes `fixed` — el modal terminaba posicionado relativo al
+        `<header>` (solo unos pocos px de alto), no a la pantalla completa.
+        Moverlo a un hermano del `<header>` (fuera de ese contenedor con
+        `backdrop-filter`) resuelve el recorte sin tocar `ModalShell`, que
+        ya está bien construido y lo usan decenas de otros modales sin este
+        problema. */}
+    {modalMiWallet && <ModalMiWallet operador={operador} onClose={() => setModalMiWallet(false)} />}
+    </>
   );
 }
 
@@ -4344,7 +4356,7 @@ function ModalMiWallet({ operador, onClose }) {
   }, [operador.id]);
 
   return (
-    <ModalShell titulo="Mi Wallet" subtitulo={operador.nombre} onClose={onClose} icon={Wallet} ancho="max-w-md">
+    <ModalShell titulo={`Mi Wallet - ${operador.nombre}`} subtitulo="Saldo y movimientos de tu Wallet" onClose={onClose} icon={Wallet} ancho="max-w-md">
       <div className="space-y-4">
         <div className="rounded-xl border border-lime-400/30 bg-lime-400/10 p-4 text-center">
           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Saldo Disponible</p>
@@ -8146,12 +8158,20 @@ function ComandaPanel({
   puedeEditarPrecio = false,
   onEditarPrecio,
   directorioJugadores = [],
+  // Autocompletado Unificado en Datos del Cliente (nuevo): directorio de
+  // Colaboradores/Operadores activos, para que el mismo campo "Nombre y
+  // Apellido del cliente..." también encuentre y vincule un Operador (con
+  // badge `[Operador]`) — ver `SelectorJugadorRegistrado` y
+  // `clienteOperadorId`/`onSeleccionarOperador` más abajo.
+  operadoresDirectorio = [],
   clienteNombre = '',
   onCambiarClienteNombre,
   clienteTelefono = '',
   onCambiarClienteTelefono,
   clienteSeleccionadoId = null,
   onSeleccionarCliente,
+  clienteOperadorId = null,
+  onSeleccionarOperador,
   cortesiaDisponible = null,
   onAbrirCanjeCortesia,
 }) {
@@ -8316,11 +8336,24 @@ function ComandaPanel({
             </span>
             <SelectorJugadorRegistrado
               jugadores={directorioJugadores}
+              operadores={operadoresDirectorio}
               nombre={clienteNombre}
               onNombreChange={onCambiarClienteNombre}
-              jugadorSeleccionadoId={clienteSeleccionadoId}
+              jugadorSeleccionadoId={clienteSeleccionadoId || clienteOperadorId}
+              tipoSeleccionado={clienteOperadorId ? 'operador' : 'jugador'}
               onSeleccionarJugador={(j) => {
-                onSeleccionarCliente?.(j?.id || null);
+                // Vincular a la Comanda (nuevo): un Jugador y un Operador son
+                // mutuamente excluyentes como "cliente" de esta comanda — al
+                // elegir uno se limpia el otro, así el cobro por Wallet (más
+                // abajo, `ModalCobro`) sabe sin ambigüedad de cuál de las dos
+                // wallets debe descontar.
+                if (j?._tipoSelector === 'operador') {
+                  onSeleccionarOperador?.(j?.id || null);
+                  onSeleccionarCliente?.(null);
+                } else {
+                  onSeleccionarCliente?.(j?.id || null);
+                  onSeleccionarOperador?.(null);
+                }
                 if (j?.telefono) onCambiarClienteTelefono?.(j.telefono);
               }}
               placeholder="Nombre y Apellido del cliente..."
@@ -8330,6 +8363,7 @@ function ComandaPanel({
               onChange={(e) => {
                 onCambiarClienteTelefono?.(e.target.value);
                 if (clienteSeleccionadoId) onSeleccionarCliente?.(null);
+                if (clienteOperadorId) onSeleccionarOperador?.(null);
               }}
               className={`${inputClase} text-xs`}
               placeholder="Teléfono (10 dígitos) — identificador del cliente"
@@ -8465,7 +8499,7 @@ function PasosDeCobro({
   // Arquitectura Flexible: si el llamador no pasa nada de esto, el botón
   // "Wallet" simplemente no aparece (ver `mostrarWallet` más abajo) y este
   // componente se comporta EXACTAMENTE como antes.
-  walletJugador, // { id, nombre } — jugador ya vinculado a esta venta/cobro, si se conoce (se preselecciona, sin buscador).
+  walletPersonaFijada, // { tipo: 'jugador'|'operador', id, nombre } — persona ya vinculada a esta venta/cobro, si se conoce (se preselecciona, sin buscador).
   jugadoresDirectorio, // array del CRM, para buscar un jugador que no viene preseleccionado.
   operadorActual, // { id, nombre } — el operador logueado, para el atajo "Cobrar de Mi Wallet".
   empleadosDirectorio, // array de empleados activos, para buscar OTRO operador distinto al logueado.
@@ -8487,8 +8521,8 @@ function PasosDeCobro({
   // completar el resto (mismo criterio de "pago parcial" que el resto de la
   // solicitud: Wallet + complemento en efectivo/tarjeta, o el operador puede
   // dar "Atrás" para detener el cobro por Wallet).
-  const [walletTarget, setWalletTarget] = useState(walletJugador ? 'jugador' : 'operador');
-  const [walletPersona, setWalletPersona] = useState(walletJugador ? { id: walletJugador.id, nombre: walletJugador.nombre } : null);
+  const [walletTarget, setWalletTarget] = useState(walletPersonaFijada ? walletPersonaFijada.tipo : operadorActual ? 'operador' : 'jugador');
+  const [walletPersona, setWalletPersona] = useState(walletPersonaFijada ? { id: walletPersonaFijada.id, nombre: walletPersonaFijada.nombre } : null);
   const [walletBusqueda, setWalletBusqueda] = useState('');
   const [walletSaldo, setWalletSaldo] = useState(0);
   const [walletCargandoSaldo, setWalletCargandoSaldo] = useState(false);
@@ -8509,7 +8543,7 @@ function PasosDeCobro({
   const mixtoCoincide = centavosSumaMixto === centavosMonto && (montoEfectivoMixto !== '' || montoTarjetaMixto !== '');
 
   const mostrarWallet = Boolean(
-    walletJugador || operadorActual || (jugadoresDirectorio && jugadoresDirectorio.length > 0) || (empleadosDirectorio && empleadosDirectorio.length > 0)
+    walletPersonaFijada || operadorActual || (jugadoresDirectorio && jugadoresDirectorio.length > 0) || (empleadosDirectorio && empleadosDirectorio.length > 0)
   );
 
   async function cargarSaldoWallet(persona, target) {
@@ -8704,8 +8738,8 @@ function PasosDeCobro({
   }
 
   if (paso === 'wallet') {
-    const mostrarTabJugador = Boolean(walletJugador) || (jugadoresDirectorio && jugadoresDirectorio.length > 0);
-    const mostrarTabOperador = Boolean(operadorActual) || (empleadosDirectorio && empleadosDirectorio.length > 0);
+    const mostrarTabJugador = Boolean(walletPersonaFijada?.tipo === 'jugador') || (jugadoresDirectorio && jugadoresDirectorio.length > 0);
+    const mostrarTabOperador = Boolean(walletPersonaFijada?.tipo === 'operador') || Boolean(operadorActual) || (empleadosDirectorio && empleadosDirectorio.length > 0);
     const fuenteBusqueda = walletTarget === 'jugador' ? jugadoresDirectorio || [] : empleadosDirectorio || [];
     const terminoBusqueda = walletBusqueda.trim().toLowerCase();
     const resultadosBusqueda = !terminoBusqueda
@@ -8795,7 +8829,7 @@ function PasosDeCobro({
                 <p className="truncate text-xs font-bold text-slate-800">{walletPersona.nombre}</p>
                 <p className="text-[10px] text-slate-500">{walletTarget === 'jugador' ? 'Wallet de Jugador' : 'Wallet de Operador'}</p>
               </div>
-              {!walletJugador && (
+              {!walletPersonaFijada && (
                 <button
                   type="button"
                   onClick={() => {
@@ -8943,7 +8977,7 @@ function ModalCobro({
   onConfirmado,
   onDividir,
   registrandoVenta,
-  walletJugador,
+  walletPersonaFijada,
   jugadoresDirectorio,
   operadorActual,
   empleadosDirectorio,
@@ -8953,7 +8987,7 @@ function ModalCobro({
       <PasosDeCobro
         monto={total}
         deshabilitado={registrandoVenta}
-        walletJugador={walletJugador}
+        walletPersonaFijada={walletPersonaFijada}
         jugadoresDirectorio={jugadoresDirectorio}
         operadorActual={operadorActual}
         empleadosDirectorio={empleadosDirectorio}
@@ -12241,6 +12275,12 @@ function ModuloSmartPOS({
   const [clienteNombre, setClienteNombre] = useState('');
   const [clienteTelefono, setClienteTelefono] = useState('');
   const [clienteSeleccionadoId, setClienteSeleccionadoId] = useState(null);
+  // Autocompletado Unificado en Datos del Cliente (nuevo): mutuamente
+  // excluyente con `clienteSeleccionadoId` — el "cliente" de esta comanda es
+  // O un Jugador del CRM O un Operador/Colaborador, nunca ambos (ver
+  // `ComandaPanel`/`SelectorJugadorRegistrado`). Cuando está lleno, el cobro
+  // por Wallet (`ModalCobro`) preselecciona la Wallet de ESE operador.
+  const [clienteOperadorId, setClienteOperadorId] = useState(null);
   const directorioJugadoresCRM = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
 
   // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): estado de qué
@@ -14474,6 +14514,7 @@ function ModuloSmartPOS({
     setClienteNombre('');
     setClienteTelefono('');
     setClienteSeleccionadoId(null);
+    setClienteOperadorId(null);
   }
 
   // Registra la venta en Supabase (SOLO con las columnas reales de `ventas`:
@@ -14610,8 +14651,11 @@ function ModuloSmartPOS({
     // lee `resolverJugadorIdVentaCancha` con prioridad máxima — así una venta
     // de Pro-Shop/Cafetería SIN cancha también alimenta el historial/LTV del
     // cliente en el Directorio & CRM.
-    let clienteJugadorId = clienteSeleccionadoId || null;
-    if (!clienteJugadorId && (clienteNombre.trim() || clienteTelefono.trim())) {
+    // Autocompletado Unificado (nuevo): si el "cliente" de esta comanda es un
+    // Operador (`clienteOperadorId`), NUNCA se resuelve/crea un jugador a
+    // partir de su nombre — un colaborador del club no es un cliente del CRM.
+    let clienteJugadorId = clienteOperadorId ? null : clienteSeleccionadoId || null;
+    if (!clienteOperadorId && !clienteJugadorId && (clienteNombre.trim() || clienteTelefono.trim())) {
       try {
         clienteJugadorId = await resolverJugadorId(clienteNombre, { telefono: clienteTelefono, directorio: directorioJugadoresCRM });
       } catch (_e) {
@@ -14767,6 +14811,12 @@ function ModuloSmartPOS({
           pagos_divididos: pagosDivididos,
           jugador_id: clienteJugadorId,
           jugador_nombre: clienteNombre.trim() || null,
+          // Autocompletado Unificado (nuevo) — cuando el "cliente" de esta
+          // comanda es un Operador/Colaborador en vez de un Jugador del CRM
+          // (ver `ComandaPanel`/`SelectorJugadorRegistrado`), se guarda aquí
+          // en vez de `jugador_id` (que queda en NULL en ese caso).
+          cliente_operador_id: clienteOperadorId || null,
+          cliente_operador_nombre: clienteOperadorId ? clienteNombre.trim() || null : null,
           // Pago Mixto (item 1): desglose Efectivo/Tarjeta del ticket
           // completo — se llena para 'mixto' y también para 'wallet_mixto'
           // (Wallet + complemento, nuevo migracion_v56: `mixto.wallet` trae
@@ -15476,12 +15526,15 @@ function ModuloSmartPOS({
           puedeEditarPrecio={Boolean(permisos?.puedeEditarPrecioPOS || permisos?.puedeAplicarDescuentoManual)}
           onEditarPrecio={editarPrecioItem}
           directorioJugadores={directorioJugadoresCRM}
+          operadoresDirectorio={empleados}
           clienteNombre={clienteNombre}
           onCambiarClienteNombre={setClienteNombre}
           clienteTelefono={clienteTelefono}
           onCambiarClienteTelefono={setClienteTelefono}
           clienteSeleccionadoId={clienteSeleccionadoId}
           onSeleccionarCliente={setClienteSeleccionadoId}
+          clienteOperadorId={clienteOperadorId}
+          onSeleccionarOperador={setClienteOperadorId}
           cortesiaDisponible={cortesiaClienteActual}
           onAbrirCanjeCortesia={setCanjeCortesiaCategoria}
         />
@@ -15509,10 +15562,20 @@ function ModuloSmartPOS({
           registrandoVenta={registrandoVenta}
           onClose={() => setModalCobro(false)}
           // Wallet como método de cobro (nuevo, migracion_v56): si ya hay un
-          // Cliente seleccionado del CRM para esta comanda, se preselecciona
-          // como target de Wallet (sin buscador) — si no, el operador puede
-          // buscar cualquier Jugador o cobrar de su propia Wallet.
-          walletJugador={clienteSeleccionadoId ? { id: clienteSeleccionadoId, nombre: clienteNombre } : null}
+          // Cliente (Jugador u Operador) vinculado a esta comanda, se
+          // preselecciona como target de Wallet (sin buscador) — si el
+          // vinculado es un Operador, el checkout toma automáticamente su
+          // Wallet de Operador (`empleados.saldo_wallet` /
+          // `wallet_movimientos_operador`); si no hay nadie vinculado, el
+          // operador logueado puede buscar cualquier Jugador/Operador o
+          // cobrar de su propia Wallet.
+          walletPersonaFijada={
+            clienteOperadorId
+              ? { tipo: 'operador', id: clienteOperadorId, nombre: clienteNombre }
+              : clienteSeleccionadoId
+              ? { tipo: 'jugador', id: clienteSeleccionadoId, nombre: clienteNombre }
+              : null
+          }
           jugadoresDirectorio={directorioJugadoresCRM}
           operadorActual={operador?.id != null ? operador : null}
           empleadosDirectorio={empleados}
@@ -24886,7 +24949,27 @@ function SelectorFechaClick({ value, onChange, className = '', compact = false }
 // registrado) — `resolverJugadorId` en el `guardar()` de cada modal sigue
 // siendo quien decide si crea o reutiliza el expediente, esto solo hace más
 // rápido y menos propenso a error el caso común de un jugador que YA existe.
-function SelectorJugadorRegistrado({ jugadores = [], nombre, onNombreChange, onSeleccionarJugador, jugadorSeleccionadoId, placeholder }) {
+function SelectorJugadorRegistrado({
+  jugadores = [],
+  nombre,
+  onNombreChange,
+  onSeleccionarJugador,
+  jugadorSeleccionadoId,
+  placeholder,
+  // Autocompletado Unificado (nuevo, Smart POS → Datos del Cliente):
+  // etiqueta de la insignia cuando lo seleccionado fue un Operador en vez de
+  // un Jugador — opcional, por default se ve igual que siempre ("Del
+  // directorio").
+  tipoSeleccionado = 'jugador',
+  // Autocompletado Unificado (nuevo, Smart POS → Datos del Cliente): opcional
+  // — solo `ComandaPanel` lo pasa hoy. Cuando viene con elementos, el
+  // dropdown de sugerencias mezcla Jugadores del CRM CON Colaboradores/
+  // Operadores del club, cada operador con su badge `[Operador]`. El resto
+  // de llamadores de este selector (Retas/Torneo/Academia/Split Bill) no
+  // pasan esta prop, así que su comportamiento queda IDÉNTICO al de antes
+  // (solo jugadores, sin badges).
+  operadores = [],
+}) {
   const [abierto, setAbierto] = useState(false);
 
   // Autocomplete por NOMBRE O TELÉFONO (mejora — Dividir Cuenta con CRM): el
@@ -24901,14 +24984,15 @@ function SelectorJugadorRegistrado({ jugadores = [], nombre, onNombreChange, onS
     const q = (nombre || '').trim().toLowerCase();
     if (!q) return [];
     const qDigitos = q.replace(/\D/g, '');
-    return jugadores
-      .filter((j) => {
-        const coincideNombre = (j.nombre || '').toLowerCase().includes(q);
-        const coincideTelefono = qDigitos.length >= 3 && (j.telefono || '').replace(/\D/g, '').includes(qDigitos);
-        return coincideNombre || coincideTelefono;
-      })
-      .slice(0, 6);
-  }, [jugadores, nombre]);
+    const coincide = (p) => {
+      const coincideNombre = (p.nombre || '').toLowerCase().includes(q);
+      const coincideTelefono = qDigitos.length >= 3 && (p.telefono || '').replace(/\D/g, '').includes(qDigitos);
+      return coincideNombre || coincideTelefono;
+    };
+    const sugerenciasJugadores = jugadores.filter(coincide).map((j) => ({ ...j, _tipoSelector: 'jugador' }));
+    const sugerenciasOperadores = operadores.filter((o) => o.activo !== false).filter(coincide).map((o) => ({ ...o, _tipoSelector: 'operador' }));
+    return [...sugerenciasJugadores, ...sugerenciasOperadores].slice(0, 8);
+  }, [jugadores, operadores, nombre]);
 
   return (
     <div className="relative">
@@ -24926,8 +25010,12 @@ function SelectorJugadorRegistrado({ jugadores = [], nombre, onNombreChange, onS
           autoComplete="off"
         />
         {jugadorSeleccionadoId && (
-          <span className="absolute right-2.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-lime-400/10 px-2 py-0.5 text-[9px] font-bold text-lime-400 ring-1 ring-lime-400/30">
-            <CheckCircle2 size={9} /> Del directorio
+          <span
+            className={`absolute right-2.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold ring-1 ${
+              tipoSeleccionado === 'operador' ? 'bg-sky-100 text-sky-700 ring-sky-300' : 'bg-lime-400/10 text-lime-400 ring-lime-400/30'
+            }`}
+          >
+            <CheckCircle2 size={9} /> {tipoSeleccionado === 'operador' ? 'Operador' : 'Del directorio'}
           </span>
         )}
       </div>
@@ -24935,7 +25023,7 @@ function SelectorJugadorRegistrado({ jugadores = [], nombre, onNombreChange, onS
         <div className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-slate-300 bg-slate-100 shadow-xl">
           {sugerencias.map((j) => (
             <button
-              key={j.id}
+              key={`${j._tipoSelector}-${j.id}`}
               type="button"
               onMouseDown={() => {
                 onNombreChange(j.nombre || '');
@@ -24944,8 +25032,15 @@ function SelectorJugadorRegistrado({ jugadores = [], nombre, onNombreChange, onS
               }}
               className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-800 transition hover:bg-slate-200"
             >
-              <Users size={12} className="shrink-0 text-lime-400" />
+              {j._tipoSelector === 'operador' ? (
+                <UserCog size={12} className="shrink-0 text-sky-500" />
+              ) : (
+                <Users size={12} className="shrink-0 text-lime-400" />
+              )}
               <span className="min-w-0 flex-1 truncate">{j.nombre}</span>
+              {j._tipoSelector === 'operador' && (
+                <span className="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[9px] font-bold text-sky-700">Operador</span>
+              )}
               {j.telefono && <span className="shrink-0 text-[10px] text-slate-500">{j.telefono}</span>}
             </button>
           ))}
