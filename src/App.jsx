@@ -2281,6 +2281,14 @@ const METODOS_PAGO_POS = [
   { value: 'efectivo', label: 'Efectivo', icon: Banknote },
   { value: 'tarjeta', label: 'Tarjeta TPV', icon: CreditCard },
   { value: 'transferencia', label: 'Transferencia SPEI', icon: ArrowRightLeft },
+  // Pago Mixto (Efectivo + Tarjeta): un solo ticket, dos montos que suman el
+  // total — ver `PasosDeCobro` (paso 'mixto') para la captura y validación,
+  // y `detalles.mixto` / columnas `monto_efectivo`/`monto_tarjeta` (según la
+  // tabla) para dónde se guarda el desglose. Al vivir en este mismo arreglo,
+  // el botón/opción "Mixto" aparece automáticamente en TODOS los flujos de
+  // cobro que ya reusan `METODOS_PAGO_POS` (POS, Cuenta Abierta, Split Bill,
+  // Roster, inscripciones de Retas/Torneos/Academia) sin tocar cada uno.
+  { value: 'mixto', label: 'Mixto (Efvo + Tarjeta)', icon: Layers },
 ];
 
 // Etiqueta de "Método de Pago" para el Modal de Desglose del P&L (Contabilidad
@@ -2308,6 +2316,8 @@ function etiquetaMetodoPagoInscripcion(metodo) {
       return 'Wallet';
     case 'credito':
       return 'Crédito';
+    case 'mixto':
+      return 'Mixto (Efvo + Tarjeta)';
     default:
       return null;
   }
@@ -7433,9 +7443,16 @@ async function calcularMontoTeoricoEfectivo() {
   data.forEach((v) => {
     if (v.metodo_pago === 'efectivo') {
       suma += Number(v.total) || 0;
+    } else if (v.metodo_pago === 'mixto') {
+      // Pago Mixto (item 1): solo la PARTE en efectivo del ticket cuenta
+      // para el Arqueo — la parte en tarjeta nunca pasa por el cajón.
+      suma += Number(v.detalles?.mixto?.efectivo) || 0;
     } else if (v.metodo_pago === 'dividido' && Array.isArray(v.detalles?.pagos_divididos)) {
       v.detalles.pagos_divididos.forEach((p) => {
         if (p?.metodo === 'efectivo') suma += Number(p.monto) || 0;
+        // Split Bill con una fila 'mixto' individual (participante que pagó
+        // parte en efectivo, parte en tarjeta) — mismo criterio que arriba.
+        else if (p?.metodo === 'mixto') suma += Number(p?.mixto?.efectivo) || 0;
       });
     }
   });
@@ -8005,16 +8022,32 @@ function ComandaPanel({
 // calcula el cambio; Tarjeta/SPEI piden una confirmación explícita antes de
 // darse por liquidados (nunca se cobran "solos" con un clic).
 function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto = false }) {
-  const [paso, setPaso] = useState('elegir'); // 'elegir' | 'efectivo' | 'confirmarTerminal'
+  const [paso, setPaso] = useState('elegir'); // 'elegir' | 'efectivo' | 'confirmarTerminal' | 'mixto'
   const [metodo, setMetodo] = useState(null);
   const [efectivoRecibido, setEfectivoRecibido] = useState('');
+  // Pago Mixto (Efectivo + Tarjeta, item 1): dos montos independientes que
+  // deben sumar EXACTO el total del ticket — la comparación se hace en
+  // centavos (enteros) para no chocar con errores de punto flotante de
+  // sumar dos decimales (0.1 + 0.2 !== 0.3 en JS).
+  const [montoEfectivoMixto, setMontoEfectivoMixto] = useState('');
+  const [montoTarjetaMixto, setMontoTarjetaMixto] = useState('');
 
   const cambio = Math.max(0, Math.round(((Number(efectivoRecibido) || 0) - monto) * 100) / 100);
   const alcanza = Number(efectivoRecibido) >= monto && efectivoRecibido !== '';
 
+  const centavosMonto = Math.round((Number(monto) || 0) * 100);
+  const centavosSumaMixto = Math.round((Number(montoEfectivoMixto) || 0) * 100) + Math.round((Number(montoTarjetaMixto) || 0) * 100);
+  const restanteMixto = (centavosMonto - centavosSumaMixto) / 100;
+  // Exige que el operador haya tecleado algo en al menos un campo — sin esto,
+  // dos campos vacíos (suma $0) "coincidirían" con un ticket de $0, que no
+  // existe en la práctica, pero por seguridad no se deja confirmar en blanco.
+  const mixtoCoincide = centavosSumaMixto === centavosMonto && (montoEfectivoMixto !== '' || montoTarjetaMixto !== '');
+
   function elegir(m) {
     setMetodo(m);
-    setPaso(m === 'efectivo' ? 'efectivo' : 'confirmarTerminal');
+    if (m === 'efectivo') setPaso('efectivo');
+    else if (m === 'mixto') setPaso('mixto');
+    else setPaso('confirmarTerminal');
   }
 
   const inputSize = compacto ? 'text-xs' : '';
@@ -8050,6 +8083,77 @@ function PasosDeCobro({ monto, onConfirmar, onCancelar, deshabilitado, compacto 
           <button
             onClick={() => onConfirmar({ metodo: 'efectivo', cambio })}
             disabled={!alcanza || deshabilitado}
+            className="inline-flex items-center gap-1.5 rounded-md bg-lime-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {deshabilitado && <Loader2 size={12} className="animate-spin" />}
+            Confirmar Cobro
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (paso === 'mixto') {
+    return (
+      <div className="space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500">Monto Efectivo</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={montoEfectivoMixto}
+              onChange={(e) => setMontoEfectivoMixto(e.target.value)}
+              className={`${inputClase} ${inputSize}`}
+              placeholder="0.00"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500">Monto Tarjeta</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={montoTarjetaMixto}
+              onChange={(e) => setMontoTarjetaMixto(e.target.value)}
+              className={`${inputClase} ${inputSize}`}
+              placeholder="0.00"
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <button
+            type="button"
+            onClick={() => setMontoTarjetaMixto(String(Math.max(0, Math.round((monto - (Number(montoEfectivoMixto) || 0)) * 100) / 100)))}
+            className="text-[10px] font-bold text-slate-500 underline decoration-dotted transition hover:text-slate-800"
+          >
+            Completar Tarjeta con el resto
+          </button>
+          <span
+            className={`text-[11px] font-black ${
+              mixtoCoincide ? 'text-emerald-400' : restanteMixto > 0 ? 'text-amber-500' : 'text-rose-500'
+            }`}
+          >
+            {mixtoCoincide
+              ? '✓ Coincide con el total'
+              : restanteMixto > 0
+              ? `Falta ${formatoMoneda(restanteMixto)}`
+              : `Sobra ${formatoMoneda(Math.abs(restanteMixto))}`}
+          </span>
+        </div>
+        <div className="flex justify-end gap-1.5">
+          {botonVolver}
+          <button
+            onClick={() =>
+              onConfirmar({
+                metodo: 'mixto',
+                cambio: 0,
+                mixto: { efectivo: Number(montoEfectivoMixto) || 0, tarjeta: Number(montoTarjetaMixto) || 0 },
+              })
+            }
+            disabled={!mixtoCoincide || deshabilitado}
             className="inline-flex items-center gap-1.5 rounded-md bg-lime-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {deshabilitado && <Loader2 size={12} className="animate-spin" />}
@@ -8124,7 +8228,7 @@ function ModalCobro({ total, onClose, onConfirmado, onDividir, registrandoVenta 
       <PasosDeCobro
         monto={total}
         deshabilitado={registrandoVenta}
-        onConfirmar={({ metodo, cambio }) => onConfirmado(metodo, cambio)}
+        onConfirmar={({ metodo, cambio, mixto }) => onConfirmado(metodo, cambio, mixto)}
         onCancelar={
           <button
             key="dividir"
@@ -8140,6 +8244,53 @@ function ModalCobro({ total, onClose, onConfirmado, onDividir, registrandoVenta 
         }
       />
     </ModalShell>
+  );
+}
+
+// Pago Mixto (item 1) para formularios de alta/inscripción con pago
+// inmediato que NO pasan por `PasosDeCobro` (Retas/Torneos/Academia — un
+// `<select>` simple de Método de Pago, sin flujo de "confirmar cobro" ni
+// cambio en efectivo). Mismo criterio de validación EXACTA en centavos que
+// `PasosDeCobro`, factorizado aquí para no repetirlo 3 veces.
+function mixtoCoincideConMonto(monto, montoEfectivo, montoTarjeta) {
+  const centavosMonto = Math.round((Number(monto) || 0) * 100);
+  const centavosSuma = Math.round((Number(montoEfectivo) || 0) * 100) + Math.round((Number(montoTarjeta) || 0) * 100);
+  return centavosSuma === centavosMonto && (montoEfectivo !== '' || montoTarjeta !== '');
+}
+
+function CampoPagoMixto({ monto, montoEfectivo, montoTarjeta, onMontoEfectivoChange, onMontoTarjetaChange }) {
+  const coincide = mixtoCoincideConMonto(monto, montoEfectivo, montoTarjeta);
+  const restante = Math.round(((Number(monto) || 0) - (Number(montoEfectivo) || 0) - (Number(montoTarjeta) || 0)) * 100) / 100;
+  return (
+    <div className="space-y-1.5">
+      <div className="grid grid-cols-2 gap-3">
+        <Campo label="Monto Efectivo">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={montoEfectivo}
+            onChange={(e) => onMontoEfectivoChange(e.target.value)}
+            className={inputClase}
+            placeholder="0.00"
+          />
+        </Campo>
+        <Campo label="Monto Tarjeta">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={montoTarjeta}
+            onChange={(e) => onMontoTarjetaChange(e.target.value)}
+            className={inputClase}
+            placeholder="0.00"
+          />
+        </Campo>
+      </div>
+      <p className={`text-[11px] font-bold ${coincide ? 'text-emerald-400' : restante > 0 ? 'text-amber-500' : 'text-rose-500'}`}>
+        {coincide ? '✓ Coincide con el total' : restante > 0 ? `Falta ${formatoMoneda(restante)}` : `Sobra ${formatoMoneda(Math.abs(restante))}`}
+      </p>
+    </div>
   );
 }
 
@@ -8268,6 +8419,7 @@ function FilaPagoJugador({ indice, monto, pagado, transferidoTexto, onPagado, ju
         <span className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
           <CheckCircle2 size={13} /> Pagado con {METODOS_PAGO_POS.find((m) => m.value === pagado.metodo)?.label}
           {pagado.metodo === 'efectivo' && pagado.cambio > 0 && ` · Cambio: ${formatoMoneda(pagado.cambio)}`}
+          {pagado.metodo === 'mixto' && pagado.mixto && ` · Efvo ${formatoMoneda(pagado.mixto.efectivo)} + Tarjeta ${formatoMoneda(pagado.mixto.tarjeta)}`}
         </span>
       </div>
     );
@@ -8541,6 +8693,10 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
                     monto: montoEfectivo[i],
                     metodo: p?.metodo || null,
                     cambio: p?.cambio || 0,
+                    // Pago Mixto (item 1) por fila — `{ efectivo, tarjeta }`,
+                    // solo presente cuando esta fila en particular eligió
+                    // 'mixto' en su propio `PasosDeCobro` (ver `FilaPagoJugador`).
+                    mixto: p?.mixto || null,
                     // CRM (mejora): si se seleccionó del directorio, `jugadorId`
                     // ya viene resuelto; si se capturó "Nuevo Jugador",
                     // `jugadorId` es `null` y `jugadorNombre`/`jugadorTelefono`
@@ -9379,9 +9535,18 @@ function ModalTicket({ venta, onClose, nombreClub }) {
         total: parteActiva.total,
         metodoPago: parteActiva.metodoPago,
         cambio: parteActiva.cambio,
+        mixto: parteActiva.mixto,
         jugadorNombre: parteActiva.jugadorNombre,
       }
-    : { folio: venta.folio, items: venta.items, total: venta.total, metodoPago: venta.metodoPago, cambio: venta.cambio, jugadorNombre: null };
+    : {
+        folio: venta.folio,
+        items: venta.items,
+        total: venta.total,
+        metodoPago: venta.metodoPago,
+        cambio: venta.cambio,
+        mixto: venta.mixto,
+        jugadorNombre: null,
+      };
 
   return (
     <ModalShell titulo="Ticket de Venta" subtitulo={`Folio ${vista.folio}`} onClose={onClose} icon={Receipt} ancho="max-w-sm">
@@ -9471,6 +9636,19 @@ function ModalTicket({ venta, onClose, nombreClub }) {
           <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-3">
             <span className="text-slate-500">Método</span>
             <span className="font-bold">{METODOS_PAGO_POS.find((m) => m.value === vista.metodoPago)?.label || vista.metodoPago || '—'}</span>
+          </div>
+        )}
+
+        {vista.metodoPago === 'mixto' && vista.mixto && (
+          <div className="space-y-0.5 pb-0.5 text-slate-600">
+            <div className="flex items-center justify-between">
+              <span>· Efectivo</span>
+              <span className="font-bold">{formatoMoneda(vista.mixto.efectivo)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>· Tarjeta</span>
+              <span className="font-bold">{formatoMoneda(vista.mixto.tarjeta)}</span>
+            </div>
           </div>
         )}
 
@@ -9643,6 +9821,14 @@ function itemsEditablesDeGrupo(grupo) {
             es_variante: it.esVariante === true || !!(it.variante_id || it.varianteId),
             variante_nombre: it.varianteNombre || it.variante_nombre || null,
             cancha_id: it.cancha_id || null,
+            // Trazabilidad de Operadores en Cuentas Abiertas (item 2): quién
+            // agregó ESTE ítem — vive en el propio artículo (`it.operador_*`,
+            // ver `registrarVenta`) desde que se creó; un artículo agregado
+            // ANTES de esta actualización no lo trae, así que cae al
+            // operador de la fila `ventas` completa (`v.operador`, que
+            // siempre existió) como mejor aproximación disponible.
+            operador_id: it.operador_id || null,
+            operador_nombre: it.operador_nombre || v.operador || null,
           });
         });
       }
@@ -9665,6 +9851,10 @@ function itemsEditablesDeGrupo(grupo) {
         es_variante: false,
         variante_nombre: null,
         cancha_id: grupo.reserva.cancha_id || null,
+        // Sin operador que atribuir: la línea de renta de cancha no la
+        // "agrega" ningún colaborador, nace con la reserva.
+        operador_id: null,
+        operador_nombre: null,
       },
       ...(grupo.addonsDetalle || []).map((a, i) => ({
         _key: `addon-${i}`,
@@ -9678,6 +9868,10 @@ function itemsEditablesDeGrupo(grupo) {
         es_variante: !!a.es_variante,
         variante_nombre: a.variante_nombre || null,
         cancha_id: null,
+        // Add-ons del Portal (reserva pagada en línea, sin operador de
+        // mostrador que los haya agregado) — sin autoría de staff.
+        operador_id: null,
+        operador_nombre: null,
       })),
     ];
     return { items, ajuste: -walletAplicado };
@@ -9927,6 +10121,7 @@ function ModalConfirmarLiberarClasePrivada({ clase, onClose, onConfirmar, libera
 
 function ModalLiquidarCuenta({
   grupo,
+  operador,
   onClose,
   onLiquidar,
   liquidando,
@@ -10008,9 +10203,20 @@ function ModalLiquidarCuenta({
         ) : (
           items.map((it) => (
             <div key={it._key} className="flex items-center justify-between gap-2 text-[11px]">
-              <span className="min-w-0 flex-1 truncate text-slate-600">
-                {it.cantidad}× {it.nombre}
-                {it.variante_nombre ? ` (${it.variante_nombre})` : ''}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-slate-600">
+                  {it.cantidad}× {it.nombre}
+                  {it.variante_nombre ? ` (${it.variante_nombre})` : ''}
+                </span>
+                {/* Trazabilidad de Operadores (item 2) — badge discreto: qué
+                    colaborador agregó ESTE artículo (puede ser distinto de
+                    quien termine cobrando la cuenta, ver nota abajo de
+                    `PasosDeCobro`). Solo se pinta cuando el dato existe —
+                    artículos de antes de esta actualización, o líneas de
+                    cancha/add-ons del Portal, simplemente no lo muestran. */}
+                {it.operador_nombre && (
+                  <span className="mt-0.5 block truncate text-[9px] font-semibold text-slate-400">Agregó: {it.operador_nombre}</span>
+                )}
               </span>
               <span className="shrink-0 font-semibold text-slate-500">{formatoMoneda(it.precio * it.cantidad)}</span>
               {it.editable && (
@@ -10039,7 +10245,15 @@ function ModalLiquidarCuenta({
           ))
         )}
       </div>
-      <PasosDeCobro monto={total} deshabilitado={liquidando} onConfirmar={({ metodo, cambio }) => onLiquidar(metodo, cambio, items)} />
+      {/* Trazabilidad de Operadores (item 2): quién va a CERRAR/cobrar esta
+          cuenta — siempre el operador con sesión activa ahora mismo, sin
+          importar quién haya agregado cada artículo (ver badges arriba). */}
+      {operador?.nombre && (
+        <p className="mb-2 text-[10px] font-semibold text-slate-400">
+          Se cobrará como: <span className="text-slate-600">{operador.nombre}</span>
+        </p>
+      )}
+      <PasosDeCobro monto={total} deshabilitado={liquidando} onConfirmar={({ metodo, cambio, mixto }) => onLiquidar(metodo, cambio, items, mixto)} />
 
       {puedeDividir && (
         <button
@@ -10193,7 +10407,7 @@ function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando }) {
       icon={Trophy}
       ancho="max-w-sm"
     >
-      <PasosDeCobro monto={fila.monto} deshabilitado={liquidando} onConfirmar={({ metodo, cambio }) => onCobrar(metodo, cambio)} />
+      <PasosDeCobro monto={fila.monto} deshabilitado={liquidando} onConfirmar={({ metodo, cambio, mixto }) => onCobrar(metodo, cambio, mixto)} />
     </ModalShell>
   );
 }
@@ -10316,6 +10530,7 @@ function FilaSplitBillJugador({
         <div className="mt-2 flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
             <CheckCircle2 size={13} /> Pagado con {METODOS_PAGO_POS.find((m) => m.value === pagado.metodo)?.label || pagado.metodo}
+            {pagado.metodo === 'mixto' && pagado.mixto && ` · Efvo ${formatoMoneda(pagado.mixto.efectivo)} + Tarjeta ${formatoMoneda(pagado.mixto.tarjeta)}`}
           </span>
           <button
             onClick={() => onWhatsApp(indice)}
@@ -11570,7 +11785,7 @@ function ModuloSmartPOS({
   // impute de inmediato al LTV/CHS correcto (bullet 4: Trazabilidad
   // Automática al CRM), sin ambigüedad entre los 4 jugadores que comparten
   // la misma reserva/cancha.
-  async function cobrarJugadorRoster(indice, { metodo, cambio }) {
+  async function cobrarJugadorRoster(indice, { metodo, cambio, mixto }) {
     const fila = filasSplitBill[indice];
     if (!fila) return;
 
@@ -11588,6 +11803,10 @@ function ModuloSmartPOS({
       precio: it.precio,
       cantidad: it.cantidad,
       subtotal: Math.round(it.precio * it.cantidad * 100) / 100,
+      // Trazabilidad de Operadores (item 2) — ver el mismo campo en
+      // `registrarVenta`.
+      operador_id: operador?.id || null,
+      operador_nombre: operador?.nombre || null,
     }));
     const itemCuotaCancha =
       fila.cuotaCancha > 0
@@ -11627,7 +11846,20 @@ function ModuloSmartPOS({
           operador: operador?.nombre || null,
           reserva_id: reservaVinculadaActual?.id || null,
           cancha_id: canchaVinculadaId || null,
-          detalles: { items, pagos_divididos: null, split_bill: true, jugador_id: jugadorId, jugador_nombre: roster[indice]?.nombre || null },
+          detalles: {
+            items,
+            pagos_divididos: null,
+            split_bill: true,
+            jugador_id: jugadorId,
+            jugador_nombre: roster[indice]?.nombre || null,
+            // Pago Mixto (item 1): desglose Efectivo/Tarjeta de la cuota de
+            // ESTE jugador — jsonb puro, sin migración.
+            mixto: metodo === 'mixto' ? mixto || null : null,
+            // Trazabilidad de Operadores (item 2): quién cerró/cobró esta
+            // cuota — mismo criterio que `liquidarCuenta`/`liquidarCuentaDividida`.
+            cerrado_por_operador_id: operador?.id || null,
+            cerrado_por_operador_nombre: operador?.nombre || null,
+          },
           estado_pago: 'pagado',
         })
       )
@@ -11788,7 +12020,7 @@ function ModuloSmartPOS({
     const idsAsignados = new Set(fila.items.map((it) => it.id));
     setComanda((prev) => prev.filter((item) => !idsAsignados.has(item.id)));
     setRoster((prev) =>
-      prev.map((j, i) => (i === indice ? { ...j, jugadorId, pagado: { metodo, cambio: cambio || 0, monto: total } } : j))
+      prev.map((j, i) => (i === indice ? { ...j, jugadorId, pagado: { metodo, cambio: cambio || 0, monto: total, mixto: mixto || null } } : j))
     );
 
     setCobrandoJugadorIndice(null);
@@ -11807,6 +12039,7 @@ function ModuloSmartPOS({
       metodoPago: metodo,
       pagosDivididos: null,
       cambio: cambio || 0,
+      mixto: metodo === 'mixto' ? mixto || null : null,
     });
   }
 
@@ -12220,7 +12453,7 @@ function ModuloSmartPOS({
   // `gruposReservasPendientes` arriba): en ese caso, en vez de actualizar
   // filas que no existen, INSERTA el ticket en `ventas` ya `pagado`, para
   // que el cobro quede registrado en la tabla de ingresos/ventas.
-  async function liquidarCuenta(grupo, metodoPago, cambio, itemsFinales) {
+  async function liquidarCuenta(grupo, metodoPago, cambio, itemsFinales, mixto) {
     setLiquidandoClave(grupo.clave);
     let error = null;
     let totalCobrado = grupo.total;
@@ -12254,6 +12487,11 @@ function ModuloSmartPOS({
         precio: it.precio,
         cantidad: it.cantidad,
         subtotal: Math.round((Number(it.precio) || 0) * (Number(it.cantidad) || 0) * 100) / 100,
+        // Trazabilidad de Operadores (item 2): preserva la autoría original
+        // del ítem al re-guardarlo (la edición/consolidación de
+        // `liquidarCuenta` nunca cambia quién lo agregó).
+        operador_id: it.operador_id || null,
+        operador_nombre: it.operador_nombre || null,
       }));
       totalCobrado = Math.max(
         0,
@@ -12267,7 +12505,18 @@ function ModuloSmartPOS({
       // DELETE de los sobrantes falla (el cobro ya quedó guardado en el
       // primero, que es la fuente de verdad de ingresos).
       const ventaPrincipal = grupo.ventas[0];
-      const detallesActualizados = { ...(ventaPrincipal?.detalles || {}), items: itemsParaGuardar };
+      const detallesActualizados = {
+        ...(ventaPrincipal?.detalles || {}),
+        items: itemsParaGuardar,
+        // Pago Mixto (item 1): desglose Efectivo/Tarjeta del cobro final.
+        mixto: metodoPago === 'mixto' ? mixto || null : null,
+        // Trazabilidad de Operadores (item 2): quién cerró/cobró la cuenta
+        // — puede ser distinto de quien la abrió (`ventaPrincipal.operador`,
+        // que nunca se sobreescribe abajo) o de quien agregó cada ítem
+        // (`itemsParaGuardar[].operador_nombre`).
+        cerrado_por_operador_id: operador?.id || null,
+        cerrado_por_operador_nombre: operador?.nombre || null,
+      };
       ({ error } = await supabase
         .from('ventas')
         .update({ estado_pago: 'pagado', metodo_pago: metodoPago, total: totalCobrado, detalles: detallesActualizados })
@@ -12314,6 +12563,7 @@ function ModuloSmartPOS({
         metodoPago,
         pagosDivididos: null,
         cambio,
+        mixto: metodoPago === 'mixto' ? mixto || null : null,
       };
     } else if (grupo.reserva) {
       // Ticket nuevo (nunca existió uno ligado a esta reserva): se arma con
@@ -12344,6 +12594,8 @@ function ModuloSmartPOS({
           precio: a.precio,
           cantidad: a.cantidad,
           subtotal: Math.round((Number(a.precio) || 0) * (Number(a.cantidad) || 0) * 100) / 100,
+          operador_id: a.operador_id || null,
+          operador_nombre: a.operador_nombre || null,
         }));
       const montoAddonsFinal = itemsAddons.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0);
       totalCobrado = Math.max(0, montoCanchaLinea + montoAddonsFinal + baseline.ajuste);
@@ -12376,6 +12628,9 @@ function ModuloSmartPOS({
           monto_cancha: montoCanchaLinea,
           monto_addons: montoAddonsFinal,
           wallet_aplicado: Number(grupo.reserva.saldo_wallet_aplicado) || 0,
+          mixto: metodoPago === 'mixto' ? mixto || null : null,
+          cerrado_por_operador_id: operador?.id || null,
+          cerrado_por_operador_nombre: operador?.nombre || null,
         },
         estado_pago: 'pagado',
       });
@@ -12432,6 +12687,7 @@ function ModuloSmartPOS({
         metodoPago,
         pagosDivididos: null,
         cambio,
+        mixto: metodoPago === 'mixto' ? mixto || null : null,
       };
     }
     setLiquidandoClave(null);
@@ -12608,6 +12864,10 @@ function ModuloSmartPOS({
       precio: it.precio,
       cantidad: it.cantidad,
       subtotal: Math.round((Number(it.precio) || 0) * (Number(it.cantidad) || 0) * 100) / 100,
+      // Trazabilidad de Operadores (item 2): preserva la autoría original —
+      // `itemsOriginales` viene de `itemsEditablesDeGrupo` (vía `ModalLiquidarCuenta`).
+      operador_id: it.operador_id || null,
+      operador_nombre: it.operador_nombre || null,
     }));
 
     let errorGeneral = null;
@@ -12672,6 +12932,13 @@ function ModuloSmartPOS({
           split_bill_total_partes: pagosDivididos.length,
           split_bill_grupo_id: splitBillGrupoId,
           ...(kdsEstadoPrevio ? { kds_estado: kdsEstadoPrevio } : {}),
+          // Pago Mixto (item 1) por participante.
+          mixto: p.metodo === 'mixto' ? p.mixto || null : null,
+          // Trazabilidad de Operadores (item 2): quién cerró/dividió la
+          // cuenta — el operador con sesión activa ahora mismo, igual en las
+          // N filas nuevas (una por participante) que nacen de este split.
+          cerrado_por_operador_id: operador?.id || null,
+          cerrado_por_operador_nombre: operador?.nombre || null,
         },
         estado_pago: 'pagado',
       });
@@ -12715,6 +12982,7 @@ function ModuloSmartPOS({
         total: p.monto,
         metodoPago: p.metodo,
         cambio: p.cambio || 0,
+        mixto: p.metodo === 'mixto' ? p.mixto || null : null,
       });
     }
 
@@ -12993,7 +13261,7 @@ function ModuloSmartPOS({
   // bloquea: el estado local levantado (`setInscripciones`/
   // `setParticipantesTorneo`) se actualiza de inmediato para que la UI de
   // Torneos & Retas y Mesa de Control reflejen el pago al instante.
-  async function cobrarInscripcionEvento(fila, metodoPago, cambio) {
+  async function cobrarInscripcionEvento(fila, metodoPago, cambio, mixto) {
     setCobrandoInscripcionId(fila.clave);
 
     // Academia & Clínicas es la única de las 3 fuentes con un segundo campo
@@ -13009,36 +13277,50 @@ function ModuloSmartPOS({
     // a la propia fila de inscripción/alumno, así que el Modal de Desglose
     // del P&L nunca podía mostrar el método real, aunque el operador SÍ lo
     // haya elegido aquí en `ModalCobrarInscripcion`.
+    // Pago Mixto (item 1): `reta_inscripciones`/`torneo_participantes`/
+    // `academia_alumnos` no tienen un jsonb `detalles` como `ventas` — el
+    // desglose Efectivo/Tarjeta necesita sus propias columnas
+    // (`monto_efectivo`/`monto_tarjeta`, ver migracion_v52_pago_mixto.sql).
+    // Igual que `metodo_pago` en su momento (migracion_v32), se mandan a
+    // través de `actualizarConColumnasOpcionales` — un proyecto que no haya
+    // corrido esa migración todavía sigue cobrando normal, solo sin guardar
+    // el desglose en esa tabla puntual (el comprobante de `ventas` de abajo,
+    // que SÍ es jsonb, lo conserva siempre).
+    const camposMixto =
+      metodoPago === 'mixto' ? { monto_efectivo: mixto?.efectivo ?? null, monto_tarjeta: mixto?.tarjeta ?? null } : {};
     const camposPago =
       fila.tabla === 'academia_alumnos'
         ? {
             estado_pago: 'pagado',
             estado: 'activo',
             metodo_pago: metodoPago,
+            ...camposMixto,
             ...(fila.tipoPagoAcademia === 'mensualidad'
               ? activarOrenovarMembresia(fila.paqueteCreditosAcademia || PAQUETE_CREDITOS_DEFECTO)
               : {}),
           }
-        : { estado_pago: 'pagado', metodo_pago: metodoPago };
+        : { estado_pago: 'pagado', metodo_pago: metodoPago, ...camposMixto };
 
     if (!fila.esLocal) {
       // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo:
       // los 4 campos nuevos de Membresía (`paquete_creditos`/
-      // `creditos_restantes`/`fecha_inicio_membresia`/`fecha_renovacion`) y
-      // `metodo_pago` (migracion_v32) pueden no existir todavía si el
-      // proyecto no corrió esas migraciones — sin este reintento tolerante,
-      // un solo campo faltante tronaba el UPDATE COMPLETO (incluyendo
-      // `estado_pago`/`estado`, que sí existen desde siempre) y el cobro se
-      // quedaba SOLO local aunque Supabase sí pudiera guardar el resto. Los
-      // nombres de más (irrelevantes para `reta_inscripciones`/
-      // `torneo_participantes`) son inofensivos: solo se usan si de verdad
-      // vienen en `camposPago`.
+      // `creditos_restantes`/`fecha_inicio_membresia`/`fecha_renovacion`),
+      // `metodo_pago` (migracion_v32) y `monto_efectivo`/`monto_tarjeta`
+      // (migracion_v52) pueden no existir todavía si el proyecto no corrió
+      // esas migraciones — sin este reintento tolerante, un solo campo
+      // faltante tronaba el UPDATE COMPLETO (incluyendo `estado_pago`/
+      // `estado`, que sí existen desde siempre) y el cobro se quedaba SOLO
+      // local aunque Supabase sí pudiera guardar el resto. Los nombres de
+      // más (irrelevantes para `reta_inscripciones`/`torneo_participantes`)
+      // son inofensivos: solo se usan si de verdad vienen en `camposPago`.
       const { error: errEstado } = await actualizarConColumnasOpcionales(fila.tabla, fila.id, camposPago, [
         'paquete_creditos',
         'creditos_restantes',
         'fecha_inicio_membresia',
         'fecha_renovacion',
         'metodo_pago',
+        'monto_efectivo',
+        'monto_tarjeta',
       ]);
       if (errEstado) {
         console.warn(`[Smart POS] No se pudo sincronizar el cobro de "${fila.tabla}" con Supabase, se aplica solo local:`, errEstado);
@@ -13049,7 +13331,7 @@ function ModuloSmartPOS({
       setInscripciones((prev) =>
         prev.map((i) => {
           if (i.id !== fila.id) return i;
-          const actualizado = { ...i, estado_pago: 'pagado', metodo_pago: metodoPago };
+          const actualizado = { ...i, estado_pago: 'pagado', metodo_pago: metodoPago, ...camposMixto };
           // Si es un registro `_local` (nunca llegó a existir en Supabase),
           // el localStorage guarda su propia copia — hay que actualizarla
           // también o un F5 la traería de vuelta con el estatus viejo
@@ -13071,7 +13353,7 @@ function ModuloSmartPOS({
       setParticipantesTorneo((prev) =>
         prev.map((p) => {
           if (p.id !== fila.id) return p;
-          const actualizado = { ...p, estado_pago: 'pagado', metodo_pago: metodoPago };
+          const actualizado = { ...p, estado_pago: 'pagado', metodo_pago: metodoPago, ...camposMixto };
           if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTICIPANTES_LOCAL, actualizado);
           return actualizado;
         })
@@ -13103,7 +13385,7 @@ function ModuloSmartPOS({
             operador: operador?.nombre || null,
             reserva_id: null,
             cancha_id: fila.canchaId,
-            detalles: { items: itemsComprobante, pagos_divididos: null },
+            detalles: { items: itemsComprobante, pagos_divididos: null, mixto: metodoPago === 'mixto' ? mixto || null : null },
             estado_pago: 'pagado',
           })
         )
@@ -13138,6 +13420,7 @@ function ModuloSmartPOS({
         metodoPago,
         pagosDivididos: null,
         cambio: cambio || 0,
+        mixto: metodoPago === 'mixto' ? mixto || null : null,
       });
     }
   }
@@ -13465,7 +13748,7 @@ function ModuloSmartPOS({
   // sueltos, que es justo lo que rompía el registro), descuenta stock (best
   // effort), crea/bloquea la reserva de Renta Exprés y limpia la comanda.
   // Solo arma el Ticket cuando la cuenta queda liquidada (estadoPago === 'pagado').
-  async function registrarVenta({ metodoPago, estadoPago = 'pagado', pagosDivididos = null, cambio = 0 }) {
+  async function registrarVenta({ metodoPago, estadoPago = 'pagado', pagosDivididos = null, cambio = 0, mixto = null }) {
     if (comanda.length === 0) return { ok: false };
     setRegistrandoVenta(true);
 
@@ -13488,6 +13771,17 @@ function ModuloSmartPOS({
       precio: i.precio,
       cantidad: i.cantidad,
       subtotal: Math.round(i.precio * i.cantidad * 100) / 100,
+      // Trazabilidad de Operadores en Cuentas Abiertas (item 2): quién
+      // agregó ESTE ítem — se congela al momento de armar el ticket, así
+      // que un ítem agregado por un colaborador y cobrado después por otro
+      // (cuenta abierta que pasa por varias manos durante el día) conserva
+      // su autoría real aunque la fila de `ventas` termine consolidada por
+      // `liquidarCuenta`/`liquidarCuentaDividida`. `operador_id` es el
+      // identificador estable (para cruces futuros); `operador_nombre` es
+      // lo que de verdad se pinta en el badge del ticket (ver
+      // `itemsEditablesDeGrupo`/`TarjetaCuentaAbierta`).
+      operador_id: operador?.id || null,
+      operador_nombre: operador?.nombre || null,
     }));
 
     // Artículos de cancha en la comanda son de dos tipos:
@@ -13688,6 +13982,12 @@ function ModuloSmartPOS({
             split_bill_parte: i + 1,
             split_bill_total_partes: pagosDivididos.length,
             split_bill_grupo_id: splitBillGrupoId,
+            // Pago Mixto (item 1) por participante: `p.mixto` viaja desde
+            // `ModalDividirCuenta` (cada fila corre su propio `PasosDeCobro`)
+            // solo cuando ESE participante eligió 'mixto' — jsonb puro,
+            // nunca requiere migración (ver `calcularMontoTeoricoEfectivo`
+            // para cómo Arqueo lee este campo de vuelta).
+            mixto: p.metodo === 'mixto' ? p.mixto || null : null,
           },
           estado_pago: estadoPago,
         });
@@ -13710,6 +14010,7 @@ function ModuloSmartPOS({
           total: p.monto,
           metodoPago: p.metodo,
           cambio: p.cambio || 0,
+          mixto: p.metodo === 'mixto' ? p.mixto || null : null,
         });
       }
       // Solo se considera un fallo TOTAL (bloquea el cobro con un error) si
@@ -13732,6 +14033,9 @@ function ModuloSmartPOS({
           pagos_divididos: pagosDivididos,
           jugador_id: clienteJugadorId,
           jugador_nombre: clienteNombre.trim() || null,
+          // Pago Mixto (item 1): desglose Efectivo/Tarjeta del ticket
+          // completo — solo se llena cuando `metodoPagoParaVenta === 'mixto'`.
+          mixto: metodoPagoParaVenta === 'mixto' ? mixto : null,
         },
         estado_pago: estadoPago,
       });
@@ -13965,6 +14269,7 @@ function ModuloSmartPOS({
             // queda vacío y el ticket se ve exactamente igual que siempre.
             ticketsIndividuales: ticketsIndividuales.length > 0 ? ticketsIndividuales : null,
             cambio,
+            mixto: metodoPago === 'mixto' ? mixto || null : null,
           }
         : null;
 
@@ -14457,8 +14762,8 @@ function ModuloSmartPOS({
           total={total}
           registrandoVenta={registrandoVenta}
           onClose={() => setModalCobro(false)}
-          onConfirmado={async (metodo, cambio) => {
-            const resultado = await registrarVenta({ metodoPago: metodo, estadoPago: 'pagado', cambio: cambio || 0 });
+          onConfirmado={async (metodo, cambio, mixto) => {
+            const resultado = await registrarVenta({ metodoPago: metodo, estadoPago: 'pagado', cambio: cambio || 0, mixto: mixto || null });
             if (resultado.ok) setModalCobro(false);
           }}
           onDividir={() => {
@@ -14551,9 +14856,10 @@ function ModuloSmartPOS({
       {grupoALiquidar && (
         <ModalLiquidarCuenta
           grupo={grupoALiquidar}
+          operador={operador}
           liquidando={liquidandoClave === grupoALiquidar.clave}
           onClose={() => setGrupoALiquidar(null)}
-          onLiquidar={(metodo, cambio, items) => liquidarCuenta(grupoALiquidar, metodo, cambio, items)}
+          onLiquidar={(metodo, cambio, items, mixto) => liquidarCuenta(grupoALiquidar, metodo, cambio, items, mixto)}
           onAnular={(motivo, items) => anularCuenta(grupoALiquidar, motivo, items)}
           onDividirCuenta={(grupo, items, totalGrupo) => {
             setGrupoParaDividir({ grupo, items, total: totalGrupo });
@@ -14567,7 +14873,7 @@ function ModuloSmartPOS({
           fila={inscripcionACobrar}
           liquidando={cobrandoInscripcionId === inscripcionACobrar.clave}
           onClose={() => setInscripcionACobrar(null)}
-          onCobrar={(metodo, cambio) => cobrarInscripcionEvento(inscripcionACobrar, metodo, cambio)}
+          onCobrar={(metodo, cambio, mixto) => cobrarInscripcionEvento(inscripcionACobrar, metodo, cambio, mixto)}
         />
       )}
 
@@ -24644,12 +24950,20 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
   // YA pagada aquí mismo (si queda "Pendiente", se cobra después en Smart
   // POS vía `ModalCobrarInscripcion`, que sí pide su propio método).
   const [metodoPago, setMetodoPago] = useState('efectivo');
+  // Pago Mixto (item 1): solo relevante cuando `metodoPago === 'mixto'` —
+  // ver `CampoPagoMixto`/`mixtoCoincideConMonto`.
+  const [montoEfectivoMixto, setMontoEfectivoMixto] = useState('');
+  const [montoTarjetaMixto, setMontoTarjetaMixto] = useState('');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
+  const mixtoInvalido =
+    estadoPago === 'pagado' && metodoPago === 'mixto' && !mixtoCoincideConMonto(precioDeReta(reta), montoEfectivoMixto, montoTarjetaMixto);
+
   async function guardar() {
     if (!nombre.trim()) return setError('Indica el nombre del jugador.');
+    if (mixtoInvalido) return setError('El Efectivo + Tarjeta debe sumar exactamente el monto de la inscripción.');
     // CRM & Guardado de Teléfono: obligatorio desde este formulario, igual
     // que en Smart POS — es el identificador único del cliente
     // (`resolverJugadorId`), así que sin teléfono un jugador con nombre
@@ -24683,6 +24997,10 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       // "Pagado" aquí mismo; si sigue "Pendiente" no hay método que guardar
       // todavía (se cobra después en Smart POS).
       metodo_pago: estadoPago === 'pagado' ? metodoPago : null,
+      // Pago Mixto (item 1, migracion_v52) — desglose Efectivo/Tarjeta,
+      // columnas opcionales igual que `metodo_pago` en su momento.
+      monto_efectivo: estadoPago === 'pagado' && metodoPago === 'mixto' ? Number(montoEfectivoMixto) || 0 : null,
+      monto_tarjeta: estadoPago === 'pagado' && metodoPago === 'mixto' ? Number(montoTarjetaMixto) || 0 : null,
     });
 
     let inscripcionCreada = null;
@@ -24698,6 +25016,8 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       'estatus_pago',
       'estado',
       'metodo_pago',
+      'monto_efectivo',
+      'monto_tarjeta',
     ]);
 
     if (!errInscripcion && data) {
@@ -24782,22 +25102,33 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
           </select>
         </Campo>
         {estadoPago === 'pagado' && (
-          <Campo label="Método de Pago">
-            <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
-              {METODOS_PAGO_POS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </Campo>
+          <>
+            <Campo label="Método de Pago">
+              <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
+                {METODOS_PAGO_POS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </Campo>
+            {metodoPago === 'mixto' && (
+              <CampoPagoMixto
+                monto={precioDeReta(reta)}
+                montoEfectivo={montoEfectivoMixto}
+                montoTarjeta={montoTarjetaMixto}
+                onMontoEfectivoChange={setMontoEfectivoMixto}
+                onMontoTarjetaChange={setMontoTarjetaMixto}
+              />
+            )}
+          </>
         )}
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar} disabled={guardando}>
+          <BotonPrimario onClick={guardar} disabled={guardando || mixtoInvalido}>
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <UserPlus size={15} />}
             Inscribir
           </BotonPrimario>
@@ -25682,12 +26013,19 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
   // Método de Pago (item 1, migracion_v32) — solo aplica si se registra YA
   // pagado aquí mismo (si queda "Pendiente", se cobra después en Smart POS).
   const [metodoPago, setMetodoPago] = useState('efectivo');
+  // Pago Mixto (item 1): ver `CampoPagoMixto`/`mixtoCoincideConMonto`.
+  const [montoEfectivoMixto, setMontoEfectivoMixto] = useState('');
+  const [montoTarjetaMixto, setMontoTarjetaMixto] = useState('');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
+  const mixtoInvalido =
+    estadoPago === 'pagado' && metodoPago === 'mixto' && !mixtoCoincideConMonto(Number(monto) || 0, montoEfectivoMixto, montoTarjetaMixto);
+
   async function guardar() {
     if (!nombre.trim()) return setError('Indica el nombre del participante.');
+    if (mixtoInvalido) return setError('El Efectivo + Tarjeta debe sumar exactamente el monto de la inscripción.');
     // CRM & Guardado de Teléfono: obligatorio, igual que en Smart POS — es el
     // identificador único del cliente (`resolverJugadorId`).
     const claveTelParticipante = claveTelefono(telefono);
@@ -25748,6 +26086,9 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       estatus_pago: estadoPago,
       // Método de Pago (item 1, migracion_v32) — solo si ya quedó "Pagado".
       metodo_pago: estadoPago === 'pagado' ? metodoPago : null,
+      // Pago Mixto (item 1, migracion_v52).
+      monto_efectivo: estadoPago === 'pagado' && metodoPago === 'mixto' ? Number(montoEfectivoMixto) || 0 : null,
+      monto_tarjeta: estadoPago === 'pagado' && metodoPago === 'mixto' ? Number(montoTarjetaMixto) || 0 : null,
     });
 
     let participanteCreado = null;
@@ -25770,6 +26111,8 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       'estado_pago',
       'estatus_pago',
       'metodo_pago',
+      'monto_efectivo',
+      'monto_tarjeta',
     ]);
     if (!errParticipante && data) {
       participanteCreado = data;
@@ -25848,22 +26191,33 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
           </Campo>
         </div>
         {estadoPago === 'pagado' && (
-          <Campo label="Método de Pago">
-            <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
-              {METODOS_PAGO_POS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </Campo>
+          <>
+            <Campo label="Método de Pago">
+              <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
+                {METODOS_PAGO_POS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </Campo>
+            {metodoPago === 'mixto' && (
+              <CampoPagoMixto
+                monto={Number(monto) || 0}
+                montoEfectivo={montoEfectivoMixto}
+                montoTarjeta={montoTarjetaMixto}
+                onMontoEfectivoChange={setMontoEfectivoMixto}
+                onMontoTarjetaChange={setMontoTarjetaMixto}
+              />
+            )}
+          </>
         )}
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar} disabled={guardando}>
+          <BotonPrimario onClick={guardar} disabled={guardando || mixtoInvalido}>
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <UserPlus size={15} />}
             Agregar
           </BotonPrimario>
@@ -30133,6 +30487,9 @@ function ModalDetalleClase({
   // pagado aquí mismo (si queda "Pendiente", se cobra después en Smart POS;
   // si se paga con crédito de membresía, `pagado_con_creditos` ya lo cubre).
   const [metodoPago, setMetodoPago] = useState('efectivo');
+  // Pago Mixto (item 1): ver `CampoPagoMixto`/`mixtoCoincideConMonto`.
+  const [montoEfectivoMixto, setMontoEfectivoMixto] = useState('');
+  const [montoTarjetaMixto, setMontoTarjetaMixto] = useState('');
   // NUEVO — Membresías por Créditos (item 3): tamaño del paquete que se le
   // asignará a este alumno si su Mensualidad se marca "Ya pagó" aquí mismo
   // (o cuando se cobre después en Smart POS — ver `paquete_creditos` en el
@@ -30154,12 +30511,28 @@ function ModalDetalleClase({
     () => buscarMembresiaActivaDeJugador(todosLosAlumnos, jugadorSeleccionadoId),
     [todosLosAlumnos, jugadorSeleccionadoId]
   );
+  // Monto en vivo (mismo cálculo que `altaAlumno` hace al guardar, ver abajo)
+  // — se necesita aquí también para validar Pago Mixto contra el monto real
+  // ANTES de que el operador presione "Inscribir".
+  const montoAltaPreview = membresiaActivaPreview
+    ? 0
+    : tipoPago === 'mensualidad'
+    ? Number(clase.precio_mensualidad) || 0
+    : Number(clase.precio_clase_suelta) || 0;
+  const mixtoInvalidoAlta =
+    !membresiaActivaPreview &&
+    estadoPagoAlta === 'pagado' &&
+    metodoPago === 'mixto' &&
+    !mixtoCoincideConMonto(montoAltaPreview, montoEfectivoMixto, montoTarjetaMixto);
 
   async function altaAlumno() {
     if (!nombreAlumno.trim()) return toast({ titulo: 'Ponle un nombre al alumno.', tono: 'aviso' });
     if (claseLlena) return toast({ titulo: 'La clase ya está llena.', tono: 'aviso' });
     if (claseIniciada) {
       return toast({ titulo: 'Esta clase ya inició', detalle: 'Ya no se pueden agregar alumnos hasta la próxima sesión.', tono: 'aviso' });
+    }
+    if (mixtoInvalidoAlta) {
+      return toast({ titulo: 'El Efectivo + Tarjeta debe sumar exactamente el monto a cobrar.', tono: 'aviso' });
     }
     setGuardandoAlta(true);
     const jugadorId = jugadorSeleccionadoId || (await resolverJugadorId(nombreAlumno, { telefono: telefonoAlumno, directorio: directorioJugadores }));
@@ -30190,6 +30563,9 @@ function ModalDetalleClase({
       // Método de Pago (item 1, migracion_v32) — solo si ya quedó "Pagado" Y
       // NO fue con crédito de membresía (eso ya lo indica `pagado_con_creditos`).
       metodo_pago: !membresiaActiva && estadoPagoAlta === 'pagado' ? metodoPago : null,
+      // Pago Mixto (item 1, migracion_v52).
+      monto_efectivo: !membresiaActiva && estadoPagoAlta === 'pagado' && metodoPago === 'mixto' ? Number(montoEfectivoMixto) || 0 : null,
+      monto_tarjeta: !membresiaActiva && estadoPagoAlta === 'pagado' && metodoPago === 'mixto' ? Number(montoTarjetaMixto) || 0 : null,
       ...(yaPagadoAhora ? activarOrenovarMembresia(paqueteCreditos) : {}),
     });
     const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payload, [
@@ -30202,6 +30578,8 @@ function ModalDetalleClase({
       'fecha_inicio_membresia',
       'fecha_renovacion',
       'metodo_pago',
+      'monto_efectivo',
+      'monto_tarjeta',
     ]);
     setGuardandoAlta(false);
     if (error || !data) {
@@ -30573,15 +30951,26 @@ function ModalDetalleClase({
                   </div>
                 )}
                 {!membresiaActivaPreview && estadoPagoAlta === 'pagado' && (
-                  <Campo label="Método de Pago">
-                    <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
-                      {METODOS_PAGO_POS.map((m) => (
-                        <option key={m.value} value={m.value}>
-                          {m.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Campo>
+                  <>
+                    <Campo label="Método de Pago">
+                      <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
+                        {METODOS_PAGO_POS.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Campo>
+                    {metodoPago === 'mixto' && (
+                      <CampoPagoMixto
+                        monto={montoAltaPreview}
+                        montoEfectivo={montoEfectivoMixto}
+                        montoTarjeta={montoTarjetaMixto}
+                        onMontoEfectivoChange={setMontoEfectivoMixto}
+                        onMontoTarjetaChange={setMontoTarjetaMixto}
+                      />
+                    )}
+                  </>
                 )}
                 {!membresiaActivaPreview && tipoPago === 'mensualidad' && (
                   <Campo label="Paquete de créditos" hint="Cuántas clases/mes incluye esta mensualidad">
@@ -30596,7 +30985,7 @@ function ModalDetalleClase({
                 )}
                 <div className="flex justify-end gap-2">
                   <BotonSecundario onClick={() => setMostrarAlta(false)}>Cancelar</BotonSecundario>
-                  <BotonPrimario onClick={altaAlumno} disabled={guardandoAlta}>
+                  <BotonPrimario onClick={altaAlumno} disabled={guardandoAlta || mixtoInvalidoAlta}>
                     {guardandoAlta ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Inscribir
                   </BotonPrimario>
                 </div>
