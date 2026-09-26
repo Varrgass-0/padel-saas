@@ -40556,12 +40556,20 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
   const delta = Number(monto) || 0;
   if (!empleadoId || !delta) return { ok: true, saldoNuevo: null };
   let saldoNuevo = null;
+  // FIX (migracion_v57) — `empleados.id` NO es uuid en este proyecto (es un
+  // id numérico/serial, a diferencia de `jugadores.id`, que sí lo es): el
+  // RPC/tabla de la Wallet de Operadores se mandan tipados como TEXT
+  // (`p_empleado_id text` / `wallet_movimientos_operador.empleado_id text`
+  // desde v57) — aquí se manda siempre como string explícito, sin importar
+  // si `empleadoId` llegó como número o como string, para que nunca dependa
+  // de cómo Supabase/PostgREST decida serializar un valor numérico.
+  const empleadoIdTexto = String(empleadoId);
   try {
-    const { data, error } = await supabase.rpc('fn_wallet_ajustar_operador', { p_empleado_id: empleadoId, p_delta: delta });
+    const { data, error } = await supabase.rpc('fn_wallet_ajustar_operador', { p_empleado_id: empleadoIdTexto, p_delta: delta });
     if (!error) {
       saldoNuevo = Number(data) || 0;
     } else {
-      console.warn('[Wallet Operador] fn_wallet_ajustar_operador no disponible todavía (falta migracion_v56) — usando ajuste no atómico de respaldo.', error);
+      console.warn('[Wallet Operador] fn_wallet_ajustar_operador no disponible todavía (falta migracion_v56/v57) — usando ajuste no atómico de respaldo.', error);
       const saldoActual = await leerSaldoWalletOperadorFresco(empleadoId);
       saldoNuevo = Math.max(0, Math.round((saldoActual + delta) * 100) / 100);
       const { error: errUpdate } = await supabase.from('empleados').update({ saldo_wallet: saldoNuevo }).eq('id', empleadoId);
@@ -40589,7 +40597,7 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
       .from('wallet_movimientos_operador')
       .insert(
         withClubId({
-          empleado_id: empleadoId,
+          empleado_id: empleadoIdTexto,
           empleado_nombre: empleadoNombre || null,
           tipo: delta >= 0 ? 'abono' : 'cargo',
           monto: delta,
@@ -40598,7 +40606,10 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
           metodo_aplicacion: metodoAplicacion || null,
           referencia_tipo: referenciaTipo || null,
           referencia_id: referenciaId || null,
-          creado_por_id: creadoPorId || null,
+          // `creado_por_id` (v57): mismo criterio TEXT — solo se manda si de
+          // verdad viene un id (una carga manual de Configuración del Club),
+          // nunca se fuerza un `String(null)` = `"null"`.
+          creado_por_id: creadoPorId != null ? String(creadoPorId) : null,
           creado_por_nombre: creadoPorNombre || null,
         })
       )
