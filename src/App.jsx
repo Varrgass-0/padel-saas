@@ -2499,6 +2499,21 @@ function formatoFechaLarga(fechaISO) {
   }
 }
 
+// Fecha corta Día/Mes/Año (CRM → Vista 360° → "Fecha de Nacimiento", mejora)
+// — a diferencia de `formatoFechaLarga` (con día de la semana, para
+// encabezados de reservas), esta es la lectura rápida y compacta que pide un
+// campo de fecha de nacimiento: "15/03/1990". Recibe la misma fecha ISO pura
+// "YYYY-MM-DD" que guarda `<input type="date">`/`SelectorFechaClick`.
+function formatoFechaCorta(fechaISO) {
+  try {
+    const [y, m, d] = String(fechaISO).split('-');
+    if (!y || !m || !d) return fechaISO;
+    return `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
+  } catch (_e) {
+    return fechaISO;
+  }
+}
+
 // Fix "Invalid Date" en el Historial de Observaciones del Expediente
 // Deportivo (mejora): `formatoFechaLarga` (arriba) está hecho para fechas
 // PURAS "YYYY-MM-DD" (reservas, etc.) — su `.split('-')` a mano truena en
@@ -6168,26 +6183,66 @@ function ModalNuevaReserva({
   const [telefono, setTelefono] = useState('');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [fecha, setFecha] = useState(fechaInicial || hoyISO());
+
+  // Selector de Duración (1 Hora / 2 Horas, mejora) — antes Hora Fin era
+  // SIEMPRE Hora Inicio + `duracionReservaMinutos` (el bloque fijo del
+  // club), sin ninguna forma de elegir otra duración para ESTA reserva
+  // puntual — si el club tenía configurado 120 min, el operador quedaba
+  // atado a reservas de 2 horas siempre, sin poder ofrecer 1 hora sencilla
+  // (y viceversa). Mismo criterio que el Portal
+  // (`ModalReservarCancha.permiteDosHoras`): cuando el bloque base del club
+  // es de 60 O 120 minutos, el operador puede elegir manualmente entre "1
+  // Hora" y "2 Horas" — para cualquier otra duración base (90 min) se
+  // mantiene el comportamiento de siempre, una sola duración fija sin
+  // selector (ese caso no forma parte de esta mejora).
+  const permiteDosHoras = duracionReservaMinutos === 60 || duracionReservaMinutos === 120;
+  const duracionesPermitidas = useMemo(() => {
+    if (permiteDosHoras) return DURACIONES_RENTA.filter((d) => d.horas === 1 || d.horas === 2);
+    const exactas = DURACIONES_RENTA.filter((d) => Math.round(d.horas * 60) === duracionReservaMinutos);
+    return exactas.length > 0 ? exactas : DURACIONES_RENTA;
+  }, [duracionReservaMinutos, permiteDosHoras]);
+  const [duracionSeleccionadaHoras, setDuracionSeleccionadaHoras] = useState(duracionReservaMinutos / 60);
+  useEffect(() => {
+    setDuracionSeleccionadaHoras((actual) =>
+      duracionesPermitidas.some((d) => d.horas === actual) ? actual : duracionReservaMinutos / 60
+    );
+  }, [duracionReservaMinutos, duracionesPermitidas]);
+  // Minutos de la duración ELEGIDA (no siempre igual a `duracionReservaMinutos`
+  // — ver arriba): esto es lo que ahora manda para Hora Fin/opciones de Hora
+  // Inicio, en vez del bloque fijo crudo del club.
+  const duracionMinutosElegida = Math.round(duracionSeleccionadaHoras * 60);
+
   // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
   // Academia", migracion_v42, corrección de consistencia): Hora Inicio ya
   // NO se elige entre franjas genéricas de 30 min (`SLOT_MIN`) — las
-  // opciones del selector ahora son múltiplos exactos de
-  // `duracionReservaMinutos` a partir de la apertura del club, y Hora Fin
-  // deja de ser un segundo `<select>` editable: se FIJA sola sumando
-  // `duracionReservaMinutos` a la Hora Inicio elegida, para que nunca pueda
-  // armarse una reserva con una duración distinta a la que el club
-  // configuró. `horaInicial` puede venir del Cronograma (celdas cada 30 min,
+  // opciones del selector ahora son múltiplos exactos de la duración
+  // ELEGIDA (`duracionMinutosElegida`, arriba) a partir de la apertura del
+  // club. `horaInicial` puede venir del Cronograma (celdas cada 30 min,
   // `SLOT_MIN`) — `alinearABloque` la recorta hacia abajo al múltiplo válido
   // más cercano para que el valor inicial del `<select>` siempre exista
   // entre las opciones generadas.
   const [horaInicio, setHoraInicio] = useState(() => {
     const deseada = parseHoraAMinutos(horaInicial) ?? Math.max(9 * 60, horaAperturaMin);
-    const bloques = minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionReservaMinutos);
+    const bloques = minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionMinutosElegida);
     if (bloques.length === 0) return minutosAHora(horaAperturaMin);
-    const alineada = alinearABloque(deseada, horaAperturaMin, duracionReservaMinutos);
+    const alineada = alinearABloque(deseada, horaAperturaMin, duracionMinutosElegida);
     return minutosAHora(Math.min(alineada, bloques[bloques.length - 1]));
   });
-  // Opciones de Hora Inicio — múltiplos exactos de `duracionReservaMinutos`
+  // Si el operador cambia la Duración después de abrir el modal, Hora
+  // Inicio se realinea sola al múltiplo válido más cercano de la nueva
+  // duración (nunca se deja un valor fuera de las opciones del `<select>`).
+  useEffect(() => {
+    setHoraInicio((actual) => {
+      const bloques = minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionMinutosElegida);
+      if (bloques.length === 0) return actual;
+      const actualMin = parseHoraAMinutos(actual);
+      if (actualMin !== null && bloques.includes(actualMin)) return actual;
+      const alineada = alinearABloque(actualMin ?? horaAperturaMin, horaAperturaMin, duracionMinutosElegida);
+      return minutosAHora(Math.min(alineada, bloques[bloques.length - 1]));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duracionMinutosElegida]);
+  // Opciones de Hora Inicio — múltiplos exactos de la duración ELEGIDA
   // dentro del Horario de Operación del Club (item 4), nunca los 30 min
   // genéricos de siempre (`SLOT_MIN`, que solo sigue usando la cuadrícula
   // visual del Cronograma, no este formulario). Misma fuente
@@ -6195,16 +6250,16 @@ function ModalNuevaReserva({
   // `<select>` controlado nunca quede en un valor fuera de sus propias
   // opciones.
   const opcionesHoraInicio = useMemo(() => {
-    return minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionReservaMinutos).map(minutosAHora);
-  }, [horaAperturaMin, horaCierreMin, duracionReservaMinutos]);
-  // Hora Fin — derivada, nunca editable a mano: Hora Inicio + duración
-  // configurada por el club, recortada al cierre del club como último
-  // respaldo defensivo.
+    return minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionMinutosElegida).map(minutosAHora);
+  }, [horaAperturaMin, horaCierreMin, duracionMinutosElegida]);
+  // Hora Fin — derivada, nunca editable a mano DIRECTAMENTE: Hora Inicio +
+  // duración ELEGIDA (selector de arriba), recortada al cierre del club
+  // como último respaldo defensivo.
   const horaFin = useMemo(() => {
     const ini = parseHoraAMinutos(horaInicio);
     if (ini === null) return '';
-    return minutosAHora(Math.min(ini + duracionReservaMinutos, horaCierreMin));
-  }, [horaInicio, duracionReservaMinutos, horaCierreMin]);
+    return minutosAHora(Math.min(ini + duracionMinutosElegida, horaCierreMin));
+  }, [horaInicio, duracionMinutosElegida, horaCierreMin]);
   const [monto, setMonto] = useState('');
   const [montoTocado, setMontoTocado] = useState(false);
   const [guardando, setGuardando] = useState(false);
@@ -6399,14 +6454,15 @@ function ModalNuevaReserva({
           <Campo label="Fecha">
             <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
           </Campo>
-          {/* Selectores desplegables de Hora Inicio/Fin (item 2, Turno
-              nuevo; corrección de consistencia migracion_v42): Hora Inicio
-              ofrece únicamente múltiplos de `duracionReservaMinutos` —
-              nunca los 30 min genéricos de antes — dentro del Horario de
-              Operación del Club configurado (item 4). Hora Fin ya NO es un
-              `<select>` editable: se fija sola sumando la duración
-              configurada, así ninguna reserva puede quedar con una
-              duración distinta a la que el club definió. */}
+          {/* Selectores desplegables de Hora Inicio/Duración (item 2, Turno
+              nuevo; corrección de consistencia migracion_v42; Selector de
+              Duración, mejora): Hora Inicio ofrece únicamente múltiplos de
+              la duración ELEGIDA — nunca los 30 min genéricos de antes —
+              dentro del Horario de Operación del Club configurado (item 4).
+              Hora Fin ya NO es un campo fijo/derivado sin edición: el
+              operador elige manualmente "1 Hora" o "2 Horas" (cuando el
+              bloque base del club lo permite, ver `permiteDosHoras` arriba)
+              y Hora Fin/el Monto se recalculan solos. */}
           <Campo label="Hora inicio">
             <select value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase}>
               {opcionesHoraInicio.map((h) => (
@@ -6416,9 +6472,18 @@ function ModalNuevaReserva({
               ))}
             </select>
           </Campo>
-          <Campo label={`Hora fin (${duracionReservaMinutos} min, automática)`}>
-            <select value={horaFin} disabled className={`${inputClase} cursor-not-allowed opacity-70`}>
-              <option value={horaFin}>{horaFin}</option>
+          <Campo label="Hora fin / Duración" hint={horaFin ? `Termina a las ${horaFin}` : undefined}>
+            <select
+              value={duracionSeleccionadaHoras}
+              onChange={(e) => setDuracionSeleccionadaHoras(Number(e.target.value))}
+              disabled={duracionesPermitidas.length <= 1}
+              className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-70`}
+            >
+              {duracionesPermitidas.map((d) => (
+                <option key={d.horas} value={d.horas}>
+                  {d.label}
+                </option>
+              ))}
             </select>
           </Campo>
         </div>
@@ -26179,7 +26244,13 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
   const toast = useToast();
   const [nombre, setNombre] = useState('');
   const [telefono, setTelefono] = useState('');
-  const [correo, setCorreo] = useState('');
+  // Fecha de Nacimiento (reemplaza el campo "Correo" de este formulario,
+  // ver migracion_v54): NO es un campo propio de `torneo_participantes` —
+  // se guarda en la ficha global del jugador (tabla `jugadores`), best
+  // effort, justo después de resolver/crear su expediente vía
+  // `resolverJugadorId` (ver `guardar()` abajo), para que quede disponible
+  // en el Directorio & CRM sin importar por dónde haya entrado el jugador.
+  const [fechaNacimiento, setFechaNacimiento] = useState('');
   const [nivel, setNivel] = useState('');
   const [categoria, setCategoria] = useState(torneo.categorias?.[0] ? `${torneo.categorias[0].rama} ${torneo.categorias[0].nivel}` : '');
   // Precio sugerido: si hoy cae dentro de una regla de "Descuentos por
@@ -26226,9 +26297,25 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       console.warn('[Torneos & Retas] No se pudo resolver/crear el expediente del participante en el CRM (jugadores).', errCRM);
     }
 
-    // Mapeo de compatibilidad total: se manda `correo` junto con su alias
-    // `email` — por si el proyecto de Supabase tiene esta tabla migrada
-    // con otro nombre de columna (justo el error reportado). `nivel` y
+    // Fecha de Nacimiento → ficha global del jugador (migracion_v54): se
+    // guarda en `jugadores`, NO en `torneo_participantes` — Sincronización
+    // Silenciosa (best effort, no bloquea ni retrasa la inscripción si
+    // Supabase todavía no tiene la columna o si la escritura falla).
+    if (fechaNacimiento && jugadorIdResuelto) {
+      try {
+        const { error: errFecha } = await actualizarConColumnasOpcionales(
+          'jugadores',
+          jugadorIdResuelto,
+          { fecha_nacimiento: fechaNacimiento },
+          ['fecha_nacimiento']
+        );
+        if (errFecha) throw errFecha;
+      } catch (errFecha) {
+        console.warn('[Torneos & Retas] No se pudo guardar la Fecha de Nacimiento en la ficha del jugador.', errFecha);
+      }
+    }
+
+    // Mapeo de compatibilidad total: `nivel` y
     // `categoria` ya son dos campos distintos e intencionales en este
     // formulario (nivel de juego del jugador vs. categoría del torneo en
     // la que participa), así que se mandan tal cual, sin fusionarlos.
@@ -26256,8 +26343,6 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
       jugador_id: jugadorIdResuelto,
       nombre: nombre.trim(),
       telefono: telefono.trim() || null,
-      correo: correo.trim() || null,
-      email: correo.trim() || null,
       nivel: nivel || null,
       categoria: categoria || null,
       monto: Number(monto) || 0,
@@ -26283,8 +26368,6 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
     // tu inscripción" reportada también desde este formulario del panel.
     const { data, error: errParticipante } = await insertarConColumnasOpcionales('torneo_participantes', payloadParticipante, [
       'jugador_id',
-      'correo',
-      'email',
       'nivel',
       'categoria',
       'estado_pago',
@@ -26336,8 +26419,8 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], onClose, onAgr
           <Campo label="Teléfono *" hint="Obligatorio — identificador único del cliente en el Directorio & CRM.">
             <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="10 dígitos" required />
           </Campo>
-          <Campo label="Correo">
-            <input value={correo} onChange={(e) => setCorreo(e.target.value)} className={inputClase} placeholder="correo@ejemplo.com" />
+          <Campo label="Fecha de nacimiento" hint="Se guarda en la ficha global del jugador (Directorio & CRM).">
+            <SelectorFechaClick value={fechaNacimiento} onChange={setFechaNacimiento} />
           </Campo>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -33951,6 +34034,7 @@ function DirectorioJugadoresCRM({
   productos,
   jugadoresPorId,
   onActualizarTelefonoJugador,
+  onActualizarFechaNacimientoJugador,
   onRefrescarDirectorio,
   retas,
   inscripciones,
@@ -33961,6 +34045,7 @@ function DirectorioJugadoresCRM({
   jugadorAAbrirId,
   onJugadorAAbrirConsumido,
   academiaAlumnos,
+  academiaClases,
   academiaAsistencias,
   permisos,
   configClub,
@@ -34245,6 +34330,13 @@ function DirectorioJugadoresCRM({
       ultimaCortesiaPorJugadorCategoria.set(claveJugador, porCategoria);
     });
 
+    // Nivel de Jugador (Vista 360° → header, mejora): `academia_alumnos` no
+    // guarda un nivel propio por alumno — el nivel ("Principiante"/
+    // "Intermedio"/"Avanzado") vive en la CLASE (`academia_clases.nivel`),
+    // así que se resuelve cruzando `alumnosDeJ` (ver abajo) contra este mapa
+    // por `clase_id`.
+    const clasesAcademiaPorId = new Map((academiaClases || []).map((c) => [c.id, c]));
+
     return Object.values(jugadoresPorId)
       .filter((j) => j && j.id)
       .map((j) => {
@@ -34326,6 +34418,17 @@ function DirectorioJugadoresCRM({
          *      ya haya tomado una clase. */
         const alumnosDeJ = (academiaAlumnos || []).filter((a) => a.jugador_id === j.id);
         const alumnoIdsJ = new Set(alumnosDeJ.map((a) => a.id));
+        // Nivel de Jugador — Academia: el de la clase MÁS RECIENTE en la que
+        // este jugador se inscribió (varias inscripciones a lo largo del
+        // tiempo pueden ser de niveles distintos si fue subiendo de
+        // categoría) — `null` si nunca tomó ninguna clase o si esa clase no
+        // tiene `nivel` capturado.
+        const nivelAcademiaJ =
+          alumnosDeJ
+            .slice()
+            .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+            .map((a) => clasesAcademiaPorId.get(a.clase_id)?.nivel)
+            .find(Boolean) || null;
         const asistenciasClaseUltimos6Meses = (academiaAsistencias || []).filter((a) => {
           if (!alumnoIdsJ.has(a.alumno_id) || a.asistio !== true) return false;
           const f = a.fecha ? new Date(`${a.fecha}T12:00:00`) : null;
@@ -34695,6 +34798,13 @@ function DirectorioJugadoresCRM({
           }),
         ].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
 
+        // Nivel de Jugador — Torneos/Retas: `eventosTorneoRetas` ya viene
+        // ordenado del más reciente al más antiguo (línea de arriba), así que
+        // basta con tomar la primera `categoria` real (distinta del "—" de
+        // respaldo) — mismo criterio "el más reciente manda" que
+        // `nivelAcademiaJ`.
+        const nivelTorneoRetaJ = eventosTorneoRetas.find((e) => e.categoria && e.categoria !== '—')?.categoria || null;
+
         // 3) Recencia/Frecuencia: historial de reservas de cancha (Parrilla)
         // + Horario Favorito (bloques de 2h sobre `hora_inicio`) + Cancha
         // Preferida (la más repetida).
@@ -34767,6 +34877,12 @@ function DirectorioJugadoresCRM({
           id: j.id,
           nombre: j.nombre || 'Jugador',
           telefono: j.telefono || null,
+          // Fecha de Nacimiento (migracion_v54) y Nivel de Jugador (mejora,
+          // derivado — sin columna propia): ver `actualizarFechaNacimientoJugador`
+          // en `AppInterno` y `nivelAcademiaJ`/`nivelTorneoRetaJ` arriba.
+          fechaNacimiento: j.fecha_nacimiento || null,
+          nivelAcademia: nivelAcademiaJ,
+          nivelTorneoReta: nivelTorneoRetaJ,
           saldoAFavor: Number(j.saldo_a_favor) || 0,
           gastoCanchas,
           gastoBar,
@@ -34820,6 +34936,7 @@ function DirectorioJugadoresCRM({
     participantesTorneo,
     partidosTorneo,
     academiaAlumnos,
+    academiaClases,
     academiaAsistencias,
     metaCortesiaProShop,
     metaCortesiaBar,
@@ -35132,6 +35249,7 @@ function DirectorioJugadoresCRM({
           perfil={jugadorSeleccionado}
           onClose={() => setJugadorSeleccionadoId(null)}
           onActualizarTelefono={onActualizarTelefonoJugador}
+          onActualizarFechaNacimiento={onActualizarFechaNacimientoJugador}
           permisos={permisos}
           nombreClub={configClub?.nombre}
           productos={productos}
@@ -36057,6 +36175,7 @@ function ModalPerfilJugadorCRM({
   perfil,
   onClose,
   onActualizarTelefono,
+  onActualizarFechaNacimiento,
   permisos,
   nombreClub,
   productos,
@@ -36081,6 +36200,13 @@ function ModalPerfilJugadorCRM({
   const [editandoTelefono, setEditandoTelefono] = useState(false);
   const [telefonoDraft, setTelefonoDraft] = useState(perfil.telefono || '');
   const [guardando, setGuardando] = useState(false);
+  // Fecha de Nacimiento (mejora, migracion_v54) — mismo patrón de edición
+  // in-place que el teléfono de arriba: cualquier operador puede agregarla o
+  // corregirla directo desde la tarjeta, sin importar por dónde haya
+  // entrado el jugador (reserva rápida, inscripción a un evento, etc.).
+  const [editandoFechaNacimiento, setEditandoFechaNacimiento] = useState(false);
+  const [fechaNacimientoDraft, setFechaNacimientoDraft] = useState(perfil.fechaNacimiento || '');
+  const [guardandoFecha, setGuardandoFecha] = useState(false);
   // Acordeón: qué indicador del CHS está desplegado con su historial exacto
   // (ver `DetalleIndicadorCHS`) — uno a la vez, null = todos colapsados.
   const [indicadorExpandido, setIndicadorExpandido] = useState(null);
@@ -36109,6 +36235,13 @@ function ModalPerfilJugadorCRM({
     await onActualizarTelefono(perfil.id, telefonoDraft);
     setGuardando(false);
     setEditandoTelefono(false);
+  }
+
+  async function guardarFechaNacimiento() {
+    setGuardandoFecha(true);
+    await onActualizarFechaNacimiento?.(perfil.id, fechaNacimientoDraft);
+    setGuardandoFecha(false);
+    setEditandoFechaNacimiento(false);
   }
 
   const ltvFilas = [
@@ -36284,6 +36417,54 @@ function ModalPerfilJugadorCRM({
           )}
         </div>
 
+        {/* Fecha de Nacimiento (mejora, migracion_v54) — mismo patrón de
+            edición in-place que el teléfono de arriba: si el jugador no la
+            tiene (p. ej. creado vía reserva rápida), CUALQUIER operador
+            puede agregarla directo aquí con un botón/input rápido, sin
+            tener que ir a otra pantalla. */}
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+          {editandoFechaNacimiento ? (
+            <div className="flex flex-1 flex-wrap items-center gap-2">
+              <CalendarDays size={14} className="shrink-0 text-slate-500" />
+              <SelectorFechaClick value={fechaNacimientoDraft} onChange={setFechaNacimientoDraft} className="flex-1" />
+              <BotonPrimario onClick={guardarFechaNacimiento} disabled={guardandoFecha} className="px-3 py-1.5 text-xs">
+                {guardandoFecha ? <Loader2 size={13} className="animate-spin" /> : 'Guardar'}
+              </BotonPrimario>
+              <BotonSecundario
+                onClick={() => {
+                  setEditandoFechaNacimiento(false);
+                  setFechaNacimientoDraft(perfil.fechaNacimiento || '');
+                }}
+                className="px-3 py-1.5 text-xs"
+              >
+                Cancelar
+              </BotonSecundario>
+            </div>
+          ) : (
+            <>
+              <span className="flex items-center gap-1.5 text-sm text-slate-600">
+                <CalendarDays size={14} className="text-slate-500" />
+                {perfil.fechaNacimiento ? formatoFechaCorta(perfil.fechaNacimiento) : 'Sin fecha de nacimiento registrada'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setEditandoFechaNacimiento(true)}
+                className="inline-flex items-center gap-1 text-xs font-bold text-lime-400 hover:text-lime-300"
+              >
+                {perfil.fechaNacimiento ? (
+                  <>
+                    <Pencil size={12} /> Editar
+                  </>
+                ) : (
+                  <>
+                    <Plus size={12} /> Agregar Fecha
+                  </>
+                )}
+              </button>
+            </>
+          )}
+        </div>
+
         <div className="flex flex-wrap items-center gap-2">
           {(() => {
             const meta = SEGMENTO_META[perfil.segmento];
@@ -36296,6 +36477,21 @@ function ModalPerfilJugadorCRM({
               </span>
             );
           })()}
+          {/* Nivel de Jugador (mejora): visible para cualquier operador que
+              abra la ficha — Academia (nivel de la clase más reciente en la
+              que se inscribió) y Torneos/Retas (categoría/nivel del evento
+              más reciente) son señales independientes, así que se muestran
+              las dos cuando existen en vez de que una tape a la otra. */}
+          {perfil.nivelAcademia && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-teal-400/10 px-2.5 py-1 text-xs font-bold text-teal-400 ring-1 ring-teal-400/30">
+              <GraduationCap size={13} /> Academia: {perfil.nivelAcademia}
+            </span>
+          )}
+          {perfil.nivelTorneoReta && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-violet-400/10 px-2.5 py-1 text-xs font-bold text-violet-400 ring-1 ring-violet-400/30">
+              <Trophy size={13} /> Torneos/Retas: {perfil.nivelTorneoReta}
+            </span>
+          )}
           {perfil.chs.enRiesgo && (
             <span className="inline-flex items-center gap-1 rounded-full bg-rose-400/10 px-2.5 py-1 text-xs font-bold text-rose-400 ring-1 ring-rose-400/30">
               <ShieldAlert size={13} /> En Riesgo de Abandono
@@ -36578,6 +36774,7 @@ function ModuloJugadores({
   productos,
   jugadoresPorId,
   onActualizarTelefonoJugador,
+  onActualizarFechaNacimientoJugador,
   onRefrescarDirectorio,
   retas,
   inscripciones,
@@ -36588,6 +36785,7 @@ function ModuloJugadores({
   jugadorAAbrirId,
   onJugadorAAbrirConsumido,
   academiaAlumnos,
+  academiaClases,
   academiaAsistencias,
   permisos,
   configClub,
@@ -36660,6 +36858,7 @@ function ModuloJugadores({
           productos={productos}
           jugadoresPorId={jugadoresPorId}
           onActualizarTelefonoJugador={onActualizarTelefonoJugador}
+          onActualizarFechaNacimientoJugador={onActualizarFechaNacimientoJugador}
           onRefrescarDirectorio={onRefrescarDirectorio}
           retas={retas}
           inscripciones={inscripciones}
@@ -36670,6 +36869,7 @@ function ModuloJugadores({
           jugadorAAbrirId={jugadorAAbrirId}
           onJugadorAAbrirConsumido={onJugadorAAbrirConsumido}
           academiaAlumnos={academiaAlumnos}
+          academiaClases={academiaClases}
           academiaAsistencias={academiaAsistencias}
           permisos={permisos}
           configClub={configClub}
@@ -43420,13 +43620,15 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   // (nunca `useState`) para que un cambio del club en vivo se refleje sin
   // esperar a que el jugador vuelva a abrir el modal.
   const duracionReservaMinutos = duracionesBloqueDelClub(club).reservaMin;
-  // Extensión Opción 2 Horas (mejora): cuando el club fijó su bloque base en
-  // 60 min (1 hora), el jugador SÍ puede elegir entre "1 hora" (1 bloque) y
-  // "2 horas" (2 bloques consecutivos de 60 min) — para cualquier OTRA
-  // duración base (90/120 min) se mantiene el comportamiento de siempre: una
-  // sola opción fija, sin selector real (nunca se ofrecen "1.5 horas"/"2
-  // horas" sueltas fuera de este caso).
-  const permiteDosHoras = duracionReservaMinutos === 60;
+  // Extensión Opción 1/2 Horas (mejora, ampliada): cuando el club fijó su
+  // bloque base en 60 min (1 hora) O en 120 min (2 horas), el jugador SÍ
+  // puede elegir manualmente entre "1 hora" y "2 horas" — antes, un club
+  // configurado a 120 min dejaba el selector bloqueado en "2 horas" siempre,
+  // sin poder ofrecer una reserva de 1 hora sencilla. Para cualquier OTRA
+  // duración base (90 min) se mantiene el comportamiento de siempre: una
+  // sola opción fija, sin selector real (nunca se ofrecen "1.5 horas"
+  // suelta, ese caso no forma parte de esta mejora).
+  const permiteDosHoras = duracionReservaMinutos === 60 || duracionReservaMinutos === 120;
   // El selector de Duración solo debe ofrecer "1 hora"/"2 horas" cuando
   // `permiteDosHoras` — para cualquier otra regla del club (ej.
   // `duracion_reserva_minutos === 90`) sigue ofreciendo ÚNICAMENTE la
@@ -43470,23 +43672,19 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   // pintar la cuadrícula completa con los horarios reservados claramente
   // deshabilitados/marcados, en vez de simplemente hacerlos desaparecer de
   // un <select>.
+  // Paso entre tarjetas de hora (grid de disponibilidad): el más FINO entre
+  // el bloque base del club y la duración que el jugador eligió ahora mismo.
+  // Antes siempre era el bloque base crudo (`duracionReservaMinutos`) — para
+  // un club en 60 min eso ya coincidía con cualquier duración elegida (1 o 2
+  // horas, min(60,60)=60 / min(60,120)=60, sin cambio), pero para un club en
+  // 120 min con "1 hora" elegida (extensión de arriba) el paso crudo seguía
+  // siendo 120 min, así que solo se ofrecían horarios cada 2 horas en vez de
+  // cada hora — `Math.min` corrige ese caso sin tocar ningún otro (nunca
+  // amplía el paso, solo lo puede volver más fino).
+  const pasoGridMin = Math.min(duracionReservaMinutos, Math.round(duracionHoras * 60));
   const franjasBase = useMemo(
-    () =>
-      franjasDelDiaConEstado(
-        cancha.id,
-        fecha,
-        duracionHoras,
-        reservas,
-        academiaClases,
-        horaAperturaMin,
-        horaCierreMin,
-        // Duración de Bloques/Turnos (migracion_v42, corrección de
-        // consistencia): el paso entre tarjetas de hora sigue el bloque
-        // configurado por el club (antes siempre 60 min fijos), así nunca
-        // se ofrecen fracciones de tiempo que se solapen entre sí.
-        duracionReservaMinutos
-      ),
-    [cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, duracionReservaMinutos]
+    () => franjasDelDiaConEstado(cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin),
+    [cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin]
   );
   // OPTIMIZACIÓN DE HORARIOS: cuando la fecha elegida es HOY, cualquier
   // franja cuya hora de inicio ya pasó se marca `pasado` (distinto de
@@ -43697,14 +43895,15 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           </Campo>
           <Campo label="Duración">
             {/* Duración de Bloques/Turnos (migracion_v42) + Extensión Opción
-                2 Horas (mejora): cuando el club fijó su bloque base en 90 o
-                120 min sigue sin ser una elección libre — el selector ofrece
-                solo esa opción y se deshabilita (nunca deja elegir "1.5
-                horas" suelta). Cuando el bloque base es 60 min
+                1/2 Horas (mejora, ampliada): cuando el club fijó su bloque
+                base en 90 min sigue sin ser una elección libre — el selector
+                ofrece solo esa opción y se deshabilita (nunca deja elegir
+                "1.5 horas" suelta). Cuando el bloque base es 60 O 120 min
                 (`permiteDosHoras`), el jugador SÍ puede elegir entre "1
-                hora" y "2 horas" (2 bloques consecutivos) — `setHoraInicio`
-                se limpia al cambiar para forzar a re-elegir un horario ya
-                validado contra la nueva duración. */}
+                hora" y "2 horas" — `setHoraInicio` se limpia al cambiar para
+                forzar a re-elegir un horario ya validado contra la nueva
+                duración (la cuadrícula de abajo también se recalcula sola,
+                ver `pasoGridMin`). */}
             <select
               value={duracionHoras}
               onChange={(e) => {
@@ -44590,7 +44789,15 @@ function AppInterno() {
       conClubId(supabase.from('reservas').select('*'))
         .order('fecha', { ascending: true })
         .order('hora_inicio', { ascending: true }),
-      conClubId(supabase.from('jugadores').select('id, nombre, telefono, saldo_a_favor')),
+      // `select('*')` a propósito (no columnas enumeradas): así, cuando se
+      // agregan columnas nuevas y opcionales a `jugadores` (p. ej.
+      // `fecha_nacimiento`, migracion_v54) el mapa `jugadoresPorId` las trae
+      // automáticamente sin tener que tocar este `select` cada vez — mismo
+      // criterio que `canchas`/`reservas` arriba. En un proyecto que todavía
+      // no corrió esa migración, Postgres simplemente no devuelve esa
+      // columna (no truena la consulta, a diferencia de pedirla enumerada a
+      // mano cuando no existe).
+      conClubId(supabase.from('jugadores').select('*')),
     ]);
 
     if (resCanchas.error) {
@@ -44771,6 +44978,33 @@ function AppInterno() {
       console.warn('[CRM] No se pudo sincronizar el teléfono con Supabase — se aplica solo en esta pantalla.', _e);
     }
   }
+
+  // Fecha de Nacimiento (Directorio & CRM → Vista 360°, migracion_v54) —
+  // mismo criterio que `actualizarTelefonoJugador` de arriba (estado
+  // optimista + Sincronización Silenciosa), pero vía
+  // `actualizarConColumnasOpcionales` en vez de un `.update()` a secas:
+  // `fecha_nacimiento` es una columna NUEVA y opcional (a diferencia de
+  // `telefono`, que siempre existió), así que un club que todavía no corrió
+  // la migración simplemente no la sincroniza en Supabase — el dato queda
+  // igual aplicado en esta pantalla para el resto de la sesión.
+  const actualizarFechaNacimientoJugador = useCallback(async (jugadorId, fechaNacimiento) => {
+    const fechaLimpia = fechaNacimiento || null;
+    setJugadoresPorId((prev) => ({
+      ...prev,
+      [jugadorId]: { ...(prev[jugadorId] || { id: jugadorId }), fecha_nacimiento: fechaLimpia },
+    }));
+    try {
+      const { error: errUpdate } = await actualizarConColumnasOpcionales(
+        'jugadores',
+        jugadorId,
+        { fecha_nacimiento: fechaLimpia },
+        ['fecha_nacimiento']
+      );
+      if (errUpdate) throw errUpdate;
+    } catch (_e) {
+      console.warn('[CRM] No se pudo sincronizar la Fecha de Nacimiento con Supabase — se aplica solo en esta pantalla.', _e);
+    }
+  }, []);
 
   /* ---------------- Carga de datos (Torneos & Retas, compartida) ----------------
    * Igual criterio que canchas/reservas/productos arriba: se levanta aquí, no
@@ -46894,6 +47128,7 @@ function AppInterno() {
                 productos={productos}
                 jugadoresPorId={jugadoresPorId}
                 onActualizarTelefonoJugador={actualizarTelefonoJugador}
+                onActualizarFechaNacimientoJugador={actualizarFechaNacimientoJugador}
                 onRefrescarDirectorio={() => cargarDatos({ silencioso: true })}
                 retas={retas}
                 inscripciones={inscripciones}
@@ -46904,6 +47139,7 @@ function AppInterno() {
                 jugadorAAbrirId={jugadorAAbrirId}
                 onJugadorAAbrirConsumido={() => setJugadorAAbrirId(null)}
                 academiaAlumnos={academiaAlumnos}
+                academiaClases={academiaClases}
                 academiaAsistencias={academiaAsistencias}
                 permisos={permisos}
                 configClub={configClub}
