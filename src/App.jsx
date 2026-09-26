@@ -8358,15 +8358,24 @@ function ComandaPanel({
               }}
               placeholder="Nombre y Apellido del cliente..."
             />
+            {/* Teléfono opcional para Operadores (fix): un Operador/Colaborador
+                no es un jugador del CRM — muchos no tienen teléfono
+                capturado en `empleados`, y no lo necesitan como
+                identificador (ya están identificados por `cliente_operador_id`).
+                Con un Operador vinculado el campo se deshabilita (en vez de
+                seguir pidiéndolo como si fuera obligatorio) para que
+                `onAccionPrincipal`/`abrirCuentaSinCancha` no lo exijan ni por
+                accidente se sobreescriba el teléfono ya guardado en su
+                expediente de empleado. */}
             <input
               value={clienteTelefono}
               onChange={(e) => {
                 onCambiarClienteTelefono?.(e.target.value);
                 if (clienteSeleccionadoId) onSeleccionarCliente?.(null);
-                if (clienteOperadorId) onSeleccionarOperador?.(null);
               }}
-              className={`${inputClase} text-xs`}
-              placeholder="Teléfono (10 dígitos) — identificador del cliente"
+              disabled={Boolean(clienteOperadorId)}
+              className={`${inputClase} text-xs ${clienteOperadorId ? 'cursor-not-allowed opacity-60' : ''}`}
+              placeholder={clienteOperadorId ? 'Teléfono (opcional para Operadores)' : 'Teléfono (10 dígitos) — identificador del cliente'}
               inputMode="tel"
             />
 
@@ -15090,7 +15099,13 @@ function ModuloSmartPOS({
   // método), en vez de duplicar el chequeo en cada uno.
   function onAccionPrincipal() {
     if (comanda.length === 0) return;
-    if (roster.length === 0) {
+    // Fix de validación — Operador vinculado: un Operador/Colaborador del
+    // club (`clienteOperadorId`) ya está identificado sin ambigüedad por su
+    // ID de `empleados` — exigirle Nombre+Apellido (como si fuera un
+    // Jugador del CRM) bloqueaba el cobro para operadores que solo tienen
+    // nombre de pila registrado. Con un Operador vinculado la comanda se
+    // considera válida sin este chequeo.
+    if (roster.length === 0 && !clienteOperadorId) {
       const partesNombreCliente = clienteNombre.trim().split(/\s+/).filter(Boolean);
       if (partesNombreCliente.length < 2) {
         mostrarToast({
@@ -15123,14 +15138,18 @@ function ModuloSmartPOS({
   // de identificar/agrupar esta cuenta sin cancha.
   function abrirCuentaSinCancha() {
     if (comanda.length === 0) return;
-    const partesNombreCliente = clienteNombre.trim().split(/\s+/).filter(Boolean);
-    if (partesNombreCliente.length < 2) {
-      mostrarToast({
-        titulo: 'Faltan los datos del cliente',
-        detalle: 'Captura Nombre y Apellido antes de abrir la cuenta.',
-        tono: 'aviso',
-      });
-      return;
+    // Mismo criterio que `onAccionPrincipal`: un Operador vinculado no
+    // necesita Nombre+Apellido — ya viene identificado por `clienteOperadorId`.
+    if (!clienteOperadorId) {
+      const partesNombreCliente = clienteNombre.trim().split(/\s+/).filter(Boolean);
+      if (partesNombreCliente.length < 2) {
+        mostrarToast({
+          titulo: 'Faltan los datos del cliente',
+          detalle: 'Captura Nombre y Apellido antes de abrir la cuenta.',
+          tono: 'aviso',
+        });
+        return;
+      }
     }
     registrarVenta({ metodoPago: null, estadoPago: 'pendiente' });
   }
