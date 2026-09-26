@@ -40593,28 +40593,39 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
   let movimientoId = null;
   let movimientoOk = true;
   try {
-    const { data: mov, error: errMov } = await supabase
-      .from('wallet_movimientos_operador')
-      .insert(
-        withClubId({
-          empleado_id: empleadoIdTexto,
-          empleado_nombre: empleadoNombre || null,
-          tipo: delta >= 0 ? 'abono' : 'cargo',
-          monto: delta,
-          saldo_resultante: saldoNuevo,
-          motivo: motivo || null,
-          metodo_aplicacion: metodoAplicacion || null,
-          referencia_tipo: referenciaTipo || null,
-          referencia_id: referenciaId || null,
-          // `creado_por_id` (v57): mismo criterio TEXT — solo se manda si de
-          // verdad viene un id (una carga manual de Configuración del Club),
-          // nunca se fuerza un `String(null)` = `"null"`.
-          creado_por_id: creadoPorId != null ? String(creadoPorId) : null,
-          creado_por_nombre: creadoPorNombre || null,
-        })
-      )
-      .select('id')
-      .single();
+    // Saneamiento estricto de tipos (fix v58) — `empleado_id`/`creado_por_id`
+    // ya se mandan como `String(...)` desde arriba; `referencia_id` puede
+    // traer, según de dónde venga el cobro: (a) el `id` real de una venta
+    // (uuid, si Supabase lo devolvió), (b) un id local de respaldo cuando el
+    // `.select()` tras el INSERT de la venta no tuvo permiso RLS (ver
+    // `idLocal('venta')` en `insertarVentaConReintentos`), o (c) `null` (el
+    // cargo a Wallet ocurre ANTES de que la venta exista — se vincula
+    // después, ver `registrarVenta`/`liquidarCuenta`). Ninguno de los tres
+    // casos es siempre un uuid de 36 caracteres, así que se manda tal cual
+    // como texto simple (nunca se le fuerza forma de uuid) — la columna es
+    // `text` desde v57/v58, así que cualquier string es válido.
+    const referenciaIdTexto = referenciaId != null ? String(referenciaId) : null;
+    const objetoAInsertar = withClubId({
+      empleado_id: empleadoIdTexto,
+      empleado_nombre: empleadoNombre || null,
+      tipo: delta >= 0 ? 'abono' : 'cargo',
+      monto: delta,
+      saldo_resultante: saldoNuevo,
+      motivo: motivo || null,
+      metodo_aplicacion: metodoAplicacion || null,
+      referencia_tipo: referenciaTipo || null,
+      referencia_id: referenciaIdTexto,
+      creado_por_id: creadoPorId != null ? String(creadoPorId) : null,
+      creado_por_nombre: creadoPorNombre || null,
+    });
+    // DEBUGGING (temporal, a petición explícita — deja este log si el error
+    // 22P02 sigue apareciendo después de correr migracion_v58; identifica
+    // aquí mismo, con `typeof`, cuál clave trae el valor problemático antes
+    // de que llegue a Supabase.
+    console.log('PAYLOAD INSERT WALLET OPERADOR:', objetoAInsertar, {
+      tipos: Object.fromEntries(Object.entries(objetoAInsertar).map(([k, v]) => [k, typeof v])),
+    });
+    const { data: mov, error: errMov } = await supabase.from('wallet_movimientos_operador').insert(objetoAInsertar).select('id').single();
     if (errMov) {
       console.error('[Wallet Operador] Error detallado Supabase (insertar wallet_movimientos_operador):', errMov);
       movimientoOk = false;
