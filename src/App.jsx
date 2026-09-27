@@ -30793,18 +30793,22 @@ const OPCIONES_POSICION_PREFERIDA = [
   { value: 'ambas', label: 'Ambas' },
 ];
 
-// "Mi Perfil" — modal consolidado del Portal del Jugador: Ficha Deportiva
-// editable, Nivel Oficial de Academia (solo-lectura, contenido heredado tal
-// cual de la antigua `ModalPerfilDeportivoJugador`) y Zona de Seguridad
-// (cambiar contraseña, eliminar cuenta, cerrar sesión). Único punto de
-// entrada del Portal para las tres acciones de la Zona de Seguridad — ver
-// comentario en `PortalPublicoJugadores` sobre `cerrarSesionPortal`.
+// "Mi Perfil" — modal del Portal del Jugador con sus Datos Personales +
+// Ficha Informativa (editables) y Zona de Seguridad (cambiar contraseña,
+// eliminar cuenta, cerrar sesión). Único punto de entrada del Portal para
+// las tres acciones de la Zona de Seguridad — ver comentario en
+// `PortalPublicoJugadores` sobre `cerrarSesionPortal`.
+// IMPORTANTE: este modal NO muestra nada del desempeño técnico de Academia
+// (Nivel Oficial, Skill Radar Chart, Historial de Observaciones de coaches)
+// — eso es exclusivo de `ModalMiPerfilDeportivo` (más abajo), abierto desde
+// la tarjeta "Mi Perfil Deportivo" de la pestaña Academia. Los campos
+// `categoria`/`nivel_juego` de aquí SÍ son los mismos de la Ficha Deportiva
+// (`jugadores.categoria`/`jugadores.nivel_juego`), pero se editan como
+// datos de perfil, no como evaluación de coach.
 function ModalMiPerfilJugador({
   jugador,
   ficha,
   cargandoFicha,
-  evaluaciones,
-  loadingEvaluaciones,
   onClose,
   onGuardar,
   onCambiarPassword,
@@ -30859,18 +30863,6 @@ function ModalMiPerfilJugador({
     setError(msg);
   }
 
-  // Sección "Nivel Oficial" (Academia) — contenido idéntico al de la
-  // antigua `ModalPerfilDeportivoJugador`, solo-lectura.
-  const historialEvaluaciones = useMemo(
-    () =>
-      (evaluaciones || [])
-        .slice()
-        .sort((a, b) => new Date(b.fecha || b.created_at || 0).getTime() - new Date(a.fecha || a.created_at || 0).getTime()),
-    [evaluaciones]
-  );
-  const ultimaEvaluacion = historialEvaluaciones[0] || null;
-  const nivelMeta = ultimaEvaluacion?.nivel_asignado ? NIVEL_OFICIAL_META[ultimaEvaluacion.nivel_asignado] : null;
-
   // Zona de Seguridad — "Cambiar Contraseña" (colapsable, no siempre
   // visible: mantiene la Zona de Seguridad compacta por default).
   const [cambiandoPassword, setCambiandoPassword] = useState(false);
@@ -30901,83 +30893,94 @@ function ModalMiPerfilJugador({
   return (
     <ModalShell titulo="Mi Perfil" subtitulo={jugador?.nombre || ''} onClose={onClose} icon={User} ancho="max-w-lg">
       <div className="space-y-6">
-        {/* FICHA DEPORTIVA — editable */}
+        {/* DATOS PERSONALES + FICHA INFORMATIVA — editable. Ninguna otra
+            sección de este modal habla de desempeño técnico de Academia —
+            eso vive exclusivamente en `ModalMiPerfilDeportivo`. */}
         <div>
-          <p className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Ficha Deportiva</p>
           {cargandoFicha && !draft ? (
             <div className="flex items-center justify-center py-10 text-slate-500">
               <Loader2 size={20} className="animate-spin" />
             </div>
           ) : draft ? (
-            <div className="space-y-3">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Campo label="Nombre completo">
-                  <input value={draft.nombre} onChange={(e) => setDraft({ ...draft, nombre: e.target.value })} className={inputClase} />
-                </Campo>
-                <Campo label="Apodo / Nickname">
-                  <input value={draft.apodo} onChange={(e) => setDraft({ ...draft, apodo: e.target.value })} className={inputClase} placeholder="Opcional" />
-                </Campo>
-                <Campo label="Teléfono (10 dígitos)">
-                  <input
-                    value={draft.telefono}
-                    onChange={(e) => setDraft({ ...draft, telefono: e.target.value })}
-                    className={inputClase}
-                    inputMode="tel"
-                  />
-                </Campo>
-                <Campo label="Correo electrónico">
-                  <input
-                    type="email"
-                    value={draft.correo}
-                    onChange={(e) => setDraft({ ...draft, correo: e.target.value })}
-                    className={inputClase}
-                  />
-                </Campo>
-                <Campo label="Mano hábil">
-                  <select value={draft.mano_habil} onChange={(e) => setDraft({ ...draft, mano_habil: e.target.value })} className={inputClase}>
-                    <option value="">Sin especificar</option>
-                    {OPCIONES_MANO_HABIL.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </Campo>
-                <Campo label="Posición preferida">
-                  <select
-                    value={draft.posicion_preferida}
-                    onChange={(e) => setDraft({ ...draft, posicion_preferida: e.target.value })}
-                    className={inputClase}
-                  >
-                    <option value="">Sin especificar</option>
-                    {OPCIONES_POSICION_PREFERIDA.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </Campo>
-                <Campo label="Categoría Competitiva" hint="Torneos y Retas — se actualiza sola con tu última inscripción.">
-                  <select value={draft.categoria} onChange={(e) => setDraft({ ...draft, categoria: e.target.value })} className={inputClase}>
-                    <option value="">Sin especificar</option>
-                    {NIVELES_FUERZA.map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
-                </Campo>
-                <Campo label="Nivel de Juego" hint="Academia y Clases — se actualiza solo con la evaluación de tu coach.">
-                  <select value={draft.nivel_juego} onChange={(e) => setDraft({ ...draft, nivel_juego: e.target.value })} className={inputClase}>
-                    <option value="">Sin especificar</option>
-                    {NIVELES_ACADEMIA.map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
-                </Campo>
+            <div className="space-y-5">
+              <div>
+                <p className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Datos Personales</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Campo label="Nombre completo">
+                    <input value={draft.nombre} onChange={(e) => setDraft({ ...draft, nombre: e.target.value })} className={inputClase} />
+                  </Campo>
+                  <Campo label="Apodo / Nickname">
+                    <input value={draft.apodo} onChange={(e) => setDraft({ ...draft, apodo: e.target.value })} className={inputClase} placeholder="Opcional" />
+                  </Campo>
+                  <Campo label="Teléfono (10 dígitos)">
+                    <input
+                      value={draft.telefono}
+                      onChange={(e) => setDraft({ ...draft, telefono: e.target.value })}
+                      className={inputClase}
+                      inputMode="tel"
+                    />
+                  </Campo>
+                  <Campo label="Correo electrónico">
+                    <input
+                      type="email"
+                      value={draft.correo}
+                      onChange={(e) => setDraft({ ...draft, correo: e.target.value })}
+                      className={inputClase}
+                    />
+                  </Campo>
+                </div>
               </div>
+
+              <div>
+                <p className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Ficha Informativa</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Campo label="Mano hábil">
+                    <select value={draft.mano_habil} onChange={(e) => setDraft({ ...draft, mano_habil: e.target.value })} className={inputClase}>
+                      <option value="">Sin especificar</option>
+                      {OPCIONES_MANO_HABIL.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Campo>
+                  <Campo label="Posición preferida">
+                    <select
+                      value={draft.posicion_preferida}
+                      onChange={(e) => setDraft({ ...draft, posicion_preferida: e.target.value })}
+                      className={inputClase}
+                    >
+                      <option value="">Sin especificar</option>
+                      {OPCIONES_POSICION_PREFERIDA.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Campo>
+                  <Campo label="Categoría Competitiva" hint="Torneos y Retas — se actualiza sola con tu última inscripción.">
+                    <select value={draft.categoria} onChange={(e) => setDraft({ ...draft, categoria: e.target.value })} className={inputClase}>
+                      <option value="">Sin especificar</option>
+                      {NIVELES_FUERZA.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </Campo>
+                  <Campo label="Nivel de Juego" hint="Academia y Clases — se actualiza solo con la evaluación de tu coach.">
+                    <select value={draft.nivel_juego} onChange={(e) => setDraft({ ...draft, nivel_juego: e.target.value })} className={inputClase}>
+                      <option value="">Sin especificar</option>
+                      {NIVELES_ACADEMIA.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </Campo>
+                </div>
+              </div>
+
               {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
               <div className="flex justify-end">
                 <BotonPrimario onClick={guardar} disabled={guardando} className="px-4 py-2 text-xs">
@@ -30987,75 +30990,6 @@ function ModalMiPerfilJugador({
               </div>
             </div>
           ) : null}
-        </div>
-
-        {/* NIVEL OFICIAL (Academia) — solo-lectura, contenido heredado de
-            la antigua "Mi Perfil Deportivo". */}
-        <div className="border-t border-slate-200 pt-5">
-          <p className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Nivel Oficial (Academia)</p>
-          {loadingEvaluaciones ? (
-            <div className="flex items-center justify-center py-8 text-slate-500">
-              <Loader2 size={18} className="animate-spin" />
-            </div>
-          ) : !ultimaEvaluacion ? (
-            <p className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center text-xs text-slate-500">
-              Todavía no tienes ninguna evaluación registrada. Tu coach la agrega después de tus primeras clases.
-            </p>
-          ) : (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/50 p-4">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Nivel Oficial</p>
-                  <span
-                    className={`mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-black ring-1 ${nivelMeta?.bg || 'bg-slate-100'} ${
-                      nivelMeta?.color || 'text-slate-600'
-                    } ${nivelMeta?.ring || 'ring-slate-300'}`}
-                  >
-                    <Award size={14} /> {ultimaEvaluacion.nivel_asignado || 'Sin asignar'}
-                  </span>
-                </div>
-                <div className="text-right">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Promedio General</p>
-                  <p className="mt-1 text-2xl font-black text-slate-900">
-                    {ultimaEvaluacion.promedio != null ? Number(ultimaEvaluacion.promedio).toFixed(1) : '—'}
-                    <span className="text-sm text-slate-500">/10</span>
-                  </p>
-                </div>
-              </div>
-
-              <div>
-                <p className="mb-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">Skill Radar Chart</p>
-                <RadarEvaluacion valores={ultimaEvaluacion} />
-              </div>
-
-              <div>
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de Observaciones</p>
-                <div className="max-h-64 space-y-2 overflow-y-auto pr-0.5">
-                  {historialEvaluaciones.map((ev) => {
-                    const meta = NIVEL_OFICIAL_META[ev.nivel_asignado];
-                    return (
-                      <div key={ev.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-[11px] font-bold text-slate-600">{ev.coach_nombre || 'Coach'}</p>
-                          <p className="text-[10px] text-slate-500">{formatoFechaObservacion(ev)}</p>
-                        </div>
-                        {ev.nivel_asignado && (
-                          <span
-                            className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${meta?.bg || 'bg-slate-100'} ${
-                              meta?.color || 'text-slate-500'
-                            }`}
-                          >
-                            {ev.nivel_asignado}
-                          </span>
-                        )}
-                        {ev.comentarios && <p className="mt-1.5 text-xs text-slate-500">{ev.comentarios}</p>}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* ZONA DE SEGURIDAD — Cambiar Contraseña + Zona de Peligro
@@ -31151,6 +31085,98 @@ function ModalMiPerfilJugador({
             <LogOut size={15} /> Cerrar Sesión
           </button>
         </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// "Mi Perfil Deportivo" — modal EXCLUSIVO del desempeño técnico de Academia
+// del jugador (abierto desde la tarjeta "Mi Perfil Deportivo" de la pestaña
+// Academia, NUNCA desde el header): Nivel Oficial, Promedio General, Skill
+// Radar Chart e Historial de Observaciones de sus coaches. 100% solo-lectura
+// — el jugador nunca puede calificarse a sí mismo (eso es exclusivo del
+// Expediente Deportivo del Coach, ver `ModalExpedienteDeportivo` más abajo).
+// A propósito NO incluye campos de edición de nombre/teléfono/correo, ni
+// Zona de Seguridad, ni botón de "Cerrar Sesión" — eso es exclusivo de
+// `ModalMiPerfilJugador` (arriba), para no mezclar Ficha General con
+// desempeño de Academia en la misma pantalla.
+function ModalMiPerfilDeportivo({ jugador, evaluaciones, loadingEvaluaciones, onClose }) {
+  const historialEvaluaciones = useMemo(
+    () =>
+      (evaluaciones || [])
+        .slice()
+        .sort((a, b) => new Date(b.fecha || b.created_at || 0).getTime() - new Date(a.fecha || a.created_at || 0).getTime()),
+    [evaluaciones]
+  );
+  const ultimaEvaluacion = historialEvaluaciones[0] || null;
+  const nivelMeta = ultimaEvaluacion?.nivel_asignado ? NIVEL_OFICIAL_META[ultimaEvaluacion.nivel_asignado] : null;
+
+  return (
+    <ModalShell titulo="Mi Perfil Deportivo" subtitulo={jugador?.nombre || ''} onClose={onClose} icon={Gauge} ancho="max-w-lg">
+      <div className="space-y-4">
+        {loadingEvaluaciones ? (
+          <div className="flex items-center justify-center py-8 text-slate-500">
+            <Loader2 size={18} className="animate-spin" />
+          </div>
+        ) : !ultimaEvaluacion ? (
+          <p className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center text-xs text-slate-500">
+            Todavía no tienes ninguna evaluación registrada. Tu coach la agrega después de tus primeras clases.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/50 p-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Nivel Oficial</p>
+                <span
+                  className={`mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-black ring-1 ${nivelMeta?.bg || 'bg-slate-100'} ${
+                    nivelMeta?.color || 'text-slate-600'
+                  } ${nivelMeta?.ring || 'ring-slate-300'}`}
+                >
+                  <Award size={14} /> {ultimaEvaluacion.nivel_asignado || 'Sin asignar'}
+                </span>
+              </div>
+              <div className="text-right">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Promedio General</p>
+                <p className="mt-1 text-2xl font-black text-slate-900">
+                  {ultimaEvaluacion.promedio != null ? Number(ultimaEvaluacion.promedio).toFixed(1) : '—'}
+                  <span className="text-sm text-slate-500">/10</span>
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">Skill Radar Chart</p>
+              <RadarEvaluacion valores={ultimaEvaluacion} />
+            </div>
+
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de Observaciones</p>
+              <div className="max-h-64 space-y-2 overflow-y-auto pr-0.5">
+                {historialEvaluaciones.map((ev) => {
+                  const meta = NIVEL_OFICIAL_META[ev.nivel_asignado];
+                  return (
+                    <div key={ev.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-bold text-slate-600">{ev.coach_nombre || 'Coach'}</p>
+                        <p className="text-[10px] text-slate-500">{formatoFechaObservacion(ev)}</p>
+                      </div>
+                      {ev.nivel_asignado && (
+                        <span
+                          className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${meta?.bg || 'bg-slate-100'} ${
+                            meta?.color || 'text-slate-500'
+                          }`}
+                        >
+                          {ev.nivel_asignado}
+                        </span>
+                      )}
+                      {ev.comentarios && <p className="mt-1.5 text-xs text-slate-500">{ev.comentarios}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </ModalShell>
   );
@@ -36192,6 +36218,18 @@ function DirectorioJugadoresCRM({
         // respaldo) — mismo criterio "el más reciente manda" que
         // `nivelAcademiaJ`.
         const nivelTorneoRetaJ = eventosTorneoRetas.find((e) => e.categoria && e.categoria !== '—')?.categoria || null;
+        // FIX: `nivelTorneoRetaJ` (arriba) es el texto CRUDO de la
+        // inscripción — puede ser una MODALIDAD de Reta ("Varonil Suma 4",
+        // "Suma 3"...) que NO es el nivel de fuerza individual del jugador.
+        // Igual que hace `inscribirseATorneo`/`inscribirseAReta` al
+        // sincronizar `jugadores.categoria`, se normaliza con
+        // `extraerNivelDeCategoria` (que ya sabe extraer "4ª Fuerza" de
+        // "Varonil 4ª Fuerza") y solo se usa como respaldo si de verdad
+        // resuelve a uno de los 7 niveles oficiales — nunca se muestra
+        // "Suma 4"/"Sin categoría" en el badge de la Vista 360°.
+        const nivelTorneoRetaNormalizadoJ = nivelTorneoRetaJ ? extraerNivelDeCategoria(nivelTorneoRetaJ) : null;
+        const categoriaRespaldoJ =
+          nivelTorneoRetaNormalizadoJ && nivelTorneoRetaNormalizadoJ !== 'Sin categoría' ? nivelTorneoRetaNormalizadoJ : null;
 
         // 3) Recencia/Frecuencia: historial de reservas de cancha (Parrilla)
         // + Horario Favorito (bloques de 2h sobre `hora_inicio`) + Cancha
@@ -36279,7 +36317,7 @@ function DirectorioJugadoresCRM({
           // jugadores que todavía no tienen la ficha poblada.
           nivelJuego: nivelJuegoJ,
           nivelJuegoEsDeAcademia: nivelJuegoEsDeAcademiaJ,
-          categoria: categoriaJ || nivelTorneoRetaJ,
+          categoria: categoriaJ || categoriaRespaldoJ,
           saldoAFavor: Number(j.saldo_a_favor) || 0,
           gastoCanchas,
           gastoBar,
@@ -37642,7 +37680,7 @@ function ModalPerfilJugadorCRM({
   }
 
   const ltvFilas = [
-    { label: 'Canchas (Parrilla)', valor: perfil.gastoCanchas, color: 'bg-sky-400' },
+    { label: 'Reservas', valor: perfil.gastoCanchas, color: 'bg-sky-400' },
     { label: 'Restaurante/Bar', valor: perfil.gastoBar, color: 'bg-amber-400' },
     { label: 'Torneos/Retas', valor: perfil.gastoTorneosRetas, color: 'bg-violet-400' },
     { label: 'Pro-Shop', valor: perfil.gastoProShop, color: 'bg-fuchsia-400' },
@@ -41402,16 +41440,24 @@ function PortalPublicoJugadores({ clubSlug }) {
   // banner destacado arriba del catálogo '/Clases'.
   const [modalSolicitudClase, setModalSolicitudClase] = useState(false);
 
-  // MI PERFIL (Ficha Deportiva editable + Nivel Oficial de Academia +
-  // Seguridad) — el jugador identificado (ver `jugador` arriba) puede ver
-  // Y EDITAR sus datos de perfil (`ModalMiPerfilJugador`, antes
-  // `ModalPerfilDeportivoJugador`, solo-lectura). El historial de
-  // evaluaciones (`evaluacionesJugadorPortal` abajo) sigue siendo
-  // exclusivamente de LECTURA — nunca se escribe en `evaluaciones_jugador`
-  // desde el Portal (eso es exclusivo del panel interno, ver
-  // `ModalExpedienteDeportivo`); lo que SÍ se edita desde aquí es la fila
-  // de `jugadores` misma (`fichaJugador` abajo, vía `guardarFichaJugador`).
+  // MI PERFIL (Datos Personales + Ficha Informativa editables + Zona de
+  // Seguridad) — el jugador identificado (ver `jugador` arriba) puede ver Y
+  // EDITAR sus datos de perfil (`ModalMiPerfilJugador`). Separado a
+  // propósito de `mostrarMiPerfilDeportivo` (abajo), que es 100%
+  // solo-lectura y exclusivo del desempeño técnico de Academia. El
+  // historial de evaluaciones (`evaluacionesJugadorPortal` abajo) sigue
+  // siendo exclusivamente de LECTURA — nunca se escribe en
+  // `evaluaciones_jugador` desde el Portal (eso es exclusivo del panel
+  // interno, ver `ModalExpedienteDeportivo`); lo que SÍ se edita desde "Mi
+  // Perfil" es la fila de `jugadores` misma (`fichaJugador` abajo, vía
+  // `guardarFichaJugador`).
   const [mostrarMiPerfil, setMostrarMiPerfil] = useState(false);
+  // MI PERFIL DEPORTIVO — modal SEPARADO, exclusivo del desempeño técnico de
+  // Academia (Nivel Oficial, Skill Radar Chart, Historial de Observaciones).
+  // Se abre únicamente desde la tarjeta "Mi Perfil Deportivo" de la pestaña
+  // Academia (ver `ModalMiPerfilDeportivo`) — nunca desde el header, que
+  // siempre abre `mostrarMiPerfil` (Ficha General + Zona de Seguridad).
+  const [mostrarMiPerfilDeportivo, setMostrarMiPerfilDeportivo] = useState(false);
   // Marco Legal — Derecho de Supresión: confirmación antes de anonimizar la
   // cuenta (ver `eliminarCuentaJugador`, más abajo, y `ModalConfirmarEliminarCuentaPortal`).
   const [mostrarConfirmarEliminarCuenta, setMostrarConfirmarEliminarCuenta] = useState(false);
@@ -44080,7 +44126,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                     return (
                       <button
                         type="button"
-                        onClick={() => setMostrarMiPerfil(true)}
+                        onClick={() => setMostrarMiPerfilDeportivo(true)}
                         className="flex w-full items-center justify-between gap-3 rounded-2xl border border-lime-400/30 bg-gradient-to-r from-lime-400/10 via-white/50 to-white/50 p-4 text-left backdrop-blur-sm transition hover:border-lime-400/50 hover:bg-lime-400/[0.15]"
                       >
                         <span className="flex items-center gap-2.5">
@@ -44487,17 +44533,17 @@ function PortalPublicoJugadores({ clubSlug }) {
           />
         )}
 
-        {/* MI PERFIL — Ficha Deportiva editable + Nivel Oficial de Academia
-            (solo-lectura) + Zona de Seguridad (cambiar contraseña, eliminar
-            cuenta, cerrar sesión). Único punto de entrada de "Eliminar mi
-            cuenta" y "Cerrar Sesión" en todo el Portal (ver requerimiento). */}
+        {/* MI PERFIL — Datos Personales + Ficha Informativa editables +
+            Zona de Seguridad (cambiar contraseña, eliminar cuenta, cerrar
+            sesión). Único punto de entrada de "Eliminar mi cuenta" y
+            "Cerrar Sesión" en todo el Portal (ver requerimiento). NO incluye
+            nada de desempeño de Academia — ver `ModalMiPerfilDeportivo`
+            abajo. */}
         {mostrarMiPerfil && jugador && (
           <ModalMiPerfilJugador
             jugador={jugador}
             ficha={fichaJugador}
             cargandoFicha={cargandoFicha}
-            evaluaciones={evaluacionesJugadorPortal}
-            loadingEvaluaciones={cargandoEvaluacionesPortal}
             onClose={() => setMostrarMiPerfil(false)}
             onGuardar={guardarFichaJugador}
             onCambiarPassword={cambiarPasswordJugador}
@@ -44509,6 +44555,18 @@ function PortalPublicoJugadores({ clubSlug }) {
               cerrarSesionPortal();
               setMostrarMiPerfil(false);
             }}
+          />
+        )}
+
+        {/* MI PERFIL DEPORTIVO — Nivel Oficial, Skill Radar Chart e
+            Historial de Observaciones. Modal EXCLUSIVO de Academia, sin
+            edición de datos ni Zona de Seguridad (ver requerimiento). */}
+        {mostrarMiPerfilDeportivo && jugador && (
+          <ModalMiPerfilDeportivo
+            jugador={jugador}
+            evaluaciones={evaluacionesJugadorPortal}
+            loadingEvaluaciones={cargandoEvaluacionesPortal}
+            onClose={() => setMostrarMiPerfilDeportivo(false)}
           />
         )}
 
