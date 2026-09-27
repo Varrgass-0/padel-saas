@@ -40628,13 +40628,6 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
       creado_por_id: creadoPorId != null ? String(creadoPorId) : null,
       creado_por_nombre: creadoPorNombre || null,
     });
-    // DEBUGGING (temporal, a petición explícita — deja este log si el error
-    // 22P02 sigue apareciendo después de correr migracion_v58; identifica
-    // aquí mismo, con `typeof`, cuál clave trae el valor problemático antes
-    // de que llegue a Supabase.
-    console.log('PAYLOAD INSERT WALLET OPERADOR:', objetoAInsertar, {
-      tipos: Object.fromEntries(Object.entries(objetoAInsertar).map(([k, v]) => [k, typeof v])),
-    });
     const { data: mov, error: errMov } = await supabase.from('wallet_movimientos_operador').insert(objetoAInsertar).select('id').single();
     if (errMov) {
       console.error('[Wallet Operador] Error detallado Supabase (insertar wallet_movimientos_operador):', errMov);
