@@ -2541,6 +2541,24 @@ function formatoFechaCorta(fechaISO) {
   }
 }
 
+// Fecha corta "Día Mes" SIN año (Academia — Tabla de Alumnos deduplicada,
+// columna "Última Clase": ej. "22 Sep"). Distinta de `formatoFechaCorta`
+// (con año, formato "DD/MM/AAAA" para Fecha de Nacimiento) y de
+// `formatoFechaObservacion` (con año, para el Historial de Evaluaciones) —
+// aquí el año sobra porque "Última Clase" siempre es reciente.
+function formatoFechaDiaMesCorto(fechaISO) {
+  try {
+    const [y, m, d] = String(fechaISO).split('-').map(Number);
+    const fecha = new Date(y, m - 1, d);
+    if (Number.isNaN(fecha.getTime())) return fechaISO;
+    const texto = fecha.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' });
+    // "22 sept." (es-MX) → "22 Sep" — capitaliza el mes y le quita el punto.
+    return texto.replace(/\.$/, '').replace(/(\d+)\s+(\w)/, (_m, dia, letra) => `${dia} ${letra.toUpperCase()}`);
+  } catch (_e) {
+    return fechaISO;
+  }
+}
+
 // Fix "Invalid Date" en el Historial de Observaciones del Expediente
 // Deportivo (mejora): `formatoFechaLarga` (arriba) está hecho para fechas
 // PURAS "YYYY-MM-DD" (reservas, etc.) — su `.split('-')` a mano truena en
@@ -33229,17 +33247,21 @@ function AnalyticsAcademia({
   // mejora de RBAC) y no puede navegar a los otros dos.
   const [dashboard, setDashboard] = useState(() => (permisos?.puedeVerMontos === false ? 'coaches' : 'operativo')); // 'operativo' | 'membresias' | 'coaches'
 
-  // Horas Pico de Ocupación de CANCHAS (Parrilla/`reservas`) — distinto de
-  // "Horas Pico" dentro de `kpisOperativos` (esa es de CLASES de Academia
-  // programadas). Cálculo autocontenido y sin montos: cuenta reservas no
-  // canceladas por hora de inicio y toma la de mayor frecuencia — mismo
-  // criterio de "hora con más actividad" que el Heatmap de Analytics BI,
-  // simplificado a un solo dato (sin la cuadrícula completa) para poder
-  // mostrarlo también a roles sin acceso al módulo de Analytics.
+  // FIX Hora Pico EXCLUSIVA de Academia (antes "Hora Pico de Ocupación de
+  // Canchas"): contaba TODAS las reservas no canceladas de la Parrilla
+  // (renta libre normal + bloqueos de Torneos + bloqueos de Retas + clases),
+  // así que el horario más activo del club en general opacaba el de
+  // Academia. Los bloqueos de `reservas` que sí pertenecen a una clase de
+  // Academia (Privada o Grupal) llevan `estado: 'Clase'` — mismo marcador
+  // que usa toda la Parrilla Operativa para distinguir un bloqueo de clase
+  // de uno de Torneo/Reta/reserva normal (ver `crearBloqueoParrilla`,
+  // `esBloqueoEvento`) — así que filtrar por ese único valor basta para
+  // dejar esta hora pico 100% exclusiva de Academia, sin tocar `reservas`
+  // de renta libre ni de Torneos/Retas.
   const horaPicoOcupacion = useMemo(() => {
     const conteoPorHora = {};
     (reservas || []).forEach((r) => {
-      if (r.estado === 'Cancelada') return;
+      if (r.estado !== 'Clase') return;
       const hora = Number(String(r.hora_inicio || '').slice(0, 2));
       if (!Number.isFinite(hora)) return;
       conteoPorHora[hora] = (conteoPorHora[hora] || 0) + 1;
@@ -33264,14 +33286,54 @@ function AnalyticsAcademia({
     return mapa;
   }, [alumnosActivos]);
 
+  // FIX Deduplicación (Tabla de Alumnos, KPIs Coaches): `alumnosActivos` es
+  // `academia_alumnos` — una fila POR CADA clase/sesión en la que un jugador
+  // se inscribió, así que un alumno recurrente aparecía repetido una vez por
+  // clase. Se agrupa por `jugador_id` (la llave real hacia `jugadores`; si
+  // por algún motivo viniera nulo en una fila vieja, se usa su propio `id`
+  // como respaldo para no fusionar por accidente filas de alumnos distintos)
+  // y de cada grupo se queda con la inscripción de la clase con `fecha` MÁS
+  // RECIENTE — esa es la que alimenta "Última Clase", "Coach" y "Estatus".
+  // El "Nivel" YA NO se lee de esa clase individual: usa
+  // `jugadoresPorId[...].nivel_juego` (Ficha Deportiva — migracion_v63,
+  // fuente única de verdad, mismo criterio que la Vista 360° del CRM), con
+  // respaldo al nivel de la clase más reciente para jugadores que todavía no
+  // la tienen poblada.
+  const alumnosDedupPorJugador = useMemo(() => {
+    const grupos = new Map();
+    alumnosActivos.forEach((a) => {
+      const llave = a.jugador_id != null ? `j:${a.jugador_id}` : `a:${a.id}`;
+      if (!grupos.has(llave)) grupos.set(llave, []);
+      grupos.get(llave).push(a);
+    });
+    const filas = [];
+    grupos.forEach((inscripciones) => {
+      const ordenadas = inscripciones
+        .slice()
+        .sort((a, b) => (clasesPorId[b.clase_id]?.fecha || '').localeCompare(clasesPorId[a.clase_id]?.fecha || ''));
+      const masReciente = ordenadas[0];
+      const claseReciente = clasesPorId[masReciente.clase_id] || null;
+      const jugador = masReciente.jugador_id != null ? jugadoresPorId[masReciente.jugador_id] : null;
+      filas.push({
+        id: masReciente.id,
+        jugadorId: masReciente.jugador_id ?? null,
+        nombre: masReciente.nombre,
+        claseReciente,
+        nivel: jugador?.nivel_juego || claseReciente?.nivel || null,
+        coach: claseReciente?.coach_nombre || null,
+        estadoPago: masReciente.estado_pago,
+      });
+    });
+    return filas;
+  }, [alumnosActivos, clasesPorId, jugadoresPorId]);
+
   const totalesPorNivel = useMemo(() => {
     const mapa = Object.fromEntries(NIVELES_ACADEMIA.map((n) => [n, 0]));
-    alumnosActivos.forEach((a) => {
-      const nivel = clasesPorId[a.clase_id]?.nivel;
-      if (nivel && mapa[nivel] != null) mapa[nivel] += 1;
+    alumnosDedupPorJugador.forEach((a) => {
+      if (a.nivel && mapa[a.nivel] != null) mapa[a.nivel] += 1;
     });
     return mapa;
-  }, [alumnosActivos, clasesPorId]);
+  }, [alumnosDedupPorJugador]);
 
   // Riesgo de Deserción: para cada alumno activo, ordena SU historial de
   // asistencia (más reciente primero) y cuenta la racha de "ausente" desde
@@ -33356,25 +33418,28 @@ function AnalyticsAcademia({
       mapa[nombre].alumnosInactivos += 1;
     });
 
-    // Clases Impartidas: pares únicos (clase_id, fecha) por coach, tomados
+    // FIX Redefinición "Clases Impartidas" (KPIs Coaches): medir el día de
+    // HOY daba valores en 0 la mayor parte del tiempo (no todos los coaches
+    // dan clase todos los días) y el formato "0/2" resultaba ambiguo — ya no
+    // se separa día/mes. Ahora se mide productividad real: PROMEDIO DIARIO
+    // de clases en lo que va del mes actual, con el TOTAL ACUMULADO del mes
+    // como subtexto (ver `promedioDiarioClases`/`clasesImpartidasMes` y su
+    // render, más abajo). Pares únicos (clase_id, fecha) por coach, tomados
     // de `asistencias` como comprobante de que hubo pase de lista ese día.
     const hoy = hoyISO();
     const mesActual = hoy.slice(0, 7);
-    const impartidasDiaSet = {};
     const impartidasMesSet = {};
     asistencias.forEach((a) => {
-      if (!a.fecha || !a.clase_id) return;
+      if (!a.fecha || !a.clase_id || a.fecha.slice(0, 7) !== mesActual) return;
       const clase = clasesPorId[a.clase_id];
       const nombre = clase?.coach_nombre || 'Sin asignar';
       if (!mapa[nombre]) return;
       const llave = `${a.clase_id}|${a.fecha}`;
-      if (a.fecha.slice(0, 7) === mesActual) {
-        (impartidasMesSet[nombre] = impartidasMesSet[nombre] || new Set()).add(llave);
-      }
-      if (a.fecha === hoy) {
-        (impartidasDiaSet[nombre] = impartidasDiaSet[nombre] || new Set()).add(llave);
-      }
+      (impartidasMesSet[nombre] = impartidasMesSet[nombre] || new Set()).add(llave);
     });
+    // Días transcurridos del mes actual (incluye hoy) — denominador del
+    // promedio diario. Nunca 0 (el día del mes siempre es >= 1).
+    const diasTranscurridosMes = Number(hoy.slice(8, 10)) || 1;
 
     // { coachNombre: { 'YYYY-MM': Set<alumno_id> } } — solo asistencias
     // reales (`asistio: true`) con fecha, agrupadas por mes calendario.
@@ -33391,8 +33456,8 @@ function AnalyticsAcademia({
 
     Object.keys(mapa).forEach((nombre) => {
       const c = mapa[nombre];
-      c.clasesImpartidasDia = impartidasDiaSet[nombre]?.size || 0;
       c.clasesImpartidasMes = impartidasMesSet[nombre]?.size || 0;
+      c.promedioDiarioClases = Math.round((c.clasesImpartidasMes / diasTranscurridosMes) * 10) / 10;
       c.promedioAlumnosGrupal = c.clasesGrupales > 0 ? Math.round((c.alumnosActivos / c.clasesGrupales) * 10) / 10 : null;
 
       const mesesOrdenados = Object.keys(presentesPorCoachMes[nombre] || {}).sort();
@@ -33414,6 +33479,14 @@ function AnalyticsAcademia({
 
     return Object.values(mapa).sort((a, b) => b.alumnosActivos - a.alumnosActivos);
   }, [clases, alumnosPorClase, asistencias, clasesPorId, alumnos]);
+
+  // Nombre corto del mes actual capitalizado ("Sep") — subtexto de "Clases
+  // Impartidas" en la tabla de KPIs por Coach (ver `promedioDiarioClases`/
+  // `clasesImpartidasMes` arriba): "(36 en Sep)".
+  const mesLabelCortoActual = useMemo(() => {
+    const texto = new Date().toLocaleDateString('es-MX', { month: 'short' }).replace(/\.$/, '');
+    return texto.charAt(0).toUpperCase() + texto.slice(1);
+  }, []);
 
   /* ---- Dashboard A: Operativo de Clases ----
    * Ingreso Promedio por Hora/Clase ($/hr): ingreso total (alumnos activos
@@ -33544,10 +33617,10 @@ function AnalyticsAcademia({
   // un conteo, sin ninguna tabla debajo que filtrar).
   const [filtroNivel, setFiltroNivel] = useState('todos'); // 'todos' | 'Principiante' | 'Intermedio' | 'Avanzado'
   const alumnosPorNivelFiltrados = useMemo(() => {
-    return alumnosActivos
-      .filter((a) => filtroNivel === 'todos' || clasesPorId[a.clase_id]?.nivel === filtroNivel)
+    return alumnosDedupPorJugador
+      .filter((a) => filtroNivel === 'todos' || a.nivel === filtroNivel)
       .sort((a, b) => a.nombre.localeCompare(b.nombre));
-  }, [alumnosActivos, clasesPorId, filtroNivel]);
+  }, [alumnosDedupPorJugador, filtroNivel]);
 
   const [filtroMembresia, setFiltroMembresia] = useState('todas'); // 'todas' | 'activa' | 'por_vencer' | 'vencida'
   const filtrosMembresia = [
@@ -33866,13 +33939,14 @@ function AnalyticsAcademia({
 
       {dashboard === 'coaches' && (
         <div className="space-y-4">
-          {/* Horas Pico de Ocupación de Canchas — ver `horaPicoOcupacion`
-              arriba; sin montos, disponible también para Coach. */}
+          {/* Hora Pico de Clases (Academia) — ver `horaPicoOcupacion` arriba
+              (filtrada a `reservas.estado === 'Clase'`, exclusiva de
+              Academia); sin montos, disponible también para Coach. */}
           <MetricCard
             icon={Clock}
-            etiqueta="Hora Pico de Ocupación de Canchas"
+            etiqueta="Hora Pico de Clases (Academia)"
             valor={horaPicoOcupacion ? horaPicoOcupacion.label : '—'}
-            sub={horaPicoOcupacion ? `${horaPicoOcupacion.conteo} reservas en esa franja` : 'Sin reservas registradas todavía'}
+            sub={horaPicoOcupacion ? `${horaPicoOcupacion.conteo} clases en esa franja` : 'Sin clases registradas todavía'}
             tono="sky"
           />
           {/* BANNERS INTERACTIVOS (refinamiento UX): cada tarjeta de nivel
@@ -33927,30 +34001,41 @@ function AnalyticsAcademia({
                   <thead>
                     <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       <th className="px-3 pb-2">Nombre</th>
-                      <th className="px-3 pb-2">Clase</th>
+                      <th className="px-3 pb-2">Última Clase</th>
                       <th className="px-3 pb-2">Nivel</th>
                       <th className="px-3 pb-2">Coach</th>
                       <th className="px-3 pb-2">Estatus</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200/70">
+                    {/* Deduplicada por alumno (ver `alumnosDedupPorJugador`
+                        arriba) — cada jugador aparece UNA sola vez, con los
+                        datos de su clase más reciente. */}
                     {alumnosPorNivelFiltrados.map((a) => {
-                      const clase = clasesPorId[a.clase_id];
+                      const tipoClaseReciente = a.claseReciente
+                        ? a.claseReciente.tipo_clase === 'privada'
+                          ? 'Privada'
+                          : 'Grupal'
+                        : null;
                       return (
                         <tr key={a.id}>
                           <td className="px-3 py-2 font-bold text-slate-900">{a.nombre}</td>
-                          <td className="px-3 py-2 text-slate-500">{clase?.nombre || '—'}</td>
-                          <td className="px-3 py-2 text-slate-600">{clase?.nivel || '—'}</td>
-                          <td className="px-3 py-2 text-slate-500">{clase?.coach_nombre || '—'}</td>
+                          <td className="px-3 py-2 text-slate-500">
+                            {a.claseReciente?.fecha
+                              ? `${formatoFechaDiaMesCorto(a.claseReciente.fecha)} · ${tipoClaseReciente}`
+                              : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-slate-600">{a.nivel || '—'}</td>
+                          <td className="px-3 py-2 text-slate-500">{a.coach || '—'}</td>
                           <td className="px-3 py-2">
                             <span
                               className={`rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
-                                a.estado_pago === 'pagado'
+                                a.estadoPago === 'pagado'
                                   ? 'bg-emerald-400/10 text-emerald-400 ring-emerald-400/30'
                                   : 'bg-amber-400/10 text-amber-400 ring-amber-400/30'
                               }`}
                             >
-                              {a.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                              {a.estadoPago === 'pagado' ? 'Pagado' : 'Pendiente'}
                             </span>
                           </td>
                         </tr>
@@ -34015,7 +34100,7 @@ function AnalyticsAcademia({
                   <thead>
                     <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       <th className="pb-2 pr-3">Coach</th>
-                      <th className="pb-2 pr-3">Clases Impartidas (Día / Mes)</th>
+                      <th className="pb-2 pr-3">Clases Impartidas</th>
                       <th className="pb-2 pr-3">Desglose (Privadas / Grupales)</th>
                       <th className="pb-2 pr-3">Prom. Alumnos por Clase Grupal</th>
                       <th className="pb-2 pr-3">Alumnos Activos / Inactivos</th>
@@ -34027,7 +34112,10 @@ function AnalyticsAcademia({
                       <tr key={c.nombre}>
                         <td className="py-2 pr-3 font-bold text-slate-900">{c.nombre}</td>
                         <td className="py-2 pr-3 text-slate-600">
-                          {c.clasesImpartidasDia} / {c.clasesImpartidasMes}
+                          <span className="font-bold text-slate-900">{c.promedioDiarioClases.toFixed(1)} / día</span>
+                          <span className="block text-[10px] text-slate-500">
+                            ({c.clasesImpartidasMes} en {mesLabelCortoActual})
+                          </span>
                         </td>
                         <td className="py-2 pr-3 text-slate-600">
                           {c.clasesPrivadas} privadas / {c.clasesGrupales} grupales
@@ -35136,7 +35224,14 @@ function ModuloAcademiaClinicas({
                   existía en Analytics → pestaña "KPIs Coaches" (antes "Coaches
                   & Mapa de Calor") a pedido del club, para que esa pestaña se
                   quedara enfocada en la tabla de KPIs por Coach — esta es ahora
-                  la ÚNICA vista del Heat Map en todo el módulo. */}
+                  la ÚNICA vista del Heat Map en todo el módulo.
+                  VERIFICADO — exclusividad de Academia (auditoría): recibe
+                  `clasesActivas` (filtrado de `academiaClases`, la tabla
+                  propia de Academia, línea ~34497) y NUNCA `reservas` — cada
+                  celda es el % de saturación de cupos (inscritos/
+                  capacidad_maxima) de las clases que arrancan en ese
+                  día+hora, así que Torneos, Retas y renta libre de la
+                  Parrilla general JAMÁS entran a este cálculo. */}
               <HeatmapAcademia clases={clasesActivas} alumnosPorClase={alumnosActivosPorClase} />
             </>
           )}
