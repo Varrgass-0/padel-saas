@@ -752,6 +752,7 @@ import React, {
   useRef,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { createClient } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import {
   LayoutGrid,
@@ -7772,7 +7773,7 @@ async function actualizarConColumnasOpcionales(tabla, id, payloadCompleto, colum
 // -----------------------------------------------------------------------------
 // MARCO LEGAL Y DE PRIVACIDAD (migracion_v61_marco_legal.sql) — registro
 // best-effort ("Sincronización Silenciosa") de la aceptación del checkbox
-// legal, tanto para Jugadores (Portal, `ModalIdentificacionPortal`) como
+// legal, tanto para Jugadores (Portal, `ModalAutenticacionPortal`) como
 // para Clubes (`ClubAuthScreen`/`CompletarRegistroClub`). Usa
 // `actualizarConColumnasOpcionales` a propósito: si un proyecto todavía no
 // corrió `migracion_v61_marco_legal.sql`, estas 4 columnas simplemente no
@@ -24750,6 +24751,89 @@ async function conToleranciaDeReloj(ejecutar) {
 const MENSAJE_ERROR_RELOJ_DESFASADO =
   'La fecha/hora de tu dispositivo está desincronizada con el servidor. Actívala en automático (Ajustes → Fecha y hora → Automático) e intenta de nuevo.';
 
+// =============================================================================
+// AUTENTICACIÓN DEL PORTAL DEL JUGADOR (Correo + Contraseña) — CLIENTE DE
+// SUPABASE AUTH AISLADO (migracion_v62_auth_jugadores.sql)
+// =============================================================================
+// El panel interno (`ClubAuthGate`/`ClubAuthScreen`) y el Portal Público
+// comparten el MISMO proyecto de Supabase, pero usan `supabase.auth` para
+// dos cosas completamente distintas: la sesión del Dueño/Operador del club
+// (persistente, controla acceso a TODO el panel) y ahora, con este cambio,
+// también la cuenta del Jugador (correo+contraseña, Portal público). Si
+// ambos usaran el mismo cliente `supabase`, un jugador iniciando sesión en
+// el Portal en una pestaña del navegador dispararía `onAuthStateChange` en
+// CUALQUIER OTRA pestaña de ESE MISMO navegador donde un Operador tenga el
+// panel interno abierto (Supabase Auth persiste la sesión en
+// `localStorage`, compartido entre pestañas del mismo origen) — el
+// Operador vería su sesión reemplazada por la del jugador de la nada. Este
+// escenario es real en un club (recepción con el panel abierto en una
+// pestaña, ayudando a un jugador a crear su cuenta en el Portal en otra).
+//
+// `clienteAuthDelPortal()` crea un SEGUNDO cliente de Supabase, mismo
+// proyecto (reutiliza `supabaseUrl`/`supabaseKey` del cliente `supabase`
+// normal en vez de duplicar credenciales a mano), pero con su propio
+// `storageKey` — así su sesión vive aislada en su propia llave de
+// `localStorage`, sin cruzarse jamás con la del panel interno. Además,
+// `conAuthDelPortal` cierra esa sesión (`signOut`) apenas termina de usarla
+// — el Portal nunca necesitó mantener una sesión de Supabase Auth viva (la
+// identidad del jugador durante la visita ya la resuelve
+// `guardarSesionPortalLocal`/`sessionStorage`, deliberadamente efímera,
+// "kiosko/celular compartido"), así que no hay razón para dejar credenciales
+// de sesión sentadas en el navegador más tiempo del estrictamente necesario
+// para crear la cuenta o verificar la contraseña.
+//
+// Respaldo: si por lo que sea no se puede crear ese segundo cliente (ej.
+// `supabase.supabaseUrl`/`supabase.supabaseKey` no están disponibles en
+// esta versión del SDK), cae al cliente `supabase` compartido — sigue
+// funcionando, solo sin el aislamiento extra (mismo criterio "Arquitectura
+// Flexible": degradar, nunca romper el flujo).
+let _clienteAuthPortalCache = null;
+function clienteAuthDelPortal() {
+  if (_clienteAuthPortalCache) return _clienteAuthPortalCache;
+  try {
+    const url = supabase?.supabaseUrl;
+    const key = supabase?.supabaseKey;
+    if (url && key && typeof createClient === 'function') {
+      _clienteAuthPortalCache = createClient(url, key, {
+        auth: { storageKey: 'qlubos_portal_auth_v1', persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+      });
+    }
+  } catch (_e) {
+    _clienteAuthPortalCache = null;
+  }
+  return _clienteAuthPortalCache;
+}
+
+// Envuelve cualquier llamada de `supabase.auth` del Portal (`signUp`/
+// `signInWithPassword`) con: (1) el cliente aislado de arriba (o el
+// compartido de respaldo), (2) la misma tolerancia a desfase de reloj que
+// ya usa el panel interno (`conToleranciaDeReloj`), y (3) un `signOut` de
+// limpieza garantizado al final (éxito o error) — ver comentario de
+// cabecera de este bloque.
+async function conAuthDelPortal(construirLlamada) {
+  const cliente = clienteAuthDelPortal() || supabase;
+  try {
+    return await conToleranciaDeReloj(() => construirLlamada(cliente));
+  } finally {
+    try {
+      await cliente.auth.signOut();
+    } catch (_e) {
+      /* limpieza best-effort — no debe bloquear el flujo del jugador */
+    }
+  }
+}
+
+// Detecta el error de Supabase Auth "correo ya registrado" al hacer
+// `signUp` (variantes de redacción/código según versión del SDK) — se usa
+// para sugerirle al jugador "Iniciar Sesión" en vez de "Crear Cuenta" otra
+// vez con el mismo correo.
+function esErrorCorreoRegistrado(error) {
+  if (!error) return false;
+  if (error.code === 'user_already_exists') return true;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('already registered') || msg.includes('already exists');
+}
+
 // Id sintético para un registro que se queda solo en memoria local (modo
 // fallback): nunca se confunde con un UUID real de Supabase, así que
 // cualquier intento posterior de `.update()`/`.delete()` contra ese id
@@ -41369,12 +41453,27 @@ function PortalPublicoJugadores({ clubSlug }) {
     return mapa;
   }, [participantes]);
 
-  // Identidad Unificada de Jugadores: mismo resolvedor que usa el
-  // mostrador — busca por teléfono, y si no hay match crea el expediente.
-  // `directorio: []` a propósito (el Portal es una página pública, no trae
-  // el directorio completo de jugadores del club) — `resolverJugadorId` ya
-  // sabe caer a una búsqueda por teléfono del lado de Supabase cuando no
-  // recibe un directorio local con el que cruzar primero.
+  // Identidad Unificada de Jugadores (RESPALDO LIGERO, sin correo/
+  // contraseña): mismo resolvedor que usa el mostrador — busca por
+  // teléfono, y si no hay match crea el expediente. `directorio: []` a
+  // propósito (el Portal es una página pública, no trae el directorio
+  // completo de jugadores del club) — `resolverJugadorId` ya sabe caer a
+  // una búsqueda por teléfono del lado de Supabase cuando no recibe un
+  // directorio local con el que cruzar primero.
+  //
+  // NUEVO FLUJO DE AUTENTICACIÓN (Correo + Contraseña): el modal de
+  // identificación general del Portal (`ModalAutenticacionPortal`, ver
+  // JSX más abajo) YA NO usa esta función — usa `iniciarSesionJugador`/
+  // `crearCuentaJugador`, más abajo, que sí crean una cuenta real de
+  // Supabase Auth. `identificarse` se conserva TAL CUAL únicamente para el
+  // atajo de identificación inline (solo Nombre + Teléfono, sin
+  // contraseña) que ya traía "Reservar Cancha" (`ModalReservarCancha` →
+  // `confirmarReservaConAddons`) desde antes de este cambio — un flujo
+  // deliberadamente más ligero para no interrumpir una reserva rápida
+  // pidiendo correo/contraseña. Por eso NUNCA registra la aceptación legal
+  // por sí sola salvo que se le pase `aceptaLegal` explícito (hoy nadie se
+  // lo pasa) — ese checkbox vive exclusivamente en la pestaña "Crear
+  // Cuenta" del nuevo modal, nunca en este atajo.
   async function identificarse(nombre, telefono, aceptaLegal) {
     const claveTel = claveTelefono(telefono);
     if (!claveTel) {
@@ -41389,16 +41488,190 @@ function PortalPublicoJugadores({ clubSlug }) {
     const nuevoJugador = { id, nombre: nombre.trim(), telefono: telefono.trim() };
     setJugador(nuevoJugador);
     guardarSesionPortalLocal(club?.id, nuevoJugador);
-    // Marco Legal (migracion_v61): best-effort, nunca bloquea la
-    // identificación — ver `registrarAceptacionLegal`. `aceptaLegal` llega
-    // en `true` desde `ModalIdentificacionPortal` (único punto de entrada
-    // de este flujo self-service; el checkbox ahí es obligatorio para
-    // habilitar "Continuar"), pero se revisa de todas formas por si
-    // `identificarse` se llegara a invocar desde algún otro lugar sin pasar
-    // ese dato.
     if (aceptaLegal) registrarAceptacionLegal('jugadores', id, 'jugador');
     mostrarToast({ titulo: `¡Hola, ${nombre.trim()}!`, detalle: 'Ya puedes inscribirte a Retas y Torneos abiertos.' });
     return true;
+  }
+
+  // -----------------------------------------------------------------------
+  // AUTENTICACIÓN DEL PORTAL (Correo + Contraseña) — `ModalAutenticacionPortal`
+  // -----------------------------------------------------------------------
+  // `crearCuentaJugador` (pestaña "Crear Cuenta"): crea una cuenta real de
+  // Supabase Auth (correo + contraseña) y la VINCULA ("claim") a la fila de
+  // `jugadores` que corresponda por teléfono, EN VEZ de crear siempre un
+  // expediente nuevo — así un jugador que la recepción ya dio de alta antes
+  // (solo con nombre/teléfono, sin cuenta) conserva su historial completo
+  // de reservas, Wallet e inscripciones al crear su cuenta. El checkbox
+  // legal ("Acepto los Términos...") es obligatorio SOLO aquí — nunca en
+  // `iniciarSesionJugador` (login no vuelve a pedirlo: si el jugador ya
+  // tiene `terminos_aceptados` en su fila, no hace falta volver a
+  // preguntarle, y si no lo tiene —expediente legacy— se le pide una sola
+  // vez al crear su cuenta, no en cada login).
+  async function crearCuentaJugador({ nombre, telefono, correo, password }) {
+    const nombreLimpio = (nombre || '').trim();
+    const correoLimpio = (correo || '').trim().toLowerCase();
+    const claveTel = claveTelefono(telefono);
+    if (!nombreLimpio) {
+      mostrarToast({ titulo: 'Falta tu nombre', detalle: 'Escribe tu nombre completo.', tono: 'aviso' });
+      return false;
+    }
+    if (!claveTel) {
+      mostrarToast({ titulo: 'Teléfono inválido', detalle: 'Captura tu teléfono a 10 dígitos.', tono: 'aviso' });
+      return false;
+    }
+    if (!correoLimpio) {
+      mostrarToast({ titulo: 'Falta tu correo', detalle: 'Captura un correo válido.', tono: 'aviso' });
+      return false;
+    }
+    if (!password || password.length < 6) {
+      mostrarToast({ titulo: 'Contraseña muy corta', detalle: 'Debe tener al menos 6 caracteres.', tono: 'aviso' });
+      return false;
+    }
+    try {
+      const { data, error } = await conAuthDelPortal((cliente) => cliente.auth.signUp({ email: correoLimpio, password }));
+      if (error) throw error;
+      const usuario = data?.user;
+      if (!usuario) throw new Error('No se pudo crear tu cuenta.');
+
+      // CLAIM DE PERFIL POR TELÉFONO: mismo cruce que `resolverJugadorId`
+      // (búsqueda del lado de Supabase, acotada por club vía `conClubId`),
+      // pero aquí nunca cae a "crear si no encuentra" dentro del mismo
+      // helper — el alta/actualización se decide explícitamente abajo,
+      // porque además de crear/encontrar el expediente hay que escribir
+      // `auth_user_id`/`correo`/los campos legales.
+      const { data: candidatos } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono'))
+        .not('telefono', 'is', null)
+        .limit(500);
+      const existente = (candidatos || []).find((j) => claveTelefono(j.telefono) === claveTel);
+
+      const camposLegalesYAuth = {
+        correo: correoLimpio,
+        auth_user_id: usuario.id,
+        terminos_aceptados: true,
+        fecha_aceptacion: new Date().toISOString(),
+        version_legal: VERSION_LEGAL_ACTUAL,
+        tipo_usuario: 'jugador',
+      };
+      const columnasOpcionalesAuth = ['correo', 'auth_user_id', 'terminos_aceptados', 'fecha_aceptacion', 'version_legal', 'tipo_usuario'];
+
+      let jugadorId = existente?.id || null;
+      let nombreFinal = nombreLimpio;
+      if (jugadorId) {
+        // CASO 1 — expediente ya existía (alta previa de recepción): se
+        // vincula sobre la MISMA fila, nunca se duplica. El nombre solo se
+        // sobreescribe si el expediente existente no traía uno de verdad.
+        nombreFinal = (existente.nombre || '').trim() || nombreLimpio;
+        const { error: errUpdate } = await actualizarConColumnasOpcionales(
+          'jugadores',
+          jugadorId,
+          { nombre: nombreFinal, ...camposLegalesYAuth },
+          [...columnasOpcionalesAuth]
+        );
+        if (errUpdate) throw errUpdate;
+      } else {
+        // CASO 2 — jugador nuevo.
+        const { data: nuevo, error: errInsert } = await insertarConColumnasOpcionales(
+          'jugadores',
+          { nombre: nombreLimpio, telefono: telefono.trim(), saldo_a_favor: 0, ...camposLegalesYAuth },
+          columnasOpcionalesAuth
+        );
+        if (errInsert) throw errInsert;
+        jugadorId = nuevo?.id || null;
+      }
+      if (!jugadorId) throw new Error('No se pudo vincular tu cuenta a tu expediente de jugador.');
+
+      const nuevoJugador = { id: jugadorId, nombre: nombreFinal, telefono: telefono.trim() };
+      setJugador(nuevoJugador);
+      guardarSesionPortalLocal(club?.id, nuevoJugador);
+      mostrarToast({ titulo: `¡Bienvenido, ${nombreFinal}!`, detalle: 'Tu cuenta quedó creada — ya puedes inscribirte a Retas y Torneos abiertos.' });
+      return true;
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (crear cuenta del jugador):', err);
+      mostrarToast({
+        titulo: 'No se pudo crear tu cuenta',
+        detalle: esErrorCorreoRegistrado(err) ? 'Ese correo ya tiene una cuenta — mejor inicia sesión.' : err?.message || 'Intenta de nuevo en un momento.',
+        tono: 'error',
+      });
+      return false;
+    }
+  }
+
+  // `iniciarSesionJugador` (pestaña "Iniciar Sesión"): SIN checkbox legal —
+  // si el jugador ya tiene cuenta, ya aceptó los términos al crearla. Busca
+  // el expediente vinculado primero por `auth_user_id` (respaldo por
+  // `correo` si esa columna/lookup no está disponible todavía en el
+  // proyecto — Arquitectura Flexible) y restaura la sesión local del
+  // Portal, igual que `identificarse`.
+  async function iniciarSesionJugador(correo, password) {
+    const correoLimpio = (correo || '').trim().toLowerCase();
+    if (!correoLimpio || !password) {
+      mostrarToast({ titulo: 'Faltan datos', detalle: 'Captura tu correo y tu contraseña.', tono: 'aviso' });
+      return false;
+    }
+    try {
+      const { data, error } = await conAuthDelPortal((cliente) => cliente.auth.signInWithPassword({ email: correoLimpio, password }));
+      if (error) throw error;
+      const usuario = data?.user;
+      if (!usuario) throw new Error('No se pudo iniciar sesión.');
+
+      const { data: porAuthId } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono')).eq('auth_user_id', usuario.id).maybeSingle();
+      let fila = porAuthId || null;
+      if (!fila) {
+        const { data: porCorreo } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono')).eq('correo', correoLimpio).maybeSingle();
+        fila = porCorreo || null;
+      }
+      if (!fila) throw new Error('No encontramos tu cuenta en este club — si es tu primera vez, usa "Crear Cuenta".');
+
+      const jugadorSesion = { id: fila.id, nombre: fila.nombre || '', telefono: fila.telefono || '' };
+      setJugador(jugadorSesion);
+      guardarSesionPortalLocal(club?.id, jugadorSesion);
+      mostrarToast({ titulo: `¡Hola de nuevo${jugadorSesion.nombre ? ', ' + jugadorSesion.nombre.split(' ')[0] : ''}!` });
+      return true;
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (iniciar sesión del jugador):', err);
+      mostrarToast({
+        titulo: 'No se pudo iniciar sesión',
+        detalle: err?.message === 'Invalid login credentials' ? 'Correo o contraseña incorrectos.' : err?.message || 'Intenta de nuevo en un momento.',
+        tono: 'error',
+      });
+      return false;
+    }
+  }
+
+  // Continuación compartida tras `iniciarSesionJugador`/`crearCuentaJugador`
+  // exitosos — misma lógica de "retomar la inscripción que quedó pendiente"
+  // que antes vivía en línea dentro del `onIdentificado` del viejo modal,
+  // ahora extraída para no duplicarla entre las dos pestañas del modal
+  // nuevo. MEJORA respecto al comportamiento anterior: si `ok` es `false`
+  // el modal se queda ABIERTO (antes se cerraba igual, confiando solo en el
+  // toast) — con correo/contraseña real, "contraseña incorrecta" o "correo
+  // ya registrado" son errores mucho más comunes y recuperables que el
+  // viejo flujo de solo-teléfono, así que perder lo ya capturado en el
+  // formulario cada vez sería mala experiencia. `ModalAutenticacionPortal`
+  // ya muestra su propio mensaje de error inline (ver su `enviarLogin`/
+  // `enviarCrearCuenta`) para ese caso.
+  function manejarPostAutenticacionPortal(ok) {
+    if (!ok) return;
+    if (eventoParaInscribir) {
+      if (eventoParaInscribir.tipo === 'reta') {
+        setFlujoPago({ tipo: 'reta', evento: eventoParaInscribir.evento, categoria: null, monto: precioDeReta(eventoParaInscribir.evento) });
+      } else if (eventoParaInscribir.tipo === 'torneo') {
+        const t = eventoParaInscribir.evento;
+        if (Array.isArray(t.categorias) && t.categorias.length > 0) {
+          setEventoParaInscribir({ tipo: 'torneo-categoria', evento: t });
+          setModalIdentificacion(false);
+          return;
+        }
+        setFlujoPago({ tipo: 'torneo', evento: t, categoria: null, monto: montoInscripcionTorneo(t, null) });
+      } else if (eventoParaInscribir.tipo === 'academia') {
+        const c = eventoParaInscribir.evento;
+        const tipoPago = eventoParaInscribir.tipoPago;
+        const monto = tipoPago === 'mensualidad' ? Number(c.precio_mensualidad) || 0 : Number(c.precio_clase_suelta) || 0;
+        setFlujoPago({ tipo: 'academia', evento: c, tipoPago, categoria: null, monto });
+      }
+    }
+    setModalIdentificacion(false);
+    setEventoParaInscribir(null);
   }
 
   // Búsqueda de jugadores YA registrados en el sistema — usada por
@@ -43614,33 +43887,20 @@ function PortalPublicoJugadores({ clubSlug }) {
         )}
 
         {modalIdentificacion && (
-          <ModalIdentificacionPortal
+          <ModalAutenticacionPortal
             onClose={() => {
               setModalIdentificacion(false);
               setEventoParaInscribir(null);
             }}
-            onIdentificado={async (nombre, telefono, aceptaLegal) => {
-              const ok = await identificarse(nombre, telefono, aceptaLegal);
-              if (ok && eventoParaInscribir) {
-                if (eventoParaInscribir.tipo === 'reta') {
-                  setFlujoPago({ tipo: 'reta', evento: eventoParaInscribir.evento, categoria: null, monto: precioDeReta(eventoParaInscribir.evento) });
-                } else if (eventoParaInscribir.tipo === 'torneo') {
-                  const t = eventoParaInscribir.evento;
-                  if (Array.isArray(t.categorias) && t.categorias.length > 0) {
-                    setEventoParaInscribir({ tipo: 'torneo-categoria', evento: t });
-                    setModalIdentificacion(false);
-                    return;
-                  }
-                  setFlujoPago({ tipo: 'torneo', evento: t, categoria: null, monto: montoInscripcionTorneo(t, null) });
-                } else if (eventoParaInscribir.tipo === 'academia') {
-                  const c = eventoParaInscribir.evento;
-                  const tipoPago = eventoParaInscribir.tipoPago;
-                  const monto = tipoPago === 'mensualidad' ? Number(c.precio_mensualidad) || 0 : Number(c.precio_clase_suelta) || 0;
-                  setFlujoPago({ tipo: 'academia', evento: c, tipoPago, categoria: null, monto });
-                }
-              }
-              setModalIdentificacion(false);
-              setEventoParaInscribir(null);
+            onIniciarSesion={async (correo, password) => {
+              const ok = await iniciarSesionJugador(correo, password);
+              manejarPostAutenticacionPortal(ok);
+              return ok;
+            }}
+            onCrearCuenta={async (datos) => {
+              const ok = await crearCuentaJugador(datos);
+              manejarPostAutenticacionPortal(ok);
+              return ok;
             }}
           />
         )}
@@ -43851,62 +44111,165 @@ function PortalPublicoJugadores({ clubSlug }) {
   );
 }
 
-function ModalIdentificacionPortal({ onClose, onIdentificado }) {
-  const [nombre, setNombre] = useState('');
-  const [telefono, setTelefono] = useState('');
-  const [aceptaLegal, setAceptaLegal] = useState(false);
+// Modal de Autenticación del Portal — dos pestañas: "Iniciar Sesión"
+// (correo + contraseña, SIN checkbox legal — ver requerimiento: el checkbox
+// solo debe aparecer en la creación de cuenta, nunca de nuevo en cada
+// login) y "Crear Cuenta" (nombre + teléfono + correo + contraseña +
+// checkbox legal obligatorio). `onIniciarSesion`/`onCrearCuenta` son las
+// dos funciones que de verdad hablan con Supabase (`iniciarSesionJugador`/
+// `crearCuentaJugador`, dentro de `PortalPublicoJugadores`) — este
+// componente es 100% de presentación/validación de formulario, deja el
+// error inline visible (no se cierra solo) si `onIniciarSesion`/
+// `onCrearCuenta` regresan `false`.
+function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
+  const [tab, setTab] = useState('login'); // 'login' | 'crear'
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
 
-  async function enviar() {
+  // Pestaña "Iniciar Sesión"
+  const [correoLogin, setCorreoLogin] = useState('');
+  const [passwordLogin, setPasswordLogin] = useState('');
+
+  // Pestaña "Crear Cuenta"
+  const [nombre, setNombre] = useState('');
+  const [telefono, setTelefono] = useState('');
+  const [correoCrear, setCorreoCrear] = useState('');
+  const [passwordCrear, setPasswordCrear] = useState('');
+  const [aceptaLegal, setAceptaLegal] = useState(false);
+
+  function cambiarTab(nuevaTab) {
+    setTab(nuevaTab);
+    setError('');
+  }
+
+  async function enviarLogin() {
+    if (!correoLogin.trim() || !passwordLogin) return setError('Captura tu correo y tu contraseña.');
+    setEnviando(true);
+    setError('');
+    const ok = await onIniciarSesion(correoLogin.trim(), passwordLogin);
+    setEnviando(false);
+    if (!ok) setError('No pudimos iniciar tu sesión. Revisa tu correo y contraseña, o crea tu cuenta si es tu primera vez.');
+  }
+
+  async function enviarCrearCuenta() {
     if (!nombre.trim()) return setError('Escribe tu nombre.');
     if (!claveTelefono(telefono)) return setError('Escribe tu teléfono a 10 dígitos.');
+    if (!correoCrear.trim()) return setError('Escribe tu correo.');
+    if (!passwordCrear || passwordCrear.length < 6) return setError('Tu contraseña debe tener al menos 6 caracteres.');
     if (!aceptaLegal) return setError('Debes aceptar los Términos y Condiciones y la Política de Privacidad para continuar.');
     setEnviando(true);
     setError('');
-    await onIdentificado(nombre, telefono, aceptaLegal);
+    const ok = await onCrearCuenta({ nombre, telefono, correo: correoCrear, password: passwordCrear });
     setEnviando(false);
+    if (!ok) setError('No pudimos crear tu cuenta. Revisa tus datos e intenta de nuevo.');
   }
 
+  const claseTab = (activa) =>
+    `flex-1 rounded-md px-3 py-2 text-xs font-bold transition ${
+      activa ? 'bg-lime-400 text-slate-950 shadow-lg shadow-lime-400/20' : 'text-slate-500 hover:text-slate-800'
+    }`;
+
   return (
-    <ModalShell titulo="Identifícate" subtitulo="Solo tu nombre y teléfono — sin contraseñas" onClose={onClose} icon={Phone} ancho="max-w-sm">
+    <ModalShell titulo="Tu cuenta" subtitulo="Inicia sesión o crea tu cuenta en segundos" onClose={onClose} icon={User} ancho="max-w-sm">
       <div className="space-y-4">
-        <Campo label="Nombre completo">
-          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Tu nombre" autoFocus />
-        </Campo>
-        <Campo label="Teléfono (10 dígitos)" hint="Si ya juegas en el club, te reconoceremos por tu teléfono.">
-          <input
-            value={telefono}
-            onChange={(e) => setTelefono(e.target.value)}
-            className={inputClase}
-            placeholder="55 1234 5678"
-            inputMode="tel"
-          />
-        </Campo>
-        {/* Marco Legal (migracion_v61) — checkbox obligatorio: sin esto,
-            "Continuar" queda deshabilitado (ver `disabled` abajo) Y `enviar()`
-            lo vuelve a validar por su cuenta como respaldo. */}
-        <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] text-slate-600">
-          <input
-            type="checkbox"
-            checked={aceptaLegal}
-            onChange={(e) => setAceptaLegal(e.target.checked)}
-            className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
-          />
-          <span>
-            Acepto los{' '}
-            <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
-              Términos y Condiciones de Jugadores y la Política de Privacidad
-            </a>
-            .
-          </span>
-        </label>
+        <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+          <button type="button" onClick={() => cambiarTab('login')} className={claseTab(tab === 'login')}>
+            Iniciar Sesión
+          </button>
+          <button type="button" onClick={() => cambiarTab('crear')} className={claseTab(tab === 'crear')}>
+            Crear Cuenta
+          </button>
+        </div>
+
+        {tab === 'login' ? (
+          <>
+            <Campo label="Correo electrónico">
+              <input
+                type="email"
+                autoComplete="email"
+                value={correoLogin}
+                onChange={(e) => setCorreoLogin(e.target.value)}
+                className={inputClase}
+                placeholder="tucorreo@ejemplo.com"
+                autoFocus
+              />
+            </Campo>
+            <Campo label="Contraseña">
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={passwordLogin}
+                onChange={(e) => setPasswordLogin(e.target.value)}
+                className={inputClase}
+                placeholder="••••••••"
+              />
+            </Campo>
+          </>
+        ) : (
+          <>
+            <Campo label="Nombre completo">
+              <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Tu nombre" autoFocus />
+            </Campo>
+            <Campo label="Teléfono (10 dígitos)" hint="Si ya juegas en el club, vincularemos tu cuenta con tu expediente existente.">
+              <input
+                value={telefono}
+                onChange={(e) => setTelefono(e.target.value)}
+                className={inputClase}
+                placeholder="55 1234 5678"
+                inputMode="tel"
+              />
+            </Campo>
+            <Campo label="Correo electrónico">
+              <input
+                type="email"
+                autoComplete="email"
+                value={correoCrear}
+                onChange={(e) => setCorreoCrear(e.target.value)}
+                className={inputClase}
+                placeholder="tucorreo@ejemplo.com"
+              />
+            </Campo>
+            <Campo label="Contraseña" hint="Mínimo 6 caracteres.">
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={passwordCrear}
+                onChange={(e) => setPasswordCrear(e.target.value)}
+                className={inputClase}
+                placeholder="••••••••"
+              />
+            </Campo>
+            {/* Marco Legal (migracion_v61) — checkbox obligatorio SOLO en
+                "Crear Cuenta": la pestaña "Iniciar Sesión" nunca lo muestra
+                (si el jugador ya tiene cuenta, ya lo aceptó una vez al
+                crearla). */}
+            <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] text-slate-600">
+              <input
+                type="checkbox"
+                checked={aceptaLegal}
+                onChange={(e) => setAceptaLegal(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
+              />
+              <span>
+                Acepto los{' '}
+                <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+                  Términos y Condiciones de Jugadores y la Política de Privacidad
+                </a>
+                .
+              </span>
+            </label>
+          </>
+        )}
+
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={enviar} disabled={enviando || !aceptaLegal}>
+          <BotonPrimario
+            onClick={tab === 'login' ? enviarLogin : enviarCrearCuenta}
+            disabled={enviando || (tab === 'crear' && !aceptaLegal)}
+          >
             {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Continuar
+            {tab === 'login' ? 'Entrar' : 'Crear mi Cuenta'}
           </BotonPrimario>
         </div>
       </div>
