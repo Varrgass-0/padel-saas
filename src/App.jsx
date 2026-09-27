@@ -7769,6 +7769,41 @@ async function actualizarConColumnasOpcionales(tabla, id, payloadCompleto, colum
   return conColumnasOpcionales(payloadCompleto, columnasOpcionales, (payload) => supabase.from(tabla).update(payload).eq('id', id));
 }
 
+// -----------------------------------------------------------------------------
+// MARCO LEGAL Y DE PRIVACIDAD (migracion_v61_marco_legal.sql) — registro
+// best-effort ("Sincronización Silenciosa") de la aceptación del checkbox
+// legal, tanto para Jugadores (Portal, `ModalIdentificacionPortal`) como
+// para Clubes (`ClubAuthScreen`/`CompletarRegistroClub`). Usa
+// `actualizarConColumnasOpcionales` a propósito: si un proyecto todavía no
+// corrió `migracion_v61_marco_legal.sql`, estas 4 columnas simplemente no
+// existen todavía y el update se reintenta sin ellas (no truena nada) — y
+// si el update entero fallara por cualquier otra razón (red, RLS), el
+// `catch` de abajo lo traga: esto NUNCA debe bloquear el registro/
+// identificación real del usuario, solo dejar constancia cuando se puede.
+// -----------------------------------------------------------------------------
+const VERSION_LEGAL_ACTUAL = '1.0';
+const COLUMNAS_ACEPTACION_LEGAL = ['terminos_aceptados', 'fecha_aceptacion', 'version_legal', 'tipo_usuario'];
+
+async function registrarAceptacionLegal(tabla, id, tipoUsuario) {
+  if (!id) return;
+  try {
+    const { error } = await actualizarConColumnasOpcionales(
+      tabla,
+      id,
+      {
+        terminos_aceptados: true,
+        fecha_aceptacion: new Date().toISOString(),
+        version_legal: VERSION_LEGAL_ACTUAL,
+        tipo_usuario: tipoUsuario,
+      },
+      COLUMNAS_ACEPTACION_LEGAL
+    );
+    if (error) console.error(`[Legal] No se pudo registrar la aceptación de términos (${tabla}/${id}).`, error);
+  } catch (err) {
+    console.error(`[Legal] Error inesperado registrando la aceptación de términos (${tabla}/${id}).`, err);
+  }
+}
+
 // Mismo criterio que `conColumnasOpcionales`, pero para un INSERT MASIVO (un
 // arreglo de varias filas de una sola vez, ej. TODOS los partidos de un
 // cuadro recién generado en `torneo_partidos`) — `conColumnasOpcionales` no
@@ -30598,6 +30633,43 @@ function RadarEvaluacion({ valores, size = 280 }) {
 // solo-lectura — el jugador nunca puede calificarse a sí mismo (eso es
 // exclusivo del Expediente Deportivo del Coach, ver `ModalExpedienteDeportivo`
 // más abajo).
+// Marco Legal — Derecho de Supresión (migracion_v61_marco_legal.sql):
+// confirmación antes de "Eliminar mi cuenta" desde la pestaña Wallet del
+// Portal (ver `eliminarCuentaJugador`, dentro de `PortalPublicoJugadores`).
+// Mismo criterio visual que `ModalConfirmarLiberarClasePrivada` (confirmar/
+// cancelar simple, sin pedir un motivo escrito — a diferencia de
+// `ModalMotivoObligatorio`, que es para acciones internas de Staff con
+// auditoría, no para este flujo self-service del jugador).
+function ModalConfirmarEliminarCuentaPortal({ onClose, onConfirmar, eliminando }) {
+  return (
+    <ModalShell titulo="¿Eliminar tu cuenta?" subtitulo="Esta acción no se puede deshacer" onClose={onClose} icon={Trash2} ancho="max-w-sm">
+      <div className="space-y-4">
+        <p className="text-xs font-semibold text-slate-600">
+          Tu nombre, teléfono y correo se anonimizarán de nuestra base de datos. Conservamos únicamente un folio numérico
+          desvinculado, por exigencias contables del club — tal como indica nuestra Política de Privacidad.
+        </p>
+        <p className="text-[11px] text-slate-500">
+          Cerrarás sesión de inmediato en este dispositivo. Si vuelves a reservar en el club, se creará un nuevo expediente.
+        </p>
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose} disabled={eliminando}>
+            Cancelar
+          </BotonSecundario>
+          <button
+            type="button"
+            onClick={onConfirmar}
+            disabled={eliminando}
+            className="inline-flex items-center gap-2 rounded-lg bg-rose-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {eliminando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+            Sí, eliminar mi cuenta
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 function ModalPerfilDeportivoJugador({ evaluaciones, loading, onClose }) {
   const historial = useMemo(
     () =>
@@ -40891,6 +40963,9 @@ function PortalPublicoJugadores({ clubSlug }) {
   // LECTURA — nunca escribe en `evaluaciones_jugador` desde el Portal (eso
   // es exclusivo del panel interno, ver `ModalExpedienteDeportivo`).
   const [mostrarPerfilDeportivo, setMostrarPerfilDeportivo] = useState(false);
+  // Marco Legal — Derecho de Supresión: confirmación antes de anonimizar la
+  // cuenta (ver `eliminarCuentaJugador`, más abajo, y `ModalConfirmarEliminarCuentaPortal`).
+  const [mostrarConfirmarEliminarCuenta, setMostrarConfirmarEliminarCuenta] = useState(false);
   const [evaluacionesJugadorPortal, setEvaluacionesJugadorPortal] = useState([]);
   const [cargandoEvaluacionesPortal, setCargandoEvaluacionesPortal] = useState(true);
 
@@ -41300,7 +41375,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   // el directorio completo de jugadores del club) — `resolverJugadorId` ya
   // sabe caer a una búsqueda por teléfono del lado de Supabase cuando no
   // recibe un directorio local con el que cruzar primero.
-  async function identificarse(nombre, telefono) {
+  async function identificarse(nombre, telefono, aceptaLegal) {
     const claveTel = claveTelefono(telefono);
     if (!claveTel) {
       mostrarToast({ titulo: 'Teléfono inválido', detalle: 'Captura tu teléfono a 10 dígitos.', tono: 'aviso' });
@@ -41314,6 +41389,14 @@ function PortalPublicoJugadores({ clubSlug }) {
     const nuevoJugador = { id, nombre: nombre.trim(), telefono: telefono.trim() };
     setJugador(nuevoJugador);
     guardarSesionPortalLocal(club?.id, nuevoJugador);
+    // Marco Legal (migracion_v61): best-effort, nunca bloquea la
+    // identificación — ver `registrarAceptacionLegal`. `aceptaLegal` llega
+    // en `true` desde `ModalIdentificacionPortal` (único punto de entrada
+    // de este flujo self-service; el checkbox ahí es obligatorio para
+    // habilitar "Continuar"), pero se revisa de todas formas por si
+    // `identificarse` se llegara a invocar desde algún otro lugar sin pasar
+    // ese dato.
+    if (aceptaLegal) registrarAceptacionLegal('jugadores', id, 'jugador');
     mostrarToast({ titulo: `¡Hola, ${nombre.trim()}!`, detalle: 'Ya puedes inscribirte a Retas y Torneos abiertos.' });
     return true;
   }
@@ -41339,6 +41422,48 @@ function PortalPublicoJugadores({ clubSlug }) {
   function cerrarSesionPortal() {
     setJugador(null);
     borrarSesionPortalLocal(club?.id);
+  }
+
+  // Marco Legal — Derecho de Supresión (migracion_v61_marco_legal.sql,
+  // Política de Privacidad sección 4): "Eliminar mi cuenta", accesible
+  // desde la pestaña Wallet (ver JSX de `vista === 'wallet'` más abajo — no
+  // existe una ruta `/perfil` dedicada en este Portal de una sola pantalla
+  // con pestañas, así que se ubicó junto al resto de la información de
+  // cuenta del jugador). NUNCA borra la fila de `jugadores` (se conserva el
+  // folio/ID por el historial de reservas/ventas ya asociado y por
+  // exigencias contables del club, tal como indica el texto legal) — solo
+  // anonimiza `nombre`/`telefono`/`correo` y marca `cuenta_eliminada`. Usa
+  // `actualizarConColumnasOpcionales` (Arquitectura Flexible): un proyecto
+  // sin `migracion_v61` sigue anonimizando `nombre`/`telefono` igual, solo
+  // sin las columnas nuevas.
+  const [eliminandoCuenta, setEliminandoCuenta] = useState(false);
+  async function eliminarCuentaJugador() {
+    if (!jugador?.id) return false;
+    setEliminandoCuenta(true);
+    try {
+      const { error } = await actualizarConColumnasOpcionales(
+        'jugadores',
+        jugador.id,
+        {
+          nombre: 'Cuenta eliminada',
+          telefono: null,
+          correo: null,
+          cuenta_eliminada: true,
+          fecha_eliminacion: new Date().toISOString(),
+        },
+        ['correo', 'cuenta_eliminada', 'fecha_eliminacion']
+      );
+      if (error) throw error;
+      cerrarSesionPortal();
+      mostrarToast({ titulo: 'Cuenta eliminada', detalle: 'Tus datos personales fueron anonimizados.' });
+      return true;
+    } catch (err) {
+      console.error('[Portal] Error detallado Supabase (eliminar cuenta del jugador):', err);
+      mostrarToast({ titulo: 'No se pudo eliminar tu cuenta', detalle: 'Intenta de nuevo en un momento.', tono: 'error' });
+      return false;
+    } finally {
+      setEliminandoCuenta(false);
+    }
   }
 
   // Inscripción — Reta: mismo payload/criterio de tolerancia total que
@@ -43427,6 +43552,30 @@ function PortalPublicoJugadores({ clubSlug }) {
                           `walletMovimientos`/`cargandoWallet` se dejan tal
                           cual (mismo fetch de siempre) por si otra vista los
                           necesita más adelante. */}
+
+                      {/* Marco Legal — Derecho de Supresión: no existe una
+                          ruta `/perfil` dedicada en este Portal de una sola
+                          pantalla con pestañas (todo vive en tabs/modales),
+                          así que "Mi Cuenta"/"Eliminar mi cuenta" se ubica
+                          aquí, junto al resto de la información de cuenta
+                          del jugador identificado. */}
+                      <div className="rounded-2xl border border-slate-200 bg-white/50 p-4 backdrop-blur-sm">
+                        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Mi Cuenta</p>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          Puedes solicitar el borrado de tus datos personales cuando quieras. Consulta el detalle en nuestra{' '}
+                          <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+                            Política de Privacidad
+                          </a>
+                          .
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setMostrarConfirmarEliminarCuenta(true)}
+                          className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-1.5 text-xs font-bold text-rose-400 transition hover:bg-rose-400/10"
+                        >
+                          <Trash2 size={13} /> Eliminar mi cuenta
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -43434,6 +43583,16 @@ function PortalPublicoJugadores({ clubSlug }) {
             </>
           )}
         </main>
+
+        {/* Marco Legal — enlace público a `/legales`, visible al fondo de
+            cualquier pestaña del Portal (equivalente al footer que pidió el
+            requerimiento en una pantalla de una sola página con tabs, sin
+            un pie de página fijo propio). */}
+        <p className="mx-auto max-w-3xl px-4 pb-6 text-center text-[11px] text-slate-500">
+          <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+            Términos y Condiciones y Política de Privacidad
+          </a>
+        </p>
 
         {/* Carrito flotante de la Tienda — visible en cualquier pestaña en
             cuanto hay algo en el carrito, para no obligar a volver a Tienda
@@ -43460,8 +43619,8 @@ function PortalPublicoJugadores({ clubSlug }) {
               setModalIdentificacion(false);
               setEventoParaInscribir(null);
             }}
-            onIdentificado={async (nombre, telefono) => {
-              const ok = await identificarse(nombre, telefono);
+            onIdentificado={async (nombre, telefono, aceptaLegal) => {
+              const ok = await identificarse(nombre, telefono, aceptaLegal);
               if (ok && eventoParaInscribir) {
                 if (eventoParaInscribir.tipo === 'reta') {
                   setFlujoPago({ tipo: 'reta', evento: eventoParaInscribir.evento, categoria: null, monto: precioDeReta(eventoParaInscribir.evento) });
@@ -43581,6 +43740,17 @@ function PortalPublicoJugadores({ clubSlug }) {
           />
         )}
 
+        {mostrarConfirmarEliminarCuenta && jugador && (
+          <ModalConfirmarEliminarCuentaPortal
+            onClose={() => setMostrarConfirmarEliminarCuenta(false)}
+            eliminando={eliminandoCuenta}
+            onConfirmar={async () => {
+              const ok = await eliminarCuentaJugador();
+              if (ok) setMostrarConfirmarEliminarCuenta(false);
+            }}
+          />
+        )}
+
         {modalSolicitudClase && (
           <ModalSolicitarClase
             onClose={() => setModalSolicitudClase(false)}
@@ -43684,15 +43854,17 @@ function PortalPublicoJugadores({ clubSlug }) {
 function ModalIdentificacionPortal({ onClose, onIdentificado }) {
   const [nombre, setNombre] = useState('');
   const [telefono, setTelefono] = useState('');
+  const [aceptaLegal, setAceptaLegal] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
 
   async function enviar() {
     if (!nombre.trim()) return setError('Escribe tu nombre.');
     if (!claveTelefono(telefono)) return setError('Escribe tu teléfono a 10 dígitos.');
+    if (!aceptaLegal) return setError('Debes aceptar los Términos y Condiciones y la Política de Privacidad para continuar.');
     setEnviando(true);
     setError('');
-    await onIdentificado(nombre, telefono);
+    await onIdentificado(nombre, telefono, aceptaLegal);
     setEnviando(false);
   }
 
@@ -43711,10 +43883,28 @@ function ModalIdentificacionPortal({ onClose, onIdentificado }) {
             inputMode="tel"
           />
         </Campo>
+        {/* Marco Legal (migracion_v61) — checkbox obligatorio: sin esto,
+            "Continuar" queda deshabilitado (ver `disabled` abajo) Y `enviar()`
+            lo vuelve a validar por su cuenta como respaldo. */}
+        <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] text-slate-600">
+          <input
+            type="checkbox"
+            checked={aceptaLegal}
+            onChange={(e) => setAceptaLegal(e.target.checked)}
+            className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
+          />
+          <span>
+            Acepto los{' '}
+            <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+              Términos y Condiciones de Jugadores y la Política de Privacidad
+            </a>
+            .
+          </span>
+        </label>
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={enviar} disabled={enviando}>
+          <BotonPrimario onClick={enviar} disabled={enviando || !aceptaLegal}>
             {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
             Continuar
           </BotonPrimario>
@@ -49233,6 +49423,7 @@ function ClubAuthScreen({ onAutenticado }) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [nombreClub, setNombreClub] = useState('');
   const [vincularExistente, setVincularExistente] = useState(false);
+  const [aceptaLegalClub, setAceptaLegalClub] = useState(false);
   const [mostrarPassword, setMostrarPassword] = useState(false);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState('');
@@ -49293,6 +49484,10 @@ function ClubAuthScreen({ onAutenticado }) {
       setError('Las contraseñas no coinciden.');
       return;
     }
+    if (!aceptaLegalClub) {
+      setError('Debes aceptar los Términos y Condiciones para Clubes y la Política de Privacidad.');
+      return;
+    }
     setCargando(true);
     setError('');
     try {
@@ -49305,7 +49500,9 @@ function ClubAuthScreen({ onAutenticado }) {
       // no hay sesión todavía para crear/vincular el club — se hace hasta
       // que el usuario confirme su correo e inicie sesión por primera vez
       // (ver `ClubAuthGate`, que corre este mismo alta de club en cuanto
-      // detecta sesión + sin club todavía).
+      // detecta sesión + sin club todavía, con su propio checkbox legal en
+      // `CompletarRegistroClub` — la aceptación de aquí no sobrevive ese
+      // viaje de ida y vuelta por correo).
       if (!data.session) {
         setMensaje('Cuenta creada. Revisa tu correo para confirmar tu cuenta y después inicia sesión.');
         setModo('login');
@@ -49314,6 +49511,9 @@ function ClubAuthScreen({ onAutenticado }) {
 
       const resultado = await crearOVincularClub({ usuarioId: usuario.id, nombreClub: nombreClub.trim(), vincularExistente });
       if (!resultado.ok) throw new Error(resultado.error || 'No se pudo crear el club.');
+      // Marco Legal (migracion_v61): best-effort, nunca bloquea el alta del
+      // club — ver `registrarAceptacionLegal`.
+      registrarAceptacionLegal('configuracion_club', resultado.club?.id, 'club');
       onAutenticado(data.session, resultado.club);
     } catch (err) {
       setError(esErrorRelojDesfasado(err) ? MENSAJE_ERROR_RELOJ_DESFASADO : err?.message || 'No se pudo completar el registro.');
@@ -49522,7 +49722,26 @@ function ClubAuthScreen({ onAutenticado }) {
                   onChange={(e) => setConfirmPassword(e.target.value)}
                 />
               </Campo>
-              <BotonPrimario type="submit" disabled={cargando} className="w-full">
+              {/* Marco Legal (migracion_v61) — checkbox obligatorio: sin
+                  esto, "Crear mi club" queda deshabilitado (ver `disabled`
+                  abajo) Y `manejarRegistro` lo vuelve a validar como
+                  respaldo. */}
+              <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={aceptaLegalClub}
+                  onChange={(e) => setAceptaLegalClub(e.target.checked)}
+                  className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
+                />
+                <span>
+                  Acepto los{' '}
+                  <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+                    Términos y Condiciones para Clubes (SaaS B2B) y la Política de Privacidad
+                  </a>
+                  .
+                </span>
+              </label>
+              <BotonPrimario type="submit" disabled={cargando || !aceptaLegalClub} className="w-full">
                 {cargando ? <Loader2 size={16} className="animate-spin" /> : <Building2 size={16} />}
                 Crear mi club
               </BotonPrimario>
@@ -49562,6 +49781,14 @@ function ClubAuthScreen({ onAutenticado }) {
             </form>
           )}
         </div>
+
+        {/* Marco Legal — enlace a `/legales`, visible en las tres pantallas
+            (Login/Registro/Recuperar) tal como pide el requerimiento. */}
+        <p className="mt-4 text-center text-[11px] text-slate-400">
+          <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-400 underline hover:text-lime-300">
+            Términos y Condiciones y Política de Privacidad
+          </a>
+        </p>
       </div>
     </div>
   );
@@ -49804,6 +50031,7 @@ function ClubAuthGate() {
 function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
   const [nombreClub, setNombreClub] = useState('');
   const [vincularExistente, setVincularExistente] = useState(false);
+  const [aceptaLegalClub, setAceptaLegalClub] = useState(false);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState(errorInicial || '');
 
@@ -49817,6 +50045,10 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
       setError('Ponle un nombre a tu club.');
       return;
     }
+    if (!aceptaLegalClub) {
+      setError('Debes aceptar los Términos y Condiciones para Clubes y la Política de Privacidad.');
+      return;
+    }
     setCargando(true);
     setError('');
     const resultado = await crearOVincularClub({ usuarioId, nombreClub: nombreClub.trim(), vincularExistente });
@@ -49825,6 +50057,9 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
       setError(resultado.error || 'No se pudo crear el club.');
       return;
     }
+    // Marco Legal (migracion_v61): best-effort, nunca bloquea el alta del
+    // club — ver `registrarAceptacionLegal`.
+    registrarAceptacionLegal('configuracion_club', resultado.club?.id, 'club');
     onListo(resultado.club);
   }
 
@@ -49876,7 +50111,26 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
                 </div>
               </Campo>
             )}
-            <BotonPrimario type="submit" disabled={cargando} className="w-full">
+            {/* Marco Legal (migracion_v61) — la aceptación del primer
+                formulario (`ClubAuthScreen`) no sobrevive el viaje de
+                confirmación de correo, así que se vuelve a pedir aquí,
+                mismo criterio que ya aplica `nombreClub` en este paso. */}
+            <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={aceptaLegalClub}
+                onChange={(e) => setAceptaLegalClub(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
+              />
+              <span>
+                Acepto los{' '}
+                <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+                  Términos y Condiciones para Clubes (SaaS B2B) y la Política de Privacidad
+                </a>
+                .
+              </span>
+            </label>
+            <BotonPrimario type="submit" disabled={cargando || !aceptaLegalClub} className="w-full">
               {cargando ? <Loader2 size={16} className="animate-spin" /> : <Building2 size={16} />}
               Continuar
             </BotonPrimario>
@@ -49892,6 +50146,315 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
           </form>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * MARCO LEGAL Y DE PRIVACIDAD — `/legales` (migracion_v61_marco_legal.sql)
+ * ==========================================================================*/
+// Ruta pública, sin contexto de club (texto genérico de QLUBOS, no de un
+// club en particular) — accesible desde el footer del Portal del Jugador
+// (`PortalPublicoJugadores`, debajo de la pestaña Wallet) y desde la
+// pantalla de Login/Registro de Clubes (`ClubAuthScreen`), además de los
+// enlaces inline de cada checkbox de aceptación. El TEXTO de los tres
+// documentos de abajo es EXACTO E ÍNTEGRO, tal como lo entregó el
+// requerimiento — no se parafraseó ni resumió ninguna sección.
+//
+// Estructura de datos en bloques (`{ t: 'h'|'p'|'ul', ... }`) en vez de JSX
+// suelto repetido tres veces: permite reusar un solo renderer
+// (`BloqueLegal`) para los tres documentos con exactamente el mismo look,
+// sin duplicar las clases de Tailwind en cada párrafo/lista.
+const DOCUMENTOS_LEGALES = [
+  {
+    id: 'jugadores',
+    tab: 'Jugadores',
+    icon: ClipboardList,
+    titulo: 'Términos y Condiciones de Uso — Jugadores',
+    contenido: [
+      { t: 'h', texto: '1. Objeto de la Plataforma' },
+      { t: 'p', texto: 'QLUBOS es una plataforma digital y software de gestión que permite a los usuarios:' },
+      {
+        t: 'ul',
+        items: [
+          'Reservar canchas de pádel y deportes de raqueta.',
+          'Registrarse y participar en partidos, retas, clínicas, academias y torneos.',
+          'Gestionar saldos y monederos digitales (Wallet del Jugador).',
+          'Consultar rankings, niveles de juego y estadísticas personales.',
+          'Realizar pagos mediante integraciones de pasarelas de pago externas.',
+          'Recibir notificaciones operativas vinculadas a su actividad deportiva.',
+        ],
+      },
+      {
+        t: 'p',
+        texto:
+          'QLUBOS actúa exclusivamente como proveedor tecnológico. No organiza, opera ni garantiza directamente las actividades deportivas, torneos o servicios prestados por los clubes o terceros afiliados.',
+      },
+      { t: 'h', texto: '2. Registro, Cuenta y Responsabilidad' },
+      {
+        t: 'ul',
+        items: [
+          'El usuario debe proporcionar información veraz, completa y actualizada (nombre, teléfono, fecha de nacimiento, etc.).',
+          'La cuenta es personal e intransferible.',
+          'El usuario es responsable de la confidencialidad de sus accesos y de toda actividad realizada desde su perfil.',
+          'QLUBOS y/o el Club se reservan el derecho de suspender o eliminar cuentas por uso fraudulento, conductas abusivas, suplantación de identidad o manipulación de resultados y rankings.',
+        ],
+      },
+      { t: 'h', texto: '3. Reservas, Cancelaciones y Pagos' },
+      {
+        t: 'ul',
+        items: [
+          'Las reservas, políticas de cancelación, reembolsos o saldo a favor son administrados directamente por cada club organizador.',
+          'Los pagos procesados en la plataforma se ejecutan mediante proveedores externos autorizados. QLUBOS no almacena información completa de tarjetas de crédito o débito.',
+        ],
+      },
+      { t: 'h', texto: '4. Rankings, Estadísticas y Niveles' },
+      {
+        t: 'ul',
+        items: [
+          'Las métricas, rankings, niveles y estadísticas son estimativas y referenciales.',
+          'QLUBOS no garantiza exactitud absoluta ni se hace responsable por errores técnicos en cálculos o información cargada por clubes o usuarios.',
+        ],
+      },
+      { t: 'h', texto: '5. Limitación de Responsabilidad' },
+      { t: 'p', texto: 'QLUBOS no se responsabiliza por:' },
+      {
+        t: 'ul',
+        items: [
+          'Lesiones deportivas o accidentes dentro de las instalaciones de los clubes.',
+          'Conflictos entre usuarios, cancelaciones o incumplimientos por parte del club.',
+          'Interrupciones del servicio derivadas de mantenimiento, fallas de internet, servidores de terceros o fuerza mayor.',
+        ],
+      },
+      { t: 'h', texto: '6. Validez de Aceptación Electrónica y Jurisdicción' },
+      {
+        t: 'p',
+        texto:
+          'La aceptación mediante casilla de selección (checkbox), botón de registro o interacción digital tiene plena validez jurídica. Cualquier controversia se someterá a las leyes vigentes y tribunales competentes.',
+      },
+    ],
+  },
+  {
+    id: 'clubes',
+    tab: 'Clubes (SaaS B2B)',
+    icon: Building2,
+    titulo: 'Términos y Condiciones de Uso — Clubes y Administradores (SaaS B2B)',
+    contenido: [
+      { t: 'h', texto: '1. Objeto del Servicio SaaS' },
+      {
+        t: 'p',
+        texto:
+          'QLUBOS otorga al Club una licencia de uso de software como servicio (SaaS), no exclusiva, revocable e intransferible, para la gestión operativa, comercial y administrativa de sus instalaciones deportivas.',
+      },
+      {
+        t: 'p',
+        texto:
+          'QLUBOS actúa de forma exclusiva como un proveedor de infraestructura tecnológica y herramientas digitales de software. En ningún caso QLUBOS interviene como organizador, coorganizador, empleador, intermediario comercial ni garante de las actividades deportivas, eventos, torneos, servicios de cafetería, venta de artículos o alquiler de instalaciones prestados por el Club.',
+      },
+      { t: 'h', texto: '2. Pasarela de Pagos Externa y Deslinde Absoluto de Fondos' },
+      {
+        t: 'ul',
+        items: [
+          {
+            fuerte: 'Procesamiento Directo vía Stripe:',
+            texto:
+              'Toda transacción económica, cobro por reserva de canchas, inscripción a torneos, venta en punto de venta (POS), recarga de Wallet o pago de clases procesado de forma digital dentro de la plataforma se realiza mediante la pasarela de pagos Stripe (Stripe, Inc.).',
+          },
+          {
+            fuerte: 'Conexión Directa de Cuenta (Stripe Connect):',
+            texto:
+              'El dinero pagado por los jugadores e ingresado a través de la plataforma cae e ingresa directamente en la cuenta de Stripe vinculada y configurada por el Club.',
+          },
+          {
+            fuerte: 'Cero Retención de Fondos:',
+            texto:
+              'QLUBOS no retiene, custodia, administra, dispersa ni acumula fondos provenientes de los cobros a los jugadores o usuarios finales. QLUBOS no actúa como entidad financiera ni procesador de pagos intermediario.',
+          },
+          {
+            fuerte: 'Comisiones, Reembolsos y Contargos:',
+            texto:
+              'Todas las tarifas de procesamiento por tarjeta, comisiones bancarias, devoluciones, cancelaciones de reservas, reembolsos, reclamos de cargos no reconocidos (chargebacks) o disputas financieras son responsabilidad exclusiva entre el Jugador, el Club y Stripe. El Club deslinda a QLUBOS de cualquier responsabilidad contable, fiscal, administrativa o legal sobre dichos fondos.',
+          },
+        ],
+      },
+      { t: 'h', texto: '3. Registro del Club, Cuentas de Operadores y Seguridad' },
+      {
+        t: 'ul',
+        items: [
+          'El Club es responsable de proporcionar información veraz, legal y actualizada sobre su razón social, identificación fiscal, representante legal y datos de contacto.',
+          'El Club es responsable de la administración y custodia de los accesos creados para sus empleados, recepcionistas, administradores u operadores.',
+          'QLUBOS se reserva el derecho de suspender el acceso al software en caso de incumplimiento de pago de la suscripción, uso ilícito o intento de vulneración de seguridad.',
+        ],
+      },
+      { t: 'h', texto: '4. Propiedad de la Información y Gestión del CRM' },
+      {
+        t: 'ul',
+        items: [
+          {
+            fuerte: 'Propiedad de Datos:',
+            texto: 'La base de datos de clientes, historial de reservas, registros contables e inventarios generados por la operación del Club son propiedad del Club.',
+          },
+          {
+            fuerte: 'Exportación y Cancelación:',
+            texto: 'En caso de cancelación de suscripción, el Club tendrá un plazo de 30 días naturales para exportar sus reportes en formato estándar (CSV/Excel).',
+          },
+        ],
+      },
+      { t: 'h', texto: '5. Disponibilidad del Servicio y Mantenimiento' },
+      {
+        t: 'ul',
+        items: [
+          'QLUBOS no será responsable por pérdidas de ingresos o afectaciones comerciales derivadas de interrupciones temporales del software, caídas de internet locales o problemas en servicios de terceros (como Stripe o WhatsApp).',
+        ],
+      },
+      { t: 'h', texto: '6. Instalaciones, Seguridad Física y Responsabilidad Civil' },
+      {
+        t: 'ul',
+        items: [
+          'El Club es el único responsable de la seguridad física de sus instalaciones, del mantenimiento de las canchas, reglamentos internos, arbitraje y entrega efectiva de premios en torneos.',
+        ],
+      },
+      { t: 'h', texto: '7. Propiedad Intelectual' },
+      { t: 'p', texto: 'Todo el código fuente, diseño, arquitectura, marcas, algoritmos y módulos de QLUBOS son propiedad exclusiva de QLUBOS.' },
+      { t: 'h', texto: '8. Modificaciones y Validez de Aceptación Digital' },
+      {
+        t: 'p',
+        texto: 'La aceptación mediante casilla de verificación (checkbox) o activación de la cuenta constituye un contrato legalmente binding entre el Club y QLUBOS.',
+      },
+    ],
+  },
+  {
+    id: 'privacidad',
+    tab: 'Privacidad',
+    icon: ShieldAlert,
+    titulo: 'Política de Privacidad y Tratamiento de Datos',
+    contenido: [
+      { t: 'h', texto: '1. Datos Recolectados' },
+      { t: 'p', texto: 'QLUBOS recolecta:' },
+      {
+        t: 'ul',
+        items: [
+          { fuerte: 'Datos de identificación y contacto:', texto: 'Nombre, número de teléfono, correo electrónico, fecha de nacimiento.' },
+          {
+            fuerte: 'Datos deportivos y de uso:',
+            texto: 'Historial de reservas, inscripciones a torneos, estadísticas, nivel de juego y saldo en Wallet.',
+          },
+          { fuerte: 'Información técnica:', texto: 'Dirección IP, tipo de dispositivo, cookies e identificadores de sesión.' },
+        ],
+      },
+      { t: 'h', texto: '2. Declaración sobre Datos de Terceros y Transferencias' },
+      {
+        t: 'ul',
+        items: [
+          {
+            fuerte: 'Pasarelas de Pago:',
+            texto: 'La información financiera es procesada de forma encriptada directamente por Stripe. QLUBOS no recolecta ni almacena datos de tarjetas bancarias.',
+          },
+          {
+            fuerte: 'Proveedores Tecnológicos:',
+            texto:
+              'La información se almacena de forma segura en la nube (Supabase / Vercel) respaldada por políticas de aislamiento de datos por club (Row Level Security).',
+          },
+          { fuerte: 'No comercialización:', texto: 'QLUBOS no comercializa ni vende la base de datos de usuarios a terceros.' },
+        ],
+      },
+      { t: 'h', texto: '3. Finalidad del Tratamiento' },
+      {
+        t: 'p',
+        texto:
+          'Los datos se utilizan exclusivamente para operar la plataforma, procesar reservas, enviar notificaciones de confirmación (vía WhatsApp/email) y generar estadísticas deportivas.',
+      },
+      { t: 'h', texto: '4. Eliminación de Cuenta y Cancelación de Datos (Derecho de Supresión)' },
+      {
+        t: 'ul',
+        items: [
+          'Todo usuario tiene derecho a solicitar el borrado de sus datos personales directamente desde la sección Mi Perfil > Eliminar mi cuenta.',
+          'La cuenta será desactivada y sus datos identificables (nombre, teléfono, correo) serán anonimizados de la base de datos, manteniendo únicamente folios numéricos desvinculados por exigencias contables del club.',
+        ],
+      },
+    ],
+  },
+];
+
+function BloqueLegal({ bloque }) {
+  if (bloque.t === 'h') {
+    return <h3 className="mt-6 text-sm font-black text-white first:mt-0">{bloque.texto}</h3>;
+  }
+  if (bloque.t === 'p') {
+    return <p className="mt-2 text-sm leading-relaxed text-slate-300">{bloque.texto}</p>;
+  }
+  if (bloque.t === 'ul') {
+    return (
+      <ul className="mt-2 space-y-2">
+        {bloque.items.map((item, idx) => (
+          <li key={idx} className="flex gap-2 text-sm leading-relaxed text-slate-300">
+            <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-lime-400" />
+            <span>
+              {typeof item === 'string' ? item : (
+                <>
+                  <span className="font-bold text-slate-100">{item.fuerte} </span>
+                  {item.texto}
+                </>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  return null;
+}
+
+function VistaLegales() {
+  const [tabActiva, setTabActiva] = useState('jugadores');
+  const doc = DOCUMENTOS_LEGALES.find((d) => d.id === tabActiva) || DOCUMENTOS_LEGALES[0];
+
+  return (
+    <div className="min-h-screen min-h-dvh bg-[#0f172a]">
+      <header className="sticky top-0 z-20 border-b border-white/10 bg-[#0f172a]/95 px-4 py-4 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => (window.history.length > 1 ? window.history.back() : navegarA('/'))}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 transition hover:bg-white/10"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <div>
+              <p className="text-sm font-black text-white">Legales</p>
+              <p className="text-[11px] text-slate-400">QLUBOS — versión {VERSION_LEGAL_ACTUAL}</p>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-3xl px-4 py-5 pb-16">
+        <div className="mb-5 flex gap-1 overflow-x-auto rounded-lg border border-white/10 bg-white/5 p-1">
+          {DOCUMENTOS_LEGALES.map((d) => {
+            const Icon = d.icon;
+            return (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => setTabActiva(d.id)}
+                className={`flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3.5 py-2 text-[11px] font-bold transition sm:flex-1 ${
+                  tabActiva === d.id ? 'bg-lime-400 text-slate-950 shadow-lg shadow-lime-400/20' : 'text-slate-400 hover:text-slate-100'
+                }`}
+              >
+                <Icon size={14} /> {d.tab}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur-sm">
+          <h2 className="text-base font-black text-white">{doc.titulo}</h2>
+          {doc.contenido.map((bloque, idx) => (
+            <BloqueLegal key={idx} bloque={bloque} />
+          ))}
+        </div>
+      </main>
     </div>
   );
 }
@@ -49933,6 +50496,10 @@ const PATRON_RUTA_PORTAL = /^\/canchas\/([a-z0-9-]+)\/?$/i;
 export default function App() {
   const ruta = usarRutaActual();
   const matchPortal = ruta.match(PATRON_RUTA_PORTAL);
+  // Marco Legal (migracion_v61) — ruta pública `/legales`, sin contexto de
+  // club (ver `VistaLegales`), accesible desde el footer del Portal y desde
+  // la pantalla de Login/Registro de Clubes.
+  const esRutaLegales = ruta === '/legales' || ruta === '/legales/';
   return (
     <>
       {/* Fondo global de html/body/#root — mismo gris súper tenue que usa
@@ -49954,7 +50521,9 @@ export default function App() {
           Header (`BotonTemaClubOS`, ver `TopHeader`). */}
       <style>{`html, body, #root { background-color: #f8fafc; overscroll-behavior: none; }
 ${CSS_MODO_OSCURO_CLUBOS}`}</style>
-      {matchPortal ? (
+      {esRutaLegales ? (
+        <VistaLegales />
+      ) : matchPortal ? (
         <PortalPublicoJugadores clubSlug={matchPortal[1]} />
       ) : (
         // Panel interno (ClubOS): `ClubAuthGate` resuelve Login/Registro/
