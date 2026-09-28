@@ -11109,7 +11109,7 @@ function ModalMotivoObligatorio({ titulo, subtitulo, textoBoton = 'Confirmar', o
   return (
     <ModalShell titulo={titulo} subtitulo={subtitulo} onClose={onClose} icon={Ban} ancho="max-w-sm">
       <div className="space-y-4">
-        <div className="flex items-start gap-2 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2.5 text-[11px] font-semibold text-rose-300">
+        <div className="flex items-start gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2.5 text-[11px] font-semibold text-rose-700">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           Esta acción no se puede deshacer. Queda registrada en el Log de Actividad para auditoría interna.
         </div>
@@ -23214,7 +23214,7 @@ function ModuloContabilidadCompras({
               ancho="max-w-sm"
             >
               <div className="space-y-4">
-                <div className="flex items-start gap-2 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2.5 text-xs font-semibold text-rose-300">
+                <div className="flex items-start gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2.5 text-xs font-semibold text-rose-700">
                   <AlertTriangle size={14} className="mt-0.5 shrink-0" />
                   ¿Estás seguro de cancelar esta compra? Se revertirá el gasto en P&L y el stock (si aplica).
                 </div>
@@ -25678,6 +25678,25 @@ function esErrorJugadorDuplicadoGlobal(error) {
   if (error.code !== '23505') return false;
   const msg = (error.message || '').toLowerCase();
   return msg.includes('jugadores') && (msg.includes('telefono') || msg.includes('correo') || msg.includes('email'));
+}
+
+// Detecta específicamente la violación del índice único GLOBAL heredado
+// sobre `jugadores.telefono_normalizado` (`jugadores_telefono_normalizado_unique`
+// / `idx_jugadores_telefono_normalizado_unique`) — un artefacto del esquema
+// original que NUNCA vivió en el código de esta app (ningún campo
+// `telefonoNormalizado` existe en App.jsx; la columna se llena sola por un
+// trigger/columna generada en Supabase) y que por eso seguía bloqueando el
+// registro multi-club incluso después de `migracion_v68` (que solo tocaba
+// `telefono`/`correo`). Ver `migracion_v69_drop_telefono_normalizado_unique.sql`,
+// que lo reemplaza por un único compuesto `(club_id, telefono_normalizado)`.
+// Se usa en `crearCuentaJugador` para intentar una recuperación transparente
+// (reclamar el expediente si la colisión es en realidad dentro del MISMO
+// club) antes de darle al jugador un mensaje de error.
+function esErrorTelefonoNormalizadoDuplicado(error) {
+  if (!error) return false;
+  if (error.code !== '23505') return false;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('telefono_normalizado');
 }
 
 // Margen de tolerancia (leeway) ante un desfase MENOR de reloj entre el
@@ -32015,8 +32034,8 @@ function ModalMiPerfilJugador({
               </div>
             )}
 
-            <div className="rounded-xl border border-rose-400/30 bg-rose-400/5 p-4">
-              <p className="text-xs font-bold uppercase tracking-wide text-rose-400">Zona de Peligro</p>
+            <div className="rounded-xl border border-rose-300 bg-rose-50 p-4">
+              <p className="text-xs font-bold uppercase tracking-wide text-rose-700">Zona de Peligro</p>
               <p className="mt-1 text-[11px] text-slate-500">Elimina tu cuenta y anonimiza tus datos personales — esta acción no se puede deshacer.</p>
               <button
                 type="button"
@@ -33472,9 +33491,9 @@ function ModalDetalleClase({
         {subvista === 'alumnos' && (
           <div className="space-y-3">
             {mostrarPromptClaseVacia && (
-              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-rose-400/30 bg-rose-400/5 p-3">
-                <AlertTriangle size={16} className="shrink-0 text-rose-400" />
-                <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-300">
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-rose-300 bg-rose-50 p-3">
+                <AlertTriangle size={16} className="shrink-0 text-rose-600" />
+                <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-700">
                   Esta Clase Privada se quedó sin alumnos (0/1). ¿Deseas cancelarla para liberar la cancha en el Cronograma y la Parrilla, y que quede disponible para otros cobros o reservas?
                 </p>
                 <div className="flex shrink-0 gap-1.5">
@@ -33912,7 +33931,7 @@ function ModalConfirmarEliminarClase({ clase, alumnosActivos, onClose, onConfirm
   return (
     <ModalShell titulo="Eliminar Clase Definitivamente" subtitulo={clase.nombre} onClose={onClose} icon={Trash2} ancho="max-w-sm">
       <div className="space-y-4">
-        <div className="flex items-start gap-2 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2.5 text-[11px] font-semibold text-rose-300">
+        <div className="flex items-start gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2.5 text-[11px] font-semibold text-rose-700">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           Esta acción es permanente: se borra la clase, su sesión, sus alumnos inscritos y su asistencia de Supabase, y se libera la cancha en el Cronograma y la Parrilla Operativa. No se puede deshacer.
         </div>
@@ -43619,11 +43638,47 @@ function PortalPublicoJugadores({ clubSlug }) {
         if (errUpdate) throw errUpdate;
       } else {
         // CASO 2 — jugador nuevo.
-        const { data: nuevo, error: errInsert } = await insertarConColumnasOpcionales(
+        let { data: nuevo, error: errInsert } = await insertarConColumnasOpcionales(
           'jugadores',
           { nombre: nombreLimpio, telefono: telefono.trim(), saldo_a_favor: 0, ...camposLegalesYAuth },
           columnasOpcionalesAuth
         );
+        // RED DE SEGURIDAD (migracion_v69): si el proyecto todavía no corrió
+        // esa migración, este INSERT puede chocar contra el índice único
+        // GLOBAL heredado sobre `telefono_normalizado` — ver
+        // `esErrorTelefonoNormalizadoDuplicado`. Antes de rendirse, se
+        // repite EXACTAMENTE la misma búsqueda "claim por teléfono" de
+        // arriba, scoped a este club (mismo criterio de recuperación que ya
+        // usa `resolverJugadorId` para el 23505 de `idx_jugadores_telefono_unico`):
+        // cubre el caso real de una carrera dentro del MISMO club (dos
+        // pestañas/dispositivos dando de alta el mismo teléfono casi al
+        // mismo tiempo) de forma transparente, sin mostrarle nada al
+        // jugador. Si tras reintentar tampoco aparece nada en ESTE club, la
+        // colisión es contra la fila de OTRO club — ahí sí no hay forma de
+        // crear la fila desde el cliente sin la migración (ver el `catch`
+        // de más abajo, que entonces explica la causa real en vez de un
+        // 409 críptico).
+        if (errInsert && esErrorTelefonoNormalizadoDuplicado(errInsert)) {
+          const { data: candidatosTrasColision } = await conClubId(
+            supabase.from('jugadores').select('id, nombre, telefono, auth_user_id')
+          )
+            .not('telefono', 'is', null)
+            .limit(500);
+          const existenteTrasColision = (candidatosTrasColision || []).find((j) => claveTelefono(j.telefono) === claveTel);
+          if (existenteTrasColision && !existenteTrasColision.auth_user_id) {
+            nombreFinal = (existenteTrasColision.nombre || '').trim() || nombreLimpio;
+            const { error: errUpdateTrasColision } = await actualizarConColumnasOpcionales(
+              'jugadores',
+              existenteTrasColision.id,
+              { nombre: nombreFinal, ...camposLegalesYAuth },
+              [...columnasOpcionalesAuth]
+            );
+            if (!errUpdateTrasColision) {
+              nuevo = { id: existenteTrasColision.id };
+              errInsert = null;
+            }
+          }
+        }
         if (errInsert) throw errInsert;
         jugadorId = nuevo?.id || null;
       }
@@ -43640,8 +43695,8 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: 'No se pudo crear tu cuenta',
         detalle: esErrorCorreoRegistrado(err)
           ? 'Ese correo ya tiene una cuenta — mejor inicia sesión.'
-          : esErrorJugadorDuplicadoGlobal(err)
-          ? 'Tu club todavía no tiene el ajuste de base de datos que permite jugar en más de un club con el mismo teléfono/correo (corre migracion_v68 en Supabase) — repórtalo con tu club.'
+          : esErrorTelefonoNormalizadoDuplicado(err) || esErrorJugadorDuplicadoGlobal(err)
+          ? 'Tu club todavía no tiene el ajuste de base de datos que permite jugar en más de un club con el mismo teléfono/correo (corre migracion_v68 y migracion_v69 en Supabase) — repórtalo con tu club.'
           : err?.message || 'Intenta de nuevo en un momento.',
         tono: 'error',
       });
@@ -46458,7 +46513,15 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
           </>
         )}
 
-        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        {/* FIX Contraste (misma paleta que `ClubAuthScreen`): antes texto
+            rosa claro suelto, sin fondo — sobre la tarjeta blanca de este
+            modal era difícil de leer. */}
+        {error && (
+          <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-900">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario
@@ -47421,8 +47484,8 @@ function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
         </dl>
 
         {confirmandoCancelar ? (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-3.5">
-            <p className="text-xs font-bold text-rose-300">¿Seguro que quieres cancelar tu asistencia a esta clase?</p>
+          <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5">
+            <p className="text-xs font-bold text-rose-700">¿Seguro que quieres cancelar tu asistencia a esta clase?</p>
             <p className="mt-1 text-[11px] text-slate-500">Liberas tu lugar de inmediato — si cambias de opinión, tendrás que volver a inscribirte.</p>
             <div className="mt-2.5 flex justify-end gap-2">
               <BotonSecundario onClick={() => setConfirmandoCancelar(false)} className="px-2.5 py-1.5 text-xs">
@@ -52529,8 +52592,13 @@ function ClubAuthScreen({ onAutenticado }) {
             </div>
           )}
 
+          {/* FIX Contraste (alertas Login/Registro/Recuperar Contraseña): antes
+              `border-rose-500/30 bg-rose-500/10 text-rose-300` — texto rosa
+              claro sobre una tarjeta CLARA (`bg-white/80`) era casi
+              ilegible. Paleta de alto contraste, misma que se usa ahora en
+              todo error/alerta de esta pantalla. */}
           {error && (
-            <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+            <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-900">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
               <span>{error}</span>
             </div>
