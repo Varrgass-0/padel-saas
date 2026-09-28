@@ -40290,6 +40290,20 @@ function normalizarFilaClub(fila, tabla) {
     // mostrar.
     addons_habilitados: fila.addons_habilitados !== false,
     productos_addons_ids: Array.isArray(fila.productos_addons_ids) ? fila.productos_addons_ids.map((id) => String(id)) : [],
+    // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
+    // Academia, migracion_v71) — BUG FIX: esta función arma el objeto
+    // `club` del Portal como una lista BLANCA de columnas (no reenvía la
+    // fila cruda de Supabase tal cual), y estas 3 columnas nunca se habían
+    // agregado aquí — así que el Portal SIEMPRE caía al default de
+    // `tarifasAcademiaDelClub` ($180/$1,200/4 clases), sin importar lo que
+    // el dueño guardara en Configuración del Club, para CUALQUIER club
+    // (no solo uno). Mismo criterio tolerante que el resto de esta
+    // función: proyecto sin la migración → `undefined` → cae al default
+    // que ya usa `tarifasAcademiaDelClub`.
+    academia_precio_base_clase_suelta: Number(fila.academia_precio_base_clase_suelta) >= 0 ? Number(fila.academia_precio_base_clase_suelta) : undefined,
+    academia_precio_base_mensualidad: Number(fila.academia_precio_base_mensualidad) >= 0 ? Number(fila.academia_precio_base_mensualidad) : undefined,
+    academia_clases_incluidas_mensualidad:
+      Number(fila.academia_clases_incluidas_mensualidad) > 0 ? Number(fila.academia_clases_incluidas_mensualidad) : undefined,
     _tabla: tabla,
   };
 }
@@ -47751,56 +47765,58 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   return (
     <ModalShell titulo="Solicitar Clase Privada o Nuevo Grupo" subtitulo="El club revisa tu solicitud y te confirmará" onClose={onClose} icon={Sparkles} ancho="max-w-lg">
       <div className="space-y-3.5">
-        {/* Arquitectura de Tarifas Academia (Corrección — item 4): 2
-            opciones visuales, mismo copy/diseño que el catálogo de clases
-            ya publicadas — funcionan como selector (tarjeta resaltada = tu
-            elección), no como envío inmediato: la solicitud real se manda
-            hasta "Enviar solicitud" al final del formulario, con el resto
-            de datos (fecha/horario/nivel/coach). Sin encabezado "¿Qué
-            buscas?" (ajuste UX): las 2 tarjetas se explican solas. */}
+        {/* Arquitectura de Tarifas Academia (Corrección — item 4, refinado):
+            2 tarjetas puramente SELECCIONABLES (modo toggle/radio, borde +
+            ring resaltado = tu elección) — SIN botón de acción propio
+            adentro, a diferencia del catálogo de clases ya publicadas
+            (`alIntentarInscribirClase`, que sí envía/cobra de inmediato al
+            hacer clic). Aquí la solicitud real se manda hasta "Enviar
+            solicitud" al final del formulario, junto con el resto de datos
+            (fecha/horario/nivel/coach) — un botón de acción adentro de la
+            tarjeta sugería (incorrectamente) que el clic ya enviaba la
+            solicitud. Sin encabezado "¿Qué buscas?" (ajuste UX anterior):
+            las 2 tarjetas se explican solas. */}
         <div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <button
               type="button"
               onClick={() => setTipoPagoDeseado('clase_suelta')}
-              className={`flex flex-col justify-between rounded-xl border p-3 text-left transition ${
+              aria-pressed={tipoPagoDeseado === 'clase_suelta'}
+              className={`flex flex-col gap-1.5 rounded-xl border p-3 text-left transition ${
                 tipoPagoDeseado === 'clase_suelta' ? 'border-lime-500 bg-lime-400/[0.06] ring-2 ring-lime-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-lime-400/40'
               }`}
             >
-              <div>
+              <div className="flex items-start justify-between gap-2">
                 <p className="text-xs font-black text-slate-900">Clase Suelta</p>
-                <p className="mt-0.5 text-[10.5px] leading-snug text-slate-500">Asiste a una sesión individual sin compromisos periódicos</p>
-                <p className="mt-1.5 text-base font-black text-slate-900">{formatoMoneda(tarifasAcademiaClub.precioBaseClaseSuelta)}</p>
+                <span
+                  className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
+                    tipoPagoDeseado === 'clase_suelta' ? 'border-lime-500 bg-lime-500' : 'border-slate-300 bg-white'
+                  }`}
+                />
               </div>
-              <span
-                className={`mt-2.5 inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold ${
-                  tipoPagoDeseado === 'clase_suelta' ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-600'
-                }`}
-              >
-                Reservar Clase Suelta
-              </span>
+              <p className="text-[10.5px] leading-snug text-slate-500">Asiste a una sesión individual sin compromisos periódicos</p>
+              <p className="text-base font-black text-slate-900">{formatoMoneda(tarifasAcademiaClub.precioBaseClaseSuelta)}</p>
             </button>
             <button
               type="button"
               onClick={() => setTipoPagoDeseado('mensualidad')}
-              className={`flex flex-col justify-between rounded-xl border p-3 text-left transition ${
+              aria-pressed={tipoPagoDeseado === 'mensualidad'}
+              className={`flex flex-col gap-1.5 rounded-xl border p-3 text-left transition ${
                 tipoPagoDeseado === 'mensualidad' ? 'border-lime-500 bg-lime-400/[0.06] ring-2 ring-lime-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-lime-400/40'
               }`}
             >
-              <div>
+              <div className="flex items-start justify-between gap-2">
                 <p className="text-xs font-black text-slate-900">Plan Mensual de Academia</p>
-                <p className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
-                  Garantiza tu lugar fijo cada semana + incluye {tarifasAcademiaClub.clasesIncluidasMensualidad} clases al mes
-                </p>
-                <p className="mt-1.5 text-base font-black text-slate-900">{formatoMoneda(tarifasAcademiaClub.precioBaseMensualidad)}</p>
+                <span
+                  className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
+                    tipoPagoDeseado === 'mensualidad' ? 'border-lime-500 bg-lime-500' : 'border-slate-300 bg-white'
+                  }`}
+                />
               </div>
-              <span
-                className={`mt-2.5 inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold ${
-                  tipoPagoDeseado === 'mensualidad' ? 'bg-lime-400 text-slate-950' : 'bg-slate-200 text-slate-600'
-                }`}
-              >
-                <UserPlus size={13} /> Unirme a la Academia
-              </span>
+              <p className="text-[10.5px] leading-snug text-slate-500">
+                Garantiza tu lugar fijo cada semana + incluye {tarifasAcademiaClub.clasesIncluidasMensualidad} clases al mes
+              </p>
+              <p className="text-base font-black text-slate-900">{formatoMoneda(tarifasAcademiaClub.precioBaseMensualidad)}</p>
             </button>
           </div>
         </div>
