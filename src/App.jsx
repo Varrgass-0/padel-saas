@@ -9799,9 +9799,27 @@ function ModalNuevoProducto({
   // `AppInterno`) el grupo que se cree desde el botón "+ Crear Grupo" de
   // aquí abajo, sin esperar al Realtime de `grupos_modificadores`.
   upsertGrupoModificadorLocal,
+  // Blindaje de Seguridad — Editar Producto desde Smart POS: rol de la
+  // sesión activa, para decidir si este modal se ve completo o reducido al
+  // EDITAR (ver `puedeEditarProductoCompleto` abajo). Hoy `puedeGestionarProductos`
+  // ya limita quién puede siquiera ABRIR este modal a Owner/Manager (ver
+  // `manejarClickProducto`/botón "editar" en `ModuloSmartPOS`) — este flag
+  // es una segunda capa, más fina, para cuando otros roles (Recepción/Bar)
+  // lleguen a tener ese mismo acceso más adelante.
+  permisos,
 }) {
   const toast = useToast();
   const editando = Boolean(producto);
+  // Blindaje de Seguridad (Grupos de Modificadores — ajuste de UX): al
+  // EDITAR un producto ya existente desde el Smart POS, solo Owner/Manager
+  // ven el formulario completo (Precio, Categoría, Stock/Variantes,
+  // Disponible, Eliminar) — cualquier otro rol (Recepción/Bar, y cualquiera
+  // que llegue a abrir este modal en el futuro) ve ÚNICAMENTE Nombre,
+  // Imagen y Asignar Grupo de Modificadores, para evitar que un operador de
+  // mostrador cambie precios/stock/categoría por error o mala práctica. El
+  // alta de un producto NUEVO (`!editando`) NUNCA se restringe por esto —
+  // sigue siendo el formulario completo, igual que siempre.
+  const puedeEditarProductoCompleto = !editando || permisos?.rol === 'owner' || permisos?.rol === 'manager';
   const [nombre, setNombre] = useState(producto?.nombre || '');
   // Enfoque del alta rápida en Smart POS (ajuste de UX de Grupos de
   // Modificadores): un producto NUEVO (no `editando`) arranca en
@@ -9965,7 +9983,13 @@ function ModalNuevoProducto({
       setError('El nombre del producto es obligatorio.');
       return;
     }
-    if (precio === '' || Number(precio) < 0) {
+    // Blindaje de Seguridad: con el campo Precio oculto (edición reducida,
+    // `!puedeEditarProductoCompleto`), `precio` nunca lo toca el operador —
+    // se re-guarda tal cual venía del producto. Esta validación solo aplica
+    // cuando el campo SÍ está en pantalla, para no dejar a un operador
+    // restringido sin poder guardar Nombre/Imagen/Grupo por un precio viejo
+    // que ni siquiera puede ver ni corregir.
+    if (puedeEditarProductoCompleto && (precio === '' || Number(precio) < 0)) {
       setError('Indica un precio válido.');
       return;
     }
@@ -10057,6 +10081,24 @@ function ModalNuevoProducto({
     if (imagen) campos.imagen_url = imagen;
     campos.imagenes = imagenes;
 
+    // Blindaje de Seguridad — Editar Producto desde Smart POS: con el
+    // formulario reducido (`editando && !puedeEditarProductoCompleto`), el
+    // UPDATE que de verdad se manda a Supabase NUNCA incluye
+    // categoria/subcategoria/precio/maneja_stock/stock/variantes/disponible
+    // — no basta con solo ocultarlos en pantalla (el estado en memoria
+    // sigue siendo el que trajo el producto al abrir el modal, pero por
+    // seguridad se excluyen del payload explícitamente en vez de confiar en
+    // que nadie los tocó mientras el modal estuvo abierto).
+    if (editando && !puedeEditarProductoCompleto) {
+      delete campos.categoria;
+      delete campos.subcategoria;
+      delete campos.precio;
+      delete campos.maneja_stock;
+      delete campos.stock;
+      delete campos.variantes;
+      delete campos.disponible;
+    }
+
     // Arquitectura Flexible: `subcategoria`/`imagenes` son columnas nuevas —
     // un proyecto de Supabase que todavía no corrió esas migraciones no debe
     // tronar el alta/edición completa del producto por ellas, solo se
@@ -10107,7 +10149,13 @@ function ModalNuevoProducto({
     <>
     <ModalShell
       titulo={editando ? 'Editar Producto' : '+ Nuevo Producto'}
-      subtitulo={editando ? 'Nombre, precio, foto, stock, disponibilidad' : 'Se agrega al catálogo del POS'}
+      subtitulo={
+        editando
+          ? puedeEditarProductoCompleto
+            ? 'Nombre, precio, foto, stock, disponibilidad'
+            : 'Nombre, foto y grupo de modificadores'
+          : 'Se agrega al catálogo del POS'
+      }
       onClose={onClose}
       icon={editando ? Settings2 : Plus}
       ancho="max-w-lg"
@@ -10117,6 +10165,13 @@ function ModalNuevoProducto({
           <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} />
         </Campo>
 
+        {/* Blindaje de Seguridad — Editar Producto desde Smart POS: Categoría,
+            Precio, Subcategoría, Maneja Inventario/Stock y Variantes quedan
+            OCULTOS al editar para cualquier rol que no sea Owner/Manager (ver
+            `puedeEditarProductoCompleto` arriba) — el alta de un producto
+            NUEVO nunca se oculta nada de esto. */}
+        {puedeEditarProductoCompleto && (
+          <>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Campo label="Categoría">
             <select value={categoria} onChange={(e) => cambiarCategoria(e.target.value)} className={inputClase}>
@@ -10293,6 +10348,8 @@ function ModalNuevoProducto({
             </div>
           )}
         </div>
+          </>
+        )}
 
         {/* Grupos de Modificadores/Extras (migracion_v64) — DISTINTO de
             "Variantes / Modificadores" de arriba: la variante es la unidad
@@ -10337,8 +10394,10 @@ function ModalNuevoProducto({
         {/* Con `editando` (cualquier producto ya existente) o `esAlimento`
             (Alimentos necesita este toggle DESDE el alta, ver el comentario
             de `esAlimento` arriba — es su único control de disponibilidad,
-            reemplaza los campos de stock). */}
-        {(editando || esAlimento) && (
+            reemplaza los campos de stock). Blindaje de Seguridad: al editar,
+            también requiere `puedeEditarProductoCompleto` — ver el bloque de
+            arriba. */}
+        {puedeEditarProductoCompleto && (editando || esAlimento) && (
           <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-2.5">
             <span className="text-xs font-semibold text-slate-800">
               {disponible ? 'Disponible' : 'No disponible'}
@@ -10420,6 +10479,7 @@ function ModalNuevoProducto({
         <div className="flex items-center justify-between gap-2 pt-2">
           <div>
             {editando &&
+              puedeEditarProductoCompleto &&
               (confirmarEliminar ? (
                 <div className="flex items-center gap-1.5">
                   <span className="text-[11px] font-semibold text-rose-300">¿Seguro?</span>
@@ -16097,6 +16157,7 @@ function ModuloSmartPOS({
           upsertProducto={upsertProducto}
           gruposModificadores={gruposModificadores}
           upsertGrupoModificadorLocal={upsertGrupoModificadorLocal}
+          permisos={permisos}
         />
       )}
 
@@ -20034,10 +20095,6 @@ function ModuloContabilidadCompras({
   productos,
   upsertProducto,
   quitarProductoLocal,
-  // Grupos de Modificadores/Extras (migracion_v64) — selector "Asignar
-  // Grupo de Modificadores" en "+ Crear Nuevo Producto desde Compra" (ver
-  // `nuevoProductoForm` más abajo).
-  gruposModificadores,
   onRegistrarAuditoria,
 }) {
   const mostrarToast = useToast();
@@ -20546,10 +20603,6 @@ function ModuloContabilidadCompras({
       stockInicial: '',
       imagenUrl: '',
       variantes: [],
-      // Grupos de Modificadores/Extras (migracion_v64) — mismo campo
-      // opcional que "Asignar Grupo de Modificadores" en `ModalNuevoProducto`
-      // ('' = sin grupo, retrocompatibilidad total).
-      grupoModificadorId: '',
     };
   }
   const [formEgreso, setFormEgreso] = useState(ESTADO_INICIAL_FORM_EGRESO);
@@ -21145,14 +21198,8 @@ function ModuloContabilidadCompras({
             variantes: variantesJSONB,
             imagen_url: imagenUrlNuevoProducto,
             recibido: true,
-            // Grupos de Modificadores/Extras (migracion_v64) — ver "Asignar
-            // Grupo de Modificadores" en el sub-formulario de arriba.
-            grupo_modificador_id: nuevoProductoForm.grupoModificadorId || null,
           };
-          const { data, error: errProducto } = await insertarConColumnasOpcionales('productos', nuevoProductoPayload, [
-            'recibido',
-            'grupo_modificador_id',
-          ]);
+          const { data, error: errProducto } = await insertarConColumnasOpcionales('productos', nuevoProductoPayload, ['recibido']);
           if (errProducto) throw errProducto;
           productoCreado = data;
           upsertProducto(productoCreado);
@@ -21202,10 +21249,6 @@ function ModuloContabilidadCompras({
                   precio_creacion: v.precio === '' ? null : Number(v.precio),
                   costo_unitario_creacion: v.costoUnitario === '' ? null : Number(v.costoUnitario),
                   imagen_url_creacion: imagenUrlNuevoProducto,
-                  // Grupos de Modificadores/Extras (migracion_v64) — se
-                  // propaga hasta la alta diferida real en
-                  // confirmarRecepcionParcial.
-                  grupo_modificador_id_creacion: nuevoProductoForm.grupoModificadorId || null,
                 }))
               : [
                   {
@@ -21221,7 +21264,6 @@ function ModuloContabilidadCompras({
                     precio_creacion: precioProductoPadre,
                     costo_unitario_creacion: costoUnitarioProductoPadre,
                     imagen_url_creacion: imagenUrlNuevoProducto,
-                    grupo_modificador_id_creacion: nuevoProductoForm.grupoModificadorId || null,
                   },
                 ];
         }
@@ -21520,15 +21562,11 @@ function ModuloContabilidadCompras({
                   : [],
                 imagen_url: item.imagen_url_creacion || null,
                 recibido: true,
-                // Grupos de Modificadores/Extras (migracion_v64) — llega
-                // aquí desde `grupo_modificador_id_creacion` (capturado en
-                // el sub-formulario "+ Crear Nuevo Producto desde Compra").
-                grupo_modificador_id: item.grupo_modificador_id_creacion || null,
               };
               const { data: productoCreado, error: errProducto } = await insertarConColumnasOpcionales(
                 'productos',
                 nuevoProductoPayload,
-                ['recibido', 'grupo_modificador_id']
+                ['recibido']
               );
               if (!errProducto && productoCreado) {
                 upsertProducto(productoCreado);
@@ -22719,25 +22757,6 @@ function ModuloContabilidadCompras({
                         </div>
                       </div>
                     )}
-
-                    {/* Grupos de Modificadores/Extras (migracion_v64) — mismo
-                        campo opcional que "Asignar Grupo de Modificadores"
-                        en `ModalNuevoProducto`. Se aplica al producto padre
-                        sin importar si tiene variantes o no. */}
-                    <Campo label="Asignar Grupo de Modificadores" hint="Preparados, Salsas, Términos, etc. — opcional, no afecta el inventario.">
-                      <select
-                        value={nuevoProductoForm.grupoModificadorId}
-                        onChange={(e) => setNuevoProductoForm((f) => ({ ...f, grupoModificadorId: e.target.value }))}
-                        className={inputClase}
-                      >
-                        <option value="">Sin asignar (venta directa en 1 clic)</option>
-                        {(gruposModificadores || []).map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.nombre}
-                          </option>
-                        ))}
-                      </select>
-                    </Campo>
 
                     <div>
                       <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -50780,7 +50799,6 @@ function AppInterno() {
                 productos={productos}
                 upsertProducto={upsertProducto}
                 quitarProductoLocal={quitarProductoLocal}
-                gruposModificadores={gruposModificadores}
                 onRegistrarAuditoria={registrarEventoAuditoria}
               />
             ) : moduloActivo === 'analytics' ? (
