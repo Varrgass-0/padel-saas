@@ -778,6 +778,7 @@ import {
   ImagePlus,
   Settings2,
   UserCog,
+  UserCircle2,
   CheckCircle2,
   Wallet,
   CreditCard,
@@ -3313,6 +3314,14 @@ const LS_KEY_CLUB_CONFIG = 'smashpadel_club_config_v1';
 const CONFIG_CLUB_DEFAULT = {
   nombre: '',
   logoUrl: '',
+  // Nombre del Administrador/Dueño (Refactor Onboarding v67, Módulo 1 del
+  // Onboarding Canvas) — cadena vacía por default: un club que nunca lo
+  // captura (proyecto viejo, o el dueño todavía no llega a esa pantalla) no
+  // ve ningún cambio; el Header/Kiosko simplemente siguen su respaldo
+  // anterior (nombre del empleado `rol: owner`, con su propio fallback al
+  // prefijo del correo — ver `guardarConfigClub`/auto-provisión del
+  // Propietario en `AppInterno`).
+  nombreAdministrador: '',
   horaApertura: '06:00',
   horaCierre: '24:00',
   duracionReservaMinutos: 60,
@@ -3386,6 +3395,7 @@ function leerConfigClubLocal() {
     return {
       nombre: (parsed.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
       logoUrl: parsed.logoUrl || '',
+      nombreAdministrador: (parsed.nombreAdministrador || '').trim() || CONFIG_CLUB_DEFAULT.nombreAdministrador,
       horaApertura: parsed.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura,
       horaCierre: parsed.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
       duracionReservaMinutos: Number(parsed.duracionReservaMinutos) > 0 ? Number(parsed.duracionReservaMinutos) : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
@@ -5058,6 +5068,11 @@ function Toolbar({
   onFiltroEstatus,
   onNuevaCancha,
   soloLectura = false,
+  // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) —
+  // `false` cuando el club ya alcanzó el límite de canchas de su plan
+  // suscrito: oculta por completo el botón (no solo lo deshabilita), tal
+  // como se pidió. Ver `limiteCanchasDelPlan`/`ModuloParrillaOperativa`.
+  puedeCrearCancha = true,
 }) {
   return (
     <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -5150,7 +5165,7 @@ function Toolbar({
             <CalendarRange size={14} /> Calendario
           </button>
         </div>
-        {!soloLectura && (
+        {!soloLectura && puedeCrearCancha && (
           <BotonPrimario onClick={onNuevaCancha} className="whitespace-nowrap">
             <Plus size={15} /> Nueva Cancha
           </BotonPrimario>
@@ -5201,7 +5216,7 @@ function ErrorBanner({ mensaje, onReintentar }) {
   );
 }
 
-function EmptyState({ onNuevaCancha }) {
+function EmptyState({ onNuevaCancha, puedeCrearCancha = true }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 py-16 text-center">
       <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-white">
@@ -5211,9 +5226,11 @@ function EmptyState({ onNuevaCancha }) {
       <p className="mt-1 max-w-xs text-xs text-slate-500">
         Crea tu primera cancha para empezar a gestionar reservas y disponibilidad.
       </p>
-      <BotonPrimario onClick={onNuevaCancha} className="mt-4">
-        <Plus size={15} /> Nueva Cancha
-      </BotonPrimario>
+      {puedeCrearCancha && (
+        <BotonPrimario onClick={onNuevaCancha} className="mt-4">
+          <Plus size={15} /> Nueva Cancha
+        </BotonPrimario>
+      )}
     </div>
   );
 }
@@ -6108,6 +6125,31 @@ function ModalNuevaCancha({ onClose, onCreada }) {
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
             Crear cancha
           </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) —
+// modal informativo que reemplaza a `ModalNuevaCancha` en cuanto el club
+// alcanza el tope de canchas de su plan suscrito (ver `abrirModalNuevaCancha`
+// en `ModuloParrillaOperativa`, el único punto que decide cuál de los dos
+// modales abrir). Puramente informativo por ahora — "Actualizar Plan" no
+// dispara ningún cambio real todavía (no hay Billing/Stripe conectado), solo
+// cierra el modal; el mensaje deja claro que debe contactar/actualizar su
+// plan.
+function ModalLimiteCanchasPlan({ limiteCanchasPlan, onClose }) {
+  return (
+    <ModalShell titulo="Llegaste al límite de tu plan" onClose={onClose} icon={Lock}>
+      <div className="space-y-4">
+        <p className="text-sm text-slate-600">
+          Tu plan actual incluye hasta <span className="font-bold text-slate-900">{limiteCanchasPlan}</span>{' '}
+          {limiteCanchasPlan === 1 ? 'cancha' : 'canchas'}, y ya las tienes todas registradas. Para agregar más
+          canchas, actualiza tu plan.
+        </p>
+        <div className="flex justify-end gap-2 pt-2">
+          <BotonSecundario onClick={onClose}>Entendido</BotonSecundario>
         </div>
       </div>
     </ModalShell>
@@ -7275,6 +7317,10 @@ function ModuloParrillaOperativa({
   // "Nueva Reserva" calcule el `MONTO (MXN)` automático según la franja de
   // la Hora Inicio elegida.
   tarifasHorarios,
+  // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) —
+  // tope numérico ya resuelto por `AppInterno` (`limiteCanchasDelPlan`
+  // sobre `planClubSeleccionado`); `null`/`undefined` = sin límite.
+  limiteCanchasPlan,
 }) {
   // Horario de Operación del Club (item 4) — el Cronograma y "Nueva Reserva"
   // de este módulo dejan de usar el límite fijo 06:00–24:00 y respetan el
@@ -7300,12 +7346,30 @@ function ModuloParrillaOperativa({
     return { anio: hoy.getFullYear(), mes: hoy.getMonth() };
   });
   const cambiarMesCalendario = (delta) => setCalendarioMes((prev) => sumarMeses(prev.anio, prev.mes, delta));
+  // Único punto que abre `ModalNuevaCancha` en todo este módulo (Toolbar +
+  // EmptyState ya ocultan el botón que llega aquí, pero este guard es la
+  // defensa real — es el ÚNICO choke point que inserta en `canchas`, ver
+  // `ModalNuevaCancha`): si el plan ya está en su tope, jamás se abre el
+  // formulario de alta, se abre el modal informativo en su lugar.
+  const abrirModalNuevaCancha = () => {
+    if (alcanzoLimiteCanchasPlan) {
+      setModalLimiteCanchasPlan(true);
+      return;
+    }
+    setModalNuevaCancha(true);
+  };
   const irADiaCalendario = (fechaISOClic) => {
     setFechaSeleccionada(fechaISOClic);
     setVista('dia');
   };
 
+  // Límite Rígido de Canchas por Plan (item 4) — se recalcula en cada
+  // render a partir de `canchas.length` (la fuente de verdad ya cargada por
+  // `AppInterno`), así que se actualiza solo en cuanto una cancha nueva
+  // entra por Realtime, sin ningún estado propio.
+  const alcanzoLimiteCanchasPlan = limiteCanchasPlan != null && canchas.length >= limiteCanchasPlan;
   const [modalNuevaCancha, setModalNuevaCancha] = useState(false);
+  const [modalLimiteCanchasPlan, setModalLimiteCanchasPlan] = useState(false);
   const [modalCambiarFoto, setModalCambiarFoto] = useState(null); // cancha
   const [modalNuevaReserva, setModalNuevaReserva] = useState(null); // { cancha, hora }
   const [modalDetalle, setModalDetalle] = useState(null); // { cancha, reserva }
@@ -7469,14 +7533,15 @@ function ModuloParrillaOperativa({
         onCambiarFecha={setFechaSeleccionada}
         filtroEstatus={filtroEstatus}
         onFiltroEstatus={setFiltroEstatus}
-        onNuevaCancha={() => setModalNuevaCancha(true)}
+        onNuevaCancha={abrirModalNuevaCancha}
         soloLectura={permisos?.soloLecturaParrilla === true}
+        puedeCrearCancha={!alcanzoLimiteCanchasPlan}
       />
 
       {loading ? (
         <SkeletonGrid />
       ) : canchas.length === 0 ? (
-        <EmptyState onNuevaCancha={() => setModalNuevaCancha(true)} />
+        <EmptyState onNuevaCancha={abrirModalNuevaCancha} puedeCrearCancha={!alcanzoLimiteCanchasPlan} />
       ) : vista === 'tarjetas' ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {canchasFiltradas.map((c) => (
@@ -7561,6 +7626,10 @@ function ModuloParrillaOperativa({
 
       {modalNuevaCancha && (
         <ModalNuevaCancha onClose={() => setModalNuevaCancha(false)} onCreada={(cancha) => upsertCancha(cancha)} />
+      )}
+
+      {modalLimiteCanchasPlan && (
+        <ModalLimiteCanchasPlan limiteCanchasPlan={limiteCanchasPlan} onClose={() => setModalLimiteCanchasPlan(false)} />
       )}
 
       {modalCambiarFoto && (
@@ -39868,11 +39937,18 @@ function normalizarFilaClub(fila, tabla) {
  * todo (no queda nada que migrar, nunca tuvo contenido real).
  * ==========================================================================*/
 
+// Orden (Refactor Onboarding v67, item 3): General → Operadores & Staff →
+// Reservas & Academia → Jugadores & Fidelización → Portal & Tienda Web →
+// Wallet. Este MISMO arreglo maneja tanto el Onboarding Canvas (Setup
+// Canvas, Paso 3) como la pestaña normal de "Configuración del Club" —
+// reordenarlo aquí cambia el orden en AMBOS lugares a propósito (mismo
+// criterio de "una sola fuente de verdad" del resto de este módulo).
 const TABS_CONFIGURACION_CLUB = [
-  { value: 'portal', label: 'Portal & Tienda Web', icon: ShoppingBag },
   { value: 'general', label: 'General', icon: Settings2 },
-  { value: 'jugadores', label: 'Jugadores & Fidelización', icon: Gift },
+  { value: 'staff', label: 'Operadores & Staff', icon: UserCog },
   { value: 'reservas', label: 'Reservas & Academia', icon: LayoutGrid },
+  { value: 'jugadores', label: 'Jugadores & Fidelización', icon: Gift },
+  { value: 'portal', label: 'Portal & Tienda Web', icon: ShoppingBag },
   { value: 'wallet', label: 'Wallet', icon: Wallet },
 ];
 
@@ -39901,6 +39977,7 @@ function ModuloConfiguracionClub({
   onGuardarConfigClub,
   guardandoConfigClub,
   empleados,
+  onCrearEmpleado,
   rangosHorarioClases,
   onGuardarRangosHorarioClases,
   guardandoRangosHorarioClases,
@@ -39944,12 +40021,23 @@ function ModuloConfiguracionClub({
   // último módulo ("Finalizar Configuración").
   modoOnboarding = false,
   onFinalizarOnboarding,
+  // Zona de Peligro (item 5) — reenviados tal cual a `SeccionGeneralClub`;
+  // `AppInterno` es quien realmente sabe cómo se llama el club y cómo
+  // ejecutar el borrado suave.
+  nombreClub,
+  onEliminarClub,
+  eliminandoClub,
 }) {
-  const [tab, setTab] = useState('portal');
+  const [tab, setTab] = useState('general');
   const tabsVisibles = modoOnboarding ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet') : TABS_CONFIGURACION_CLUB;
   const tabActual = tabsVisibles.find((t) => t.value === tab) || tabsVisibles[0];
   const indiceTabActual = tabsVisibles.findIndex((t) => t.value === tabActual.value);
   const esUltimoModuloOnboarding = modoOnboarding && indiceTabActual === tabsVisibles.length - 1;
+  // Módulo 1 (General) exige el "Nombre del Administrador / Dueño" antes de
+  // dejar avanzar el wizard (item 2 del Refactor Onboarding v67) — fuera del
+  // Onboarding (`!modoOnboarding`) este candado no aplica, el dueño puede
+  // guardar Configuración del Club en cualquier orden como siempre.
+  const bloqueadoPorNombreAdministrador = modoOnboarding && tabActual.value === 'general' && !(configClub?.nombreAdministrador || '').trim();
 
   return (
     <div className="space-y-4">
@@ -39988,7 +40076,13 @@ function ModuloConfiguracionClub({
           onGuardarTarifaHorario={onGuardarTarifaHorario}
           guardandoTarifaHorario={guardandoTarifaHorario}
           onEliminarTarifaHorario={onEliminarTarifaHorario}
+          modoOnboarding={modoOnboarding}
+          nombreClub={nombreClub}
+          onEliminarClub={onEliminarClub}
+          eliminandoClub={eliminandoClub}
         />
+      ) : tab === 'staff' ? (
+        <SeccionOperadoresStaff empleados={empleados} onCrearEmpleado={onCrearEmpleado} />
       ) : tab === 'jugadores' ? (
         <SeccionJugadoresFidelizacion
           productos={productos}
@@ -40056,16 +40150,83 @@ function ModuloConfiguracionClub({
               <BotonSecundario onClick={() => setTab(tabsVisibles[indiceTabActual - 1].value)}>Atrás</BotonSecundario>
             )}
             {esUltimoModuloOnboarding ? (
-              <BotonPrimario onClick={onFinalizarOnboarding}>
+              <BotonPrimario onClick={onFinalizarOnboarding} disabled={bloqueadoPorNombreAdministrador}>
                 Finalizar Configuración <ArrowRight size={14} />
               </BotonPrimario>
             ) : (
-              <BotonPrimario onClick={() => setTab(tabsVisibles[indiceTabActual + 1].value)}>
+              <BotonPrimario
+                onClick={() => setTab(tabsVisibles[indiceTabActual + 1].value)}
+                disabled={bloqueadoPorNombreAdministrador}
+              >
                 Siguiente Módulo <ArrowRight size={14} />
               </BotonPrimario>
             )}
           </div>
         </div>
+      )}
+      {bloqueadoPorNombreAdministrador && (
+        <p className="text-right text-[11px] font-semibold text-rose-500">
+          Captura y guarda el Nombre del Administrador/Dueño arriba para continuar.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Operadores & Staff (Configuración del Club → Módulo 2, NUEVO en el
+// Refactor Onboarding v67, item 3) — permite al dueño dar de alta a sus
+// primeros operadores/recepcionistas/coaches (Nombre, Correo, Rol/Puesto)
+// sin salir del wizard. Reutiliza EXACTAMENTE `ModalGestionEmpleados` (el
+// mismo modal de alta que ya usa Control & Seguridad → Directorio de
+// Empleados, ver `crearEmpleado` en `AppInterno`) y `FilaEmpleado` para
+// listar lo ya dado de alta — cero lógica de guardado nueva, mismo criterio
+// de "una sola fuente de verdad" que el resto de `ModuloConfiguracionClub`.
+// Este paso es OPCIONAL: un club puede terminar el Onboarding sin dar de
+// alta a nadie más (el Owner auto-provisionado siempre existe, ver
+// "Auto-provisión del Propietario" en `AppInterno`) — no hay ningún gate
+// que bloquee "Siguiente Módulo" aquí.
+function SeccionOperadoresStaff({ empleados, onCrearEmpleado }) {
+  const [modalAbierto, setModalAbierto] = useState(false);
+  const lista = Array.isArray(empleados) ? empleados : [];
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <UserCog size={16} className="text-lime-500" />
+            <h3 className="text-sm font-black text-slate-900">Operadores & Staff</h3>
+          </div>
+          <BotonPrimario onClick={() => setModalAbierto(true)}>
+            <UserPlus size={15} /> Agregar Operador
+          </BotonPrimario>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Da de alta a tus primeros operadores, recepcionistas y coaches — cada uno entra a la Pantalla Kiosko con su
+          propia tarjeta y PIN. Puedes dejar este paso vacío y agregar colaboradores después desde Control &
+          Seguridad.
+        </p>
+
+        {lista.length === 0 ? (
+          <div className="flex flex-col items-center gap-1.5 rounded-xl border border-dashed border-slate-300 bg-slate-50 py-8 text-center">
+            <Users size={20} className="text-slate-400" />
+            <p className="text-xs font-semibold text-slate-500">Todavía no das de alta a ningún operador.</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {lista.map((emp) => (
+              <FilaEmpleado key={emp.id} empleado={emp} puedeGestionar={false} onEditar={() => {}} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {modalAbierto && (
+        <ModalGestionEmpleados
+          empleado={null}
+          onClose={() => setModalAbierto(false)}
+          onCrear={onCrearEmpleado}
+          onActualizar={async () => {}}
+        />
       )}
     </div>
   );
@@ -40091,6 +40252,22 @@ const PLANES_ONBOARDING_CLUB = [
   { canchas: '4-7', nombre: '4 – 7 Canchas', precioMensual: 2990 },
   { canchas: '8-12', nombre: '8 – 12 Canchas', precioMensual: 4990 },
 ];
+
+// Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) — el
+// tope NUMÉRICO de canchas de cada rango elegido en `PLANES_ONBOARDING_CLUB`
+// (el límite superior de cada rango: "1-3" → 3, etc.). `null` significa
+// "sin límite" — un club que todavía no eligió plan (`planClubSeleccionado`
+// vacío, proyecto sin migracion_v66/v67, o un valor de plan que no coincide
+// con ninguno de los 3 conocidos) NUNCA se bloquea, para no romper el
+// comportamiento de siempre en un proyecto que no ha corrido estas
+// migraciones o que no pasó por el Onboarding Canvas (clubes migrados desde
+// antes de v66, ver su `DEFAULT true` en `onboarding_completed`).
+function limiteCanchasDelPlan(planCanchas) {
+  if (planCanchas === '1-3') return 3;
+  if (planCanchas === '4-7') return 7;
+  if (planCanchas === '8-12') return 12;
+  return null;
+}
 
 function formatoPrecioPlanOnboarding(precio) {
   return `$${Number(precio).toLocaleString('es-MX')}`;
@@ -40285,11 +40462,22 @@ function SeccionGeneralClub({
   onGuardarTarifaHorario,
   guardandoTarifaHorario,
   onEliminarTarifaHorario,
+  modoOnboarding = false,
+  nombreClub,
+  onEliminarClub,
+  eliminandoClub,
 }) {
   const config = configClub || CONFIG_CLUB_DEFAULT;
   const [horaApertura, setHoraApertura] = useState(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
   const [horaCierre, setHoraCierre] = useState(config.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
   const [error, setError] = useState('');
+  // Nombre del Administrador/Dueño (Refactor Onboarding v67) — tarjeta
+  // propia con su propio estado local + botón "Guardar", mismo patrón que
+  // "Horario de Apertura y Cierre" arriba (cada tarjeta de esta sección es
+  // su propio mini-formulario, todas reenvían el resto de `configClub` tal
+  // cual para no pisar los demás campos al guardar).
+  const [nombreAdministrador, setNombreAdministrador] = useState(config.nombreAdministrador || '');
+  const [errorNombreAdministrador, setErrorNombreAdministrador] = useState('');
 
   // Sincroniza los selectores si `configClub` llega/cambia después de montar
   // este componente (ej. la primera carga desde Supabase todavía no había
@@ -40297,7 +40485,34 @@ function SeccionGeneralClub({
   useEffect(() => {
     setHoraApertura(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
     setHoraCierre(config.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
-  }, [config.horaApertura, config.horaCierre]);
+    setNombreAdministrador(config.nombreAdministrador || '');
+  }, [config.horaApertura, config.horaCierre, config.nombreAdministrador]);
+
+  async function guardarNombreAdministrador() {
+    setErrorNombreAdministrador('');
+    if (!nombreAdministrador.trim()) {
+      setErrorNombreAdministrador('Escribe el nombre del Administrador/Dueño del club.');
+      return;
+    }
+    await onGuardarConfigClub?.({
+      nombre: config.nombre,
+      logoUrl: config.logoUrl,
+      nombreAdministrador: nombreAdministrador.trim(),
+      horaApertura: config.horaApertura,
+      horaCierre: config.horaCierre,
+      duracionReservaMinutos: config.duracionReservaMinutos,
+      duracionClaseMinutos: config.duracionClaseMinutos,
+      tarifaBaseHora: config.tarifaBaseHora,
+      tarifasHabilitadas: config.tarifasHabilitadas !== false,
+      toleranciaCancelacionMaster: config.toleranciaCancelacionMaster !== false,
+      toleranciaReservasEnabled: config.toleranciaReservasEnabled === true,
+      toleranciaReservasHoras: config.toleranciaReservasHoras,
+      toleranciaTorneosEnabled: config.toleranciaTorneosEnabled === true,
+      toleranciaTorneosHoras: config.toleranciaTorneosHoras,
+      toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
+      toleranciaRetasHoras: config.toleranciaRetasHoras,
+    });
+  }
 
   async function guardar() {
     setError('');
@@ -40308,6 +40523,7 @@ function SeccionGeneralClub({
     await onGuardarConfigClub?.({
       nombre: config.nombre,
       logoUrl: config.logoUrl,
+      nombreAdministrador: config.nombreAdministrador,
       horaApertura,
       horaCierre,
       // Duración de Bloques/Turnos (migracion_v42) y Tarifa Base/Estándar
@@ -40333,6 +40549,36 @@ function SeccionGeneralClub({
 
   return (
     <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <UserCircle2 size={16} className="text-lime-500" />
+          <h3 className="text-sm font-black text-slate-900">Nombre del Administrador / Dueño</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Este es el nombre que se muestra en el Header superior y en "Cambiar Operador/Turno" — en vez de la
+          primera parte de tu correo. Ej: "Adrián Ramírez".
+        </p>
+
+        <Campo label="Nombre completo">
+          <input
+            type="text"
+            value={nombreAdministrador}
+            onChange={(e) => setNombreAdministrador(e.target.value)}
+            placeholder="Ej. Adrián Ramírez"
+            className={inputClase}
+          />
+        </Campo>
+
+        {errorNombreAdministrador && <p className="mt-3 text-xs font-semibold text-rose-400">{errorNombreAdministrador}</p>}
+
+        <div className="mt-4 flex justify-end">
+          <BotonPrimario onClick={guardarNombreAdministrador} disabled={guardandoConfigClub}>
+            {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Guardar nombre
+          </BotonPrimario>
+        </div>
+      </div>
+
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
           <Clock size={16} className="text-lime-500" />
@@ -40383,7 +40629,109 @@ function SeccionGeneralClub({
         guardandoTarifaHorario={guardandoTarifaHorario}
         onEliminarTarifaHorario={onEliminarTarifaHorario}
       />
+
+      {/* Zona de Peligro ("Eliminar Club / Cancelar Cuenta", item 5 del
+          Refactor Onboarding v67) — a propósito NO se muestra durante el
+          Onboarding Canvas (`modoOnboarding`): un club que apenas se está
+          creando no tiene nada que borrar todavía, y mezclar esta acción
+          destructiva con el wizard de alta habría sido confuso/riesgoso. */}
+      {!modoOnboarding && <SeccionZonaPeligro nombreClub={nombreClub} onEliminarClub={onEliminarClub} eliminandoClub={eliminandoClub} />}
     </div>
+  );
+}
+
+// Zona de Peligro (Configuración del Club → General, item 5 del Refactor
+// Onboarding v67) — "Eliminar Club / Cancelar Cuenta". Requiere escribir el
+// nombre EXACTO del club en `ModalConfirmarEliminarClub` antes de habilitar
+// el botón de confirmación — mismo patrón de fricción intencional que
+// GitHub/Vercel usan para borrados irreversibles. Ver `onEliminarClub`
+// (`AppInterno`) para el detalle de qué hace realmente el borrado (BORRADO
+// SUAVE — columna `eliminado_en`, el resto de las tablas del club no se
+// tocan; ver comentario ahí y en migracion_v67).
+function SeccionZonaPeligro({ nombreClub, onEliminarClub, eliminandoClub }) {
+  const [modalAbierto, setModalAbierto] = useState(false);
+  return (
+    <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+      <div className="mb-1 flex items-center gap-2">
+        <ShieldAlert size={16} className="text-rose-500" />
+        <h3 className="text-sm font-black text-rose-700">Seguridad / Zona de Peligro</h3>
+      </div>
+      <p className="mb-3 text-xs text-rose-600">
+        Eliminar tu club deshabilita el acceso de todo tu equipo de inmediato. Esta acción no se puede deshacer desde
+        la app.
+      </p>
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-300 bg-white p-3">
+        <div>
+          <p className="text-xs font-black text-slate-900">Eliminar Club / Cancelar Cuenta</p>
+          <p className="text-[11px] text-slate-500">Borra el acceso a "{nombreClub || 'tu club'}" de forma definitiva.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setModalAbierto(true)}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-100 px-3 py-2 text-xs font-bold text-rose-700 transition hover:bg-rose-200"
+        >
+          <Trash2 size={14} /> Eliminar Club
+        </button>
+      </div>
+      {modalAbierto && (
+        <ModalConfirmarEliminarClub
+          nombreClub={nombreClub}
+          eliminando={eliminandoClub}
+          onClose={() => setModalAbierto(false)}
+          onConfirmar={async () => {
+            await onEliminarClub?.();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal de confirmación de "Eliminar Club" — el botón de confirmación solo
+// se habilita cuando el texto escrito coincide EXACTO (case-sensitive) con
+// el nombre real del club, para evitar un borrado accidental por doble clic.
+function ModalConfirmarEliminarClub({ nombreClub, onClose, onConfirmar, eliminando }) {
+  const [texto, setTexto] = useState('');
+  const nombreEsperado = (nombreClub || '').trim();
+  const coincide = nombreEsperado.length > 0 && texto.trim() === nombreEsperado;
+  // Mientras `eliminando` está en curso, Escape/click fuera no deben cerrar
+  // el modal a medio proceso — mismo criterio que el resto de modales
+  // destructivos de este archivo (ver `ModalDevolucionPOS`/`ModalArqueo`).
+  const cerrar = () => {
+    if (!eliminando) onClose?.();
+  };
+  return (
+    <ModalShell titulo={`Eliminar "${nombreEsperado || 'este club'}"`} onClose={cerrar} ancho="max-w-md" icon={AlertTriangle}>
+      <p className="mb-4 text-sm text-slate-600">
+        Esta acción bloquea el acceso al club para ti y todo tu equipo de inmediato. Para confirmar, escribe el
+        nombre exacto de tu club abajo:
+      </p>
+      <p className="mb-2 select-all rounded-lg bg-slate-100 px-3 py-2 text-center text-sm font-bold text-slate-800">
+        {nombreEsperado || '—'}
+      </p>
+      <input
+        type="text"
+        value={texto}
+        onChange={(e) => setTexto(e.target.value)}
+        placeholder="Escribe el nombre del club"
+        className={inputClase}
+        autoFocus
+      />
+      <div className="mt-5 flex justify-end gap-2">
+        <BotonSecundario onClick={cerrar} disabled={eliminando}>
+          Cancelar
+        </BotonSecundario>
+        <button
+          type="button"
+          disabled={!coincide || eliminando}
+          onClick={onConfirmar}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {eliminando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+          Eliminar definitivamente
+        </button>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -48254,8 +48602,16 @@ function AppInterno({ clubInicial } = {}) {
     (async () => {
       const { data } = await supabase.auth.getUser();
       const correo = data?.user?.email || '';
+      // Refactor Onboarding (v67): si el usuario ya tiene un
+      // `user_metadata.full_name` capturado (ej. quedó guardado en un
+      // intento anterior de Configuración/Onboarding, antes de que esta
+      // fila de `empleados` existiera), se usa ESE nombre en vez del
+      // prefijo crudo del correo (ej. "contacto.adrix") — el caso normal
+      // (club recién creado, ningún nombre capturado todavía) sigue
+      // cayendo al mismo respaldo de siempre.
+      const nombreCompleto = (data?.user?.user_metadata?.full_name || '').trim();
       await crearEmpleado({
-        nombre: correo ? correo.split('@')[0] : 'Propietario',
+        nombre: nombreCompleto || (correo ? correo.split('@')[0] : 'Propietario'),
         rol: 'owner',
         email: correo,
       });
@@ -48564,6 +48920,11 @@ function AppInterno({ clubInicial } = {}) {
       : null
   );
   const [guardandoActivacionOnboarding, setGuardandoActivacionOnboarding] = useState(false);
+  // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) —
+  // tope numérico derivado del plan snapshot de arriba (`null` = sin
+  // límite, ver `limiteCanchasDelPlan`). Memoizado para no recalcular en
+  // cada render; se reenvía tal cual a `ModuloParrillaOperativa`.
+  const limiteCanchasPlan = useMemo(() => limiteCanchasDelPlan(planClubSeleccionado?.canchas), [planClubSeleccionado]);
 
   // Rangos de Horario Habilitados para Clases (migracion_v30) — misma fila
   // de `configuracion_club`, guardado/cargado por separado del nombre/logo
@@ -49153,6 +49514,7 @@ function AppInterno({ clubInicial } = {}) {
         if (
           data.nombre != null ||
           data.logo_url != null ||
+          data.nombre_administrador != null ||
           data.hora_apertura != null ||
           data.hora_cierre != null ||
           data.duracion_reserva_minutos != null ||
@@ -49170,6 +49532,11 @@ function AppInterno({ clubInicial } = {}) {
           const nuevaConfig = {
             nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
             logoUrl: data.logo_url || '',
+            // Nombre del Administrador/Dueño (Refactor Onboarding v67) —
+            // mismo `select('*')` de arriba, sin consulta nueva: en un
+            // proyecto sin esta migración viene `undefined` y cae a cadena
+            // vacía (`CONFIG_CLUB_DEFAULT.nombreAdministrador`).
+            nombreAdministrador: (data.nombre_administrador || '').trim() || CONFIG_CLUB_DEFAULT.nombreAdministrador,
             // Horario de Operación del Club (item 4, migracion_v31) — mismo
             // `select('*')` de arriba, sin consulta nueva: en un proyecto
             // viejo sin esta migración, ambos vienen `undefined` y se cae al
@@ -49752,6 +50119,13 @@ function AppInterno({ clubInicial } = {}) {
       const limpia = {
         nombre: (nuevaConfig.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
         logoUrl: nuevaConfig.logoUrl || '',
+        // Nombre del Administrador/Dueño (Refactor Onboarding v67) — se
+        // limpia igual que `nombre` (trim + respaldo a lo anterior si viene
+        // vacío) PERO el sync hacia auth/empleados de abajo solo se dispara
+        // si queda un valor no vacío — un caller que no lo toca (ej. un
+        // guardado viejo de "Horario de Apertura y Cierre" que reconstruye
+        // `nuevaConfig` desde `config.*`) nunca lo borra por accidente.
+        nombreAdministrador: (nuevaConfig.nombreAdministrador || '').trim() || CONFIG_CLUB_DEFAULT.nombreAdministrador,
         // Horario de Operación del Club (item 4, migracion_v31).
         horaApertura: nuevaConfig.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura,
         horaCierre: nuevaConfig.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
@@ -49794,6 +50168,7 @@ function AppInterno({ clubInicial } = {}) {
         const campos = {
           nombre: limpia.nombre,
           logo_url: limpia.logoUrl || null,
+          nombre_administrador: limpia.nombreAdministrador || null,
           hora_apertura: limpia.horaApertura,
           hora_cierre: limpia.horaCierre,
           duracion_reserva_minutos: limpia.duracionReservaMinutos,
@@ -49817,6 +50192,7 @@ function AppInterno({ clubInicial } = {}) {
         // guardado (incluyendo nombre/logo, que sí existen desde siempre)
         // por columnas que ni siquiera se están mostrando en pantalla.
         const { error } = await actualizarConColumnasOpcionales('configuracion_club', CLUB_ACTIVO_ID, campos, [
+          'nombre_administrador',
           'hora_apertura',
           'hora_cierre',
           'duracion_reserva_minutos',
@@ -49840,11 +50216,93 @@ function AppInterno({ clubInicial } = {}) {
         // Realtime, sin interrumpir al operador con un aviso flotante.
         console.warn('[Club] No se pudo guardar el nombre/logo en Supabase — se guardó en modo local.', err);
       }
+      // Nombre del Administrador/Dueño (Refactor Onboarding v67) — sync
+      // best-effort EN PARALELO hacia (a) `user_metadata.full_name` del
+      // usuario de Supabase Auth y (b) la columna `nombre` de la fila de
+      // `empleados` con `rol: 'owner'` de este club — que es lo que
+      // REALMENTE pinta el Header/`ModalOperador` ("Cambiar Operador/Turno")
+      // hoy (ver `operador.nombre`, alimentado por `operadorRaw`/
+      // `empleados`, no por `configClub`). Sin este paso, capturar el campo
+      // en Configuración del Club/Onboarding no cambiaría nada visible ahí.
+      // No bloquea el guardado de arriba ni el toast final — si falla, el
+      // dueño simplemente sigue viendo el nombre anterior hasta el próximo
+      // guardado o refresco.
+      const nombreAdminSync = limpia.nombreAdministrador.trim();
+      if (nombreAdminSync && CLUB_ACTIVO_ID) {
+        // Optimista, de inmediato: si el colaborador fichado ahora mismo en
+        // esta terminal es el Propietario, el Header/`ModalOperador` deben
+        // reflejar el nombre nuevo sin esperar ninguna red — mismo criterio
+        // de Sincronización Silenciosa que el resto de este archivo. Se usa
+        // la forma funcional de ambos setters (`prev => ...`) a propósito:
+        // así siempre parte del estado MÁS RECIENTE de `empleados`/
+        // `operadorRaw`, sin importar si este `useCallback` quedó con un
+        // cierre viejo por sus dependencias (`[mostrarToast]`).
+        setEmpleados((prev) => prev.map((e) => (e.rol === 'owner' ? { ...e, nombre: nombreAdminSync } : e)));
+        setOperadorRaw((prev) => (prev && prev.rol === 'owner' ? { ...prev, nombre: nombreAdminSync } : prev));
+        (async () => {
+          try {
+            const { error: errorAuth } = await supabase.auth.updateUser({ data: { full_name: nombreAdminSync } });
+            if (errorAuth) throw errorAuth;
+          } catch (err) {
+            console.warn('[Club] No se pudo sincronizar el Nombre del Administrador hacia auth.user_metadata.full_name.', err);
+          }
+          try {
+            const { error: errorEmpleado } = await supabase
+              .from('empleados')
+              .update({ nombre: nombreAdminSync })
+              .eq('club_id', CLUB_ACTIVO_ID)
+              .eq('rol', 'owner');
+            if (errorEmpleado) throw errorEmpleado;
+          } catch (err) {
+            console.warn('[Club] No se pudo sincronizar el Nombre del Administrador hacia la fila de empleados (rol owner).', err);
+          }
+        })();
+      }
       mostrarToast({ titulo: 'Club actualizado', detalle: `${limpia.nombre} — ya se ve igual en todos los dispositivos.` });
       setGuardandoConfigClub(false);
     },
     [mostrarToast]
   );
+
+  // Zona de Peligro — "Eliminar Club / Cancelar Cuenta" (item 5 del Refactor
+  // Onboarding v67, migracion_v67). BORRADO SUAVE a propósito: este proyecto
+  // no usa FOREIGN KEYS (aislamiento 100% por `club_id`/RLS), así que no hay
+  // ninguna relación que Postgres pueda recorrer para purgar en cascada las
+  // decenas de tablas de un club (`ventas`, `reservas`, `kardex`,
+  // `empleados`, etc.) — borrarlas todas a mano desde el cliente, una por
+  // una, sería lento y fácil de dejar a medias si algo falla a mitad de
+  // camino. En vez de eso, se marca `configuracion_club.eliminado_en` (los
+  // datos del club quedan intactos, recuperables por soporte si hiciera
+  // falta) y `ClubAuthGate` (`resolverClubDeSesion`) rechaza cualquier
+  // intento de volver a entrar a un club con esta columna distinta de NULL
+  // — funcionalmente, el club y todo su equipo pierden el acceso de
+  // inmediato, que es el efecto que le importa al dueño. Al terminar, se
+  // cierra la sesión (Supabase Auth) para que `ClubAuthGate` vuelva al
+  // Login de inmediato, sin dejar al dueño viendo un Panel que ya no debería
+  // poder usar.
+  const [eliminandoClub, setEliminandoClub] = useState(false);
+  const eliminarClub = useCallback(async () => {
+    if (!CLUB_ACTIVO_ID) return;
+    setEliminandoClub(true);
+    try {
+      const { error } = await actualizarConColumnasOpcionales(
+        'configuracion_club',
+        CLUB_ACTIVO_ID,
+        { eliminado_en: new Date().toISOString() },
+        ['eliminado_en']
+      );
+      if (error) throw error;
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error('[Club] No se pudo eliminar el club.', err);
+      mostrarToast({
+        titulo: 'No se pudo eliminar el club',
+        detalle: detalleErrorSupabase(err) || 'Intenta de nuevo en unos segundos — si sigue fallando, corre migracion_v67 en Supabase.',
+        tono: 'error',
+      });
+      setEliminandoClub(false);
+    }
+  }, [mostrarToast]);
 
   // Interactive Onboarding Canvas (migracion_v66) — Paso 1 "Selección de
   // Plan": guarda el snapshot del plan elegido (rango de canchas, nombre,
@@ -51070,6 +51528,10 @@ function AppInterno({ clubInicial } = {}) {
       onGuardarConfigClub: guardarConfigClub,
       guardandoConfigClub,
       empleados,
+      onCrearEmpleado: crearEmpleado,
+      nombreClub: configClub?.nombre,
+      onEliminarClub: eliminarClub,
+      eliminandoClub,
       rangosHorarioClases,
       onGuardarRangosHorarioClases: guardarRangosHorarioClases,
       guardandoRangosHorarioClases,
@@ -51196,6 +51658,7 @@ function AppInterno({ clubInicial } = {}) {
                 jugadoresPorId={jugadoresPorId}
                 configClub={configClub}
                 tarifasHorarios={tarifasHorarios}
+                limiteCanchasPlan={limiteCanchasPlan}
               />
             ) : moduloActivo === 'pos' ? (
               <ModuloSmartPOS
@@ -51489,6 +51952,10 @@ function AppInterno({ clubInicial } = {}) {
                 onGuardarConfigClub={guardarConfigClub}
                 guardandoConfigClub={guardandoConfigClub}
                 empleados={empleados}
+                onCrearEmpleado={crearEmpleado}
+                nombreClub={configClub?.nombre}
+                onEliminarClub={eliminarClub}
+                eliminandoClub={eliminandoClub}
                 rangosHorarioClases={rangosHorarioClases}
                 onGuardarRangosHorarioClases={guardarRangosHorarioClases}
                 guardandoRangosHorarioClases={guardandoRangosHorarioClases}
@@ -51564,125 +52031,15 @@ function AppInterno({ clubInicial } = {}) {
 // `null`), y `conClubId`/`withClubId`/`canalClubFiltro` filtran en modo
 // estricto desde el primer render.
 
-// Fondo tipográfico animado de las pantallas de Auth — puramente
-// decorativo: un ticker/marquee de filas horizontales en grilla CSS,
-// alternando 2 frases del posicionamiento del producto en direcciones
-// opuestas, en verde neón (exactamente el mismo `lime-400` del botón
-// principal) a opacidad visible (25%, subida a pedido del club — antes
-// casi imperceptible al 10%) sobre el fondo `#f8fafc`: se nota claramente
-// sin competir con la tarjeta de login, que sigue siendo lo único que de
-// verdad se lee.
-// Reescrito desde cero sobre una base de CSS Grid: `auto-rows-[minmax(0,1fr)]`
-// reparte el alto disponible en partes EXACTAMENTE iguales entre
-// `FILAS_FONDO_AUTH` filas, sin importar el alto real del viewport — así no
-// quedan huecos ni encimes arriba/abajo en ningún tamaño de pantalla
-// (celular muy alto incluido) y no hace falta ni gap ni space-y ni máscara
-// de degradado. 20 filas (antes 18) para compensar el "desborde" extra de
-// `-inset-y-12` del contenedor (ver más abajo, fix de Safari/iOS): al
-// estirarse 3rem hacia arriba y abajo, un poco más de filas evita que se
-// note el reparto más ancho del grid.
-const FILAS_FONDO_AUTH = 20;
-// Filas IMPARES (1, 3, 5...): esta frase, hacia la derecha.
-const TEXTO_FONDO_AUTH_IMPAR = 'OPERATE BETTER • SELL MORE • GROW FASTER • ';
-// Filas PARES (2, 4, 6...): la misma terna en orden inverso, hacia la
-// izquierda — así ninguna fila vecina repite exactamente el mismo texto en
-// la misma dirección, refuerza la sensación de trama tejida del video de
-// referencia.
-const TEXTO_FONDO_AUTH_PAR = 'GROW FASTER • SELL MORE • OPERATE BETTER • ';
-// Cuántas veces se repite la terna DENTRO de cada uno de los 2 bloques
-// `shrink-0` del track: un bloque angosto en un monitor ancho (hasta 4K) es
-// lo que provoca el salto perceptible al llegar a translateX(-50%) — con 5
-// repeticiones por bloque el ancho real de cada bloque queda muy por
-// encima del 100% del viewport en cualquier pantalla, así el segundo
-// bloque entra siempre fuera del área visible y el corte del loop deja de
-// notarse por completo.
-const REPETICIONES_BLOQUE_FONDO_AUTH = 5;
-
-function FondoAuthAnimado() {
-  return (
-    <div className="pointer-events-none fixed -inset-x-0 -inset-y-12 z-0 h-[calc(100vh+6rem)] h-[calc(100dvh+6rem)] w-full overflow-hidden bg-[#f8fafc]">
-      {/* Keyframes + clases de animación propias (no dependen de
-          tailwind.config — este proyecto se entrega como un solo App.jsx):
-          cada fila trae un track `w-max flex` con 2 bloques `shrink-0`
-          IDÉNTICOS uno junto al otro, cada uno con la terna repetida varias
-          veces (`REPETICIONES_BLOQUE_FONDO_AUTH`) para garantizar que un
-          solo bloque ya cubra de sobra el ancho de cualquier pantalla — el
-          track se desplaza exactamente la mitad de su ancho total (un
-          bloque completo), así el ciclo nunca deja un salto/corte visible.
-          Filas pares hacia la izquierda, impares hacia la derecha,
-          duración lenta y elegante (65s-90s) + una preferencia de
-          movimiento reducido para quien la tenga activada en su SO.
-          `fixed` (no `absolute`) + `-inset-y-12` estira el fondo 3rem hacia
-          arriba y hacia abajo del viewport real — así cubre el notch, la
-          barra de estado y la barra de navegación de Safari en iPhone/iPad
-          sin dejar franjas blancas, incluso cuando esas barras aparecen o
-          desaparecen al hacer scroll. `h-[calc(100dvh+6rem)]` va DESPUÉS de
-          `h-[calc(100vh+6rem)]` a propósito: los navegadores que no
-          entienden `dvh` ignoran esa línea y se quedan con `100vh`; los que
-          sí lo entienden (Safari iOS moderno) la usan porque es la última
-          declaración — mismo criterio que `min-h-screen`/`min-h-dvh` en el
-          contenedor padre de la pantalla de Auth (ver `ClubAuthScreen` /
-          `ClubAuthGate`) evitan que se asome el blanco del body/html en
-          los bordes durante el rebote de scroll (bounce scroll) de iOS. */}
-      <style>{`
-        @keyframes marquee-left { 0% { transform: translateX(0%); } 100% { transform: translateX(-50%); } }
-        @keyframes marquee-right { 0% { transform: translateX(-50%); } 100% { transform: translateX(0%); } }
-        .animate-marquee-left { animation-name: marquee-left; animation-timing-function: linear; animation-iteration-count: infinite; }
-        .animate-marquee-right { animation-name: marquee-right; animation-timing-function: linear; animation-iteration-count: infinite; }
-        @media (prefers-reduced-motion: reduce) {
-          .animate-marquee-left, .animate-marquee-right { animation: none !important; transform: translateX(0) !important; }
-        }
-      `}</style>
-      <div className="grid h-full w-full grid-cols-1 auto-rows-[minmax(0,1fr)]">
-        {Array.from({ length: FILAS_FONDO_AUTH }).map((_, i) => {
-          const numeroFila = i + 1; // 1-based, para que "impar/par" sea literal
-          const esPar = numeroFila % 2 === 0;
-          const texto = esPar ? TEXTO_FONDO_AUTH_PAR : TEXTO_FONDO_AUTH_IMPAR;
-          const textoRepetido = texto.repeat(REPETICIONES_BLOQUE_FONDO_AUTH);
-          // Duración 65s-90s: movimiento lento y elegante (antes 25s-35s,
-          // se sentía todavía rápido para un fondo puramente decorativo) —
-          // filas vecinas nunca quedan perfectamente sincronizadas entre sí.
-          const duracionSeg = 65 + (i % 6) * 5;
-          return (
-            <div key={i} className="flex h-full w-full items-center overflow-hidden">
-              <div
-                className={`flex w-max ${esPar ? 'animate-marquee-left' : 'animate-marquee-right'}`}
-                style={{ animationDuration: `${duracionSeg}s` }}
-              >
-                <div className="flex shrink-0 pr-4">
-                  <span
-                    className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-25 sm:text-4xl lg:text-5xl"
-                    style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
-                  >
-                    {textoRepetido}
-                  </span>
-                </div>
-                <div className="flex shrink-0 pr-4">
-                  <span
-                    className="whitespace-nowrap text-3xl font-black uppercase leading-none tracking-tighter text-lime-400 opacity-25 sm:text-4xl lg:text-5xl"
-                    style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
-                  >
-                    {textoRepetido}
-                  </span>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// Fondo de VIDEO en bucle para la pantalla de Login (`ClubAuthScreen`) — a
-// pedido del club, reemplaza ahí el fondo tipográfico animado
-// (`FondoAuthAnimado`, que se conserva tal cual para las otras pantallas de
-// Auth: loading, error de reloj, completar registro) por un `<video>` a
-// pantalla completa, fijado detrás de la tarjeta de login.
+// Fondo de VIDEO en bucle para la pantalla de Login (`ClubAuthScreen`) — un
+// `<video>` a pantalla completa, fijado detrás de la tarjeta de login. El
+// fondo tipográfico animado que usaban el resto de las pantallas de Auth
+// (loading, error de reloj, "sin club") se eliminó por completo (refactor
+// v67, a pedido del club: se veía como una marca de agua repetitiva) — esas
+// pantallas ahora son fondo plano `#f8fafc`.
 // - `fixed inset-0 -z-10 h-full w-full object-cover`: cubre todo el
 //   viewport sin deformarse sin importar el aspect ratio del video ni el
-//   tamaño de pantalla (recorta, nunca estira) — mismo criterio `fixed` +
-//   `-z-10` que ya usa `FondoAuthAnimado` para no competir con la tarjeta.
+//   tamaño de pantalla (recorta, nunca estira).
 // - `autoPlay muted loop playsInline`: reproducción automática en bucle
 //   infinito, sin audio (requisito de los navegadores para permitir
 //   autoplay) y `playsInline` para que iOS no lo abra a pantalla completa
@@ -51726,6 +52083,42 @@ function FondoAuthVideo() {
       <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/40 to-black/65" />
     </>
   );
+}
+
+// Refactor Onboarding (v67) — "Completar Registro" eliminado: cuando el
+// proyecto de Supabase Auth exige confirmar correo, `signUp()` no da sesión
+// inmediata y el alta real del club (`crearOVincularClub`) se hace hasta que
+// el usuario confirma e inicia sesión por primera vez — un momento distinto,
+// a veces en otra pestaña/dispositivo, donde el nombre de club que se
+// escribió en `manejarRegistro` ya no existe en memoria. Antes se le volvía
+// a pedir con una pantalla extra ("Un último paso"); ahora se cachea aquí
+// (localStorage, SIN scope de club — todavía no existe ninguno) al enviar el
+// registro, y `ClubAuthGate` lo recupera solo, sin mostrar nada al usuario,
+// para crear el club automáticamente. Si no está disponible (otro
+// navegador/dispositivo confirmó el correo), se cae a un nombre genérico —
+// el dueño lo renombra después desde "Personalizar Club" o el Módulo General
+// del Onboarding, nunca se bloquea la entrada por esto.
+const LS_KEY_NOMBRE_CLUB_PENDIENTE = 'qlubos_nombre_club_pendiente';
+function guardarNombreClubPendiente(nombre) {
+  try {
+    localStorage.setItem(LS_KEY_NOMBRE_CLUB_PENDIENTE, (nombre || '').trim());
+  } catch (_e) {
+    /* localStorage no disponible — el auto-alta cae al nombre genérico, sin romper el flujo */
+  }
+}
+function leerNombreClubPendiente() {
+  try {
+    return (localStorage.getItem(LS_KEY_NOMBRE_CLUB_PENDIENTE) || '').trim();
+  } catch (_e) {
+    return '';
+  }
+}
+function limpiarNombreClubPendiente() {
+  try {
+    localStorage.removeItem(LS_KEY_NOMBRE_CLUB_PENDIENTE);
+  } catch (_e) {
+    /* no-op */
+  }
 }
 
 function ClubAuthScreen({ onAutenticado }) {
@@ -51801,6 +52194,11 @@ function ClubAuthScreen({ onAutenticado }) {
     }
     setCargando(true);
     setError('');
+    // Refactor Onboarding (v67) — se cachea ANTES del `signUp()`: si el
+    // proyecto exige confirmar correo, este nombre es lo único que
+    // `ClubAuthGate` va a tener disponible más tarde para dar de alta el
+    // club automáticamente (ver `leerNombreClubPendiente`, arriba).
+    guardarNombreClubPendiente(nombreClub);
     try {
       // Interactive Onboarding Canvas (fix urgente) — `emailRedirectTo`
       // explícito: si el proyecto de Supabase Auth tiene "Confirm email"
@@ -51847,6 +52245,7 @@ function ClubAuthScreen({ onAutenticado }) {
       // un club en blanco y pasa por el Interactive Onboarding Canvas.
       const resultado = await crearOVincularClub({ usuarioId: usuario.id, nombreClub: nombreClub.trim(), vincularExistente: false });
       if (!resultado.ok) throw new Error(resultado.error || 'No se pudo crear el club.');
+      limpiarNombreClubPendiente(); // ya se usó (o ni falta hizo, sesión inmediata) — no debe sobrevivir a un futuro registro
       // Marco Legal (migracion_v61): best-effort, nunca bloquea el alta del
       // club — ver `registrarAceptacionLegal`.
       registrarAceptacionLegal('configuracion_club', resultado.club?.id, 'club');
@@ -52234,10 +52633,16 @@ async function crearOVincularClub({ usuarioId, nombreClub, vincularExistente }) 
 // aquí mismo se detecta el cambio a `session: null` para volver a mostrar el
 // login.
 function ClubAuthGate() {
-  const [estado, setEstado] = useState('cargando'); // 'cargando' | 'sin_sesion' | 'sin_club' | 'listo'
+  const [estado, setEstado] = useState('cargando'); // 'cargando' | 'sin_sesion' | 'sin_club' | 'club_eliminado' | 'listo'
   const [club, setClub] = useState(null);
   const [sesion, setSesion] = useState(null);
   const [errorClub, setErrorClub] = useState('');
+  // Refactor Onboarding (v67) — "Completar Registro" eliminado: el alta
+  // automática de "sin_club" (ver más abajo) puede fallar (red, Supabase
+  // caído); este mensaje es lo único que distingue "todavía creando tu
+  // club" de "no se pudo, aquí está el porqué + Reintentar".
+  const [errorProvisionClub, setErrorProvisionClub] = useState('');
+  const intentoProvisionEnCursoRef = useRef(false);
 
   const resolverClubDeSesion = useCallback(async (session) => {
     setSesion(session || null);
@@ -52258,6 +52663,17 @@ function ClubAuthGate() {
       );
       if (error) throw error;
       if (data) {
+        // Zona de Peligro (migracion_v67) — "Eliminar Club/Cancelar Cuenta"
+        // es un borrado SUAVE: la fila y todos los datos del club siguen
+        // intactos, pero nadie vuelve a entrar a él desde aquí. Tolerante:
+        // en un proyecto sin la migración, `eliminado_en` viene `undefined`
+        // y este bloque nunca se activa.
+        if (data.eliminado_en) {
+          establecerClubActivo(null);
+          setClub(null);
+          setEstado('club_eliminado');
+          return;
+        }
         establecerClubActivo(data.id);
         setClub(data);
         setEstado('listo');
@@ -52266,16 +52682,17 @@ function ClubAuthGate() {
         // todavía — pasa cuando `signUp` no trae sesión inmediata (ver
         // `manejarRegistro`, proyecto con confirmación de correo activada) y
         // el alta del club quedó pendiente hasta este primer login. Se
-        // completa aquí mismo con `CompletarRegistroClub`, abajo.
+        // completa automáticamente más abajo (`provisionarClubAutomatico`),
+        // sin mostrarle ninguna pantalla nueva al usuario.
         setEstado('sin_club');
       }
     } catch (err) {
       console.error('[ClubOS] Error resolviendo el club de la sesión.', err);
       if (esErrorRelojDesfasado(err)) {
         // Estado propio (no "sin_club"): el problema es el reloj del
-        // dispositivo, no la cuenta — mostrarle el flujo de "completar
-        // registro" aquí sería confuso y hasta arriesgado (podría duplicar
-        // el club). Ofrece reintentar en vez de pedir datos de más.
+        // dispositivo, no la cuenta — auto-provisionar el club aquí sería
+        // confuso y hasta arriesgado (podría duplicar el club). Ofrece
+        // reintentar en vez de intentarlo a ciegas.
         setErrorClub(MENSAJE_ERROR_RELOJ_DESFASADO);
         setEstado('error_reloj');
         return;
@@ -52315,11 +52732,48 @@ function ClubAuthGate() {
     }
   }
 
+  // Refactor Onboarding (v67) — auto-provisión silenciosa del club: única
+  // forma en que se resuelve `estado === 'sin_club'` ahora que
+  // `CompletarRegistroClub` ya no existe. El nombre capturado en el primer
+  // formulario (`ClubAuthScreen`) se recupera de `leerNombreClubPendiente()`
+  // — si no está disponible (confirmó desde otro navegador/dispositivo), se
+  // usa un nombre genérico y el dueño lo cambia después. En cuanto el club
+  // existe, `manejarAutenticado` lleva directo a `AppInterno`, que a su vez
+  // (por `onboarding_completed: false`, ver `crearOVincularClub`) muestra el
+  // Interactive Onboarding Canvas de inmediato — nunca una pantalla
+  // intermedia.
+  const provisionarClubAutomatico = useCallback(async () => {
+    if (!sesion?.user?.id || intentoProvisionEnCursoRef.current) return;
+    intentoProvisionEnCursoRef.current = true;
+    setErrorProvisionClub('');
+    const nombrePendiente = leerNombreClubPendiente();
+    const resultado = await crearOVincularClub({
+      usuarioId: sesion.user.id,
+      nombreClub: nombrePendiente || 'Mi Club',
+      vincularExistente: false,
+    });
+    intentoProvisionEnCursoRef.current = false;
+    if (!resultado.ok) {
+      setErrorProvisionClub(resultado.error || 'No se pudo crear tu club automáticamente.');
+      return;
+    }
+    limpiarNombreClubPendiente();
+    registrarAceptacionLegal('configuracion_club', resultado.club?.id, 'club');
+    manejarAutenticado(sesion, resultado.club);
+  }, [sesion]);
+
+  useEffect(() => {
+    if (estado === 'sin_club') provisionarClubAutomatico();
+    // Solo debe dispararse cuando `estado` ENTRA a 'sin_club' — no en cada
+    // cambio de `provisionarClubAutomatico` (cambiaría de identidad con
+    // cada render de `sesion` y podría reintentar en bucle).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estado]);
+
   if (estado === 'cargando') {
     return (
-      <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#f8fafc]">
-        <FondoAuthAnimado />
-        <Loader2 size={28} className="relative z-10 animate-spin text-lime-400" />
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center bg-[#f8fafc]">
+        <Loader2 size={28} className="animate-spin text-lime-400" />
       </div>
     );
   }
@@ -52330,18 +52784,60 @@ function ClubAuthGate() {
 
   if (estado === 'sin_club') {
     return (
-      <CompletarRegistroClub
-        usuarioId={sesion?.user?.id}
-        errorInicial={errorClub}
-        onListo={(clubCreado) => manejarAutenticado(sesion, clubCreado)}
-      />
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center bg-[#f8fafc] px-4">
+        {errorProvisionClub ? (
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-2xl">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-rose-400/10 text-rose-500 ring-1 ring-rose-400/30">
+              <AlertTriangle size={22} />
+            </div>
+            <h2 className="text-base font-bold text-slate-900">No se pudo preparar tu club</h2>
+            <p className="mt-2 text-xs text-slate-500">{errorProvisionClub}</p>
+            <BotonPrimario className="mt-4 w-full" onClick={provisionarClubAutomatico}>
+              <RefreshCw size={16} /> Reintentar
+            </BotonPrimario>
+            <BotonSecundario
+              className="mt-2 w-full"
+              onClick={async () => {
+                await supabase.auth.signOut();
+              }}
+            >
+              Cerrar sesión
+            </BotonSecundario>
+          </div>
+        ) : (
+          <Loader2 size={28} className="animate-spin text-lime-400" />
+        )}
+      </div>
+    );
+  }
+
+  if (estado === 'club_eliminado') {
+    return (
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center bg-[#f8fafc] px-4">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-2xl">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-rose-400/10 text-rose-500 ring-1 ring-rose-400/30">
+            <Trash2 size={22} />
+          </div>
+          <h2 className="text-base font-bold text-slate-900">Esta cuenta fue eliminada</h2>
+          <p className="mt-2 text-xs text-slate-500">
+            El club asociado a esta cuenta ya no está disponible. Si crees que fue un error, contacta a soporte.
+          </p>
+          <BotonSecundario
+            className="mt-4 w-full"
+            onClick={async () => {
+              await supabase.auth.signOut();
+            }}
+          >
+            Cerrar sesión
+          </BotonSecundario>
+        </div>
+      </div>
     );
   }
 
   if (estado === 'error_reloj') {
     return (
-      <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#f8fafc] px-4">
-        <FondoAuthAnimado />
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center bg-[#f8fafc] px-4">
         <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-2xl">
           <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30">
             <AlertTriangle size={22} />
@@ -52365,129 +52861,14 @@ function ClubAuthGate() {
   }
 
   // `clubInicial` (fix urgente, condición de carrera de Onboarding): `club`
-  // aquí SIEMPRE ya viene resuelto (recién creado por `manejarRegistro`/
-  // `CompletarRegistroClub`, o cargado por `resolverClubDeSesion` en un
+  // aquí SIEMPRE ya viene resuelto (recién creado por `manejarRegistro`/la
+  // auto-provisión de arriba, o cargado por `resolverClubDeSesion` en un
   // login/reload normal) — pasarlo tal cual evita que `AppInterno` tenga que
   // arrancar "a ciegas" y esperar su propio round-trip a Supabase para saber
   // si debe mostrar el Onboarding Canvas, que era exactamente la condición
   // de carrera que por un instante dejaba ver el Panel Operativo/Kiosko
   // ("vista previa sin onboarding") antes de redirigir.
   return <AppInterno key={club?.id ?? 'sin-club'} clubInicial={club} />;
-}
-
-// Pantalla de remate del registro para el caso en el que Supabase Auth
-// exige confirmar el correo antes de dar sesión (ajuste por default en
-// proyectos nuevos): el usuario ya existe y ya inició sesión, pero el
-// nombre de club que capturó en `ClubAuthScreen` se perdió junto con ese
-// primer formulario (la confirmación pasa en otra pestaña/momento) — así
-// que se le vuelve a pedir aquí, una sola vez, antes de entrar al panel.
-function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
-  const [nombreClub, setNombreClub] = useState('');
-  const [aceptaLegalClub, setAceptaLegalClub] = useState(false);
-  const [cargando, setCargando] = useState(false);
-  const [error, setError] = useState(errorInicial || '');
-
-  async function guardar(e) {
-    e.preventDefault();
-    if (!usuarioId) {
-      setError('Tu sesión no es válida — vuelve a iniciar sesión.');
-      return;
-    }
-    if (!nombreClub.trim()) {
-      setError('Ponle un nombre a tu club.');
-      return;
-    }
-    if (!aceptaLegalClub) {
-      setError('Debes aceptar los Términos y Condiciones para Clubes y la Política de Privacidad.');
-      return;
-    }
-    setCargando(true);
-    setError('');
-    // Checkbox "Vincular mi club existente" eliminado (mismo criterio que
-    // `ClubAuthScreen`) — este paso siempre crea un club nuevo.
-    const resultado = await crearOVincularClub({ usuarioId, nombreClub: nombreClub.trim(), vincularExistente: false });
-    setCargando(false);
-    if (!resultado.ok) {
-      setError(resultado.error || 'No se pudo crear el club.');
-      return;
-    }
-    // Marco Legal (migracion_v61): best-effort, nunca bloquea el alta del
-    // club — ver `registrarAceptacionLegal`.
-    registrarAceptacionLegal('configuracion_club', resultado.club?.id, 'club');
-    onListo(resultado.club);
-  }
-
-  return (
-    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#f8fafc] px-4 py-10">
-      <FondoAuthAnimado />
-      <div className="relative z-10 w-full max-w-md">
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
-          <div className="mb-5 flex items-start gap-3">
-            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
-              <Building2 size={18} />
-            </div>
-            <div>
-              <h2 className="text-base font-bold text-slate-900">Un último paso</h2>
-              <p className="mt-0.5 text-xs text-slate-500">Tu correo ya está confirmado — ponle nombre a tu club para terminar.</p>
-            </div>
-          </div>
-
-          {error && (
-            <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
-              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <form onSubmit={guardar} className="space-y-4">
-            <Campo label="Nombre del club">
-              <div className="relative">
-                <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  className={`${inputClase} pl-9`}
-                  value={nombreClub}
-                  onChange={(e) => setNombreClub(e.target.value)}
-                />
-              </div>
-            </Campo>
-            {/* Marco Legal (migracion_v61) — la aceptación del primer
-                formulario (`ClubAuthScreen`) no sobrevive el viaje de
-                confirmación de correo, así que se vuelve a pedir aquí,
-                mismo criterio que ya aplica `nombreClub` en este paso. */}
-            <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
-              <input
-                type="checkbox"
-                checked={aceptaLegalClub}
-                onChange={(e) => setAceptaLegalClub(e.target.checked)}
-                className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
-              />
-              <span>
-                Acepto los{' '}
-                <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-emerald-700 underline hover:text-emerald-800">
-                  Términos y Condiciones para Clubes (SaaS B2B) y la Política de Privacidad
-                </a>
-                .
-              </span>
-            </label>
-            <BotonPrimario type="submit" disabled={cargando || !aceptaLegalClub} className="w-full">
-              {cargando ? <Loader2 size={16} className="animate-spin" /> : <Building2 size={16} />}
-              Continuar
-            </BotonPrimario>
-            <BotonSecundario
-              type="button"
-              className="w-full"
-              onClick={async () => {
-                await supabase.auth.signOut();
-              }}
-            >
-              Cerrar sesión
-            </BotonSecundario>
-          </form>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 /* ============================================================================
@@ -52847,8 +53228,7 @@ export default function App() {
           none`: sin esto, un blanco puro por defecto de html/body podría
           alcanzar a asomar (desfasado del `#f8fafc` de la app) en los
           bordes durante el rebote de scroll (bounce scroll) de iOS, sobre todo en
-          las pantallas de Auth donde `FondoAuthAnimado` ya se estira con
-          `-inset-y-12` para cubrir notch/barra de estado/barra de Safari.
+          las pantallas de Auth (login/registro, "sin club", error de reloj).
           Va aquí (no en un index.css aparte) porque este proyecto se
           entrega como un solo App.jsx; se aplica una sola vez para TODO el
           árbol (Portal Público y panel interno / Auth por igual).
