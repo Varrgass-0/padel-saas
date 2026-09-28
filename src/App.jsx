@@ -851,6 +851,9 @@ import {
   Timer,
   Copy,
   Sliders,
+  ArrowRight,
+  Rocket,
+  PartyPopper,
 } from 'lucide-react';
 
 /* ============================================================================
@@ -39930,14 +39933,28 @@ function ModuloConfiguracionClub({
   jugadoresPorId,
   operador,
   permisos,
+  // Interactive Onboarding Canvas (migracion_v66) — cuando `OnboardingCanvasClub`
+  // monta este MISMO componente (Paso 3 "Setup Canvas"), en vez de duplicar
+  // las 4 secciones existentes en un wizard aparte: (a) oculta la pestaña
+  // "Wallet" (fuera de alcance del onboarding, a propósito) y (b) agrega una
+  // barra inferior de navegación ("Siguiente Módulo"/"Atrás" + indicador de
+  // progreso) que avanza por las MISMAS pestañas — cero lógica de guardado
+  // nueva, cada sección sigue usando exactamente los mismos props/callbacks
+  // de siempre. `onFinalizarOnboarding` se dispara al presionar el botón del
+  // último módulo ("Finalizar Configuración").
+  modoOnboarding = false,
+  onFinalizarOnboarding,
 }) {
   const [tab, setTab] = useState('portal');
-  const tabActual = TABS_CONFIGURACION_CLUB.find((t) => t.value === tab);
+  const tabsVisibles = modoOnboarding ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet') : TABS_CONFIGURACION_CLUB;
+  const tabActual = tabsVisibles.find((t) => t.value === tab) || tabsVisibles[0];
+  const indiceTabActual = tabsVisibles.findIndex((t) => t.value === tabActual.value);
+  const esUltimoModuloOnboarding = modoOnboarding && indiceTabActual === tabsVisibles.length - 1;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-1 rounded-lg border border-slate-300 bg-slate-100 p-1">
-        {TABS_CONFIGURACION_CLUB.map((t) => {
+        {tabsVisibles.map((t) => {
           const Icon = t.icon;
           return (
             <button
@@ -40020,6 +40037,233 @@ function ModuloConfiguracionClub({
           </p>
         </div>
       )}
+
+      {modoOnboarding && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-300 bg-white p-3">
+          <div className="flex items-center gap-1.5">
+            {tabsVisibles.map((t, i) => (
+              <span
+                key={t.value}
+                className={`h-1.5 w-7 rounded-full transition ${i <= indiceTabActual ? 'bg-lime-400' : 'bg-slate-200'}`}
+              />
+            ))}
+            <span className="ml-2 text-[11px] font-bold text-slate-500">
+              Módulo {indiceTabActual + 1} de {tabsVisibles.length} — {tabActual?.label}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {indiceTabActual > 0 && (
+              <BotonSecundario onClick={() => setTab(tabsVisibles[indiceTabActual - 1].value)}>Atrás</BotonSecundario>
+            )}
+            {esUltimoModuloOnboarding ? (
+              <BotonPrimario onClick={onFinalizarOnboarding}>
+                Finalizar Configuración <ArrowRight size={14} />
+              </BotonPrimario>
+            ) : (
+              <BotonPrimario onClick={() => setTab(tabsVisibles[indiceTabActual + 1].value)}>
+                Siguiente Módulo <ArrowRight size={14} />
+              </BotonPrimario>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Interactive Onboarding Canvas (migracion_v66) — reemplaza el flujo rígido
+// "Paso 1/Paso 2" por una experiencia centrada en la propuesta de valor:
+// Selección de Plan → Kickoff → Setup Canvas (reutiliza `ModuloConfiguracionClub`
+// tal cual, en modo wizard, justo arriba) → Confirmación/Activación (mock,
+// listo para Stripe). Se monta desde `AppInterno`, ANTES del gate de
+// Kiosko/PIN (ver "Sistema Kiosko/PIN — gate de entrada" más abajo), mientras
+// `onboardingCompletedClub === false` — un club recién creado no ve ni el
+// Sidebar ni ningún módulo operativo hasta terminar este asistente. Mismo
+// lenguaje visual Tema Claro (`#f8fafc` fijo, tarjetas blancas, acentos
+// `lime-400`) que `ClubAuthScreen`, la pantalla que el dueño acaba de dejar
+// segundos antes — la transición del registro al onboarding se siente
+// continua, no un salto a otra app.
+// ============================================================================
+
+const PLANES_ONBOARDING_CLUB = [
+  { canchas: '1-3', nombre: '1 – 3 Canchas', precioMensual: 1499 },
+  { canchas: '4-7', nombre: '4 – 7 Canchas', precioMensual: 2990 },
+  { canchas: '8-12', nombre: '8 – 12 Canchas', precioMensual: 4990 },
+];
+
+function formatoPrecioPlanOnboarding(precio) {
+  return `$${Number(precio).toLocaleString('es-MX')}`;
+}
+
+// Envoltura compartida por las pantallas del wizard (Plan/Kickoff/
+// Confirmación) — mismo criterio que `ClubAuthScreen` (fondo `#f8fafc` fijo,
+// sin depender del modo oscuro del resto de la app).
+function LienzoOnboardingClub({ children, ancho = 'max-w-3xl' }) {
+  return (
+    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#f8fafc] px-4 py-10">
+      <div className={`relative w-full ${ancho}`}>{children}</div>
+    </div>
+  );
+}
+
+// ---- Paso 1: Propuesta de Valor y Selección de Plan (Tiers) --------------
+function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSeleccionarPlan, onContinuar }) {
+  return (
+    <LienzoOnboardingClub ancho="max-w-4xl">
+      <div className="mb-8 text-center">
+        <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-lime-300 bg-lime-50 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-lime-700">
+          <Sparkles size={12} /> {nombreClub ? `Bienvenido, ${nombreClub}` : 'Bienvenido a QLUBOS'}
+        </div>
+        <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">Un sistema. Una suscripción. Todo incluido.</h1>
+        <p className="mt-2 text-sm font-medium text-slate-500">Elige tu plan según el tamaño de tu club.</p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        {PLANES_ONBOARDING_CLUB.map((plan) => {
+          const activo = planSeleccionado?.canchas === plan.canchas;
+          return (
+            <button
+              key={plan.canchas}
+              type="button"
+              onClick={() => onSeleccionarPlan(plan)}
+              className={`flex flex-col items-start gap-3 rounded-2xl border-2 bg-white p-5 text-left transition ${
+                activo ? 'border-lime-400 shadow-[0_0_0_4px_rgba(163,230,53,0.25)]' : 'border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${activo ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-500'}`}>
+                <LayoutGrid size={18} />
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
+                <p className="mt-1 text-2xl font-black text-slate-900">
+                  {formatoPrecioPlanOnboarding(plan.precioMensual)}
+                  <span className="text-sm font-semibold text-slate-400"> / mes</span>
+                </p>
+              </div>
+              {activo && (
+                <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-lime-600">
+                  <CheckCircle2 size={14} /> Plan seleccionado
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-8 flex justify-center">
+        <BotonPrimario onClick={onContinuar} disabled={!planSeleccionado} className="px-8 py-3 text-base">
+          Continuar <ArrowRight size={16} />
+        </BotonPrimario>
+      </div>
+    </LienzoOnboardingClub>
+  );
+}
+
+// ---- Paso 2: Transición Interactiva ("Kickoff") ---------------------------
+function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
+  return (
+    <LienzoOnboardingClub ancho="max-w-lg">
+      <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200 bg-white p-10 text-center shadow-sm">
+        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-lime-400 text-slate-950">
+          <PartyPopper size={30} />
+        </div>
+        <div>
+          <h2 className="text-2xl font-black text-slate-900">¡Bienvenido a QLUBOS!</h2>
+          <p className="mt-1 text-sm font-medium text-slate-500">Comencemos a configurar {nombreClub || 'tu club'}.</p>
+        </div>
+        <BotonPrimario onClick={onComenzar} className="w-full px-6 py-3 text-base">
+          <Rocket size={16} /> Comenzar Configuración
+        </BotonPrimario>
+      </div>
+    </LienzoOnboardingClub>
+  );
+}
+
+// ---- Paso 4: Confirmación y Pago de Membresía (mock, listo para Stripe) --
+function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar }) {
+  return (
+    <LienzoOnboardingClub ancho="max-w-lg">
+      <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200 bg-white p-10 text-center shadow-sm">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-lime-100 text-lime-600">
+          <CheckCircle2 size={32} />
+        </div>
+        <div>
+          <h2 className="text-2xl font-black text-slate-900">Todo listo</h2>
+          <p className="mt-1 text-sm font-medium text-slate-500">La configuración inicial de tu club ya está lista.</p>
+        </div>
+
+        <div className="w-full rounded-xl border border-slate-200 bg-slate-50 p-4 text-left">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Plan elegido</p>
+          <p className="mt-1 text-lg font-black text-slate-900">
+            {planSeleccionado ? `Plan ${planSeleccionado.canchas} Canchas` : 'Sin plan seleccionado'}
+          </p>
+          {planSeleccionado?.precioMensual != null && (
+            <p className="text-sm font-semibold text-slate-500">{formatoPrecioPlanOnboarding(planSeleccionado.precioMensual)} MXN/mes</p>
+          )}
+        </div>
+
+        {/* Mock de pasarela de pago — placeholder listo para reemplazarse por
+            un Checkout real de Stripe: HOY no se cobra nada, este botón solo
+            marca `onboarding_completed: true` en `configuracion_club` (ver
+            `finalizarOnboardingClub` en `AppInterno`). Cuando se integre
+            Stripe, la confirmación real de pago debe ocurrir ANTES de esta
+            llamada — este es el único punto donde se "abre la puerta" al
+            Panel Operativo. */}
+        <BotonPrimario onClick={onConfirmar} disabled={guardando} className="w-full px-6 py-3 text-base">
+          {guardando ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+          Confirmar y Activar Club
+        </BotonPrimario>
+      </div>
+    </LienzoOnboardingClub>
+  );
+}
+
+// ---- Orquestador: máquina de 4 etapas -------------------------------------
+// `moduloConfigProps` es exactamente el mismo objeto de props que
+// `AppInterno` ya arma para el `<ModuloConfiguracionClub>` de producción (ver
+// más abajo, dentro del router de módulos) — se reenvía tal cual, sin
+// reconstruir ningún prop nuevo, para que el Paso 3 sea 100% el mismo
+// componente/datos/guardado que el resto de la app.
+function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan, guardandoActivacion, onConfirmarActivacion, moduloConfigProps }) {
+  const [etapa, setEtapa] = useState('plan'); // 'plan' | 'kickoff' | 'setup' | 'confirmacion'
+
+  if (etapa === 'plan') {
+    return (
+      <PantallaSeleccionPlanOnboarding
+        nombreClub={nombreClub}
+        planSeleccionado={planSeleccionado}
+        onSeleccionarPlan={onSeleccionarPlan}
+        onContinuar={() => setEtapa('kickoff')}
+      />
+    );
+  }
+
+  if (etapa === 'kickoff') {
+    return <PantallaKickoffOnboarding nombreClub={nombreClub} onComenzar={() => setEtapa('setup')} />;
+  }
+
+  if (etapa === 'confirmacion') {
+    return <PantallaConfirmacionOnboarding planSeleccionado={planSeleccionado} guardando={guardandoActivacion} onConfirmar={onConfirmarActivacion} />;
+  }
+
+  // etapa === 'setup' — Asistente Interactivo de Configuración (Setup
+  // Canvas): reutiliza `ModuloConfiguracionClub` completo, con la barra de
+  // módulos + wizard nav ya integrados (`modoOnboarding`, ver la definición
+  // de `ModuloConfiguracionClub` arriba) — cero componentes nuevos para
+  // Portal/General/Jugadores/Reservas: son EXACTAMENTE los mismos que el
+  // Panel Operativo usa en producción, incluida la Wallet excluida a
+  // propósito (`modoOnboarding` oculta esa pestaña).
+  return (
+    <div className="min-h-screen min-h-dvh bg-[#f8fafc] px-4 py-8 sm:px-8">
+      <div className="mx-auto mb-6 max-w-5xl text-center">
+        <p className="text-[11px] font-bold uppercase tracking-widest text-lime-600">Configuración inicial</p>
+        <h2 className="text-2xl font-black text-slate-900">Configuremos {nombreClub || 'tu club'}</h2>
+        <p className="mt-1 text-sm text-slate-500">Puedes ajustar cualquiera de estos módulos después, desde Configuración del Club.</p>
+      </div>
+      <div className="mx-auto max-w-5xl">
+        <ModuloConfiguracionClub {...moduloConfigProps} modoOnboarding onFinalizarOnboarding={() => setEtapa('confirmacion')} />
+      </div>
     </div>
   );
 }
@@ -48292,6 +48536,21 @@ function AppInterno() {
   const [configClub, setConfigClub] = useState(() => leerConfigClubLocal());
   const [guardandoConfigClub, setGuardandoConfigClub] = useState(false);
 
+  // Interactive Onboarding Canvas (migracion_v66) — arranca en `true`
+  // (Onboarding "completado"/omitido) a propósito: es el valor MÁS SEGURO
+  // mientras `cargarConfigClubSupabase` todavía no responde, para que un
+  // club YA EXISTENTE (el 100% de los casos reales hoy) jamás vea ni por un
+  // instante el wizard de Selección de Plan/Setup Canvas por una carrera de
+  // timing en la carga. Solo se pone en `false` cuando Supabase confirma
+  // explícitamente `onboarding_completed === false` (club recién creado,
+  // ver `crearOVincularClub`) — cualquier otro valor (incluido
+  // `undefined`/columna sin migrar) se queda en `true`. `planClubSeleccionado`
+  // guarda el plan elegido en el Paso 1 (snapshot: rango de canchas, nombre,
+  // precio mensual) — `null` hasta que el dueño elige una tarjeta.
+  const [onboardingCompletedClub, setOnboardingCompletedClub] = useState(true);
+  const [planClubSeleccionado, setPlanClubSeleccionado] = useState(null);
+  const [guardandoActivacionOnboarding, setGuardandoActivacionOnboarding] = useState(false);
+
   // Rangos de Horario Habilitados para Clases (migracion_v30) — misma fila
   // de `configuracion_club`, guardado/cargado por separado del nombre/logo
   // de arriba (ver `guardarRangosHorarioClases` más abajo) para no mezclar
@@ -48997,6 +49256,19 @@ function AppInterno() {
           setProductosAddonsIds(nuevaAddonsConfig.productosIds);
           guardarAddonsConfigLocal(nuevaAddonsConfig);
         }
+        // Interactive Onboarding Canvas (migracion_v66) — mismo `select('*')`
+        // de arriba, sin consulta nueva. `!== false` es la parte crítica:
+        // un proyecto sin la migración trae `data.onboarding_completed:
+        // undefined`, que aquí se trata igual que `true` (completado) — solo
+        // un `false` explícito (club nuevo, recién creado) activa el wizard.
+        setOnboardingCompletedClub(data.onboarding_completed !== false);
+        if (data.plan_canchas != null || data.plan_nombre != null || data.plan_precio_mensual != null) {
+          setPlanClubSeleccionado({
+            canchas: data.plan_canchas || null,
+            nombre: data.plan_nombre || null,
+            precioMensual: data.plan_precio_mensual != null ? Number(data.plan_precio_mensual) : null,
+          });
+        }
       }
     } catch (err) {
       if (!esErrorTablaInexistente(err) && !opts.silencioso) {
@@ -49559,6 +49831,77 @@ function AppInterno() {
     },
     [mostrarToast]
   );
+
+  // Interactive Onboarding Canvas (migracion_v66) — Paso 1 "Selección de
+  // Plan": guarda el snapshot del plan elegido (rango de canchas, nombre,
+  // precio mensual). Sincronización Silenciosa: el estado local avanza de
+  // inmediato (nunca bloquea el wizard esperando la red) y Supabase se
+  // actualiza best-effort por debajo — un fallo aquí no debe trabar el
+  // onboarding, ya se reintentará en el guardado final de Confirmación si
+  // hace falta.
+  const guardarPlanSeleccionadoClub = useCallback(async (plan) => {
+    setPlanClubSeleccionado(plan);
+    if (!CLUB_ACTIVO_ID || !plan) return;
+    try {
+      const { error } = await actualizarConColumnasOpcionales(
+        'configuracion_club',
+        CLUB_ACTIVO_ID,
+        {
+          plan_canchas: plan.canchas || null,
+          plan_nombre: plan.nombre || null,
+          plan_precio_mensual: plan.precioMensual != null ? plan.precioMensual : null,
+        },
+        ['plan_canchas', 'plan_nombre', 'plan_precio_mensual']
+      );
+      if (error) throw error;
+    } catch (err) {
+      // No se interrumpe el wizard — el plan ya quedó elegido en pantalla;
+      // si Supabase no lo aceptó (columnas sin migrar, red), el paso final
+      // de "Confirmar y Activar Club" vuelve a intentar guardarlo todo.
+      console.warn('[Onboarding Canvas] No se pudo guardar el plan elegido en Supabase todavía.', err);
+    }
+  }, []);
+
+  // Interactive Onboarding Canvas (migracion_v66) — Paso 4 "Confirmación":
+  // marca `onboarding_completed: true` (además de re-confirmar el plan, por
+  // si el guardado del Paso 1 no había llegado a Supabase) — este es el
+  // ÚNICO punto donde `AppInterno` deja de mostrar `OnboardingCanvasClub` y
+  // pasa al Panel Operativo normal. Mock de pasarela de pago: hoy no cobra
+  // nada real — `plan_activado_en` queda como el snapshot de cuándo se
+  // "activó" la cuenta, listo para que una integración de Stripe futura lo
+  // sustituya por una confirmación real de pago ANTES de este punto (ver el
+  // comentario del botón "Confirmar y Activar Club" en
+  // `PantallaConfirmacionOnboarding`).
+  const finalizarOnboardingClub = useCallback(async () => {
+    setGuardandoActivacionOnboarding(true);
+    try {
+      if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
+      const { error } = await actualizarConColumnasOpcionales(
+        'configuracion_club',
+        CLUB_ACTIVO_ID,
+        {
+          onboarding_completed: true,
+          plan_canchas: planClubSeleccionado?.canchas || null,
+          plan_nombre: planClubSeleccionado?.nombre || null,
+          plan_precio_mensual: planClubSeleccionado?.precioMensual != null ? planClubSeleccionado.precioMensual : null,
+          plan_activado_en: new Date().toISOString(),
+        },
+        ['onboarding_completed', 'plan_canchas', 'plan_nombre', 'plan_precio_mensual', 'plan_activado_en']
+      );
+      if (error) throw error;
+      setOnboardingCompletedClub(true);
+      mostrarToast({ titulo: '¡Club activado!', detalle: 'La configuración inicial quedó lista — bienvenido a tu Panel Operativo.' });
+    } catch (err) {
+      // Aquí SÍ se avisa con un toast de error (a diferencia del guardado
+      // silencioso del Paso 1): este es el paso que de verdad "abre la
+      // puerta" al panel — si falla, el dueño del club se queda en la
+      // pantalla de Confirmación para reintentar, en vez de quedar varado
+      // sin saber por qué nunca entra a su panel.
+      console.warn('[Onboarding Canvas] No se pudo activar el club.', err);
+      mostrarToast({ titulo: 'No se pudo activar el club', detalle: err?.message || 'Intenta de nuevo en unos segundos.', tono: 'error' });
+    }
+    setGuardandoActivacionOnboarding(false);
+  }, [planClubSeleccionado, mostrarToast]);
 
   useEffect(() => {
     cargarRetas();
@@ -50689,6 +51032,78 @@ function AppInterno() {
 
   /* ---------------- Render ---------------- */
 
+  // Interactive Onboarding Canvas (migracion_v66) — gate de entrada MÁS
+  // ALTO que el Kiosko/PIN de abajo a propósito: un club recién creado no
+  // tiene todavía PINs de colaboradores ni nada que "fichar" — primero debe
+  // elegir su plan y terminar el Setup Canvas. Se apaga solo (vuelve al
+  // Panel Operativo normal) en cuanto `onboardingCompletedClub` pasa a
+  // `true` — ya sea porque Supabase confirmó que este club es viejo/ya
+  // completado (ver `cargarConfigClubSupabase`), o porque el dueño terminó
+  // el asistente ahora mismo (`finalizarOnboardingClub`). `moduloConfigProps`
+  // es EXACTAMENTE el mismo objeto de props que recibe el
+  // `<ModuloConfiguracionClub>` de producción, unas líneas más abajo —
+  // reenviado tal cual al Paso 3 del wizard (`OnboardingCanvasClub`) para no
+  // duplicar ni un solo callback/estado de guardado.
+  if (!onboardingCompletedClub) {
+    const moduloConfigProps = {
+      productos,
+      variantesPorProducto,
+      addonsHabilitados,
+      productosAddonsIds,
+      onGuardarAddonsConfig: guardarAddonsConfig,
+      guardandoAddonsConfig,
+      configClub,
+      onGuardarConfigClub: guardarConfigClub,
+      guardandoConfigClub,
+      empleados,
+      rangosHorarioClases,
+      onGuardarRangosHorarioClases: guardarRangosHorarioClases,
+      guardandoRangosHorarioClases,
+      metaCortesiaProShop,
+      metaCortesiaBar,
+      cortesiasActivas,
+      productosAutorizadosCortesiaProShop,
+      productosAutorizadosCortesiaBar,
+      onGuardarMetasCortesia: guardarMetasCortesia,
+      guardandoMetasCortesia,
+      cortesiasFrecuenciaActivas,
+      metaFrecuenciaReservas,
+      recompensaTipoFrecuenciaReservas,
+      recompensaValorFrecuenciaReservas,
+      metaFrecuenciaRetas,
+      recompensaTipoFrecuenciaRetas,
+      recompensaValorFrecuenciaRetas,
+      metaFrecuenciaTorneos,
+      recompensaTipoFrecuenciaTorneos,
+      recompensaValorFrecuenciaTorneos,
+      metaFrecuenciaClases,
+      recompensaTipoFrecuenciaClases,
+      recompensaValorFrecuenciaClases,
+      onGuardarCortesiasFrecuencia: guardarCortesiasFrecuencia,
+      guardandoCortesiasFrecuencia,
+      tarifasHorarios,
+      onGuardarTarifaHorario: guardarTarifaHorario,
+      guardandoTarifaHorario,
+      onEliminarTarifaHorario: eliminarTarifaHorario,
+      jugadoresPorId,
+      operador,
+      permisos,
+    };
+    return (
+      <ToastContext.Provider value={mostrarToast}>
+        <OnboardingCanvasClub
+          nombreClub={configClub?.nombre}
+          planSeleccionado={planClubSeleccionado}
+          onSeleccionarPlan={guardarPlanSeleccionadoClub}
+          guardandoActivacion={guardandoActivacionOnboarding}
+          onConfirmarActivacion={finalizarOnboardingClub}
+          moduloConfigProps={moduloConfigProps}
+        />
+        <ToastHost toasts={toasts} />
+      </ToastContext.Provider>
+    );
+  }
+
   // Sistema Kiosko/PIN — gate de entrada: nadie ha fichado todavía en esta
   // terminal (`hayColaboradorFichado === false`). En vez del Sidebar/
   // TopHeader/módulos de siempre, se renderiza ÚNICAMENTE `PantallaKiosko`
@@ -51739,11 +52154,29 @@ async function crearOVincularClub({ usuarioId, nombreClub, vincularExistente }) 
     // en el primer intento.
     for (let intento = 0; intento < 5; intento++) {
       const slugIntento = intento === 0 ? slugBase : `${slugBase}-${Math.random().toString(36).slice(2, 6)}`;
-      const resultado = await supabase
+      // Interactive Onboarding Canvas (migracion_v66): todo club NUEVO nace
+      // con `onboarding_completed: false` — es lo único que distingue a un
+      // club recién creado de uno viejo/ya existente (que llega en `true`
+      // por el DEFAULT de la columna, ver la migración) y lo que hace que
+      // `AppInterno` le muestre el wizard de Selección de Plan/Setup Canvas
+      // en vez del Panel Operativo normal. Intento tolerante: si el
+      // proyecto todavía no corrió `migracion_v66` (columna inexistente),
+      // se reintenta SIN esa columna — el club se crea igual, solo que el
+      // registro no rompe por una columna nueva que el `insert()` directo
+      // de esta función (a propósito, sin `insertarConColumnasOpcionales`)
+      // no sabe tolerar por sí solo.
+      let resultado = await supabase
         .from('configuracion_club')
-        .insert({ nombre: nombreLimpio, slug: slugIntento, propietario_user_id: usuarioId })
+        .insert({ nombre: nombreLimpio, slug: slugIntento, propietario_user_id: usuarioId, onboarding_completed: false })
         .select()
         .single();
+      if (resultado.error && esErrorColumnaInexistente(resultado.error)) {
+        resultado = await supabase
+          .from('configuracion_club')
+          .insert({ nombre: nombreLimpio, slug: slugIntento, propietario_user_id: usuarioId })
+          .select()
+          .single();
+      }
       if (!resultado.error) {
         clubNuevo = resultado.data;
         break;
