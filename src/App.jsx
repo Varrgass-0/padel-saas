@@ -10863,6 +10863,15 @@ function itemsEditablesDeGrupo(grupo) {
             // siempre existió) como mejor aproximación disponible.
             operador_id: it.operador_id || null,
             operador_nombre: it.operador_nombre || v.operador || null,
+            // Grupos de Modificadores/Extras (migracion_v64) — se preserva
+            // al re-armar la lista editable de Cuentas Abiertas, para que
+            // `liquidarCuenta`/`liquidarCuentaDividida` (que reconstruyen
+            // `detalles.items` desde ESTA lista, no desde la venta original)
+            // no lo pierdan al cobrar/dividir. Sin esto, el nombre del
+            // artículo seguía mostrando "(Extra: X)" (ya venía compuesto
+            // desde `agregarProducto`) pero el arreglo estructurado que lee
+            // Analytics BI (`item.modificadores`) se guardaba vacío.
+            modificadores: it.modificadores || [],
           });
         });
       }
@@ -10906,6 +10915,9 @@ function itemsEditablesDeGrupo(grupo) {
         // mostrador que los haya agregado) — sin autoría de staff.
         operador_id: null,
         operador_nombre: null,
+        // Grupos de Modificadores/Extras (migracion_v64) — ver comentario en
+        // la rama de `grupo.ventas` arriba.
+        modificadores: a.modificadores || [],
       })),
     ];
     return { items, ajuste: -walletAplicado };
@@ -13640,6 +13652,13 @@ function ModuloSmartPOS({
         // `liquidarCuenta` nunca cambia quién lo agregó).
         operador_id: it.operador_id || null,
         operador_nombre: it.operador_nombre || null,
+        // Grupos de Modificadores/Extras (migracion_v64) — sin esto, el
+        // ticket final de una Cuenta Abierta guardaba el nombre compuesto
+        // ("... (Extra: Cubana)") pero perdía el arreglo estructurado que
+        // lee Analytics BI (`item.modificadores`), así que "Top Modificadores
+        // / Extras" nunca contaba estas ventas aunque el Kárdex sí mostrara
+        // el preparado en el nombre del artículo.
+        modificadores: it.modificadores || [],
       }));
       totalCobrado = Math.max(
         0,
@@ -13751,6 +13770,9 @@ function ModuloSmartPOS({
           subtotal: Math.round((Number(a.precio) || 0) * (Number(a.cantidad) || 0) * 100) / 100,
           operador_id: a.operador_id || null,
           operador_nombre: a.operador_nombre || null,
+          // Grupos de Modificadores/Extras (migracion_v64) — ver comentario
+          // en `itemsParaGuardar` de arriba.
+          modificadores: a.modificadores || [],
         }));
       const montoAddonsFinal = itemsAddons.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0);
       totalCobrado = Math.max(0, montoCanchaLinea + montoAddonsFinal + baseline.ajuste);
@@ -14057,6 +14079,11 @@ function ModuloSmartPOS({
       // `itemsOriginales` viene de `itemsEditablesDeGrupo` (vía `ModalLiquidarCuenta`).
       operador_id: it.operador_id || null,
       operador_nombre: it.operador_nombre || null,
+      // Grupos de Modificadores/Extras (migracion_v64) — mismo fix que
+      // `liquidarCuenta`: sin esto, Dividir Cuenta desde Cuentas Abiertas
+      // guardaba el nombre compuesto pero perdía el arreglo estructurado que
+      // lee Analytics BI.
+      modificadores: it.modificadores || [],
     }));
 
     let errorGeneral = null;
@@ -17085,7 +17112,12 @@ async function descontarStockKardexAddonsReserva(
       stock_anterior: stockAnterior,
       stock_nuevo: nuevoStock,
       costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-      motivo: `${motivoBase}${esVariante ? ` · ${varianteNombreEtiqueta}` : ''}`,
+      // Grupos de Modificadores/Extras (migracion_v64) — mismo sufijo
+      // "(Con Preparado: X)" que ya usan los otros dos puntos de Kárdex de
+      // Smart POS (`registrarVenta`/Split Bill), para consistencia — el
+      // nombre del artículo ya trae "(Extra: X)" compuesto desde el
+      // carrito, esto solo lo repite explícito en el motivo/observaciones.
+      motivo: `${motivoBase}${esVariante ? ` · ${varianteNombreEtiqueta}` : ''}${sufijoPreparadoKardex(item)}`,
       operador: operador || 'Recepción',
     });
     if (!resultadoKardex.ok) {
@@ -19556,9 +19588,9 @@ function TopModificadoresTabla({ filas, cargando }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-900">
-        <Sliders size={16} className="text-lime-500" /> Top Modificadores / Extras Más Pedidos
+        <Sliders size={16} className="text-lime-500" /> Top Extras Más Pedidos
       </h3>
-      <p className="mb-3 text-[11px] text-slate-500">Preparados y extras elegidos en Smart POS (ej. "Cubana", "Clamato", "Salsa Habanero").</p>
+      <p className="mb-3 text-[11px] text-slate-500">Preparados y extras más solicitados en ventas de Smart POS.</p>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
           Sin modificadores/extras pedidos en este rango.
