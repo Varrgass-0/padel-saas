@@ -48010,7 +48010,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
 // NO es el export por defecto del archivo — ver `App` (router raíz) al
 // final, que decide entre este panel y el Portal Público de Jugadores según
 // la URL.
-function AppInterno() {
+function AppInterno({ clubInicial } = {}) {
   // Datos compartidos entre los dos módulos: la Parrilla los usa para todo, y
   // Smart POS los usa solo para el selector "Vincular a Cancha".
   const [canchas, setCanchas] = useState([]);
@@ -48536,19 +48536,33 @@ function AppInterno() {
   const [configClub, setConfigClub] = useState(() => leerConfigClubLocal());
   const [guardandoConfigClub, setGuardandoConfigClub] = useState(false);
 
-  // Interactive Onboarding Canvas (migracion_v66) — arranca en `true`
-  // (Onboarding "completado"/omitido) a propósito: es el valor MÁS SEGURO
-  // mientras `cargarConfigClubSupabase` todavía no responde, para que un
-  // club YA EXISTENTE (el 100% de los casos reales hoy) jamás vea ni por un
-  // instante el wizard de Selección de Plan/Setup Canvas por una carrera de
-  // timing en la carga. Solo se pone en `false` cuando Supabase confirma
-  // explícitamente `onboarding_completed === false` (club recién creado,
-  // ver `crearOVincularClub`) — cualquier otro valor (incluido
-  // `undefined`/columna sin migrar) se queda en `true`. `planClubSeleccionado`
-  // guarda el plan elegido en el Paso 1 (snapshot: rango de canchas, nombre,
-  // precio mensual) — `null` hasta que el dueño elige una tarjeta.
-  const [onboardingCompletedClub, setOnboardingCompletedClub] = useState(true);
-  const [planClubSeleccionado, setPlanClubSeleccionado] = useState(null);
+  // Interactive Onboarding Canvas (migracion_v66) — semilla desde
+  // `clubInicial` (fix urgente de condición de carrera, ver `ClubAuthGate`):
+  // ese prop SIEMPRE ya trae la fila real de `configuracion_club` resuelta
+  // ANTES de montar `AppInterno` (login, reload, o alta recién completada),
+  // así que el primer render YA sabe si debe mostrar el Onboarding Canvas —
+  // sin esto, el valor arrancaba en `true` a ciegas y esperaba su propio
+  // round-trip a Supabase (`cargarConfigClubSupabase`) para corregirse, lo
+  // que por un instante dejaba ver el Panel Operativo/Kiosko normal en vez
+  // de redirigir al wizard. Mismo criterio tolerante de siempre: cualquier
+  // valor que no sea explícitamente `false` (incluido `undefined` — club sin
+  // `clubInicial`, o columna sin migrar) se trata como "completado".
+  // `cargarConfigClubSupabase` (más abajo) lo vuelve a confirmar/corregir en
+  // cuanto responde, por si `clubInicial` llegara desactualizado.
+  // `planClubSeleccionado` guarda el plan elegido en el Paso 1 (snapshot:
+  // rango de canchas, nombre, precio mensual) — `null` hasta que el dueño
+  // elige una tarjeta (o si `clubInicial` ya trae un plan guardado, ej. el
+  // dueño recargó la página a medio Onboarding).
+  const [onboardingCompletedClub, setOnboardingCompletedClub] = useState(() => clubInicial?.onboarding_completed !== false);
+  const [planClubSeleccionado, setPlanClubSeleccionado] = useState(() =>
+    clubInicial && (clubInicial.plan_canchas != null || clubInicial.plan_nombre != null || clubInicial.plan_precio_mensual != null)
+      ? {
+          canchas: clubInicial.plan_canchas || null,
+          nombre: clubInicial.plan_nombre || null,
+          precioMensual: clubInicial.plan_precio_mensual != null ? Number(clubInicial.plan_precio_mensual) : null,
+        }
+      : null
+  );
   const [guardandoActivacionOnboarding, setGuardandoActivacionOnboarding] = useState(false);
 
   // Rangos de Horario Habilitados para Clases (migracion_v30) — misma fila
@@ -51720,7 +51734,6 @@ function ClubAuthScreen({ onAutenticado }) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [nombreClub, setNombreClub] = useState('');
-  const [vincularExistente, setVincularExistente] = useState(false);
   const [aceptaLegalClub, setAceptaLegalClub] = useState(false);
   const [mostrarPassword, setMostrarPassword] = useState(false);
   const [cargando, setCargando] = useState(false);
@@ -51766,7 +51779,7 @@ function ClubAuthScreen({ onAutenticado }) {
 
   async function manejarRegistro(e) {
     e.preventDefault();
-    if (!vincularExistente && !nombreClub.trim()) {
+    if (!nombreClub.trim()) {
       setError('Ponle un nombre a tu club.');
       return;
     }
@@ -51789,29 +51802,60 @@ function ClubAuthScreen({ onAutenticado }) {
     setCargando(true);
     setError('');
     try {
-      const { data, error: errAuth } = await conToleranciaDeReloj(() => supabase.auth.signUp({ email: email.trim(), password }));
+      // Interactive Onboarding Canvas (fix urgente) — `emailRedirectTo`
+      // explícito: si el proyecto de Supabase Auth tiene "Confirm email"
+      // activado (Authentication → Providers → Email, en el Dashboard de
+      // Supabase — un ajuste del PROYECTO, no algo que este `signUp()` desde
+      // el cliente pueda desactivar por sí solo), el correo de confirmación
+      // regresa al usuario exactamente a esta app en vez de a una URL en
+      // blanco. Si "Confirm email" está DESACTIVADO en el proyecto (lo
+      // recomendado para que "Crear mi club" entre directo al Onboarding
+      // Canvas sin fricción), `data.session` abajo ya viene con sesión
+      // inmediata y este `emailRedirectTo` simplemente no se usa.
+      const { data, error: errAuth } = await conToleranciaDeReloj(() =>
+        supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: { emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined },
+        })
+      );
       if (errAuth) throw errAuth;
       const usuario = data?.user;
       if (!usuario) throw new Error('No se pudo crear la cuenta.');
 
-      // Sin `data.session` (proyecto con confirmación de correo activada):
-      // no hay sesión todavía para crear/vincular el club — se hace hasta
-      // que el usuario confirme su correo e inicie sesión por primera vez
-      // (ver `ClubAuthGate`, que corre este mismo alta de club en cuanto
-      // detecta sesión + sin club todavía, con su propio checkbox legal en
+      // Sin `data.session` (proyecto con "Confirm email" activado en el
+      // Dashboard de Supabase): no hay sesión todavía para crear/vincular el
+      // club — se hace hasta que el usuario confirme su correo e inicie
+      // sesión por primera vez (ver `ClubAuthGate`, que corre este mismo
+      // alta de club en cuanto detecta sesión + sin club todavía, vía
       // `CompletarRegistroClub` — la aceptación de aquí no sobrevive ese
-      // viaje de ida y vuelta por correo).
+      // viaje de ida y vuelta por correo). Esto NO es un bug de redirección:
+      // es el comportamiento esperado mientras esa opción del proyecto siga
+      // encendida — para que "Crear mi club" caiga DIRECTO en el Onboarding
+      // Canvas sin este paso intermedio, hay que apagar "Confirm email" en
+      // Authentication → Providers → Email del Dashboard de Supabase (fuera
+      // del alcance de este archivo: es configuración del proyecto, no
+      // código del cliente).
       if (!data.session) {
-        setMensaje('Cuenta creada. Revisa tu correo para confirmar tu cuenta y después inicia sesión.');
+        setMensaje('Cuenta creada. Revisa tu correo para confirmar tu cuenta y después inicia sesión — ahí continuamos con la configuración de tu club.');
         setModo('login');
         return;
       }
 
-      const resultado = await crearOVincularClub({ usuarioId: usuario.id, nombreClub: nombreClub.trim(), vincularExistente });
+      // Club nuevo, siempre — el checkbox "Vincular mi club existente" se
+      // eliminó de esta pantalla a propósito: todo registro desde aquí crea
+      // un club en blanco y pasa por el Interactive Onboarding Canvas.
+      const resultado = await crearOVincularClub({ usuarioId: usuario.id, nombreClub: nombreClub.trim(), vincularExistente: false });
       if (!resultado.ok) throw new Error(resultado.error || 'No se pudo crear el club.');
       // Marco Legal (migracion_v61): best-effort, nunca bloquea el alta del
       // club — ver `registrarAceptacionLegal`.
       registrarAceptacionLegal('configuracion_club', resultado.club?.id, 'club');
+      // `resultado.club` ya trae `onboarding_completed: false` (ver
+      // `crearOVincularClub`) — `onAutenticado` lo pasa tal cual hasta
+      // `AppInterno` (prop `clubInicial`) para que el Interactive Onboarding
+      // Canvas se muestre en el PRIMER render, sin ningún parpadeo del Panel
+      // Operativo/Kiosko de por medio (fix de la condición de carrera que
+      // causaba "enviar a la vista previa sin onboarding").
       onAutenticado(data.session, resultado.club);
     } catch (err) {
       setError(esErrorRelojDesfasado(err) ? MENSAJE_ERROR_RELOJ_DESFASADO : err?.message || 'No se pudo completar el registro.');
@@ -51886,8 +51930,8 @@ function ClubAuthScreen({ onAutenticado }) {
             </div>
           )}
           {mensaje && (
-            <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
-              <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+            <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+              <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-600" />
               <span>{mensaje}</span>
             </div>
           )}
@@ -51931,7 +51975,7 @@ function ClubAuthScreen({ onAutenticado }) {
                 <button
                   type="button"
                   onClick={() => cambiarModo('recuperar')}
-                  className="text-xs font-semibold text-lime-400 hover:text-lime-300"
+                  className="text-xs font-semibold text-slate-600 hover:text-slate-800 hover:underline"
                 >
                   ¿Olvidaste tu contraseña?
                 </button>
@@ -51942,7 +51986,7 @@ function ClubAuthScreen({ onAutenticado }) {
               </BotonPrimario>
               <p className="text-center text-xs text-slate-500">
                 ¿Tu club todavía no tiene cuenta?{' '}
-                <button type="button" onClick={() => cambiarModo('registro')} className="font-semibold text-lime-400 hover:text-lime-300">
+                <button type="button" onClick={() => cambiarModo('registro')} className="font-semibold text-emerald-700 hover:text-emerald-800">
                   Regístralo
                 </button>
               </p>
@@ -51951,32 +51995,17 @@ function ClubAuthScreen({ onAutenticado }) {
 
           {modo === 'registro' && (
             <form onSubmit={manejarRegistro} className="space-y-4">
-              <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
-                <input
-                  type="checkbox"
-                  checked={vincularExistente}
-                  onChange={(e) => setVincularExistente(e.target.checked)}
-                  className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
-                />
-                <span>
-                  <span className="font-semibold text-slate-800">Vincular mi club existente</span> — ya tengo canchas,
-                  reservas y datos cargados en este sistema y quiero que se muevan a mi cuenta nueva, en vez de crear un club
-                  vacío.
-                </span>
-              </label>
-              {!vincularExistente && (
-                <Campo label="Nombre del club">
-                  <div className="relative">
-                    <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      className={`${inputClase} pl-9`}
-                      value={nombreClub}
-                      onChange={(e) => setNombreClub(e.target.value)}
-                    />
-                  </div>
-                </Campo>
-              )}
+              <Campo label="Nombre del club">
+                <div className="relative">
+                  <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    className={`${inputClase} pl-9`}
+                    value={nombreClub}
+                    onChange={(e) => setNombreClub(e.target.value)}
+                  />
+                </div>
+              </Campo>
               <Campo label="Correo">
                 <div className="relative">
                   <Mail size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -52033,7 +52062,7 @@ function ClubAuthScreen({ onAutenticado }) {
                 />
                 <span>
                   Acepto los{' '}
-                  <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+                  <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-emerald-700 underline hover:text-emerald-800">
                     Términos y Condiciones para Clubes (SaaS B2B) y la Política de Privacidad
                   </a>
                   .
@@ -52045,7 +52074,7 @@ function ClubAuthScreen({ onAutenticado }) {
               </BotonPrimario>
               <p className="text-center text-xs text-slate-500">
                 ¿Ya tienes cuenta?{' '}
-                <button type="button" onClick={() => cambiarModo('login')} className="font-semibold text-lime-400 hover:text-lime-300">
+                <button type="button" onClick={() => cambiarModo('login')} className="font-semibold text-emerald-700 hover:text-emerald-800">
                   Inicia sesión
                 </button>
               </p>
@@ -52072,7 +52101,7 @@ function ClubAuthScreen({ onAutenticado }) {
                 Enviar enlace de recuperación
               </BotonPrimario>
               <p className="text-center text-xs text-slate-500">
-                <button type="button" onClick={() => cambiarModo('login')} className="font-semibold text-lime-400 hover:text-lime-300">
+                <button type="button" onClick={() => cambiarModo('login')} className="font-semibold text-emerald-700 hover:text-emerald-800">
                   Volver a iniciar sesión
                 </button>
               </p>
@@ -52083,7 +52112,7 @@ function ClubAuthScreen({ onAutenticado }) {
         {/* Marco Legal — enlace a `/legales`, visible en las tres pantallas
             (Login/Registro/Recuperar) tal como pide el requerimiento. */}
         <p className="mt-4 text-center text-[11px] text-slate-400">
-          <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-400 underline hover:text-lime-300">
+          <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-emerald-700 underline hover:text-emerald-800">
             Términos y Condiciones y Política de Privacidad
           </a>
         </p>
@@ -52335,7 +52364,15 @@ function ClubAuthGate() {
     );
   }
 
-  return <AppInterno key={club?.id ?? 'sin-club'} />;
+  // `clubInicial` (fix urgente, condición de carrera de Onboarding): `club`
+  // aquí SIEMPRE ya viene resuelto (recién creado por `manejarRegistro`/
+  // `CompletarRegistroClub`, o cargado por `resolverClubDeSesion` en un
+  // login/reload normal) — pasarlo tal cual evita que `AppInterno` tenga que
+  // arrancar "a ciegas" y esperar su propio round-trip a Supabase para saber
+  // si debe mostrar el Onboarding Canvas, que era exactamente la condición
+  // de carrera que por un instante dejaba ver el Panel Operativo/Kiosko
+  // ("vista previa sin onboarding") antes de redirigir.
+  return <AppInterno key={club?.id ?? 'sin-club'} clubInicial={club} />;
 }
 
 // Pantalla de remate del registro para el caso en el que Supabase Auth
@@ -52346,7 +52383,6 @@ function ClubAuthGate() {
 // que se le vuelve a pedir aquí, una sola vez, antes de entrar al panel.
 function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
   const [nombreClub, setNombreClub] = useState('');
-  const [vincularExistente, setVincularExistente] = useState(false);
   const [aceptaLegalClub, setAceptaLegalClub] = useState(false);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState(errorInicial || '');
@@ -52357,7 +52393,7 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
       setError('Tu sesión no es válida — vuelve a iniciar sesión.');
       return;
     }
-    if (!vincularExistente && !nombreClub.trim()) {
+    if (!nombreClub.trim()) {
       setError('Ponle un nombre a tu club.');
       return;
     }
@@ -52367,7 +52403,9 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
     }
     setCargando(true);
     setError('');
-    const resultado = await crearOVincularClub({ usuarioId, nombreClub: nombreClub.trim(), vincularExistente });
+    // Checkbox "Vincular mi club existente" eliminado (mismo criterio que
+    // `ClubAuthScreen`) — este paso siempre crea un club nuevo.
+    const resultado = await crearOVincularClub({ usuarioId, nombreClub: nombreClub.trim(), vincularExistente: false });
     setCargando(false);
     if (!resultado.ok) {
       setError(resultado.error || 'No se pudo crear el club.');
@@ -52402,31 +52440,17 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
           )}
 
           <form onSubmit={guardar} className="space-y-4">
-            <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
-              <input
-                type="checkbox"
-                checked={vincularExistente}
-                onChange={(e) => setVincularExistente(e.target.checked)}
-                className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
-              />
-              <span>
-                <span className="font-semibold text-slate-800">Vincular mi club existente</span> — ya tengo datos cargados en
-                este sistema y quiero que se muevan a mi cuenta.
-              </span>
-            </label>
-            {!vincularExistente && (
-              <Campo label="Nombre del club">
-                <div className="relative">
-                  <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="text"
-                    className={`${inputClase} pl-9`}
-                    value={nombreClub}
-                    onChange={(e) => setNombreClub(e.target.value)}
-                  />
-                </div>
-              </Campo>
-            )}
+            <Campo label="Nombre del club">
+              <div className="relative">
+                <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  className={`${inputClase} pl-9`}
+                  value={nombreClub}
+                  onChange={(e) => setNombreClub(e.target.value)}
+                />
+              </div>
+            </Campo>
             {/* Marco Legal (migracion_v61) — la aceptación del primer
                 formulario (`ClubAuthScreen`) no sobrevive el viaje de
                 confirmación de correo, así que se vuelve a pedir aquí,
@@ -52440,7 +52464,7 @@ function CompletarRegistroClub({ usuarioId, errorInicial, onListo }) {
               />
               <span>
                 Acepto los{' '}
-                <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+                <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-emerald-700 underline hover:text-emerald-800">
                   Términos y Condiciones para Clubes (SaaS B2B) y la Política de Privacidad
                 </a>
                 .
