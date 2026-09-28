@@ -15040,6 +15040,22 @@ function ModuloSmartPOS({
       // `itemsEditablesDeGrupo`/`TarjetaCuentaAbierta`).
       operador_id: operador?.id || null,
       operador_nombre: operador?.nombre || null,
+      // Grupos de Modificadores/Extras (migracion_v64) — FIX RAÍZ (v66):
+      // este es el ÚNICO punto donde `registrarVenta` arma el arreglo real
+      // que se guarda en `ventas.detalles.items` — tanto para una venta
+      // directa (`estadoPago: 'pagado'`) como para "Agregar a la Cuenta"
+      // (`estadoPago: 'pendiente'`, Cuentas Abiertas) y para Dividir Cuenta
+      // (que abajo hace `items.map((it) => ({...it, ...}))`, spread de ESTE
+      // mismo arreglo). Antes de este fix, `modificadores` NUNCA se copiaba
+      // aquí — se perdía desde el primer INSERT, sin importar el flujo de
+      // cobro — por eso Analytics BI ("Top Extras Más Pedidos") siempre veía
+      // `item.modificadores` como `undefined` aunque el carrito (`comanda`,
+      // ver `continuarAgregarProducto`) sí lo traía bien. El nombre
+      // compuesto del item (ej. "Cerveza — Corona (Extra: Cubana)") SÍ
+      // sobrevivía como texto libre en `i.nombre`/Kárdex, lo que hacía
+      // parecer que "el dato ya existía" cuando en realidad solo
+      // sobrevivía el nombre, nunca el arreglo estructurado.
+      modificadores: i.modificadores || [],
     }));
 
     // Artículos de cancha en la comanda son de dos tipos:
@@ -24007,6 +24023,20 @@ function ModuloAnalyticsBI({
     const topModificadores = Object.values(filasPorModificador)
       .sort((a, b) => b.unidades - a.unidades)
       .slice(0, 5);
+
+    // LOG TEMPORAL DE DIAGNÓSTICO (v66) — confirma en vivo, en la consola del
+    // navegador, que "Top Extras Más Pedidos" sí está leyendo `ventas` frescas
+    // del rango filtrado y sí encuentra `item.modificadores` en ellas. Seguro
+    // de quitar en cuanto se confirme en producción que el ranking se ve bien
+    // (no afecta ningún cálculo, solo imprime).
+    console.log('[Analytics Modificadores]:', {
+      rango: { inicio: rango.inicio, fin: rango.fin },
+      ventasPagadas: ventasPagadas.length,
+      ventasPagadasConModificadores: ventasPagadas.filter((v) =>
+        (v?.detalles?.items || []).some((it) => Array.isArray(it.modificadores) && it.modificadores.length > 0)
+      ).length,
+      topModificadores,
+    });
 
     // Auditoría del Kardex del periodo (entradas / salidas por venta /
     // ajustes) — para la sección de Auditoría ERP & Inventario del reporte.
