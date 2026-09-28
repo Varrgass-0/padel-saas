@@ -4663,10 +4663,41 @@ function CanchaCard({
   // ve completa, pero SIN ningún control de edición (Nueva Reserva, Foto,
   // Cambiar Estatus) — "Horarios" se queda porque es de solo consulta.
   soloLectura = false,
+  // Edición rápida de Nombre de Cancha (Patrocinios/Sponsorships) — solo
+  // Owner/Manager (mismo candado que `puedeCambiarEstatusCancha`, ver
+  // `PERMISOS_POR_ROL`: Recepción/Bar/Coach/Contador nunca lo tienen en
+  // `true`). `onRenombrarCancha` viene de `ModuloParrillaOperativa`.
+  puedeRenombrarCancha = false,
+  onRenombrarCancha,
 }) {
   const [menuAbierto, setMenuAbierto] = useState(false);
   const meta = ESTATUS_META[estadoActual];
   const bloqueada = estadoActual === 'mantenimiento';
+
+  // Edición rápida de Nombre (Patrocinios) — estado local propio de esta
+  // tarjeta, independiente del resto de controles: clic en el lápiz cambia
+  // el `<h3>` por un input angosto con Guardar/Cancelar, sin abrir ningún
+  // modal — "accesible directamente y rápido" tal como se pidió.
+  const [editandoNombre, setEditandoNombre] = useState(false);
+  const [nombreEditado, setNombreEditado] = useState(cancha.nombre || '');
+  const [guardandoNombre, setGuardandoNombre] = useState(false);
+
+  useEffect(() => {
+    if (!editandoNombre) setNombreEditado(cancha.nombre || '');
+  }, [cancha.nombre, editandoNombre]);
+
+  async function guardarNombreCancha() {
+    const limpio = nombreEditado.trim();
+    if (!limpio || limpio === cancha.nombre) {
+      setEditandoNombre(false);
+      setNombreEditado(cancha.nombre || '');
+      return;
+    }
+    setGuardandoNombre(true);
+    await onRenombrarCancha?.(cancha, limpio);
+    setGuardandoNombre(false);
+    setEditandoNombre(false);
+  }
 
   return (
     <div
@@ -4716,8 +4747,57 @@ function CanchaCard({
       </div>
 
       <div className="p-3.5">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="truncate text-sm font-black text-slate-900">{cancha.nombre}</h3>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          {editandoNombre ? (
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <input
+                autoFocus
+                value={nombreEditado}
+                onChange={(e) => setNombreEditado(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') guardarNombreCancha();
+                  if (e.key === 'Escape') {
+                    setEditandoNombre(false);
+                    setNombreEditado(cancha.nombre || '');
+                  }
+                }}
+                disabled={guardandoNombre}
+                className="w-full min-w-0 rounded-lg border border-lime-400 bg-white px-2 py-1 text-sm font-black text-slate-900 outline-none"
+              />
+              <button
+                onClick={guardarNombreCancha}
+                disabled={guardandoNombre || !nombreEditado.trim()}
+                className="shrink-0 rounded-lg bg-lime-400 p-1.5 text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Guardar nombre"
+              >
+                {guardandoNombre ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+              </button>
+              <button
+                onClick={() => {
+                  setEditandoNombre(false);
+                  setNombreEditado(cancha.nombre || '');
+                }}
+                disabled={guardandoNombre}
+                className="shrink-0 rounded-lg border border-slate-300 bg-slate-100 p-1.5 text-slate-500 transition hover:bg-slate-200"
+                title="Cancelar"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ) : (
+            <>
+              <h3 className="truncate text-sm font-black text-slate-900">{cancha.nombre}</h3>
+              {puedeRenombrarCancha && (
+                <button
+                  onClick={() => setEditandoNombre(true)}
+                  className="shrink-0 rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 group-hover:opacity-100"
+                  title="Renombrar cancha (ej. patrocinio de marca)"
+                >
+                  <Pencil size={13} />
+                </button>
+              )}
+            </>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -7308,6 +7388,9 @@ function ModuloParrillaOperativa({
   upsertReserva,
   marcarReservaCancelada,
   actualizarEstatusCancha,
+  // Edición rápida de Nombre de Cancha (Patrocinios/Sponsorships) — ver
+  // `renombrarCancha` en `AppInterno`.
+  onRenombrarCancha,
   onReservaParaCobro,
   bloqueosMaestroTorneoIds,
   jugadoresPorId,
@@ -7559,6 +7642,8 @@ function ModuloParrillaOperativa({
                 setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
               }
               soloLectura={permisos?.soloLecturaParrilla === true}
+              puedeRenombrarCancha={permisos?.puedeCambiarEstatusCancha === true}
+              onRenombrarCancha={onRenombrarCancha}
             />
           ))}
         </div>
@@ -25577,6 +25662,24 @@ function esErrorSlugDuplicado(error) {
   return msg.includes('slug');
 }
 
+// Detecta una violación del (viejo) índice único GLOBAL de
+// `jugadores.telefono`/`correo` — `idx_jugadores_telefono_unico` y
+// similares, ver `migracion_v68_jugadores_unico_por_club.sql`. Ese índice
+// bloqueaba registrar el MISMO teléfono/correo en un SEGUNDO club (ej. un
+// jugador que juega en dos clubes distintos con la app), aunque el alta ya
+// estuviera correctamente `club_id`-scoped en el código — la migración v68
+// lo reemplaza por índices únicos compuestos `(club_id, telefono)`/
+// `(club_id, correo)`. Este detector es solo una RED DE SEGURIDAD para un
+// proyecto que todavía no corrió esa migración: si el 23505 sigue
+// ocurriendo, se le explica al jugador la causa real en vez de un mensaje
+// genérico de Postgres.
+function esErrorJugadorDuplicadoGlobal(error) {
+  if (!error) return false;
+  if (error.code !== '23505') return false;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('jugadores') && (msg.includes('telefono') || msg.includes('correo') || msg.includes('email'));
+}
+
 // Margen de tolerancia (leeway) ante un desfase MENOR de reloj entre el
 // dispositivo del operador y el servidor de Supabase: en vez de fallar el
 // login/registro/sesión de inmediato con el mensaje críptico "JWT issued at
@@ -40029,7 +40132,15 @@ function ModuloConfiguracionClub({
   eliminandoClub,
 }) {
   const [tab, setTab] = useState('general');
-  const tabsVisibles = modoOnboarding ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet') : TABS_CONFIGURACION_CLUB;
+  // "Operadores & Staff" (Módulo 2) SOLO existe durante el Onboarding — la
+  // administración habitual de personal, roles, PINs y logs ya vive en su
+  // módulo dedicado de la barra lateral ("Control & Seguridad"), así que
+  // fuera del wizard esta pestaña se oculta para no duplicar esa función en
+  // dos lugares. "Wallet" es al revés: solo se oculta DURANTE el Onboarding
+  // (fuera de alcance del wizard, ver comentario original de `modoOnboarding`).
+  const tabsVisibles = modoOnboarding
+    ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet')
+    : TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'staff');
   const tabActual = tabsVisibles.find((t) => t.value === tab) || tabsVisibles[0];
   const indiceTabActual = tabsVisibles.findIndex((t) => t.value === tabActual.value);
   const esUltimoModuloOnboarding = modoOnboarding && indiceTabActual === tabsVisibles.length - 1;
@@ -43449,15 +43560,37 @@ function PortalPublicoJugadores({ clubSlug }) {
       if (!usuario) throw new Error('No se pudo crear tu cuenta.');
 
       // CLAIM DE PERFIL POR TELÉFONO: mismo cruce que `resolverJugadorId`
-      // (búsqueda del lado de Supabase, acotada por club vía `conClubId`),
-      // pero aquí nunca cae a "crear si no encuentra" dentro del mismo
-      // helper — el alta/actualización se decide explícitamente abajo,
-      // porque además de crear/encontrar el expediente hay que escribir
-      // `auth_user_id`/`correo`/los campos legales.
-      const { data: candidatos } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono'))
+      // (búsqueda del lado de Supabase, acotada por club vía `conClubId` —
+      // así que un teléfono que YA existe pero en OTRO club nunca aparece
+      // aquí como "existente", ver comentario de cabecera de
+      // `migracion_v68_jugadores_unico_por_club.sql`), pero aquí nunca cae a
+      // "crear si no encuentra" dentro del mismo helper — el alta/
+      // actualización se decide explícitamente abajo, porque además de
+      // crear/encontrar el expediente hay que escribir
+      // `auth_user_id`/`correo`/los campos legales. Se trae `auth_user_id`
+      // en el `select` (antes no venía) para poder distinguir CASO 1a/1b de
+      // abajo.
+      const { data: candidatos } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono, auth_user_id'))
         .not('telefono', 'is', null)
         .limit(500);
       const existente = (candidatos || []).find((j) => claveTelefono(j.telefono) === claveTel);
+
+      // FIX (Registro Multi-Club, migracion_v68): si el expediente que ya
+      // existe EN ESTE CLUB ya tiene una cuenta vinculada (`auth_user_id` no
+      // nulo), NO se debe re-vincular/sobreescribir en silencio — eso
+      // "secuestraría" la cuenta de quien sea que ya la creó. En vez de
+      // seguir con el alta, se avisa que ya existe una cuenta con ese
+      // teléfono en este club e invita a iniciar sesión. Un expediente sin
+      // `auth_user_id` (alta vieja de recepción, nunca reclamada) SÍ se
+      // puede vincular normalmente — ver CASO 1 más abajo.
+      if (existente?.auth_user_id) {
+        mostrarToast({
+          titulo: 'Ese teléfono ya tiene una cuenta en este club',
+          detalle: 'Mejor inicia sesión con el correo que usaste para crearla.',
+          tono: 'aviso',
+        });
+        return false;
+      }
 
       const camposLegalesYAuth = {
         correo: correoLimpio,
@@ -43472,9 +43605,10 @@ function PortalPublicoJugadores({ clubSlug }) {
       let jugadorId = existente?.id || null;
       let nombreFinal = nombreLimpio;
       if (jugadorId) {
-        // CASO 1 — expediente ya existía (alta previa de recepción): se
-        // vincula sobre la MISMA fila, nunca se duplica. El nombre solo se
-        // sobreescribe si el expediente existente no traía uno de verdad.
+        // CASO 1 — expediente ya existía EN ESTE CLUB pero sin cuenta
+        // vinculada (alta previa de recepción): se vincula sobre la MISMA
+        // fila, nunca se duplica. El nombre solo se sobreescribe si el
+        // expediente existente no traía uno de verdad.
         nombreFinal = (existente.nombre || '').trim() || nombreLimpio;
         const { error: errUpdate } = await actualizarConColumnasOpcionales(
           'jugadores',
@@ -43504,7 +43638,11 @@ function PortalPublicoJugadores({ clubSlug }) {
       console.error('[Portal] Error detallado Supabase (crear cuenta del jugador):', err);
       mostrarToast({
         titulo: 'No se pudo crear tu cuenta',
-        detalle: esErrorCorreoRegistrado(err) ? 'Ese correo ya tiene una cuenta — mejor inicia sesión.' : err?.message || 'Intenta de nuevo en un momento.',
+        detalle: esErrorCorreoRegistrado(err)
+          ? 'Ese correo ya tiene una cuenta — mejor inicia sesión.'
+          : esErrorJugadorDuplicadoGlobal(err)
+          ? 'Tu club todavía no tiene el ajuste de base de datos que permite jugar en más de un club con el mismo teléfono/correo (corre migracion_v68 en Supabase) — repórtalo con tu club.'
+          : err?.message || 'Intenta de nuevo en un momento.',
         tono: 'error',
       });
       return false;
@@ -51542,6 +51680,34 @@ function AppInterno({ clubInicial } = {}) {
     });
   }
 
+  // Edición rápida de Nombre de Cancha (Patrocinios/Sponsorships) — permite
+  // renombrar una cancha ya creada (ej. "Cancha 1" → "Cancha Wilson") sin
+  // pasar por ningún modal, directo desde el lápiz de `CanchaCard` en la
+  // Parrilla Operativa. Gateado a Owner/Manager en el llamador (ver
+  // `puedeRenombrarCancha` en `ModuloParrillaOperativa`), mismo criterio de
+  // permisos que `puedeCambiarEstatusCancha`. Optimista (Sincronización
+  // Silenciosa): el nombre nuevo se ve de inmediato en la tarjeta; si
+  // Supabase falla, se revierte y se avisa con un toast.
+  async function renombrarCancha(cancha, nuevoNombre) {
+    const limpio = (nuevoNombre || '').trim();
+    if (!limpio || limpio === cancha.nombre) return;
+    const anterior = { ...cancha };
+    upsertCancha({ ...cancha, nombre: limpio });
+    const { error: err } = await supabase.from('canchas').update({ nombre: limpio }).eq('id', cancha.id);
+    if (err) {
+      upsertCancha(anterior); // rollback
+      mostrarToast({ titulo: 'No se pudo renombrar la cancha', detalle: err.message, tono: 'error' });
+      return;
+    }
+    mostrarToast({ titulo: 'Cancha renombrada', detalle: `"${anterior.nombre}" ahora es "${limpio}".` });
+    // Auditoría — Control Interno: "Modificación de horarios o canchas".
+    registrarEventoAuditoria('modificacion_cancha', {
+      cancha: limpio,
+      antes: `Nombre: ${anterior.nombre}`,
+      despues: `Nombre: ${limpio}`,
+    });
+  }
+
   /* ---------------- Render ---------------- */
 
   // Interactive Onboarding Canvas (migracion_v66) — gate de entrada MÁS
@@ -51693,6 +51859,7 @@ function AppInterno({ clubInicial } = {}) {
                 upsertReserva={upsertReserva}
                 marcarReservaCancelada={marcarReservaCancelada}
                 actualizarEstatusCancha={actualizarEstatusCancha}
+                onRenombrarCancha={renombrarCancha}
                 onReservaParaCobro={enviarReservaAPOS}
                 bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
                 jugadoresPorId={jugadoresPorId}
