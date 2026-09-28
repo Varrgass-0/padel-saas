@@ -42662,15 +42662,33 @@ function repartirPagoConWallet(monto, saldoDisponible, usarWallet) {
 // primero en `configuracion_club` (la tabla que usa el resto de la app) y,
 // si ahí no hay filas (tabla vacía, sin migrar, o bloqueada por RLS para el
 // acceso público), intenta también `clubes`, por si el catálogo de clubes
-// vive en una tabla aparte con ese nombre. El match por slug es insensible
-// a mayúsculas/minúsculas y, si no hay coincidencia exacta (o la columna
-// `slug` ni siquiera existe todavía), cae al slug derivado del nombre y, en
-// último caso, al PRIMER registro que se haya encontrado — el Portal nunca
-// debe quedarse en "Club no encontrado" mientras exista al menos una fila
-// en cualquiera de las dos tablas.
+// vive en una tabla aparte con ese nombre.
+//
+// FIX (Zona de Peligro / "Club No Encontrado" — Refactor Onboarding v67,
+// hallazgo post-lanzamiento de "Eliminar Club"): esta función ANTES tenía
+// dos fallbacks peligrosos — (a) si la tabla resuelta tenía exactamente UNA
+// fila, la aceptaba sin siquiera comparar el slug, y (b) si el slug de la
+// URL no coincidía con ningún club, usaba el PRIMER registro de la tabla
+// "como respaldo". Resultado real: visitar la URL de un club eliminado (o
+// cualquier slug inexistente) cargaba silenciosamente los datos de OTRO
+// club activo cualquiera, en vez de mostrar "Club no encontrado" — un club
+// borrado (soft delete, `eliminado_en`, ver migracion_v67) seguía siendo
+// 100% visible/operable desde su URL pública. AMBOS fallbacks se eliminaron
+// por completo: el match ahora SIEMPRE exige (1) coincidencia exacta de
+// slug (insensible a mayúsculas — o, si la fila no tiene `slug` capturado
+// todavía, coincidencia exacta contra el slug derivado de su nombre, mismo
+// criterio de siempre, NUNCA una fila arbitraria) Y (2) `eliminado_en`
+// vacío/NULL — cualquier fila que no cumpla AMBAS condiciones se descarta,
+// y si ninguna fila sobrevive el filtro se regresa `null` (el Portal
+// muestra "Club No Encontrado o Inactivo", ver `PortalPublicoJugadores`).
+//
+// `eliminado_en` es una columna OPCIONAL (migracion_v67): en un proyecto
+// que todavía no corrió esa migración, ninguna fila la trae — `!!c.eliminado_en`
+// es `false` para todas, así que el filtro no excluye nada y el
+// comportamiento de un proyecto sin esa migración no cambia.
 //
 // AUDITORÍA — causas raíz reales que hacían que esto siguiera fallando
-// después del primer intento de arreglo:
+// después del primer intento de arreglo (previas a este fix):
 //   1. `.order('id', { ascending: true })`: si la tabla del club no tiene
 //      una columna llamada exactamente `id` (o el acceso público a esa
 //      columna está restringido), Postgres regresa un error y la consulta
@@ -42682,18 +42700,19 @@ function repartirPagoConWallet(monto, saldoDisponible, usarWallet) {
 //      vacío), no había forma de saberlo desde la consola del navegador.
 //      Ahora cada intento se registra con `console.error` con el detalle
 //      exacto de Supabase.
-//   3. Sin el fallback explícito `.select('*').limit(1)` que se pidió: se
-//      agrega como último recurso, después del listado completo, por si
-//      alguna política RLS particular permite un `limit` pequeño pero no un
-//      listado sin acotar.
-//
-// `establecerClubActivo` (multitenant) solo se activa cuando de verdad hay
-// más de un club en la tabla que se terminó usando — con uno solo, el resto
-// de la app sigue leyendo/escribiendo exactamente igual que hoy (sin filtro
-// de club_id).
+//   3. Fallback explícito `.select('*').limit(1)` SOLO como reintento de
+//      LISTADO (por si alguna política RLS particular permite un `limit`
+//      pequeño pero no un listado sin acotar) — nunca como fuente de un
+//      club a devolver sin verificar su slug/`eliminado_en`.
 async function resolverClubDelPortal(clubSlug) {
   const slugBuscado = (clubSlug || '').toLowerCase().trim();
   const tablasClub = ['configuracion_club', 'clubes'];
+
+  if (!slugBuscado) {
+    console.error('[Portal] Se pidió resolver el club del Portal sin slug en la URL.');
+    establecerClubActivo(null);
+    return null;
+  }
 
   let filas = [];
   let tablaUsada = null;
@@ -42715,21 +42734,22 @@ async function resolverClubDelPortal(clubSlug) {
     }
   }
 
-  // Paso 2 — FALLBACK DE SEGURIDAD explícito, tal como se pidió: si el
-  // listado de arriba no trajo nada, se reintenta con la consulta más
-  // simple posible antes de rendirse.
+  // Paso 2 — reintento de listado con la consulta más simple posible antes
+  // de rendirse (por si alguna política RLS particular permite un `limit`
+  // pequeño pero no un listado sin acotar). Sigue siendo solo un listado —
+  // el match por slug/`eliminado_en` de abajo se aplica exactamente igual.
   if (filas.length === 0) {
     for (const tabla of tablasClub) {
       try {
-        const { data, error } = await supabase.from(tabla).select('*').limit(1);
-        console.error(`[Portal] Fallback ${tabla} → select('*').limit(1):`, { filas: data?.length ?? 0, error: error || null });
+        const { data, error } = await supabase.from(tabla).select('*').limit(50);
+        console.error(`[Portal] Fallback ${tabla} → select('*').limit(50):`, { filas: data?.length ?? 0, error: error || null });
         if (!error && Array.isArray(data) && data.length > 0) {
           filas = data;
           tablaUsada = tabla;
           break;
         }
       } catch (e) {
-        console.error(`[Portal] Excepción en fallback limit(1) de ${tabla}:`, e);
+        console.error(`[Portal] Excepción en fallback limit(50) de ${tabla}:`, e);
       }
     }
   }
@@ -42740,28 +42760,29 @@ async function resolverClubDelPortal(clubSlug) {
         'la causa casi segura es una política RLS que no permite SELECT al rol "anon" (visitante público, sin sesión) — ' +
         'revisa Authentication → Policies para esa tabla.'
     );
+    establecerClubActivo(null);
     return null;
   }
-  // FIX ClubOS (aislamiento estricto): antes esto solo llamaba
-  // `establecerClubActivo` cuando había MÁS DE UN club (ver rama de abajo)
-  // — con un solo club, el Portal se quedaba con `CLUB_ACTIVO_ID = null`
-  // para siempre, así que ninguna reserva/venta/inscripción del Portal
-  // nacía con `club_id` real y el nuevo canal `notificaciones_club_{id}`
-  // nunca podría armar su nombre. Ahora se fija SIEMPRE, tengas uno o
-  // varios clubes.
-  if (filas.length === 1) {
-    establecerClubActivo(filas[0].id);
-    return normalizarFilaClub(filas[0], tablaUsada);
-  }
 
-  const porSlug = filas.find((c) => {
+  // Filtro estricto: SOLO clubes activos (borrado suave — `eliminado_en`
+  // vacío/NULL, ver migracion_v67) entran a la comparación de slug. Un club
+  // eliminado nunca vuelve a resolverse desde el Portal, sin importar qué
+  // tan bien coincida su slug con la URL.
+  const filasActivas = filas.filter((c) => !c.eliminado_en);
+
+  const club = filasActivas.find((c) => {
     const slugFila = (c.slug || '').toLowerCase().trim();
     return (slugFila && slugFila === slugBuscado) || slugificarClub(c.nombre || c.name) === slugBuscado;
   });
-  if (!porSlug) {
-    console.error(`[Portal] El slug "${slugBuscado}" no coincidió con ninguno de los ${filas.length} clubes en ${tablaUsada}; se usa el primero como respaldo.`);
+
+  if (!club) {
+    console.error(
+      `[Portal] El slug "${slugBuscado}" no coincidió con ningún club ACTIVO (no eliminado) de los ${filas.length} encontrados en ${tablaUsada} — se muestra "Club No Encontrado o Inactivo".`
+    );
+    establecerClubActivo(null);
+    return null;
   }
-  const club = porSlug || filas[0]; // fallback final: nunca se queda sin club
+
   establecerClubActivo(club.id);
   return normalizarFilaClub(club, tablaUsada);
 }
@@ -43058,8 +43079,16 @@ function PortalPublicoJugadores({ clubSlug }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'configuracion_club', filter: `id=eq.${club.id}` },
         async () => {
+          // FIX (Zona de Peligro): a propósito YA NO se descarta un
+          // resultado `null` — si el club se marca `eliminado_en` (Zona de
+          // Peligro) MIENTRAS un jugador tiene el Portal abierto,
+          // `resolverClubDelPortal` ahora regresa `null` (ver su fix más
+          // arriba) y este `setClub(null)` saca al jugador de inmediato
+          // hacia la pantalla "Club No Encontrado o Inactivo" — antes se
+          // ignoraba silenciosamente y el jugador seguía viendo/usando el
+          // Portal de un club ya dado de baja.
           const clubActualizado = await resolverClubDelPortal(clubSlug);
-          if (clubActualizado) setClub(clubActualizado);
+          setClub(clubActualizado);
         }
       )
       .on(
@@ -43067,7 +43096,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         { event: '*', schema: 'public', table: 'clubes', filter: `id=eq.${club.id}` },
         async () => {
           const clubActualizado = await resolverClubDelPortal(clubSlug);
-          if (clubActualizado) setClub(clubActualizado);
+          setClub(clubActualizado);
         }
       )
       .subscribe();
@@ -45194,11 +45223,22 @@ function PortalPublicoJugadores({ clubSlug }) {
   }
 
   if (!club) {
+    // "Club No Encontrado o Inactivo" (Refactor Onboarding v67 — fix del
+    // Portal tras "Eliminar Club"): se muestra tanto si el slug de la URL
+    // no coincide con ningún club como si coincide con uno que ya fue dado
+    // de baja (`eliminado_en`, ver `resolverClubDelPortal`) — desde el
+    // punto de vista del jugador ambos casos son indistinguibles ("esta
+    // dirección ya no funciona"), así que comparten el mismo mensaje.
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-slate-50 px-6 text-center text-slate-500">
-        <MapPin size={28} className="text-slate-400" />
-        <p className="text-lg font-bold text-slate-800">Club no encontrado</p>
-        <p className="max-w-sm text-sm">No encontramos ningún club en esta dirección. Verifica el enlace con tu club.</p>
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50 px-6 text-center text-slate-500">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-200/70">
+          <MapPin size={26} className="text-slate-400" />
+        </div>
+        <p className="text-lg font-bold text-slate-800">Club No Encontrado o Inactivo</p>
+        <p className="max-w-sm text-sm">El club que buscas ya no se encuentra disponible o ha sido dado de baja.</p>
+        <BotonPrimario onClick={() => { window.location.href = '/'; }} className="mt-2">
+          Volver al inicio
+        </BotonPrimario>
       </div>
     );
   }
