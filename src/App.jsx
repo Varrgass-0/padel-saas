@@ -9794,13 +9794,23 @@ function ModalNuevoProducto({
   // Grupos de Modificadores/Extras (migracion_v64) — catálogo de grupos
   // asignables (ver selector "Asignar Grupo de Modificadores" más abajo).
   gruposModificadores = [],
+  // Sincronización Silenciosa: refleja de inmediato en el catálogo
+  // compartido (`gruposModificadores`/`gruposModificadoresPorId` de
+  // `AppInterno`) el grupo que se cree desde el botón "+ Crear Grupo" de
+  // aquí abajo, sin esperar al Realtime de `grupos_modificadores`.
+  upsertGrupoModificadorLocal,
 }) {
   const toast = useToast();
   const editando = Boolean(producto);
   const [nombre, setNombre] = useState(producto?.nombre || '');
-  const [categoria, setCategoria] = useState(
-    producto?.categoria || CATEGORIAS_PRODUCTO.find((c) => c.value !== 'todos')?.value || 'Pro-Shop'
-  );
+  // Enfoque del alta rápida en Smart POS (ajuste de UX de Grupos de
+  // Modificadores): un producto NUEVO (no `editando`) arranca en
+  // "Restaurante/Bar" por defecto — es el segmento donde de verdad se usan
+  // Variantes (Corona/Victoria) y Grupos de Modificadores (Preparados,
+  // Salsas, Términos), así el operador llega directo a esos controles sin
+  // tener que cambiar de categoría primero. Editar un producto existente
+  // sigue respetando SIEMPRE su categoría real (`producto?.categoria`).
+  const [categoria, setCategoria] = useState(producto?.categoria || 'Cafetería/Bar');
   const [precio, setPrecio] = useState(producto?.precio != null ? String(producto.precio) : '');
   // Subcategoría "Alimentos" (Restaurante/Bar) — solo tiene sentido cuando
   // `categoria === 'Cafetería/Bar'` (ver `SUBCATEGORIAS_RESTAURANTE_BAR`);
@@ -9819,6 +9829,12 @@ function ModalNuevoProducto({
   // el grupo de modificadores es un atributo de cobro extra/preparación que
   // nunca toca stock.
   const [grupoModificadorId, setGrupoModificadorId] = useState(producto?.grupo_modificador_id || '');
+  // "+ Crear Grupo" (acceso directo, ver Campo "Asignar Grupo de
+  // Modificadores" más abajo): abre `ModalGrupoModificador` COMO HIJO de
+  // este modal, sin cerrarlo — al guardar, el grupo nuevo se selecciona
+  // solo en el selector de arriba, sin que el operador tenga que salir a
+  // buscarlo a ERP & Inventario → "Modificadores" y volver.
+  const [creandoGrupoModificador, setCreandoGrupoModificador] = useState(false);
   // "Alimentos": platillos/bebidas preparadas que se preparan sobre pedido —
   // nunca se controlan por unidades de stock, solo por si hay insumos para
   // prepararlos ahora mismo (el toggle Disponible/No disponible, más abajo).
@@ -10088,6 +10104,7 @@ function ModalNuevoProducto({
   }
 
   return (
+    <>
     <ModalShell
       titulo={editando ? 'Editar Producto' : '+ Nuevo Producto'}
       subtitulo={editando ? 'Nombre, precio, foto, stock, disponibilidad' : 'Se agrega al catálogo del POS'}
@@ -10289,7 +10306,23 @@ function ModalNuevoProducto({
             de elegir la variante (o de inmediato, si el producto no tiene
             variantes). El catálogo de grupos se gestiona en ERP &
             Inventario → pestaña "Modificadores" (`ListaGruposModificadores`). */}
-        <Campo label="Asignar Grupo de Modificadores" hint="Preparados, Salsas, Términos, etc. — opcional, no afecta el inventario.">
+        <div>
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Asignar Grupo de Modificadores</span>
+            {/* Acceso directo "+ Crear Grupo" — SOLO en este modal (Editar
+                Producto / + Nuevo Producto del Smart POS) y en la pestaña
+                "Modificadores" de ERP & Inventario. A propósito NO existe un
+                botón equivalente en "+ Crear Nuevo Producto desde Compra":
+                ese formulario se mantiene enfocado únicamente en registrar
+                la compra y el stock físico. */}
+            <button
+              type="button"
+              onClick={() => setCreandoGrupoModificador(true)}
+              className="inline-flex shrink-0 items-center gap-1 text-[11px] font-bold text-lime-600 hover:text-lime-500"
+            >
+              <Plus size={13} /> Crear Grupo
+            </button>
+          </div>
           <select value={grupoModificadorId} onChange={(e) => setGrupoModificadorId(e.target.value)} className={inputClase}>
             <option value="">Sin asignar (venta directa en 1 clic)</option>
             {gruposModificadores.map((g) => (
@@ -10298,7 +10331,8 @@ function ModalNuevoProducto({
               </option>
             ))}
           </select>
-        </Campo>
+          <span className="mt-1 block text-[11px] text-slate-500">Preparados, Salsas, Términos, etc. — opcional, no afecta el inventario.</span>
+        </div>
 
         {/* Con `editando` (cualquier producto ya existente) o `esAlimento`
             (Alimentos necesita este toggle DESDE el alta, ver el comentario
@@ -10430,6 +10464,25 @@ function ModalNuevoProducto({
         </div>
       </div>
     </ModalShell>
+
+    {/* Modal hijo de "+ Crear Grupo" — se renderiza ENCIMA del modal
+        principal (mismo `z-50` de `ModalShell`, pero montado después en el
+        árbol, así que pinta arriba) sin desmontarlo: el nombre/precio/
+        variantes que el operador ya haya capturado arriba se conservan
+        intactos mientras da de alta el grupo. */}
+    {creandoGrupoModificador && (
+      <ModalGrupoModificador
+        grupo={null}
+        onClose={() => setCreandoGrupoModificador(false)}
+        onGuardado={(grupo) => {
+          upsertGrupoModificadorLocal?.(grupo);
+          setGrupoModificadorId(grupo.id);
+          setCreandoGrupoModificador(false);
+        }}
+        onEliminado={() => {}}
+      />
+    )}
+    </>
   );
 }
 
@@ -12453,6 +12506,7 @@ function ModuloSmartPOS({
   // (ver `manejarClickProducto`/`continuarAgregarProducto` más abajo).
   gruposModificadores,
   gruposModificadoresPorId,
+  upsertGrupoModificadorLocal,
   cortesiasDisponiblesPorJugador,
   onActualizarCortesiasDisponibles,
   metaCortesiaProShop,
@@ -16042,6 +16096,7 @@ function ModuloSmartPOS({
           quitarVarianteProductoLocal={quitarVarianteProductoLocal}
           upsertProducto={upsertProducto}
           gruposModificadores={gruposModificadores}
+          upsertGrupoModificadorLocal={upsertGrupoModificadorLocal}
         />
       )}
 
@@ -18937,7 +18992,7 @@ function ModuloERPInventario({
                   vista === 'modificadores' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <Sliders size={14} /> Modificadores
+                <Sliders size={14} /> Grupos de Modificadores
               </button>
             )}
           </div>
@@ -50679,6 +50734,7 @@ function AppInterno() {
                 quitarVarianteProductoLocal={quitarVarianteProductoLocal}
                 gruposModificadores={gruposModificadores}
                 gruposModificadoresPorId={gruposModificadoresPorId}
+                upsertGrupoModificadorLocal={upsertGrupoModificadorLocal}
                 cortesiasDisponiblesPorJugador={cortesiasDisponiblesPorJugador}
                 onActualizarCortesiasDisponibles={setCortesiasDisponiblesPorJugador}
                 metaCortesiaProShop={metaCortesiaProShop}
