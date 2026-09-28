@@ -45805,19 +45805,22 @@ function PortalPublicoJugadores({ clubSlug }) {
                     const ultimaPortal = ultimaEvaluacionDe(evaluacionesJugadorPortal, jugador.id);
                     const nivelActualPortal = ultimaPortal?.nivel_asignado || null;
                     const metaPortal = nivelActualPortal ? NIVEL_OFICIAL_META[nivelActualPortal] : null;
+                    // FIX (sin degradados): antes `bg-gradient-to-r
+                    // from-lime-400/10 via-white/50 to-white/50` — fondo
+                    // plano y oscuro de la paleta QLUBOS.
                     return (
                       <button
                         type="button"
                         onClick={() => setMostrarMiPerfilDeportivo(true)}
-                        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-lime-400/30 bg-gradient-to-r from-lime-400/10 via-white/50 to-white/50 p-4 text-left backdrop-blur-sm transition hover:border-lime-400/50 hover:bg-lime-400/[0.15]"
+                        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-700/50 bg-slate-800/80 p-4 text-left transition hover:border-lime-400/50 hover:bg-slate-800"
                       >
                         <span className="flex items-center gap-2.5">
                           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/15 text-lime-300 ring-1 ring-lime-400/30">
                             <Gauge size={16} />
                           </span>
                           <span>
-                            <span className="block text-sm font-black text-slate-900">Mi Perfil Deportivo</span>
-                            <span className="block text-[11px] text-slate-500">Tu Nivel Oficial, tu progreso y las notas de tus coaches.</span>
+                            <span className="block text-sm font-black text-white">Mi Perfil Deportivo</span>
+                            <span className="block text-[11px] text-slate-400">Tu Nivel Oficial, tu progreso y las notas de tus coaches.</span>
                           </span>
                         </span>
                         <span className="flex shrink-0 items-center gap-2">
@@ -45842,18 +45845,21 @@ function PortalPublicoJugadores({ clubSlug }) {
                       lista de abajo (ver el `.filter` de `tipo_clase`), así
                       que este es el único camino para pedir una clase
                       individual o armar un grupo nuevo desde el Portal. */}
+                  {/* FIX (sin degradados): antes `bg-gradient-to-r
+                      from-violet-400/10 via-white/50 to-white/50` — fondo
+                      plano y oscuro de la paleta QLUBOS. */}
                   <button
                     type="button"
                     onClick={() => (jugador ? setModalSolicitudClase(true) : setModalIdentificacion(true))}
-                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-violet-400/30 bg-gradient-to-r from-violet-400/10 via-white/50 to-white/50 p-4 text-left backdrop-blur-sm transition hover:border-violet-400/50 hover:bg-violet-400/[0.15]"
+                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-700/50 bg-slate-800/80 p-4 text-left transition hover:border-violet-400/50 hover:bg-slate-800"
                   >
                     <span className="flex items-center gap-2.5">
                       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-400/15 text-violet-300 ring-1 ring-violet-400/30">
                         <Sparkles size={16} />
                       </span>
                       <span>
-                        <span className="block text-sm font-black text-slate-900">Solicitar Clase Privada o Nuevo Grupo</span>
-                        <span className="block text-[11px] text-slate-500">Elige fecha, nivel y horario en la cuadrícula — el club te confirma.</span>
+                        <span className="block text-sm font-black text-white">Solicitar Clase Privada o Nuevo Grupo</span>
+                        <span className="block text-[11px] text-slate-400">Elige fecha, nivel y horario en la cuadrícula — el club te confirma.</span>
                       </span>
                     </span>
                     <ChevronRight size={16} className="shrink-0 text-violet-300" />
@@ -46028,14 +46034,18 @@ function PortalPublicoJugadores({ clubSlug }) {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      <div className="overflow-hidden rounded-2xl border border-lime-400/20 bg-gradient-to-br from-lime-400/10 via-white/60 to-white/60 p-5 backdrop-blur-sm">
+                      {/* FIX (sin degradados): antes `bg-gradient-to-br
+                          from-lime-400/10 via-white/60 to-white/60` — fondo
+                          plano y oscuro de la paleta QLUBOS, texto claro
+                          para contraste consistente. */}
+                      <div className="overflow-hidden rounded-2xl border border-slate-700/50 bg-slate-800/80 p-5">
                         <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-lime-400/80">
                           <Sparkles size={12} /> Saldo disponible
                         </p>
-                        <p className="mt-1 text-3xl font-black text-slate-900">
+                        <p className="mt-1 text-3xl font-black text-white">
                           {cargandoWallet ? <Loader2 size={22} className="animate-spin text-lime-400" /> : formatoMoneda(saldoWallet)}
                         </p>
-                        <p className="mt-1 text-xs text-slate-500">
+                        <p className="mt-1 text-xs text-slate-400">
                           Úsalo para pagar canchas, torneos, retas o compras en la Tienda — cubre lo que alcance, el resto se paga en recepción.
                         </p>
                       </div>
@@ -46050,29 +46060,13 @@ function PortalPublicoJugadores({ clubSlug }) {
                           cual (mismo fetch de siempre) por si otra vista los
                           necesita más adelante. */}
 
-                      {/* Marco Legal — Derecho de Supresión: no existe una
-                          ruta `/perfil` dedicada en este Portal de una sola
-                          pantalla con pestañas (todo vive en tabs/modales),
-                          así que "Mi Cuenta"/"Eliminar mi cuenta" se ubica
-                          aquí, junto al resto de la información de cuenta
-                          del jugador identificado. */}
-                      <div className="rounded-2xl border border-slate-200 bg-white/50 p-4 backdrop-blur-sm">
-                        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Mi Cuenta</p>
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          Puedes solicitar el borrado de tus datos personales cuando quieras. Consulta el detalle en nuestra{' '}
-                          <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
-                            Política de Privacidad
-                          </a>
-                          .
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => setMostrarConfirmarEliminarCuenta(true)}
-                          className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-1.5 text-xs font-bold text-rose-400 transition hover:bg-rose-400/10"
-                        >
-                          <Trash2 size={13} /> Eliminar mi cuenta
-                        </button>
-                      </div>
+                      {/* LIMPIEZA DE UI (fix): se quitó la tarjeta "Mi
+                          Cuenta"/"Eliminar mi cuenta" que vivía aquí —
+                          redundante con la Zona de Peligro del modal "Mi
+                          Perfil" (ver `onAbrirEliminarCuenta` más abajo, que
+                          abre exactamente el mismo `setMostrarConfirmarEliminarCuenta`).
+                          Wallet ahora muestra únicamente información
+                          financiera: el saldo disponible de arriba. */}
                     </div>
                   )}
                 </div>
