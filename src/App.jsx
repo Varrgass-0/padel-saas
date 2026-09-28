@@ -850,6 +850,7 @@ import {
   Sun,
   Timer,
   Copy,
+  Sliders,
 } from 'lucide-react';
 
 /* ============================================================================
@@ -8187,6 +8188,47 @@ function ModalSeleccionarVariante({ producto, variantes, onSeleccionar, onClose 
   );
 }
 
+// Paso 2 del flujo unificado de Smart POS (Grupos de Modificadores/Extras,
+// migracion_v64) — aparece SOLO cuando el producto (ya con su variante física
+// definida, si aplica) tiene un grupo asignado vía
+// `grupoModificadorDeProducto` (ver `continuarAgregarProducto` en
+// `ModuloSmartPOS`). Nunca toca stock: es únicamente cobro extra +
+// preparación, por eso no muestra ningún indicador de existencias.
+function ModalSeleccionarModificador({ producto, variante, grupo, opciones, onSeleccionar, onClose }) {
+  return (
+    <ModalShell
+      titulo={grupo?.nombre || 'Elegir preparado'}
+      subtitulo={`${producto?.nombre || ''}${variante ? ` — ${variante.nombre}` : ''} · elige el preparado/extra`}
+      onClose={onClose}
+      icon={Sliders}
+      ancho="max-w-md"
+    >
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {opciones.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            onClick={() => onSeleccionar(o)}
+            className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-slate-100 px-3.5 py-3 text-left transition hover:border-lime-400/50 hover:bg-slate-100/80"
+          >
+            <span className="text-xs font-bold text-slate-900">{o.nombre}</span>
+            <span className="text-sm font-black text-lime-400">
+              {o.precio_adicional > 0
+                ? `+${formatoMoneda(o.precio_adicional)}`
+                : o.precio_adicional < 0
+                ? formatoMoneda(o.precio_adicional)
+                : 'Sin costo extra'}
+            </span>
+          </button>
+        ))}
+        {opciones.length === 0 && (
+          <p className="col-span-2 text-xs text-slate-500">Este grupo de modificadores no tiene opciones registradas.</p>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
 function ComandaPanel({
   comanda,
   total,
@@ -9749,6 +9791,9 @@ function ModalNuevoProducto({
   upsertVarianteProducto,
   quitarVarianteProductoLocal,
   upsertProducto,
+  // Grupos de Modificadores/Extras (migracion_v64) — catálogo de grupos
+  // asignables (ver selector "Asignar Grupo de Modificadores" más abajo).
+  gruposModificadores = [],
 }) {
   const toast = useToast();
   const editando = Boolean(producto);
@@ -9767,6 +9812,13 @@ function ModalNuevoProducto({
   const [manejaStock, setManejaStock] = useState(producto?.maneja_stock !== false);
   const [stock, setStock] = useState(producto?.stock != null ? String(producto.stock) : '');
   const [disponible, setDisponible] = useState(producto?.disponible !== false);
+  // Grupos de Modificadores/Extras (migracion_v64) — asignación OPCIONAL:
+  // '' = sin grupo (retrocompatibilidad total, el producto se vende en 1
+  // solo clic exactamente igual que hoy). Distinto de "Variantes" (más
+  // abajo): la variante es la unidad física que se descuenta de inventario;
+  // el grupo de modificadores es un atributo de cobro extra/preparación que
+  // nunca toca stock.
+  const [grupoModificadorId, setGrupoModificadorId] = useState(producto?.grupo_modificador_id || '');
   // "Alimentos": platillos/bebidas preparadas que se preparan sobre pedido —
   // nunca se controlan por unidades de stock, solo por si hay insumos para
   // prepararlos ahora mismo (el toggle Disponible/No disponible, más abajo).
@@ -9972,6 +10024,11 @@ function ModalNuevoProducto({
       stock: !manejaStockFinal ? null : tieneVariantes ? stockCalculadoDeVariantes : stock === '' ? 0 : Number(stock),
       disponible,
       variantes: variantesJSONB,
+      // Grupos de Modificadores/Extras (migracion_v64): '' (sin grupo) se
+      // guarda como `null` — nunca como cadena vacía — para que
+      // `grupoModificadorDeProducto` lo trate igual que un producto que
+      // nunca tuvo la columna.
+      grupo_modificador_id: grupoModificadorId || null,
     };
     // `imagen_url` (portada, columna vieja) solo se sobrescribe si quedó al
     // menos una imagen en el arreglo — así quitar TODAS las fotos y guardar
@@ -9990,11 +10047,11 @@ function ModalNuevoProducto({
     // reintenta sin las columnas puntuales que falten (ver
     // `insertarConColumnasOpcionales`/`actualizarConColumnasOpcionales`).
     const { data, error: err } = editando
-      ? await actualizarConColumnasOpcionales('productos', producto.id, campos, ['subcategoria', 'imagenes'])
+      ? await actualizarConColumnasOpcionales('productos', producto.id, campos, ['subcategoria', 'imagenes', 'grupo_modificador_id'])
       : await insertarConColumnasOpcionales(
           'productos',
           { ...campos, imagen_url: imagen || null, activo: true },
-          ['subcategoria', 'imagenes']
+          ['subcategoria', 'imagenes', 'grupo_modificador_id']
         );
 
     setGuardando(false);
@@ -10219,6 +10276,29 @@ function ModalNuevoProducto({
             </div>
           )}
         </div>
+
+        {/* Grupos de Modificadores/Extras (migracion_v64) — DISTINTO de
+            "Variantes / Modificadores" de arriba: la variante es la unidad
+            física que se descuenta de inventario (Corona vs. Victoria); un
+            Grupo de Modificadores es un atributo de cobro EXTRA y
+            preparación (ej. "Preparados de Cerveza": Sola +$0 / Clásica
+            +$70 / Cubana +$90 / Clamato +$100) que NUNCA descuenta stock
+            propio. Opcional a propósito — "Sin asignar" (retrocompatibilidad
+            total): el producto se sigue agregando en 1 solo clic. Cuando SÍ
+            tiene un grupo, Smart POS pasa automáticamente al Paso 2 después
+            de elegir la variante (o de inmediato, si el producto no tiene
+            variantes). El catálogo de grupos se gestiona en ERP &
+            Inventario → pestaña "Modificadores" (`ListaGruposModificadores`). */}
+        <Campo label="Asignar Grupo de Modificadores" hint="Preparados, Salsas, Términos, etc. — opcional, no afecta el inventario.">
+          <select value={grupoModificadorId} onChange={(e) => setGrupoModificadorId(e.target.value)} className={inputClase}>
+            <option value="">Sin asignar (venta directa en 1 clic)</option>
+            {gruposModificadores.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.nombre}
+              </option>
+            ))}
+          </select>
+        </Campo>
 
         {/* Con `editando` (cualquier producto ya existente) o `esAlimento`
             (Alimentos necesita este toggle DESDE el alta, ver el comentario
@@ -12023,17 +12103,31 @@ function TarjetaComandaKDS({ ventas, itemsBar, origenLabel, esCancha, ahora, act
       </div>
 
       <ul className="mt-3 space-y-1.5 rounded-xl bg-slate-50 px-3 py-2.5">
-        {itemsBar.map((it, i) => (
-          <li key={i} className="flex items-start gap-2 text-xs">
-            <span className="mt-0.5 flex h-5 min-w-[22px] shrink-0 items-center justify-center rounded-md bg-amber-400/15 px-1 text-[11px] font-black text-amber-600">
-              {it.cantidad}×
-            </span>
-            <span className="font-semibold text-slate-800">
-              {it.nombre}
-              {(it.variante_nombre || it.varianteNombre) ? ` (${it.variante_nombre || it.varianteNombre})` : ''}
-            </span>
-          </li>
-        ))}
+        {itemsBar.map((it, i) => {
+          // Grupos de Modificadores/Extras (migracion_v64): subtexto de
+          // preparación para el barman/cocina — DISTINTO del paréntesis de
+          // variante de arriba (esa es la unidad física; esto es el
+          // preparado/extra elegido). Tolerante a items sin `modificadores`
+          // (arreglo ausente/vacío = ítem sin modificador, cero cambio
+          // visual).
+          const nombresModificadores = (it.modificadores || []).map((m) => m?.nombre).filter(Boolean);
+          return (
+            <li key={i} className="flex items-start gap-2 text-xs">
+              <span className="mt-0.5 flex h-5 min-w-[22px] shrink-0 items-center justify-center rounded-md bg-amber-400/15 px-1 text-[11px] font-black text-amber-600">
+                {it.cantidad}×
+              </span>
+              <span className="flex flex-col">
+                <span className="font-semibold text-slate-800">
+                  {it.nombre}
+                  {(it.variante_nombre || it.varianteNombre) ? ` (${it.variante_nombre || it.varianteNombre})` : ''}
+                </span>
+                {nombresModificadores.length > 0 && (
+                  <span className="text-[11px] font-bold text-lime-600">Extra: {nombresModificadores.join(', ')}</span>
+                )}
+              </span>
+            </li>
+          );
+        })}
       </ul>
 
       {activa && (
@@ -12138,7 +12232,13 @@ function TableroKDSRestauranteBar({ productos, canchas, variantesPorProducto, op
       // prorrateo, no altera la cantidad real preparada.
       const itemsPorClave = new Map();
       for (const it of grupo.itemsBar) {
-        const claveItem = it.variante_id ? `v:${it.variante_id}` : `p:${it.producto_id}`;
+        // Grupos de Modificadores/Extras (migracion_v64): el modificador
+        // entra a la clave de consolidación — mismo criterio que la llave de
+        // fusión del carrito (`agregarProducto`) — para que, p. ej., una
+        // Corona "Sola" y una Corona "Clamato" del mismo split NUNCA se
+        // fusionen en un solo renglón con el preparado equivocado.
+        const claveModificador = (it.modificadores || []).map((m) => m?.id).filter(Boolean).join('+');
+        const claveItem = `${it.variante_id ? `v:${it.variante_id}` : `p:${it.producto_id}`}${claveModificador ? `-mod:${claveModificador}` : ''}`;
         const existente = itemsPorClave.get(claveItem);
         if (existente) {
           existente.cantidad += Number(it.cantidad) || 0;
@@ -12347,6 +12447,12 @@ function ModuloSmartPOS({
   variantesPorProducto,
   upsertVarianteProducto,
   quitarVarianteProductoLocal,
+  // Grupos de Modificadores/Extras (migracion_v64) — `gruposModificadores`
+  // (arreglo) alimenta el selector de `ModalNuevoProducto`;
+  // `gruposModificadoresPorId` (mapa) alimenta el Paso 2 del flujo de venta
+  // (ver `manejarClickProducto`/`continuarAgregarProducto` más abajo).
+  gruposModificadores,
+  gruposModificadoresPorId,
   cortesiasDisponiblesPorJugador,
   onActualizarCortesiasDisponibles,
   metaCortesiaProShop,
@@ -12697,6 +12803,9 @@ function ModuloSmartPOS({
       // `registrarVenta`.
       operador_id: operador?.id || null,
       operador_nombre: operador?.nombre || null,
+      // Grupos de Modificadores/Extras (migracion_v64) — mismo criterio que
+      // `registrarVenta`.
+      modificadores: it.modificadores || [],
     }));
     const itemCuotaCancha =
       fila.cuotaCancha > 0
@@ -12850,7 +12959,7 @@ function ModuloSmartPOS({
         costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
         motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`})${
           esVariante ? ` · ${varianteNombreEtiqueta}` : ''
-        }`,
+        }${sufijoPreparadoKardex(item)}`,
         operador: operador?.nombre,
       });
       if (!resultadoKardex.ok) {
@@ -12896,7 +13005,7 @@ function ModuloSmartPOS({
         costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
         motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`}) (sin control de stock)${
           esVariante ? ` · ${varianteNombreEtiqueta}` : ''
-        }`,
+        }${sufijoPreparadoKardex(item)}`,
         operador: operador?.nombre,
       });
       if (!resultadoKardexSinStock.ok) {
@@ -14563,14 +14672,20 @@ function ModuloSmartPOS({
   // `variante` viene de `ModalSeleccionarVariante` cuando el producto trae
   // entradas en su arreglo JSONB `productos.variantes` — su stock/precio
   // manda sobre el del producto padre (ver `manejarClickProducto`, el único
-  // punto de entrada real desde el grid del POS).
-  function agregarProducto(producto, variante = null) {
+  // punto de entrada real desde el grid del POS). `modificador` (Grupos de
+  // Modificadores/Extras, migracion_v64) viene de `ModalSeleccionarModificador`
+  // vía `continuarAgregarProducto` cuando el producto tiene un grupo asignado
+  // — NUNCA afecta stock/variante, solo suma un precio extra y un subtexto de
+  // preparación (regla crítica de no-regresión).
+  function agregarProducto(producto, variante = null, modificador = null) {
     if (producto.disponible === false) {
       mostrarToast({ titulo: 'No disponible', detalle: `${producto.nombre} está marcado como no disponible por ahora.`, tono: 'aviso' });
       return;
     }
-    const nombreArticulo = variante ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
-    const precioArticulo = variante && variante.precio != null ? Number(variante.precio) : Number(producto.precio) || 0;
+    const nombreBase = variante ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
+    const nombreArticulo = modificador ? `${nombreBase} (Extra: ${modificador.nombre})` : nombreBase;
+    const precioBase = variante && variante.precio != null ? Number(variante.precio) : Number(producto.precio) || 0;
+    const precioArticulo = precioBase + (modificador ? Number(modificador.precio_adicional) || 0 : 0);
     // `maneja_stock === false` (o, con variante, sin stock propio) = artículo
     // de cocina/platillo o variante sin control de inventario: nunca se
     // limita por número de stock, siempre se puede agregar. Arquitectura
@@ -14605,7 +14720,12 @@ function ModuloSmartPOS({
     // variante también entra a la llave: la misma cerveza en Victoria vs.
     // Corona son renglones distintos.
     const jugadorIndice = roster.length > 0 ? jugadorActivoParaAgregar : null;
-    const id = `producto-${producto.id}${variante ? `-var-${variante.id}` : ''}-${jugadorIndice ?? 'compartido'}`;
+    // El modificador también entra a la llave de fusión: la misma cerveza
+    // Corona "Sola" vs. "Clamato" deben quedar en renglones distintos de la
+    // comanda, igual criterio que ya aplica la variante física.
+    const id = `producto-${producto.id}${variante ? `-var-${variante.id}` : ''}${
+      modificador ? `-mod-${modificador.id}` : ''
+    }-${jugadorIndice ?? 'compartido'}`;
     setComanda((prev) => {
       const existente = prev.find((i) => i.id === id);
       const cantidadActual = existente?.cantidad || 0;
@@ -14651,6 +14771,15 @@ function ModuloSmartPOS({
           // decidir si intentan el descuento en Supabase.
           manejaStock,
           jugadorIndice,
+          // Grupos de Modificadores/Extras (migracion_v64) — `modificadores`
+          // es un ARREGLO opcional (hoy con a lo más 1 elemento, ver
+          // `ModalSeleccionarModificador`) para que `registrarVenta`,
+          // `TarjetaComandaKDS` y Analytics puedan leer `item.modificadores`
+          // sin distinguir "sin modificador" de "un modificador" — ambos
+          // casos son simplemente un arreglo vacío o con una entrada.
+          // NUNCA gestiona stock (ver `insertarMovimientoKardex`, que sigue
+          // recibiendo únicamente `producto_id`/`variante_id`).
+          modificadores: modificador ? [{ id: modificador.id, nombre: modificador.nombre, precio_adicional: modificador.precio_adicional }] : [],
         },
       ];
     });
@@ -14662,6 +14791,27 @@ function ModuloSmartPOS({
   // 100% de los productos sin variantes se comportan exactamente igual que
   // antes de esta actualización.
   const [productoParaVariante, setProductoParaVariante] = useState(null);
+  // Grupos de Modificadores/Extras (migracion_v64) — Paso 2 del flujo:
+  // `productoParaModificador` guarda `{ producto, variante }` (la variante
+  // puede ser `null` si el producto no maneja variantes físicas) mientras se
+  // muestra `ModalSeleccionarModificador`.
+  const [productoParaModificador, setProductoParaModificador] = useState(null);
+
+  // Encadena el Paso 1 (variante física, si aplica) con el Paso 2
+  // (modificador/extra, si el producto tiene un grupo asignado). Retrocompa-
+  // tibilidad total: un producto SIN grupo asignado (Overgrips, Palas, etc.)
+  // sigue agregándose en 1 SOLO CLIC exactamente igual que antes — este
+  // chequeo es lo único nuevo en el camino feliz.
+  function continuarAgregarProducto(producto, variante = null) {
+    const grupo = grupoModificadorDeProducto(producto, gruposModificadoresPorId);
+    const opciones = opcionesModificadorValidas(grupo);
+    if (grupo && opciones.length > 0) {
+      setProductoParaModificador({ producto, variante });
+    } else {
+      agregarProducto(producto, variante);
+    }
+  }
+
   function manejarClickProducto(producto) {
     // Filtro Doble a nivel variante: una variante 🟡 Pendiente de Recepción
     // (nacida de "+ Crear Nueva Variante para este Producto" en Compras) no
@@ -14671,7 +14821,7 @@ function ModuloSmartPOS({
     if (variantesDelProducto.length > 0) {
       setProductoParaVariante(producto);
     } else {
-      agregarProducto(producto);
+      continuarAgregarProducto(producto);
     }
   }
 
@@ -15192,7 +15342,7 @@ function ModuloSmartPOS({
           stock_anterior: stockAnterior,
           stock_nuevo: nuevoStock,
           costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-          motivo: esVariante ? `Venta en Smart POS · ${varianteNombreEtiqueta}` : 'Venta en Smart POS',
+          motivo: `${esVariante ? `Venta en Smart POS · ${varianteNombreEtiqueta}` : 'Venta en Smart POS'}${sufijoPreparadoKardex(item)}`,
           operador: operador?.nombre,
         });
         if (!resultadoKardex.ok) {
@@ -15245,9 +15395,11 @@ function ModuloSmartPOS({
           stock_anterior: 0,
           stock_nuevo: 0,
           costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-          motivo: esVariante
-            ? `Venta en Smart POS · ${varianteNombreEtiqueta} (sin control de stock)`
-            : 'Venta en Smart POS (sin control de stock)',
+          motivo: `${
+            esVariante
+              ? `Venta en Smart POS · ${varianteNombreEtiqueta} (sin control de stock)`
+              : 'Venta en Smart POS (sin control de stock)'
+          }${sufijoPreparadoKardex(item)}`,
           operador: operador?.nombre,
         });
         if (!resultadoKardexSinStock.ok) {
@@ -15889,6 +16041,7 @@ function ModuloSmartPOS({
           upsertVarianteProducto={upsertVarianteProducto}
           quitarVarianteProductoLocal={quitarVarianteProductoLocal}
           upsertProducto={upsertProducto}
+          gruposModificadores={gruposModificadores}
         />
       )}
 
@@ -15898,8 +16051,22 @@ function ModuloSmartPOS({
           variantes={variantesVisiblesParaVenta(variantesPorProducto?.[productoParaVariante.id])}
           onClose={() => setProductoParaVariante(null)}
           onSeleccionar={(variante) => {
-            agregarProducto(productoParaVariante, variante);
+            continuarAgregarProducto(productoParaVariante, variante);
             setProductoParaVariante(null);
+          }}
+        />
+      )}
+
+      {productoParaModificador && (
+        <ModalSeleccionarModificador
+          producto={productoParaModificador.producto}
+          variante={productoParaModificador.variante}
+          grupo={grupoModificadorDeProducto(productoParaModificador.producto, gruposModificadoresPorId)}
+          opciones={opcionesModificadorValidas(grupoModificadorDeProducto(productoParaModificador.producto, gruposModificadoresPorId))}
+          onClose={() => setProductoParaModificador(null)}
+          onSeleccionar={(opcion) => {
+            agregarProducto(productoParaModificador.producto, productoParaModificador.variante, opcion);
+            setProductoParaModificador(null);
           }}
         />
       )}
@@ -16399,6 +16566,66 @@ function textoPrecioConVariantes(producto, variantes) {
   const precioMin = Math.min(...precios);
   const precioMax = Math.max(...precios);
   return precioMin !== precioMax ? `Desde ${formatoMoneda(precioMin)}` : formatoMoneda(precioMin);
+}
+
+// ============================================================================
+// Grupos de Modificadores / Extras — Arquitectura JSONB (migracion_v64)
+// ============================================================================
+// Un "Grupo de Modificadores" (ej. "Preparados de Cerveza": Sola +$0 /
+// Clásica +$70 / Cubana +$90 / Clamato +$100) vive en su propia tabla
+// `grupos_modificadores` (columna `opciones`, JSONB) — DISTINTA de
+// `productos.variantes`. La variante es la unidad FÍSICA que se descuenta de
+// inventario (Corona vs. Victoria); el modificador es un atributo de cobro
+// adicional y preparación que NUNCA descuenta stock propio (regla crítica de
+// no-regresión: el Kárdex solo ve la variante/producto físico, jamás el
+// modificador). Un producto se vincula a lo más UN grupo vía
+// `productos.grupo_modificador_id` (columna opcional — ver
+// migracion_v64_grupos_modificadores.sql) — eso es lo que activa el Paso 2
+// en Smart POS (`manejarClickProducto`/`continuarAgregarProducto`, dentro de
+// `ModuloSmartPOS`, más abajo).
+
+// Normaliza una entrada cruda de `grupos_modificadores.opciones` a
+// `{ id, nombre, precio_adicional }` — mismo criterio de tolerancia que
+// `normalizarVarianteJSONB`: un `precio_adicional` inválido/ausente cae a 0
+// (una opción sin precio extra capturado, ej. "Sola", nunca debe romper el
+// total de la partida).
+function normalizarOpcionModificador(o, indice) {
+  const nombre = (o?.nombre ?? '').toString().trim();
+  return {
+    id: o?.id != null && o.id !== '' ? String(o.id) : nombre ? `mod-${nombre.toLowerCase().replace(/\s+/g, '-')}` : `mod-${indice}`,
+    nombre: nombre || `Opción ${indice + 1}`,
+    precio_adicional: Number.isFinite(Number(o?.precio_adicional)) ? Number(o.precio_adicional) : 0,
+  };
+}
+
+// Opciones vendibles de un grupo — `grupo` puede venir `null`/`undefined`
+// (producto sin grupo asignado, grupo desactivado, o `grupos_modificadores`
+// todavía sin cargar) sin que el llamador tenga que revisarlo primero.
+function opcionesModificadorValidas(grupo) {
+  if (!grupo || grupo.activo === false || !Array.isArray(grupo.opciones)) return [];
+  return grupo.opciones.map(normalizarOpcionModificador);
+}
+
+// El grupo de modificadores asignado a un producto, o `null` — Arquitectura
+// Flexible: `gruposModificadoresPorId` puede no traer la llave todavía
+// (fetch en curso, o el proyecto no ha corrido migracion_v64) o el producto
+// puede no tener `grupo_modificador_id` (retrocompatibilidad total). Ambos
+// casos regresan `null` sin lanzar, y el llamador simplemente no abre el
+// Paso 2 — el producto se agrega en 1 solo clic, exactamente igual que hoy.
+function grupoModificadorDeProducto(producto, gruposModificadoresPorId) {
+  if (!producto?.grupo_modificador_id) return null;
+  return gruposModificadoresPorId?.[producto.grupo_modificador_id] || null;
+}
+
+// Sufijo `(Con Preparado: X)` para el `motivo`/texto libre de un movimiento
+// de Kárdex — el Kárdex sigue registrando la salida limpia de -1 unidad
+// sobre la VARIANTE FÍSICA (nunca sobre el modificador, regla crítica de
+// no-regresión); esto solo añade el subtexto informativo al motivo. Item
+// sin modificador (el 100% de los productos hoy) → cadena vacía, cero
+// cambio visual en el Kárdex existente.
+function sufijoPreparadoKardex(item) {
+  const nombres = (item?.modificadores || []).map((m) => m?.nombre).filter(Boolean);
+  return nombres.length > 0 ? ` (Con Preparado: ${nombres.join(', ')})` : '';
 }
 
 // COSTO REAL VINCULADO A CADA VENTA: resuelve el `costo_unitario` (producto
@@ -17946,6 +18173,225 @@ function ModalDesgloseVentas({ titulo, subtitulo, lineas, cargando, error, onRei
   );
 }
 
+// Grupos de Modificadores/Extras (migracion_v64) — alta/edición de un grupo
+// reutilizable (ej. "Preparados de Cerveza"): nombre + lista dinámica de
+// opciones (nombre + precio adicional, $0 permitido a propósito, ej.
+// "Sola +$0"). Mismo modal para crear (`grupo` null) y editar (`grupo`
+// presente) — mismo criterio que `ModalNuevoProducto`. "Desactivar grupo"
+// es borrado LÓGICO (`activo: false`, nunca DELETE): las ventas/kárdex ya
+// guardaron el nombre de cada opción como texto plano, así que desactivar
+// un grupo no rompe ningún historial, solo deja de ofrecerlo en productos
+// nuevos.
+function ModalGrupoModificador({ grupo, onClose, onGuardado, onEliminado }) {
+  const editando = Boolean(grupo);
+  const [nombre, setNombre] = useState(grupo?.nombre || '');
+  const [opciones, setOpciones] = useState(() => {
+    const iniciales = opcionesModificadorValidas(grupo);
+    return iniciales.length > 0
+      ? iniciales.map((o) => ({ id: o.id, nombre: o.nombre, precio: String(o.precio_adicional) }))
+      : [{ id: idLocal('mod'), nombre: '', precio: '0' }];
+  });
+  const [guardando, setGuardando] = useState(false);
+  const [eliminando, setEliminando] = useState(false);
+  const [error, setError] = useState('');
+
+  function agregarOpcion() {
+    setOpciones((prev) => [...prev, { id: idLocal('mod'), nombre: '', precio: '' }]);
+  }
+  function actualizarOpcion(id, campo, valor) {
+    setOpciones((prev) => prev.map((o) => (o.id === id ? { ...o, [campo]: valor } : o)));
+  }
+  function quitarOpcion(id) {
+    setOpciones((prev) => (prev.length > 1 ? prev.filter((o) => o.id !== id) : prev));
+  }
+
+  async function guardar() {
+    const nombreLimpio = nombre.trim();
+    if (!nombreLimpio) {
+      setError('Escribe un nombre para el grupo.');
+      return;
+    }
+    const opcionesValidas = opciones
+      .map((o) => ({ id: o.id, nombre: o.nombre.trim(), precio_adicional: o.precio === '' ? 0 : Number(o.precio) || 0 }))
+      .filter((o) => o.nombre);
+    if (opcionesValidas.length === 0) {
+      setError('Agrega al menos una opción con nombre (ej. "Sola", "Clásica"...).');
+      return;
+    }
+    setError('');
+    setGuardando(true);
+    const payload = { nombre: nombreLimpio, opciones: opcionesValidas, activo: true };
+    const resultado = editando
+      ? await actualizarConColumnasOpcionales('grupos_modificadores', grupo.id, payload, [])
+      : await insertarConColumnasOpcionales('grupos_modificadores', payload, []);
+    setGuardando(false);
+    if (resultado.error) {
+      setError(resultado.error.message || 'No se pudo guardar el grupo de modificadores.');
+      return;
+    }
+    onGuardado(editando ? { ...grupo, ...payload } : resultado.data);
+    onClose();
+  }
+
+  async function eliminar() {
+    if (!grupo) return;
+    setEliminando(true);
+    const { error: errDesactivar } = await actualizarConColumnasOpcionales('grupos_modificadores', grupo.id, { activo: false }, []);
+    setEliminando(false);
+    if (errDesactivar) {
+      setError(errDesactivar.message || 'No se pudo desactivar el grupo.');
+      return;
+    }
+    onEliminado(grupo.id);
+    onClose();
+  }
+
+  return (
+    <ModalShell
+      titulo={editando ? 'Editar Grupo de Modificadores' : 'Nuevo Grupo de Modificadores'}
+      subtitulo="Preparados, Términos, Salsas, etc. — con su precio extra"
+      onClose={onClose}
+      icon={Layers}
+      ancho="max-w-lg"
+    >
+      <div className="space-y-4">
+        <Campo label="Nombre del grupo">
+          <input
+            value={nombre}
+            onChange={(e) => setNombre(e.target.value)}
+            placeholder='Ej. "Preparados de Cerveza"'
+            className={inputClase}
+          />
+        </Campo>
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Opciones</p>
+            <button
+              type="button"
+              onClick={agregarOpcion}
+              className="inline-flex items-center gap-1 text-[11px] font-bold text-lime-600 hover:text-lime-500"
+            >
+              <Plus size={13} /> Agregar opción
+            </button>
+          </div>
+          <div className="space-y-2">
+            {opciones.map((o) => (
+              <div key={o.id} className="flex items-center gap-2">
+                <input
+                  value={o.nombre}
+                  onChange={(e) => actualizarOpcion(o.id, 'nombre', e.target.value)}
+                  placeholder="Nombre (ej. Clamato)"
+                  className={`${inputClase} flex-1`}
+                />
+                <div className="relative w-28 shrink-0">
+                  <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-500">$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={o.precio}
+                    onChange={(e) => actualizarOpcion(o.id, 'precio', e.target.value)}
+                    placeholder="0"
+                    className={`${inputClase} pl-5`}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => quitarOpcion(o.id)}
+                  disabled={opciones.length <= 1}
+                  className="shrink-0 text-slate-400 transition hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="flex items-center justify-between gap-2 pt-1">
+          {editando ? (
+            <button
+              type="button"
+              onClick={eliminar}
+              disabled={eliminando || guardando}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-rose-400 transition hover:text-rose-300 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {eliminando ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Desactivar grupo
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <BotonSecundario onClick={onClose} disabled={guardando || eliminando}>
+              Cancelar
+            </BotonSecundario>
+            <BotonPrimario onClick={guardar} disabled={guardando || eliminando} className="px-4 py-2 text-xs">
+              {guardando ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Guardar
+            </BotonPrimario>
+          </div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Lista de Grupos de Modificadores (pestaña "Modificadores" de ERP &
+// Inventario) — una tarjeta por grupo con sus opciones/precios en chips, y
+// "+ Nuevo Grupo" arriba. 100% administrativo: no vende nada aquí, solo
+// define el catálogo que luego aparece como Paso 2 en Smart POS.
+function ListaGruposModificadores({ grupos, loading, tablaExiste, onNuevo, onEditar }) {
+  if (!tablaExiste) {
+    return <BannerTablaFaltante tabla="grupos_modificadores (corre migracion_v64_grupos_modificadores.sql)" />;
+  }
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-14 text-slate-500">
+        <Loader2 size={20} className="animate-spin" />
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-500">
+          Asigna un grupo a un producto desde su ficha ("Asignar Grupo de Modificadores") para activar el Paso 2 en Smart POS.
+        </p>
+        <BotonPrimario onClick={onNuevo} className="shrink-0 px-3 py-2 text-xs">
+          <Plus size={14} /> Nuevo Grupo
+        </BotonPrimario>
+      </div>
+      {grupos.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-slate-200 py-14 text-center text-sm text-slate-500">
+          Todavía no hay grupos de modificadores — crea el primero (ej. "Preparados de Cerveza").
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {grupos.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              onClick={() => onEditar(g)}
+              className="rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-lime-400/50 hover:bg-slate-50"
+            >
+              <p className="text-sm font-black text-slate-900">{g.nombre}</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {opcionesModificadorValidas(g).map((o) => (
+                  <span
+                    key={o.id}
+                    className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600 ring-1 ring-slate-200"
+                  >
+                    {o.nombre} {o.precio_adicional > 0 ? `+${formatoMoneda(o.precio_adicional)}` : formatoMoneda(0)}
+                  </span>
+                ))}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModuloERPInventario({
   productos,
   loadingProductos,
@@ -17956,6 +18402,14 @@ function ModuloERPInventario({
   variantesPorProducto,
   upsertVarianteProducto,
   quitarVarianteProductoLocal,
+  // Grupos de Modificadores/Extras (migracion_v64) — pestaña "Modificadores"
+  // (gestión admin del catálogo, ver `vista === 'modificadores'` abajo) y
+  // selector "Asignar Grupo de Modificadores" en `ModalNuevoProducto`.
+  gruposModificadores,
+  loadingGruposModificadores,
+  tablaGruposModificadoresExiste,
+  cargarGruposModificadores,
+  upsertGrupoModificadorLocal,
   permisos,
 }) {
   const mostrarToast = useToast();
@@ -17970,7 +18424,13 @@ function ModuloERPInventario({
   // `true` para 'contador', que sí debe seguir viendo el Kardex completo y
   // el catálogo entero para conciliar compras): ambos se gatean solo por rol.
   const esRolBar = permisos?.rol === 'bar';
-  const [vista, setVista] = useState('catalogo'); // 'catalogo' | 'kardex'
+  const [vista, setVista] = useState('catalogo'); // 'catalogo' | 'kardex' | 'modificadores'
+  // Grupos de Modificadores/Extras (migracion_v64) — mismo patrón crear/
+  // editar que `modalNuevoProducto`/`productoEditar` de Smart POS:
+  // `modalGrupoModificador` abre en blanco (nuevo), `grupoModificadorEditar`
+  // abre con un grupo existente precargado.
+  const [modalGrupoModificador, setModalGrupoModificador] = useState(false);
+  const [grupoModificadorEditar, setGrupoModificadorEditar] = useState(null);
   const [busqueda, setBusqueda] = useState('');
   const [categoriaFiltro, setCategoriaFiltro] = useState('todos');
   // Filtrado Estricto de Categoría (rol 'bar'): el catálogo SIEMPRE se
@@ -18466,6 +18926,20 @@ function ModuloERPInventario({
                 <History size={14} /> Kardex
               </button>
             )}
+            {/* Grupos de Modificadores/Extras (migracion_v64) — gestión
+                administrativa, mismo criterio de permiso que "+ Nuevo
+                Producto" en Smart POS (`puedeGestionarProductos`), oculto
+                para el rol 'bar' igual que Kardex. */}
+            {!esRolBar && permisos?.puedeGestionarProductos !== false && (
+              <button
+                onClick={() => setVista('modificadores')}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                  vista === 'modificadores' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Sliders size={14} /> Modificadores
+              </button>
+            )}
           </div>
           {vista === 'catalogo' && (
             <>
@@ -18497,7 +18971,21 @@ function ModuloERPInventario({
 
       {errorProductos && <ErrorBanner mensaje={errorProductos} onReintentar={() => cargarProductos()} />}
 
-      {vista === 'catalogo' || esRolBar ? (
+      {vista === 'modificadores' && !esRolBar ? (
+        <ListaGruposModificadores
+          grupos={gruposModificadores}
+          loading={loadingGruposModificadores}
+          tablaExiste={tablaGruposModificadoresExiste}
+          onNuevo={() => {
+            setGrupoModificadorEditar(null);
+            setModalGrupoModificador(true);
+          }}
+          onEditar={(g) => {
+            setGrupoModificadorEditar(g);
+            setModalGrupoModificador(true);
+          }}
+        />
+      ) : vista === 'catalogo' || esRolBar ? (
         loadingProductos ? (
           <SkeletonProductos />
         ) : productos.length === 0 ? (
@@ -18519,6 +19007,18 @@ function ModuloERPInventario({
         )
       ) : (
         <TablaKardex kardex={kardex} productos={productos} loading={loadingKardex} error={errorKardex} onReintentar={() => cargarKardex()} />
+      )}
+
+      {modalGrupoModificador && (
+        <ModalGrupoModificador
+          grupo={grupoModificadorEditar}
+          onClose={() => {
+            setModalGrupoModificador(false);
+            setGrupoModificadorEditar(null);
+          }}
+          onGuardado={(grupo) => upsertGrupoModificadorLocal(grupo)}
+          onEliminado={(id) => upsertGrupoModificadorLocal({ id, activo: false })}
+        />
       )}
 
       {modalAlertasReorden && (
@@ -18920,6 +19420,53 @@ function TopProductosTabla({ filas, cargando }) {
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Widget dedicado "Top Modificadores/Extras Más Pedidos" (Grupos de
+// Modificadores/Extras, migracion_v64) — DISTINTO de `TopProductosTabla`:
+// ese ranking es de productos/variantes físicas, este es de los
+// preparados/extras elegidos sobre ellos (ej. "Clamato", "Salsa Habanero").
+// `filas` viene de `analisis.topModificadores`, ya tolerante a un periodo
+// sin ninguna venta con modificadores (arreglo vacío, no `undefined`).
+function TopModificadoresTabla({ filas, cargando }) {
+  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-900">
+        <Sliders size={16} className="text-lime-500" /> Top Modificadores / Extras Más Pedidos
+      </h3>
+      <p className="mb-3 text-[11px] text-slate-500">Preparados y extras elegidos en Smart POS (ej. "Cubana", "Clamato", "Salsa Habanero").</p>
+      {filas.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
+          Sin modificadores/extras pedidos en este rango.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
+          <table className="w-full min-w-[420px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-2.5">#</th>
+                <th className="px-3 py-2.5">Modificador / Extra</th>
+                <th className="px-3 py-2.5 text-right">Unidades</th>
+                <th className="px-3 py-2.5 text-right">Ingreso Extra</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f, i) => (
+                <tr key={f.id} className="border-b border-slate-200/70 last:border-0">
+                  <td className="px-3 py-2.5 font-black text-slate-400">{i + 1}°</td>
+                  <td className="px-3 py-2.5 font-bold text-slate-900">{f.nombre}</td>
+                  <td className="px-3 py-2.5 text-right font-bold text-slate-800">{f.unidades}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingresoExtra)}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -19432,6 +19979,10 @@ function ModuloContabilidadCompras({
   productos,
   upsertProducto,
   quitarProductoLocal,
+  // Grupos de Modificadores/Extras (migracion_v64) — selector "Asignar
+  // Grupo de Modificadores" en "+ Crear Nuevo Producto desde Compra" (ver
+  // `nuevoProductoForm` más abajo).
+  gruposModificadores,
   onRegistrarAuditoria,
 }) {
   const mostrarToast = useToast();
@@ -19940,6 +20491,10 @@ function ModuloContabilidadCompras({
       stockInicial: '',
       imagenUrl: '',
       variantes: [],
+      // Grupos de Modificadores/Extras (migracion_v64) — mismo campo
+      // opcional que "Asignar Grupo de Modificadores" en `ModalNuevoProducto`
+      // ('' = sin grupo, retrocompatibilidad total).
+      grupoModificadorId: '',
     };
   }
   const [formEgreso, setFormEgreso] = useState(ESTADO_INICIAL_FORM_EGRESO);
@@ -20535,8 +21090,14 @@ function ModuloContabilidadCompras({
             variantes: variantesJSONB,
             imagen_url: imagenUrlNuevoProducto,
             recibido: true,
+            // Grupos de Modificadores/Extras (migracion_v64) — ver "Asignar
+            // Grupo de Modificadores" en el sub-formulario de arriba.
+            grupo_modificador_id: nuevoProductoForm.grupoModificadorId || null,
           };
-          const { data, error: errProducto } = await insertarConColumnasOpcionales('productos', nuevoProductoPayload, ['recibido']);
+          const { data, error: errProducto } = await insertarConColumnasOpcionales('productos', nuevoProductoPayload, [
+            'recibido',
+            'grupo_modificador_id',
+          ]);
           if (errProducto) throw errProducto;
           productoCreado = data;
           upsertProducto(productoCreado);
@@ -20586,6 +21147,10 @@ function ModuloContabilidadCompras({
                   precio_creacion: v.precio === '' ? null : Number(v.precio),
                   costo_unitario_creacion: v.costoUnitario === '' ? null : Number(v.costoUnitario),
                   imagen_url_creacion: imagenUrlNuevoProducto,
+                  // Grupos de Modificadores/Extras (migracion_v64) — se
+                  // propaga hasta la alta diferida real en
+                  // confirmarRecepcionParcial.
+                  grupo_modificador_id_creacion: nuevoProductoForm.grupoModificadorId || null,
                 }))
               : [
                   {
@@ -20601,6 +21166,7 @@ function ModuloContabilidadCompras({
                     precio_creacion: precioProductoPadre,
                     costo_unitario_creacion: costoUnitarioProductoPadre,
                     imagen_url_creacion: imagenUrlNuevoProducto,
+                    grupo_modificador_id_creacion: nuevoProductoForm.grupoModificadorId || null,
                   },
                 ];
         }
@@ -20899,11 +21465,15 @@ function ModuloContabilidadCompras({
                   : [],
                 imagen_url: item.imagen_url_creacion || null,
                 recibido: true,
+                // Grupos de Modificadores/Extras (migracion_v64) — llega
+                // aquí desde `grupo_modificador_id_creacion` (capturado en
+                // el sub-formulario "+ Crear Nuevo Producto desde Compra").
+                grupo_modificador_id: item.grupo_modificador_id_creacion || null,
               };
               const { data: productoCreado, error: errProducto } = await insertarConColumnasOpcionales(
                 'productos',
                 nuevoProductoPayload,
-                ['recibido']
+                ['recibido', 'grupo_modificador_id']
               );
               if (!errProducto && productoCreado) {
                 upsertProducto(productoCreado);
@@ -22095,6 +22665,25 @@ function ModuloContabilidadCompras({
                       </div>
                     )}
 
+                    {/* Grupos de Modificadores/Extras (migracion_v64) — mismo
+                        campo opcional que "Asignar Grupo de Modificadores"
+                        en `ModalNuevoProducto`. Se aplica al producto padre
+                        sin importar si tiene variantes o no. */}
+                    <Campo label="Asignar Grupo de Modificadores" hint="Preparados, Salsas, Términos, etc. — opcional, no afecta el inventario.">
+                      <select
+                        value={nuevoProductoForm.grupoModificadorId}
+                        onChange={(e) => setNuevoProductoForm((f) => ({ ...f, grupoModificadorId: e.target.value }))}
+                        className={inputClase}
+                      >
+                        <option value="">Sin asignar (venta directa en 1 clic)</option>
+                        {(gruposModificadores || []).map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {g.nombre}
+                          </option>
+                        ))}
+                      </select>
+                    </Campo>
+
                     <div>
                       <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
                         Estatus de Recepción
@@ -23183,6 +23772,14 @@ function ModuloAnalyticsBI({
     let cogsTotal = 0;
     let transaccionesConProducto = 0;
     const filasPorClave = {};
+    // Grupos de Modificadores/Extras (migracion_v64) — "Top Modificadores/
+    // Extras Más Pedidos": agregado INDEPENDIENTE del de productos físicos
+    // de arriba (`filasPorClave`), leído del mismo `item.modificadores`
+    // opcional que guarda `registrarVenta`. Tolerante por diseño: un item
+    // sin `modificadores` (arreglo ausente o vacío — el 100% de las ventas
+    // históricas, y cualquier producto sin grupo asignado) simplemente no
+    // aporta nada aquí, sin romper el resto de la consulta.
+    const filasPorModificador = {};
     ventasPagadas.forEach((v) => {
       const items = v?.detalles?.items;
       if (!Array.isArray(items)) return;
@@ -23216,6 +23813,20 @@ function ModuloAnalyticsBI({
         filasPorClave[clave].unidades += cantidad;
         filasPorClave[clave].ingreso += subtotal;
         filasPorClave[clave].costo += costo;
+
+        // Top Modificadores/Extras Más Pedidos (migracion_v64): por cada
+        // modificador del item (hoy, a lo más 1) se suma unidades e ingreso
+        // extra (`precio_adicional × cantidad`) — nunca costo/margen, porque
+        // el modificador no tiene costo propio (no gestiona stock, regla
+        // crítica de no-regresión).
+        (Array.isArray(item.modificadores) ? item.modificadores : []).forEach((mod) => {
+          if (!mod?.id) return;
+          if (!filasPorModificador[mod.id]) {
+            filasPorModificador[mod.id] = { id: mod.id, nombre: mod.nombre || 'Extra', unidades: 0, ingresoExtra: 0 };
+          }
+          filasPorModificador[mod.id].unidades += cantidad;
+          filasPorModificador[mod.id].ingresoExtra += (Number(mod.precio_adicional) || 0) * cantidad;
+        });
 
         cogsTotal += costo;
         const cat = prod?.categoria;
@@ -23282,6 +23893,15 @@ function ModuloAnalyticsBI({
 
     const topProductos = [...filasProducto].sort((a, b) => b.unidades - a.unidades).slice(0, 5);
 
+    // Top Modificadores/Extras Más Pedidos (migracion_v64) — mismo criterio
+    // de orden que `topProductos` (por unidades, top 5). Arreglo vacío
+    // (nunca `undefined`) cuando ninguna venta del periodo trae
+    // modificadores, para que el widget pueda distinguir "sin datos todavía"
+    // de "cargando".
+    const topModificadores = Object.values(filasPorModificador)
+      .sort((a, b) => b.unidades - a.unidades)
+      .slice(0, 5);
+
     // Auditoría del Kardex del periodo (entradas / salidas por venta /
     // ajustes) — para la sección de Auditoría ERP & Inventario del reporte.
     const auditoriaKardex = kardexRango.reduce(
@@ -23309,6 +23929,7 @@ function ModuloAnalyticsBI({
       rentabilidadPorCategoria,
       categoriaEstrella,
       topProductos,
+      topModificadores,
       auditoriaKardex,
     };
   }, [
@@ -23605,6 +24226,11 @@ function ModuloAnalyticsBI({
         <TopProductosTabla filas={analisis.topProductos} cargando={cargandoFinanciero} />
         <RendimientoPorCanchaTabla filas={rendimientoPorCancha} />
       </div>
+
+      {/* Grupos de Modificadores/Extras (migracion_v64): widget dedicado,
+          separado del ranking de productos físicos de arriba — ver
+          `TopModificadoresTabla`. */}
+      <TopModificadoresTabla filas={analisis.topModificadores} cargando={cargandoFinanciero} />
     </>
   );
 }
@@ -47021,6 +47647,14 @@ function AppInterno() {
   const [loadingProductos, setLoadingProductos] = useState(true);
   const [errorProductos, setErrorProductos] = useState('');
 
+  // Grupos de Modificadores/Extras (migracion_v64) — catálogo propio,
+  // mismo criterio de estado "levantado aquí" que `productos`: Smart POS
+  // (Paso 2 del flujo de venta), ERP & Inventario (gestión admin), Compras
+  // (asignación al dar de alta un producto) y Analytics (Top Modificadores)
+  // comparten exactamente el mismo estado en vivo.
+  const [gruposModificadores, setGruposModificadores] = useState([]);
+  const [loadingGruposModificadores, setLoadingGruposModificadores] = useState(true);
+
   const [sidebarAbierto, setSidebarAbierto] = useState(false);
   const [moduloActivo, setModuloActivo] = useState('parrilla'); // 'parrilla' | 'pos' | 'erp' | 'analytics' | 'torneos'
 
@@ -47766,6 +48400,56 @@ function AppInterno() {
     });
   }
 
+  // Grupos de Modificadores/Extras (migracion_v64) — catálogo pequeño y de
+  // poco cambio (un club edita sus grupos ocasionalmente, no en cada venta),
+  // así que un fetch al montar + Realtime basta, sin el poll de 20s que sí
+  // necesita `productos` (ese poll existe por el stock, que cambia con cada
+  // venta). Arquitectura Flexible: si el proyecto no ha corrido
+  // migracion_v64 todavía, `esErrorTablaInexistente` lo tolera en silencio y
+  // el catálogo de grupos simplemente queda vacío — ningún producto ofrece
+  // el Paso 2 hasta que la migración corra, pero el resto de la app (Smart
+  // POS de 1 clic, ERP, Analytics) sigue funcionando exactamente igual.
+  const [tablaGruposModificadoresExiste, setTablaGruposModificadoresExiste] = useState(true);
+  const cargarGruposModificadores = useCallback(async (opts = {}) => {
+    if (!opts.silencioso) setLoadingGruposModificadores(true);
+    const { data, error: errGrupos } = await conClubId(supabase.from('grupos_modificadores').select('*')).order('nombre', {
+      ascending: true,
+    });
+    if (errGrupos) {
+      if (esErrorTablaInexistente(errGrupos)) {
+        setTablaGruposModificadoresExiste(false);
+      } else {
+        console.warn('[Grupos de Modificadores] No se pudo cargar el catálogo.', errGrupos);
+      }
+      setGruposModificadores([]);
+    } else {
+      setTablaGruposModificadoresExiste(true);
+      setGruposModificadores(data || []);
+    }
+    setLoadingGruposModificadores(false);
+  }, []);
+
+  useEffect(() => {
+    cargarGruposModificadores();
+  }, [cargarGruposModificadores]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('grupos-modificadores-catalogo')
+      .on('postgres_changes', canalClubFiltro('grupos_modificadores'), () => cargarGruposModificadores({ silencioso: true }))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarGruposModificadores]);
+
+  function upsertGrupoModificadorLocal(grupo) {
+    setGruposModificadores((prev) => {
+      const existe = prev.some((g) => g.id === grupo.id);
+      return existe ? prev.map((g) => (g.id === grupo.id ? { ...g, ...grupo } : g)) : [...prev, grupo];
+    });
+  }
+
   // Cancelación de Compras — Alta de Producto Nuevo revertida
   // (`cancelarCompra` en `ModuloContabilidadCompras`): quita el producto del
   // estado local YA MISMO, sin esperar al canal Realtime ni al poll de 20s
@@ -47811,6 +48495,18 @@ function AppInterno() {
     }
     return mapa;
   }, [productos]);
+
+  // Grupos de Modificadores/Extras (migracion_v64) — mismo criterio que
+  // `variantesPorProducto` arriba: se indexa una sola vez por `id` para que
+  // `grupoModificadorDeProducto(producto, gruposModificadoresPorId)` sea
+  // O(1) en cada render del grid del POS.
+  const gruposModificadoresPorId = useMemo(() => {
+    const mapa = {};
+    for (const g of gruposModificadores) {
+      mapa[g.id] = g;
+    }
+    return mapa;
+  }, [gruposModificadores]);
 
   // Directorio/CRM de Jugadores: captura o corrige el teléfono de un jugador
   // ya existente en `jugadores` (nace vacío desde `resolverJugadorId`, ver
@@ -49981,6 +50677,8 @@ function AppInterno() {
                 variantesPorProducto={variantesPorProducto}
                 upsertVarianteProducto={upsertVarianteProducto}
                 quitarVarianteProductoLocal={quitarVarianteProductoLocal}
+                gruposModificadores={gruposModificadores}
+                gruposModificadoresPorId={gruposModificadoresPorId}
                 cortesiasDisponiblesPorJugador={cortesiasDisponiblesPorJugador}
                 onActualizarCortesiasDisponibles={setCortesiasDisponiblesPorJugador}
                 metaCortesiaProShop={metaCortesiaProShop}
@@ -50007,6 +50705,11 @@ function AppInterno() {
                 variantesPorProducto={variantesPorProducto}
                 upsertVarianteProducto={upsertVarianteProducto}
                 quitarVarianteProductoLocal={quitarVarianteProductoLocal}
+                gruposModificadores={gruposModificadores}
+                loadingGruposModificadores={loadingGruposModificadores}
+                tablaGruposModificadoresExiste={tablaGruposModificadoresExiste}
+                cargarGruposModificadores={cargarGruposModificadores}
+                upsertGrupoModificadorLocal={upsertGrupoModificadorLocal}
                 permisos={permisos}
               />
             ) : moduloActivo === 'contabilidad' ? (
@@ -50021,6 +50724,7 @@ function AppInterno() {
                 productos={productos}
                 upsertProducto={upsertProducto}
                 quitarProductoLocal={quitarProductoLocal}
+                gruposModificadores={gruposModificadores}
                 onRegistrarAuditoria={registrarEventoAuditoria}
               />
             ) : moduloActivo === 'analytics' ? (
