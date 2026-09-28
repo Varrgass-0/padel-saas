@@ -32614,7 +32614,13 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     if (solicitudOrigen?.hora_hasta) return solicitudOrigen.hora_hasta;
     return inicio ? minutosAHora(Math.min(parseHoraAMinutos(inicio) + 60, HORA_FIN_MIN)) : '18:00';
   });
-  const [capacidad, setCapacidad] = useState('6');
+  // Si la solicitud web trae "Número de Participantes" (solo "Nuevo
+  // grupo", migracion_v70) se usa para prellenar la capacidad de la clase
+  // — así el operador ve de una vez cuántos lugares pidió el jugador, en
+  // vez del "6" genérico de siempre. Respaldo tolerante: si el proyecto
+  // todavía no corrió esa migración, `numero_participantes` viene `undefined`
+  // y este `useState` se comporta exactamente igual que antes.
+  const [capacidad, setCapacidad] = useState(solicitudOrigen?.numero_participantes ? String(solicitudOrigen.numero_participantes) : '6');
   const [precioMensualidad, setPrecioMensualidad] = useState('1200');
   const [precioClaseSuelta, setPrecioClaseSuelta] = useState('180');
   const [guardando, setGuardando] = useState(false);
@@ -36246,6 +36252,12 @@ function ModuloAcademiaClinicas({
                       </p>
                       <p className="mt-0.5 text-xs text-slate-500">
                         {s.nivel || 'Nivel sin indicar'} · Coach {s.coach_deseado || 'sin preferencia'}
+                        {/* NÚMERO DE PARTICIPANTES: solo "Nuevo grupo" lo
+                            trae (una solicitud "Privada" es siempre 1-a-1,
+                            ver `ModalSolicitarClase`) — así el club/coach
+                            sabe cuántos alumnos esperar al revisar la
+                            solicitud, sin tener que preguntarle al jugador. */}
+                        {s.tipo_solicitud !== 'privada' && s.numero_participantes ? ` · ${s.numero_participantes} personas` : ''}
                       </p>
                       <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
                         <CalendarClock size={12} /> {diaLabel}
@@ -44772,6 +44784,13 @@ function PortalPublicoJugadores({ clubSlug }) {
       dia_semana: datos.fecha ? diaSemanaDeFecha(datos.fecha).value : datos.dia || null,
       hora_desde: datos.horaDesde || null,
       hora_hasta: datos.horaHasta || null,
+      // NÚMERO DE PARTICIPANTES (solo "Grupal" — `datos.numeroParticipantes`
+      // ya viene en `null` para "Privada" desde `ModalSolicitarClase`, ver
+      // `migracion_v70_academia_solicitudes_num_participantes.sql`, columna
+      // nueva). Va en `insertarConColumnasOpcionales` como opcional (misma
+      // Arquitectura Flexible de siempre) por si el club todavía no corrió
+      // esa migración — la solicitud igual se guarda, solo sin ese dato.
+      numero_participantes: datos.numeroParticipantes || null,
       estado: 'pendiente',
     });
     try {
@@ -44783,6 +44802,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         'dia_semana',
         'hora_desde',
         'hora_hasta',
+        'numero_participantes',
         'estado',
       ]);
       if (error) throw error;
@@ -44790,7 +44810,10 @@ function PortalPublicoJugadores({ clubSlug }) {
       setModalSolicitudClase(false);
       crearNotificacionClub({
         tipo: 'solicitud_clase',
-        titulo: `${payload.nombre || 'Un jugador'} solicitó una clase ${datos.tipo === 'privada' ? 'privada' : 'grupal'} nueva`,
+        titulo:
+          datos.tipo === 'privada'
+            ? `${payload.nombre || 'Un jugador'} solicitó una clase privada nueva`
+            : `${payload.nombre || 'Un jugador'} solicitó un grupo nuevo${datos.numeroParticipantes ? ` (${datos.numeroParticipantes} personas)` : ''}`,
         jugadorId: jugador?.id || null,
         jugadorNombre: payload.nombre,
         // Una solicitud no es una inscripción pagable todavía — el destino
@@ -44799,6 +44822,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           tipo_solicitud: datos.tipo,
           nivel: datos.nivel || null,
           fecha: datos.fecha || null,
+          numero_participantes: datos.numeroParticipantes || null,
           solicitud_id: solicitudCreada?.id || null,
           modulo_destino: 'academia',
         },
@@ -45805,22 +45829,35 @@ function PortalPublicoJugadores({ clubSlug }) {
                     const ultimaPortal = ultimaEvaluacionDe(evaluacionesJugadorPortal, jugador.id);
                     const nivelActualPortal = ultimaPortal?.nivel_asignado || null;
                     const metaPortal = nivelActualPortal ? NIVEL_OFICIAL_META[nivelActualPortal] : null;
-                    // FIX (sin degradados): antes `bg-gradient-to-r
-                    // from-lime-400/10 via-white/50 to-white/50` — fondo
-                    // plano y oscuro de la paleta QLUBOS.
+                    // FIX (sin degradados, adaptable Claro/Oscuro): antes
+                    // `bg-gradient-to-r from-lime-400/10 via-white/50
+                    // to-white/50`, y luego (fix anterior) un
+                    // `bg-slate-800/80` FIJO que se veía como bloque negro
+                    // en Modo Claro. Este archivo NO usa el prefijo
+                    // `dark:` de Tailwind en ningún lado — el Modo Oscuro
+                    // de todo el Portal es un retrofit vía hoja de CSS
+                    // (`CSS_MODO_OSCURO_CLUBOS`, arriba) que pisa clases
+                    // PLANAS de Tailwind (`bg-white/80`, `border-slate-200`,
+                    // `text-slate-900`, `text-slate-600`, `hover:bg-slate-50`)
+                    // bajo el ancestro `html.dark`. Usando esas mismas
+                    // clases planas (en vez de `dark:algo`, que esa hoja no
+                    // reconoce y que no está enlazado al toggle Sol/Luna de
+                    // este proyecto) esta tarjeta hereda el contraste
+                    // correcto en ambos temas gratis, igual que el resto de
+                    // la app.
                     return (
                       <button
                         type="button"
                         onClick={() => setMostrarMiPerfilDeportivo(true)}
-                        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-700/50 bg-slate-800/80 p-4 text-left transition hover:border-lime-400/50 hover:bg-slate-800"
+                        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/80 p-4 text-left transition hover:border-lime-400/50 hover:bg-slate-50"
                       >
                         <span className="flex items-center gap-2.5">
                           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/15 text-lime-300 ring-1 ring-lime-400/30">
                             <Gauge size={16} />
                           </span>
                           <span>
-                            <span className="block text-sm font-black text-white">Mi Perfil Deportivo</span>
-                            <span className="block text-[11px] text-slate-400">Tu Nivel Oficial, tu progreso y las notas de tus coaches.</span>
+                            <span className="block text-sm font-black text-slate-900">Mi Perfil Deportivo</span>
+                            <span className="block text-[11px] text-slate-600">Tu Nivel Oficial, tu progreso y las notas de tus coaches.</span>
                           </span>
                         </span>
                         <span className="flex shrink-0 items-center gap-2">
@@ -45845,21 +45882,27 @@ function PortalPublicoJugadores({ clubSlug }) {
                       lista de abajo (ver el `.filter` de `tipo_clase`), así
                       que este es el único camino para pedir una clase
                       individual o armar un grupo nuevo desde el Portal. */}
-                  {/* FIX (sin degradados): antes `bg-gradient-to-r
-                      from-violet-400/10 via-white/50 to-white/50` — fondo
-                      plano y oscuro de la paleta QLUBOS. */}
+                  {/* FIX (sin degradados, adaptable Claro/Oscuro): antes
+                      `bg-gradient-to-r from-violet-400/10 via-white/50
+                      to-white/50`, y luego un `bg-slate-800/80` FIJO — ver
+                      el comentario largo sobre la tarjeta "Mi Perfil
+                      Deportivo" arriba: mismas clases PLANAS de Tailwind
+                      (`bg-white/80`/`border-slate-200`/`text-slate-900`/
+                      `text-slate-600`), ya cubiertas por
+                      `CSS_MODO_OSCURO_CLUBOS`, en vez de `dark:algo` (este
+                      proyecto no usa ese prefijo en ningún lado). */}
                   <button
                     type="button"
                     onClick={() => (jugador ? setModalSolicitudClase(true) : setModalIdentificacion(true))}
-                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-700/50 bg-slate-800/80 p-4 text-left transition hover:border-violet-400/50 hover:bg-slate-800"
+                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/80 p-4 text-left transition hover:border-violet-400/50 hover:bg-slate-50"
                   >
                     <span className="flex items-center gap-2.5">
                       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-400/15 text-violet-300 ring-1 ring-violet-400/30">
                         <Sparkles size={16} />
                       </span>
                       <span>
-                        <span className="block text-sm font-black text-white">Solicitar Clase Privada o Nuevo Grupo</span>
-                        <span className="block text-[11px] text-slate-400">Elige fecha, nivel y horario en la cuadrícula — el club te confirma.</span>
+                        <span className="block text-sm font-black text-slate-900">Solicitar Clase Privada o Nuevo Grupo</span>
+                        <span className="block text-[11px] text-slate-600">Elige fecha, nivel y horario en la cuadrícula — el club te confirma.</span>
                       </span>
                     </span>
                     <ChevronRight size={16} className="shrink-0 text-violet-300" />
@@ -46034,18 +46077,22 @@ function PortalPublicoJugadores({ clubSlug }) {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {/* FIX (sin degradados): antes `bg-gradient-to-br
-                          from-lime-400/10 via-white/60 to-white/60` — fondo
-                          plano y oscuro de la paleta QLUBOS, texto claro
-                          para contraste consistente. */}
-                      <div className="overflow-hidden rounded-2xl border border-slate-700/50 bg-slate-800/80 p-5">
-                        <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-lime-400/80">
+                      {/* FIX (sin degradados, adaptable Claro/Oscuro): antes
+                          `bg-gradient-to-br from-lime-400/10 via-white/60
+                          to-white/60`, y luego un `bg-slate-800/80` FIJO —
+                          ver el comentario largo sobre "Mi Perfil
+                          Deportivo" (pestaña Academia): mismas clases
+                          PLANAS de Tailwind, ya cubiertas por
+                          `CSS_MODO_OSCURO_CLUBOS`, en vez de `dark:algo`
+                          (este proyecto no usa ese prefijo en ningún lado). */}
+                      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white/80 p-5">
+                        <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-lime-400">
                           <Sparkles size={12} /> Saldo disponible
                         </p>
-                        <p className="mt-1 text-3xl font-black text-white">
+                        <p className="mt-1 text-3xl font-black text-slate-900">
                           {cargandoWallet ? <Loader2 size={22} className="animate-spin text-lime-400" /> : formatoMoneda(saldoWallet)}
                         </p>
-                        <p className="mt-1 text-xs text-slate-400">
+                        <p className="mt-1 text-xs text-slate-600">
                           Úsalo para pagar canchas, torneos, retas o compras en la Tienda — cubre lo que alcance, el resto se paga en recepción.
                         </p>
                       </div>
@@ -47132,6 +47179,11 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
 function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club }) {
   const [tipo, setTipo] = useState('grupal'); // 'privada' | 'grupal'
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
+  // NÚMERO DE PARTICIPANTES (solo aplica a "Grupal" — una "Privada" siempre
+  // es 1-a-1, así que este selector se oculta y no se manda en ese caso; ver
+  // `enviar()` más abajo). Arranca en 2 (la opción más chica) porque `tipo`
+  // ya arranca en 'grupal' por defecto.
+  const [numeroParticipantes, setNumeroParticipantes] = useState(2);
   const [fecha, setFecha] = useState(hoyISO());
   const [horaInicio, setHoraInicio] = useState('');
   // Coach Preferido (item 3) — '' = "Cualquiera disponible". La lista de
@@ -47228,6 +47280,12 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       // sugeridos informativos de esa hora, si hay alguno (el club confirma
       // el coach final al revisar la solicitud, esto es solo referencia).
       coach: coachPreferido || slotElegido?.coachesNombres?.[0] || null,
+      // NÚMERO DE PARTICIPANTES: solo tiene sentido para "Grupal" — una
+      // "Privada" siempre es 1-a-1, así que se manda `null` explícito (no
+      // el valor que haya quedado seleccionado de una vuelta anterior por
+      // "Grupal") para que el club/coach nunca vea un número de personas
+      // que no corresponde al tipo de solicitud.
+      numeroParticipantes: tipo === 'grupal' ? numeroParticipantes : null,
     });
     setEnviando(false);
   }
@@ -47252,6 +47310,31 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
             ))}
           </div>
         </div>
+
+        {/* NÚMERO DE PARTICIPANTES — solo para "Grupal" (una "Privada" es
+            siempre 1-a-1, así que este selector se oculta por completo en
+            ese caso, ver `tipo === 'grupal'` abajo). Se manda en el payload
+            de la solicitud (`numeroParticipantes`, ver `enviar()`) para que
+            el club/coach sepa cuántos alumnos asistirán al revisarla. */}
+        {tipo === 'grupal' && (
+          <div>
+            <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Número de Participantes</p>
+            <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
+              {[2, 3, 4].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setNumeroParticipantes(n)}
+                  className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
+                    numeroParticipantes === n ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {n} Personas
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div>
           <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Nivel</p>
