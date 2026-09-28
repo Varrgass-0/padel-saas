@@ -40945,35 +40945,47 @@ function SeccionGeneralClub({
 
   return (
     <div className="space-y-4">
-      <div className="rounded-2xl border border-slate-200 bg-white p-4">
-        <div className="mb-1 flex items-center gap-2">
-          <UserCircle2 size={16} className="text-lime-500" />
-          <h3 className="text-sm font-black text-slate-900">Nombre del Administrador / Dueño</h3>
+      {/* Nombre del Administrador/Dueño (Refactor Onboarding v67) — a
+          pedido del club, esta tarjeta SOLO aplica durante el
+          Onboarding/registro inicial (el wizard la exige antes de dejar
+          avanzar, ver `bloqueadoPorNombreAdministrador` en el componente
+          padre) — fuera de él, en la Configuración del Club de uso diario,
+          ya no se muestra. El campo (`configClub.nombreAdministrador` /
+          `configuracion_club.nombre_administrador`) y su guardado
+          (`guardarNombreAdministrador`) siguen existiendo tal cual, solo se
+          oculta esta tarjeta para no duplicar un paso que ya es de
+          registro único. */}
+      {modoOnboarding && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="mb-1 flex items-center gap-2">
+            <UserCircle2 size={16} className="text-lime-500" />
+            <h3 className="text-sm font-black text-slate-900">Nombre del Administrador / Dueño</h3>
+          </div>
+          <p className="mb-3 text-xs text-slate-500">
+            Este es el nombre que se muestra en el Header superior y en "Cambiar Operador/Turno" — en vez de la
+            primera parte de tu correo. Ej: "Adrián Ramírez".
+          </p>
+
+          <Campo label="Nombre completo">
+            <input
+              type="text"
+              value={nombreAdministrador}
+              onChange={(e) => setNombreAdministrador(e.target.value)}
+              placeholder="Ej. Adrián Ramírez"
+              className={inputClase}
+            />
+          </Campo>
+
+          {errorNombreAdministrador && <p className="mt-3 text-xs font-semibold text-rose-400">{errorNombreAdministrador}</p>}
+
+          <div className="mt-4 flex justify-end">
+            <BotonPrimario onClick={guardarNombreAdministrador} disabled={guardandoConfigClub}>
+              {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              Guardar nombre
+            </BotonPrimario>
+          </div>
         </div>
-        <p className="mb-3 text-xs text-slate-500">
-          Este es el nombre que se muestra en el Header superior y en "Cambiar Operador/Turno" — en vez de la
-          primera parte de tu correo. Ej: "Adrián Ramírez".
-        </p>
-
-        <Campo label="Nombre completo">
-          <input
-            type="text"
-            value={nombreAdministrador}
-            onChange={(e) => setNombreAdministrador(e.target.value)}
-            placeholder="Ej. Adrián Ramírez"
-            className={inputClase}
-          />
-        </Campo>
-
-        {errorNombreAdministrador && <p className="mt-3 text-xs font-semibold text-rose-400">{errorNombreAdministrador}</p>}
-
-        <div className="mt-4 flex justify-end">
-          <BotonPrimario onClick={guardarNombreAdministrador} disabled={guardandoConfigClub}>
-            {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Guardar nombre
-          </BotonPrimario>
-        </div>
-      </div>
+      )}
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
@@ -42193,7 +42205,16 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
 
   const puedeGestionar = permisos?.puedeGestionarWalletOperadores !== false;
 
-  const directorioJugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+  // FIX (Wallet de Jugadores): excluye cuentas eliminadas/anonimizadas del
+  // listado — mismo criterio que ya usa el resto de la app para no
+  // ofrecerlas (`esJugadorEliminado`, ver `ModalNuevaClase`/Directorio de
+  // Jugadores CRM). Antes se listaba `Object.values(jugadoresPorId)` sin
+  // ningún filtro, así que una "Cuenta eliminada" seguía apareciendo aquí
+  // y se le podía buscar/cargar crédito por error.
+  const directorioJugadores = useMemo(
+    () => Object.values(jugadoresPorId || {}).filter((j) => !esJugadorEliminado(j)),
+    [jugadoresPorId]
+  );
   const directorioOperadores = useMemo(() => (empleados || []).filter((e) => e.activo !== false), [empleados]);
 
   const resultados = useMemo(() => {
@@ -47728,16 +47749,16 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   }
 
   return (
-    <ModalShell titulo="Solicitar Clase Privada o Nuevo Grupo" subtitulo="El club revisa tu solicitud y te confirma horario y costo" onClose={onClose} icon={Sparkles} ancho="max-w-lg">
+    <ModalShell titulo="Solicitar Clase Privada o Nuevo Grupo" subtitulo="El club revisa tu solicitud y te confirmará" onClose={onClose} icon={Sparkles} ancho="max-w-lg">
       <div className="space-y-3.5">
         {/* Arquitectura de Tarifas Academia (Corrección — item 4): 2
             opciones visuales, mismo copy/diseño que el catálogo de clases
             ya publicadas — funcionan como selector (tarjeta resaltada = tu
             elección), no como envío inmediato: la solicitud real se manda
             hasta "Enviar solicitud" al final del formulario, con el resto
-            de datos (fecha/horario/nivel/coach). */}
+            de datos (fecha/horario/nivel/coach). Sin encabezado "¿Qué
+            buscas?" (ajuste UX): las 2 tarjetas se explican solas. */}
         <div>
-          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">¿Qué buscas?</p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <button
               type="button"
@@ -47767,7 +47788,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               }`}
             >
               <div>
-                <p className="text-xs font-black text-slate-900">Adquirir Membresía o Plan Mensual de Academia</p>
+                <p className="text-xs font-black text-slate-900">Plan Mensual de Academia</p>
                 <p className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
                   Garantiza tu lugar fijo cada semana + incluye {tarifasAcademiaClub.clasesIncluidasMensualidad} clases al mes
                 </p>
