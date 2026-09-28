@@ -32741,7 +32741,7 @@ async function generarSesionesClase({ clase, reservasExistentes = [] }) {
 // Privada / Personalizada — selector de alumno del directorio (en vez del
 // nombre libre), alta automática como primer inscrito (cupo 1/1) en
 // `academia_alumnos`, y notificación al jugador (`crearNotificacionJugador`).
-function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen, configClub }) {
+function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen, configClub, permisos }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
@@ -32802,8 +32802,24 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   // creada, la clase guarda su propio precio y ya no depende de este
   // default (cambiar la config del club después no la mueve).
   const tarifasAcademiaClub = useMemo(() => tarifasAcademiaDelClub(configClub), [configClub]);
+  // Bloqueo de Edición de Montos para Coach/Staff: solo Dueño/Admin
+  // (`permisos.puedeGestionarEmpleados`, mismo flag que ya distingue Owner
+  // del resto de la matriz de roles — ver `PERMISOS_POR_ROL`, `true` SOLO
+  // para 'owner'/'admin') puede ajustar los precios base al crear una
+  // clase; Coach/Manager/Recepción/etc. ven los 2 campos bloqueados y
+  // SIEMPRE tomando el valor vigente de la configuración del club.
+  const puedeEditarPreciosAcademia = Boolean(permisos?.puedeGestionarEmpleados);
   const [precioMensualidad, setPrecioMensualidad] = useState(String(tarifasAcademiaClub.precioBaseMensualidad));
   const [precioClaseSuelta, setPrecioClaseSuelta] = useState(String(tarifasAcademiaClub.precioBaseClaseSuelta));
+  // Si el campo está bloqueado (no-Owner/Admin), estos 2 valores siempre
+  // reflejan la configuración vigente del club — nunca un valor editado a
+  // mano, ni siquiera si `configClub` llega/cambia después de montar el
+  // modal (ej. Realtime).
+  useEffect(() => {
+    if (puedeEditarPreciosAcademia) return;
+    setPrecioMensualidad(String(tarifasAcademiaClub.precioBaseMensualidad));
+    setPrecioClaseSuelta(String(tarifasAcademiaClub.precioBaseClaseSuelta));
+  }, [puedeEditarPreciosAcademia, tarifasAcademiaClub.precioBaseMensualidad, tarifasAcademiaClub.precioBaseClaseSuelta]);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
@@ -33100,22 +33116,30 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
               "Precio Mensualidad"/"Precio Clase Suelta", en ambos tipos —
               el dato guardado (precio_mensualidad/precio_clase_suelta) no
               cambia, solo se deja de renombrar el campo. */}
-          <Campo label="Precio Mensualidad">
+          <Campo
+            label="Precio Mensualidad"
+            hint={!puedeEditarPreciosAcademia ? 'Definido por el Dueño/Admin en Configuración del Club.' : undefined}
+          >
             <input
               type="number"
               min="0"
               value={precioMensualidad}
               onChange={(e) => setPrecioMensualidad(e.target.value)}
-              className={inputClase}
+              disabled={!puedeEditarPreciosAcademia}
+              className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-60`}
             />
           </Campo>
-          <Campo label="Precio Clase Suelta">
+          <Campo
+            label="Precio Clase Suelta"
+            hint={!puedeEditarPreciosAcademia ? 'Definido por el Dueño/Admin en Configuración del Club.' : undefined}
+          >
             <input
               type="number"
               min="0"
               value={precioClaseSuelta}
               onChange={(e) => setPrecioClaseSuelta(e.target.value)}
-              className={inputClase}
+              disabled={!puedeEditarPreciosAcademia}
+              className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-60`}
             />
           </Campo>
         </div>
@@ -36462,6 +36486,12 @@ function ModuloAcademiaClinicas({
                             sabe cuántos alumnos esperar al revisar la
                             solicitud, sin tener que preguntarle al jugador. */}
                         {s.tipo_solicitud !== 'privada' && s.numero_participantes ? ` · ${s.numero_participantes} personas` : ''}
+                        {/* Preferencia de pago (Corrección — item 4,
+                            migracion_v72): solo se muestra si la solicitud
+                            ya trae el dato — solicitudes viejas o de un
+                            proyecto sin la migración simplemente no la
+                            traen (`undefined`). */}
+                        {s.tipo_pago_deseado ? ` · Prefiere ${s.tipo_pago_deseado === 'mensualidad' ? 'Plan Mensual' : 'Clase Suelta'}` : ''}
                       </p>
                       <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
                         <CalendarClock size={12} /> {diaLabel}
@@ -36610,6 +36640,7 @@ function ModuloAcademiaClinicas({
           prellenado={celdaParaNuevaClase}
           solicitudOrigen={solicitudParaNuevaClase}
           configClub={configClub}
+          permisos={permisos}
           onClose={() => {
             setModalNuevaClase(false);
             setCeldaParaNuevaClase(null);
@@ -41834,6 +41865,64 @@ function SeccionReservasAcademia({
 
   return (
     <div className="space-y-4">
+      {/* Tarifas y Paquetes de Academia (nuevo bloque) — precios/paquete
+          SUGERIDOS que prellenan "Nueva Clase" y que redactan las 2
+          opciones de inscripción del Portal ("Clase Suelta"/"Plan Mensual",
+          ver `PortalPublicoJugadores` → `tarifasAcademiaDelClub`). Cambiar
+          estos valores NO modifica clases ya creadas — cada clase guarda su
+          propio `precio_mensualidad`/`precio_clase_suelta` al crearse.
+          Corrección: movida hasta ARRIBA de la pestaña (por encima de
+          "Horarios Habilitados para Clases" y "Políticas de Cancelación") a
+          pedido del usuario — es la tarjeta que más ajusta el club al
+          activar Academia. */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <DollarSign size={16} className="text-lime-500" />
+          <h3 className="text-sm font-black text-slate-900">Tarifas y Paquetes de Academia</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Precios y paquete por defecto para clases nuevas — el operador siempre puede ajustarlos al crear cada clase en particular.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Campo label="Precio Base Clase Suelta ($)">
+            <input
+              type="number"
+              min="0"
+              value={precioBaseClaseSuelta}
+              onChange={(e) => setPrecioBaseClaseSuelta(e.target.value)}
+              className={inputClase}
+              placeholder="180"
+            />
+          </Campo>
+          <Campo label="Precio Base Mensualidad ($)">
+            <input
+              type="number"
+              min="0"
+              value={precioBaseMensualidad}
+              onChange={(e) => setPrecioBaseMensualidad(e.target.value)}
+              className={inputClase}
+              placeholder="1200"
+            />
+          </Campo>
+          <Campo label="Clases incluidas en la Mensualidad">
+            <input
+              type="number"
+              min="1"
+              value={clasesIncluidasMensualidad}
+              onChange={(e) => setClasesIncluidasMensualidad(e.target.value)}
+              className={inputClase}
+              placeholder="4"
+            />
+          </Campo>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <BotonPrimario onClick={guardarTarifasAcademia} disabled={guardandoConfigClub}>
+            {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Guardar Tarifas de Academia
+          </BotonPrimario>
+        </div>
+      </div>
+
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
           <Clock size={16} className="text-lime-500" />
@@ -42062,60 +42151,6 @@ function SeccionReservasAcademia({
           <BotonPrimario onClick={() => guardarTolerancia()} disabled={guardandoConfigClub}>
             {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
             Guardar Políticas de Cancelación
-          </BotonPrimario>
-        </div>
-      </div>
-
-      {/* Tarifas y Paquetes de Academia (nuevo bloque) — precios/paquete
-          SUGERIDOS que prellenan "Nueva Clase" y que redactan las 2
-          opciones de inscripción del Portal ("Clase Suelta"/"Plan Mensual",
-          ver `PortalPublicoJugadores` → `tarifasAcademiaDelClub`). Cambiar
-          estos valores NO modifica clases ya creadas — cada clase guarda su
-          propio `precio_mensualidad`/`precio_clase_suelta` al crearse. */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-4">
-        <div className="mb-1 flex items-center gap-2">
-          <DollarSign size={16} className="text-lime-500" />
-          <h3 className="text-sm font-black text-slate-900">Tarifas y Paquetes de Academia</h3>
-        </div>
-        <p className="mb-3 text-xs text-slate-500">
-          Precios y paquete por defecto para clases nuevas — el operador siempre puede ajustarlos al crear cada clase en particular.
-        </p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Campo label="Precio Base Clase Suelta ($)">
-            <input
-              type="number"
-              min="0"
-              value={precioBaseClaseSuelta}
-              onChange={(e) => setPrecioBaseClaseSuelta(e.target.value)}
-              className={inputClase}
-              placeholder="180"
-            />
-          </Campo>
-          <Campo label="Precio Base Mensualidad ($)">
-            <input
-              type="number"
-              min="0"
-              value={precioBaseMensualidad}
-              onChange={(e) => setPrecioBaseMensualidad(e.target.value)}
-              className={inputClase}
-              placeholder="1200"
-            />
-          </Campo>
-          <Campo label="Clases incluidas en la Mensualidad">
-            <input
-              type="number"
-              min="1"
-              value={clasesIncluidasMensualidad}
-              onChange={(e) => setClasesIncluidasMensualidad(e.target.value)}
-              className={inputClase}
-              placeholder="4"
-            />
-          </Campo>
-        </div>
-        <div className="mt-4 flex justify-end">
-          <BotonPrimario onClick={guardarTarifasAcademia} disabled={guardandoConfigClub}>
-            {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Guardar Tarifas de Academia
           </BotonPrimario>
         </div>
       </div>
@@ -45143,6 +45178,12 @@ function PortalPublicoJugadores({ clubSlug }) {
       // Arquitectura Flexible de siempre) por si el club todavía no corrió
       // esa migración — la solicitud igual se guarda, solo sin ese dato.
       numero_participantes: datos.numeroParticipantes || null,
+      // Tarifas y Paquetes de Academia (Corrección — item 4, migracion_v72):
+      // preferencia de pago que el jugador eligió en las 2 tarjetas del
+      // modal ("Clase Suelta"/"Plan Mensual") — el precio FINAL lo confirma
+      // el club al atender la solicitud (ver `ModalNuevaClase`), este campo
+      // es solo la intención del jugador para que Solicitudes la vea.
+      tipo_pago_deseado: datos.tipoPagoDeseado || null,
       estado: 'pendiente',
     });
     try {
@@ -45155,6 +45196,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         'hora_desde',
         'hora_hasta',
         'numero_participantes',
+        'tipo_pago_deseado',
         'estado',
       ]);
       if (error) throw error;
@@ -47559,6 +47601,18 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
 // `reservas`/`academiaClases` que el Portal ya tiene cargadas, sin ninguna
 // consulta ni suscripción nueva (Regla de Oro de Realtime intacta).
 function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club }) {
+  // Arquitectura de Tarifas Academia (Corrección — item 4): esta solicitud
+  // ("modal genérico de horarios") no tenía forma de capturar si el
+  // jugador busca una Clase Suelta o el Plan Mensual — ahora se pide con
+  // las mismas 2 tarjetas visuales que ya usa el catálogo de clases
+  // publicadas (`alIntentarInscribirClase`), mostrando el precio BASE
+  // configurado por el club (`tarifasAcademiaDelClub`) como referencia —
+  // el precio final de una clase Privada/Nuevo grupo lo confirma el club
+  // al revisar la solicitud (`ModalShell subtitulo`), así que aquí es solo
+  // informativo/preferencia, se guarda en `tipo_pago_deseado`
+  // (migracion_v72) para que Academia & Clínicas → Solicitudes lo vea.
+  const tarifasAcademiaClub = useMemo(() => tarifasAcademiaDelClub(club), [club]);
+  const [tipoPagoDeseado, setTipoPagoDeseado] = useState('clase_suelta'); // 'clase_suelta' | 'mensualidad'
   const [tipo, setTipo] = useState('grupal'); // 'privada' | 'grupal'
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
   // NÚMERO DE PARTICIPANTES (solo aplica a "Grupal" — una "Privada" siempre
@@ -47668,6 +47722,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       // "Grupal") para que el club/coach nunca vea un número de personas
       // que no corresponde al tipo de solicitud.
       numeroParticipantes: tipo === 'grupal' ? numeroParticipantes : null,
+      tipoPagoDeseado,
     });
     setEnviando(false);
   }
@@ -47675,6 +47730,60 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   return (
     <ModalShell titulo="Solicitar Clase Privada o Nuevo Grupo" subtitulo="El club revisa tu solicitud y te confirma horario y costo" onClose={onClose} icon={Sparkles} ancho="max-w-lg">
       <div className="space-y-3.5">
+        {/* Arquitectura de Tarifas Academia (Corrección — item 4): 2
+            opciones visuales, mismo copy/diseño que el catálogo de clases
+            ya publicadas — funcionan como selector (tarjeta resaltada = tu
+            elección), no como envío inmediato: la solicitud real se manda
+            hasta "Enviar solicitud" al final del formulario, con el resto
+            de datos (fecha/horario/nivel/coach). */}
+        <div>
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">¿Qué buscas?</p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setTipoPagoDeseado('clase_suelta')}
+              className={`flex flex-col justify-between rounded-xl border p-3 text-left transition ${
+                tipoPagoDeseado === 'clase_suelta' ? 'border-lime-500 bg-lime-400/[0.06] ring-2 ring-lime-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-lime-400/40'
+              }`}
+            >
+              <div>
+                <p className="text-xs font-black text-slate-900">Clase Suelta</p>
+                <p className="mt-0.5 text-[10.5px] leading-snug text-slate-500">Asiste a una sesión individual sin compromisos periódicos</p>
+                <p className="mt-1.5 text-base font-black text-slate-900">{formatoMoneda(tarifasAcademiaClub.precioBaseClaseSuelta)}</p>
+              </div>
+              <span
+                className={`mt-2.5 inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold ${
+                  tipoPagoDeseado === 'clase_suelta' ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-600'
+                }`}
+              >
+                Reservar Clase Suelta
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTipoPagoDeseado('mensualidad')}
+              className={`flex flex-col justify-between rounded-xl border p-3 text-left transition ${
+                tipoPagoDeseado === 'mensualidad' ? 'border-lime-500 bg-lime-400/[0.06] ring-2 ring-lime-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-lime-400/40'
+              }`}
+            >
+              <div>
+                <p className="text-xs font-black text-slate-900">Adquirir Membresía o Plan Mensual de Academia</p>
+                <p className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
+                  Garantiza tu lugar fijo cada semana + incluye {tarifasAcademiaClub.clasesIncluidasMensualidad} clases al mes
+                </p>
+                <p className="mt-1.5 text-base font-black text-slate-900">{formatoMoneda(tarifasAcademiaClub.precioBaseMensualidad)}</p>
+              </div>
+              <span
+                className={`mt-2.5 inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold ${
+                  tipoPagoDeseado === 'mensualidad' ? 'bg-lime-400 text-slate-950' : 'bg-slate-200 text-slate-600'
+                }`}
+              >
+                <UserPlus size={13} /> Unirme a la Academia
+              </span>
+            </button>
+          </div>
+        </div>
+
         <div>
           <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Tipo de Clase</p>
           <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
@@ -50227,7 +50336,10 @@ function AppInterno({ clubInicial } = {}) {
           data.tolerancia_torneos_enabled != null ||
           data.tolerancia_torneos_horas != null ||
           data.tolerancia_retas_enabled != null ||
-          data.tolerancia_retas_horas != null
+          data.tolerancia_retas_horas != null ||
+          data.academia_precio_base_clase_suelta != null ||
+          data.academia_precio_base_mensualidad != null ||
+          data.academia_clases_incluidas_mensualidad != null
         ) {
           const nuevaConfig = {
             nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
@@ -50271,6 +50383,27 @@ function AppInterno({ clubInicial } = {}) {
             toleranciaTorneosHoras: Number(data.tolerancia_torneos_horas) > 0 ? Number(data.tolerancia_torneos_horas) : CONFIG_CLUB_DEFAULT.toleranciaTorneosHoras,
             toleranciaRetasEnabled: data.tolerancia_retas_enabled !== false,
             toleranciaRetasHoras: Number(data.tolerancia_retas_horas) > 0 ? Number(data.tolerancia_retas_horas) : CONFIG_CLUB_DEFAULT.toleranciaRetasHoras,
+            // Tarifas y Paquetes de Academia (Configuración del Club →
+            // Reservas & Academia, migracion_v71) — mismo criterio tolerante
+            // que el resto de este objeto: proyecto sin la migración →
+            // columnas `undefined` → cae a `CONFIG_CLUB_DEFAULT` (BUG FIX:
+            // antes este loader no leía estas 3 columnas en absoluto, y como
+            // `setConfigClub(nuevaConfig)` REEMPLAZA todo el objeto de
+            // configuración de golpe, cualquier valor de academia ya
+            // guardado en Supabase se perdía del estado de React en cuanto
+            // esta función corría — por ejemplo, al refrescar la página).
+            academiaPrecioBaseClaseSuelta:
+              Number(data.academia_precio_base_clase_suelta) >= 0
+                ? Number(data.academia_precio_base_clase_suelta)
+                : CONFIG_CLUB_DEFAULT.academiaPrecioBaseClaseSuelta,
+            academiaPrecioBaseMensualidad:
+              Number(data.academia_precio_base_mensualidad) >= 0
+                ? Number(data.academia_precio_base_mensualidad)
+                : CONFIG_CLUB_DEFAULT.academiaPrecioBaseMensualidad,
+            academiaClasesIncluidasMensualidad:
+              Number(data.academia_clases_incluidas_mensualidad) > 0
+                ? Number(data.academia_clases_incluidas_mensualidad)
+                : CONFIG_CLUB_DEFAULT.academiaClasesIncluidasMensualidad,
           };
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
