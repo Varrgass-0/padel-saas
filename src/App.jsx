@@ -752,6 +752,7 @@ import React, {
   useRef,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import {
@@ -855,6 +856,7 @@ import {
   ArrowRight,
   Rocket,
   PartyPopper,
+  Check,
 } from 'lucide-react';
 
 /* ============================================================================
@@ -3170,6 +3172,14 @@ function ComboBoxTexto({ value, onChange, opciones, placeholder, className, onEn
 
 const inputClase =
   'w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-orange-400 focus:ring-1 focus:ring-orange-400';
+
+// Variante SOLO para el Wizard de Registro/Onboarding (`ClubAuthScreen`) —
+// micro-interacción de foco más pronunciada (glow/ring suave en Naranja
+// QLUBOS `#FF6B35`, con `transition-all` para que el glow entre y salga con
+// la misma suavidad). El resto de la app (miles de inputs fuera del
+// flujo de entrada) sigue usando `inputClase` tal cual, sin tocar.
+const inputClaseWizard =
+  'w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 outline-none transition-all duration-200 focus:border-[#FF6B35] focus:ring-4 focus:ring-[#FF6B35]/20';
 
 function BotonPrimario({ children, className = '', ...props }) {
   return (
@@ -40472,6 +40482,18 @@ function ModuloConfiguracionClub({
         })}
       </div>
 
+      {/* Transición fluida al cambiar de pestaña/módulo (fade + slide corto)
+          — envoltura genérica, NO toca el contenido interno de cada
+          `Seccion*` (compartidas con el Panel Operativo fuera del
+          Onboarding): solo anima el contenedor que las intercambia. */}
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={tab}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.2, ease: 'easeOut' }}
+        >
       {tab === 'portal' ? (
         <SeccionPortalTiendaWeb
           productos={productos}
@@ -40544,15 +40566,21 @@ function ModuloConfiguracionClub({
           </p>
         </div>
       )}
+        </motion.div>
+      </AnimatePresence>
 
       {modoOnboarding && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-300 bg-white p-3">
           <div className="flex items-center gap-1.5">
             {tabsVisibles.map((t, i) => (
-              <span
-                key={t.value}
-                className={`h-1.5 w-7 rounded-full transition ${i <= indiceTabActual ? 'bg-orange-400' : 'bg-slate-200'}`}
-              />
+              <span key={t.value} className="h-1.5 w-7 overflow-hidden rounded-full bg-slate-200">
+                <motion.span
+                  className="block h-full rounded-full bg-orange-400"
+                  initial={false}
+                  animate={{ width: i <= indiceTabActual ? '100%' : '0%' }}
+                  transition={{ duration: 0.3, ease: 'easeOut' }}
+                />
+              </span>
             ))}
             <span className="ml-2 text-[11px] font-bold text-slate-500">
               Módulo {indiceTabActual + 1} de {tabsVisibles.length} — {tabActual?.label}
@@ -40563,16 +40591,16 @@ function ModuloConfiguracionClub({
               <BotonSecundario onClick={() => setTab(tabsVisibles[indiceTabActual - 1].value)}>Atrás</BotonSecundario>
             )}
             {esUltimoModuloOnboarding ? (
-              <BotonPrimario onClick={onFinalizarOnboarding} disabled={bloqueadoPorNombreAdministrador}>
+              <BotonPrimarioWizard onClick={onFinalizarOnboarding} disabled={bloqueadoPorNombreAdministrador}>
                 Finalizar Configuración <ArrowRight size={14} />
-              </BotonPrimario>
+              </BotonPrimarioWizard>
             ) : (
-              <BotonPrimario
+              <BotonPrimarioWizard
                 onClick={() => setTab(tabsVisibles[indiceTabActual + 1].value)}
                 disabled={bloqueadoPorNombreAdministrador}
               >
                 Siguiente Módulo <ArrowRight size={14} />
-              </BotonPrimario>
+              </BotonPrimarioWizard>
             )}
           </div>
         </div>
@@ -40716,20 +40744,138 @@ function LienzoOnboardingClub({ children, ancho = 'max-w-3xl' }) {
 //   Paso 4 — Configuración del Club/Setup (formulario operativo, reutiliza
 //            `ModuloConfiguracionClub`)
 //   Paso 5 — Confirmación y Activación ("Tu club está listo para operar.")
+// Rediseño Premium (Stripe/Linear-style, ver requerimiento de animaciones del
+// Wizard): la píldora estática "PASO X DE 5" se convirtió en un encabezado de
+// progreso — barra que se llena suavemente en Naranja QLUBOS (`#FF6B35`,
+// `transition: width 0.4s ease-out` vía Framer Motion) + fila de indicadores
+// numerados que hacen bounce/checkmark al completarse. Mismo componente,
+// mismos props (`paso`/`total`) — drop-in en las 5 pantallas del flujo de
+// entrada, cero cambios en cada call site.
 function InsigniaPasoOnboarding({ paso, total = 5 }) {
+  const porcentaje = Math.max(0, Math.min(100, (paso / total) * 100));
+  const pasos = Array.from({ length: total }, (_, i) => i + 1);
   return (
-    <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-orange-300 bg-orange-50 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-orange-700">
-      <Sparkles size={12} /> Paso {paso} de {total}
+    <div className="mb-5 w-full text-left">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-300 bg-orange-50 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-orange-700">
+          <Sparkles size={12} /> Paso {paso} de {total}
+        </span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+        <motion.div
+          className="h-full rounded-full bg-[#FF6B35]"
+          initial={{ width: 0 }}
+          animate={{ width: `${porcentaje}%` }}
+          transition={{ duration: 0.4, ease: 'easeOut' }}
+        />
+      </div>
+      <div className="mt-2.5 flex items-center justify-between">
+        {pasos.map((n) => {
+          const completado = n < paso;
+          const activo = n === paso;
+          return (
+            <React.Fragment key={n}>
+              <motion.div
+                initial={false}
+                animate={{
+                  backgroundColor: completado || activo ? '#FF6B35' : '#e2e8f0',
+                  scale: activo ? 1.12 : 1,
+                }}
+                transition={{ duration: 0.25, ease: 'easeOut' }}
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+              >
+                <AnimatePresence mode="wait" initial={false}>
+                  {completado ? (
+                    <motion.span
+                      key="check"
+                      initial={{ scale: 0, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      exit={{ scale: 0, opacity: 0 }}
+                      transition={{ type: 'spring', stiffness: 500, damping: 20 }}
+                      className="flex items-center justify-center text-white"
+                    >
+                      <Check size={11} strokeWidth={3} />
+                    </motion.span>
+                  ) : (
+                    <motion.span
+                      key="num"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className={`text-[10px] font-bold ${activo ? 'text-white' : 'text-slate-500'}`}
+                    >
+                      {n}
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+              </motion.div>
+              {n !== total && (
+                <div className="mx-1 h-0.5 flex-1 overflow-hidden rounded-full bg-slate-200">
+                  <motion.div
+                    className="h-full bg-[#FF6B35]"
+                    initial={false}
+                    animate={{ width: completado ? '100%' : '0%' }}
+                    transition={{ duration: 0.3, ease: 'easeOut' }}
+                  />
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
+// Botón primario con micro-interacciones (hover/tap) SOLO para el Wizard de
+// Registro/Onboarding — mismas clases visuales exactas que `BotonPrimario`
+// (el resto de la app, miles de botones, sigue usando el `<button>` plano de
+// siempre, sin tocarlo, para no cambiar comportamiento fuera de este flujo).
+// `motion.button` directo (no envuelve a `BotonPrimario`) porque las
+// gestures de Framer Motion (`whileHover`/`whileTap`) necesitan su propio
+// nodo DOM real, no un componente intermedio sin `forwardRef`.
+function BotonPrimarioWizard({ children, className = '', disabled, ...props }) {
+  return (
+    <motion.button
+      whileHover={disabled ? undefined : { y: -2, scale: 1.01 }}
+      whileTap={disabled ? undefined : { scale: 0.98 }}
+      transition={{ duration: 0.15, ease: 'easeOut' }}
+      disabled={disabled}
+      className={`inline-flex items-center justify-center gap-2 rounded-lg bg-orange-400 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+      {...props}
+    >
+      {children}
+    </motion.button>
+  );
+}
+
+// Link "Atrás" discreto, compartido por las pantallas del Wizard que
+// permiten retroceder un paso (Plan → Kickoff, Setup → Plan, Confirmación →
+// Setup) — ver `OnboardingCanvasClub` (dirección de la animación de
+// deslizamiento cuando se usa).
+function EnlaceAtrasWizard({ onClick, children = 'Atrás' }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mb-4 inline-flex items-center gap-1 text-xs font-semibold text-slate-500 transition hover:text-slate-800"
+    >
+      <ChevronLeft size={14} /> {children}
+    </button>
+  );
+}
+
 // ---- Paso 3: Selección de Plan (Tiers) ------------------------------------
-function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSeleccionarPlan, onContinuar }) {
+function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSeleccionarPlan, onContinuar, onAtras }) {
   return (
     <LienzoOnboardingClub ancho="max-w-4xl">
       <div className="mb-8 text-center">
         <InsigniaPasoOnboarding paso={3} />
+        {onAtras && (
+          <div className="text-left">
+            <EnlaceAtrasWizard onClick={onAtras} />
+          </div>
+        )}
         {/* Color en el título (corrección — item 2, unificación): "Todo
             incluido." usa EXACTAMENTE la misma clase `text-orange-400` que el
             banner inferior ("Tu dinero es tuyo...", más abajo) — mismo tono
@@ -40743,15 +40889,20 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        {PLANES_ONBOARDING_CLUB.map((plan) => {
+        {PLANES_ONBOARDING_CLUB.map((plan, i) => {
           const activo = planSeleccionado?.canchas === plan.canchas;
           return (
-            <button
+            <motion.button
               key={plan.canchas}
               type="button"
               onClick={() => onSeleccionarPlan(plan)}
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: i * 0.05, ease: 'easeOut' }}
+              whileHover={{ y: -2, scale: 1.01 }}
+              whileTap={{ scale: 0.98 }}
               className={`relative flex flex-col items-start gap-3 rounded-2xl border-2 bg-white p-5 text-left shadow-sm transition ${
-                activo ? 'border-orange-400 shadow-[0_0_0_4px_rgba(251, 146, 60, 0.25)]' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
+                activo ? 'border-[#FF6B35] shadow-[0_0_0_4px_rgba(255,107,53,0.25)]' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
               }`}
             >
               {/* Insignia "Todas las funciones incluidas" — corrección
@@ -40777,19 +40928,27 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
                     de canchas, que ya va arriba como eyebrow. */}
                 <p className="mt-1.5 text-xs leading-snug text-slate-500">{plan.descripcion}</p>
               </div>
-              {activo && (
-                <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-orange-600">
-                  <CheckCircle2 size={14} /> Plan seleccionado
-                </span>
-              )}
-            </button>
+              <AnimatePresence>
+                {activo && (
+                  <motion.span
+                    initial={{ opacity: 0, scale: 0.5, y: 6 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.5, y: 6 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 18 }}
+                    className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-orange-600"
+                  >
+                    <CheckCircle2 size={14} /> Plan seleccionado
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </motion.button>
           );
         })}
       </div>
 
       {/* Banner explicativo (corrección — item 4) — ahora es UN SOLO
           mensaje, sin la segunda línea ("Paga por el tamaño de tu
-          club..."). Verde QLUBOS completo (`text-orange-400`, legible sobre
+          club..."). Naranja QLUBOS completo (`text-orange-400`, legible sobre
           el navy sólido del contenedor) y un tamaño de fuente mayor
           (`text-base`) para que sea el mensaje principal del banner, no
           una nota al pie. */}
@@ -40798,9 +40957,9 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
       </div>
 
       <div className="mt-8 flex justify-center">
-        <BotonPrimario onClick={onContinuar} disabled={!planSeleccionado} className="px-8 py-3 text-base">
+        <BotonPrimarioWizard onClick={onContinuar} disabled={!planSeleccionado} className="px-8 py-3 text-base">
           Continuar <ArrowRight size={16} />
-        </BotonPrimario>
+        </BotonPrimarioWizard>
       </div>
     </LienzoOnboardingClub>
   );
@@ -40814,30 +40973,44 @@ function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
     <LienzoOnboardingClub ancho="max-w-lg">
       <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
         <InsigniaPasoOnboarding paso={2} />
-        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-orange-400 text-slate-950">
+        <motion.div
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: 'spring', stiffness: 260, damping: 18, delay: 0.1 }}
+          className="flex h-16 w-16 items-center justify-center rounded-2xl bg-orange-400 text-slate-950"
+        >
           <Rocket size={28} strokeWidth={1.75} />
-        </div>
+        </motion.div>
         <div>
           <h2 className="text-2xl font-black text-slate-900 sm:text-3xl">Hagamos que QLUBOS funcione como tu club.</h2>
           <p className="mt-2 text-sm font-medium text-slate-500">Vamos a configurar lo esencial para que puedas empezar a operar.</p>
         </div>
-        <BotonPrimario onClick={onComenzar} className="w-full px-6 py-3 text-base">
+        <BotonPrimarioWizard onClick={onComenzar} className="w-full px-6 py-3 text-base">
           Configurar mi club <ArrowRight size={16} />
-        </BotonPrimario>
+        </BotonPrimarioWizard>
       </div>
     </LienzoOnboardingClub>
   );
 }
 
 // ---- Paso 5: Confirmación y Activación (mock, listo para Stripe) --------
-function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar }) {
+function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar, onAtras }) {
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
       <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
         <InsigniaPasoOnboarding paso={5} />
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-orange-100 text-orange-600">
+        {onAtras && <EnlaceAtrasWizard onClick={onAtras} />}
+        {/* Entrada triunfal (Paso final del Wizard) — el badge de éxito ya no
+            aparece de golpe: escala desde 0 con un rebote spring, como el
+            "check" de una confirmación de pago estilo Stripe. */}
+        <motion.div
+          initial={{ scale: 0, opacity: 0, rotate: -15 }}
+          animate={{ scale: 1, opacity: 1, rotate: 0 }}
+          transition={{ type: 'spring', stiffness: 220, damping: 14, delay: 0.1 }}
+          className="flex h-16 w-16 items-center justify-center rounded-full bg-orange-100 text-orange-600"
+        >
           <CheckCircle2 size={32} strokeWidth={1.75} />
-        </div>
+        </motion.div>
         <div>
           <h2 className="text-2xl font-black text-slate-900 sm:text-3xl">Tu club está listo para operar.</h2>
           <p className="mt-2 text-sm font-medium text-slate-500">La configuración inicial está completa. Ahora puedes empezar a operar con QLUBOS.</p>
@@ -40861,10 +41034,26 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
             Stripe, la confirmación real de pago debe ocurrir ANTES de esta
             llamada — este es el único punto donde se "abre la puerta" al
             Panel Operativo. */}
-        <BotonPrimario onClick={onConfirmar} disabled={guardando} className="w-full px-6 py-3 text-base">
+        {/* Pulso suave de resplandor (Naranja QLUBOS, `#FF6B35`) mientras el
+            botón espera el tap del dueño — se detiene en cuanto `guardando`
+            es true (ya está procesando, un pulso infinito ahí se vería
+            roto). `transition` con overrides por propiedad: el pulso del
+            `boxShadow` corre en loop de 1.6s, pero el hover/tap siguen
+            respondiendo al toque con su propia transición corta (0.15s), no
+            con la del pulso. */}
+        <motion.button
+          type="button"
+          onClick={onConfirmar}
+          disabled={guardando}
+          animate={guardando ? { boxShadow: '0 0 0 0 rgba(255,107,53,0)' } : { boxShadow: ['0 0 0 0 rgba(255,107,53,0.45)', '0 0 0 14px rgba(255,107,53,0)'] }}
+          whileHover={guardando ? undefined : { y: -2, scale: 1.01 }}
+          whileTap={guardando ? undefined : { scale: 0.98 }}
+          transition={{ boxShadow: { duration: 1.6, repeat: guardando ? 0 : Infinity, ease: 'easeOut' }, default: { duration: 0.15, ease: 'easeOut' } }}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-orange-400 px-6 py-3 text-base font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-50"
+        >
           {guardando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
           Activar mi club
-        </BotonPrimario>
+        </motion.button>
       </div>
     </LienzoOnboardingClub>
   );
@@ -40880,48 +41069,94 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
 // más abajo, dentro del router de módulos) — se reenvía tal cual, sin
 // reconstruir ningún prop nuevo, para que el Paso 4 (Setup) sea 100% el
 // mismo componente/datos/guardado que el resto de la app.
+// Variantes de deslizamiento direccional (Slide & Fade) para la transición
+// entre etapas — avanzar entra desde la derecha y el paso anterior sale
+// hacia la izquierda; "Atrás" hace exactamente lo inverso. `custom` recibe
+// `direction` (1 = avanzar, -1 = retroceder) desde `<motion.div custom=…>`.
+const VARIANTES_PASO_WIZARD = {
+  enter: (direction) => ({ x: direction > 0 ? 30 : -30, opacity: 0 }),
+  center: { x: 0, opacity: 1 },
+  exit: (direction) => ({ x: direction > 0 ? -30 : 30, opacity: 0 }),
+};
+
 function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan, guardandoActivacion, onConfirmarActivacion, moduloConfigProps }) {
   const [etapa, setEtapa] = useState('kickoff'); // 'kickoff' | 'plan' | 'setup' | 'confirmacion'
+  const [direccion, setDireccion] = useState(1); // 1 = avanzar (Siguiente), -1 = retroceder (Atrás)
 
-  if (etapa === 'kickoff') {
-    return <PantallaKickoffOnboarding nombreClub={nombreClub} onComenzar={() => setEtapa('plan')} />;
+  function irA(nuevaEtapa, direction) {
+    setDireccion(direction);
+    setEtapa(nuevaEtapa);
   }
 
-  if (etapa === 'plan') {
-    return (
+  let contenido;
+  if (etapa === 'kickoff') {
+    contenido = <PantallaKickoffOnboarding nombreClub={nombreClub} onComenzar={() => irA('plan', 1)} />;
+  } else if (etapa === 'plan') {
+    contenido = (
       <PantallaSeleccionPlanOnboarding
         nombreClub={nombreClub}
         planSeleccionado={planSeleccionado}
         onSeleccionarPlan={onSeleccionarPlan}
-        onContinuar={() => setEtapa('setup')}
+        onContinuar={() => irA('setup', 1)}
+        onAtras={() => irA('kickoff', -1)}
       />
+    );
+  } else if (etapa === 'confirmacion') {
+    contenido = (
+      <PantallaConfirmacionOnboarding
+        planSeleccionado={planSeleccionado}
+        guardando={guardandoActivacion}
+        onConfirmar={onConfirmarActivacion}
+        onAtras={() => irA('setup', -1)}
+      />
+    );
+  } else {
+    // etapa === 'setup' (Paso 4) — Asistente Interactivo de Configuración
+    // (Setup Canvas): reutiliza `ModuloConfiguracionClub` completo, con la
+    // barra de módulos + wizard nav ya integrados (`modoOnboarding`, ver la
+    // definición de `ModuloConfiguracionClub` arriba) — cero componentes
+    // nuevos para Portal/General/Jugadores/Reservas: son EXACTAMENTE los
+    // mismos que el Panel Operativo usa en producción, incluida la Wallet
+    // excluida a propósito (`modoOnboarding` oculta esa pestaña). Termina en
+    // 'confirmacion' (Paso 5).
+    contenido = (
+      <div className="relative min-h-screen min-h-dvh bg-[#f8fafc] px-4 py-8 sm:px-8">
+        <FondoGlowQlubOS />
+        <div className="relative z-10 mx-auto mb-6 max-w-5xl text-center">
+          <InsigniaPasoOnboarding paso={4} />
+          <div className="text-left">
+            <EnlaceAtrasWizard onClick={() => irA('plan', -1)}>Cambiar de plan</EnlaceAtrasWizard>
+          </div>
+          <h2 className="text-2xl font-black text-slate-900">Configuremos {nombreClub || 'tu club'}</h2>
+          <p className="mt-1 text-sm text-slate-500">Puedes ajustar cualquiera de estos módulos después, desde Configuración del Club.</p>
+        </div>
+        <div className="relative z-10 mx-auto max-w-5xl">
+          <ModuloConfiguracionClub {...moduloConfigProps} modoOnboarding onFinalizarOnboarding={() => irA('confirmacion', 1)} />
+        </div>
+      </div>
     );
   }
 
-  if (etapa === 'confirmacion') {
-    return <PantallaConfirmacionOnboarding planSeleccionado={planSeleccionado} guardando={guardandoActivacion} onConfirmar={onConfirmarActivacion} />;
-  }
-
-  // etapa === 'setup' (Paso 4) — Asistente Interactivo de Configuración
-  // (Setup Canvas): reutiliza `ModuloConfiguracionClub` completo, con la
-  // barra de módulos + wizard nav ya integrados (`modoOnboarding`, ver la
-  // definición de `ModuloConfiguracionClub` arriba) — cero componentes
-  // nuevos para Portal/General/Jugadores/Reservas: son EXACTAMENTE los
-  // mismos que el Panel Operativo usa en producción, incluida la Wallet
-  // excluida a propósito (`modoOnboarding` oculta esa pestaña). Termina en
-  // 'confirmacion' (Paso 5).
+  // Transición de Pasos Fluida (Slide & Fade Multi-Step): el paso saliente
+  // se desliza y desvanece, el entrante llega desde el lado opuesto —
+  // dirección controlada por `direccion` (ver `irA`). `mode="wait"` evita
+  // que ambos pasos queden montados a la vez (uno termina de salir antes de
+  // que el siguiente empiece a entrar), igual que las transiciones
+  // multi-step de Stripe/Linear.
   return (
-    <div className="relative min-h-screen min-h-dvh bg-[#f8fafc] px-4 py-8 sm:px-8">
-      <FondoGlowQlubOS />
-      <div className="relative z-10 mx-auto mb-6 max-w-5xl text-center">
-        <InsigniaPasoOnboarding paso={4} />
-        <h2 className="text-2xl font-black text-slate-900">Configuremos {nombreClub || 'tu club'}</h2>
-        <p className="mt-1 text-sm text-slate-500">Puedes ajustar cualquiera de estos módulos después, desde Configuración del Club.</p>
-      </div>
-      <div className="relative z-10 mx-auto max-w-5xl">
-        <ModuloConfiguracionClub {...moduloConfigProps} modoOnboarding onFinalizarOnboarding={() => setEtapa('confirmacion')} />
-      </div>
-    </div>
+    <AnimatePresence mode="wait" custom={direccion} initial={false}>
+      <motion.div
+        key={etapa}
+        custom={direccion}
+        variants={VARIANTES_PASO_WIZARD}
+        initial="enter"
+        animate="center"
+        exit="exit"
+        transition={{ duration: 0.3, ease: 'easeInOut' }}
+      >
+        {contenido}
+      </motion.div>
+    </AnimatePresence>
   );
 }
 
@@ -42863,7 +43098,7 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
 
 // CÓDIGO DE COLORES / ESTADO DE OCUPACIÓN VISUAL — compartido por la
 // cuadrícula de "Reservar Cancha" y la de "Solicitar Clase" del Portal:
-// 'disponible' (Verde Neón), 'reservado' (Gris Oscuro — reserva normal),
+// 'disponible' (Naranja Neón), 'reservado' (Gris Oscuro — reserva normal),
 // 'clase' (Azul Eléctrico — clase de Academia programada) y 'torneo_reta'
 // (Púrpura/Morado — evento especial). Un solo lugar para las clases
 // Tailwind de cada estado, así ambas cuadrículas quedan pintadas EXACTO
@@ -43001,7 +43236,7 @@ function estadoOcupacionAgregado(canchasActivas, fecha, horaInicio, horaFin, res
   const coachOcupado = coachTieneClaseAEstaHora(coachPreferido, fecha, horaInicio, academiaClases);
 
   if (hayCanchaLibre && !bloqueEsDeOtroCoach && !coachOcupado) {
-    // Verde — al menos una cancha libre, el turno no está reservado para
+    // Naranja — al menos una cancha libre, el turno no está reservado para
     // otro coach y el coach pedido (si lo hay) sigue disponible. Coach(es)
     // sugerido(s)/mostrado(s) (item 2, Manejo de Coaches Múltiples): si el
     // jugador pidió uno específico, se muestra solo ese; si pidió
@@ -53356,6 +53591,19 @@ function ClubAuthScreen({ onAutenticado }) {
               subtítulo de cada modo ya no es redundante con la marca: es un
               mensaje de contexto real (bienvenida de regreso, invitación a
               registrarse, recuperación de acceso). */}
+          {/* Transición Fluida (Slide & Fade) al cambiar de modo
+              (login/registro/recuperar) — mismo lenguaje visual que el resto
+              del Wizard (`OnboardingCanvasClub`): un crossfade corto con
+              leve desplazamiento vertical, sin dirección (no son "pasos"
+              numerados entre sí, son puertas de entrada distintas). */}
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={modo}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.25, ease: 'easeOut' }}
+            >
           <div className="mb-6 text-center">
             {/* Insignia "Paso 1 de 5" — SOLO en 'registro': es la puerta de
                 entrada al flujo completo (Registro → Kickoff → Plan → Setup
@@ -53393,7 +53641,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   <input
                     type="email"
                     autoComplete="email"
-                    className={`${inputClase} pl-9`}
+                    className={`${inputClaseWizard} pl-9`}
                     placeholder="tucorreo@club.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -53406,7 +53654,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   <input
                     type={mostrarPassword ? 'text' : 'password'}
                     autoComplete="current-password"
-                    className={`${inputClase} px-9`}
+                    className={`${inputClaseWizard} px-9`}
                     placeholder="••••••••"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -53429,10 +53677,10 @@ function ClubAuthScreen({ onAutenticado }) {
                   ¿Olvidaste tu contraseña?
                 </button>
               </div>
-              <BotonPrimario type="submit" disabled={cargando} className="w-full">
+              <BotonPrimarioWizard type="submit" disabled={cargando} className="w-full">
                 {cargando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
                 Entrar a mi club
-              </BotonPrimario>
+              </BotonPrimarioWizard>
               <p className="text-center text-xs text-slate-500">
                 ¿Tu club todavía no está en QLUBOS?{' '}
                 <button type="button" onClick={() => cambiarModo('registro')} className="font-semibold text-emerald-700 hover:text-emerald-800">
@@ -53449,7 +53697,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   <Building2 size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
-                    className={`${inputClase} pl-9`}
+                    className={`${inputClaseWizard} pl-9`}
                     value={nombreClub}
                     onChange={(e) => setNombreClub(e.target.value)}
                   />
@@ -53461,7 +53709,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   <input
                     type="email"
                     autoComplete="email"
-                    className={`${inputClase} pl-9`}
+                    className={`${inputClaseWizard} pl-9`}
                     placeholder="tucorreo@club.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -53474,7 +53722,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   <input
                     type={mostrarPassword ? 'text' : 'password'}
                     autoComplete="new-password"
-                    className={`${inputClase} px-9`}
+                    className={`${inputClaseWizard} px-9`}
                     placeholder="••••••••"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -53492,7 +53740,7 @@ function ClubAuthScreen({ onAutenticado }) {
                 <input
                   type={mostrarPassword ? 'text' : 'password'}
                   autoComplete="new-password"
-                  className={inputClase}
+                  className={inputClaseWizard}
                   placeholder="••••••••"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
@@ -53517,10 +53765,10 @@ function ClubAuthScreen({ onAutenticado }) {
                   .
                 </span>
               </label>
-              <BotonPrimario type="submit" disabled={cargando || !aceptaLegalClub} className="w-full">
+              <BotonPrimarioWizard type="submit" disabled={cargando || !aceptaLegalClub} className="w-full">
                 {cargando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
                 Empezar con QLUBOS
-              </BotonPrimario>
+              </BotonPrimarioWizard>
               <p className="text-center text-xs text-slate-500">
                 ¿Ya tienes una cuenta?{' '}
                 <button type="button" onClick={() => cambiarModo('login')} className="font-semibold text-emerald-700 hover:text-emerald-800">
@@ -53538,17 +53786,17 @@ function ClubAuthScreen({ onAutenticado }) {
                   <input
                     type="email"
                     autoComplete="email"
-                    className={`${inputClase} pl-9`}
+                    className={`${inputClaseWizard} pl-9`}
                     placeholder="tucorreo@club.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                   />
                 </div>
               </Campo>
-              <BotonPrimario type="submit" disabled={cargando} className="w-full">
+              <BotonPrimarioWizard type="submit" disabled={cargando} className="w-full">
                 {cargando ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
                 Enviar enlace de recuperación
-              </BotonPrimario>
+              </BotonPrimarioWizard>
               <p className="text-center text-xs text-slate-500">
                 <button type="button" onClick={() => cambiarModo('login')} className="font-semibold text-emerald-700 hover:text-emerald-800">
                   Volver a iniciar sesión
@@ -53556,6 +53804,8 @@ function ClubAuthScreen({ onAutenticado }) {
               </p>
             </form>
           )}
+            </motion.div>
+          </AnimatePresence>
         </div>
 
         {/* Marco Legal — enlace a `/legales`, visible en las tres pantallas
