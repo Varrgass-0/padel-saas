@@ -40644,9 +40644,9 @@ function SeccionOperadoresStaff({ empleados, onCrearEmpleado }) {
 // ============================================================================
 
 const PLANES_ONBOARDING_CLUB = [
-  { canchas: '1-3', nombre: '1 – 3 Canchas', precioMensual: 1499 },
-  { canchas: '4-7', nombre: '4 – 7 Canchas', precioMensual: 2990 },
-  { canchas: '8-12', nombre: '8 – 12 Canchas', precioMensual: 4990 },
+  { canchas: '1-3', nombre: '1 – 3 Canchas', precioMensual: 1499, descripcion: 'QLUBOS completo para clubes pequeños.' },
+  { canchas: '4-7', nombre: '4 – 7 Canchas', precioMensual: 2990, descripcion: 'QLUBOS completo para una operación de mayor volumen.' },
+  { canchas: '8-12', nombre: '8 – 12 Canchas', precioMensual: 4990, descripcion: 'QLUBOS completo para clubes de mayor capacidad.' },
 ];
 
 // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) — el
@@ -40669,25 +40669,44 @@ function formatoPrecioPlanOnboarding(precio) {
   return `$${Number(precio).toLocaleString('es-MX')}`;
 }
 
-// Envoltura compartida por las pantallas del wizard (Plan/Kickoff/
-// Confirmación) — mismo criterio que `ClubAuthScreen` (fondo `#f8fafc` fijo,
-// sin depender del modo oscuro del resto de la app).
+// Envoltura compartida por las pantallas del wizard (Kickoff/Plan/
+// Confirmación) — mismo criterio que `ClubAuthScreen` (fondo abstracto
+// `FondoGlowQlubOS`, sin depender del modo oscuro del resto de la app): el
+// dueño ve exactamente el mismo lenguaje visual desde que se registra hasta
+// que termina el wizard, sin ningún salto de estilo entre pantallas.
 function LienzoOnboardingClub({ children, ancho = 'max-w-3xl' }) {
   return (
     <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#f8fafc] px-4 py-10">
-      <div className={`relative w-full ${ancho}`}>{children}</div>
+      <FondoGlowQlubOS />
+      <div className={`relative z-10 w-full ${ancho}`}>{children}</div>
     </div>
   );
 }
 
-// ---- Paso 1: Propuesta de Valor y Selección de Plan (Tiers) --------------
+// Insignia "PASO X DE 3" compartida por Kickoff/Plan/Confirmación — mismo
+// estilo de píldora que ya usaba la pantalla de Selección de Plan
+// ("Bienvenido, {club}"), reutilizado ahora como indicador de progreso del
+// wizard (Reordenamiento — item 4/5/6/7): Bienvenida y Configuración
+// Esencial (Paso 1) → Selección de Plan (Paso 2) → Resumen Final y
+// Activación (Paso 3).
+function InsigniaPasoOnboarding({ paso }) {
+  return (
+    <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-lime-300 bg-lime-50 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-lime-700">
+      <Sparkles size={12} /> Paso {paso} de 3
+    </div>
+  );
+}
+
+// ---- Paso 2: Selección de Plan (Tiers) ------------------------------------
+// Reordenamiento (item 4): ahora es el Paso 2 del wizard (antes era el
+// primero) — llega DESPUÉS de la Bienvenida y Configuración Esencial, así
+// que la píldora de arriba ya no saluda al club (eso ya pasó en Kickoff),
+// muestra el progreso real ("Paso 2 de 3").
 function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSeleccionarPlan, onContinuar }) {
   return (
     <LienzoOnboardingClub ancho="max-w-4xl">
       <div className="mb-8 text-center">
-        <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-lime-300 bg-lime-50 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-lime-700">
-          <Sparkles size={12} /> {nombreClub ? `Bienvenido, ${nombreClub}` : 'Bienvenido a QLUBOS'}
-        </div>
+        <InsigniaPasoOnboarding paso={2} />
         <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">Un sistema. Una suscripción. Todo incluido.</h1>
         <p className="mt-2 text-sm font-medium text-slate-500">Elige tu plan según el tamaño de tu club.</p>
       </div>
@@ -40700,8 +40719,8 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
               key={plan.canchas}
               type="button"
               onClick={() => onSeleccionarPlan(plan)}
-              className={`flex flex-col items-start gap-3 rounded-2xl border-2 bg-white p-5 text-left transition ${
-                activo ? 'border-lime-400 shadow-[0_0_0_4px_rgba(163,230,53,0.25)]' : 'border-slate-200 hover:border-slate-300'
+              className={`flex flex-col items-start gap-3 rounded-2xl border-2 bg-white p-5 text-left shadow-sm transition ${
+                activo ? 'border-lime-400 shadow-[0_0_0_4px_rgba(163,230,53,0.25)]' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
               }`}
             >
               <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${activo ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-500'}`}>
@@ -40713,6 +40732,10 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
                   {formatoPrecioPlanOnboarding(plan.precioMensual)}
                   <span className="text-sm font-semibold text-slate-400"> / mes</span>
                 </p>
+                {/* Descripción por tarjeta (item 6, nuevo) — una línea corta
+                    que explica el tier sin repetir el rango de canchas, que
+                    ya va arriba como eyebrow. */}
+                <p className="mt-1.5 text-xs leading-snug text-slate-500">{plan.descripcion}</p>
               </div>
               {activo && (
                 <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-lime-600">
@@ -40724,6 +40747,17 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
         })}
       </div>
 
+      {/* Banner explicativo (item 6, nuevo) — refuerza la propuesta de
+          precio "todo incluido" justo debajo de las 3 tarjetas, antes del
+          CTA de "Continuar". Navy sobrio (no verde) para que se lea como
+          una afirmación seria de producto, no como otro botón/acento. */}
+      <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-900 px-5 py-4 text-center">
+        <p className="text-xs font-medium text-slate-300">
+          Todos los planes incluyen QLUBOS completo. Sin módulos bloqueados. Sin comisión QLUBOS.
+        </p>
+        <p className="mt-1 text-sm font-black text-lime-400">Paga por el tamaño de tu club. No por las funciones que utilizas.</p>
+      </div>
+
       <div className="mt-8 flex justify-center">
         <BotonPrimario onClick={onContinuar} disabled={!planSeleccionado} className="px-8 py-3 text-base">
           Continuar <ArrowRight size={16} />
@@ -40733,47 +40767,53 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
   );
 }
 
-// ---- Paso 2: Transición Interactiva ("Kickoff") ---------------------------
+// ---- Paso 1: Bienvenida y Configuración Esencial (Reordenamiento — item 5)
+// Antes esta pantalla era un simple "Kickoff" de transición entre Plan y
+// Setup; ahora ES el Paso 1 — lo primero que ve el dueño tras registrarse o
+// iniciar sesión por primera vez, antes de elegir plan.
 function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
-      <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200 bg-white p-10 text-center shadow-sm">
+      <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
+        <InsigniaPasoOnboarding paso={1} />
         <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-lime-400 text-slate-950">
-          <PartyPopper size={30} />
+          <Rocket size={28} strokeWidth={1.75} />
         </div>
         <div>
-          <h2 className="text-2xl font-black text-slate-900">¡Bienvenido a QLUBOS!</h2>
-          <p className="mt-1 text-sm font-medium text-slate-500">Comencemos a configurar {nombreClub || 'tu club'}.</p>
+          <h2 className="text-2xl font-black text-slate-900 sm:text-3xl">Hagamos que QLUBOS funcione como tu club.</h2>
+          <p className="mt-2 text-sm font-medium text-slate-500">Vamos a configurar lo esencial para que puedas empezar a operar.</p>
         </div>
         <BotonPrimario onClick={onComenzar} className="w-full px-6 py-3 text-base">
-          <Rocket size={16} /> Comenzar Configuración
+          Configurar mi club <ArrowRight size={16} />
         </BotonPrimario>
       </div>
     </LienzoOnboardingClub>
   );
 }
 
-// ---- Paso 4: Confirmación y Pago de Membresía (mock, listo para Stripe) --
+// ---- Paso 3: Resumen Final y Activación (mock, listo para Stripe) --------
 function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar }) {
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
-      <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200 bg-white p-10 text-center shadow-sm">
+      <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
+        <InsigniaPasoOnboarding paso={3} />
         <div className="flex h-16 w-16 items-center justify-center rounded-full bg-lime-100 text-lime-600">
-          <CheckCircle2 size={32} />
+          <CheckCircle2 size={32} strokeWidth={1.75} />
         </div>
         <div>
-          <h2 className="text-2xl font-black text-slate-900">Todo listo</h2>
-          <p className="mt-1 text-sm font-medium text-slate-500">La configuración inicial de tu club ya está lista.</p>
+          <h2 className="text-2xl font-black text-slate-900 sm:text-3xl">Tu club está listo para operar.</h2>
+          <p className="mt-2 text-sm font-medium text-slate-500">La configuración inicial está completa. Ahora puedes empezar a operar con QLUBOS.</p>
         </div>
 
-        <div className="w-full rounded-xl border border-slate-200 bg-slate-50 p-4 text-left">
-          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Plan elegido</p>
-          <p className="mt-1 text-lg font-black text-slate-900">
-            {planSeleccionado ? `Plan ${planSeleccionado.canchas} Canchas` : 'Sin plan seleccionado'}
+        <div className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Plan seleccionado</p>
+          <p className="mt-1.5 text-lg font-black text-slate-900">
+            {planSeleccionado ? `${planSeleccionado.canchas} Canchas`.toUpperCase() : 'Sin plan seleccionado'}
           </p>
           {planSeleccionado?.precioMensual != null && (
-            <p className="text-sm font-semibold text-slate-500">{formatoPrecioPlanOnboarding(planSeleccionado.precioMensual)} MXN/mes</p>
+            <p className="text-sm font-semibold text-slate-500">{formatoPrecioPlanOnboarding(planSeleccionado.precioMensual)} MXN / mes</p>
           )}
+          <p className="mt-2 text-xs font-semibold text-lime-600">Todo QLUBOS incluido.</p>
         </div>
 
         {/* Mock de pasarela de pago — placeholder listo para reemplazarse por
@@ -40784,8 +40824,8 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
             llamada — este es el único punto donde se "abre la puerta" al
             Panel Operativo. */}
         <BotonPrimario onClick={onConfirmar} disabled={guardando} className="w-full px-6 py-3 text-base">
-          {guardando ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-          Confirmar y Activar Club
+          {guardando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
+          Activar mi club
         </BotonPrimario>
       </div>
     </LienzoOnboardingClub>
@@ -40793,13 +40833,24 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
 }
 
 // ---- Orquestador: máquina de 4 etapas -------------------------------------
+// Reordenamiento del Wizard (item 4): el orden ANTES era
+// Plan → Kickoff → Setup → Confirmación; ahora es
+// Kickoff (Paso 1: Bienvenida) → Setup (continuación del Paso 1:
+// Configuración Esencial) → Plan (Paso 2: Selección de Plan) →
+// Confirmación (Paso 3: Resumen Final y Activación) — el dueño configura
+// su club ANTES de que se le pida elegir cuánto va a pagar, en vez de
+// pedirle una decisión de precio en el primer segundo de la cuenta.
 // `moduloConfigProps` es exactamente el mismo objeto de props que
 // `AppInterno` ya arma para el `<ModuloConfiguracionClub>` de producción (ver
 // más abajo, dentro del router de módulos) — se reenvía tal cual, sin
-// reconstruir ningún prop nuevo, para que el Paso 3 sea 100% el mismo
-// componente/datos/guardado que el resto de la app.
+// reconstruir ningún prop nuevo, para que el Paso 1 (Setup) sea 100% el
+// mismo componente/datos/guardado que el resto de la app.
 function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan, guardandoActivacion, onConfirmarActivacion, moduloConfigProps }) {
-  const [etapa, setEtapa] = useState('plan'); // 'plan' | 'kickoff' | 'setup' | 'confirmacion'
+  const [etapa, setEtapa] = useState('kickoff'); // 'kickoff' | 'setup' | 'plan' | 'confirmacion'
+
+  if (etapa === 'kickoff') {
+    return <PantallaKickoffOnboarding nombreClub={nombreClub} onComenzar={() => setEtapa('setup')} />;
+  }
 
   if (etapa === 'plan') {
     return (
@@ -40807,13 +40858,9 @@ function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan,
         nombreClub={nombreClub}
         planSeleccionado={planSeleccionado}
         onSeleccionarPlan={onSeleccionarPlan}
-        onContinuar={() => setEtapa('kickoff')}
+        onContinuar={() => setEtapa('confirmacion')}
       />
     );
-  }
-
-  if (etapa === 'kickoff') {
-    return <PantallaKickoffOnboarding nombreClub={nombreClub} onComenzar={() => setEtapa('setup')} />;
   }
 
   if (etapa === 'confirmacion') {
@@ -40821,21 +40868,24 @@ function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan,
   }
 
   // etapa === 'setup' — Asistente Interactivo de Configuración (Setup
-  // Canvas): reutiliza `ModuloConfiguracionClub` completo, con la barra de
-  // módulos + wizard nav ya integrados (`modoOnboarding`, ver la definición
-  // de `ModuloConfiguracionClub` arriba) — cero componentes nuevos para
-  // Portal/General/Jugadores/Reservas: son EXACTAMENTE los mismos que el
-  // Panel Operativo usa en producción, incluida la Wallet excluida a
-  // propósito (`modoOnboarding` oculta esa pestaña).
+  // Canvas), continuación del Paso 1: reutiliza `ModuloConfiguracionClub`
+  // completo, con la barra de módulos + wizard nav ya integrados
+  // (`modoOnboarding`, ver la definición de `ModuloConfiguracionClub`
+  // arriba) — cero componentes nuevos para Portal/General/Jugadores/
+  // Reservas: son EXACTAMENTE los mismos que el Panel Operativo usa en
+  // producción, incluida la Wallet excluida a propósito (`modoOnboarding`
+  // oculta esa pestaña). Termina en 'plan' (Paso 2), no en 'confirmacion'
+  // — la Selección de Plan ahora va DESPUÉS de configurar lo esencial.
   return (
-    <div className="min-h-screen min-h-dvh bg-[#f8fafc] px-4 py-8 sm:px-8">
-      <div className="mx-auto mb-6 max-w-5xl text-center">
-        <p className="text-[11px] font-bold uppercase tracking-widest text-lime-600">Configuración inicial</p>
+    <div className="relative min-h-screen min-h-dvh bg-[#f8fafc] px-4 py-8 sm:px-8">
+      <FondoGlowQlubOS />
+      <div className="relative z-10 mx-auto mb-6 max-w-5xl text-center">
+        <InsigniaPasoOnboarding paso={1} />
         <h2 className="text-2xl font-black text-slate-900">Configuremos {nombreClub || 'tu club'}</h2>
         <p className="mt-1 text-sm text-slate-500">Puedes ajustar cualquiera de estos módulos después, desde Configuración del Club.</p>
       </div>
-      <div className="mx-auto max-w-5xl">
-        <ModuloConfiguracionClub {...moduloConfigProps} modoOnboarding onFinalizarOnboarding={() => setEtapa('confirmacion')} />
+      <div className="relative z-10 mx-auto max-w-5xl">
+        <ModuloConfiguracionClub {...moduloConfigProps} modoOnboarding onFinalizarOnboarding={() => setEtapa('plan')} />
       </div>
     </div>
   );
@@ -49751,10 +49801,11 @@ function AppInterno({ clubInicial } = {}) {
   // `clubInicial`, o columna sin migrar) se trata como "completado".
   // `cargarConfigClubSupabase` (más abajo) lo vuelve a confirmar/corregir en
   // cuanto responde, por si `clubInicial` llegara desactualizado.
-  // `planClubSeleccionado` guarda el plan elegido en el Paso 1 (snapshot:
-  // rango de canchas, nombre, precio mensual) — `null` hasta que el dueño
-  // elige una tarjeta (o si `clubInicial` ya trae un plan guardado, ej. el
-  // dueño recargó la página a medio Onboarding).
+  // `planClubSeleccionado` guarda el plan elegido en el Paso 2 del wizard
+  // (Reordenamiento — Selección de Plan, snapshot: rango de canchas,
+  // nombre, precio mensual) — `null` hasta que el dueño elige una tarjeta
+  // (o si `clubInicial` ya trae un plan guardado, ej. el dueño recargó la
+  // página a medio Onboarding).
   const [onboardingCompletedClub, setOnboardingCompletedClub] = useState(() => clubInicial?.onboarding_completed !== false);
   const [planClubSeleccionado, setPlanClubSeleccionado] = useState(() =>
     clubInicial && (clubInicial.plan_canchas != null || clubInicial.plan_nombre != null || clubInicial.plan_precio_mensual != null)
@@ -52435,8 +52486,9 @@ function AppInterno({ clubInicial } = {}) {
   // el asistente ahora mismo (`finalizarOnboardingClub`). `moduloConfigProps`
   // es EXACTAMENTE el mismo objeto de props que recibe el
   // `<ModuloConfiguracionClub>` de producción, unas líneas más abajo —
-  // reenviado tal cual al Paso 3 del wizard (`OnboardingCanvasClub`) para no
-  // duplicar ni un solo callback/estado de guardado.
+  // reenviado tal cual a la etapa "setup" del Paso 1 del wizard
+  // (`OnboardingCanvasClub`, Reordenamiento — item 4) para no duplicar ni
+  // un solo callback/estado de guardado.
   if (!onboardingCompletedClub) {
     const moduloConfigProps = {
       productos,
@@ -52987,24 +53039,29 @@ function AppInterno({ clubInicial } = {}) {
 //   fallback — si el navegador no puede cargar el primero (404 u otra
 //   causa), intenta automáticamente el siguiente `<source>` del mismo
 //   `<video>` antes de darse por vencido.
-const RUTA_VIDEO_FONDO_LOGIN = '/background-padel.MP4';
-const RUTA_VIDEO_FONDO_LOGIN_FALLBACK = '/background-padel.mp4';
-
-function FondoAuthVideo() {
+// REDISEÑO PREMIUM SAAS UI (Auth + Onboarding) — reemplaza el video de
+// fondo con jugadores/cancha (`FondoAuthVideo`, ahora eliminado) por un
+// fondo abstracto: off-white (`#f8fafc`) enriquecido con "glow gradients"
+// — orbes de luz muy sutiles, difuminados (`blur`), en verde QLUBOS
+// (lime) y azul marino/navy profundo (`slate-900`, el mismo navy de
+// `fill-slate-800` del logo y de `slate-950` en Modo Oscuro) — nada de
+// fotos de stock/canchas/pelotas/jugadores, para que la marca escale a
+// cualquier deporte. Un solo componente compartido por `ClubAuthScreen`
+// (Login/Registro/Recuperar) Y `LienzoOnboardingClub` (Kickoff/Plan/
+// Confirmación del wizard) — mismo lenguaje visual de principio a fin del
+// flujo de entrada, nunca un salto de estilo entre pantallas.
+function FondoGlowQlubOS() {
   return (
-    <>
-      <video
-        autoPlay
-        muted
-        loop
-        playsInline
-        className="fixed inset-0 -z-10 h-full w-full bg-[#0f172a] object-cover"
-      >
-        <source src={RUTA_VIDEO_FONDO_LOGIN} type="video/mp4" />
-        <source src={RUTA_VIDEO_FONDO_LOGIN_FALLBACK} type="video/mp4" />
-      </video>
-      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/40 to-black/65" />
-    </>
+    <div aria-hidden="true" className="fixed inset-0 -z-10 overflow-hidden bg-[#f8fafc]">
+      {/* Orbe lima (marca QLUBOS) — esquina superior izquierda. */}
+      <div className="absolute -left-40 -top-40 h-[34rem] w-[34rem] rounded-full bg-lime-300/40 blur-[120px]" />
+      {/* Orbe navy profundo — esquina inferior derecha, contrapeso serio/B2B
+          al verde, mismo tono que el acento oscuro de marca (`slate-900`). */}
+      <div className="absolute -bottom-48 -right-40 h-[36rem] w-[36rem] rounded-full bg-slate-900/[0.07] blur-[130px]" />
+      {/* Tercer orbe, discreto, arriba a la derecha — rompe la simetría
+          perfecta sin competir con los dos principales. */}
+      <div className="absolute -right-24 top-1/3 h-72 w-72 rounded-full bg-emerald-300/20 blur-[100px]" />
+    </div>
   );
 }
 
@@ -53210,18 +53267,19 @@ function ClubAuthScreen({ onAutenticado }) {
   }
 
   const titulos = {
-    // "Run Your Club" (sin subtítulo): a petición del club, la pantalla de
-    // login ya no lleva ninguna marca fija ("ClubOS · Panel de operación",
-    // "Smash Pádel Club" debajo del logo) — el nombre de CADA club vive
-    // solo en `configuracion_club.nombre`, nunca hardcodeado aquí.
-    login: { titulo: 'Run Your Club', subtitulo: '' },
-    registro: { titulo: 'Registra tu club', subtitulo: 'Crea tu cuenta y empieza a operar en minutos' },
+    // Copy Premium SaaS UI (Actualización Onboarding/Login/Registro): cada
+    // pantalla ahora tiene su propio título/subtítulo con intención real —
+    // 'login' YA NO se queda muda (antes el logo, con su "RUN YOUR CLUB."
+    // vectorial incluido, se llevaba todo el protagonismo); el saludo de
+    // regreso es contenido nuevo, no repite la marca del logo.
+    login: { titulo: 'Bienvenido de vuelta.', subtitulo: 'Tu club está listo. Entremos a operar.' },
+    registro: { titulo: 'Pon tu club en marcha.', subtitulo: 'Crea tu acceso a QLUBOS y empieza a operar desde un solo sistema.' },
     recuperar: { titulo: 'Recupera tu contraseña', subtitulo: 'Te mandamos un enlace para elegir una nueva' },
   };
 
   return (
-    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#0f172a] p-4">
-      <FondoAuthVideo />
+    <div className="relative flex min-h-screen min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#f8fafc] p-4">
+      <FondoGlowQlubOS />
 
       {/* Tarjeta única (consolidada): logo + leyenda "RUN YOUR CLUB." (ambos
           ya viven dentro del mismo SVG de `LogoQlubOS`) y el formulario de
@@ -53229,21 +53287,25 @@ function ClubAuthScreen({ onAutenticado }) {
           2 tarjetas apiladas (una solo para el logo, otra para el
           formulario); a pedido del club se consolidaron en un único
           contenedor `max-w-md` para que todo (logo, campos, botón) quepa
-          balanceado sin la separación visual redundante. */}
+          balanceado sin la separación visual redundante.
+          REDISEÑO PREMIUM: bordes más redondeados (`rounded-3xl`), más aire
+          (`p-8 sm:p-10` en vez de `p-6`), logo más amplio/protagonista
+          (`w-64 sm:w-72`) y un toque de vidrio (`bg-white/90
+          backdrop-blur-xl`) que deja asomar los orbes de `FondoGlowQlubOS`
+          detrás, en vez del panel sólido que tapaba el video anterior. */}
       <div className="relative z-10 w-full max-w-md">
-        <div className="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-2xl backdrop-blur-xl">
-          <LogoQlubOS className="mx-auto mb-6 h-auto w-56 sm:w-64" />
-          {/* Encabezado interno removido en 'login': el logo de arriba (que
-              ya incluye "RUN YOUR CLUB.") se lleva todo el protagonismo de
-              marca — repetirlo aquí sería redundante. Se conserva SOLO para
-              'registro'/'recuperar', donde el título no es una marca sino
-              contexto real (le dice al usuario en qué paso del flujo está). */}
-          {modo !== 'login' && (
-            <div className="mb-5">
-              <h2 className="text-base font-bold text-slate-900">{titulos[modo].titulo}</h2>
-              {titulos[modo].subtitulo && <p className="mt-0.5 text-xs text-slate-500">{titulos[modo].subtitulo}</p>}
-            </div>
-          )}
+        <div className="rounded-3xl border border-slate-200/70 bg-white/90 p-8 shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-10">
+          <LogoQlubOS className="mx-auto mb-7 h-auto w-64 sm:w-72" />
+          {/* Encabezado interno: ahora se muestra en LAS TRES pantallas
+              (antes se ocultaba en 'login' porque el logo, con su "RUN YOUR
+              CLUB." vectorial, ya se sentía suficiente) — el título/
+              subtítulo de cada modo ya no es redundante con la marca: es un
+              mensaje de contexto real (bienvenida de regreso, invitación a
+              registrarse, recuperación de acceso). */}
+          <div className="mb-6 text-center">
+            <h2 className="text-xl font-black text-slate-900">{titulos[modo].titulo}</h2>
+            {titulos[modo].subtitulo && <p className="mt-1.5 text-sm text-slate-500">{titulos[modo].subtitulo}</p>}
+          </div>
 
           {/* FIX Contraste (alertas Login/Registro/Recuperar Contraseña): antes
               `border-rose-500/30 bg-rose-500/10 text-rose-300` — texto rosa
@@ -53308,13 +53370,13 @@ function ClubAuthScreen({ onAutenticado }) {
                 </button>
               </div>
               <BotonPrimario type="submit" disabled={cargando} className="w-full">
-                {cargando ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
-                Iniciar sesión
+                {cargando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
+                Entrar a mi club
               </BotonPrimario>
               <p className="text-center text-xs text-slate-500">
-                ¿Tu club todavía no tiene cuenta?{' '}
+                ¿Tu club todavía no está en QLUBOS?{' '}
                 <button type="button" onClick={() => cambiarModo('registro')} className="font-semibold text-emerald-700 hover:text-emerald-800">
-                  Regístralo
+                  Comienza aquí
                 </button>
               </p>
             </form>
@@ -53396,13 +53458,13 @@ function ClubAuthScreen({ onAutenticado }) {
                 </span>
               </label>
               <BotonPrimario type="submit" disabled={cargando || !aceptaLegalClub} className="w-full">
-                {cargando ? <Loader2 size={16} className="animate-spin" /> : <Building2 size={16} />}
-                Crear mi club
+                {cargando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
+                Empezar con QLUBOS
               </BotonPrimario>
               <p className="text-center text-xs text-slate-500">
-                ¿Ya tienes cuenta?{' '}
+                ¿Ya tienes una cuenta?{' '}
                 <button type="button" onClick={() => cambiarModo('login')} className="font-semibold text-emerald-700 hover:text-emerald-800">
-                  Inicia sesión
+                  Entra a tu club
                 </button>
               </p>
             </form>
