@@ -40708,16 +40708,15 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
     <LienzoOnboardingClub ancho="max-w-4xl">
       <div className="mb-8 text-center">
         <InsigniaPasoOnboarding paso={3} />
-        <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">Un sistema. Una suscripción. Todo incluido.</h1>
+        {/* Color en el título (corrección — item 1): "Todo incluido." en
+            verde QLUBOS legible — `text-lime-600` (no `lime-400`, demasiado
+            neón/claro sobre fondo blanco para un encabezado grande) es el
+            mismo tono ya usado en los demás textos destacados sobre fondo
+            claro de esta pantalla (ej. "Plan seleccionado" en cada tarjeta). */}
+        <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">
+          Un sistema. Una suscripción. <span className="text-lime-600">Todo incluido.</span>
+        </h1>
         <p className="mt-2 text-sm font-medium text-slate-500">Elige tu plan según el tamaño de tu club.</p>
-        {/* Badge/insignia superior (versión definitiva del copy, item 2) —
-            distinta de la píldora de progreso de arriba: esta es la
-            promesa de producto, justo encima de las 3 tarjetas. Estilo
-            "sofisticado" = navy sólido (no lima) con texto claro, para que
-            se lea como sello/certificación, no como otro paso del wizard. */}
-        <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-4 py-1.5 text-[11px] font-bold uppercase tracking-widest text-white">
-          <CheckCircle2 size={12} className="text-lime-400" /> Todas las funciones incluidas
-        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -40728,14 +40727,23 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
               key={plan.canchas}
               type="button"
               onClick={() => onSeleccionarPlan(plan)}
-              className={`flex flex-col items-start gap-3 rounded-2xl border-2 bg-white p-5 text-left shadow-sm transition ${
+              className={`relative flex flex-col items-start gap-3 rounded-2xl border-2 bg-white p-5 text-left shadow-sm transition ${
                 activo ? 'border-lime-400 shadow-[0_0_0_4px_rgba(163,230,53,0.25)]' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
               }`}
             >
+              {/* Insignia "Todas las funciones incluidas" — corrección
+                  (item 2): ya NO es un badge flotante arriba de las 3
+                  tarjetas, ahora vive DENTRO de cada una, esquina superior
+                  derecha. `absolute` sobre el `relative` del `<button>` de
+                  arriba; `pr-16` en el bloque de precio (más abajo) le deja
+                  espacio para no encimarse en pantallas angostas. */}
+              <div className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-lime-300 bg-lime-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-lime-700">
+                <CheckCircle2 size={10} /> Todas las funciones incluidas
+              </div>
               <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${activo ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-500'}`}>
                 <LayoutGrid size={18} />
               </div>
-              <div>
+              <div className="pr-2">
                 <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
                 <p className="mt-1 text-2xl font-black text-slate-900">
                   {formatoPrecioPlanOnboarding(plan.precioMensual)}
@@ -40756,14 +40764,14 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
         })}
       </div>
 
-      {/* Banner explicativo (versión definitiva del copy, item 3) — refuerza
-          la propuesta de precio "todo incluido, sin comisiones" justo
-          debajo de las 3 tarjetas, antes del CTA de "Continuar". Navy
-          sobrio (no verde) para que se lea como una afirmación seria de
-          producto; solo la línea 2 va en verde QLUBOS, en negrita. */}
-      <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-900 px-5 py-4 text-center">
-        <p className="text-xs font-medium text-white">Tu dinero es tuyo: 0% comisiones por reserva o transacción.</p>
-        <p className="mt-1 text-sm font-black text-lime-400">Paga por el tamaño de tu club. No por las funciones que utilizas.</p>
+      {/* Banner explicativo (corrección — item 4) — ahora es UN SOLO
+          mensaje, sin la segunda línea ("Paga por el tamaño de tu
+          club..."). Verde QLUBOS completo (`text-lime-400`, legible sobre
+          el navy sólido del contenedor) y un tamaño de fuente mayor
+          (`text-base`) para que sea el mensaje principal del banner, no
+          una nota al pie. */}
+      <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-900 px-5 py-5 text-center">
+        <p className="text-base font-black text-lime-400">Tu dinero es tuyo: 0% comisiones por reserva o transacción.</p>
       </div>
 
       <div className="mt-8 flex justify-center">
