@@ -1157,8 +1157,16 @@ const LogoQlubOS = ({ className = 'w-auto h-8' }) => (
       />
 
       {/* RUN YOUR CLUB. — 12 <path> cerrados (R,U,N,Y,O,U,R,C,L,U,B,.), uno
-          por letra, contornos reales de Poppins Bold vía fontTools. */}
-      <g fill="#0f172a">
+          por letra, contornos reales de Poppins Bold vía fontTools.
+          FIX Modo Oscuro (Portal de Clubes/TopHeader): antes `fill="#0f172a"`
+          como atributo SVG fijo — invisible sobre fondo oscuro porque un
+          atributo `fill` no es una clase, así que la hoja `CSS_MODO_OSCURO_CLUBOS`
+          (que pisa `[class~="fill-slate-800"]`, ver la "Q"/"L"/"U"/"B" de
+          arriba) nunca lo alcanzaba. Ahora usa la misma clase Tailwind
+          `fill-slate-800` (mismo `#0f172a` en Modo Claro) que el resto del
+          logo — la MISMA regla CSS que ya adapta "QLUBOS" adapta ahora
+          también el eslogan, sin duplicar ninguna regla nueva. */}
+      <g className="fill-slate-800">
         <path
           transform="translate(85.92 84) scale(0.011 -0.011)"
           d="M420 0 274 265H233V0H62V702H349Q432 702 490.5 673.0Q549 644 578.0 593.5Q607 543 607 481Q607 411 567.5 356.0Q528 301 451 278L613 0ZM233 386H339Q386 386 409.5 409.0Q433 432 433 474Q433 514 409.5 537.0Q386 560 339 560H233Z"
@@ -4833,9 +4841,18 @@ function CanchaCard({
             <>
               <h3 className="truncate text-sm font-black text-slate-900">{cancha.nombre}</h3>
               {puedeRenombrarCancha && (
+                // FIX Táctil/iPad: `opacity-0` + `group-hover:opacity-100`
+                // dejaba este botón invisible/imposible de tocar en
+                // cualquier dispositivo sin cursor real (iPad, tablet,
+                // celular) — no hay "hover" que disparar antes del tap.
+                // `[@media(hover:none)]:opacity-100` (variante arbitraria
+                // de Tailwind) fuerza el lápiz a full-opacidad en CUALQUIER
+                // dispositivo sin capacidad de hover, sin tocar el
+                // comportamiento en desktop (sigue apareciendo solo al
+                // hacer hover ahí, vía `group-hover:opacity-100`).
                 <button
                   onClick={() => setEditandoNombre(true)}
-                  className="shrink-0 rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 group-hover:opacity-100"
+                  className="shrink-0 rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
                   title="Renombrar cancha (ej. patrocinio de marca)"
                 >
                   <Pencil size={13} />
@@ -45960,27 +45977,47 @@ function PortalPublicoJugadores({ clubSlug }) {
     <ToastContext.Provider value={mostrarToast}>
       <div className="min-h-screen bg-slate-50 text-slate-900">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-slate-50/70 px-4 py-3.5 backdrop-blur-xl">
-          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5">
+          {/* Logo QLUBOS centrado (item 3) — mismo componente de marca
+              (`LogoQlubOS`, incluye "QLUBOS" + el eslogan "RUN YOUR CLUB.")
+              y mismo criterio de 3 columnas que ya usa `TopHeader` del
+              Panel Operativo ("Izquierda / Centro: logo / Derecha"),
+              adaptado a `grid-cols-[1fr_auto_1fr]` en vez de `grid-cols-3`
+              fijo: la columna central mide exactamente lo que ocupa el
+              logo y las columnas izquierda/derecha (que NO son simétricas
+              en este header — nombre del club vs. toggle+perfil) se
+              reparten el resto sin empujarse entre sí. `min-w-0` +
+              `truncate` en el bloque del club para que un nombre largo
+              jamás empuje el logo fuera del centro en pantallas angostas
+              (el uso principal de este Portal es celular, a diferencia del
+              Panel Operativo). El logo hereda el mismo comportamiento de
+              color adaptable a Modo Oscuro que `TopHeader` — es el mismo
+              `<svg>`, sin ninguna clase nueva que mantener aparte. */}
+          <div className="mx-auto grid max-w-3xl grid-cols-[1fr_auto_1fr] items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2.5 justify-self-start">
               {club.logo_url ? (
-                <img src={club.logo_url} alt={club.nombre} className="h-9 w-9 rounded-lg object-cover ring-1 ring-slate-200" />
+                <img src={club.logo_url} alt={club.nombre} className="h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-slate-200" />
               ) : (
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20">
                   <Trophy size={17} />
                 </div>
               )}
-              <div>
-                <p className="text-sm font-black leading-tight text-slate-900">{club.nombre || 'Club de Pádel'}</p>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-black leading-tight text-slate-900">{club.nombre || 'Club de Pádel'}</p>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Portal de jugadores</p>
               </div>
             </div>
+
+            <div className="flex justify-center">
+              <LogoQlubOS className="h-7 w-auto sm:h-9" />
+            </div>
+
             {/* Modo Oscuro (Toggle Theme) — mismo botón/hook que ya usa el
                 panel interno (`useTemaClubOS`/`BotonTemaClubOS`, ambos
                 module-scope, sin props/estado nuevo que inventar). Va
                 justo a la izquierda del saludo/perfil del jugador (o del
                 botón "Identificarme" cuando todavía no se ha identificado),
                 dentro del mismo grupo de la derecha del header. */}
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center justify-self-end gap-1.5">
               <BotonTemaClubOS tema={temaPortal} onAlternar={alternarTemaPortal} />
               {jugador ? (
                 // FIX: este botón abría "Mi Perfil" cerrando la sesión de
