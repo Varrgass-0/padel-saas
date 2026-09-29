@@ -40683,32 +40683,41 @@ function LienzoOnboardingClub({ children, ancho = 'max-w-3xl' }) {
   );
 }
 
-// Insignia "PASO X DE 3" compartida por Kickoff/Plan/Confirmación — mismo
-// estilo de píldora que ya usaba la pantalla de Selección de Plan
-// ("Bienvenido, {club}"), reutilizado ahora como indicador de progreso del
-// wizard (Reordenamiento — item 4/5/6/7): Bienvenida y Configuración
-// Esencial (Paso 1) → Selección de Plan (Paso 2) → Resumen Final y
-// Activación (Paso 3).
-function InsigniaPasoOnboarding({ paso }) {
+// Insignia "PASO X DE 5" compartida por TODO el flujo de entrada — Registro
+// (`ClubAuthScreen`, Paso 1) + Kickoff/Plan/Setup/Confirmación (este
+// wizard, Pasos 2-5) — mismo estilo de píldora en las 5 pantallas para que
+// el dueño sienta un único recorrido continuo, nunca 2 flujos distintos
+// pegados. Orden cronológico exacto (versión definitiva del copy):
+//   Paso 1 — Registro del Club ("Pon tu club en marcha.", en `ClubAuthScreen`)
+//   Paso 2 — Bienvenida/Kickoff ("Hagamos que QLUBOS funcione como tu club.")
+//   Paso 3 — Selección de Plan ("Un sistema. Una suscripción. Todo incluido.")
+//   Paso 4 — Configuración del Club/Setup (formulario operativo, reutiliza
+//            `ModuloConfiguracionClub`)
+//   Paso 5 — Confirmación y Activación ("Tu club está listo para operar.")
+function InsigniaPasoOnboarding({ paso, total = 5 }) {
   return (
     <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-lime-300 bg-lime-50 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-lime-700">
-      <Sparkles size={12} /> Paso {paso} de 3
+      <Sparkles size={12} /> Paso {paso} de {total}
     </div>
   );
 }
 
-// ---- Paso 2: Selección de Plan (Tiers) ------------------------------------
-// Reordenamiento (item 4): ahora es el Paso 2 del wizard (antes era el
-// primero) — llega DESPUÉS de la Bienvenida y Configuración Esencial, así
-// que la píldora de arriba ya no saluda al club (eso ya pasó en Kickoff),
-// muestra el progreso real ("Paso 2 de 3").
+// ---- Paso 3: Selección de Plan (Tiers) ------------------------------------
 function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSeleccionarPlan, onContinuar }) {
   return (
     <LienzoOnboardingClub ancho="max-w-4xl">
       <div className="mb-8 text-center">
-        <InsigniaPasoOnboarding paso={2} />
+        <InsigniaPasoOnboarding paso={3} />
         <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">Un sistema. Una suscripción. Todo incluido.</h1>
         <p className="mt-2 text-sm font-medium text-slate-500">Elige tu plan según el tamaño de tu club.</p>
+        {/* Badge/insignia superior (versión definitiva del copy, item 2) —
+            distinta de la píldora de progreso de arriba: esta es la
+            promesa de producto, justo encima de las 3 tarjetas. Estilo
+            "sofisticado" = navy sólido (no lima) con texto claro, para que
+            se lea como sello/certificación, no como otro paso del wizard. */}
+        <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-4 py-1.5 text-[11px] font-bold uppercase tracking-widest text-white">
+          <CheckCircle2 size={12} className="text-lime-400" /> Todas las funciones incluidas
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -40732,9 +40741,9 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
                   {formatoPrecioPlanOnboarding(plan.precioMensual)}
                   <span className="text-sm font-semibold text-slate-400"> / mes</span>
                 </p>
-                {/* Descripción por tarjeta (item 6, nuevo) — una línea corta
-                    que explica el tier sin repetir el rango de canchas, que
-                    ya va arriba como eyebrow. */}
+                {/* Descripción por tarjeta (versión definitiva del copy) —
+                    una línea corta que explica el tier sin repetir el rango
+                    de canchas, que ya va arriba como eyebrow. */}
                 <p className="mt-1.5 text-xs leading-snug text-slate-500">{plan.descripcion}</p>
               </div>
               {activo && (
@@ -40747,14 +40756,13 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
         })}
       </div>
 
-      {/* Banner explicativo (item 6, nuevo) — refuerza la propuesta de
-          precio "todo incluido" justo debajo de las 3 tarjetas, antes del
-          CTA de "Continuar". Navy sobrio (no verde) para que se lea como
-          una afirmación seria de producto, no como otro botón/acento. */}
+      {/* Banner explicativo (versión definitiva del copy, item 3) — refuerza
+          la propuesta de precio "todo incluido, sin comisiones" justo
+          debajo de las 3 tarjetas, antes del CTA de "Continuar". Navy
+          sobrio (no verde) para que se lea como una afirmación seria de
+          producto; solo la línea 2 va en verde QLUBOS, en negrita. */}
       <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-900 px-5 py-4 text-center">
-        <p className="text-xs font-medium text-slate-300">
-          Todos los planes incluyen QLUBOS completo. Sin módulos bloqueados. Sin comisión QLUBOS.
-        </p>
+        <p className="text-xs font-medium text-white">Tu dinero es tuyo: 0% comisiones por reserva o transacción.</p>
         <p className="mt-1 text-sm font-black text-lime-400">Paga por el tamaño de tu club. No por las funciones que utilizas.</p>
       </div>
 
@@ -40767,15 +40775,14 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
   );
 }
 
-// ---- Paso 1: Bienvenida y Configuración Esencial (Reordenamiento — item 5)
-// Antes esta pantalla era un simple "Kickoff" de transición entre Plan y
-// Setup; ahora ES el Paso 1 — lo primero que ve el dueño tras registrarse o
-// iniciar sesión por primera vez, antes de elegir plan.
+// ---- Paso 2: Bienvenida/Kickoff -------------------------------------------
+// Lo primero que ve el dueño tras registrarse (Paso 1, `ClubAuthScreen`) o
+// iniciar sesión por primera vez — antes de elegir plan (Paso 3).
 function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
       <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
-        <InsigniaPasoOnboarding paso={1} />
+        <InsigniaPasoOnboarding paso={2} />
         <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-lime-400 text-slate-950">
           <Rocket size={28} strokeWidth={1.75} />
         </div>
@@ -40791,12 +40798,12 @@ function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
   );
 }
 
-// ---- Paso 3: Resumen Final y Activación (mock, listo para Stripe) --------
+// ---- Paso 5: Confirmación y Activación (mock, listo para Stripe) --------
 function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar }) {
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
       <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
-        <InsigniaPasoOnboarding paso={3} />
+        <InsigniaPasoOnboarding paso={5} />
         <div className="flex h-16 w-16 items-center justify-center rounded-full bg-lime-100 text-lime-600">
           <CheckCircle2 size={32} strokeWidth={1.75} />
         </div>
@@ -40832,24 +40839,21 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
   );
 }
 
-// ---- Orquestador: máquina de 4 etapas -------------------------------------
-// Reordenamiento del Wizard (item 4): el orden ANTES era
-// Plan → Kickoff → Setup → Confirmación; ahora es
-// Kickoff (Paso 1: Bienvenida) → Setup (continuación del Paso 1:
-// Configuración Esencial) → Plan (Paso 2: Selección de Plan) →
-// Confirmación (Paso 3: Resumen Final y Activación) — el dueño configura
-// su club ANTES de que se le pida elegir cuánto va a pagar, en vez de
-// pedirle una decisión de precio en el primer segundo de la cuenta.
+// ---- Orquestador: máquina de 4 etapas (Pasos 2 a 5 del flujo de entrada) --
+// Orden cronológico definitivo (item 1): Registro (Paso 1, fuera de este
+// componente, en `ClubAuthScreen`) → Kickoff (Paso 2: Bienvenida) → Plan
+// (Paso 3: Selección de Plan) → Setup (Paso 4: Configuración del Club) →
+// Confirmación (Paso 5: Confirmación y Activación).
 // `moduloConfigProps` es exactamente el mismo objeto de props que
 // `AppInterno` ya arma para el `<ModuloConfiguracionClub>` de producción (ver
 // más abajo, dentro del router de módulos) — se reenvía tal cual, sin
-// reconstruir ningún prop nuevo, para que el Paso 1 (Setup) sea 100% el
+// reconstruir ningún prop nuevo, para que el Paso 4 (Setup) sea 100% el
 // mismo componente/datos/guardado que el resto de la app.
 function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan, guardandoActivacion, onConfirmarActivacion, moduloConfigProps }) {
-  const [etapa, setEtapa] = useState('kickoff'); // 'kickoff' | 'setup' | 'plan' | 'confirmacion'
+  const [etapa, setEtapa] = useState('kickoff'); // 'kickoff' | 'plan' | 'setup' | 'confirmacion'
 
   if (etapa === 'kickoff') {
-    return <PantallaKickoffOnboarding nombreClub={nombreClub} onComenzar={() => setEtapa('setup')} />;
+    return <PantallaKickoffOnboarding nombreClub={nombreClub} onComenzar={() => setEtapa('plan')} />;
   }
 
   if (etapa === 'plan') {
@@ -40858,7 +40862,7 @@ function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan,
         nombreClub={nombreClub}
         planSeleccionado={planSeleccionado}
         onSeleccionarPlan={onSeleccionarPlan}
-        onContinuar={() => setEtapa('confirmacion')}
+        onContinuar={() => setEtapa('setup')}
       />
     );
   }
@@ -40867,25 +40871,24 @@ function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan,
     return <PantallaConfirmacionOnboarding planSeleccionado={planSeleccionado} guardando={guardandoActivacion} onConfirmar={onConfirmarActivacion} />;
   }
 
-  // etapa === 'setup' — Asistente Interactivo de Configuración (Setup
-  // Canvas), continuación del Paso 1: reutiliza `ModuloConfiguracionClub`
-  // completo, con la barra de módulos + wizard nav ya integrados
-  // (`modoOnboarding`, ver la definición de `ModuloConfiguracionClub`
-  // arriba) — cero componentes nuevos para Portal/General/Jugadores/
-  // Reservas: son EXACTAMENTE los mismos que el Panel Operativo usa en
-  // producción, incluida la Wallet excluida a propósito (`modoOnboarding`
-  // oculta esa pestaña). Termina en 'plan' (Paso 2), no en 'confirmacion'
-  // — la Selección de Plan ahora va DESPUÉS de configurar lo esencial.
+  // etapa === 'setup' (Paso 4) — Asistente Interactivo de Configuración
+  // (Setup Canvas): reutiliza `ModuloConfiguracionClub` completo, con la
+  // barra de módulos + wizard nav ya integrados (`modoOnboarding`, ver la
+  // definición de `ModuloConfiguracionClub` arriba) — cero componentes
+  // nuevos para Portal/General/Jugadores/Reservas: son EXACTAMENTE los
+  // mismos que el Panel Operativo usa en producción, incluida la Wallet
+  // excluida a propósito (`modoOnboarding` oculta esa pestaña). Termina en
+  // 'confirmacion' (Paso 5).
   return (
     <div className="relative min-h-screen min-h-dvh bg-[#f8fafc] px-4 py-8 sm:px-8">
       <FondoGlowQlubOS />
       <div className="relative z-10 mx-auto mb-6 max-w-5xl text-center">
-        <InsigniaPasoOnboarding paso={1} />
+        <InsigniaPasoOnboarding paso={4} />
         <h2 className="text-2xl font-black text-slate-900">Configuremos {nombreClub || 'tu club'}</h2>
         <p className="mt-1 text-sm text-slate-500">Puedes ajustar cualquiera de estos módulos después, desde Configuración del Club.</p>
       </div>
       <div className="relative z-10 mx-auto max-w-5xl">
-        <ModuloConfiguracionClub {...moduloConfigProps} modoOnboarding onFinalizarOnboarding={() => setEtapa('plan')} />
+        <ModuloConfiguracionClub {...moduloConfigProps} modoOnboarding onFinalizarOnboarding={() => setEtapa('confirmacion')} />
       </div>
     </div>
   );
@@ -53303,6 +53306,12 @@ function ClubAuthScreen({ onAutenticado }) {
               mensaje de contexto real (bienvenida de regreso, invitación a
               registrarse, recuperación de acceso). */}
           <div className="mb-6 text-center">
+            {/* Insignia "Paso 1 de 5" — SOLO en 'registro': es la puerta de
+                entrada al flujo completo (Registro → Kickoff → Plan → Setup
+                → Confirmación, ver `InsigniaPasoOnboarding`). 'login' y
+                'recuperar' no son parte de ese recorrido numerado (un
+                dueño que ya tiene cuenta no "avanza pasos" al entrar). */}
+            {modo === 'registro' && <InsigniaPasoOnboarding paso={1} />}
             <h2 className="text-xl font-black text-slate-900">{titulos[modo].titulo}</h2>
             {titulos[modo].subtitulo && <p className="mt-1.5 text-sm text-slate-500">{titulos[modo].subtitulo}</p>}
           </div>
