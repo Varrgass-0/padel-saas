@@ -993,9 +993,9 @@ function BotonTemaClubOS({ tema, onAlternar }) {
 //     (`border-slate-*`/`ring-slate-*`/`divide-slate-*`): `#334155`.
 //   - Texto principal (`text-slate-900`/`text-slate-800`): `#f8fafc`.
 //   - Texto secundario (`text-slate-700/600/500/400/300`): `#94a3b8`.
-//   - `text-slate-950` (botones/badges de fondo `bg-lime-400`) y las clases
-//     `lime-*`/`emerald-*`/etc. de marca y estado NUNCA se tocan — ya son el
-//     verde neón de QLUB OS, así que resaltan solas más fuerte todavía sobre
+//   - `text-slate-950` (botones/badges de fondo `bg-orange-400`) y las clases
+//     `orange-*`/`emerald-*`/etc. de marca y estado NUNCA se tocan — ya son el
+//     naranja neón de QLUB OS, así que resaltan solas más fuerte todavía sobre
 //     el nuevo fondo oscuro (justo lo que pide el punto 2 del requerimiento).
 const CSS_MODO_OSCURO_CLUBOS = `
 html.dark, html.dark body, html.dark #root { background-color: #0b1329; }
@@ -1058,7 +1058,7 @@ html.dark [class~="hover:text-slate-800"]:hover { color: #f8fafc; }
 /* Logo QLUB OS — letras "Q"/"L"/"U"/"B" (ver LogoQlubOS): en Modo Claro usan
    la clase fill-slate-800 (#0f172a, igual que antes); en Modo Oscuro se
    pisan a un gris casi blanco para que no se pierdan sobre el fondo oscuro
-   (#0b1329). "O"/"S" siguen en verde lima fijo, sin regla aquí — no cambian. */
+   (#0b1329). "O"/"S" siguen en naranja fijo, sin regla aquí — no cambian. */
 html.dark [class~="fill-slate-800"] { fill: #f1f5f9; }
 
 html.dark [class~="text-slate-700"],
@@ -1081,8 +1081,8 @@ html.dark [class~="placeholder-slate-400"]::placeholder { color: #64748b; }
 // geométricas dibujadas a mano ni la "O" con anillo/cápsula de power de
 // versiones anteriores: son contornos reales de Poppins Bold (idéntica
 // familia y técnica que la leyenda de abajo, ver el bloque siguiente),
-// solo que a mayor escala. "O"/"S" van en el mismo verde neón
-// (`#a3e635` = `lime-400`, el mismo tono exacto de `BotonPrimario`/los
+// solo que a mayor escala. "O"/"S" van en el mismo naranja neón
+// (`#fb923c` = `orange-400`, el mismo tono exacto de `BotonPrimario`/los
 // botones de acción principal) y "Q"/"L"/"U"/"B" en `#0f172a`.
 //
 // Tagline "RUN YOUR CLUB." SIN <text>: antes usaba un `<text fontFamily=
@@ -1113,7 +1113,7 @@ const LogoQlubOS = ({ className = 'w-auto h-8' }) => (
     <svg width="240" height="65" viewBox="0 0 320 85" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
       {/* QLUBOS — contornos reales de Poppins Bold vía fontTools/SVGPathPen
           (mismo método/familia que "RUN YOUR CLUB." abajo, ver comentario de
-          cabecera). "O"/"S" en `#a3e635` (`lime-400`, idéntico al verde de
+          cabecera). "O"/"S" en `#fb923c` (`orange-400`, idéntico al naranja de
           `BotonPrimario`) — SIN CAMBIOS.
           "Q"/"L"/"U"/"B" AJUSTE Modo Oscuro: antes `fill="#0f172a"` fijo, que
           se volvía invisible sobre el fondo oscuro (`#0b1329`, ver
@@ -1143,17 +1143,17 @@ const LogoQlubOS = ({ className = 'w-auto h-8' }) => (
         d="M622 191Q622 103 560.5 51.5Q499 0 389 0H62V702H378Q485 702 545.5 653.0Q606 604 606 520Q606 458 573.5 417.0Q541 376 487 360Q548 347 585.0 299.5Q622 252 622 191ZM233 418H345Q387 418 409.5 436.5Q432 455 432 491Q432 527 409.5 546.0Q387 565 345 565H233ZM449 214Q449 251 424.5 272.0Q400 293 357 293H233V138H359Q402 138 425.5 157.5Q449 177 449 214Z"
       />
       </g>
-      {/* O VERDE */}
+      {/* O NARANJA */}
       <path
         transform="translate(212.22 68.68) scale(0.077896 -0.077896)"
         d="M33 353Q33 456 81.5 538.0Q130 620 212.5 666.0Q295 712 394 712Q493 712 575.5 666.0Q658 620 705.5 538.0Q753 456 753 353Q753 250 705.0 167.5Q657 85 575.0 39.0Q493 -7 394 -7Q295 -7 212.5 39.0Q130 85 81.5 167.5Q33 250 33 353ZM579 353Q579 446 528.5 501.5Q478 557 394 557Q309 557 258.5 502.0Q208 447 208 353Q208 260 258.5 204.5Q309 149 394 149Q478 149 528.5 205.0Q579 261 579 353Z"
-        fill="#a3e635"
+        fill="#fb923c"
       />
-      {/* S VERDE */}
+      {/* S NARANJA */}
       <path
         transform="translate(273.44 68.68) scale(0.077896 -0.077896)"
         d="M42 210H224Q228 171 251.0 150.5Q274 130 311 130Q349 130 371.0 147.5Q393 165 393 196Q393 222 375.5 239.0Q358 256 332.5 267.0Q307 278 260 292Q192 313 149.0 334.0Q106 355 75.0 396.0Q44 437 44 503Q44 601 115.0 656.5Q186 712 300 712Q416 712 487.0 656.5Q558 601 563 502H378Q376 536 353.0 555.5Q330 575 294 575Q263 575 244.0 558.5Q225 542 225 511Q225 477 257.0 458.0Q289 439 357 417Q425 394 467.5 373.0Q510 352 541.0 312.0Q572 272 572 209Q572 149 541.5 100.0Q511 51 453.0 22.0Q395 -7 316 -7Q239 -7 178.0 18.0Q117 43 80.5 92.0Q44 141 42 210Z"
-        fill="#a3e635"
+        fill="#fb923c"
       />
 
       {/* RUN YOUR CLUB. — 12 <path> cerrados (R,U,N,Y,O,U,R,C,L,U,B,.), uno
@@ -1581,7 +1581,7 @@ function SelectorArchivoImagen({ onSubida, carpeta, disabled }) {
   return (
     <div>
       <label
-        className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-100 px-3 py-2.5 text-xs font-bold text-slate-600 transition hover:border-lime-400/50 hover:text-slate-900 ${
+        className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-100 px-3 py-2.5 text-xs font-bold text-slate-600 transition hover:border-orange-400/50 hover:text-slate-900 ${
           disabled || subiendo ? 'pointer-events-none opacity-60' : ''
         }`}
       >
@@ -1825,7 +1825,7 @@ const ESTATUS_META = {
 const ROLES = [
   { value: 'owner', label: 'Owner', descripcion: 'Acceso total e incondicional.', icon: Crown, color: 'text-amber-300', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30' },
   { value: 'manager', label: 'Manager', descripcion: 'Gestión de reservas, aprobación de cortes y supervisión de POS.', icon: UserCog, color: 'text-sky-300', bg: 'bg-sky-400/10', ring: 'ring-sky-400/30' },
-  { value: 'recepcion', label: 'Recepción/Caja', descripcion: 'Agendar reservas, check-in, cobro en POS/Split Bill y flujos de inscripción de Torneos y Academia.', icon: Users, color: 'text-lime-300', bg: 'bg-lime-400/10', ring: 'ring-lime-400/30' },
+  { value: 'recepcion', label: 'Recepción/Caja', descripcion: 'Agendar reservas, check-in, cobro en POS/Split Bill y flujos de inscripción de Torneos y Academia.', icon: Users, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
   { value: 'bar', label: 'Restaurante/Bar', descripcion: 'Comandas y venta en Smart POS; inventario de alimentos/bebidas en solo lectura, sin precios ni costos.', icon: Coffee, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
   { value: 'coach', label: 'Coach', descripcion: 'Academia & Clínicas, Torneos & Retas y Parrilla Operativa en modo solo lectura.', icon: Award, color: 'text-fuchsia-300', bg: 'bg-fuchsia-400/10', ring: 'ring-fuchsia-400/30' },
   {
@@ -2957,7 +2957,7 @@ function useToast() {
 const ACENTO_TOAST = {
   error: { borde: 'border-l-rose-500', icono: AlertTriangle, color: 'text-rose-400' },
   aviso: { borde: 'border-l-amber-500', icono: Info, color: 'text-amber-400' },
-  ok: { borde: 'border-l-lime-500', icono: CheckCircle2, color: 'text-lime-400' },
+  ok: { borde: 'border-l-orange-500', icono: CheckCircle2, color: 'text-orange-400' },
 };
 
 function ToastHost({ toasts }) {
@@ -3004,7 +3004,7 @@ function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', 
         <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur">
           <div className="flex items-start gap-3">
             {Icon && (
-              <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
+              <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-400/10 text-orange-400">
                 <Icon size={18} />
               </div>
             )}
@@ -3156,7 +3156,7 @@ function ComboBoxTexto({ value, onChange, opciones, placeholder, className, onEn
                   onChange(o);
                   setAbierto(false);
                 }}
-                className="block w-full truncate px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-lime-50 active:bg-lime-100"
+                className="block w-full truncate px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-orange-50 active:bg-orange-100"
               >
                 {o}
               </button>
@@ -3169,12 +3169,12 @@ function ComboBoxTexto({ value, onChange, opciones, placeholder, className, onEn
 }
 
 const inputClase =
-  'w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-lime-400 focus:ring-1 focus:ring-lime-400';
+  'w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-orange-400 focus:ring-1 focus:ring-orange-400';
 
 function BotonPrimario({ children, className = '', ...props }) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-lg bg-lime-400 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+      className={`inline-flex items-center justify-center gap-2 rounded-lg bg-orange-400 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
       {...props}
     >
       {children}
@@ -3908,7 +3908,7 @@ function Sidebar({
   onCerrarSesion,
 }) {
   const itemBase = 'flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-bold transition';
-  const itemActivo = 'bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20';
+  const itemActivo = 'bg-orange-400/10 text-orange-400 ring-1 ring-orange-400/20';
   const itemInactivo = 'text-slate-500 hover:bg-slate-100 hover:text-slate-800';
 
   function ir(modulo) {
@@ -3992,7 +3992,7 @@ function Sidebar({
         } ${colapsado ? 'lg:w-[76px]' : 'lg:w-64'}`}
       >
         <div className={`flex items-center gap-2.5 border-b border-slate-200 px-5 py-5 ${colapsado ? 'lg:justify-center lg:px-0' : ''}`}>
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-lime-400 font-black text-slate-950">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-orange-400 font-black text-slate-950">
             {configClubActual.logoUrl ? (
               <img
                 src={configClubActual.logoUrl}
@@ -4039,7 +4039,7 @@ function Sidebar({
               type="button"
               onClick={() => setModalConfigClub(true)}
               title="Editar nombre, logo y horario del club"
-              className={`shrink-0 rounded-md p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-lime-400 ${colapsado ? 'lg:hidden' : ''}`}
+              className={`shrink-0 rounded-md p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-orange-400 ${colapsado ? 'lg:hidden' : ''}`}
             >
               <Settings2 size={14} />
             </button>
@@ -4055,7 +4055,7 @@ function Sidebar({
           type="button"
           onClick={alternarColapso}
           title={colapsado ? 'Expandir menú' : 'Colapsar menú'}
-          className={`hidden shrink-0 items-center gap-2.5 border-b border-slate-200 px-5 py-2.5 text-[11px] font-bold text-slate-500 transition hover:bg-slate-100 hover:text-lime-400 lg:flex ${
+          className={`hidden shrink-0 items-center gap-2.5 border-b border-slate-200 px-5 py-2.5 text-[11px] font-bold text-slate-500 transition hover:bg-slate-100 hover:text-orange-400 lg:flex ${
             colapsado ? 'lg:justify-center' : ''
           }`}
         >
@@ -4074,7 +4074,7 @@ function Sidebar({
               title={modoReordenar ? 'Listo — salir de reordenar' : 'Reordenar módulos'}
               className={`mb-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-bold transition ${
                 modoReordenar
-                  ? 'border-lime-400/40 bg-lime-400/10 text-lime-400'
+                  ? 'border-orange-400/40 bg-orange-400/10 text-orange-400'
                   : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-800'
               }`}
             >
@@ -4120,7 +4120,7 @@ function Sidebar({
                       onClick={() => moverModulo(m.id, -1)}
                       disabled={idx === 0}
                       title="Mover arriba"
-                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-100 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
+                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-100 hover:text-orange-400 disabled:pointer-events-none disabled:opacity-20"
                     >
                       <ChevronUp size={13} />
                     </button>
@@ -4129,7 +4129,7 @@ function Sidebar({
                       onClick={() => moverModulo(m.id, 1)}
                       disabled={idx === modulosVisibles.length - 1}
                       title="Mover abajo"
-                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-100 hover:text-lime-400 disabled:pointer-events-none disabled:opacity-20"
+                      className="rounded p-0.5 text-slate-500 transition hover:bg-slate-100 hover:text-orange-400 disabled:pointer-events-none disabled:opacity-20"
                     >
                       <ChevronDown size={13} />
                     </button>
@@ -4339,9 +4339,9 @@ function TopHeader({
         <div className="relative shrink-0" data-menu-operador>
           <button
             onClick={() => (esOwner ? onAbrirOperador() : setMenuColaboradorAbierto((v) => !v))}
-            className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1.5 pr-2.5 transition hover:border-lime-400/40 hover:bg-slate-100 sm:gap-2.5 sm:px-2.5 sm:pr-3"
+            className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1.5 pr-2.5 transition hover:border-orange-400/40 hover:bg-slate-100 sm:gap-2.5 sm:px-2.5 sm:pr-3"
           >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lime-400 text-xs font-black text-slate-950">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-orange-400 text-xs font-black text-slate-950">
               {iniciales(operador.nombre)}
             </div>
             <div className="hidden min-w-0 max-w-[7rem] text-left sm:block md:max-w-[10rem]">
@@ -4371,7 +4371,7 @@ function TopHeader({
                   }}
                   className="flex w-full items-center gap-2.5 border-b border-slate-100 px-3.5 py-3 text-left text-xs font-bold text-slate-700 transition hover:bg-slate-100"
                 >
-                  <Wallet size={15} className="shrink-0 text-lime-500" /> Mi Wallet
+                  <Wallet size={15} className="shrink-0 text-orange-500" /> Mi Wallet
                 </button>
               )}
               <button
@@ -4444,9 +4444,9 @@ function ModalMiWallet({ operador, onClose }) {
   return (
     <ModalShell titulo={`Mi Wallet - ${operador.nombre}`} subtitulo="Saldo y movimientos de tu Wallet" onClose={onClose} icon={Wallet} ancho="max-w-md">
       <div className="space-y-4">
-        <div className="rounded-xl border border-lime-400/30 bg-lime-400/10 p-4 text-center">
+        <div className="rounded-xl border border-orange-400/30 bg-orange-400/10 p-4 text-center">
           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Saldo Disponible</p>
-          <p className="mt-1 text-2xl font-black text-lime-700">{cargando ? '…' : formatoMoneda(saldo)}</p>
+          <p className="mt-1 text-2xl font-black text-orange-700">{cargando ? '…' : formatoMoneda(saldo)}</p>
         </div>
 
         <div>
@@ -4508,7 +4508,7 @@ const TIPO_ALERTA_META = {
   // el instante en que una venta hace que un jugador cruce el 100% de su
   // meta de cortesía (Pro-Shop o Restaurante/Bar), mismo criterio interno
   // que `reabastecimiento`.
-  cortesia_lista: { icon: Gift, color: 'text-lime-400', bg: 'bg-lime-400/10' },
+  cortesia_lista: { icon: Gift, color: 'text-orange-400', bg: 'bg-orange-400/10' },
 };
 
 // Centro de Alertas del Club: campana con contador de no leídas + dropdown,
@@ -4552,7 +4552,7 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
           <div className="flex items-center justify-between border-b border-slate-200 px-3.5 py-2.5">
             <p className="text-xs font-black uppercase tracking-wide text-slate-600">Alertas del Portal Web</p>
             {noLeidas > 0 && (
-              <button onClick={onMarcarTodasLeidas} className="text-[11px] font-bold text-lime-400 hover:text-lime-300">
+              <button onClick={onMarcarTodasLeidas} className="text-[11px] font-bold text-orange-400 hover:text-orange-300">
                 Marcar todas leídas
               </button>
             )}
@@ -4590,7 +4590,7 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
                       <p className="text-xs font-semibold leading-snug text-slate-800">{a.titulo}</p>
                       <p className="mt-0.5 text-[10px] text-slate-500">{formatoHoraCorta(a.creadaEn)}</p>
                     </div>
-                    {!a.leida && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-lime-400" />}
+                    {!a.leida && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-orange-400" />}
                   </button>
                 );
               })
@@ -4606,9 +4606,9 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
  * MÉTRICAS
  * ==========================================================================*/
 
-function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime', onClick, activo = false }) {
+function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'orange', onClick, activo = false }) {
   const tonos = {
-    lime: 'text-lime-400 bg-lime-400/10',
+    orange: 'text-orange-400 bg-orange-400/10',
     sky: 'text-sky-400 bg-sky-400/10',
     amber: 'text-amber-400 bg-amber-400/10',
     violet: 'text-violet-400 bg-violet-400/10',
@@ -4628,8 +4628,8 @@ function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'lime', onClick, 
   return (
     <div
       className={`rounded-2xl border border-slate-200 bg-white p-4 ${
-        interactiva ? 'cursor-pointer transition hover:border-lime-400/50 hover:bg-slate-100/60' : ''
-      } ${interactiva && activo ? 'border-lime-400/60 ring-1 ring-lime-400/40 bg-slate-100/60' : ''}`}
+        interactiva ? 'cursor-pointer transition hover:border-orange-400/50 hover:bg-slate-100/60' : ''
+      } ${interactiva && activo ? 'border-orange-400/60 ring-1 ring-orange-400/40 bg-slate-100/60' : ''}`}
       onClick={onClick}
       role={interactiva ? 'button' : undefined}
       tabIndex={interactiva ? 0 : undefined}
@@ -4690,7 +4690,7 @@ function MenuEstatus({ estadoActual, onSeleccionar, onCerrar }) {
           >
             <span className={`h-2 w-2 rounded-full ${op.dot}`} />
             <span className="text-slate-900">{op.label}</span>
-            {estadoActual === op.value && <CheckCircle2 size={14} className="ml-auto text-lime-400" />}
+            {estadoActual === op.value && <CheckCircle2 size={14} className="ml-auto text-orange-400" />}
           </button>
         );
       })}
@@ -4794,7 +4794,7 @@ function CanchaCard({
             <BadgePago estadoPago={reservaActual.estado_pago} />
           </div>
         )}
-        <span className="absolute right-3 top-3 rounded-lg bg-slate-50/70 px-2 py-1 text-xs font-black text-lime-400 backdrop-blur">
+        <span className="absolute right-3 top-3 rounded-lg bg-slate-50/70 px-2 py-1 text-xs font-black text-orange-400 backdrop-blur">
           {formatoMoneda(precioPorHoraDeCancha(cancha))}/hr
         </span>
       </div>
@@ -4815,12 +4815,12 @@ function CanchaCard({
                   }
                 }}
                 disabled={guardandoNombre}
-                className="w-full min-w-0 rounded-lg border border-lime-400 bg-white px-2 py-1 text-sm font-black text-slate-900 outline-none"
+                className="w-full min-w-0 rounded-lg border border-orange-400 bg-white px-2 py-1 text-sm font-black text-slate-900 outline-none"
               />
               <button
                 onClick={guardarNombreCancha}
                 disabled={guardandoNombre || !nombreEditado.trim()}
-                className="shrink-0 rounded-lg bg-lime-400 p-1.5 text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+                className="shrink-0 rounded-lg bg-orange-400 p-1.5 text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-40"
                 title="Guardar nombre"
               >
                 {guardandoNombre ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
@@ -4867,7 +4867,7 @@ function CanchaCard({
             <button
               onClick={() => onNuevaReserva(cancha)}
               disabled={bloqueada}
-              className="col-span-2 inline-flex items-center justify-center gap-1.5 rounded-lg bg-lime-400 px-2.5 py-2 text-xs font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+              className="col-span-2 inline-flex items-center justify-center gap-1.5 rounded-lg bg-orange-400 px-2.5 py-2 text-xs font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Plus size={14} /> Nueva Reserva
             </button>
@@ -5065,7 +5065,7 @@ function FilaCronograma({
                 style={{ width: SLOT_PX }}
                 className={`h-full shrink-0 border-r transition ${
                   esHoraEnPunto ? 'border-slate-300/60' : 'border-slate-200/40'
-                } ${ocupados.has(i) ? '' : 'hover:bg-lime-400/10'}`}
+                } ${ocupados.has(i) ? '' : 'hover:bg-orange-400/10'}`}
               />
             );
           })}
@@ -5281,7 +5281,7 @@ function Toolbar({
           <button
             onClick={() => onCambiarVista('tarjetas')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              vista === 'tarjetas' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vista === 'tarjetas' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <LayoutGrid size={14} /> Tarjetas
@@ -5289,7 +5289,7 @@ function Toolbar({
           <button
             onClick={() => onCambiarVista('cronograma')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              vista === 'cronograma' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vista === 'cronograma' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <CalendarDays size={14} /> Cronograma
@@ -5301,7 +5301,7 @@ function Toolbar({
           <button
             onClick={() => onCambiarVista('calendario')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              vista === 'calendario' || vista === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vista === 'calendario' || vista === 'dia' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <CalendarRange size={14} /> Calendario
@@ -5482,11 +5482,11 @@ function CalendarioMensual({ anio, mes, onCambiarMes, onDiaClick, eventosPorDia,
               key={fechaCelda}
               type="button"
               onClick={() => onDiaClick(fechaCelda)}
-              className={`flex min-h-[64px] flex-col items-start gap-1 rounded-xl border p-1.5 text-left transition hover:border-lime-400/60 hover:bg-lime-400/5 sm:min-h-[78px] ${
-                esHoy ? 'border-lime-400 bg-lime-400/10' : 'border-slate-200 bg-slate-50'
+              className={`flex min-h-[64px] flex-col items-start gap-1 rounded-xl border p-1.5 text-left transition hover:border-orange-400/60 hover:bg-orange-400/5 sm:min-h-[78px] ${
+                esHoy ? 'border-orange-400 bg-orange-400/10' : 'border-slate-200 bg-slate-50'
               }`}
             >
-              <span className={`text-[11px] font-black ${esHoy ? 'text-lime-600' : 'text-slate-700'}`}>{dia}</span>
+              <span className={`text-[11px] font-black ${esHoy ? 'text-orange-600' : 'text-slate-700'}`}>{dia}</span>
               {hayEventos && (
                 <div className="flex flex-wrap gap-1">
                   {tiposLeyenda.map((t) => {
@@ -5517,14 +5517,14 @@ function CalendarioMensual({ anio, mes, onCambiarMes, onDiaClick, eventosPorDia,
 // clasificar por ese campo, sin necesitar ninguna prop nueva del módulo.
 const LEYENDA_CALENDARIO_PARRILLA = [
   { key: 'reserva', label: 'Reservas', dot: 'bg-sky-400', badge: 'bg-sky-400/15 text-sky-600' },
-  { key: 'clase', label: 'Clases', dot: 'bg-lime-400', badge: 'bg-lime-400/15 text-lime-600' },
+  { key: 'clase', label: 'Clases', dot: 'bg-orange-400', badge: 'bg-orange-400/15 text-orange-600' },
   { key: 'evento', label: 'Retas/Torneos', dot: 'bg-violet-400', badge: 'bg-violet-400/15 text-violet-600' },
 ];
 
 // Leyenda del Calendario Mensual de Academia & Clínicas — clasifica
 // `academia_clases` por `tipo_clase` (ver `TIPOS_CLASE_ACADEMIA`).
 const LEYENDA_CALENDARIO_ACADEMIA = [
-  { key: 'grupal', label: 'Clases Grupales', dot: 'bg-lime-400', badge: 'bg-lime-400/15 text-lime-600' },
+  { key: 'grupal', label: 'Clases Grupales', dot: 'bg-orange-400', badge: 'bg-orange-400/15 text-orange-600' },
   { key: 'privada', label: 'Clases Privadas', dot: 'bg-amber-400', badge: 'bg-amber-400/15 text-amber-600' },
 ];
 
@@ -5565,7 +5565,7 @@ function TarjetaEventoAgenda({ reserva, canchasPorId, onClick, continuacion = fa
       // `VistaAgendaDia`), la tarjeta se ve ligeramente atenuada y marcada
       // "· continúa" — sigue siendo clicleable (misma reserva real) pero
       // deja clarísimo cuál bloque es el de inicio real del evento.
-      className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition hover:border-lime-400/40 hover:bg-slate-100/60 ${
+      className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition hover:border-orange-400/40 hover:bg-slate-100/60 ${
         continuacion ? 'border-slate-100 bg-slate-50/70' : 'border-slate-200 bg-white'
       }`}
     >
@@ -5736,7 +5736,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                 onClick={() => setTurno(t.value)}
                 className={`rounded-lg border px-3 py-2 text-xs font-bold transition ${
                   turno === t.value
-                    ? 'border-lime-400 bg-lime-400/10 text-lime-400'
+                    ? 'border-orange-400 bg-orange-400/10 text-orange-400'
                     : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
@@ -5754,7 +5754,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                 {esOwner && (
                   <button
                     onClick={() => setModoAlta(true)}
-                    className="inline-flex items-center gap-1 text-[11px] font-bold text-lime-400 transition hover:underline"
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-orange-400 transition hover:underline"
                   >
                     <UserPlus size={12} /> Nuevo empleado
                   </button>
@@ -5776,8 +5776,8 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                         onClick={() => ficharEmpleado(emp)}
                         className={`flex w-full items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition ${
                           activo
-                            ? 'border-lime-400/60 bg-lime-400/10'
-                            : 'border-slate-300 bg-slate-100 hover:border-lime-400/40 hover:bg-slate-200'
+                            ? 'border-orange-400/60 bg-orange-400/10'
+                            : 'border-slate-300 bg-slate-100 hover:border-orange-400/40 hover:bg-slate-200'
                         }`}
                       >
                         <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${rolMeta?.bg || 'bg-slate-200'}`}>
@@ -5787,7 +5787,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                           <p className="truncate text-sm font-bold text-slate-900">{emp.nombre}</p>
                           <p className="text-[11px] text-slate-500">{rolMeta?.label || emp.rol}</p>
                         </div>
-                        {activo && <CheckCircle2 size={16} className="shrink-0 text-lime-400" />}
+                        {activo && <CheckCircle2 size={16} className="shrink-0 text-orange-400" />}
                       </button>
                     );
                   })}
@@ -5808,7 +5808,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
             </div>
           </>
         ) : (
-          <div className="space-y-3 rounded-xl border border-lime-400/20 bg-lime-400/5 p-4">
+          <div className="space-y-3 rounded-xl border border-orange-400/20 bg-orange-400/5 p-4">
             <p className="text-sm font-bold text-slate-900">Alta rápida de empleado</p>
             <Campo label="Nombre">
               <input
@@ -5828,7 +5828,7 @@ function ModalOperador({ operador, empleados = [], onGuardar, onCrearEmpleado, o
                       onClick={() => setRolNuevo(r.value)}
                       className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-[11px] font-bold transition ${
                         rolNuevo === r.value
-                          ? `border-lime-400 ${r.bg} ${r.color}`
+                          ? `border-orange-400 ${r.bg} ${r.color}`
                           : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
@@ -5877,7 +5877,7 @@ function PuntosPin({ longitud = 4, llenos = 0 }) {
         <div
           key={i}
           className={`h-4 w-4 rounded-full border-2 transition ${
-            i < llenos ? 'border-lime-400 bg-lime-400' : 'border-slate-400 bg-transparent'
+            i < llenos ? 'border-orange-400 bg-orange-400' : 'border-slate-400 bg-transparent'
           }`}
         />
       ))}
@@ -5898,7 +5898,7 @@ function TecladoNumericoPin({ valor, onCambiar, deshabilitado }) {
     onCambiar(valor.slice(0, -1));
   }
   const claseTecla =
-    'rounded-xl border border-slate-300 bg-slate-100 py-4 text-xl font-bold text-slate-900 transition hover:border-lime-400/40 hover:bg-slate-200 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40';
+    'rounded-xl border border-slate-300 bg-slate-100 py-4 text-xl font-bold text-slate-900 transition hover:border-orange-400/40 hover:bg-slate-200 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40';
   return (
     <div className="mx-auto grid max-w-xs grid-cols-3 gap-2">
       {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
@@ -5993,7 +5993,7 @@ function ModalCrearPin({ empleado, onClose, onGuardar }) {
             Regresar y escribir otro PIN
           </button>
         )}
-        {guardando && <p className="text-center text-[11px] font-semibold text-lime-400">Guardando tu PIN...</p>}
+        {guardando && <p className="text-center text-[11px] font-semibold text-orange-400">Guardando tu PIN...</p>}
       </div>
     </ModalShell>
   );
@@ -6093,8 +6093,8 @@ function PantallaKiosko({
     <div className="flex min-h-screen w-full flex-col items-center justify-center bg-slate-50 px-4 py-10 text-slate-900">
       <div className="w-full max-w-3xl space-y-8">
         <div className="text-center">
-          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-lime-400/10">
-            <Users size={26} className="text-lime-400" />
+          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-orange-400/10">
+            <Users size={26} className="text-orange-400" />
           </div>
           <h1 className="text-xl font-black text-slate-900">{configClub?.nombre || 'ClubOS'}</h1>
           <p className="mt-1 text-sm text-slate-500">¿Quién está usando esta terminal? Elige tu tarjeta para fichar tu turno.</p>
@@ -6120,7 +6120,7 @@ function PantallaKiosko({
                 <button
                   key={emp.id}
                   onClick={() => tocarTarjeta(emp)}
-                  className={`flex flex-col items-center gap-2 rounded-2xl border bg-white px-4 py-6 text-center transition hover:border-lime-400/40 hover:bg-slate-100 ${
+                  className={`flex flex-col items-center gap-2 rounded-2xl border bg-white px-4 py-6 text-center transition hover:border-orange-400/40 hover:bg-slate-100 ${
                     esOwner ? 'border-amber-400/40 ring-1 ring-amber-400/20' : 'border-slate-200'
                   }`}
                 >
@@ -6889,7 +6889,7 @@ function ModalNuevaReserva({
                     setMontoTocado(false);
                     setMonto(String(montoCalculado));
                   }}
-                  className="font-bold text-lime-400 transition hover:underline"
+                  className="font-bold text-orange-400 transition hover:underline"
                 >
                   Usar este monto
                 </button>
@@ -7292,7 +7292,7 @@ function DetalleReserva({
               type="checkbox"
               checked={abonarSaldo}
               onChange={(e) => setAbonarSaldo(e.target.checked)}
-              className="mt-0.5 h-4 w-4 accent-lime-400"
+              className="mt-0.5 h-4 w-4 accent-orange-400"
               disabled={!reserva.jugador_id}
             />
             <span className="text-xs text-gray-700">
@@ -7415,7 +7415,7 @@ function ModalDetalleCancha({
             <button
               key={r.id}
               onClick={() => setReservaActiva(r)}
-              className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-left transition hover:border-lime-400/40"
+              className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-left transition hover:border-orange-400/40"
             >
               <div className="min-w-0">
                 <p className="truncate text-sm font-bold text-slate-900">{r.jugador_nombre || 'Jugador'}</p>
@@ -7649,7 +7649,7 @@ function ModuloParrillaOperativa({
   return (
     <>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <MetricCard icon={LayoutGrid} etiqueta="Total Canchas" valor={metrics.totalCanchas} sub={`${canchasActivas.length} activas`} tono="lime" />
+        <MetricCard icon={LayoutGrid} etiqueta="Total Canchas" valor={metrics.totalCanchas} sub={`${canchasActivas.length} activas`} tono="orange" />
         <MetricCard
           icon={TrendingUp}
           etiqueta="Ocupación Actual"
@@ -7861,7 +7861,7 @@ function ModalProximasReservas({ reservas, canchasPorId, onClose, onVerDetalle }
                 key={r.id}
                 type="button"
                 onClick={() => onVerDetalle(r)}
-                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left transition hover:border-lime-400/40 hover:bg-slate-100/60"
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left transition hover:border-orange-400/40 hover:bg-slate-100/60"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-bold text-slate-900">{r.jugador_nombre || 'Jugador'}</p>
@@ -8260,7 +8260,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
   const rangoPrecioVariantes = precioMinVariantes !== null && precioMinVariantes !== precioMaxVariantes;
 
   return (
-    <div className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white transition hover:border-lime-400/40">
+    <div className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white transition hover:border-orange-400/40">
       {onEditar && (
         <button
           type="button"
@@ -8269,7 +8269,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
             onEditar(producto);
           }}
           title="Editar / disponibilidad / eliminar"
-          className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-slate-50/80 text-slate-600 backdrop-blur transition hover:bg-slate-100 hover:text-lime-400"
+          className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-slate-50/80 text-slate-600 backdrop-blur transition hover:bg-slate-100 hover:text-orange-400"
         >
           <Settings2 size={12} />
         </button>
@@ -8296,7 +8296,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
             </span>
           )}
           {tieneVariantes && (
-            <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-slate-50/80 px-2 py-0.5 text-[9px] font-bold text-lime-300 backdrop-blur">
+            <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-slate-50/80 px-2 py-0.5 text-[9px] font-bold text-orange-300 backdrop-blur">
               <Layers size={9} /> {variantes.length} opciones
             </span>
           )}
@@ -8313,7 +8313,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
         <div className="flex flex-1 flex-col gap-1 p-2.5">
           <p className="line-clamp-2 text-xs font-bold leading-snug text-slate-900">{producto.nombre}</p>
           <div className="mt-auto flex items-center justify-between pt-1">
-            <span className="text-sm font-black text-lime-400">
+            <span className="text-sm font-black text-orange-400">
               {tieneVariantes
                 ? rangoPrecioVariantes
                   ? `Desde ${formatoMoneda(precioMinVariantes)}`
@@ -8379,11 +8379,11 @@ function ModalSeleccionarVariante({ producto, variantes, onSeleccionar, onClose 
               type="button"
               disabled={sinStock}
               onClick={() => onSeleccionar(v)}
-              className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-slate-100 px-3.5 py-3 text-left transition hover:border-lime-400/50 hover:bg-slate-100/80 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-slate-100 px-3.5 py-3 text-left transition hover:border-orange-400/50 hover:bg-slate-100/80 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <span className="text-xs font-bold text-slate-900">{v.nombre}</span>
               <span className="flex w-full items-center justify-between">
-                <span className="text-sm font-black text-lime-400">{formatoMoneda(precio)}</span>
+                <span className="text-sm font-black text-orange-400">{formatoMoneda(precio)}</span>
                 {controlaStock && (
                   <span
                     className={`text-[10px] font-semibold ${
@@ -8428,10 +8428,10 @@ function ModalSeleccionarModificador({ producto, variante, grupo, opciones, onSe
             key={o.id}
             type="button"
             onClick={() => onSeleccionar(o)}
-            className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-slate-100 px-3.5 py-3 text-left transition hover:border-lime-400/50 hover:bg-slate-100/80"
+            className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-slate-100 px-3.5 py-3 text-left transition hover:border-orange-400/50 hover:bg-slate-100/80"
           >
             <span className="text-xs font-bold text-slate-900">{o.nombre}</span>
-            <span className="text-sm font-black text-lime-400">
+            <span className="text-sm font-black text-orange-400">
               {o.precio_adicional > 0
                 ? `+${formatoMoneda(o.precio_adicional)}`
                 : o.precio_adicional < 0
@@ -8505,7 +8505,7 @@ function ComandaPanel({
     <div className="sticky top-20 flex flex-col rounded-2xl border border-slate-200 bg-white">
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3.5">
         <div className="flex items-center gap-2">
-          <Receipt size={16} className="text-lime-400" />
+          <Receipt size={16} className="text-orange-400" />
           <h3 className="text-sm font-black text-slate-900">Comanda</h3>
           {!vacio && (
             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{totalArticulos}</span>
@@ -8553,14 +8553,14 @@ function ComandaPanel({
                               setEditandoPrecioId(null);
                             }
                           }}
-                          className="w-20 rounded-md border border-lime-400/40 bg-slate-50 px-1.5 py-0.5 text-[11px] font-bold text-slate-900"
+                          className="w-20 rounded-md border border-orange-400/40 bg-slate-50 px-1.5 py-0.5 text-[11px] font-bold text-slate-900"
                         />
                         <button
                           onClick={() => {
                             onEditarPrecio?.(item.id, precioBorrador);
                             setEditandoPrecioId(null);
                           }}
-                          className="text-lime-400 hover:text-lime-300"
+                          className="text-orange-400 hover:text-orange-300"
                         >
                           <CheckCircle2 size={14} />
                         </button>
@@ -8601,7 +8601,7 @@ function ComandaPanel({
                       <Plus size={12} />
                     </button>
                   </div>
-                  <span className="w-16 shrink-0 text-right text-xs font-black text-lime-400">
+                  <span className="w-16 shrink-0 text-right text-xs font-black text-orange-400">
                     {formatoMoneda(item.precio * item.cantidad)}
                   </span>
                   <button onClick={() => onQuitarProducto(item.id)} className="shrink-0 text-slate-400 transition hover:text-rose-400">
@@ -8706,7 +8706,7 @@ function ComandaPanel({
                   <button
                     type="button"
                     onClick={() => onAbrirCanjeCortesia?.('proshop')}
-                    className="inline-flex animate-pulse items-center gap-1 rounded-full bg-gradient-to-r from-amber-400 to-lime-400 px-2.5 py-1 text-[10px] font-black text-slate-950 shadow-lg shadow-amber-400/20 transition hover:animate-none"
+                    className="inline-flex animate-pulse items-center gap-1 rounded-full bg-gradient-to-r from-amber-400 to-orange-400 px-2.5 py-1 text-[10px] font-black text-slate-950 shadow-lg shadow-amber-400/20 transition hover:animate-none"
                   >
                     <Gift size={11} /> 1 Cortesía Disponible · Pro-Shop
                   </button>
@@ -8715,7 +8715,7 @@ function ComandaPanel({
                   <button
                     type="button"
                     onClick={() => onAbrirCanjeCortesia?.('bar')}
-                    className="inline-flex animate-pulse items-center gap-1 rounded-full bg-gradient-to-r from-amber-400 to-lime-400 px-2.5 py-1 text-[10px] font-black text-slate-950 shadow-lg shadow-amber-400/20 transition hover:animate-none"
+                    className="inline-flex animate-pulse items-center gap-1 rounded-full bg-gradient-to-r from-amber-400 to-orange-400 px-2.5 py-1 text-[10px] font-black text-slate-950 shadow-lg shadow-amber-400/20 transition hover:animate-none"
                   >
                     <Gift size={11} /> 1 Cortesía Disponible · Bar
                   </button>
@@ -8992,7 +8992,7 @@ function PasosDeCobro({
           <button
             onClick={() => onConfirmar({ metodo: 'efectivo', cambio })}
             disabled={!alcanza || deshabilitado}
-            className="inline-flex items-center gap-1.5 rounded-md bg-lime-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-md bg-orange-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {deshabilitado && <Loader2 size={12} className="animate-spin" />}
             Confirmar Cobro
@@ -9063,7 +9063,7 @@ function PasosDeCobro({
               })
             }
             disabled={!mixtoCoincide || deshabilitado}
-            className="inline-flex items-center gap-1.5 rounded-md bg-lime-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-md bg-orange-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {deshabilitado && <Loader2 size={12} className="animate-spin" />}
             Confirmar Cobro
@@ -9101,7 +9101,7 @@ function PasosDeCobro({
                       setWalletBusqueda('');
                     }}
                     className={`flex-1 rounded-md px-2.5 py-1.5 text-[11px] font-bold transition ${
-                      walletTarget === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                      walletTarget === t.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     {t.label}
@@ -9114,7 +9114,7 @@ function PasosDeCobro({
               <button
                 type="button"
                 onClick={() => elegirPersonaWallet(operadorActual)}
-                className="flex w-full items-center gap-2 rounded-lg border border-lime-400/40 bg-lime-400/10 px-3 py-2 text-left text-xs font-bold text-lime-700 transition hover:bg-lime-400/20"
+                className="flex w-full items-center gap-2 rounded-lg border border-orange-400/40 bg-orange-400/10 px-3 py-2 text-left text-xs font-bold text-orange-700 transition hover:bg-orange-400/20"
               >
                 <Wallet size={13} /> Cobrar de Mi Wallet ({operadorActual.nombre})
               </button>
@@ -9182,7 +9182,7 @@ function PasosDeCobro({
 
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-500">Saldo disponible</span>
-              <span className="font-black text-lime-600">{walletCargandoSaldo ? '…' : formatoMoneda(walletSaldo)}</span>
+              <span className="font-black text-orange-600">{walletCargandoSaldo ? '…' : formatoMoneda(walletSaldo)}</span>
             </div>
 
             {saldoInsuficiente && (
@@ -9206,8 +9206,8 @@ function PasosDeCobro({
                       onClick={() => setWalletMetodoComplemento(c.value)}
                       className={`rounded-lg border px-3 py-2 text-xs font-bold transition ${
                         walletMetodoComplemento === c.value
-                          ? 'border-lime-400 bg-lime-400/10 text-lime-700'
-                          : 'border-slate-300 bg-white text-slate-600 hover:border-lime-400/40'
+                          ? 'border-orange-400 bg-orange-400/10 text-orange-700'
+                          : 'border-slate-300 bg-white text-slate-600 hover:border-orange-400/40'
                       }`}
                     >
                       {c.label}
@@ -9235,7 +9235,7 @@ function PasosDeCobro({
               <button
                 onClick={confirmarWallet}
                 disabled={!walletPuedeConfirmar || walletProcesando || deshabilitado}
-                className="inline-flex items-center gap-1.5 rounded-md bg-lime-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex items-center gap-1.5 rounded-md bg-orange-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {(walletProcesando || deshabilitado) && <Loader2 size={12} className="animate-spin" />}
                 Confirmar Cobro
@@ -9253,7 +9253,7 @@ function PasosDeCobro({
     return (
       <div className="space-y-2">
         <div className="flex items-start gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5">
-          <Icon size={16} className="mt-0.5 shrink-0 text-lime-400" />
+          <Icon size={16} className="mt-0.5 shrink-0 text-orange-400" />
           <p className="text-[11px] text-slate-600">
             Procesa {formatoMoneda(monto)} en {metodo === 'tarjeta' ? 'la terminal (TPV)' : 'la banca / app SPEI'}. No confirmes hasta ver el
             comprobante.
@@ -9264,7 +9264,7 @@ function PasosDeCobro({
           <button
             onClick={() => onConfirmar({ metodo })}
             disabled={deshabilitado}
-            className="inline-flex items-center gap-1.5 rounded-md bg-lime-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-md bg-orange-400 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {deshabilitado && <Loader2 size={12} className="animate-spin" />}
             Sí, el cobro se completó
@@ -9284,7 +9284,7 @@ function PasosDeCobro({
           <button
             key={m.value}
             onClick={() => elegir(m.value)}
-            className="flex flex-col items-center gap-1 rounded-lg border border-slate-300 bg-white py-2 text-[10px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400"
+            className="flex flex-col items-center gap-1 rounded-lg border border-slate-300 bg-white py-2 text-[10px] font-bold text-slate-600 transition hover:border-orange-400/40 hover:text-orange-400"
           >
             <Icon size={14} />
             {m.label}
@@ -9293,9 +9293,9 @@ function PasosDeCobro({
           <button
             key={m.value}
             onClick={() => elegir(m.value)}
-            className="flex w-full items-center gap-3 rounded-xl border border-slate-300 bg-slate-100 px-4 py-3 text-left transition hover:border-lime-400/40 hover:bg-slate-200"
+            className="flex w-full items-center gap-3 rounded-xl border border-slate-300 bg-slate-100 px-4 py-3 text-left transition hover:border-orange-400/40 hover:bg-slate-200"
           >
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-orange-400/10 text-orange-400">
               <Icon size={17} />
             </div>
             <span className="text-sm font-bold text-slate-900">{m.label}</span>
@@ -9336,7 +9336,7 @@ function ModalCobro({
             key="dividir"
             onClick={onDividir}
             disabled={registrandoVenta}
-            className="flex w-full items-center gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-100/50 px-4 py-3 text-left transition hover:border-lime-400/40 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex w-full items-center gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-100/50 px-4 py-3 text-left transition hover:border-orange-400/40 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-400/10 text-violet-400">
               <Divide size={17} />
@@ -9420,7 +9420,7 @@ function IdentificacionJugadorSplit({ jugadores, participante, onCambiar }) {
     return (
       <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-white px-2.5 py-1.5 ring-1 ring-slate-200">
         <span className="flex min-w-0 items-center gap-1.5 text-xs font-bold text-slate-800">
-          <CheckCircle2 size={12} className="shrink-0 text-lime-400" />
+          <CheckCircle2 size={12} className="shrink-0 text-orange-400" />
           <span className="truncate">{nombre || 'Jugador del directorio'}</span>
         </span>
         <button
@@ -9477,7 +9477,7 @@ function IdentificacionJugadorSplit({ jugadores, participante, onCambiar }) {
       <button
         type="button"
         onClick={() => onCambiar({ modo: 'nuevo', jugadorId: null, nombre, telefono: '' })}
-        className="inline-flex items-center gap-1 text-[10px] font-bold text-lime-400 hover:text-lime-300"
+        className="inline-flex items-center gap-1 text-[10px] font-bold text-orange-400 hover:text-orange-300"
       >
         <Plus size={11} /> Registrar como Nuevo Jugador
       </button>
@@ -9692,7 +9692,7 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
                 onClick={() => setNumJugadores(n)}
                 className={`rounded-lg border px-3 py-2 text-sm font-bold transition ${
                   numJugadores === n
-                    ? 'border-lime-400 bg-lime-400/10 text-lime-400'
+                    ? 'border-orange-400 bg-orange-400/10 text-orange-400'
                     : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
@@ -10424,8 +10424,8 @@ function ModalNuevoProducto({
         )}
 
         {esAlimento ? (
-          <div className="flex items-start gap-2 rounded-lg border border-lime-400/30 bg-lime-400/5 px-3.5 py-2.5 text-[11px] font-semibold text-slate-600">
-            <Info size={14} className="mt-0.5 shrink-0 text-lime-500" />
+          <div className="flex items-start gap-2 rounded-lg border border-orange-400/30 bg-orange-400/5 px-3.5 py-2.5 text-[11px] font-semibold text-slate-600">
+            <Info size={14} className="mt-0.5 shrink-0 text-orange-500" />
             <span>
               Alimentos no maneja unidades de stock — se prepara sobre pedido. En su lugar, controla si hay insumos para
               prepararlo ahora mismo con el toggle Disponible / No disponible de abajo. Nunca mostrará "Agotado" ni
@@ -10445,7 +10445,7 @@ function ModalNuevoProducto({
                 type="checkbox"
                 checked={manejaStock}
                 onChange={(e) => setManejaStock(e.target.checked)}
-                className="h-4 w-8 shrink-0 accent-lime-400"
+                className="h-4 w-8 shrink-0 accent-orange-400"
               />
             </label>
 
@@ -10480,7 +10480,7 @@ function ModalNuevoProducto({
             <button
               type="button"
               onClick={agregarFilaVariante}
-              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-bold text-lime-400 transition hover:border-lime-400/50"
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-bold text-orange-400 transition hover:border-orange-400/50"
             >
               <Plus size={12} /> Variante
             </button>
@@ -10594,7 +10594,7 @@ function ModalNuevoProducto({
             <button
               type="button"
               onClick={() => setCreandoGrupoModificador(true)}
-              className="inline-flex shrink-0 items-center gap-1 text-[11px] font-bold text-lime-600 hover:text-lime-500"
+              className="inline-flex shrink-0 items-center gap-1 text-[11px] font-bold text-orange-600 hover:text-orange-500"
             >
               <Plus size={13} /> Crear Grupo
             </button>
@@ -10628,7 +10628,7 @@ function ModalNuevoProducto({
               type="checkbox"
               checked={disponible}
               onChange={(e) => setDisponible(e.target.checked)}
-              className="h-4 w-8 shrink-0 accent-lime-400"
+              className="h-4 w-8 shrink-0 accent-orange-400"
             />
           </label>
         )}
@@ -10659,7 +10659,7 @@ function ModalNuevoProducto({
                     }}
                   />
                   {idx === 0 && (
-                    <span className="absolute left-1 top-1 rounded bg-lime-400 px-1.5 py-0.5 text-[9px] font-black text-slate-950">
+                    <span className="absolute left-1 top-1 rounded bg-orange-400 px-1.5 py-0.5 text-[9px] font-black text-slate-950">
                       Portada
                     </span>
                   )}
@@ -10817,7 +10817,7 @@ function ModalTicket({ venta, onClose, nombreClub }) {
             type="button"
             onClick={() => setTicketActivo(null)}
             className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-              ticketActivo === null ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              ticketActivo === null ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
             General
@@ -10828,7 +10828,7 @@ function ModalTicket({ venta, onClose, nombreClub }) {
               type="button"
               onClick={() => setTicketActivo(i)}
               className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-                ticketActivo === i ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                ticketActivo === i ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
               {t.jugadorNombre}
@@ -11317,7 +11317,7 @@ function ModalRecepcionCompra({ compra, items, guardando, onClose, onConfirmar }
                             onChange={(e) => actualizarCantidad(idx, e.target.value, pendiente)}
                             placeholder="0"
                             disabled={guardando}
-                            className="w-20 rounded-md border border-slate-300 px-2 py-1 text-right text-xs font-bold text-slate-800 focus:border-lime-400 focus:outline-none"
+                            className="w-20 rounded-md border border-slate-300 px-2 py-1 text-right text-xs font-bold text-slate-800 focus:border-orange-400 focus:outline-none"
                           />
                           <span className="text-[9px] font-semibold text-slate-400">Pendiente actual: {pendiente}</span>
                         </span>
@@ -11555,7 +11555,7 @@ function ModalLiquidarCuenta({
           type="button"
           onClick={() => onDividirCuenta(grupo, items, total)}
           disabled={liquidando || items.length === 0}
-          className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-lime-400/30 bg-lime-400/5 px-3 py-2 text-xs font-bold text-lime-500 transition hover:bg-lime-400/10 disabled:cursor-not-allowed disabled:opacity-40"
+          className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-orange-400/30 bg-orange-400/5 px-3 py-2 text-xs font-bold text-orange-500 transition hover:bg-orange-400/10 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Divide size={13} /> Dividir Cuenta
         </button>
@@ -11720,7 +11720,7 @@ function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando, onCambiar
           type="button"
           onClick={onCambiarTipoPago}
           disabled={liquidando}
-          className="mb-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-lime-400/50 bg-lime-400/10 px-3 py-2 text-xs font-bold text-lime-700 transition hover:bg-lime-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+          className="mb-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-orange-400/50 bg-orange-400/10 px-3 py-2 text-xs font-bold text-orange-700 transition hover:bg-orange-400/20 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <RefreshCw size={13} />
           {cambiarA === 'mensualidad'
@@ -11923,10 +11923,10 @@ function RosterSplitBillPanel({
   }
 
   return (
-    <div className="rounded-2xl border border-lime-400/30 bg-lime-400/5 p-4">
+    <div className="rounded-2xl border border-orange-400/30 bg-orange-400/5 p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <Users size={16} className="text-lime-400" />
+          <Users size={16} className="text-orange-400" />
           <h3 className="text-sm font-black text-slate-900">Roster & Split Bill · {cancha?.nombre || 'Cancha'}</h3>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -11942,7 +11942,7 @@ function RosterSplitBillPanel({
           {filas.length < 4 && (
             <button
               onClick={onAgregarJugador}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold text-lime-400 transition hover:bg-lime-400/10"
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold text-orange-400 transition hover:bg-orange-400/10"
             >
               <UserPlus size={13} /> Agregar jugador
             </button>
@@ -12083,7 +12083,7 @@ function ModalAbsorberConsumo({ filas, onClose, onConfirmar, procesando }) {
             <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Jugador Destino (absorbe la deuda)</p>
             <label
               className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2.5 transition ${
-                destino === 'principal' ? 'border-lime-400 bg-lime-400/5' : 'border-slate-300 bg-slate-100 hover:border-slate-400'
+                destino === 'principal' ? 'border-orange-400 bg-orange-400/5' : 'border-slate-300 bg-slate-100 hover:border-slate-400'
               }`}
             >
               <input
@@ -12091,7 +12091,7 @@ function ModalAbsorberConsumo({ filas, onClose, onConfirmar, procesando }) {
                 name="destino-absorcion"
                 checked={destino === 'principal'}
                 onChange={() => setDestino('principal')}
-                className="accent-lime-400"
+                className="accent-orange-400"
               />
               <span className="text-xs font-semibold text-slate-800">
                 Cuenta principal del grupo
@@ -12102,7 +12102,7 @@ function ModalAbsorberConsumo({ filas, onClose, onConfirmar, procesando }) {
               <label
                 key={o.indice}
                 className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2.5 transition ${
-                  destino === String(o.indice) ? 'border-lime-400 bg-lime-400/5' : 'border-slate-300 bg-slate-100 hover:border-slate-400'
+                  destino === String(o.indice) ? 'border-orange-400 bg-orange-400/5' : 'border-slate-300 bg-slate-100 hover:border-slate-400'
                 }`}
               >
                 <input
@@ -12110,7 +12110,7 @@ function ModalAbsorberConsumo({ filas, onClose, onConfirmar, procesando }) {
                   name="destino-absorcion"
                   checked={destino === String(o.indice)}
                   onChange={() => setDestino(String(o.indice))}
-                  className="accent-lime-400"
+                  className="accent-orange-400"
                 />
                 <span className="text-xs font-semibold text-slate-800">{o.nombre}</span>
               </label>
@@ -12128,7 +12128,7 @@ function ModalAbsorberConsumo({ filas, onClose, onConfirmar, procesando }) {
               type="button"
               onClick={confirmar}
               disabled={procesando || origen == null}
-              className="inline-flex items-center gap-2 rounded-lg bg-lime-400 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-orange-400 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {procesando ? <Loader2 size={15} className="animate-spin" /> : <ArrowRightLeft size={15} />}
               Transferir consumo
@@ -12224,7 +12224,7 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
     <div className="space-y-3 rounded-2xl border border-slate-200 bg-white/60 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-600">
-          <BarChart3 size={14} className="text-lime-400" /> {titulo || 'Analytics Operativos'}
+          <BarChart3 size={14} className="text-orange-400" /> {titulo || 'Analytics Operativos'}
         </p>
         <select value={dias} onChange={(e) => setDias(Number(e.target.value))} className={`${inputClase} w-36 !py-1.5 text-[11px]`}>
           <option value={7}>Últimos 7 días</option>
@@ -12243,7 +12243,7 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
               {top5.map((f, i) => (
                 <li key={i} className="flex items-center justify-between gap-2 text-[11px]">
                   <span className="flex min-w-0 items-center gap-2 text-slate-800">
-                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-lime-400/10 text-[9px] font-black text-lime-400">
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-orange-400/10 text-[9px] font-black text-orange-400">
                       {i + 1}
                     </span>
                     <span className="truncate">{f.nombre}</span>
@@ -12342,7 +12342,7 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
   if (itemsCriticos.length === 0) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
-        <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-lime-400">
+        <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-orange-400">
           <PackagePlus size={14} /> Reorden Sugerido
         </p>
         <p className="mt-2 text-xs text-slate-500">Todo el catálogo está por encima de su stock mínimo.</p>
@@ -12465,7 +12465,7 @@ function TarjetaComandaKDS({ ventas, itemsBar, origenLabel, esCancha, ahora, act
           </p>
         </div>
         {!activa && (
-          <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-full bg-lime-400/10 px-2 py-0.5 text-[10px] font-bold text-lime-500 ring-1 ring-lime-400/30">
+          <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-full bg-orange-400/10 px-2 py-0.5 text-[10px] font-bold text-orange-500 ring-1 ring-orange-400/30">
             <CheckCircle2 size={11} className="mr-1" />
             Listo{listoEn ? ` · ${listoEn.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}` : ''}
           </span>
@@ -12492,7 +12492,7 @@ function TarjetaComandaKDS({ ventas, itemsBar, origenLabel, esCancha, ahora, act
                   {(it.variante_nombre || it.varianteNombre) ? ` (${it.variante_nombre || it.varianteNombre})` : ''}
                 </span>
                 {nombresModificadores.length > 0 && (
-                  <span className="text-[11px] font-bold text-lime-600">Extra: {nombresModificadores.join(', ')}</span>
+                  <span className="text-[11px] font-bold text-orange-600">Extra: {nombresModificadores.join(', ')}</span>
                 )}
               </span>
             </li>
@@ -12702,14 +12702,14 @@ function TableroKDSRestauranteBar({ productos, canchas, variantesPorProducto, op
           <button
             onClick={() => setVista('activas')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-              vista === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vista === 'activas' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Coffee size={14} /> Comandas Activas
             {activas.length > 0 && (
               <span
                 className={`ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-black ${
-                  vista === 'activas' ? 'bg-slate-50 text-lime-400' : 'bg-rose-500 text-rose-50'
+                  vista === 'activas' ? 'bg-slate-50 text-orange-400' : 'bg-rose-500 text-rose-50'
                 }`}
               >
                 {activas.length}
@@ -12719,7 +12719,7 @@ function TableroKDSRestauranteBar({ productos, canchas, variantesPorProducto, op
           <button
             onClick={() => setVista('historial')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-              vista === 'historial' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vista === 'historial' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <History size={14} /> Historial de Hoy
@@ -16076,7 +16076,7 @@ function ModuloSmartPOS({
           <button
             onClick={() => setVistaPOS('vender')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-              vistaPOS === 'vender' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vistaPOS === 'vender' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <ShoppingCart size={14} /> Vender
@@ -16084,14 +16084,14 @@ function ModuloSmartPOS({
           <button
             onClick={() => setVistaPOS('cuentas')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-              vistaPOS === 'cuentas' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vistaPOS === 'cuentas' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Link2 size={14} /> Cuentas Abiertas / Comandas Activas
             {gruposCuentasAbiertas.length > 0 && (
               <span
                 className={`ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-black ${
-                  vistaPOS === 'cuentas' ? 'bg-slate-50 text-lime-400' : 'bg-rose-500 text-rose-50'
+                  vistaPOS === 'cuentas' ? 'bg-slate-50 text-orange-400' : 'bg-rose-500 text-rose-50'
                 }`}
               >
                 {gruposCuentasAbiertas.length}
@@ -16101,14 +16101,14 @@ function ModuloSmartPOS({
           <button
             onClick={() => setVistaPOS('inscripciones')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-              vistaPOS === 'inscripciones' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vistaPOS === 'inscripciones' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Trophy size={14} /> Cuentas Pendientes / Inscripciones
             {inscripcionesEventoPendientes.length + gruposReservasPendientes.length + gruposTiendaWebPendientes.length > 0 && (
               <span
                 className={`ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-black ${
-                  vistaPOS === 'inscripciones' ? 'bg-slate-50 text-lime-400' : 'bg-rose-500 text-rose-50'
+                  vistaPOS === 'inscripciones' ? 'bg-slate-50 text-orange-400' : 'bg-rose-500 text-rose-50'
                 }`}
               >
                 {inscripcionesEventoPendientes.length + gruposReservasPendientes.length + gruposTiendaWebPendientes.length}
@@ -16226,7 +16226,7 @@ function ModuloSmartPOS({
                       onClick={() => setCategoriaActiva(cat.value)}
                       className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition ${
                         categoriaActiva === cat.value
-                          ? 'border-lime-400 bg-lime-400/10 text-lime-400'
+                          ? 'border-orange-400 bg-orange-400/10 text-orange-400'
                           : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
@@ -16250,7 +16250,7 @@ function ModuloSmartPOS({
                 <button
                   onClick={() => setJugadorActivoParaAgregar(null)}
                   className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-                    jugadorActivoParaAgregar === null ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    jugadorActivoParaAgregar === null ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
                   Sin asignar
@@ -16260,7 +16260,7 @@ function ModuloSmartPOS({
                     key={i}
                     onClick={() => setJugadorActivoParaAgregar(i)}
                     className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-                      jugadorActivoParaAgregar === i ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      jugadorActivoParaAgregar === i ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
                     {j.nombre || `Jugador ${i + 1}`}
@@ -18073,7 +18073,7 @@ function FilaVarianteInventarioCompleta({
             value={precio}
             onChange={(e) => setPrecio(e.target.value)}
             onBlur={() => guardarSiCambio('precio', precio, variante.precio ?? null)}
-            className="w-20 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-lime-400 focus:outline-none"
+            className="w-20 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-orange-400 focus:outline-none"
             placeholder={`$${productoPadre.precio || 0}`}
             title="Vacío = hereda el precio del producto"
           />
@@ -18090,7 +18090,7 @@ function FilaVarianteInventarioCompleta({
             value={costo}
             onChange={(e) => setCosto(e.target.value)}
             onBlur={() => guardarSiCambio('costo_unitario', costo, variante.costo_unitario ?? null)}
-            className="w-20 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-lime-400 focus:outline-none"
+            className="w-20 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-orange-400 focus:outline-none"
             placeholder="—"
             title="Vacío = hereda el costo del producto"
           />
@@ -18115,7 +18115,7 @@ function FilaVarianteInventarioCompleta({
             value={stock}
             onChange={(e) => setStock(e.target.value)}
             onBlur={() => guardarSiCambio('stock', stock, variante.stock ?? null)}
-            className="w-16 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-lime-400 focus:outline-none"
+            className="w-16 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-orange-400 focus:outline-none"
             placeholder="—"
             title="Vacío = sin control de inventario propio"
           />
@@ -18133,7 +18133,7 @@ function FilaVarianteInventarioCompleta({
             value={stockMinimo}
             onChange={(e) => setStockMinimo(e.target.value)}
             onBlur={() => guardarSiCambio('stock_minimo', stockMinimo, variante.stock_minimo ?? null)}
-            className="w-16 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-lime-400 focus:outline-none"
+            className="w-16 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-1 text-right text-[11px] text-slate-900 focus:border-orange-400 focus:outline-none"
             placeholder="—"
           />
         )}
@@ -18247,7 +18247,7 @@ function FilaProductoInventario({
             <button
               type="button"
               onClick={() => setVariantesAbiertas((v) => !v)}
-              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-lime-400/10 px-2 py-0.5 text-[9px] font-bold text-lime-400 ring-1 ring-lime-400/30 transition hover:bg-lime-400/20"
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-orange-400/10 px-2 py-0.5 text-[9px] font-bold text-orange-400 ring-1 ring-orange-400/30 transition hover:bg-orange-400/20"
               title="Ver/editar variantes"
             >
               <Layers size={9} /> {variantes.length} {variantesAbiertas ? <ChevronUp size={9} /> : <ChevronDown size={9} />}
@@ -18272,7 +18272,7 @@ function FilaProductoInventario({
             value={costo}
             onChange={(e) => setCosto(e.target.value)}
             onBlur={() => guardarSiCambio('costo_unitario', costo, producto.costo_unitario ?? null)}
-            className="w-20 rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-right text-xs text-slate-900 focus:border-lime-400 focus:outline-none"
+            className="w-20 rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-right text-xs text-slate-900 focus:border-orange-400 focus:outline-none"
             placeholder="—"
           />
         )}
@@ -18311,7 +18311,7 @@ function FilaProductoInventario({
             value={stockMinimo}
             onChange={(e) => setStockMinimo(e.target.value)}
             onBlur={() => guardarSiCambio('stock_minimo', stockMinimo, producto.stock_minimo ?? null)}
-            className="w-16 rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-right text-xs text-slate-900 focus:border-lime-400 focus:outline-none"
+            className="w-16 rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-right text-xs text-slate-900 focus:border-orange-400 focus:outline-none"
             placeholder="—"
           />
         )}
@@ -18551,7 +18551,7 @@ function SelectorFechaCompacto({ value, onChange, tamano = 'compacto' }) {
   return (
     <div
       onClick={abrirCalendario}
-      className={`flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-slate-50 transition hover:border-lime-400/60 ${
+      className={`flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-slate-50 transition hover:border-orange-400/60 ${
         // `min-w-[160px]` en vez de `w-full`: este chip vive tanto dentro de
         // un grid de formulario (Egresos, columna ya con ancho propio) como
         // dentro de una barra de filtros flex sin ancho fijo (P&L) — un
@@ -18754,7 +18754,7 @@ function ModalGrupoModificador({ grupo, onClose, onGuardado, onEliminado }) {
             <button
               type="button"
               onClick={agregarOpcion}
-              className="inline-flex items-center gap-1 text-[11px] font-bold text-lime-600 hover:text-lime-500"
+              className="inline-flex items-center gap-1 text-[11px] font-bold text-orange-600 hover:text-orange-500"
             >
               <Plus size={13} /> Agregar opción
             </button>
@@ -18856,7 +18856,7 @@ function ListaGruposModificadores({ grupos, loading, tablaExiste, onNuevo, onEdi
               key={g.id}
               type="button"
               onClick={() => onEditar(g)}
-              className="rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-lime-400/50 hover:bg-slate-50"
+              className="rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-orange-400/50 hover:bg-slate-50"
             >
               <p className="text-sm font-black text-slate-900">{g.nombre}</p>
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -19308,7 +19308,7 @@ function ModuloERPInventario({
           etiqueta="Alertas de Reorden"
           valor={kpis.alertasReorden}
           sub={kpis.alertasReorden > 0 ? 'Productos en o bajo su mínimo · clic para ver desglose' : 'Todo por encima del mínimo'}
-          tono={kpis.alertasReorden > 0 ? 'rose' : 'lime'}
+          tono={kpis.alertasReorden > 0 ? 'rose' : 'orange'}
           onClick={kpis.alertasReorden > 0 ? () => setModalAlertasReorden(true) : undefined}
         />
         {/* Tarjetas Interactivas de Ventas: clic (fuera del selector de
@@ -19316,7 +19316,7 @@ function ModuloERPInventario({
             el desglose línea por línea del periodo — disponible para
             cualquier rol, ver `abrirDesgloseVentas`. */}
         <div
-          className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-lime-400/50 hover:bg-slate-100/60"
+          className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-orange-400/50 hover:bg-slate-100/60"
           onClick={() => abrirDesgloseVentas('dia')}
           role="button"
           tabIndex={0}
@@ -19344,7 +19344,7 @@ function ModuloERPInventario({
           <p className="mt-1 text-[10px] font-semibold text-slate-400">Clic para ver el desglose</p>
         </div>
         <div
-          className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-lime-400/50 hover:bg-slate-100/60"
+          className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-orange-400/50 hover:bg-slate-100/60"
           onClick={() => abrirDesgloseVentas('mes')}
           role="button"
           tabIndex={0}
@@ -19391,7 +19391,7 @@ function ModuloERPInventario({
             <button
               onClick={() => setVista('catalogo')}
               className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                vista === 'catalogo' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                vista === 'catalogo' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Package size={14} /> Catálogo
@@ -19405,7 +19405,7 @@ function ModuloERPInventario({
               <button
                 onClick={() => setVista('kardex')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                  vista === 'kardex' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  vista === 'kardex' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <History size={14} /> Kardex
@@ -19419,7 +19419,7 @@ function ModuloERPInventario({
               <button
                 onClick={() => setVista('modificadores')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                  vista === 'modificadores' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  vista === 'modificadores' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Sliders size={14} /> Grupos de Modificadores
@@ -19659,7 +19659,7 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
           <button
             onClick={() => onModo('dia')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              modo === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              modo === 'dia' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <CalendarDays size={14} /> Día
@@ -19667,7 +19667,7 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
           <button
             onClick={() => onModo('mes')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              modo === 'mes' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              modo === 'mes' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <CalendarIcon size={14} /> Mes
@@ -19675,7 +19675,7 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
           <button
             onClick={() => onModo('anio')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              modo === 'anio' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              modo === 'anio' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <CalendarRange size={14} /> Año
@@ -19792,7 +19792,7 @@ function RentabilidadPorCategoria({ filas, cargando }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <h3 className="mb-4 flex items-center gap-1.5 text-sm font-black text-slate-900">
-        <Percent size={16} className="text-lime-400" /> Rentabilidad por Categoría
+        <Percent size={16} className="text-orange-400" /> Rentabilidad por Categoría
       </h3>
 
       <div className="overflow-x-auto rounded-xl border border-slate-200">
@@ -19925,7 +19925,7 @@ function TopModificadoresTabla({ filas, cargando }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-900">
-        <Sliders size={16} className="text-lime-500" /> Top Extras Más Pedidos
+        <Sliders size={16} className="text-orange-500" /> Top Extras Más Pedidos
       </h3>
       <p className="mb-3 text-[11px] text-slate-500">Preparados y extras más solicitados en ventas de Smart POS.</p>
       {filas.length === 0 ? (
@@ -19968,7 +19968,7 @@ function IngresosCruzadosTabla({ filas, cargando }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-900">
-        <Clock size={16} className="text-lime-400" /> Ingresos Cruzados por Cancha y Bloque Horario
+        <Clock size={16} className="text-orange-400" /> Ingresos Cruzados por Cancha y Bloque Horario
       </h3>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
@@ -20443,7 +20443,7 @@ function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
                 <td colSpan={5} className="px-3 py-2.5 text-right text-xs font-bold uppercase tracking-wide text-slate-500">
                   Total ({filas.length} {filas.length === 1 ? 'movimiento' : 'movimientos'})
                 </td>
-                <td className="px-3 py-2.5 text-right text-sm font-black text-lime-400">{formatoMoneda(total)}</td>
+                <td className="px-3 py-2.5 text-right text-sm font-black text-orange-400">{formatoMoneda(total)}</td>
               </tr>
             </tfoot>
           </table>
@@ -22564,7 +22564,7 @@ function ModuloContabilidadCompras({
         <button
           onClick={() => setVista('egresos')}
           className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
-            vista === 'egresos' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            vista === 'egresos' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
           <Receipt size={14} /> Egresos & Compras
@@ -22572,7 +22572,7 @@ function ModuloContabilidadCompras({
         <button
           onClick={() => setVista('proveedores')}
           className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
-            vista === 'proveedores' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            vista === 'proveedores' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
           <Truck size={14} /> Proveedores
@@ -22580,7 +22580,7 @@ function ModuloContabilidadCompras({
         <button
           onClick={() => setVista('pnl')}
           className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
-            vista === 'pnl' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            vista === 'pnl' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
           <Landmark size={14} /> P&L / Estado de Resultados
@@ -22592,7 +22592,7 @@ function ModuloContabilidadCompras({
           {!tablaEgresosExiste && <BannerTablaFaltante tabla="compras_gastos" />}
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-900">
-              <PackagePlus size={16} className="text-lime-400" /> Registrar Compra / Gasto
+              <PackagePlus size={16} className="text-orange-400" /> Registrar Compra / Gasto
             </h3>
             {/* Limpieza de Layout: en "+ Crear Nuevo Producto desde Compra" esta
                 barra general (Fecha/Concepto/Categoría/Monto/Proveedor) se oculta
@@ -22678,7 +22678,7 @@ function ModuloContabilidadCompras({
                     type="button"
                     onClick={() => setFormEgreso((f) => ({ ...f, modoCompra: 'gasto' }))}
                     className={`rounded-md px-3 py-1.5 transition ${
-                      formEgreso.modoCompra === 'gasto' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                      formEgreso.modoCompra === 'gasto' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     Gasto General / Servicio
@@ -22687,7 +22687,7 @@ function ModuloContabilidadCompras({
                     type="button"
                     onClick={() => setFormEgreso((f) => ({ ...f, modoCompra: 'producto' }))}
                     className={`rounded-md px-3 py-1.5 transition ${
-                      formEgreso.modoCompra === 'producto' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                      formEgreso.modoCompra === 'producto' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     Compra de Producto / Stock
@@ -22819,8 +22819,8 @@ function ModuloContabilidadCompras({
                           />
                         </Campo>
                         {modoNuevaVarianteExistente ? (
-                          <div className="sm:col-span-2 lg:col-span-4 space-y-3 rounded-lg border border-lime-400/20 bg-lime-400/5 p-3">
-                            <p className="text-xs font-bold text-lime-400">+ Crear Nueva Variante para este Producto</p>
+                          <div className="sm:col-span-2 lg:col-span-4 space-y-3 rounded-lg border border-orange-400/20 bg-orange-400/5 p-3">
+                            <p className="text-xs font-bold text-orange-400">+ Crear Nueva Variante para este Producto</p>
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                               <div className="sm:col-span-2">
                                 <Campo label="Nombre de la variante">
@@ -22861,7 +22861,7 @@ function ModuloContabilidadCompras({
                                 type="checkbox"
                                 checked={formEgreso.actualizarCostoCatalogo}
                                 onChange={(e) => setFormEgreso((f) => ({ ...f, actualizarCostoCatalogo: e.target.checked }))}
-                                className="h-3.5 w-3.5 rounded border-slate-400 bg-slate-100 accent-lime-400"
+                                className="h-3.5 w-3.5 rounded border-slate-400 bg-slate-100 accent-orange-400"
                               />
                               Actualizar costo unitario en el catálogo de productos
                             </label>
@@ -23046,7 +23046,7 @@ function ModuloContabilidadCompras({
                                   type="button"
                                   onClick={copiarPrimeraVarianteATodas}
                                   title="Aplica el Precio de Venta, Costo y Stock de la primera variante al resto de la lista — puedes seguir editando cada fila después."
-                                  className="inline-flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-lime-400"
+                                  className="inline-flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-orange-400"
                                 >
                                   <Copy size={13} /> Copiar Precio, Costo y Stock a todas las variantes
                                 </button>
@@ -23054,7 +23054,7 @@ function ModuloContabilidadCompras({
                               <button
                                 type="button"
                                 onClick={agregarFilaVarianteNuevoProducto}
-                                className="inline-flex items-center gap-1 text-xs font-bold text-lime-400 hover:text-lime-300"
+                                className="inline-flex items-center gap-1 text-xs font-bold text-orange-400 hover:text-orange-300"
                               >
                                 <Plus size={13} /> Agregar variante
                               </button>
@@ -23200,7 +23200,7 @@ function ModuloContabilidadCompras({
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2">
               <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-                <History size={16} className="text-lime-400" /> Historial de Compras & Gastos
+                <History size={16} className="text-orange-400" /> Historial de Compras & Gastos
               </h3>
               {/* Beta: botón de exportar oculto — `exportarEgresosCSV` no se toca. */}
               {SHOW_BETA_EXPORTAR_REPORTES && (
@@ -23418,7 +23418,7 @@ function ModuloContabilidadCompras({
           {!tablaProveedoresExiste && <BannerTablaFaltante tabla="proveedores" />}
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-900">
-              <UserPlus size={16} className="text-lime-400" /> Alta de Proveedor
+              <UserPlus size={16} className="text-orange-400" /> Alta de Proveedor
             </h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
               <Campo label="Nombre">
@@ -23481,7 +23481,7 @@ function ModuloContabilidadCompras({
 
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-900">
-              <Truck size={16} className="text-lime-400" /> Catálogo de Proveedores
+              <Truck size={16} className="text-orange-400" /> Catálogo de Proveedores
             </h3>
             {loadingProveedores ? (
               <div className="h-40 animate-pulse rounded-xl bg-slate-100/60" />
@@ -23539,7 +23539,7 @@ function ModuloContabilidadCompras({
                 <button
                   onClick={() => setModoFiltroPnl('dia')}
                   className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                    modoFiltroPnl === 'dia' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                    modoFiltroPnl === 'dia' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <CalendarDays size={14} /> Día
@@ -23547,7 +23547,7 @@ function ModuloContabilidadCompras({
                 <button
                   onClick={() => setModoFiltroPnl('mes')}
                   className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                    modoFiltroPnl === 'mes' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                    modoFiltroPnl === 'mes' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <CalendarIcon size={14} /> Mes
@@ -23555,7 +23555,7 @@ function ModuloContabilidadCompras({
                 <button
                   onClick={() => setModoFiltroPnl('anio')}
                   className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                    modoFiltroPnl === 'anio' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                    modoFiltroPnl === 'anio' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <CalendarRange size={14} /> Año
@@ -23650,7 +23650,7 @@ function ModuloContabilidadCompras({
                 etiqueta="Clases y Clínicas"
                 valor={formatoMoneda(pnl.clasesClinicas)}
                 sub="Academia — mensualidades y clases sueltas"
-                tono="lime"
+                tono="orange"
                 onClick={() => setModalDesglose({ titulo: 'Clases y Clínicas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.clasesClinicas })}
               />
             </div>
@@ -23693,7 +23693,7 @@ function ModuloContabilidadCompras({
 
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3.5 flex items-center gap-1.5 text-sm font-black text-slate-900">
-              <Receipt size={16} className="text-lime-400" /> Egresos por Categoría
+              <Receipt size={16} className="text-orange-400" /> Egresos por Categoría
             </h3>
             {Object.keys(pnl.egresosPorCategoria).length === 0 ? (
               <p className="py-6 text-center text-xs text-slate-500">Sin egresos registrados en este periodo.</p>
@@ -24669,7 +24669,7 @@ function ModuloAnalyticsBI({
           etiqueta="Ratio de Gasto Secundario"
           valor={`${analisis.ratioCrossSelling.toFixed(1)}%`}
           sub="Pro-Shop + Cafetería sobre ingresos totales"
-          tono="lime"
+          tono="orange"
         />
       </div>
 
@@ -26335,8 +26335,8 @@ const TIPOS_EVENTO_AUDITORIA = {
   arqueo_caja: {
     label: 'Arqueo de caja',
     icon: Calculator,
-    color: 'text-lime-400',
-    bg: 'bg-lime-400/10',
+    color: 'text-orange-400',
+    bg: 'bg-orange-400/10',
     detalleTexto: (d) =>
       `Turno ${d?.turno || ''} — contado ${formatoMoneda(d?.montoReportado)} vs. teórico ${formatoMoneda(d?.montoTeorico)} (${
         Number(d?.diferencia) > 0 ? 'sobrante' : Number(d?.diferencia) < 0 ? 'faltante' : 'sin diferencia'
@@ -26409,7 +26409,7 @@ function SelectorFechaClick({ value, onChange, className = '', compact = false }
   return (
     <div
       onClick={abrirCalendario}
-      className={`flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 transition hover:border-lime-400/60 ${className}`}
+      className={`flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 transition hover:border-orange-400/60 ${className}`}
     >
       <CalendarDays size={compact ? 12 : 14} className="shrink-0 text-slate-500" />
       <input
@@ -26495,7 +26495,7 @@ function SelectorJugadorRegistrado({
         {jugadorSeleccionadoId && (
           <span
             className={`absolute right-2.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold ring-1 ${
-              tipoSeleccionado === 'operador' ? 'bg-sky-100 text-sky-700 ring-sky-300' : 'bg-lime-400/10 text-lime-400 ring-lime-400/30'
+              tipoSeleccionado === 'operador' ? 'bg-sky-100 text-sky-700 ring-sky-300' : 'bg-orange-400/10 text-orange-400 ring-orange-400/30'
             }`}
           >
             <CheckCircle2 size={9} /> {tipoSeleccionado === 'operador' ? 'Operador' : 'Del directorio'}
@@ -26518,7 +26518,7 @@ function SelectorJugadorRegistrado({
               {j._tipoSelector === 'operador' ? (
                 <UserCog size={12} className="shrink-0 text-sky-500" />
               ) : (
-                <Users size={12} className="shrink-0 text-lime-400" />
+                <Users size={12} className="shrink-0 text-orange-400" />
               )}
               <span className="min-w-0 flex-1 truncate">{j.nombre}</span>
               {j._tipoSelector === 'operador' && (
@@ -26737,7 +26737,7 @@ function TarjetaReta({
                 }}
                 className="w-full rounded-md border border-fuchsia-400/40 bg-slate-50 px-2 py-1 text-sm font-black text-slate-900"
               />
-              <button onClick={confirmarRenombrar} className="shrink-0 text-lime-400 hover:text-lime-300">
+              <button onClick={confirmarRenombrar} className="shrink-0 text-orange-400 hover:text-orange-300">
                 <CheckCircle2 size={16} />
               </button>
               <button
@@ -26855,8 +26855,8 @@ function TarjetaReta({
       </div>
 
       {tieneMarcador && (
-        <div className="mt-3 rounded-lg border border-lime-400/30 bg-lime-400/5 px-3 py-2">
-          <p className="flex items-center gap-1.5 text-[11px] font-bold text-lime-400">
+        <div className="mt-3 rounded-lg border border-orange-400/30 bg-orange-400/5 px-3 py-2">
+          <p className="flex items-center gap-1.5 text-[11px] font-bold text-orange-400">
             <Trophy size={12} /> Ganó: {ganadorTexto || 'Equipo'}
           </p>
           <p className="mt-0.5 text-[11px] text-slate-500">
@@ -26921,7 +26921,7 @@ function TarjetaReta({
             type="button"
             onClick={() => onArchivar?.(reta, !archivado)}
             disabled={actualizandoArchivo}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-orange-400/40 hover:text-orange-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {actualizandoArchivo ? (
               <Loader2 size={12} className="animate-spin" />
@@ -27566,7 +27566,7 @@ function TarjetaTorneo({
               real, `descuentoProntoPagoVigente`) para que el operador no se
               sorprenda si el registro cobra menos que el precio de lista. */}
           {descuentoProntoPagoVigente(torneo) > 0 && (
-            <span className="rounded-full bg-lime-400/10 px-1.5 py-0.5 text-[9px] font-bold text-lime-400 ring-1 ring-lime-400/30">
+            <span className="rounded-full bg-orange-400/10 px-1.5 py-0.5 text-[9px] font-bold text-orange-400 ring-1 ring-orange-400/30">
               -{descuentoProntoPagoVigente(torneo)}% hoy
             </span>
           )}
@@ -27629,7 +27629,7 @@ function TarjetaTorneo({
             type="button"
             onClick={() => onArchivar?.(torneo, !archivado)}
             disabled={actualizandoArchivo}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-orange-400/40 hover:text-orange-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {actualizandoArchivo ? (
               <Loader2 size={12} className="animate-spin" />
@@ -28054,7 +28054,7 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
                 Opcional
               </span>
             </span>
-            <button type="button" onClick={agregarDescuento} className="text-[11px] font-bold text-lime-400 hover:underline">
+            <button type="button" onClick={agregarDescuento} className="text-[11px] font-bold text-orange-400 hover:underline">
               + Agregar descuento
             </button>
           </div>
@@ -28103,7 +28103,7 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
             <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
               <Lock size={12} /> Bloqueo de Canchas en la Parrilla
             </span>
-            <button onClick={agregarBloqueo} className="text-[11px] font-bold text-lime-400 hover:underline">
+            <button onClick={agregarBloqueo} className="text-[11px] font-bold text-orange-400 hover:underline">
               + Agregar horario
             </button>
           </div>
@@ -28196,7 +28196,7 @@ function ModalGestionTorneo({
             type="button"
             onClick={() => setVista('resumen')}
             className={`flex-1 rounded-lg px-3.5 py-2 text-xs font-bold transition ${
-              vista === 'resumen' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vista === 'resumen' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             Resumen
@@ -28205,7 +28205,7 @@ function ModalGestionTorneo({
             type="button"
             onClick={() => setVista('cuadro')}
             className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition ${
-              vista === 'cuadro' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+              vista === 'cuadro' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Layers size={13} /> Cuadros &amp; Partidos
@@ -28286,7 +28286,7 @@ function ModalGestionTorneo({
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-                  <Users size={14} className="text-lime-400" /> Participantes
+                  <Users size={14} className="text-orange-400" /> Participantes
                 </h3>
                 <BotonSecundario onClick={onAgregarParticipante}>
                   <UserPlus size={14} /> Agregar Participante
@@ -28694,7 +28694,7 @@ function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, 
           setEditandoSlot(null);
         }}
         onBlur={() => setEditandoSlot(null)}
-        className="w-full rounded-lg border border-lime-400/40 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-900"
+        className="w-full rounded-lg border border-orange-400/40 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-900"
       >
         {opciones.map((op) => (
           <option key={op || '__vacante__'} value={op}>
@@ -28708,7 +28708,7 @@ function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, 
   return (
     <div
       onClick={editable ? () => setEditandoSlot(slot) : undefined}
-      className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs ${editable ? 'cursor-pointer hover:ring-1 hover:ring-lime-400/40' : ''} ${
+      className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs ${editable ? 'cursor-pointer hover:ring-1 hover:ring-orange-400/40' : ''} ${
         esGanador ? 'bg-emerald-400/10 font-black text-emerald-300 ring-1 ring-emerald-400/30' : 'bg-white font-semibold text-slate-800'
       }`}
       title={editable ? 'Clic para asignar/reasignar pareja' : undefined}
@@ -28814,7 +28814,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
             <button
               type="button"
               onClick={() => onAsignarHorario(partido)}
-              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-white px-2 py-1.5 text-[10px] font-bold text-slate-600 ring-1 ring-slate-200 transition hover:text-lime-400"
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-white px-2 py-1.5 text-[10px] font-bold text-slate-600 ring-1 ring-slate-200 transition hover:text-orange-400"
             >
               <Clock size={11} className="shrink-0" />
               <span className="truncate">
@@ -28941,7 +28941,7 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
                 type="button"
                 onClick={() => setCategoriaFiltro(valor)}
                 className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-                  categoriaFiltro === valor ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                  categoriaFiltro === valor ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {valor}
@@ -29121,7 +29121,7 @@ function BuscadorSlotPareja({ valor, opciones, onChange, placeholder }) {
               }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-800 transition hover:bg-slate-200"
             >
-              <Users size={11} className="shrink-0 text-lime-400" />
+              <Users size={11} className="shrink-0 text-orange-400" />
               <span className="min-w-0 flex-1 truncate">{n}</span>
             </button>
           ))}
@@ -29142,7 +29142,7 @@ function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
         <button
           type="button"
           onClick={() => onChange({ ...valor, modo: modo === 'manual' ? 'selects' : 'manual' })}
-          className="shrink-0 text-[10px] font-bold text-lime-400 hover:underline"
+          className="shrink-0 text-[10px] font-bold text-orange-400 hover:underline"
         >
           {modo === 'manual' ? 'Elegir de la lista' : 'Escribir a mano'}
         </button>
@@ -29346,7 +29346,7 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
                 type="button"
                 onClick={() => elegirFicha(t)}
                 className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                  modoTamano === 'fichas' && numParejas === t ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                  modoTamano === 'fichas' && numParejas === t ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {t}
@@ -29356,7 +29356,7 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
               type="button"
               onClick={() => setModoTamano('personalizado')}
               className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                modoTamano === 'personalizado' ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                modoTamano === 'personalizado' ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
               }`}
             >
               Personalizado
@@ -29670,7 +29670,7 @@ function ModalMarcadorReta({ reta, confirmados, onClose, onGuardar, guardando })
               <button
                 type="button"
                 onClick={() => setIndiceParejas((i) => (i + 1) % parejasPosibles.length)}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-lime-400 transition hover:border-lime-400/50"
+                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-orange-400 transition hover:border-orange-400/50"
               >
                 <RefreshCw size={10} /> Cambiar parejas
               </button>
@@ -29822,7 +29822,7 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo, pue
             disponible para todos, solo cambia el encabezado que lo acompaña. */}
         {puedeVerMontos && (
           <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-            <ClipboardList size={16} className="text-lime-400" /> Desglose Financiero por Evento
+            <ClipboardList size={16} className="text-orange-400" /> Desglose Financiero por Evento
           </h3>
         )}
         <div className="flex items-center gap-1.5">
@@ -29869,7 +29869,7 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo, pue
       <div>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-            <ClipboardList size={16} className="text-lime-400" /> Directorio de Participantes
+            <ClipboardList size={16} className="text-orange-400" /> Directorio de Participantes
             {filtroDirectorio === 'pendientes' && (
               <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-500 ring-1 ring-amber-400/30">
                 Pendientes de pago
@@ -31167,7 +31167,7 @@ function ModuloTorneosRetas({
                 key={v.value}
                 onClick={() => setSubvista(v.value)}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  subvista === v.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Icon size={14} /> {v.label}
@@ -31198,7 +31198,7 @@ function ModuloTorneosRetas({
                 type="button"
                 onClick={() => setFiltroReta('activas')}
                 className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroReta === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
+                  filtroReta === 'activas' ? 'bg-orange-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 Activas
@@ -31207,7 +31207,7 @@ function ModuloTorneosRetas({
                 type="button"
                 onClick={() => setFiltroReta('archivadas')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroReta === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
+                  filtroReta === 'archivadas' ? 'bg-orange-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 <Archive size={11} /> Archivadas
@@ -31281,7 +31281,7 @@ function ModuloTorneosRetas({
                 type="button"
                 onClick={() => setFiltroTorneo('activos')}
                 className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroTorneo === 'activos' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
+                  filtroTorneo === 'activos' ? 'bg-orange-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 Activos
@@ -31290,7 +31290,7 @@ function ModuloTorneosRetas({
                 type="button"
                 onClick={() => setFiltroTorneo('archivados')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                  filtroTorneo === 'archivados' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
+                  filtroTorneo === 'archivados' ? 'bg-orange-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
                 <Archive size={11} /> Archivados
@@ -31552,7 +31552,7 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
             type="button"
             onClick={() => setNivelFiltro(n)}
             className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-              nivelFiltro === n ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+              nivelFiltro === n ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
             }`}
           >
             {n}
@@ -31598,7 +31598,7 @@ function RankingDelClub({ ranking, loading, error, onReintentar }) {
                     </span>
                   </td>
                   <td className="px-3 py-2.5 font-bold text-slate-900">{r.nombre}</td>
-                  <td className="px-3 py-2.5 text-right font-black text-lime-400">{r.puntos}</td>
+                  <td className="px-3 py-2.5 text-right font-black text-orange-400">{r.puntos}</td>
                   <td className="px-3 py-2.5 text-right text-slate-600">{r.partidos_jugados}</td>
                   <td className="px-3 py-2.5 text-right text-slate-600">{r.efectividad}%</td>
                   <td className="px-3 py-2.5 text-right text-slate-600">{r.torneosDisputados}</td>
@@ -31783,14 +31783,14 @@ function ultimaEvaluacionDe(evaluaciones, jugadorId) {
 const NIVEL_OFICIAL_META = {
   Principiante: { color: 'text-sky-400', bg: 'bg-sky-400/10', ring: 'ring-sky-400/30' },
   Intermedio: { color: 'text-amber-400', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30' },
-  Avanzado: { color: 'text-lime-400', bg: 'bg-lime-400/10', ring: 'ring-lime-400/30' },
+  Avanzado: { color: 'text-orange-400', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
 };
 
 // Skill Radar Chart — hexágono con inline SVG a mano (el archivo no importa
 // ninguna librería de gráficas, ver el resto de visuales custom como el
 // logo/íconos en `<svg>`): un anillo por cada 25/50/75/100% de
 // `ESCALA_MAX_EVALUACION`, una línea por eje desde el centro, el polígono de
-// valores relleno en lima, y la etiqueta corta de cada eje en su vértice.
+// valores relleno en naranja, y la etiqueta corta de cada eje en su vértice.
 function RadarEvaluacion({ valores, size = 280 }) {
   const centro = size / 2;
   const radioMax = size / 2 - 34;
@@ -31862,9 +31862,9 @@ function RadarEvaluacion({ valores, size = 280 }) {
         const [x, y] = puntoEn(i, 1);
         return <line key={eje.key} x1={centro} y1={centro} x2={x} y2={y} stroke="#cbd5e1" strokeWidth="1" />;
       })}
-      <polygon points={puntosValorTexto} fill="rgba(163,230,53,0.25)" stroke="#a3e635" strokeWidth="2" />
+      <polygon points={puntosValorTexto} fill="rgba(251, 146, 60, 0.25)" stroke="#fb923c" strokeWidth="2" />
       {puntosValor.map(([x, y], i) => (
-        <circle key={EJES_EVALUACION[i].key} cx={x} cy={y} r="3.5" fill="#a3e635" stroke="#0f172a" strokeWidth="1" />
+        <circle key={EJES_EVALUACION[i].key} cx={x} cy={y} r="3.5" fill="#fb923c" stroke="#0f172a" strokeWidth="1" />
       ))}
       {EJES_EVALUACION.map((eje, i) => {
         const [x, y] = puntoEn(i, 1.22);
@@ -32157,7 +32157,7 @@ function ModalMiPerfilJugador({
               <button
                 type="button"
                 onClick={() => setCambiandoPassword(true)}
-                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/50 px-4 py-3 text-left text-sm font-bold text-slate-700 transition hover:border-lime-400/40 hover:text-slate-900"
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/50 px-4 py-3 text-left text-sm font-bold text-slate-700 transition hover:border-orange-400/40 hover:text-slate-900"
               >
                 <span className="flex items-center gap-2">
                   <Lock size={15} className="text-slate-400" /> Cambiar Contraseña
@@ -32415,7 +32415,7 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
                 <div key={eje.key}>
                   <div className="mb-1 flex items-center justify-between text-xs font-semibold text-slate-600">
                     <span>{eje.label}</span>
-                    <span className="text-lime-400">{valoresEjes[eje.key]}/10</span>
+                    <span className="text-orange-400">{valoresEjes[eje.key]}/10</span>
                   </div>
                   <input
                     type="range"
@@ -32424,7 +32424,7 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
                     step={1}
                     value={valoresEjes[eje.key]}
                     onChange={(e) => setValoresEjes((prev) => ({ ...prev, [eje.key]: Number(e.target.value) }))}
-                    className="w-full accent-lime-400"
+                    className="w-full accent-orange-400"
                   />
                 </div>
               ))}
@@ -32443,7 +32443,7 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
                     onClick={() => setNivelAsignado(n)}
                     className={`rounded-lg border px-2.5 py-2 text-xs font-bold transition ${
                       nivelAsignado === n
-                        ? `border-lime-400 ${NIVEL_OFICIAL_META[n]?.bg || ''} ${NIVEL_OFICIAL_META[n]?.color || 'text-lime-400'}`
+                        ? `border-orange-400 ${NIVEL_OFICIAL_META[n]?.bg || ''} ${NIVEL_OFICIAL_META[n]?.color || 'text-orange-400'}`
                         : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
@@ -33049,7 +33049,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
                 type="button"
                 onClick={() => setTipoClase(t.value)}
                 className={`flex-1 rounded-md px-3 py-2 text-xs font-bold transition ${
-                  tipoClase === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  tipoClase === t.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {t.label}
@@ -33265,7 +33265,7 @@ function TarjetaClaseAcademia({
           type="button"
           onClick={() => onArchivar?.(clase, !archivado)}
           disabled={actualizandoArchivo}
-          className="inline-flex items-center gap-1.5 self-start rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-400 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 self-start rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-orange-400/40 hover:text-orange-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {actualizandoArchivo ? (
             <Loader2 size={12} className="animate-spin" />
@@ -33714,7 +33714,7 @@ function ModalDetalleClase({
                 key={v.value}
                 onClick={() => setSubvista(v.value)}
                 className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md py-2 text-xs font-bold transition ${
-                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  subvista === v.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Icon size={14} /> {v.label}
@@ -33899,7 +33899,7 @@ function ModalDetalleClase({
                     {alumnosBaja.map((a) => (
                       <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white/50 px-3 py-2 opacity-60">
                         <p className="truncate text-xs font-semibold text-slate-500">{a.nombre}</p>
-                        <button onClick={() => reactivar(a)} className="text-[10px] font-bold text-lime-400 hover:underline">
+                        <button onClick={() => reactivar(a)} className="text-[10px] font-bold text-orange-400 hover:underline">
                           Reactivar
                         </button>
                       </div>
@@ -34353,7 +34353,7 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar, n
               value={motivo}
               onChange={(e) => setMotivo(e.target.value)}
               placeholder="Motivo de la baja…"
-              className="w-36 rounded-md border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] text-slate-900 outline-none focus:border-lime-400"
+              className="w-36 rounded-md border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] text-slate-900 outline-none focus:border-orange-400"
             />
             <button
               onClick={() => {
@@ -34377,7 +34377,7 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar, n
               title={puedeCobrarPOS ? undefined : 'Se habilita cuando le quede 1 crédito o menos, o su membresía ya haya vencido — evita cobros accidentales.'}
               className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold ring-1 ${
                 puedeCobrarPOS
-                  ? 'bg-lime-400/10 text-lime-300 ring-lime-400/30 hover:bg-lime-400/20'
+                  ? 'bg-orange-400/10 text-orange-300 ring-orange-400/30 hover:bg-orange-400/20'
                   : 'cursor-not-allowed bg-slate-100/60 text-slate-400 ring-slate-300/50'
               }`}
             >
@@ -34901,7 +34901,7 @@ function AnalyticsAcademia({
               key={d.value}
               onClick={() => setDashboard(d.value)}
               className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-bold transition ${
-                dashboard === d.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                dashboard === d.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Icon size={14} /> {d.label}
@@ -34918,7 +34918,7 @@ function AnalyticsAcademia({
               etiqueta="Ingreso Promedio por Hora/Clase"
               valor={`${formatoMoneda(kpisOperativos.ingresoPorHora)}/hr`}
               sub="Ponderado por duración real de cada clase"
-              tono="lime"
+              tono="orange"
             />
             <MetricCard
               icon={Layers}
@@ -34965,7 +34965,7 @@ function AnalyticsAcademia({
                         </span>
                       </div>
                       <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                        <div className="h-full rounded-full bg-lime-400" style={{ width: `${pct}%` }} />
+                        <div className="h-full rounded-full bg-orange-400" style={{ width: `${pct}%` }} />
                       </div>
                     </div>
                   );
@@ -35015,7 +35015,7 @@ function AnalyticsAcademia({
               etiqueta="Membresías Activas"
               valor={kpisMembresias.activas}
               sub={`${alumnosConMembresia.length} con membresía alguna vez`}
-              tono="lime"
+              tono="orange"
               activo={filtroMembresia === 'activa'}
               onClick={() => setFiltroMembresia((prev) => (prev === 'activa' ? 'todas' : 'activa'))}
             />
@@ -35058,7 +35058,7 @@ function AnalyticsAcademia({
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-                <Crown size={16} className="text-lime-400" /> Alumnos con Membresía
+                <Crown size={16} className="text-orange-400" /> Alumnos con Membresía
               </h3>
               <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
                 {filtrosMembresia.map((f) => (
@@ -35066,7 +35066,7 @@ function AnalyticsAcademia({
                     key={f.value}
                     onClick={() => setFiltroMembresia(f.value)}
                     className={`rounded-md px-2.5 py-1.5 text-[11px] font-bold transition ${
-                      filtroMembresia === f.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                      filtroMembresia === f.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     {f.label}
@@ -35168,8 +35168,8 @@ function AnalyticsAcademia({
                 onClick={() => setFiltroNivel((prev) => (prev === nivel ? 'todos' : nivel))}
                 className={`rounded-2xl border p-4 text-left transition ${
                   filtroNivel === nivel
-                    ? 'border-lime-400/60 bg-slate-100/60 ring-1 ring-lime-400/40'
-                    : 'border-slate-200 bg-white hover:border-lime-400/30 hover:bg-slate-100/40'
+                    ? 'border-orange-400/60 bg-slate-100/60 ring-1 ring-orange-400/40'
+                    : 'border-slate-200 bg-white hover:border-orange-400/30 hover:bg-slate-100/40'
                 }`}
               >
                 <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{nivel}</p>
@@ -35182,11 +35182,11 @@ function AnalyticsAcademia({
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-                <Users size={16} className="text-lime-400" /> Tabla de Alumnos
+                <Users size={16} className="text-orange-400" /> Tabla de Alumnos
               </h3>
               <div className="flex items-center gap-2">
                 {filtroNivel !== 'todos' && (
-                  <span className="rounded-full bg-lime-400/10 px-2.5 py-1 text-[10px] font-bold text-lime-300 ring-1 ring-lime-400/30">
+                  <span className="rounded-full bg-orange-400/10 px-2.5 py-1 text-[10px] font-bold text-orange-300 ring-1 ring-orange-400/30">
                     Filtro: {filtroNivel}
                   </span>
                 )}
@@ -35507,7 +35507,7 @@ function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardan
         <button
           type="button"
           onClick={agregarBloque}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-2 text-xs font-bold text-slate-500 hover:border-lime-400/50 hover:text-lime-400"
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-2 text-xs font-bold text-slate-500 hover:border-orange-400/50 hover:text-orange-400"
         >
           <Plus size={13} /> Agregar bloque
         </button>
@@ -35640,8 +35640,8 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando }) {
                 onClick={() => alternarDia(d.indice)}
                 className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition ${
                   diasSemana.includes(d.indice)
-                    ? 'border-lime-400 bg-lime-400/10 text-lime-700'
-                    : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-lime-400/40'
+                    ? 'border-orange-400 bg-orange-400/10 text-orange-700'
+                    : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
                 }`}
               >
                 {d.label.slice(0, 3)}
@@ -35654,16 +35654,16 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando }) {
           type="button"
           onClick={() => setActivo((a) => !a)}
           className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition ${
-            activo ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+            activo ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-slate-100'
           }`}
         >
           <span className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activo ? 'bg-lime-500' : 'bg-slate-400'}`} />
-            <span className={`text-xs font-bold ${activo ? 'text-lime-700' : 'text-slate-600'}`}>
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activo ? 'bg-orange-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${activo ? 'text-orange-700' : 'text-slate-600'}`}>
               Franja {activo ? 'Activa' : 'Desactivada'}
             </span>
           </span>
-          <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${activo ? 'bg-lime-500' : 'bg-slate-300'}`}>
+          <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${activo ? 'bg-orange-500' : 'bg-slate-300'}`}>
             <span
               className={`inline-block h-4.5 w-4.5 transform rounded-full bg-white shadow transition ${activo ? 'translate-x-6' : 'translate-x-1'}`}
               style={{ height: '1.125rem', width: '1.125rem' }}
@@ -36230,7 +36230,7 @@ function ModuloAcademiaClinicas({
                 key={v.value}
                 onClick={() => setSubvista(v.value)}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-                  subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  subvista === v.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Icon size={14} /> {v.label}
@@ -36260,7 +36260,7 @@ function ModuloAcademiaClinicas({
                 type="button"
                 onClick={() => setModoParrillaClases('cronograma')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                  modoParrillaClases === 'cronograma' ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  modoParrillaClases === 'cronograma' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <CalendarDays size={14} /> Cronograma
@@ -36270,7 +36270,7 @@ function ModuloAcademiaClinicas({
                 onClick={() => setModoParrillaClases('calendario')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
                   modoParrillaClases === 'calendario' || modoParrillaClases === 'dia'
-                    ? 'bg-lime-400 text-slate-950'
+                    ? 'bg-orange-400 text-slate-950'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
@@ -36332,7 +36332,7 @@ function ModuloAcademiaClinicas({
                     type="button"
                     onClick={() => setFiltroClase('activas')}
                     className={`rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                      filtroClase === 'activas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
+                      filtroClase === 'activas' ? 'bg-orange-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                     }`}
                   >
                     Activas
@@ -36341,7 +36341,7 @@ function ModuloAcademiaClinicas({
                     type="button"
                     onClick={() => setFiltroClase('archivadas')}
                     className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition ${
-                      filtroClase === 'archivadas' ? 'bg-lime-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
+                      filtroClase === 'archivadas' ? 'bg-orange-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
                     }`}
                   >
                     <Archive size={11} /> Archivadas
@@ -36601,7 +36601,7 @@ function ModuloAcademiaClinicas({
                     key={alumno.jugadorId}
                     type="button"
                     onClick={() => setAlumnoExpedienteId(alumno.jugadorId)}
-                    className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-lime-400/40"
+                    className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-orange-400/40"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -36620,7 +36620,7 @@ function ModuloAcademiaClinicas({
                     </div>
                     <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
                       <span>{ultima?.promedio != null ? `Promedio ${ultima.promedio}/10` : 'Sin calificaciones aún'}</span>
-                      <span className="inline-flex items-center gap-1 text-lime-400">
+                      <span className="inline-flex items-center gap-1 text-orange-400">
                         <Gauge size={12} /> Ver Expediente
                       </span>
                     </div>
@@ -37921,7 +37921,7 @@ function DirectorioJugadoresCRM({
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MetricCard icon={Users} etiqueta="Jugadores en el Directorio" valor={String(resumen.totalJugadores)} tono="sky" />
         {permisos?.puedeVerMontos !== false && (
-          <MetricCard icon={DollarSign} etiqueta="Gasto Total Histórico del Club" valor={formatoMoneda(resumen.ltvClubTotal)} tono="lime" />
+          <MetricCard icon={DollarSign} etiqueta="Gasto Total Histórico del Club" valor={formatoMoneda(resumen.ltvClubTotal)} tono="orange" />
         )}
         <MetricCard
           icon={Crown}
@@ -37956,7 +37956,7 @@ function DirectorioJugadoresCRM({
               type="button"
               onClick={() => setFiltroSegmento(seg)}
               className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
-                filtroSegmento === seg ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                filtroSegmento === seg ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
               }`}
             >
               {seg === 'todos' ? 'Todos' : seg}
@@ -38111,7 +38111,7 @@ function SeccionProductosAutorizadosCortesia({ etiqueta, categoria, productos, v
                   type="checkbox"
                   checked={autorizados.has(clave)}
                   onChange={() => onAlternar(clave)}
-                  className="h-3.5 w-3.5 shrink-0 accent-lime-500"
+                  className="h-3.5 w-3.5 shrink-0 accent-orange-500"
                 />
                 <span className="truncate font-semibold">{p.nombre}</span>
               </label>
@@ -38129,7 +38129,7 @@ function SeccionProductosAutorizadosCortesia({ etiqueta, categoria, productos, v
                         type="checkbox"
                         checked={autorizados.has(clave)}
                         onChange={() => onAlternar(clave)}
-                        className="h-3.5 w-3.5 shrink-0 accent-lime-500"
+                        className="h-3.5 w-3.5 shrink-0 accent-orange-500"
                       />
                       <span className="truncate">{v.nombre}</span>
                     </label>
@@ -38537,12 +38537,12 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos }) {
         {permisos?.puedeVerMontos !== false ? (
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Gasto Total</p>
-            <p className="text-lg font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
+            <p className="text-lg font-black text-orange-400">{formatoMoneda(perfil.ltvTotal)}</p>
           </div>
         ) : (
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reservas</p>
-            <p className="text-lg font-black text-lime-400">{perfil.historialCanchas?.length || 0}</p>
+            <p className="text-lg font-black text-orange-400">{perfil.historialCanchas?.length || 0}</p>
           </div>
         )}
         <div className="text-right">
@@ -38600,7 +38600,7 @@ function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, can
         </span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-        <div className={`h-full rounded-full ${lista ? 'bg-amber-400' : 'bg-lime-400'}`} style={{ width: `${pct}%` }} />
+        <div className={`h-full rounded-full ${lista ? 'bg-amber-400' : 'bg-orange-400'}`} style={{ width: `${pct}%` }} />
       </div>
       {lista ? (
         <button
@@ -38634,7 +38634,7 @@ function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria })
         </span>
       )}
       {perfil.productoFavoritoBar && (
-        <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-lime-400/10 px-2.5 py-1 text-[11px] font-bold text-lime-600 ring-1 ring-lime-400/30">
+        <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-orange-400/10 px-2.5 py-1 text-[11px] font-bold text-orange-600 ring-1 ring-orange-400/30">
           <Star size={11} /> Favorito Restaurant/Bar: {perfil.productoFavoritoBar.nombre} ({perfil.productoFavoritoBar.cantidad}x)
         </span>
       )}
@@ -39164,7 +39164,7 @@ function ModalPerfilJugadorCRM({
               <button
                 type="button"
                 onClick={() => setEditandoTelefono(true)}
-                className="inline-flex items-center gap-1 text-xs font-bold text-lime-400 hover:text-lime-300"
+                className="inline-flex items-center gap-1 text-xs font-bold text-orange-400 hover:text-orange-300"
               >
                 <Pencil size={12} /> Editar
               </button>
@@ -39204,7 +39204,7 @@ function ModalPerfilJugadorCRM({
               <button
                 type="button"
                 onClick={() => setEditandoFechaNacimiento(true)}
-                className="inline-flex items-center gap-1 text-xs font-bold text-lime-400 hover:text-lime-300"
+                className="inline-flex items-center gap-1 text-xs font-bold text-orange-400 hover:text-orange-300"
               >
                 {perfil.fechaNacimiento ? (
                   <>
@@ -39273,19 +39273,19 @@ function ModalPerfilJugadorCRM({
           <>
             <div>
               <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
-                <CalendarClock size={15} className="text-lime-400" /> Actividad del Jugador
+                <CalendarClock size={15} className="text-orange-400" /> Actividad del Jugador
               </h3>
               <div className="grid grid-cols-3 gap-2">
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
-                  <p className="text-xl font-black text-lime-400">{perfil.historialCanchas?.length || 0}</p>
+                  <p className="text-xl font-black text-orange-400">{perfil.historialCanchas?.length || 0}</p>
                   <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reservas</p>
                 </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
-                  <p className="text-xl font-black text-lime-400">{perfil.visitasPropias || 0}</p>
+                  <p className="text-xl font-black text-orange-400">{perfil.visitasPropias || 0}</p>
                   <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Visitas</p>
                 </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
-                  <p className="text-xl font-black text-lime-400">{perfil.clasesAcademiaTomadas || 0}</p>
+                  <p className="text-xl font-black text-orange-400">{perfil.clasesAcademiaTomadas || 0}</p>
                   <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Asistencias Academia</p>
                 </div>
               </div>
@@ -39318,7 +39318,7 @@ function ModalPerfilJugadorCRM({
             {permisos?.puedeGestionarCortesias && (
               <div>
                 <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
-                  <Gift size={15} className="text-lime-400" /> Consumo Secundario
+                  <Gift size={15} className="text-orange-400" /> Consumo Secundario
                 </h3>
                 <DetalleConsumoPOS
                   perfil={perfil}
@@ -39332,9 +39332,9 @@ function ModalPerfilJugadorCRM({
           <>
             <div>
               <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
-                <DollarSign size={15} className="text-lime-400" /> Gasto Total Histórico
+                <DollarSign size={15} className="text-orange-400" /> Gasto Total Histórico
               </h3>
-              <p className="text-2xl font-black text-lime-400">{formatoMoneda(perfil.ltvTotal)}</p>
+              <p className="text-2xl font-black text-orange-400">{formatoMoneda(perfil.ltvTotal)}</p>
               <div className="mt-3 space-y-2">
                 {ltvFilas.map((f) => (
                   <div key={f.label}>
@@ -39358,7 +39358,7 @@ function ModalPerfilJugadorCRM({
 
             <div>
               <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
-                <Gauge size={15} className="text-lime-400" /> Nivel de Fidelidad (Score) — {perfil.chs.puntaje}/100 pts
+                <Gauge size={15} className="text-orange-400" /> Nivel de Fidelidad (Score) — {perfil.chs.puntaje}/100 pts
               </h3>
               <p className="mb-2 text-[11px] text-slate-500">Da clic en cualquier indicador para ver su historial exacto.</p>
               <div className="space-y-2">
@@ -39418,7 +39418,7 @@ function ModalPerfilJugadorCRM({
           Object.keys(ETIQUETA_FRECUENCIA).some((cat) => datosFrecuenciaPorCategoria[cat]) && (
             <div>
               <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
-                <Gift size={15} className="text-lime-400" /> Cortesías por Frecuencia de Actividad
+                <Gift size={15} className="text-orange-400" /> Cortesías por Frecuencia de Actividad
               </h3>
               <div className="space-y-2">
                 {Object.keys(ETIQUETA_FRECUENCIA)
@@ -39602,7 +39602,7 @@ function ModuloJugadores({
               key={v.value}
               onClick={() => setSubvista(v.value)}
               className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-                subvista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                subvista === v.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Icon size={14} /> {v.label}
@@ -39750,7 +39750,7 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
                   onClick={() => setRol(r.value)}
                   className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-[11px] font-bold transition ${
                     rol === r.value
-                      ? `border-lime-400 ${r.bg} ${r.color}`
+                      ? `border-orange-400 ${r.bg} ${r.color}`
                       : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
@@ -39798,7 +39798,7 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
               type="checkbox"
               checked={activo}
               onChange={(e) => setActivo(e.target.checked)}
-              className="h-4 w-4 accent-lime-400"
+              className="h-4 w-4 accent-orange-400"
             />
             <span className="text-xs font-semibold text-slate-600">Empleado activo (aparece para ficharse)</span>
           </label>
@@ -39862,7 +39862,7 @@ function FilaEmpleado({ empleado, puedeGestionar, onEditar }) {
       {puedeGestionar && (
         <button
           onClick={() => onEditar(empleado)}
-          className="shrink-0 rounded-lg border border-slate-300 bg-slate-100 p-2 text-slate-500 transition hover:border-lime-400/40 hover:text-lime-400"
+          className="shrink-0 rounded-lg border border-slate-300 bg-slate-100 p-2 text-slate-500 transition hover:border-orange-400/40 hover:text-orange-400"
         >
           <Pencil size={13} />
         </button>
@@ -39905,7 +39905,7 @@ function FilaCierreCaja({ cierre, puedeAprobar, onAprobar }) {
           ) : puedeAprobar ? (
             <button
               onClick={() => onAprobar(cierre.id)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-lime-400/40 bg-lime-400/10 px-2.5 py-1.5 text-[11px] font-bold text-lime-400 transition hover:bg-lime-400/20"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-orange-400/40 bg-orange-400/10 px-2.5 py-1.5 text-[11px] font-bold text-orange-400 transition hover:bg-orange-400/20"
             >
               <CheckCircle2 size={12} /> Aprobar
             </button>
@@ -40030,7 +40030,7 @@ function ModuloControlSeguridad({
   return (
     <>
       <div className={SHOW_BETA_POS_CIERRE_ARQUEO ? 'grid grid-cols-2 gap-3 sm:grid-cols-4' : 'grid grid-cols-2 gap-3'}>
-        <MetricCard icon={Users} etiqueta="Empleados" valor={empleadosOrdenados.length} sub={`${ROLES.length} roles disponibles`} tono="lime" />
+        <MetricCard icon={Users} etiqueta="Empleados" valor={empleadosOrdenados.length} sub={`${ROLES.length} roles disponibles`} tono="orange" />
         {/* Beta: tarjetas de Cortes de Caja ocultas — `cortesPendientesAprobar`/
             `cortesConDiferencia` se siguen calculando arriba (no se tocan),
             solo no se muestran mientras dure la Beta. */}
@@ -40063,7 +40063,7 @@ function ModuloControlSeguridad({
               key={sv.value}
               onClick={() => setSubvista(sv.value)}
               className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-                subvista === sv.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                subvista === sv.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Icon size={14} /> {sv.label}
@@ -40463,7 +40463,7 @@ function ModuloConfiguracionClub({
               type="button"
               onClick={() => setTab(t.value)}
               className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
-                tab === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                tab === t.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Icon size={14} /> {t.label}
@@ -40551,7 +40551,7 @@ function ModuloConfiguracionClub({
             {tabsVisibles.map((t, i) => (
               <span
                 key={t.value}
-                className={`h-1.5 w-7 rounded-full transition ${i <= indiceTabActual ? 'bg-lime-400' : 'bg-slate-200'}`}
+                className={`h-1.5 w-7 rounded-full transition ${i <= indiceTabActual ? 'bg-orange-400' : 'bg-slate-200'}`}
               />
             ))}
             <span className="ml-2 text-[11px] font-bold text-slate-500">
@@ -40606,7 +40606,7 @@ function SeccionOperadoresStaff({ empleados, onCrearEmpleado }) {
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <UserCog size={16} className="text-lime-500" />
+            <UserCog size={16} className="text-orange-500" />
             <h3 className="text-sm font-black text-slate-900">Operadores & Staff</h3>
           </div>
           <BotonPrimario onClick={() => setModalAbierto(true)}>
@@ -40655,7 +40655,7 @@ function SeccionOperadoresStaff({ empleados, onCrearEmpleado }) {
 // `onboardingCompletedClub === false` — un club recién creado no ve ni el
 // Sidebar ni ningún módulo operativo hasta terminar este asistente. Mismo
 // lenguaje visual Tema Claro (`#f8fafc` fijo, tarjetas blancas, acentos
-// `lime-400`) que `ClubAuthScreen`, la pantalla que el dueño acaba de dejar
+// `orange-400`) que `ClubAuthScreen`, la pantalla que el dueño acaba de dejar
 // segundos antes — la transición del registro al onboarding se siente
 // continua, no un salto a otra app.
 // ============================================================================
@@ -40718,7 +40718,7 @@ function LienzoOnboardingClub({ children, ancho = 'max-w-3xl' }) {
 //   Paso 5 — Confirmación y Activación ("Tu club está listo para operar.")
 function InsigniaPasoOnboarding({ paso, total = 5 }) {
   return (
-    <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-lime-300 bg-lime-50 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-lime-700">
+    <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-orange-300 bg-orange-50 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-orange-700">
       <Sparkles size={12} /> Paso {paso} de {total}
     </div>
   );
@@ -40731,13 +40731,13 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
       <div className="mb-8 text-center">
         <InsigniaPasoOnboarding paso={3} />
         {/* Color en el título (corrección — item 2, unificación): "Todo
-            incluido." usa EXACTAMENTE la misma clase `text-lime-400` que el
+            incluido." usa EXACTAMENTE la misma clase `text-orange-400` que el
             banner inferior ("Tu dinero es tuyo...", más abajo) — mismo tono
-            y brillo en las dos apariciones del verde QLUBOS en esta
+            y brillo en las dos apariciones del naranja QLUBOS en esta
             pantalla, a propósito, aunque el título esté sobre fondo claro y
             el banner sobre navy. */}
         <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">
-          Un sistema. Una suscripción. <span className="text-lime-400">Todo incluido.</span>
+          Un sistema. Una suscripción. <span className="text-orange-400">Todo incluido.</span>
         </h1>
         <p className="mt-2 text-sm font-medium text-slate-500">Elige tu plan según el tamaño de tu club.</p>
       </div>
@@ -40751,7 +40751,7 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
               type="button"
               onClick={() => onSeleccionarPlan(plan)}
               className={`relative flex flex-col items-start gap-3 rounded-2xl border-2 bg-white p-5 text-left shadow-sm transition ${
-                activo ? 'border-lime-400 shadow-[0_0_0_4px_rgba(163,230,53,0.25)]' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
+                activo ? 'border-orange-400 shadow-[0_0_0_4px_rgba(251, 146, 60, 0.25)]' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
               }`}
             >
               {/* Insignia "Todas las funciones incluidas" — corrección
@@ -40760,10 +40760,10 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
                   derecha. `absolute` sobre el `relative` del `<button>` de
                   arriba; `pr-16` en el bloque de precio (más abajo) le deja
                   espacio para no encimarse en pantallas angostas. */}
-              <div className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-lime-300 bg-lime-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-lime-700">
+              <div className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-orange-300 bg-orange-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-orange-700">
                 <CheckCircle2 size={10} /> Todas las funciones incluidas
               </div>
-              <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${activo ? 'bg-lime-400 text-slate-950' : 'bg-slate-100 text-slate-500'}`}>
+              <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${activo ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-500'}`}>
                 <LayoutGrid size={18} />
               </div>
               <div className="pr-2">
@@ -40778,7 +40778,7 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
                 <p className="mt-1.5 text-xs leading-snug text-slate-500">{plan.descripcion}</p>
               </div>
               {activo && (
-                <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-lime-600">
+                <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-orange-600">
                   <CheckCircle2 size={14} /> Plan seleccionado
                 </span>
               )}
@@ -40789,12 +40789,12 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
 
       {/* Banner explicativo (corrección — item 4) — ahora es UN SOLO
           mensaje, sin la segunda línea ("Paga por el tamaño de tu
-          club..."). Verde QLUBOS completo (`text-lime-400`, legible sobre
+          club..."). Verde QLUBOS completo (`text-orange-400`, legible sobre
           el navy sólido del contenedor) y un tamaño de fuente mayor
           (`text-base`) para que sea el mensaje principal del banner, no
           una nota al pie. */}
       <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-900 px-5 py-5 text-center">
-        <p className="text-base font-black text-lime-400">Tu dinero es tuyo: 0% comisiones por reserva o transacción.</p>
+        <p className="text-base font-black text-orange-400">Tu dinero es tuyo: 0% comisiones por reserva o transacción.</p>
       </div>
 
       <div className="mt-8 flex justify-center">
@@ -40814,7 +40814,7 @@ function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
     <LienzoOnboardingClub ancho="max-w-lg">
       <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
         <InsigniaPasoOnboarding paso={2} />
-        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-lime-400 text-slate-950">
+        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-orange-400 text-slate-950">
           <Rocket size={28} strokeWidth={1.75} />
         </div>
         <div>
@@ -40835,7 +40835,7 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
     <LienzoOnboardingClub ancho="max-w-lg">
       <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
         <InsigniaPasoOnboarding paso={5} />
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-lime-100 text-lime-600">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-orange-100 text-orange-600">
           <CheckCircle2 size={32} strokeWidth={1.75} />
         </div>
         <div>
@@ -40851,7 +40851,7 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
           {planSeleccionado?.precioMensual != null && (
             <p className="text-sm font-semibold text-slate-500">{formatoPrecioPlanOnboarding(planSeleccionado.precioMensual)} MXN / mes</p>
           )}
-          <p className="mt-2 text-xs font-semibold text-lime-600">Todo QLUBOS incluido.</p>
+          <p className="mt-2 text-xs font-semibold text-orange-600">Todo QLUBOS incluido.</p>
         </div>
 
         {/* Mock de pasarela de pago — placeholder listo para reemplazarse por
@@ -41056,7 +41056,7 @@ function SeccionGeneralClub({
       {modoOnboarding && (
         <div className="rounded-2xl border border-slate-200 bg-white p-4">
           <div className="mb-1 flex items-center gap-2">
-            <UserCircle2 size={16} className="text-lime-500" />
+            <UserCircle2 size={16} className="text-orange-500" />
             <h3 className="text-sm font-black text-slate-900">Nombre del Administrador / Dueño</h3>
           </div>
           <p className="mb-3 text-xs text-slate-500">
@@ -41087,7 +41087,7 @@ function SeccionGeneralClub({
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <Clock size={16} className="text-lime-500" />
+          <Clock size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Horario de Apertura y Cierre</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -41356,7 +41356,7 @@ function SeccionTarifasFranjas({
     <div className="space-y-4">
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <DollarSign size={16} className="text-lime-500" />
+          <DollarSign size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Tarifas y Franjas Horarias</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -41370,18 +41370,18 @@ function SeccionTarifasFranjas({
           onClick={alternarTarifasHabilitadas}
           disabled={guardandoConfigClub}
           className={`mb-4 flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-            tarifasHabilitadas ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+            tarifasHabilitadas ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-slate-100'
           }`}
         >
           <span className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${tarifasHabilitadas ? 'bg-lime-500' : 'bg-slate-400'}`} />
-            <span className={`text-xs font-bold ${tarifasHabilitadas ? 'text-lime-700' : 'text-slate-600'}`}>
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${tarifasHabilitadas ? 'bg-orange-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${tarifasHabilitadas ? 'text-orange-700' : 'text-slate-600'}`}>
               Cobro Diferenciado por Franja Horaria: {tarifasHabilitadas ? 'Activado' : 'Desactivado'}
             </span>
           </span>
           <span
             className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
-              tarifasHabilitadas ? 'bg-lime-500' : 'bg-slate-300'
+              tarifasHabilitadas ? 'bg-orange-500' : 'bg-slate-300'
             }`}
           >
             <span
@@ -41453,7 +41453,7 @@ function SeccionTarifasFranjas({
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <span className="text-xs font-black text-lime-600">{formatoMoneda(t.precio_hora)}/h</span>
+                  <span className="text-xs font-black text-orange-600">{formatoMoneda(t.precio_hora)}/h</span>
                   <button
                     type="button"
                     onClick={() => setModalTarifa(t)}
@@ -41479,7 +41479,7 @@ function SeccionTarifasFranjas({
         <button
           type="button"
           onClick={() => setModalTarifa({})}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-2 text-xs font-bold text-slate-500 hover:border-lime-400/50 hover:text-lime-400"
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-2 text-xs font-bold text-slate-500 hover:border-orange-400/50 hover:text-orange-400"
         >
           <Plus size={13} /> Nueva Franja Horaria
         </button>
@@ -41604,7 +41604,7 @@ function SeccionJugadoresFidelizacion({
     <div className="space-y-4">
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <Gift size={16} className="text-lime-500" />
+          <Gift size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Metas de Cortesía</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -41618,18 +41618,18 @@ function SeccionJugadoresFidelizacion({
           onClick={alternarActivo}
           disabled={guardandoMetasCortesia}
           className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-            activo ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+            activo ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-slate-100'
           }`}
         >
           <span className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activo ? 'bg-lime-500' : 'bg-slate-400'}`} />
-            <span className={`text-xs font-bold ${activo ? 'text-lime-700' : 'text-slate-600'}`}>
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activo ? 'bg-orange-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${activo ? 'text-orange-700' : 'text-slate-600'}`}>
               Motor de Cortesías por Fidelidad: {activo ? 'Activado' : 'Desactivado'}
             </span>
           </span>
           <span
             className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
-              activo ? 'bg-lime-500' : 'bg-slate-300'
+              activo ? 'bg-orange-500' : 'bg-slate-300'
             }`}
           >
             <span
@@ -41685,7 +41685,7 @@ function SeccionJugadoresFidelizacion({
       {SHOW_BETA_CORTESIAS_FRECUENCIA && (
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <Gift size={16} className="text-lime-500" />
+          <Gift size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Cortesías por Frecuencia de Actividad</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -41699,18 +41699,18 @@ function SeccionJugadoresFidelizacion({
           onClick={alternarActivoFrecuencia}
           disabled={guardandoCortesiasFrecuencia}
           className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-            activoFrecuencia ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+            activoFrecuencia ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-slate-100'
           }`}
         >
           <span className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activoFrecuencia ? 'bg-lime-500' : 'bg-slate-400'}`} />
-            <span className={`text-xs font-bold ${activoFrecuencia ? 'text-lime-700' : 'text-slate-600'}`}>
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activoFrecuencia ? 'bg-orange-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${activoFrecuencia ? 'text-orange-700' : 'text-slate-600'}`}>
               Cortesías por Frecuencia de Actividad: {activoFrecuencia ? 'Activado' : 'Desactivado'}
             </span>
           </span>
           <span
             className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
-              activoFrecuencia ? 'bg-lime-500' : 'bg-slate-300'
+              activoFrecuencia ? 'bg-orange-500' : 'bg-slate-300'
             }`}
           >
             <span
@@ -41987,7 +41987,7 @@ function SeccionReservasAcademia({
           activar Academia. */}
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <DollarSign size={16} className="text-lime-500" />
+          <DollarSign size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Tarifas y Paquetes de Academia</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -42035,7 +42035,7 @@ function SeccionReservasAcademia({
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <Clock size={16} className="text-lime-500" />
+          <Clock size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Horarios Habilitados para Clases</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -42066,7 +42066,7 @@ function SeccionReservasAcademia({
           `configuracion_club` como el resto de esta pantalla). */}
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <Timer size={16} className="text-lime-500" />
+          <Timer size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Duración de Bloques / Turnos</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -42085,8 +42085,8 @@ function SeccionReservasAcademia({
                   onClick={() => setDuracionReservaMinutos(o.value)}
                   className={`rounded-xl border px-3 py-2.5 text-left text-xs font-bold transition ${
                     duracionReservaMinutos === o.value
-                      ? 'border-lime-400 bg-lime-400/10 text-lime-700'
-                      : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
+                      ? 'border-orange-400 bg-orange-400/10 text-orange-700'
+                      : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
                   }`}
                 >
                   {o.label}
@@ -42105,8 +42105,8 @@ function SeccionReservasAcademia({
                   onClick={() => setDuracionClaseMinutos(o.value)}
                   className={`rounded-xl border px-3 py-2.5 text-left text-xs font-bold transition ${
                     duracionClaseMinutos === o.value
-                      ? 'border-lime-400 bg-lime-400/10 text-lime-700'
-                      : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
+                      ? 'border-orange-400 bg-orange-400/10 text-orange-700'
+                      : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
                   }`}
                 >
                   {o.label}
@@ -42133,7 +42133,7 @@ function SeccionReservasAcademia({
           `ModuloTorneosRetas` para el único lugar que hoy consume esto. */}
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <ShieldAlert size={16} className="text-lime-500" />
+          <ShieldAlert size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Políticas y Tolerancia de Cancelación</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -42150,18 +42150,18 @@ function SeccionReservasAcademia({
           }}
           disabled={guardandoConfigClub}
           className={`mb-4 flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-            toleranciaMaster ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+            toleranciaMaster ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-slate-100'
           }`}
         >
           <span className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${toleranciaMaster ? 'bg-lime-500' : 'bg-slate-400'}`} />
-            <span className={`text-xs font-bold ${toleranciaMaster ? 'text-lime-700' : 'text-slate-600'}`}>
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${toleranciaMaster ? 'bg-orange-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${toleranciaMaster ? 'text-orange-700' : 'text-slate-600'}`}>
               Política de Cancelación (Switch Master): {toleranciaMaster ? 'Activada' : 'Desactivada'}
             </span>
           </span>
           <span
             className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
-              toleranciaMaster ? 'bg-lime-500' : 'bg-slate-300'
+              toleranciaMaster ? 'bg-orange-500' : 'bg-slate-300'
             }`}
           >
             <span
@@ -42219,18 +42219,18 @@ function SeccionReservasAcademia({
                 }}
                 disabled={guardandoConfigClub}
                 className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                  modulo.enabled ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-white'
+                  modulo.enabled ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-white'
                 }`}
               >
                 <span className="flex items-center gap-2">
-                  <span className={`h-2 w-2 shrink-0 rounded-full ${modulo.enabled ? 'bg-lime-500' : 'bg-slate-400'}`} />
-                  <span className={`text-xs font-bold ${modulo.enabled ? 'text-lime-700' : 'text-slate-600'}`}>
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${modulo.enabled ? 'bg-orange-500' : 'bg-slate-400'}`} />
+                  <span className={`text-xs font-bold ${modulo.enabled ? 'text-orange-700' : 'text-slate-600'}`}>
                     {modulo.titulo}: {modulo.enabled ? 'Activado' : 'Desactivado'}
                   </span>
                 </span>
                 <span
                   className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
-                    modulo.enabled ? 'bg-lime-500' : 'bg-slate-300'
+                    modulo.enabled ? 'bg-orange-500' : 'bg-slate-300'
                   }`}
                 >
                   <span
@@ -42392,7 +42392,7 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
     <div className="space-y-4">
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <Wallet size={16} className="text-lime-500" />
+          <Wallet size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Wallet de Jugadores y Operadores</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -42412,7 +42412,7 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
                 type="button"
                 onClick={() => cambiarVista(v.value)}
                 className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-bold transition ${
-                  vista === v.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  vista === v.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Icon size={13} /> {v.label}
@@ -42445,7 +42445,7 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
                     type="button"
                     onClick={() => seleccionarPersona(p)}
                     className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-xs transition ${
-                      personaSeleccionada?.id === p.id ? 'bg-lime-400/15 text-lime-700' : 'text-slate-700 hover:bg-slate-200/60'
+                      personaSeleccionada?.id === p.id ? 'bg-orange-400/15 text-orange-700' : 'text-slate-700 hover:bg-slate-200/60'
                     }`}
                   >
                     <span className="min-w-0 flex-1 truncate font-bold">{p.nombre || 'Sin nombre'}</span>
@@ -42477,7 +42477,7 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
                   <div className="flex items-center gap-3">
                     <div className="text-right">
                       <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Saldo Disponible</p>
-                      <p className="text-lg font-black text-lime-600">{cargando ? '…' : formatoMoneda(saldo)}</p>
+                      <p className="text-lg font-black text-orange-600">{cargando ? '…' : formatoMoneda(saldo)}</p>
                     </div>
                     {puedeGestionar && (
                       <BotonPrimario onClick={() => setModalCredito(true)} className="shrink-0">
@@ -42598,7 +42598,7 @@ function ModalCargarCreditoWallet({ persona, guardando, onClose, onConfirmar }) 
               key={c}
               type="button"
               onClick={() => setConcepto(c)}
-              className="rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600 transition hover:border-lime-400/40 hover:text-lime-600"
+              className="rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600 transition hover:border-orange-400/40 hover:text-orange-600"
             >
               {c}
             </button>
@@ -42663,7 +42663,7 @@ function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsI
     <div className="space-y-4">
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
-          <ShoppingBag size={16} className="text-lime-500" />
+          <ShoppingBag size={16} className="text-orange-500" />
           <h3 className="text-sm font-black text-slate-900">Quick Sell del Portal</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
@@ -42677,18 +42677,18 @@ function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsI
           onClick={alternarHabilitado}
           disabled={guardandoAddonsConfig}
           className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-            addonsHabilitados ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-300 bg-slate-100'
+            addonsHabilitados ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-slate-100'
           }`}
         >
           <span className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addonsHabilitados ? 'bg-lime-500' : 'bg-slate-400'}`} />
-            <span className={`text-xs font-bold ${addonsHabilitados ? 'text-lime-700' : 'text-slate-600'}`}>
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addonsHabilitados ? 'bg-orange-500' : 'bg-slate-400'}`} />
+            <span className={`text-xs font-bold ${addonsHabilitados ? 'text-orange-700' : 'text-slate-600'}`}>
               Sección de Quick Sell en el Portal: {addonsHabilitados ? 'Activada' : 'Desactivada'}
             </span>
           </span>
           <span
             className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
-              addonsHabilitados ? 'bg-lime-500' : 'bg-slate-300'
+              addonsHabilitados ? 'bg-orange-500' : 'bg-slate-300'
             }`}
           >
             <span
@@ -42780,7 +42780,7 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
                 type="button"
                 onClick={() => setCategoriaFiltro(c.value)}
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
-                  categoriaFiltro === c.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  categoriaFiltro === c.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Icon size={13} /> {c.label}
@@ -42810,10 +42810,10 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
               <label
                 key={p.id}
                 className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2 transition ${
-                  marcado ? 'border-lime-400/40 bg-lime-400/10' : 'border-slate-200 bg-white hover:border-slate-300'
+                  marcado ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
-                <input type="checkbox" checked={marcado} onChange={() => alternar(p.id)} className="h-4 w-4 shrink-0 accent-lime-500" />
+                <input type="checkbox" checked={marcado} onChange={() => alternar(p.id)} className="h-4 w-4 shrink-0 accent-orange-500" />
                 <div className="h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-slate-100">
                   <img
                     src={p.imagen_url || fallbackImagenProducto(p)}
@@ -42869,7 +42869,7 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
 // Tailwind de cada estado, así ambas cuadrículas quedan pintadas EXACTO
 // igual sin duplicar la paleta en cada componente.
 const ESTILO_OCUPACION_SLOT = {
-  disponible: { etiqueta: 'Disponible', clases: 'border-lime-400/50 bg-lime-400/10 text-lime-400' },
+  disponible: { etiqueta: 'Disponible', clases: 'border-orange-400/50 bg-orange-400/10 text-orange-400' },
   reservado: { etiqueta: 'Reservado', clases: 'border-slate-300 bg-slate-100/90 text-slate-500' },
   clase: { etiqueta: 'Clase', clases: 'border-sky-400/50 bg-sky-400/10 text-sky-400' },
   torneo_reta: { etiqueta: 'Torneo/Reta', clases: 'border-purple-400/50 bg-purple-400/10 text-purple-400' },
@@ -45997,7 +45997,7 @@ function PortalPublicoJugadores({ clubSlug }) {
               {club.logo_url ? (
                 <img src={club.logo_url} alt={club.nombre} className="h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-slate-200" />
               ) : (
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/10 text-lime-400 ring-1 ring-lime-400/20">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-400/10 text-orange-400 ring-1 ring-orange-400/20">
                   <Trophy size={17} />
                 </div>
               )}
@@ -46065,7 +46065,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                   key={tab.value}
                   onClick={() => setVista(tab.value)}
                   className={`flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3.5 py-2 text-[11px] font-bold transition sm:flex-1 ${
-                    vista === tab.value ? 'bg-lime-400 text-slate-950 shadow-lg shadow-lime-400/20' : 'text-slate-500 hover:text-slate-800'
+                    vista === tab.value ? 'bg-orange-400 text-slate-950 shadow-lg shadow-orange-400/20' : 'text-slate-500 hover:text-slate-800'
                   }`}
                 >
                   <Icon size={14} /> {tab.label}
@@ -46093,7 +46093,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                         key={c.id}
                         type="button"
                         onClick={() => setCanchaParaReservar(c)}
-                        className="group overflow-hidden rounded-2xl border border-slate-200 bg-white/50 text-left backdrop-blur-sm transition hover:border-lime-400/30 hover:bg-white/70"
+                        className="group overflow-hidden rounded-2xl border border-slate-200 bg-white/50 text-left backdrop-blur-sm transition hover:border-orange-400/30 hover:bg-white/70"
                       >
                         <div className="relative h-28 w-full bg-slate-100">
                           <img
@@ -46112,8 +46112,8 @@ function PortalPublicoJugadores({ clubSlug }) {
                             <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${meta.badge}`}>{meta.label}</span>
                           </div>
                           <div className="mt-1 flex items-center justify-between">
-                            <p className="text-sm font-bold text-lime-400">{formatoMoneda(precioPorHoraDeCancha(c))}/hora</p>
-                            <span className="flex items-center gap-1 text-[11px] font-bold text-slate-500 group-hover:text-lime-400">
+                            <p className="text-sm font-bold text-orange-400">{formatoMoneda(precioPorHoraDeCancha(c))}/hora</p>
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-slate-500 group-hover:text-orange-400">
                               Reservar <ChevronRight size={13} />
                             </span>
                           </div>
@@ -46219,13 +46219,13 @@ function PortalPublicoJugadores({ clubSlug }) {
                           </div>
                         )}
                         <div className="mt-3 flex items-center justify-between gap-2">
-                          <p className="flex items-center gap-1.5 text-sm font-bold text-lime-400">
+                          <p className="flex items-center gap-1.5 text-sm font-bold text-orange-400">
                             {formatoMoneda(montoInscripcionTorneo(t, null))} / {t.unidad_precio || 'pareja'}
                             {/* Descuentos por Pronto Pago: aviso visible desde el listado, no
                                 solo al abrir el detalle — así el jugador ya sabe el precio real
                                 antes de dar clic. */}
                             {descuentoProntoPagoVigente(t) > 0 && (
-                              <span className="rounded-full bg-lime-400/10 px-1.5 py-0.5 text-[9px] font-bold text-lime-400 ring-1 ring-lime-400/30">
+                              <span className="rounded-full bg-orange-400/10 px-1.5 py-0.5 text-[9px] font-bold text-orange-400 ring-1 ring-orange-400/30">
                                 -{descuentoProntoPagoVigente(t)}%
                               </span>
                             )}
@@ -46296,7 +46296,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                           </div>
                         )}
                         <div className="mt-3 flex items-center justify-between gap-2">
-                          <p className="text-sm font-bold text-lime-400">{formatoMoneda(precioDeReta(r))}/lugar</p>
+                          <p className="text-sm font-bold text-orange-400">{formatoMoneda(precioDeReta(r))}/lugar</p>
                           {miInscripcionReta ? (
                             <div className="flex items-center gap-2">
                               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-400 ring-1 ring-emerald-400/30">
@@ -46363,7 +46363,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                     const nivelActualPortal = ultimaPortal?.nivel_asignado || null;
                     const metaPortal = nivelActualPortal ? NIVEL_OFICIAL_META[nivelActualPortal] : null;
                     // FIX (sin degradados, adaptable Claro/Oscuro): antes
-                    // `bg-gradient-to-r from-lime-400/10 via-white/50
+                    // `bg-gradient-to-r from-orange-400/10 via-white/50
                     // to-white/50`, y luego (fix anterior) un
                     // `bg-slate-800/80` FIJO que se veía como bloque negro
                     // en Modo Claro. Este archivo NO usa el prefijo
@@ -46382,10 +46382,10 @@ function PortalPublicoJugadores({ clubSlug }) {
                       <button
                         type="button"
                         onClick={() => setMostrarMiPerfilDeportivo(true)}
-                        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/80 p-4 text-left transition hover:border-lime-400/50 hover:bg-slate-50"
+                        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/80 p-4 text-left transition hover:border-orange-400/50 hover:bg-slate-50"
                       >
                         <span className="flex items-center gap-2.5">
-                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-lime-400/15 text-lime-300 ring-1 ring-lime-400/30">
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-400/15 text-orange-300 ring-1 ring-orange-400/30">
                             <Gauge size={16} />
                           </span>
                           <span>
@@ -46403,7 +46403,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                               Sin evaluar
                             </span>
                           )}
-                          <ChevronRight size={16} className="text-lime-300" />
+                          <ChevronRight size={16} className="text-orange-300" />
                         </span>
                       </button>
                     );
@@ -46448,12 +46448,12 @@ function PortalPublicoJugadores({ clubSlug }) {
                       aparecerían en ningún lado del Portal. */}
                   {misClasesPrivadasProximas.length > 0 && (
                     <div className="space-y-2">
-                      <p className="text-xs font-bold uppercase tracking-wide text-lime-400">Tus Próximas Clases Privadas</p>
+                      <p className="text-xs font-bold uppercase tracking-wide text-orange-400">Tus Próximas Clases Privadas</p>
                       {misClasesPrivadasProximas.map((c) => {
                         const cancha = canchasPorId[c.cancha_id];
                         const diaFecha = c.fecha ? formatoFechaLarga(c.fecha) : 'Sin fecha';
                         return (
-                          <div key={c.id} className="rounded-2xl border border-lime-400/20 bg-lime-400/[0.04] p-4 backdrop-blur-sm">
+                          <div key={c.id} className="rounded-2xl border border-orange-400/20 bg-orange-400/[0.04] p-4 backdrop-blur-sm">
                             <div className="flex items-start justify-between gap-2">
                               <div>
                                 <p className="font-black text-slate-900">{c.nombre}</p>
@@ -46463,7 +46463,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                                   {cancha ? ` · ${cancha.nombre}` : ''}
                                 </p>
                               </div>
-                              <span className="whitespace-nowrap rounded-full bg-lime-400/15 px-2 py-0.5 text-[10px] font-black text-lime-400 ring-1 ring-lime-400/30">
+                              <span className="whitespace-nowrap rounded-full bg-orange-400/15 px-2 py-0.5 text-[10px] font-black text-orange-400 ring-1 ring-orange-400/30">
                                 Confirmada
                               </span>
                             </div>
@@ -46554,7 +46554,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                                   Reservar Clase Suelta
                                 </BotonSecundario>
                               </div>
-                              <div className="flex flex-col justify-between rounded-xl border border-lime-400/40 bg-lime-400/[0.06] p-3">
+                              <div className="flex flex-col justify-between rounded-xl border border-orange-400/40 bg-orange-400/[0.06] p-3">
                                 <div>
                                   <p className="text-xs font-black text-slate-900">Adquirir Membresía o Plan Mensual de Academia</p>
                                   <p className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
@@ -46582,7 +46582,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                 <div>
                   {!jugador ? (
                     <div className="flex flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-white/50 p-8 text-center backdrop-blur-sm">
-                      <History size={26} className="text-lime-400" />
+                      <History size={26} className="text-orange-400" />
                       <p className="text-sm text-slate-500">Identifícate para ver tu historial de actividad.</p>
                       <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
                         <User size={13} /> Identificarme
@@ -46602,7 +46602,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                             return (
                               <div key={h.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                                 <div className="flex min-w-0 items-start gap-2.5">
-                                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-lime-400">
+                                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-orange-400">
                                     <Icon size={14} />
                                   </div>
                                   <div className="min-w-0">
@@ -46632,7 +46632,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                 <div>
                   {!jugador ? (
                     <div className="flex flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-white/50 p-8 text-center backdrop-blur-sm">
-                      <Wallet size={26} className="text-lime-400" />
+                      <Wallet size={26} className="text-orange-400" />
                       <p className="text-sm text-slate-500">Identifícate para ver tu saldo y tu historial.</p>
                       <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
                         <User size={13} /> Identificarme
@@ -46641,7 +46641,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                   ) : (
                     <div className="space-y-3">
                       {/* FIX (sin degradados, adaptable Claro/Oscuro): antes
-                          `bg-gradient-to-br from-lime-400/10 via-white/60
+                          `bg-gradient-to-br from-orange-400/10 via-white/60
                           to-white/60`, y luego un `bg-slate-800/80` FIJO —
                           ver el comentario largo sobre "Mi Perfil
                           Deportivo" (pestaña Academia): mismas clases
@@ -46649,11 +46649,11 @@ function PortalPublicoJugadores({ clubSlug }) {
                           `CSS_MODO_OSCURO_CLUBOS`, en vez de `dark:algo`
                           (este proyecto no usa ese prefijo en ningún lado). */}
                       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white/80 p-5">
-                        <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-lime-400">
+                        <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-orange-400">
                           <Sparkles size={12} /> Saldo disponible
                         </p>
                         <p className="mt-1 text-3xl font-black text-slate-900">
-                          {cargandoWallet ? <Loader2 size={22} className="animate-spin text-lime-400" /> : formatoMoneda(saldoWallet)}
+                          {cargandoWallet ? <Loader2 size={22} className="animate-spin text-orange-400" /> : formatoMoneda(saldoWallet)}
                         </p>
                         <p className="mt-1 text-xs text-slate-600">
                           Úsalo para pagar canchas, torneos, retas o compras en la Tienda — cubre lo que alcance, el resto se paga en recepción.
@@ -46690,7 +46690,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             requerimiento en una pantalla de una sola página con tabs, sin
             un pie de página fijo propio). */}
         <p className="mx-auto max-w-3xl px-4 pb-6 text-center text-[11px] text-slate-500">
-          <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+          <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-orange-500 underline hover:text-orange-400">
             Términos y Condiciones y Política de Privacidad
           </a>
         </p>
@@ -46702,13 +46702,13 @@ function PortalPublicoJugadores({ clubSlug }) {
           <button
             type="button"
             onClick={() => setModalCarritoAbierto(true)}
-            className="fixed inset-x-4 bottom-4 z-40 mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-2xl border border-lime-400/30 bg-white/90 px-4 py-3 text-left shadow-2xl shadow-black/50 backdrop-blur-xl"
+            className="fixed inset-x-4 bottom-4 z-40 mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-2xl border border-orange-400/30 bg-white/90 px-4 py-3 text-left shadow-2xl shadow-black/50 backdrop-blur-xl"
           >
             <span className="flex items-center gap-2 text-sm font-bold text-slate-900">
-              <ShoppingCart size={16} className="text-lime-400" />
+              <ShoppingCart size={16} className="text-orange-400" />
               {carritoTienda.reduce((acc, i) => acc + i.cantidad, 0)} artículo(s)
             </span>
-            <span className="flex items-center gap-1.5 text-sm font-black text-lime-400">
+            <span className="flex items-center gap-1.5 text-sm font-black text-orange-400">
               {formatoMoneda(totalCarritoTienda)} <ChevronRight size={15} />
             </span>
           </button>
@@ -47022,7 +47022,7 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
 
   const claseTab = (activa) =>
     `flex-1 rounded-md px-3 py-2 text-xs font-bold transition ${
-      activa ? 'bg-lime-400 text-slate-950 shadow-lg shadow-lime-400/20' : 'text-slate-500 hover:text-slate-800'
+      activa ? 'bg-orange-400 text-slate-950 shadow-lg shadow-orange-400/20' : 'text-slate-500 hover:text-slate-800'
     }`;
 
   return (
@@ -47104,11 +47104,11 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
                 type="checkbox"
                 checked={aceptaLegal}
                 onChange={(e) => setAceptaLegal(e.target.checked)}
-                className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
+                className="mt-0.5 h-3.5 w-3.5 accent-orange-400"
               />
               <span>
                 Acepto los{' '}
-                <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-lime-500 underline hover:text-lime-400">
+                <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-orange-500 underline hover:text-orange-400">
                   Términos y Condiciones de Jugadores y la Política de Privacidad
                 </a>
                 .
@@ -47149,7 +47149,7 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
           <button
             key={idx}
             onClick={() => onElegir(`${c.rama} ${c.nivel}`.trim())}
-            className="flex w-full items-center justify-between rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-2.5 text-sm font-bold text-slate-800 hover:border-lime-400/50 hover:text-lime-400"
+            className="flex w-full items-center justify-between rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-2.5 text-sm font-bold text-slate-800 hover:border-orange-400/50 hover:text-orange-400"
           >
             {c.rama} {c.nivel}
             <ChevronRight size={15} />
@@ -47417,11 +47417,11 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
             {formatoFechaLarga(torneo.fecha_inicio)}
             {torneo.fecha_fin && torneo.fecha_fin !== torneo.fecha_inicio ? ` — ${formatoFechaLarga(torneo.fecha_fin)}` : ''}
           </p>
-          <p className="mt-2 flex flex-wrap items-center gap-2 text-lg font-black text-lime-400">
+          <p className="mt-2 flex flex-wrap items-center gap-2 text-lg font-black text-orange-400">
             {formatoMoneda(precioListaConDescuento)}{' '}
             <span className="text-xs font-semibold text-slate-500">/ {torneo.unidad_precio || 'pareja'}</span>
             {descuentoPctVigente > 0 && (
-              <span className="rounded-full bg-lime-400/10 px-1.5 py-0.5 text-[10px] font-bold text-lime-400 ring-1 ring-lime-400/30">
+              <span className="rounded-full bg-orange-400/10 px-1.5 py-0.5 text-[10px] font-bold text-orange-400 ring-1 ring-orange-400/30">
                 -{descuentoPctVigente}% pronto pago
               </span>
             )}
@@ -47453,7 +47453,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                     type="button"
                     onClick={() => setCategoria(valor)}
                     className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
-                      activa ? 'border-lime-400 bg-lime-400/10 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/50'
+                      activa ? 'border-orange-400 bg-orange-400/10 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/50'
                     }`}
                   >
                     {c.rama} {c.nivel}
@@ -47563,8 +47563,8 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
           // jugador confirme (o le dé "Cambiar" para volver a las opciones
           // normales). El único camino de aquí en adelante es
           // `confirmarInscripcion` → `onInscribirme(..., {modo:'unirme',...})`.
-          <div className="rounded-xl border border-lime-400/30 bg-lime-400/10 p-3.5">
-            <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-lime-400">
+          <div className="rounded-xl border border-orange-400/30 bg-orange-400/10 p-3.5">
+            <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-orange-400">
               <UserPlus size={13} /> Unirme a pareja seleccionada
             </p>
             <p className="mt-1.5 text-sm font-black text-slate-900">Te unes a {parejaParaUnirme.nombre}</p>
@@ -47620,7 +47620,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                     type="button"
                     onClick={() => setModoPareja(op.id)}
                     className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
-                      modoPareja === op.id ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                      modoPareja === op.id ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     {op.label}
@@ -47671,8 +47671,8 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                     className={inputClase}
                   />
                   {parejaSeleccionada ? (
-                    <div className="flex items-center justify-between rounded-lg border border-lime-400/30 bg-lime-400/10 px-3 py-2">
-                      <p className="text-xs font-bold text-lime-400">{parejaSeleccionada.nombre}</p>
+                    <div className="flex items-center justify-between rounded-lg border border-orange-400/30 bg-orange-400/10 px-3 py-2">
+                      <p className="text-xs font-bold text-orange-400">{parejaSeleccionada.nombre}</p>
                       <button type="button" onClick={() => setParejaSeleccionada(null)} className="text-[11px] font-bold text-slate-500 hover:text-slate-800">
                         Cambiar
                       </button>
@@ -47690,7 +47690,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                               key={r.id}
                               type="button"
                               onClick={() => setParejaSeleccionada(r)}
-                              className="flex w-full items-center justify-between rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-lime-400/50"
+                              className="flex w-full items-center justify-between rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-orange-400/50"
                             >
                               <span className="text-xs font-bold text-slate-800">{r.nombre}</span>
                               <ChevronRight size={13} className="text-slate-500" />
@@ -47887,14 +47887,14 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               onClick={() => setTipoPagoDeseado('clase_suelta')}
               aria-pressed={tipoPagoDeseado === 'clase_suelta'}
               className={`flex flex-col gap-1.5 rounded-xl border p-3 text-left transition ${
-                tipoPagoDeseado === 'clase_suelta' ? 'border-lime-500 bg-lime-400/[0.06] ring-2 ring-lime-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-lime-400/40'
+                tipoPagoDeseado === 'clase_suelta' ? 'border-orange-500 bg-orange-400/[0.06] ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-orange-400/40'
               }`}
             >
               <div className="flex items-start justify-between gap-2">
                 <p className="text-xs font-black text-slate-900">Clase Suelta</p>
                 <span
                   className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
-                    tipoPagoDeseado === 'clase_suelta' ? 'border-lime-500 bg-lime-500' : 'border-slate-300 bg-white'
+                    tipoPagoDeseado === 'clase_suelta' ? 'border-orange-500 bg-orange-500' : 'border-slate-300 bg-white'
                   }`}
                 />
               </div>
@@ -47906,14 +47906,14 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               onClick={() => setTipoPagoDeseado('mensualidad')}
               aria-pressed={tipoPagoDeseado === 'mensualidad'}
               className={`flex flex-col gap-1.5 rounded-xl border p-3 text-left transition ${
-                tipoPagoDeseado === 'mensualidad' ? 'border-lime-500 bg-lime-400/[0.06] ring-2 ring-lime-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-lime-400/40'
+                tipoPagoDeseado === 'mensualidad' ? 'border-orange-500 bg-orange-400/[0.06] ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-orange-400/40'
               }`}
             >
               <div className="flex items-start justify-between gap-2">
                 <p className="text-xs font-black text-slate-900">Plan Mensual de Academia</p>
                 <span
                   className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
-                    tipoPagoDeseado === 'mensualidad' ? 'border-lime-500 bg-lime-500' : 'border-slate-300 bg-white'
+                    tipoPagoDeseado === 'mensualidad' ? 'border-orange-500 bg-orange-500' : 'border-slate-300 bg-white'
                   }`}
                 />
               </div>
@@ -47934,7 +47934,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                 type="button"
                 onClick={() => setTipo(t.value)}
                 className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
-                  tipo === t.value ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  tipo === t.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {t.value === 'privada' ? 'Privada 1-a-1' : 'Grupal'}
@@ -47958,7 +47958,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                   type="button"
                   onClick={() => setNumeroParticipantes(n)}
                   className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
-                    numeroParticipantes === n ? 'bg-lime-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                    numeroParticipantes === n ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   {n} Personas
@@ -47977,7 +47977,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                 type="button"
                 onClick={() => setNivel(n)}
                 className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
-                  nivel === n ? 'border-lime-400 bg-lime-400/10 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/50'
+                  nivel === n ? 'border-orange-400 bg-orange-400/10 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/50'
                 }`}
               >
                 {n}
@@ -48021,7 +48021,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               type="button"
               onClick={() => setFecha(hoyISO())}
               className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                fecha === hoyISO() ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
+                fecha === hoyISO() ? 'border-orange-400/60 bg-orange-400/15 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
               }`}
             >
               Hoy
@@ -48030,7 +48030,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               type="button"
               onClick={() => setFecha(sumarDia(hoyISO(), 1))}
               className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                fecha === sumarDia(hoyISO(), 1) ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
+                fecha === sumarDia(hoyISO(), 1) ? 'border-orange-400/60 bg-orange-400/15 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
               }`}
             >
               Mañana
@@ -48043,7 +48043,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
           hint={
             coachPreferido
               ? 'Blanco = disponible con ese coach, gris = no disponible (coach ocupado, no asignado a ese turno o sin cancha libre).'
-              : 'Blanco = disponible (con el coach del turno, si tiene uno asignado), gris = no disponible (sin cancha libre, clase o torneo/reta). Borde verde lima = tu horario elegido.'
+              : 'Blanco = disponible (con el coach del turno, si tiene uno asignado), gris = no disponible (sin cancha libre, clase o torneo/reta). Borde naranja = tu horario elegido.'
           }
         >
           <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
@@ -48105,14 +48105,14 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                   // alto contraste (nunca fondos verdes/azules/morados tenues
                   // que encimen la letra); pasado/no disponible/ocupado = un
                   // único gris opaco + texto tenue, inhabilitado; seleccionado
-                  // = SOLO borde/ring verde lima grueso, conservando el mismo
+                  // = SOLO borde/ring naranja grueso, conservando el mismo
                   // fondo claro que "disponible" para legibilidad total.
                   className={`flex min-h-[58px] flex-col items-center justify-center gap-0.5 overflow-hidden rounded-lg border px-1.5 py-2 text-center transition ${
                     bloqueado || s.pasado
                       ? 'cursor-not-allowed border-slate-200 bg-slate-200/60 text-slate-400'
                       : seleccionado
-                      ? 'border-2 border-lime-500 ring-2 ring-lime-500/30 bg-white text-slate-900 font-semibold'
-                      : 'border-slate-200 bg-white text-slate-900 font-semibold hover:border-lime-400/50'
+                      ? 'border-2 border-orange-500 ring-2 ring-orange-500/30 bg-white text-slate-900 font-semibold'
+                      : 'border-slate-200 bg-white text-slate-900 font-semibold hover:border-orange-400/50'
                   }`}
                 >
                   <span className="block w-full truncate text-[11px] font-bold leading-tight">{formatoHora12(s.horaInicio)}</span>
@@ -48364,10 +48364,10 @@ function SelectorMetodoPagoPortal({
           type="button"
           onClick={() => onCambiarMetodo('wallet')}
           disabled={saldoWallet <= 0}
-          className={`${claseBoton} justify-between ${metodo === 'wallet' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-300 bg-slate-100'}`}
+          className={`${claseBoton} justify-between ${metodo === 'wallet' ? 'border-orange-400/50 bg-orange-400/10' : 'border-slate-300 bg-slate-100'}`}
         >
           <span className="flex items-center gap-2">
-            <Wallet size={chico ? 14 : 15} className="text-lime-400" /> Pagar con Wallet
+            <Wallet size={chico ? 14 : 15} className="text-orange-400" /> Pagar con Wallet
           </span>
           <span className="text-[11px] font-semibold text-slate-500">Saldo: {formatoMoneda(saldoWallet)}</span>
         </button>
@@ -48375,7 +48375,7 @@ function SelectorMetodoPagoPortal({
       <button
         type="button"
         onClick={() => onCambiarMetodo('recepcion')}
-        className={`${claseBoton} ${metodo === 'recepcion' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-300 bg-slate-100'}`}
+        className={`${claseBoton} ${metodo === 'recepcion' ? 'border-orange-400/50 bg-orange-400/10' : 'border-slate-300 bg-slate-100'}`}
       >
         <span className="flex items-center gap-2">
           {/* Beta: texto visible renombrado de "Pagar en Recepción" a "Pagar
@@ -48389,7 +48389,7 @@ function SelectorMetodoPagoPortal({
         <button
           type="button"
           onClick={() => onCambiarMetodo('tarjeta')}
-          className={`${claseBoton} ${metodo === 'tarjeta' ? 'border-lime-400/50 bg-lime-400/10' : 'border-slate-300 bg-slate-100'}`}
+          className={`${claseBoton} ${metodo === 'tarjeta' ? 'border-orange-400/50 bg-orange-400/10' : 'border-slate-300 bg-slate-100'}`}
         >
           <span className="flex items-center gap-2">
             <CreditCard size={chico ? 14 : 15} className="text-slate-500" /> Pagar con Tarjeta (Débito/Crédito)
@@ -48706,10 +48706,10 @@ function ModalCarritoTienda({
                     type="button"
                     disabled={sinStock}
                     onClick={() => onAgregarSugerido(p)}
-                    className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-lime-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-300"
+                    className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-orange-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-300"
                   >
                     <span className="text-[11px] font-bold text-slate-800">{p.nombre}</span>
-                    <span className="text-[11px] font-semibold text-lime-400">{textoPrecioConVariantes(p, variantes)}</span>
+                    <span className="text-[11px] font-semibold text-orange-400">{textoPrecioConVariantes(p, variantes)}</span>
                     {sinStock && <span className="text-[10px] font-bold text-rose-400">Agotado</span>}
                   </button>
                 );
@@ -48722,7 +48722,7 @@ function ModalCarritoTienda({
           <>
             <div className="flex items-center justify-between border-t border-slate-200 pt-3">
               <span className="text-sm font-bold text-slate-600">Total</span>
-              <span className="text-xl font-black text-lime-400">{formatoMoneda(total)}</span>
+              <span className="text-xl font-black text-orange-400">{formatoMoneda(total)}</span>
             </div>
 
             {jugador && (
@@ -49038,7 +49038,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 type="button"
                 onClick={() => setFecha(hoyISO())}
                 className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                  fecha === hoyISO() ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
+                  fecha === hoyISO() ? 'border-orange-400/60 bg-orange-400/15 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
                 }`}
               >
                 Hoy
@@ -49047,7 +49047,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 type="button"
                 onClick={() => setFecha(sumarDia(hoyISO(), 1))}
                 className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                  fecha === sumarDia(hoyISO(), 1) ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-lime-400/40'
+                  fecha === sumarDia(hoyISO(), 1) ? 'border-orange-400/60 bg-orange-400/15 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
                 }`}
               >
                 Mañana
@@ -49083,7 +49083,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           </Campo>
         </div>
 
-        <Campo label="Hora" hint="Blanco = disponible, gris = no disponible (reservado, clase o torneo/reta), borde verde lima = tu horario elegido.">
+        <Campo label="Hora" hint="Blanco = disponible, gris = no disponible (reservado, clase o torneo/reta), borde naranja = tu horario elegido.">
           {/* INDICADOR DE DEMANDA/OCUPACIÓN — % de horarios de ESTA cancha,
               ESTA fecha y duración ya reservados hoy (Slots Reservados /
               Slots Totales del Día * 100). Insignia roja/amarilla/verde
@@ -49103,7 +49103,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 type="button"
                 onClick={() => setTurnoFiltro(t.id)}
                 className={`shrink-0 rounded-full border px-3 py-1 text-[10px] font-bold transition ${
-                  turnoFiltro === t.id ? 'border-lime-400/60 bg-lime-400/15 text-lime-400' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-lime-400/40'
+                  turnoFiltro === t.id ? 'border-orange-400/60 bg-orange-400/15 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
                 }`}
               >
                 {t.label}
@@ -49146,7 +49146,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                     // (nunca fondos verdes/tenues que encimen la letra), gris
                     // opaco + texto tenue para pasados/no disponibles, y el
                     // horario SELECCIONADO se distingue SOLO con un borde/ring
-                    // verde lima grueso — conserva el mismo fondo claro que
+                    // naranja grueso — conserva el mismo fondo claro que
                     // "disponible" para que coach/precio/horario se sigan
                     // leyendo perfectamente (ver `CSS_MODO_OSCURO_CLUBOS`: en
                     // Modo Oscuro `bg-white`/`text-slate-900` ya se traducen
@@ -49156,8 +49156,8 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                       bloqueado
                         ? 'cursor-not-allowed border-slate-200 bg-slate-200/60 text-slate-400'
                         : seleccionado
-                        ? 'border-2 border-lime-500 ring-2 ring-lime-500/30 bg-white text-slate-900 font-semibold'
-                        : 'border-slate-200 bg-white text-slate-900 font-semibold hover:border-lime-400/50'
+                        ? 'border-2 border-orange-500 ring-2 ring-orange-500/30 bg-white text-slate-900 font-semibold'
+                        : 'border-slate-200 bg-white text-slate-900 font-semibold hover:border-orange-400/50'
                     }`}
                   >
                     <span className={`text-[11px] font-bold ${bloqueado ? 'line-through' : ''}`}>
@@ -49194,10 +49194,10 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                     type="button"
                     disabled={sinStock}
                     onClick={() => (variantes.length > 0 ? setAddonParaVariante(p) : agregarAddon(p))}
-                    className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-lime-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-300"
+                    className="flex shrink-0 flex-col items-start gap-0.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-left hover:border-orange-400/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-300"
                   >
                     <span className="text-[11px] font-bold text-slate-800">{p.nombre}</span>
-                    <span className="text-[11px] font-semibold text-lime-400">{textoPrecioConVariantes(p, variantes)}</span>
+                    <span className="text-[11px] font-semibold text-orange-400">{textoPrecioConVariantes(p, variantes)}</span>
                     {sinStock && <span className="text-[10px] font-bold text-rose-400">Agotado</span>}
                   </button>
                 );
@@ -49249,7 +49249,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           )}
           <div className="flex items-center justify-between border-t border-slate-300 pt-2 text-sm font-black text-slate-900">
             <span>Total</span>
-            <span className="text-lime-400">{formatoMoneda(total)}</span>
+            <span className="text-orange-400">{formatoMoneda(total)}</span>
           </div>
         </div>
 
@@ -53096,8 +53096,8 @@ function AppInterno({ clubInicial } = {}) {
 // REDISEÑO PREMIUM SAAS UI (Auth + Onboarding) — reemplaza el video de
 // fondo con jugadores/cancha (`FondoAuthVideo`, ahora eliminado) por un
 // fondo abstracto: off-white (`#f8fafc`) enriquecido con "glow gradients"
-// — orbes de luz muy sutiles, difuminados (`blur`), en verde QLUBOS
-// (lime) y azul marino/navy profundo (`slate-900`, el mismo navy de
+// — orbes de luz muy sutiles, difuminados (`blur`), en naranja QLUBOS
+// (orange) y azul marino/navy profundo (`slate-900`, el mismo navy de
 // `fill-slate-800` del logo y de `slate-950` en Modo Oscuro) — nada de
 // fotos de stock/canchas/pelotas/jugadores, para que la marca escale a
 // cualquier deporte. Un solo componente compartido por `ClubAuthScreen`
@@ -53107,10 +53107,10 @@ function AppInterno({ clubInicial } = {}) {
 function FondoGlowQlubOS() {
   return (
     <div aria-hidden="true" className="fixed inset-0 -z-10 overflow-hidden bg-[#f8fafc]">
-      {/* Orbe lima (marca QLUBOS) — esquina superior izquierda. */}
-      <div className="absolute -left-40 -top-40 h-[34rem] w-[34rem] rounded-full bg-lime-300/40 blur-[120px]" />
+      {/* Orbe naranja (marca QLUBOS) — esquina superior izquierda. */}
+      <div className="absolute -left-40 -top-40 h-[34rem] w-[34rem] rounded-full bg-orange-300/40 blur-[120px]" />
       {/* Orbe navy profundo — esquina inferior derecha, contrapeso serio/B2B
-          al verde, mismo tono que el acento oscuro de marca (`slate-900`). */}
+          al naranja, mismo tono que el acento oscuro de marca (`slate-900`). */}
       <div className="absolute -bottom-48 -right-40 h-[36rem] w-[36rem] rounded-full bg-slate-900/[0.07] blur-[130px]" />
       {/* Tercer orbe, discreto, arriba a la derecha — rompe la simetría
           perfecta sin competir con los dos principales. */}
@@ -53507,7 +53507,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   type="checkbox"
                   checked={aceptaLegalClub}
                   onChange={(e) => setAceptaLegalClub(e.target.checked)}
-                  className="mt-0.5 h-3.5 w-3.5 accent-lime-400"
+                  className="mt-0.5 h-3.5 w-3.5 accent-orange-400"
                 />
                 <span>
                   Acepto los{' '}
@@ -53823,7 +53823,7 @@ function ClubAuthGate() {
   if (estado === 'cargando') {
     return (
       <div className="relative flex min-h-screen min-h-dvh items-center justify-center bg-[#f8fafc]">
-        <Loader2 size={28} className="animate-spin text-lime-400" />
+        <Loader2 size={28} className="animate-spin text-orange-400" />
       </div>
     );
   }
@@ -53855,7 +53855,7 @@ function ClubAuthGate() {
             </BotonSecundario>
           </div>
         ) : (
-          <Loader2 size={28} className="animate-spin text-lime-400" />
+          <Loader2 size={28} className="animate-spin text-orange-400" />
         )}
       </div>
     );
@@ -54159,7 +54159,7 @@ function BloqueLegal({ bloque }) {
       <ul className="mt-2 space-y-2">
         {bloque.items.map((item, idx) => (
           <li key={idx} className="flex gap-2 text-sm leading-relaxed text-slate-300">
-            <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-lime-400" />
+            <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-orange-400" />
             <span>
               {typeof item === 'string' ? item : (
                 <>
@@ -54210,7 +54210,7 @@ function VistaLegales() {
                 type="button"
                 onClick={() => setTabActiva(d.id)}
                 className={`flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3.5 py-2 text-[11px] font-bold transition sm:flex-1 ${
-                  tabActiva === d.id ? 'bg-lime-400 text-slate-950 shadow-lg shadow-lime-400/20' : 'text-slate-400 hover:text-slate-100'
+                  tabActiva === d.id ? 'bg-orange-400 text-slate-950 shadow-lg shadow-orange-400/20' : 'text-slate-400 hover:text-slate-100'
                 }`}
               >
                 <Icon size={14} /> {d.tab}
