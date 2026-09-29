@@ -40643,10 +40643,15 @@ function SeccionOperadoresStaff({ empleados, onCrearEmpleado }) {
 // continua, no un salto a otra app.
 // ============================================================================
 
+// Copy final de tarjetas (corrección — el `descripcion` de cada plan es la
+// fuente real que lee `PantallaSeleccionPlanOnboarding` vía `plan.descripcion`;
+// un cambio de texto SIEMPRE se hace aquí, nunca solo en el JSX/comentarios
+// de esa pantalla, o el render sigue mostrando este string sin importar qué
+// diga el comentario de al lado).
 const PLANES_ONBOARDING_CLUB = [
-  { canchas: '1-3', nombre: '1 – 3 Canchas', precioMensual: 1499, descripcion: 'QLUBOS completo para clubes pequeños.' },
-  { canchas: '4-7', nombre: '4 – 7 Canchas', precioMensual: 2990, descripcion: 'QLUBOS completo para una operación de mayor volumen.' },
-  { canchas: '8-12', nombre: '8 – 12 Canchas', precioMensual: 4990, descripcion: 'QLUBOS completo para clubes de mayor capacidad.' },
+  { canchas: '1-3', nombre: '1 – 3 Canchas', precioMensual: 1499, descripcion: 'Diseñado para clubes ágiles y en crecimiento.' },
+  { canchas: '4-7', nombre: '4 – 7 Canchas', precioMensual: 2990, descripcion: 'Ideal para clubes de capacidad intermedia.' },
+  { canchas: '8-12', nombre: '8 – 12 Canchas', precioMensual: 4990, descripcion: 'Optimizado para complejos de gran escala.' },
 ];
 
 // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) — el
@@ -40708,13 +40713,14 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
     <LienzoOnboardingClub ancho="max-w-4xl">
       <div className="mb-8 text-center">
         <InsigniaPasoOnboarding paso={3} />
-        {/* Color en el título (corrección — item 1): "Todo incluido." en
-            verde QLUBOS legible — `text-lime-600` (no `lime-400`, demasiado
-            neón/claro sobre fondo blanco para un encabezado grande) es el
-            mismo tono ya usado en los demás textos destacados sobre fondo
-            claro de esta pantalla (ej. "Plan seleccionado" en cada tarjeta). */}
+        {/* Color en el título (corrección — item 2, unificación): "Todo
+            incluido." usa EXACTAMENTE la misma clase `text-lime-400` que el
+            banner inferior ("Tu dinero es tuyo...", más abajo) — mismo tono
+            y brillo en las dos apariciones del verde QLUBOS en esta
+            pantalla, a propósito, aunque el título esté sobre fondo claro y
+            el banner sobre navy. */}
         <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">
-          Un sistema. Una suscripción. <span className="text-lime-600">Todo incluido.</span>
+          Un sistema. Una suscripción. <span className="text-lime-400">Todo incluido.</span>
         </h1>
         <p className="mt-2 text-sm font-medium text-slate-500">Elige tu plan según el tamaño de tu club.</p>
       </div>
