@@ -3289,6 +3289,9 @@ function BadgeEstatusFinanciero({ estatus }) {
     exonerada: { texto: 'Penalización Exonerada', clase: 'bg-slate-100 text-slate-600 border border-slate-200' },
     // Reembolso a Wallet en Cancelación en Tiempo (Parte 5).
     reembolsado: { texto: 'Reembolsado a Wallet', clase: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
+    // Corrección de Lógica de Negocio (fix): reserva YA PAGADA cancelada
+    // fuera de tolerancia — el club retuvo el pago, no hubo reembolso.
+    retenido: { texto: 'Pago Retenido (Política de Cancelación)', clase: 'bg-red-50 text-red-700 border border-red-200' },
   };
   const cfg = CONFIG[estatus] || CONFIG.pendiente;
   return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${cfg.clase}`}>{cfg.texto}</span>;
@@ -3668,6 +3671,18 @@ function validarToleranciaCancelacion(fechaEventoMs, toleranciaHoras) {
   return { horasParaEvento, dentroDeTolerancia: horasParaEvento >= horas };
 }
 
+// Blindaje de Lógica de Negocio (fix Motor de Penalizaciones): normaliza la
+// evaluación de "¿esta actividad tiene el pago pendiente?" para que
+// variaciones de mayúsculas/minúsculas o de nombre de campo (`estado_pago`
+// en Reservas/Clases, `estatus_pago` en algunas filas de Retas/Torneos más
+// viejas) nunca hagan que una reserva sin pago real se lea como "pagada" ni
+// viceversa. Úsalo en vez de comparar `=== 'pendiente'` a mano.
+function esPagoPendiente(entidad) {
+  return ['pendiente', 'pago_en_club', 'pendiente_pago'].includes(
+    String(entidad?.estado_pago ?? entidad?.estatus_pago ?? '').toLowerCase()
+  );
+}
+
 // ============================================================================
 // MOTOR DE GESTIÓN DE PENALIZACIONES PENDIENTES (migracion_v74) — tabla
 // central `penalizaciones_pendientes`: un renglón cobrable/condonable por
@@ -3680,9 +3695,18 @@ function validarToleranciaCancelacion(fechaEventoMs, toleranciaHoras) {
 // ============================================================================
 
 async function registrarPenalizacionPendiente({ jugadorId, jugadorNombre, tipoActividad, referenciaTabla, referenciaId, monto, motivo, fechaActividad }) {
-  if (!(Number(monto) > 0)) return;
+  if (!(Number(monto) > 0)) return { ok: false, error: new Error('Monto inválido para registrar penalización.') };
+  // FIX CRÍTICO (blindaje): el cliente de Supabase NO lanza excepción
+  // cuando un insert falla por RLS/columna faltante/tabla inexistente — solo
+  // regresa `{ data, error }`. La versión anterior de esta función nunca
+  // leía `error`, así que un insert fallido se veía IDÉNTICO a uno exitoso:
+  // la cancelación en Parrilla decía "listo" pero la fila nunca llegaba a
+  // `penalizaciones_pendientes`, sin ningún rastro en consola ni en el toast
+  // del staff. Ahora se revisa `error` explícitamente y se regresa
+  // `{ ok, error }` para que quien llama pueda avisar y no dar la
+  // transacción por completa cuando en realidad quedó a medias.
   try {
-    await supabase.from('penalizaciones_pendientes').insert(
+    const { error } = await supabase.from('penalizaciones_pendientes').insert(
       withClubId({
         jugador_id: jugadorId ?? null,
         jugador_nombre: jugadorNombre || 'Jugador',
@@ -3695,8 +3719,14 @@ async function registrarPenalizacionPendiente({ jugadorId, jugadorNombre, tipoAc
         estado: 'pendiente',
       })
     );
+    if (error) {
+      console.error('[Penalizaciones] Falló el insert en penalizaciones_pendientes (¿corriste migracion_v74_motor_penalizaciones_pendientes.sql?).', error);
+      return { ok: false, error };
+    }
+    return { ok: true };
   } catch (_e) {
-    console.warn('[Penalizaciones] No se pudo registrar la penalización pendiente (¿corriste migracion_v74?).', _e);
+    console.error('[Penalizaciones] Excepción al registrar la penalización pendiente.', _e);
+    return { ok: false, error: _e };
   }
 }
 
@@ -7260,8 +7290,12 @@ function DetalleReserva({
   // como si ya se hubiera pagado. Ahora `montoPagado` es 0 salvo que el
   // pago ya esté marcado `pagado`, y toda la sección de Wallet se oculta
   // por completo cuando no hay nada que devolver (ver el render más abajo).
-  const montoPagado = reserva.estado_pago === 'pagado' ? Number(reserva.monto_total) || 0 : 0;
-  const reservaSinPago = montoPagado <= 0;
+  const montoPagado = !esPagoPendiente(reserva) && reserva.estado_pago === 'pagado' ? Number(reserva.monto_total) || 0 : 0;
+  // Blindaje de Lógica de Negocio (fix): `esPagoPendiente` normaliza
+  // mayúsculas/minúsculas y el nombre de campo (`estado_pago`/`estatus_pago`)
+  // — una reserva marcada 'Pendiente', 'pago_en_club', etc. siempre cuenta
+  // como sin pago real, sin importar cómo haya quedado escrito el valor.
+  const reservaSinPago = esPagoPendiente(reserva) || montoPagado <= 0;
   const [abonarSaldo, setAbonarSaldo] = useState(true);
   const [montoAbono, setMontoAbono] = useState(String(montoPagado || reserva.monto_total || 0));
   const [motivoCancelacion, setMotivoCancelacion] = useState('');
@@ -7436,9 +7470,19 @@ function DetalleReserva({
     // "Penalizada"/"Adeudo Pendiente" en el Portal de inmediato, sin esperar
     // un segundo round-trip.
     const generaPenalizacionAhora = mostrarPenalizacionParrilla && generarPenalizacion;
+    // Corrección de Lógica de Negocio (fix): reserva YA PAGADA + cancelación
+    // fuera de tolerancia = el club retiene el pago por política, nunca se
+    // reembolsa a Wallet. Es automático — no depende de ningún checkbox que
+    // el staff pueda dejar marcado sin querer (ver el render de arriba).
+    const retencionPorPolitica = !reservaSinPago && toleranciaReservasActiva && fueraDeTolerancia;
+    const estadoPagoOriginalReserva = reserva.estado_pago;
     const { error: errReserva } = await supabase
       .from('reservas')
-      .update({ estado: 'Cancelada', ...(generaPenalizacionAhora ? { estado_pago: 'penalizacion_pendiente' } : {}) })
+      .update({
+        estado: 'Cancelada',
+        ...(generaPenalizacionAhora ? { estado_pago: 'penalizacion_pendiente' } : {}),
+        ...(retencionPorPolitica ? { estado_pago: 'retenido' } : {}),
+      })
       .eq('id', reserva.id);
 
     if (errReserva) {
@@ -7448,8 +7492,16 @@ function DetalleReserva({
       return;
     }
 
+    // FIX CRÍTICO (blindaje): antes esta llamada no revisaba si el insert
+    // realmente se guardó — `registrarPenalizacionPendiente` ahora regresa
+    // `{ ok, error }` de verdad. Si falla, se revierte el `estado_pago` que
+    // ya se había marcado arriba (para no dejar un badge de "Adeudo
+    // Pendiente" fantasma sin ningún renglón real en `penalizaciones_
+    // pendientes`) y se avisa al staff con un toast de error explícito, para
+    // que sepa que tiene que reintentar o registrar el adeudo a mano.
+    let penalizacionRegistradaOk = false;
     if (generaPenalizacionAhora) {
-      await registrarPenalizacionPendiente({
+      const resultadoPenalizacion = await registrarPenalizacionPendiente({
         jugadorId: reserva.jugador_id,
         jugadorNombre: reserva.jugador_nombre,
         tipoActividad: 'reserva',
@@ -7459,10 +7511,25 @@ function DetalleReserva({
         motivo: motivoCancelacion.trim() || 'Cancelación extemporánea desde Parrilla Operativa',
         fechaActividad: reserva.fecha,
       });
+      if (resultadoPenalizacion?.ok) {
+        penalizacionRegistradaOk = true;
+      } else {
+        await supabase
+          .from('reservas')
+          .update({ estado_pago: estadoPagoOriginalReserva ?? 'pendiente' })
+          .eq('id', reserva.id);
+        toast({
+          titulo: 'La reserva se canceló, pero la penalización NO se guardó',
+          detalle:
+            resultadoPenalizacion?.error?.message ||
+            'No se pudo registrar el adeudo en Penalizaciones Pendientes (Smart POS). Vuelve a intentarlo o regístralo ahí manualmente.',
+          tono: 'error',
+        });
+      }
     }
 
     let saldoAplicado = 0;
-    if (!reservaSinPago && abonarSaldo && reserva.jugador_id && Number(montoAbono) > 0) {
+    if (!retencionPorPolitica && !reservaSinPago && abonarSaldo && reserva.jugador_id && Number(montoAbono) > 0) {
       try {
         const { data: jugadorActual, error: errJugador } = await supabase
           .from('jugadores')
@@ -7516,7 +7583,9 @@ function DetalleReserva({
       detalle:
         saldoAplicado > 0
           ? `Se abonaron ${formatoMoneda(saldoAplicado)} de saldo a favor.`
-          : generaPenalizacionAhora
+          : retencionPorPolitica
+          ? `Cancelación fuera de tiempo — el pago de ${formatoMoneda(montoPagado)} queda retenido por el club, sin reembolso.`
+          : penalizacionRegistradaOk
           ? `Se generó un adeudo de ${formatoMoneda(montoPenalizacionSugerido)} en Penalizaciones Pendientes (Smart POS).`
           : 'El horario quedó liberado.',
     });
@@ -7651,49 +7720,68 @@ function DetalleReserva({
               conserva el aviso de tolerancia + checkbox de siempre. */}
           {!reservaSinPago && (
             <>
-              {toleranciaReservasActiva && (
-                <p
-                  className={`flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
-                    fueraDeTolerancia ? 'bg-white text-gray-700 ring-1 ring-rose-200' : 'bg-amber-100 text-amber-900 ring-1 ring-amber-300'
-                  }`}
-                >
-                  <ShieldAlert size={13} className="mt-0.5 shrink-0" />
-                  {fueraDeTolerancia
-                    ? `Cancelación fuera de tiempo (a menos de ${toleranciaReservasHoras}h del juego) — tiempo de tolerancia expirado. Tú decides si de todas formas abonas saldo.`
-                    : `Dentro del tiempo de anticipación requerido (${toleranciaReservasHoras}h antes del juego) — cancelación sin penalización, se sugiere abonar saldo a favor.`}
-                </p>
-              )}
-
-              <label className="flex items-start gap-2.5 rounded-lg bg-white p-3">
-                <input
-                  type="checkbox"
-                  checked={abonarSaldo}
-                  onChange={(e) => setAbonarSaldo(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 accent-orange-400"
-                  disabled={!reserva.jugador_id}
-                />
-                <span className="text-xs text-gray-700">
-                  <span className="flex items-center gap-1.5 font-bold text-gray-900">
-                    <Wallet size={13} /> Abonar como Saldo a Favor al Wallet del Jugador
-                  </span>
-                  {!reserva.jugador_id && (
-                    <span className="mt-1 block text-amber-700">
-                      Esta reserva no tiene un jugador vinculado, así que no se puede abonar saldo.
-                    </span>
+              {toleranciaReservasActiva && fueraDeTolerancia ? (
+                // Corrección de Lógica de Negocio (fix): antes, una reserva
+                // YA PAGADA cancelada fuera de tiempo seguía mostrando el
+                // checkbox "Abonar Saldo a Favor" marcado por default — si
+                // el staff no lo desmarcaba a mano, el sistema reembolsaba
+                // a Wallet una cancelación extemporánea, justo lo que las
+                // políticas de cancelación existen para evitar. Ahora, fuera
+                // de tolerancia con pago real, el retiro del pago es
+                // AUTOMÁTICO — no hay checkbox que se pueda dejar marcado
+                // por accidente — y `cancelar()` nunca ejecuta el abono a
+                // Wallet en este caso (ver más abajo).
+                <div className="rounded-lg bg-white p-3 ring-1 ring-rose-200">
+                  <p className="flex items-start gap-1.5 text-xs font-semibold text-gray-700">
+                    <ShieldAlert size={13} className="mt-0.5 shrink-0 text-rose-500" />
+                    Cancelación fuera de tiempo. De acuerdo a las políticas del club, el monto pagado no es reembolsable.
+                  </p>
+                  <p className="mt-1.5 text-[11px] text-slate-500">
+                    Se registrará como <b>Penalización Aplicada / Retenido</b> — el pago de {formatoMoneda(montoPagado)} se
+                    queda en el club; no se abona nada a la Wallet del jugador.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {toleranciaReservasActiva && (
+                    <p className="flex items-start gap-1.5 rounded-lg bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-900 ring-1 ring-amber-300">
+                      <ShieldAlert size={13} className="mt-0.5 shrink-0" />
+                      {`Dentro del tiempo de anticipación requerido (${toleranciaReservasHoras}h antes del juego) — cancelación sin penalización, se sugiere abonar saldo a favor.`}
+                    </p>
                   )}
-                </span>
-              </label>
 
-              {abonarSaldo && reserva.jugador_id && (
-                <Campo label="Monto a abonar (MXN)">
-                  <input
-                    type="number"
-                    min="0"
-                    value={montoAbono}
-                    onChange={(e) => setMontoAbono(e.target.value)}
-                    className={inputClase}
-                  />
-                </Campo>
+                  <label className="flex items-start gap-2.5 rounded-lg bg-white p-3">
+                    <input
+                      type="checkbox"
+                      checked={abonarSaldo}
+                      onChange={(e) => setAbonarSaldo(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 accent-orange-400"
+                      disabled={!reserva.jugador_id}
+                    />
+                    <span className="text-xs text-gray-700">
+                      <span className="flex items-center gap-1.5 font-bold text-gray-900">
+                        <Wallet size={13} /> Abonar como Saldo a Favor al Wallet del Jugador
+                      </span>
+                      {!reserva.jugador_id && (
+                        <span className="mt-1 block text-amber-700">
+                          Esta reserva no tiene un jugador vinculado, así que no se puede abonar saldo.
+                        </span>
+                      )}
+                    </span>
+                  </label>
+
+                  {abonarSaldo && reserva.jugador_id && (
+                    <Campo label="Monto a abonar (MXN)">
+                      <input
+                        type="number"
+                        min="0"
+                        value={montoAbono}
+                        onChange={(e) => setMontoAbono(e.target.value)}
+                        className={inputClase}
+                      />
+                    </Campo>
+                  )}
+                </>
               )}
             </>
           )}
@@ -30575,8 +30663,14 @@ function ModuloTorneosRetas({
     // un adeudo real y cobrable; se registra en la tabla central para que
     // el Smart POS ("Penalizaciones Pendientes") y el CRM de Jugadores lo
     // vean, sin importar que la cancelación haya sido desde el Panel Admin.
+    // FIX CRÍTICO (blindaje, mismo bug que en Parrilla/Reservas): antes esta
+    // llamada era "fire and forget" — ni `await` ni revisión de `error`, así
+    // que un insert fallido en `penalizaciones_pendientes` se veía idéntico
+    // a uno exitoso. Ahora se espera el resultado real y, si falla, el
+    // staff se entera por un toast de error en vez de un silencio.
+    let penalizacionGuardada = null;
     if (nuevoEstado === 'retenido' && !inscripcion.penalizacion_registrada) {
-      registrarPenalizacionPendiente({
+      const resultadoPenalizacion = await registrarPenalizacionPendiente({
         jugadorId: inscripcion.jugador_id,
         jugadorNombre: inscripcion.nombre,
         tipoActividad: 'reta',
@@ -30586,15 +30680,27 @@ function ModuloTorneosRetas({
         motivo: `Cancelación fuera de tolerancia · Reta ${reta?.nombre || ''}`.trim(),
         fechaActividad: reta?.fecha,
       });
-      actualizarConColumnasOpcionales('reta_inscripciones', inscripcion.id, { penalizacion_registrada: true }, ['penalizacion_registrada']);
+      penalizacionGuardada = !!resultadoPenalizacion?.ok;
+      if (penalizacionGuardada) {
+        await actualizarConColumnasOpcionales('reta_inscripciones', inscripcion.id, { penalizacion_registrada: true }, ['penalizacion_registrada']);
+      } else {
+        console.error('[Penalizaciones] No se pudo registrar el adeudo de la Reta.', resultadoPenalizacion?.error);
+      }
     }
     mostrarToast({
-      titulo: nuevoEstado === 'retenido' ? 'Cancelación con retención' : 'Inscripción cancelada',
+      titulo:
+        nuevoEstado === 'retenido'
+          ? penalizacionGuardada === false
+            ? 'Retención aplicada, pero el adeudo NO se guardó'
+            : 'Cancelación con retención'
+          : 'Inscripción cancelada',
       detalle:
         nuevoEstado === 'retenido'
-          ? `Fuera de la ventana de tolerancia — la cuota de ${inscripcion.nombre} NO se reembolsa (queda como penalización pendiente de cobro). El lugar vuelve a estar disponible.`
+          ? penalizacionGuardada === false
+            ? `El lugar de ${inscripcion.nombre} se liberó, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Smart POS). Regístralo ahí manualmente.`
+            : `Fuera de la ventana de tolerancia — la cuota de ${inscripcion.nombre} NO se reembolsa (queda como penalización pendiente de cobro). El lugar vuelve a estar disponible.`
           : `Se liberó el lugar de ${inscripcion.nombre}.`,
-      tono: nuevoEstado === 'retenido' ? 'aviso' : 'ok',
+      tono: nuevoEstado === 'retenido' ? (penalizacionGuardada === false ? 'error' : 'aviso') : 'ok',
     });
   }
 
@@ -46453,10 +46559,16 @@ function PortalPublicoJugadores({ clubSlug }) {
           // Historial Informativo (Parte 4) — dos badges independientes.
           // Motor de Gestión de Penalizaciones Pendientes, conexión con la
           // Parrilla Operativa: `estado_pago === 'penalizacion_pendiente'`
-          // (ver `DetalleReserva.cancelar`) es el equivalente en Reservas al
-          // 'retenido' que ya usaba Retas — cancelación extemporánea sin
-          // pago real, ahora sí deja un adeudo real y visible aquí.
-          estadoActividad: r.estado === 'Cancelada' ? (r.estado_pago === 'penalizacion_pendiente' ? 'penalizada' : 'cancelada') : 'activa',
+          // (reserva SIN pago real, ver `DetalleReserva.cancelar`) y
+          // `'retenido'` (reserva YA PAGADA, política de retención — fix)
+          // son ambos el equivalente en Reservas al 'retenido' que ya usaba
+          // Retas — cancelación extemporánea que deja un rastro real aquí.
+          estadoActividad:
+            r.estado === 'Cancelada'
+              ? r.estado_pago === 'penalizacion_pendiente' || r.estado_pago === 'retenido'
+                ? 'penalizada'
+                : 'cancelada'
+              : 'activa',
           estatusFinanciero:
             r.estado_pago === 'penalizacion_liquidada'
               ? 'liquidada'
@@ -46464,6 +46576,8 @@ function PortalPublicoJugadores({ clubSlug }) {
               ? 'exonerada'
               : r.estado_pago === 'reembolsado'
               ? 'reembolsado'
+              : r.estado_pago === 'retenido'
+              ? 'retenido'
               : r.estado_pago === 'penalizacion_pendiente'
               ? 'adeudo'
               : r.estado_pago === 'pagado'
