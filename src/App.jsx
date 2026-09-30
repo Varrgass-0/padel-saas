@@ -3310,7 +3310,6 @@ function SeccionPenalizacionesPendientes({ jugadorId, onIrACobrarEnComanda, ocul
   const [lista, setLista] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
-  const [procesandoId, setProcesandoId] = useState(null);
   const [penalizacionACondonar, setPenalizacionACondonar] = useState(null);
 
   const cargar = useCallback(async () => {
@@ -3351,16 +3350,17 @@ function SeccionPenalizacionesPendientes({ jugadorId, onIrACobrarEnComanda, ocul
     };
   }, [cargar, jugadorId]);
 
-  async function cobrar(p) {
-    setProcesandoId(p.id);
-    const resultado = await resolverPenalizacionPendiente(p, { accion: 'liquidar' });
-    setProcesandoId(null);
-    if (!resultado.ok) {
-      toast({ titulo: 'No se pudo cobrar la penalización', detalle: resultado.error?.message, tono: 'error' });
-      return;
-    }
-    toast({ titulo: 'Penalización cobrada', detalle: `${formatoMoneda(p.monto)} de ${p.jugador_nombre} quedó liquidada.` });
-    setLista((prev) => prev.filter((x) => x.id !== p.id));
+  // Reestructuración del flujo de cobro (fix): "$ Cobrar Penalización" ya
+  // NO liquida el adeudo aquí mismo — carga el concepto a la Comanda activa
+  // del Smart POS (jugador ya asignado) y cambia la vista a Cobro/Vender
+  // (`onIrACobrarEnComanda` = `enviarPenalizacionAPOS`, ver `AppInterno`).
+  // La liquidación real (`resolverPenalizacionPendiente`) ocurre sola
+  // cuando ese ticket se cobra de verdad, sin importar el método de pago
+  // (Efectivo/Tarjeta/Wallet) — ver `registrarVenta` en `ModuloSmartPOS`.
+  // Se eliminó el botón separado "+ Cargar a la Comanda": este botón ahora
+  // hace las dos cosas en un solo clic.
+  function cobrar(p) {
+    onIrACobrarEnComanda?.(p);
   }
 
   async function condonar(p, motivo) {
@@ -3420,15 +3420,6 @@ function SeccionPenalizacionesPendientes({ jugadorId, onIrACobrarEnComanda, ocul
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {onIrACobrarEnComanda && (
-                    <button
-                      type="button"
-                      onClick={() => onIrACobrarEnComanda(p)}
-                      className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-100"
-                    >
-                      + Cargar a la Comanda
-                    </button>
-                  )}
                   <button
                     type="button"
                     onClick={() => setPenalizacionACondonar(p)}
@@ -3439,10 +3430,9 @@ function SeccionPenalizacionesPendientes({ jugadorId, onIrACobrarEnComanda, ocul
                   <button
                     type="button"
                     onClick={() => cobrar(p)}
-                    disabled={procesandoId === p.id}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-600 disabled:opacity-60"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-600"
                   >
-                    {procesandoId === p.id ? <Loader2 size={12} className="animate-spin" /> : <DollarSign size={12} />}
+                    <DollarSign size={12} />
                     Cobrar Penalización
                   </button>
                 </div>
@@ -7597,16 +7587,23 @@ function DetalleReserva({
             // Flexible): si `wallet_movimientos` no existe todavía en este
             // proyecto, la cancelación/abono ya quedó aplicada de todos modos.
             try {
-              await supabase.from('wallet_movimientos').insert(
-                withClubId({
-                  jugador_id: reserva.jugador_id,
+              // FIX (Cleanup de columnas inexistentes + tipo de jugador_id,
+              // migracion_v75): insert directo → `insertarConColumnasOpcionales`,
+              // mismo criterio que `ajustarWalletJugador` — tolera que
+              // `club_id` no exista (PGRST204) y manda `jugador_id` como
+              // texto explícito.
+              await insertarConColumnasOpcionales(
+                'wallet_movimientos',
+                {
+                  jugador_id: String(reserva.jugador_id),
                   tipo: 'abono',
                   monto: Math.abs(Number(montoAbono)),
                   saldo_resultante: nuevoSaldo,
                   motivo: `Saldo a favor por cancelación de reserva · ${cancha?.nombre || 'Cancha'} ${reserva.fecha || ''}`.trim(),
                   referencia_tipo: 'reserva',
                   referencia_id: reserva.id,
-                })
+                },
+                []
               );
             } catch (_errMovimiento) {
               /* best-effort — el abono real ya quedó aplicado arriba */
@@ -14101,6 +14098,17 @@ function ModuloSmartPOS({
   useEffect(() => {
     if (!conceptoPendiente) return;
     setComanda((prev) => (prev.some((i) => i.id === conceptoPendiente.id) ? prev : [...prev, conceptoPendiente]));
+    // Reestructuración del flujo de cobro (fix): cuando el concepto trae
+    // `_jugadorId` (hoy: "$ Cobrar Penalización", ver `enviarPenalizacionAPOS`),
+    // el jugador se asigna solo a la Comanda y la vista salta directo a
+    // "Vender/Cobro" — el operador no tiene que buscarlo ni cambiar de
+    // pestaña a mano, solo elegir el método de pago.
+    if (conceptoPendiente._jugadorId) {
+      setClienteSeleccionadoId(conceptoPendiente._jugadorId);
+      setClienteNombre(conceptoPendiente._jugadorNombre || '');
+      setClienteOperadorId(null);
+      setVistaPOS('vender');
+    }
     onConceptoConsumido?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conceptoPendiente]);
@@ -15932,6 +15940,14 @@ function ModuloSmartPOS({
     if (comanda.length === 0) return { ok: false };
     setRegistrandoVenta(true);
 
+    // Motor de Gestión de Penalizaciones Pendientes — Reestructuración del
+    // flujo de cobro (fix): se captura ANTES de cualquier `await` (la
+    // comanda real de este cobro, no una copia que ya se vació) para poder
+    // liquidar cada penalización DESPUÉS de que el ticket se cobre de
+    // verdad — sin importar el método (Efectivo/Tarjeta/Wallet/mixto), ver
+    // el cierre de esta función.
+    const itemsPenalizacionEnComanda = comanda.filter((i) => i.tipo === 'penalizacion');
+
     const items = comanda.map((i) => ({
       tipo: i.tipo,
       producto_id: i.tipo === 'producto' ? i.producto_id : null,
@@ -16531,6 +16547,38 @@ function ModuloSmartPOS({
       detalle: detalleToast,
     });
     if (ticket) setVentaFinalizada(ticket);
+
+    // Motor de Gestión de Penalizaciones Pendientes — Reestructuración del
+    // flujo de cobro (fix): el ticket YA se cobró de verdad
+    // (`estadoPago === 'pagado'` — nunca en "Agregar a la Cuenta"/"Abrir
+    // Cuenta Sin Cancha", que solo dejan el consumo pendiente) — ahora sí se
+    // liquida cada penalización que venía en la comanda, sin importar el
+    // método de pago. Best-effort: si falla, el cobro YA se hizo (nunca se
+    // revierte la venta por esto) — solo se avisa para resolverlo a mano
+    // desde "Penalizaciones Pendientes".
+    if (estadoPago === 'pagado' && itemsPenalizacionEnComanda.length > 0) {
+      for (const itemPenalizacion of itemsPenalizacionEnComanda) {
+        const resultado = await resolverPenalizacionPendiente(
+          {
+            id: itemPenalizacion.penalizacion_id,
+            referencia_tabla: itemPenalizacion._referenciaTabla,
+            referencia_id: itemPenalizacion._referenciaId,
+          },
+          { accion: 'liquidar' }
+        );
+        if (!resultado.ok) {
+          console.error('[Penalizaciones] La venta se cobró, pero no se pudo liquidar la penalización.', resultado.error);
+          mostrarToast({
+            titulo: 'Cobrado, pero el adeudo no se liquidó',
+            detalle:
+              resultado.error?.message ||
+              `El pago de "${itemPenalizacion.nombre}" se registró, pero no se marcó como liquidado en Penalizaciones Pendientes. Ciérralo ahí manualmente.`,
+            tono: 'error',
+          });
+        }
+      }
+    }
+
     return { ok: true, venta: data };
   }
 
@@ -37461,6 +37509,12 @@ function DirectorioJugadoresCRM({
   recompensaValorFrecuenciaClases,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
+  // Motor de Gestión de Penalizaciones Pendientes — Reestructuración del
+  // flujo de cobro (fix): "$ Cobrar Penalización" en la Ficha CRM también
+  // debe saltar al Smart POS con el jugador ya cargado en la Comanda (mismo
+  // botón/comportamiento que en la sub-pestaña de Smart POS) — se pasa
+  // hasta `ModalPerfilJugadorCRM` → `SeccionPenalizacionesPendientes`.
+  onCargarPenalizacionAComanda,
 }) {
   // Switch Master ON/OFF del Módulo de Metas de Cortesía (mejora): `true` por
   // defecto — SOLO se apaga cuando el club lo desactivó explícitamente
@@ -38696,6 +38750,7 @@ function DirectorioJugadoresCRM({
           recompensaValorFrecuenciaTorneos={recompensaValorFrecuenciaTorneos}
           recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
           recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
+          onCargarPenalizacionAComanda={onCargarPenalizacionAComanda}
           onCortesiaOtorgada={(resultado) => {
             // FIX DE SEGURIDAD CRÍTICO (Reset Inmediato del Progreso): la
             // barra no espera a que `cargarCortesiasOtorgadas()` vaya y
@@ -39623,6 +39678,7 @@ function ModalPerfilJugadorCRM({
   recompensaValorFrecuenciaTorneos,
   recompensaTipoFrecuenciaClases,
   recompensaValorFrecuenciaClases,
+  onCargarPenalizacionAComanda,
 }) {
   const mostrarToast = useToast();
   const [editandoTelefono, setEditandoTelefono] = useState(false);
@@ -39944,7 +40000,7 @@ function ModalPerfilJugadorCRM({
             visible para cualquier rol, ya que es un adeudo operativo, no una
             cifra de rentabilidad del club (a diferencia de Gasto Total
             Histórico/Nivel de Fidelidad, gateados por `puedeVerMontos`). */}
-        <SeccionPenalizacionesPendientes jugadorId={perfil.id} ocultarSiVacio />
+        <SeccionPenalizacionesPendientes jugadorId={perfil.id} ocultarSiVacio onIrACobrarEnComanda={onCargarPenalizacionAComanda} />
 
         {permisos?.puedeVerMontos === false ? (
           // Mejora de RBAC: roles sin `puedeVerMontos` (Recepción/Caja,
@@ -40264,6 +40320,7 @@ function ModuloJugadores({
   recompensaValorFrecuenciaClases,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
+  onCargarPenalizacionAComanda,
 }) {
   const [subvista, setSubvista] = useState('crm');
   const subvistas = [
@@ -40350,6 +40407,7 @@ function ModuloJugadores({
           recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
           onGuardarCortesiasFrecuencia={onGuardarCortesiasFrecuencia}
           guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
+          onCargarPenalizacionAComanda={onCargarPenalizacionAComanda}
         />
       )}
 
@@ -44484,13 +44542,28 @@ async function leerSaldoWalletFresco(jugadorId) {
 async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, referenciaId, metodoAplicacion, creadoPorId, creadoPorNombre }) {
   const delta = Number(monto) || 0;
   if (!jugadorId || !delta) return { ok: true, saldoNuevo: null };
+  // FIX (migracion_v75) — `jugadores.id` NO es uuid en este proyecto (es un
+  // id numérico/serial, mismo caso que `empleados.id` en v57): el RPC/tabla
+  // de la Wallet de Jugadores se mandan tipados como TEXT (`p_jugador_id
+  // text` / `wallet_movimientos.jugador_id text` desde v75) — aquí se manda
+  // siempre como string explícito, sin importar si `jugadorId` llegó como
+  // número o como string, para que nunca dependa de cómo Supabase/PostgREST
+  // decida serializar un valor numérico.
+  const jugadorIdTexto = String(jugadorId);
   let saldoNuevo = null;
   try {
-    const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorId, p_delta: delta });
+    const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorIdTexto, p_delta: delta });
     if (!error) {
       saldoNuevo = Number(data) || 0;
     } else {
-      console.warn('[Wallet] fn_wallet_ajustar_jugador no disponible todavía (falta migracion_v56) — usando ajuste no atómico de respaldo.', error);
+      if (error.code === '22P02') {
+        console.warn(
+          '[Wallet] fn_wallet_ajustar_jugador rechazó el id por tipo (22P02 - invalid input syntax for type uuid). Corre migracion_v75_fix_tipo_jugador_id_wallet.sql — mientras tanto, usando ajuste no atómico de respaldo.',
+          error
+        );
+      } else {
+        console.warn('[Wallet] fn_wallet_ajustar_jugador no disponible todavía (falta migracion_v56) — usando ajuste no atómico de respaldo.', error);
+      }
       const saldoActual = await leerSaldoWalletFresco(jugadorId);
       saldoNuevo = Math.max(0, Math.round((saldoActual + delta) * 100) / 100);
       const { error: errUpdate } = await supabase.from('jugadores').update({ saldo_a_favor: saldoNuevo }).eq('id', jugadorId);
@@ -44517,24 +44590,33 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
   let movimientoId = null;
   let movimientoOk = true;
   try {
-    const { data: mov, error: errMov } = await supabase
-      .from('wallet_movimientos')
-      .insert(
-        withClubId({
-          jugador_id: jugadorId,
-          tipo: delta >= 0 ? 'abono' : 'cargo',
-          monto: delta,
-          saldo_resultante: saldoNuevo,
-          motivo: motivo || null,
-          metodo_aplicacion: metodoAplicacion || null,
-          referencia_tipo: referenciaTipo || null,
-          referencia_id: referenciaId || null,
-          creado_por_id: creadoPorId || null,
-          creado_por_nombre: creadoPorNombre || null,
-        })
-      )
-      .select('id')
-      .single();
+    // FIX (Cleanup de columnas inexistentes): este insert era directo
+    // (`supabase.from(...).insert(withClubId({...}))`), así que un proyecto
+    // sin la columna `club_id` en `wallet_movimientos` (PGRST204: "Could not
+    // find the 'club_id' column of 'wallet_movimientos'") perdía el registro
+    // COMPLETO del movimiento, no solo esa columna. Ahora usa
+    // `insertarConColumnasOpcionales` — mismo criterio "Arquitectura
+    // Flexible" que el resto del archivo — así que si `club_id` (o
+    // `metodo_aplicacion`/`creado_por_id`/`creado_por_nombre`, agregadas en
+    // v56 y también opcionales) no existen todavía, reintenta sin esa
+    // columna puntual en vez de perder el movimiento entero. `jugador_id`/
+    // `creado_por_id` van como texto explícito (migracion_v75).
+    const { data: mov, error: errMov } = await insertarConColumnasOpcionales(
+      'wallet_movimientos',
+      {
+        jugador_id: jugadorIdTexto,
+        tipo: delta >= 0 ? 'abono' : 'cargo',
+        monto: delta,
+        saldo_resultante: saldoNuevo,
+        motivo: motivo || null,
+        metodo_aplicacion: metodoAplicacion || null,
+        referencia_tipo: referenciaTipo || null,
+        referencia_id: referenciaId || null,
+        creado_por_id: creadoPorId ? String(creadoPorId) : null,
+        creado_por_nombre: creadoPorNombre || null,
+      },
+      ['metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']
+    );
     if (errMov) {
       console.error('[Wallet] Error detallado Supabase (insertar wallet_movimientos):', errMov);
       movimientoOk = false;
@@ -46812,16 +46894,22 @@ function PortalPublicoJugadores({ clubSlug }) {
       if (errUpdate) return false;
       setSaldoWallet(nuevoSaldo);
       try {
-        await supabase.from('wallet_movimientos').insert(
-          withClubId({
-            jugador_id: jugador.id,
+        // FIX (Cleanup de columnas inexistentes + tipo de jugador_id,
+        // migracion_v75): mismo criterio que `ajustarWalletJugador` —
+        // tolera `club_id` faltante (PGRST204) y manda `jugador_id` como
+        // texto explícito.
+        await insertarConColumnasOpcionales(
+          'wallet_movimientos',
+          {
+            jugador_id: String(jugador.id),
             tipo: 'reembolso_cancelacion',
             monto: Math.abs(Number(monto)),
             saldo_resultante: nuevoSaldo,
             motivo,
             referencia_tipo: referenciaTipo,
             referencia_id: referenciaId,
-          })
+          },
+          []
         );
       } catch (_errMovimiento) {
         /* best-effort — el abono real ya quedó aplicado arriba */
@@ -51777,16 +51865,19 @@ function AppInterno({ clubInicial } = {}) {
       let eventoCreado = null;
       try {
         // FIX (causa raíz confirmada por DevTools): en algunos proyectos
-        // `log_actividad` no tiene la columna `detalle` todavía — Supabase
-        // regresa `PGRST204: Could not find the 'detalle' column of
-        // 'log_actividad'`. Antes esto tronaba el insert COMPLETO y el
-        // evento siempre caía al modo local, aunque el resto de la tabla sí
-        // existiera. Ahora usa la misma Arquitectura Flexible
-        // (`insertarConColumnasOpcionales`) que el resto del archivo: si
-        // `detalle` (o `club_id`) no existe, reintenta sin esa columna en
-        // vez de perder el registro completo — nunca aborta el flujo que lo
-        // disparó (cancelación/penalización), pase lo que pase aquí.
-        const { data, error } = await insertarConColumnasOpcionales('log_actividad', payloadCompleto, ['detalle']);
+        // `log_actividad` no tiene las columnas `detalle` ni `empleado_id`
+        // todavía — Supabase regresa `PGRST204: Could not find the 'detalle'
+        // column...` y, por separado, `... 'empleado_id' column...`. Antes
+        // esto tronaba el insert COMPLETO y el evento siempre caía al modo
+        // local, aunque el resto de la tabla sí existiera. Ahora usa la
+        // misma Arquitectura Flexible (`insertarConColumnasOpcionales`) que
+        // el resto del archivo: reintenta quitando SOLO la columna puntual
+        // que Supabase reporte como faltante (una por intento, hasta 3 —
+        // `detalle`/`empleado_id`/`club_id`, este último agregado
+        // automáticamente por el helper) en vez de perder el registro
+        // completo — nunca aborta el flujo que lo disparó (cancelación/
+        // penalización), pase lo que pase aquí.
+        const { data, error } = await insertarConColumnasOpcionales('log_actividad', payloadCompleto, ['detalle', 'empleado_id']);
         if (error) throw error;
         eventoCreado = data;
       } catch (err) {
@@ -54625,14 +54716,18 @@ function AppInterno({ clubInicial } = {}) {
     setModuloActivo('pos');
   }
 
-  // Motor de Gestión de Penalizaciones Pendientes — "+ Cargar a la Comanda"
-  // (Smart POS → Penalizaciones, y el banner de adeudo en la propia
-  // Comanda): mismo puente `conceptoPOS`/`enviarReservaAPOS` de arriba,
-  // reutilizado para meter la penalización como un ítem más del ticket. El
-  // cobro EFECTIVO de la penalización (que sí resuelve/liquida el adeudo en
-  // `penalizaciones_pendientes`) sigue siendo el botón "Cobrar Penalización"
-  // — este botón solo la deja lista en el carrito para cobrarla junto con
-  // el resto de la cuenta.
+  // Motor de Gestión de Penalizaciones Pendientes — Reestructuración del
+  // flujo de cobro (fix): el botón "$ Cobrar Penalización" (Smart POS
+  // "Penalizaciones Pendientes" y Ficha CRM del jugador, ver
+  // `SeccionPenalizacionesPendientes`) es ahora el ÚNICO punto de entrada —
+  // se eliminó el botón separado "+ Cargar a la Comanda". Un solo clic:
+  // (1) mete la penalización a la Comanda activa con el jugador YA asignado
+  // (`_jugadorId`/`_jugadorNombre`, leídos por el `useEffect` del puente en
+  // `ModuloSmartPOS`), (2) cambia a Smart POS → pestaña "Vender/Cobro" para
+  // que el operador elija el método de pago. La liquidación real
+  // (`resolverPenalizacionPendiente`) YA NO ocurre aquí — ocurre cuando el
+  // ticket se cobra de verdad, sin importar el método (Efectivo/Tarjeta/
+  // Wallet), ver `registrarVenta` en `ModuloSmartPOS`.
   function enviarPenalizacionAPOS(penalizacion) {
     const item = {
       id: `penalizacion-${penalizacion.id}`,
@@ -54641,6 +54736,13 @@ function AppInterno({ clubInicial } = {}) {
       nombre: `Penalización por cancelación · ${penalizacion.jugador_nombre || 'Jugador'}`,
       precio: Number(penalizacion.monto) || 0,
       cantidad: 1,
+      _jugadorId: penalizacion.jugador_id ?? null,
+      _jugadorNombre: penalizacion.jugador_nombre || 'Jugador',
+      // Para que `registrarVenta` pueda llamar `resolverPenalizacionPendiente`
+      // completo al cobrar (incluye la sincronización con la fila de origen
+      // — `reservas`/`reta_inscripciones` — que refleja el Portal).
+      _referenciaTabla: penalizacion.referencia_tabla || null,
+      _referenciaId: penalizacion.referencia_id ?? null,
     };
     setConceptoPOS(item);
     setModuloActivo('pos');
@@ -55062,6 +55164,7 @@ function AppInterno({ clubInicial } = {}) {
                 recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
                 onGuardarCortesiasFrecuencia={guardarCortesiasFrecuencia}
                 guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
+                onCargarPenalizacionAComanda={enviarPenalizacionAPOS}
               />
             ) : moduloActivo === 'torneos' ? (
               <ModuloTorneosRetas
