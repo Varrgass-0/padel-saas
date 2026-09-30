@@ -40903,13 +40903,13 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
           </div>
         )}
         {/* Color en el título (corrección — item 2, unificación): "Todo
-            incluido" usa EXACTAMENTE el mismo `#FF6B35` que el banner
-            inferior ("Tu dinero es tuyo...", más abajo) — mismo tono y
-            brillo en las dos apariciones del naranja QLUBOS en esta
-            pantalla, a propósito, aunque el título esté sobre fondo claro y
-            el banner sobre navy. Entrada animada por palabras
-            (`TextoAnimadoPorPalabras`) — "Todo"/"incluido" se resaltan en
-            `#FF6B35` en vez de heredar `text-slate-900`. */}
+            incluido" usa EXACTAMENTE el mismo `#FF6B35` que "Tu dinero es
+            tuyo." más abajo — mismo tono y brillo en las dos apariciones
+            del naranja QLUBOS de esta pantalla, ambas ahora sobre el mismo
+            fondo claro (ver limpieza del mensaje explicativo, más abajo).
+            Entrada animada por palabras (`TextoAnimadoPorPalabras`) —
+            "Todo"/"incluido" se resaltan en `#FF6B35` en vez de heredar
+            `text-slate-900`. */}
         <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">
           <TextoAnimadoPorPalabras texto="Un sistema. Una suscripción. Todo incluido." resaltar={['Todo', 'incluido']} />
         </h1>
@@ -40974,21 +40974,28 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
         })}
       </div>
 
-      {/* Banner explicativo — UN SOLO mensaje, sin la segunda línea ("Paga
-          por el tamaño de tu club..."). Rediseño (más delgado/minimalista):
-          antes `rounded-2xl px-5 py-5 text-base font-black` se sentía un
-          bloque pesado; ahora una tira compacta `py-2.5` con ícono, texto
-          `text-sm font-bold` en `#FF6B35` EXACTO — mismo tono literal que el
-          highlight "Todo incluido" del título de arriba, legible sobre el
-          navy — y entrada animada por palabras, desfasada para que llegue
-          después de que terminan de entrar las 3 tarjetas de plan
-          (`delayInicial`, ver el stagger `i * 0.05` de arriba). */}
-      <div className="mt-6 flex items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-4 py-2.5 text-center">
-        <Sparkles size={14} className="shrink-0 text-[#FF6B35]" />
-        <p className="text-sm font-bold text-[#FF6B35]">
-          <TextoAnimadoPorPalabras texto="Tu dinero es tuyo: 0% comisiones por reserva o transacción." delayInicial={0.5} />
-        </p>
-      </div>
+      {/* Mensaje explicativo — limpieza (corrección post-QA): ya NO es un
+          banner con contenedor (antes `rounded-xl border bg-slate-900` +
+          ícono `Sparkles`) — esa "barra oscura" se sentía como un bloque
+          pesado y redundante debajo de las 3 tarjetas. Ahora el texto vive
+          directo sobre el fondo limpio de la pantalla, en dos tramos de
+          color/peso distintos (dos `TextoAnimadoPorPalabras` separados, no
+          uno solo con highlight, porque acá SON dos oraciones con jerarquía
+          visual propia, no una palabra suelta resaltada dentro de una
+          frase neutra): "Tu dinero es tuyo." en `#FF6B35`/`font-bold`
+          (el mensaje que vende) y "0% comisiones..." en
+          `text-slate-800`/`font-medium` (el detalle que respalda). El
+          segundo tramo arranca su `delayInicial` justo donde termina el
+          stagger del primero (4 palabras × 0.06s) para que se lea como una
+          sola entrada continua, no dos animaciones desconectadas. */}
+      <p className="mt-6 text-center text-sm sm:text-base">
+        <span className="font-bold text-[#FF6B35]">
+          <TextoAnimadoPorPalabras texto="Tu dinero es tuyo." delayInicial={0.5} />
+        </span>{' '}
+        <span className="font-medium text-slate-800">
+          <TextoAnimadoPorPalabras texto="0% comisiones por reserva o transacción." delayInicial={0.5 + 4 * 0.06} />
+        </span>
+      </p>
 
       <div className="mt-8 flex justify-center">
         <BotonPrimarioWizard onClick={onContinuar} disabled={!planSeleccionado} className="px-8 py-3 text-base">
@@ -41029,34 +41036,15 @@ function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
 
 // ---- Paso 5: Confirmación y Activación (mock, listo para Stripe) --------
 function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar, onAtras }) {
-  // Animación de salida hacia el Panel Operativo (item 6): `AppInterno`
-  // desmonta este componente por completo en cuanto `onboarding_completed`
-  // se confirma en Supabase (gate `if (!onboardingCompletedClub)`, fuera de
-  // este archivo de componentes) — ese salto es un `return` distinto en un
-  // componente enorme, sin forma segura de cruzarlo con un `AnimatePresence`
-  // sin re-arquitecturar todo el Panel Operativo. En su lugar, la tarjeta se
-  // desvanece/encoge (fade out + zoom out) EN CUANTO se toca el botón,
-  // mientras `onConfirmar` guarda en Supabase — para cuando el gate del
-  // padre realmente desmonta el árbol, la tarjeta ya casi desapareció, así
-  // que el corte final se siente como el último paso de esa misma
-  // animación, no como un salto brusco. `activando` se resetea solo si
-  // `onConfirmar` falla (el usuario se queda en esta pantalla para
-  // reintentar, ver el catch de `finalizarOnboardingClub`).
-  const [activando, setActivando] = useState(false);
-
-  async function manejarActivar() {
-    setActivando(true);
-    await onConfirmar();
-    setActivando(false);
-  }
-
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
-      <motion.div
-        animate={activando ? { opacity: 0, scale: 0.9 } : { opacity: 1, scale: 1 }}
-        transition={{ duration: 0.45, ease: 'easeInOut' }}
-        className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12"
-      >
+      {/* La animación de salida hacia la Terminal de Operadores (Kiosko/PIN)
+          ya NO vive aquí adentro — `AppInterno` ahora envuelve las 3 fases
+          de entrada (Onboarding → Kiosko → Panel) en un único
+          `AnimatePresence` con zoom/fade (`VARIANTES_IMPACTO_ENTRADA`), así
+          que TODO este árbol (incluida esta tarjeta) hace zoom-out + fade-out
+          como una sola pieza al desmontarse — ver ese wrapper, no acá. */}
+      <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
         <InsigniaPasoOnboarding paso={5} />
         {onAtras && <EnlaceAtrasWizard onClick={onAtras} />}
         {/* Entrada triunfal (Paso final del Wizard) — el badge de éxito ya no
@@ -41102,7 +41090,7 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
             con la del pulso. */}
         <motion.button
           type="button"
-          onClick={manejarActivar}
+          onClick={onConfirmar}
           disabled={guardando}
           animate={guardando ? { boxShadow: '0 0 0 0 rgba(255,107,53,0)' } : { boxShadow: ['0 0 0 0 rgba(255,107,53,0.45)', '0 0 0 14px rgba(255,107,53,0)'] }}
           whileHover={guardando ? undefined : { y: -2, scale: 1.01 }}
@@ -41113,7 +41101,7 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
           {guardando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
           Activar mi club
         </motion.button>
-      </motion.div>
+      </div>
     </LienzoOnboardingClub>
   );
 }
@@ -41136,6 +41124,20 @@ const VARIANTES_PASO_WIZARD = {
   enter: (direction) => ({ x: direction > 0 ? 30 : -30, opacity: 0 }),
   center: { x: 0, opacity: 1 },
   exit: (direction) => ({ x: direction > 0 ? -30 : 30, opacity: 0 }),
+};
+
+// Transición de Impacto — zoom + fade entre las 3 fases de entrada de
+// `AppInterno` (Onboarding → Kiosko/Terminal de Operadores → Panel
+// Operativo): la fase saliente encoge y se desvanece (`scale 1 -> 0.95`,
+// `opacity 1 -> 0`), la entrante crece desde `scale(0.95)` a `scale(1)` con
+// fade-in — ver el `AnimatePresence mode="wait"` al final de `AppInterno`
+// (`faseEntrada` es la key). A diferencia de `VARIANTES_PASO_WIZARD` (slide
+// direccional entre pasos DENTRO del wizard), esta es una transición sin
+// dirección — no hay "Atrás" entre Onboarding/Kiosko/Panel.
+const VARIANTES_IMPACTO_ENTRADA = {
+  enter: { opacity: 0, scale: 0.95 },
+  center: { opacity: 1, scale: 1 },
+  exit: { opacity: 0, scale: 0.95 },
 };
 
 function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan, guardandoActivacion, onConfirmarActivacion, moduloConfigProps }) {
@@ -52824,6 +52826,22 @@ function AppInterno({ clubInicial } = {}) {
 
   /* ---------------- Render ---------------- */
 
+  // Transición de Impacto (Wizard → Terminal de Operadores → Panel): las 3
+  // "fases de entrada" de abajo (Onboarding/Kiosko/Panel) se arman en
+  // `contenido` en vez de cada una hacer su propio `return` — así se pueden
+  // envolver TODAS juntas, una sola vez, en el `AnimatePresence` de más
+  // abajo (`VARIANTES_IMPACTO_ENTRADA`, zoom+fade). Antes cada `if` cortaba
+  // en seco al siguiente árbol de componentes (el "salto brusco" reportado
+  // en QA al presionar "Activar mi club"); ahora la fase saliente hace
+  // zoom-out/fade-out COMPLETO (`mode="wait"`: sigue montada y visible
+  // mientras se desvanece) antes de que la entrante aparezca con zoom-in
+  // desde `scale(0.95)`. `faseEntrada` es la key que dispara la transición
+  // — nunca cambia dentro de la MISMA fase (ej. el Panel Operativo
+  // renderizando módulos distintos NO retriggerea esta animación, solo los
+  // 3 cambios de fase en sí).
+  let contenido;
+  let faseEntrada = 'panel';
+
   // Interactive Onboarding Canvas (migracion_v66) — gate de entrada MÁS
   // ALTO que el Kiosko/PIN de abajo a propósito: un club recién creado no
   // tiene todavía PINs de colaboradores ni nada que "fichar" — primero debe
@@ -52838,6 +52856,7 @@ function AppInterno({ clubInicial } = {}) {
   // (`OnboardingCanvasClub`, Reordenamiento — item 4) para no duplicar ni
   // un solo callback/estado de guardado.
   if (!onboardingCompletedClub) {
+    faseEntrada = 'onboarding';
     const moduloConfigProps = {
       productos,
       variantesPorProducto,
@@ -52886,7 +52905,7 @@ function AppInterno({ clubInicial } = {}) {
       operador,
       permisos,
     };
-    return (
+    contenido = (
       <ToastContext.Provider value={mostrarToast}>
         <OnboardingCanvasClub
           nombreClub={configClub?.nombre}
@@ -52899,18 +52918,17 @@ function AppInterno({ clubInicial } = {}) {
         <ToastHost toasts={toasts} />
       </ToastContext.Provider>
     );
-  }
-
-  // Sistema Kiosko/PIN — gate de entrada: nadie ha fichado todavía en esta
-  // terminal (`hayColaboradorFichado === false`). En vez del Sidebar/
-  // TopHeader/módulos de siempre, se renderiza ÚNICAMENTE `PantallaKiosko`
-  // — ni un dato del club se ve hasta que alguien elija su tarjeta y ponga
-  // su PIN (el Propietario incluido — ver "CANDADO DE SEGURIDAD" en
-  // `PantallaKiosko`, ya no hay ningún bypass). Sigue envuelto en
-  // `ToastContext.Provider` + `ToastHost` para que "PIN creado"/errores de
-  // carga de `empleados` se vean igual que en el resto de la app.
-  if (!hayColaboradorFichado) {
-    return (
+    // Sistema Kiosko/PIN — gate de entrada: nadie ha fichado todavía en esta
+    // terminal (`hayColaboradorFichado === false`). En vez del Sidebar/
+    // TopHeader/módulos de siempre, se renderiza ÚNICAMENTE `PantallaKiosko`
+    // — ni un dato del club se ve hasta que alguien elija su tarjeta y ponga
+    // su PIN (el Propietario incluido — ver "CANDADO DE SEGURIDAD" en
+    // `PantallaKiosko`, ya no hay ningún bypass). Sigue envuelto en
+    // `ToastContext.Provider` + `ToastHost` para que "PIN creado"/errores de
+    // carga de `empleados` se vean igual que en el resto de la app.
+  } else if (!hayColaboradorFichado) {
+    faseEntrada = 'kiosko';
+    contenido = (
       <ToastContext.Provider value={mostrarToast}>
         <PantallaKiosko
           configClub={configClub}
@@ -52925,9 +52943,8 @@ function AppInterno({ clubInicial } = {}) {
         <ToastHost toasts={toasts} />
       </ToastContext.Provider>
     );
-  }
-
-  return (
+  } else {
+  contenido = (
     <ToastContext.Provider value={mostrarToast}>
       <div className="flex min-h-screen w-full min-w-0 overflow-x-hidden bg-slate-50 text-slate-900">
         <Sidebar
@@ -53330,6 +53347,22 @@ function AppInterno({ clubInicial } = {}) {
         <ToastHost toasts={toasts} />
       </div>
     </ToastContext.Provider>
+  );
+  }
+
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      <motion.div
+        key={faseEntrada}
+        variants={VARIANTES_IMPACTO_ENTRADA}
+        initial="enter"
+        animate="center"
+        exit="exit"
+        transition={{ duration: 0.45, ease: 'easeInOut' }}
+      >
+        {contenido}
+      </motion.div>
+    </AnimatePresence>
   );
 }
 
