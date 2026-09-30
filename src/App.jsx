@@ -887,6 +887,18 @@ const SHOW_BETA_EXPORTAR_REPORTES = false;
 // siguen funcionando si se reactiva la bandera).
 const SHOW_BETA_POS_CIERRE_ARQUEO = false;
 const SHOW_BETA_POS_DEVOLUCION = false;
+// Oculta TODOS los botones/íconos de envío de mensaje por WhatsApp de la
+// interfaz (CRM/Tarjetas de Jugadores, Torneos & Retas — Cuadros de
+// enfrentamiento y horarios —, Academia & Clínicas — Solicitudes de clase y
+// confirmaciones —, Smart POS — Ticket/Roster — y el Recordatorio de
+// membresías del Dashboard) sin tocar NADA de la lógica de generación de
+// mensajes/enlaces ni los handlers (`construirEnlaceWhatsApp`,
+// `normalizarTelefonoWhatsApp`, `plantillaWhatsAppAntiChurn`,
+// `construirMensajeWhatsAppPartido`/`Membresia`, `triggerWhatsAppNotification`,
+// `enviarWhatsAppRosterJugador`, `notificarWhatsApp`, etc. — todos siguen
+// intactos y funcionando si se reactiva la bandera). `IconoWhatsApp` (el
+// glifo) tampoco se toca, solo se deja de montar en cada punto gateado.
+const SHOW_WHATSAPP_INTEGRATIONS = false;
 
 /* ============================================================================
  * MODO OSCURO / MODO CLARO — TOGGLE DE TEMA (QLUB OS)
@@ -11869,25 +11881,29 @@ function FilaSplitBillJugador({
             <CheckCircle2 size={13} /> Pagado con {METODOS_PAGO_POS.find((m) => m.value === pagado.metodo)?.label || pagado.metodo}
             {pagado.metodo === 'mixto' && pagado.mixto && ` · Efvo ${formatoMoneda(pagado.mixto.efectivo)} + Tarjeta ${formatoMoneda(pagado.mixto.tarjeta)}`}
           </span>
-          <button
-            onClick={() => onWhatsApp(indice)}
-            disabled={!fila.telefono}
-            title={fila.telefono ? 'Enviar comprobante por WhatsApp' : 'Captura su teléfono primero'}
-            className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            <IconoWhatsApp size={12} /> Ticket
-          </button>
+          {SHOW_WHATSAPP_INTEGRATIONS && (
+            <button
+              onClick={() => onWhatsApp(indice)}
+              disabled={!fila.telefono}
+              title={fila.telefono ? 'Enviar comprobante por WhatsApp' : 'Captura su teléfono primero'}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              <IconoWhatsApp size={12} /> Ticket
+            </button>
+          )}
         </div>
       ) : (
         <div className="mt-2 space-y-1.5">
           <PasosDeCobro compacto monto={fila.total} deshabilitado={cobrando} onConfirmar={(datos) => onCobrar(indice, datos)} onCancelar={null} />
-          <button
-            onClick={() => onWhatsApp(indice)}
-            disabled={!fila.telefono}
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            <IconoWhatsApp size={12} /> Enviar Ticket / Link por WhatsApp
-          </button>
+          {SHOW_WHATSAPP_INTEGRATIONS && (
+            <button
+              onClick={() => onWhatsApp(indice)}
+              disabled={!fila.telefono}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              <IconoWhatsApp size={12} /> Enviar Ticket / Link por WhatsApp
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -28739,7 +28755,7 @@ function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, 
     >
       <span className={`truncate ${esBySlot ? 'italic text-slate-500' : !texto ? 'italic text-slate-400' : ''}`}>{etiquetaPareja(texto)}</span>
       {esGanador && <CheckCircle2 size={12} className="shrink-0" />}
-      {puedeNotificar && texto && !esBySlot && (
+      {SHOW_WHATSAPP_INTEGRATIONS && puedeNotificar && texto && !esBySlot && (
         <button
           type="button"
           onClick={(e) => {
@@ -34409,12 +34425,14 @@ function FilaMembresia({ alumno, clase, onCobrarPOS, onDarDeBaja, onReactivar, n
             >
               <ShoppingCart size={11} /> Cobrar en POS
             </button>
-            <button
-              onClick={enviarRecordatorio}
-              className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-1 text-[10px] font-bold text-emerald-300 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20"
-            >
-              <IconoWhatsApp size={11} /> Recordatorio
-            </button>
+            {SHOW_WHATSAPP_INTEGRATIONS && (
+              <button
+                onClick={enviarRecordatorio}
+                className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-1 text-[10px] font-bold text-emerald-300 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20"
+              >
+                <IconoWhatsApp size={11} /> Recordatorio
+              </button>
+            )}
             {alumno.estado !== 'baja' && (
               <button onClick={() => setMostrarBaja(true)} className="rounded-md px-2 py-1 text-[10px] font-bold text-slate-500 hover:text-rose-400">
                 Dar de baja
@@ -36561,7 +36579,7 @@ function ModuloAcademiaClinicas({
                   </div>
                   {(s.estado || 'pendiente') === 'pendiente' && (
                     <div className="mt-3 flex flex-wrap items-center gap-2">
-                      {s.telefono && (
+                      {SHOW_WHATSAPP_INTEGRATIONS && s.telefono && (
                         <a
                           href={construirEnlaceWhatsApp({
                             telefono: s.telefono,
@@ -39471,25 +39489,27 @@ function ModalPerfilJugadorCRM({
             </div>
           )}
 
-        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/60 p-3">
-          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-500">
-            <TrendingDown size={13} /> Motor Anti-Churn — plantilla sugerida
-          </h3>
-          <p className="text-xs text-slate-600">{mensajeWhatsApp}</p>
-          <a
-            href={perfil.telefono ? linkWhatsApp : undefined}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(e) => {
-              if (!perfil.telefono) e.preventDefault();
-            }}
-            className={`mt-3 inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold transition ${
-              perfil.telefono ? 'bg-emerald-500 text-white hover:bg-emerald-400' : 'cursor-not-allowed bg-slate-100 text-slate-500'
-            }`}
-          >
-            <IconoWhatsApp size={15} /> {perfil.telefono ? 'Enviar por WhatsApp' : 'Agrega un teléfono para contactarlo'}
-          </a>
-        </div>
+        {SHOW_WHATSAPP_INTEGRATIONS && (
+          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/60 p-3">
+            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-500">
+              <TrendingDown size={13} /> Motor Anti-Churn — plantilla sugerida
+            </h3>
+            <p className="text-xs text-slate-600">{mensajeWhatsApp}</p>
+            <a
+              href={perfil.telefono ? linkWhatsApp : undefined}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => {
+                if (!perfil.telefono) e.preventDefault();
+              }}
+              className={`mt-3 inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold transition ${
+                perfil.telefono ? 'bg-emerald-500 text-white hover:bg-emerald-400' : 'cursor-not-allowed bg-slate-100 text-slate-500'
+              }`}
+            >
+              <IconoWhatsApp size={15} /> {perfil.telefono ? 'Enviar por WhatsApp' : 'Agrega un teléfono para contactarlo'}
+            </a>
+          </div>
+        )}
       </div>
     </ModalShell>
     {canjeCategoria && (
@@ -40391,6 +40411,12 @@ const TABS_CONFIGURACION_CLUB = [
   { value: 'jugadores', label: 'Jugadores & Fidelización', icon: Gift },
   { value: 'portal', label: 'Portal & Tienda Web', icon: ShoppingBag },
   { value: 'wallet', label: 'Wallet', icon: Wallet },
+  // Mi Cuenta & Suscripción (reestructuración Cuenta & Plan) — EXCLUSIVA
+  // Owner, ver el filtro `esOwner` en `tabsVisibles` (abajo, dentro de
+  // `ModuloConfiguracionClub`); un Coach/Recepción/Bar/Contador nunca la ve,
+  // aunque de alguna forma llegara a montar este módulo (mismo candado de
+  // defensa en profundidad que el resto del archivo).
+  { value: 'cuenta', label: 'Mi Cuenta & Suscripción', icon: CreditCard },
 ];
 
 // Centralización de Ajustes (refactor): `ModuloConfiguracionClub` pasa a ser
@@ -40468,17 +40494,32 @@ function ModuloConfiguracionClub({
   nombreClub,
   onEliminarClub,
   eliminandoClub,
+  // Mi Cuenta & Suscripción (reestructuración Cuenta & Plan) — snapshot del
+  // plan elegido (`planClubSeleccionado`, mismo estado que ya usaba el
+  // Onboarding Canvas) + su guardado (`guardarPlanSeleccionadoClub` en
+  // `AppInterno`, reutilizado tal cual — ni la firma ni la lógica de
+  // Supabase cambiaron, solo se volvió a llamar desde un lugar nuevo).
+  planClubSeleccionado,
+  onGuardarPlanSeleccionado,
 }) {
   const [tab, setTab] = useState('general');
+  // Mi Cuenta & Suscripción es EXCLUSIVA Owner (candado en profundidad,
+  // mismo criterio que el resto del archivo: el Sidebar ya solo deja llegar
+  // a Owner a este módulo, pero cada punto sensible vuelve a exigir el rol
+  // por si acaso). Un Coach/Recepción/Bar/Contador jamás ve esta pestaña en
+  // la barra, ni durante el Onboarding (tampoco tiene nada que hacer ahí:
+  // un club a medio crear no tiene aún nada que cancelar/eliminar).
+  const esOwner = operador?.rol === 'owner';
   // "Operadores & Staff" (Módulo 2) SOLO existe durante el Onboarding — la
   // administración habitual de personal, roles, PINs y logs ya vive en su
   // módulo dedicado de la barra lateral ("Control & Seguridad"), así que
   // fuera del wizard esta pestaña se oculta para no duplicar esa función en
   // dos lugares. "Wallet" es al revés: solo se oculta DURANTE el Onboarding
   // (fuera de alcance del wizard, ver comentario original de `modoOnboarding`).
-  const tabsVisibles = modoOnboarding
-    ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet')
-    : TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'staff');
+  const tabsVisibles = (modoOnboarding
+    ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet' && t.value !== 'cuenta')
+    : TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'staff')
+  ).filter((t) => t.value !== 'cuenta' || esOwner);
   const tabActual = tabsVisibles.find((t) => t.value === tab) || tabsVisibles[0];
   const indiceTabActual = tabsVisibles.findIndex((t) => t.value === tabActual.value);
   const esUltimoModuloOnboarding = modoOnboarding && indiceTabActual === tabsVisibles.length - 1;
@@ -40533,9 +40574,6 @@ function ModuloConfiguracionClub({
           guardandoTarifaHorario={guardandoTarifaHorario}
           onEliminarTarifaHorario={onEliminarTarifaHorario}
           modoOnboarding={modoOnboarding}
-          nombreClub={nombreClub}
-          onEliminarClub={onEliminarClub}
-          eliminandoClub={eliminandoClub}
         />
       ) : tab === 'staff' ? (
         <SeccionOperadoresStaff empleados={empleados} onCrearEmpleado={onCrearEmpleado} />
@@ -40578,6 +40616,16 @@ function ModuloConfiguracionClub({
         />
       ) : tab === 'wallet' ? (
         <SeccionWallet jugadoresPorId={jugadoresPorId} empleados={empleados} operador={operador} permisos={permisos} />
+      ) : tab === 'cuenta' && esOwner ? (
+        <SeccionCuentaSuscripcion
+          configClub={configClub}
+          nombreClub={nombreClub}
+          empleados={empleados}
+          planClubSeleccionado={planClubSeleccionado}
+          onGuardarPlanSeleccionado={onGuardarPlanSeleccionado}
+          onEliminarClub={onEliminarClub}
+          eliminandoClub={eliminandoClub}
+        />
       ) : (
         <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white py-16 text-center text-slate-500">
           <Wrench size={26} />
@@ -41262,9 +41310,6 @@ function SeccionGeneralClub({
   guardandoTarifaHorario,
   onEliminarTarifaHorario,
   modoOnboarding = false,
-  nombreClub,
-  onEliminarClub,
-  eliminandoClub,
 }) {
   const config = configClub || CONFIG_CLUB_DEFAULT;
   const [horaApertura, setHoraApertura] = useState(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
@@ -41455,12 +41500,13 @@ function SeccionGeneralClub({
         onEliminarTarifaHorario={onEliminarTarifaHorario}
       />
 
-      {/* Zona de Peligro ("Eliminar Club / Cancelar Cuenta", item 5 del
-          Refactor Onboarding v67) — a propósito NO se muestra durante el
-          Onboarding Canvas (`modoOnboarding`): un club que apenas se está
-          creando no tiene nada que borrar todavía, y mezclar esta acción
-          destructiva con el wizard de alta habría sido confuso/riesgoso. */}
-      {!modoOnboarding && <SeccionZonaPeligro nombreClub={nombreClub} onEliminarClub={onEliminarClub} eliminandoClub={eliminandoClub} />}
+      {/* Zona de Peligro ("Eliminar Club / Cancelar Cuenta") — reubicada
+          (reestructuración Cuenta & Suscripción) a la nueva pestaña "Mi
+          Cuenta & Suscripción" (`SeccionCuentaSuscripcion`, exclusiva
+          Owner), junto con el Perfil de la Cuenta y el Plan/Suscripción —
+          antes vivía al fondo de "General", mezclada con ajustes operativos
+          normales del día a día. `SeccionZonaPeligro` (el componente en sí)
+          no cambió, solo el lugar desde donde se invoca. */}
     </div>
   );
 }
@@ -41554,6 +41600,259 @@ function ModalConfirmarEliminarClub({ nombreClub, onClose, onConfirmar, eliminan
         >
           {eliminando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
           Eliminar definitivamente
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// ============================================================================
+// MI CUENTA & SUSCRIPCIÓN (reestructuración Cuenta & Plan) — pestaña nueva y
+// EXCLUSIVA Owner dentro de "Configuración del Club" (ver el filtro
+// `esOwner` en `ModuloConfiguracionClub`). Junta 3 bloques que antes vivían
+// dispersos o no existían: (a) Perfil de la Cuenta (solo lectura — nombre
+// del dueño/correo/club, ya capturados en otro lado, ninguno se edita
+// aquí), (b) Plan y Suscripción (snapshot real del plan elegido en el
+// Onboarding — `planClubSeleccionado`/`guardarPlanSeleccionadoClub`, mismo
+// estado y mismo guardado de siempre, reutilizados tal cual) preparado para
+// Stripe, y (c) la Zona de Peligro ("Eliminar Club"), reubicada aquí desde
+// el fondo de "General" — `SeccionZonaPeligro`/`ModalConfirmarEliminarClub`
+// (arriba) NO cambiaron, solo el lugar desde donde se invocan.
+// ============================================================================
+function SeccionCuentaSuscripcion({
+  configClub,
+  nombreClub,
+  empleados,
+  planClubSeleccionado,
+  onGuardarPlanSeleccionado,
+  onEliminarClub,
+  eliminandoClub,
+}) {
+  const config = configClub || CONFIG_CLUB_DEFAULT;
+  // El Perfil de la Cuenta no tiene su propio formulario/tabla — reutiliza
+  // datos que YA existen en otro lado: `nombreAdministrador` viene de
+  // `configuracion_club` (misma tarjeta "Nombre del Administrador/Dueño" de
+  // "General"/Onboarding), y el correo viene del registro de `empleados`
+  // con `rol: 'owner'` (`email`, capturado en la Auto-provisión del
+  // Propietario — ver `AppInterno` — o al editarlo desde `ModalGestionEmpleados`).
+  const ownerEmpleado = useMemo(() => (empleados || []).find((e) => e.rol === 'owner'), [empleados]);
+  const [modalCambiarPlan, setModalCambiarPlan] = useState(false);
+  const [modalCancelarSuscripcion, setModalCancelarSuscripcion] = useState(false);
+  // Mock de Cancelación (preparado para Stripe Webhooks): sin backend de
+  // facturación real todavía, esta bandera SOLO vive en memoria de este
+  // componente (se resetea al recargar) — a propósito no se inventa una
+  // columna nueva en Supabase para un estado que hoy no representa ningún
+  // cobro real. El día que se conecte Stripe, el webhook
+  // `customer.subscription.deleted` (o `updated` con `cancel_at_period_end`)
+  // es quien de verdad debe escribir este estado — aquí ya queda listo el
+  // punto exacto de la UI donde ese dato entraría (mismo criterio que
+  // `plan_activado_en`/mock de pasarela de pago en `finalizarOnboardingClub`).
+  const [suscripcionCancelada, setSuscripcionCancelada] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      {/* a) Perfil de la Cuenta */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <UserCircle2 size={16} className="text-orange-500" />
+          <h3 className="text-sm font-black text-slate-900">Perfil de la Cuenta</h3>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Nombre del Dueño</p>
+            <p className="mt-1 truncate text-sm font-black text-slate-900">
+              {config.nombreAdministrador || ownerEmpleado?.nombre || '—'}
+            </p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Correo Electrónico</p>
+            <p className="mt-1 truncate text-sm font-black text-slate-900">{ownerEmpleado?.email || '—'}</p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Nombre del Club</p>
+            <p className="mt-1 truncate text-sm font-black text-slate-900">{nombreClub || config.nombre || '—'}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* b) Plan y Suscripción — Preparado para Integración con Stripe */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <CreditCard size={16} className="text-orange-500" />
+          <h3 className="text-sm font-black text-slate-900">Plan y Suscripción</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          El cobro real y los webhooks de Stripe se conectan aquí mismo más adelante — hoy el plan y su estado son un
+          snapshot guardado en Supabase (`configuracion_club.plan_*`), sin pasarela de pago real todavía.
+        </p>
+        <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-black text-slate-900">
+              {planClubSeleccionado?.nombre ? `Plan ${planClubSeleccionado.nombre}` : 'Sin plan configurado'}
+              {planClubSeleccionado?.precioMensual != null && (
+                <span className="font-semibold text-slate-500">
+                  {' '}
+                  — {formatoPrecioPlanOnboarding(planClubSeleccionado.precioMensual)} MXN / mes
+                </span>
+              )}
+            </p>
+            <span
+              className={`mt-1.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                suscripcionCancelada
+                  ? 'bg-amber-400/10 text-amber-600 ring-1 ring-amber-400/30'
+                  : 'bg-emerald-400/10 text-emerald-600 ring-1 ring-emerald-400/30'
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${suscripcionCancelada ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+              {suscripcionCancelada ? 'Cancelación Programada' : 'Suscripción Activa'}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <BotonSecundario onClick={() => setModalCambiarPlan(true)}>
+              <RefreshCw size={14} /> Cambiar Plan
+            </BotonSecundario>
+            {!suscripcionCancelada && (
+              <button
+                type="button"
+                onClick={() => setModalCancelarSuscripcion(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-200"
+              >
+                <Ban size={14} /> Cancelar Suscripción
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* c) Eliminación de Cuenta (Zona Crítica) — discreta, al final. */}
+      <SeccionZonaPeligro nombreClub={nombreClub} onEliminarClub={onEliminarClub} eliminandoClub={eliminandoClub} />
+
+      {modalCambiarPlan && (
+        <ModalCambiarPlan
+          planActual={planClubSeleccionado}
+          onClose={() => setModalCambiarPlan(false)}
+          onConfirmar={async (plan) => {
+            await onGuardarPlanSeleccionado?.(plan);
+            setModalCambiarPlan(false);
+          }}
+        />
+      )}
+
+      {modalCancelarSuscripcion && (
+        <ModalCancelarSuscripcion
+          onClose={() => setModalCancelarSuscripcion(false)}
+          onConfirmar={() => {
+            setSuscripcionCancelada(true);
+            setModalCancelarSuscripcion(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal "Cambiar Plan" (Upgrade/Downgrade) — reutiliza el mismo catálogo de
+// 3 tarjetas del Onboarding (`PLANES_ONBOARDING_CLUB`) y el mismo callback
+// de guardado (`onGuardarPlanSeleccionado` → `guardarPlanSeleccionadoClub`
+// en `AppInterno`) que ya escribe `plan_canchas`/`plan_nombre`/
+// `plan_precio_mensual` en `configuracion_club` — ningún estado ni columna
+// nueva, solo un segundo punto de entrada a la misma lógica.
+function ModalCambiarPlan({ planActual, onClose, onConfirmar }) {
+  const [planElegido, setPlanElegido] = useState(
+    () => PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planActual?.canchas) || null
+  );
+  const [guardando, setGuardando] = useState(false);
+  const cambioReal = planElegido && planElegido.canchas !== planActual?.canchas;
+
+  async function confirmar() {
+    if (!planElegido || !cambioReal) return;
+    setGuardando(true);
+    await onConfirmar?.(planElegido);
+    setGuardando(false);
+  }
+
+  return (
+    <ModalShell
+      titulo="Cambiar Plan"
+      subtitulo="Upgrade o downgrade — el nuevo precio aplica desde tu siguiente ciclo de facturación."
+      onClose={onClose}
+      ancho="max-w-2xl"
+      icon={CreditCard}
+    >
+      <div className="grid gap-3 sm:grid-cols-3">
+        {PLANES_ONBOARDING_CLUB.map((plan) => {
+          const activo = planElegido?.canchas === plan.canchas;
+          const esPlanActual = planActual?.canchas === plan.canchas;
+          return (
+            <button
+              key={plan.canchas}
+              type="button"
+              onClick={() => setPlanElegido(plan)}
+              className={`relative flex flex-col items-start gap-2 rounded-2xl border-2 bg-white p-4 text-left transition ${
+                activo ? 'border-orange-400 shadow-[0_0_0_4px_rgba(251,146,60,0.15)]' : 'border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              {esPlanActual && (
+                <span className="absolute right-3 top-3 rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
+                  Plan actual
+                </span>
+              )}
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
+              <p className="text-xl font-black text-slate-900">
+                {formatoPrecioPlanOnboarding(plan.precioMensual)}
+                <span className="text-xs font-semibold text-slate-400"> / mes</span>
+              </p>
+              <p className="text-[11px] leading-snug text-slate-500">{plan.descripcion}</p>
+              {activo && (
+                <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-orange-600">
+                  <CheckCircle2 size={13} /> Seleccionado
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-5 flex justify-end gap-2">
+        <BotonSecundario onClick={onClose} disabled={guardando}>
+          Cancelar
+        </BotonSecundario>
+        <BotonPrimario onClick={confirmar} disabled={!cambioReal || guardando}>
+          {guardando ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+          Confirmar Cambio de Plan
+        </BotonPrimario>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Modal "Cancelar Suscripción" — explica el fin del período pagado (mismo
+// criterio de fricción/claridad que `ModalConfirmarEliminarClub`, aunque
+// esta acción es reversible y mucho menos destructiva). Preparado para
+// Stripe Webhooks: `onConfirmar` hoy solo marca el estado local de
+// `SeccionCuentaSuscripcion` (ver su comentario) — el día que haya cobro
+// real, este mismo botón dispara la llamada que cancela la suscripción en
+// Stripe (`cancel_at_period_end: true`) y el webhook correspondiente es
+// quien confirma el estado final.
+function ModalCancelarSuscripcion({ onClose, onConfirmar }) {
+  return (
+    <ModalShell titulo="Cancelar Suscripción" onClose={onClose} ancho="max-w-md" icon={AlertTriangle}>
+      <p className="mb-3 text-sm text-slate-600">
+        Tu suscripción seguirá <span className="font-bold text-slate-800">activa hasta el final de tu período ya pagado</span>.
+        No se hará ningún cargo adicional, y conservas acceso completo al Panel Operativo hasta esa fecha.
+      </p>
+      <p className="mb-4 text-sm text-slate-600">
+        Después de esa fecha, tu equipo perderá acceso y tu club dejará de aparecer en el Portal de Jugadores. Puedes
+        reactivar tu plan en cualquier momento antes de que termine el período — solo vuelve a "Cambiar Plan".
+      </p>
+      <div className="flex justify-end gap-2">
+        <BotonSecundario onClick={onClose}>Volver</BotonSecundario>
+        <button
+          type="button"
+          onClick={onConfirmar}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-700"
+        >
+          <Ban size={15} /> Confirmar Cancelación
         </button>
       </div>
     </ModalShell>
@@ -53319,6 +53618,8 @@ function AppInterno({ clubInicial } = {}) {
                 nombreClub={configClub?.nombre}
                 onEliminarClub={eliminarClub}
                 eliminandoClub={eliminandoClub}
+                planClubSeleccionado={planClubSeleccionado}
+                onGuardarPlanSeleccionado={guardarPlanSeleccionadoClub}
                 rangosHorarioClases={rangosHorarioClases}
                 onGuardarRangosHorarioClases={guardarRangosHorarioClases}
                 guardandoRangosHorarioClases={guardandoRangosHorarioClases}
