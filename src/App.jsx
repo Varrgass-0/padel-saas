@@ -28859,6 +28859,8 @@ function ModalGestionTorneo({
   onFinalizarTorneo,
   finalizandoTorneo,
   onReasignarCasillero,
+  onCancelarParticipante,
+  cancelandoParticipanteId,
 }) {
   const recaudado = participantes.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
   const pendiente = participantes
@@ -28988,6 +28990,7 @@ function ModalGestionTorneo({
                         <th className="px-3 py-2">Contacto</th>
                         <th className="px-3 py-2 text-right">Monto</th>
                         <th className="px-3 py-2">Pago</th>
+                        {onCancelarParticipante && <th className="px-3 py-2"></th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -29012,6 +29015,18 @@ function ModalGestionTorneo({
                               {inscripcionEstaPagada(p) ? 'Pagado' : 'Pendiente'}
                             </span>
                           </td>
+                          {onCancelarParticipante && (
+                            <td className="px-3 py-2 text-right">
+                              <button
+                                type="button"
+                                onClick={() => onCancelarParticipante(p)}
+                                disabled={cancelandoParticipanteId === p.id}
+                                className="rounded-md px-2 py-1 text-[10px] font-bold text-red-500 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                {cancelandoParticipanteId === p.id ? 'Cancelando…' : 'Cancelar Inscripción'}
+                              </button>
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
@@ -30736,6 +30751,7 @@ function ModuloTorneosRetas({
   // inscripción pasa a 'retenido' en vez de 'cancelado', pero el lugar se
   // libera igual para que el club pueda revenderlo.
   async function cancelarInscripcionReta(reta, inscripcion) {
+    if (cancelandoInscripcionId) return; // Prevención de doble clic/bucles.
     setCancelandoInscripcionId(inscripcion.id);
     // Tolerancia de Cancelación — MOTOR UNIFICADO (Auditoría de Jerarquía en
     // Cascada): ya NO se lee de `reta.tolerancia_horas` (columna que este
@@ -30751,15 +30767,51 @@ function ModuloTorneosRetas({
     const { activa: toleranciaActiva, horas: toleranciaHoras } = politicaCancelacionModulo(config, 'retas');
     const fechaRetaMs = timestampEvento(reta?.fecha, reta?.hora_inicio);
     const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaRetaMs, toleranciaActiva ? toleranciaHoras : 0);
+    // FIX (Plan Integral de Cancelaciones — Retas): `nuevoEstado` ya NO
+    // decide él solo si hay retención — antes CUALQUIER cancelación fuera
+    // de tolerancia se marcaba 'retenido' Y generaba una penalización
+    // pendiente, sin importar si la inscripción YA estaba pagada. Eso
+    // duplicaba el cobro: el club ya tenía el dinero (pagado) y además le
+    // generaba al jugador un adeudo nuevo por el mismo monto. Ahora se
+    // separan los 2 ejes (tolerancia × pago), igual que en Reservas
+    // (`DetalleReserva.cancelar`):
+    //   - Dentro de tolerancia + pagada → se reembolsa a la Wallet.
+    //   - Dentro de tolerancia + no pagada → cancelación libre.
+    //   - Fuera de tolerancia + pagada → se RETIENE el pago (sin reembolso,
+    //     SIN penalización nueva — el club ya tiene el dinero).
+    //   - Fuera de tolerancia + no pagada → se genera el adeudo/penalización
+    //     pendiente (nunca se cobró, así que sí hay algo que cobrar luego).
+    const pagada = inscripcionEstaPagada(inscripcion);
+    const monto = Number(inscripcion.monto) || precioDeReta(reta);
     const nuevoEstado = dentroDeTolerancia ? 'cancelado' : 'retenido';
+    const generaAdeudo = !dentroDeTolerancia && !pagada && monto > 0;
+    const generaReembolso = dentroDeTolerancia && pagada && monto > 0;
 
-    const { error } = await supabase.from('reta_inscripciones').update({ estado: nuevoEstado }).eq('id', inscripcion.id);
-    setCancelandoInscripcionId(null);
+    const cambiosEstado = generaReembolso ? { estado: nuevoEstado, estado_pago: 'reembolsado' } : { estado: nuevoEstado };
+    const { error } = await actualizarConColumnasOpcionales('reta_inscripciones', inscripcion.id, cambiosEstado, ['estado_pago']);
     if (error) {
+      setCancelandoInscripcionId(null);
       mostrarToast({ titulo: 'No se pudo cancelar la inscripción', detalle: error.message, tono: 'error' });
       return;
     }
-    setInscripciones((prev) => prev.map((i) => (i.id === inscripcion.id ? { ...i, estado: nuevoEstado } : i)));
+    setInscripciones((prev) => prev.map((i) => (i.id === inscripcion.id ? { ...i, ...cambiosEstado } : i)));
+
+    // Reembolso a Wallet (dentro de tolerancia + ya pagada) — mismo patrón
+    // que `DetalleReserva`/el Portal: `ajustarWalletJugador` deja su propia
+    // traza en `wallet_movimientos`.
+    let reembolsoOk = null;
+    if (generaReembolso) {
+      const resultadoReembolso = await ajustarWalletJugador({
+        jugadorId: inscripcion.jugador_id,
+        monto,
+        motivo: `Reembolso por cancelación en tiempo · Reta ${reta?.nombre || ''}`.trim(),
+        referenciaTipo: 'reta',
+        referenciaId: inscripcion.id,
+      });
+      reembolsoOk = !!resultadoReembolso?.ok;
+      if (!reembolsoOk) console.error('[Wallet] No se pudo reembolsar la cuota de la Reta.', resultadoReembolso?.error);
+    }
+
     // Motor de Gestión de Penalizaciones Pendientes — esta retención genera
     // un adeudo real y cobrable; se registra en la tabla central para que
     // el Smart POS ("Penalizaciones Pendientes") y el CRM de Jugadores lo
@@ -30770,14 +30822,14 @@ function ModuloTorneosRetas({
     // a uno exitoso. Ahora se espera el resultado real y, si falla, el
     // staff se entera por un toast de error en vez de un silencio.
     let penalizacionGuardada = null;
-    if (nuevoEstado === 'retenido' && !inscripcion.penalizacion_registrada) {
+    if (generaAdeudo && !inscripcion.penalizacion_registrada) {
       const resultadoPenalizacion = await registrarPenalizacionPendiente({
         jugadorId: inscripcion.jugador_id,
         jugadorNombre: inscripcion.nombre,
         tipoActividad: 'reta',
         referenciaTabla: 'reta_inscripciones',
         referenciaId: inscripcion.id,
-        monto: Number(inscripcion.monto) || precioDeReta(reta),
+        monto,
         motivo: `Cancelación fuera de tolerancia · Reta ${reta?.nombre || ''}`.trim(),
         fechaActividad: reta?.fecha,
       });
@@ -30788,20 +30840,31 @@ function ModuloTorneosRetas({
         console.error('[Penalizaciones] No se pudo registrar el adeudo de la Reta.', resultadoPenalizacion?.error);
       }
     }
+    setCancelandoInscripcionId(null);
     mostrarToast({
-      titulo:
-        nuevoEstado === 'retenido'
-          ? penalizacionGuardada === false
-            ? 'Retención aplicada, pero el adeudo NO se guardó'
-            : 'Cancelación con retención'
-          : 'Inscripción cancelada',
-      detalle:
-        nuevoEstado === 'retenido'
-          ? penalizacionGuardada === false
-            ? `El lugar de ${inscripcion.nombre} se liberó, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Smart POS). Regístralo ahí manualmente.`
-            : `Fuera de la ventana de tolerancia — la cuota de ${inscripcion.nombre} NO se reembolsa (queda como penalización pendiente de cobro). El lugar vuelve a estar disponible.`
-          : `Se liberó el lugar de ${inscripcion.nombre}.`,
-      tono: nuevoEstado === 'retenido' ? (penalizacionGuardada === false ? 'error' : 'aviso') : 'ok',
+      titulo: generaAdeudo
+        ? penalizacionGuardada === false
+          ? 'Retención aplicada, pero el adeudo NO se guardó'
+          : 'Cancelación con adeudo pendiente'
+        : nuevoEstado === 'retenido'
+        ? 'Cancelación con retención'
+        : generaReembolso
+        ? reembolsoOk === false
+          ? 'Cancelada, pero el reembolso NO se aplicó'
+          : 'Cancelada y reembolsada a la Wallet'
+        : 'Inscripción cancelada',
+      detalle: generaAdeudo
+        ? penalizacionGuardada === false
+          ? `El lugar de ${inscripcion.nombre} se liberó, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Smart POS). Regístralo ahí manualmente.`
+          : `Fuera de la ventana de tolerancia — nunca se cobró, así que queda como adeudo pendiente de cobro. El lugar vuelve a estar disponible.`
+        : nuevoEstado === 'retenido'
+        ? `Fuera de la ventana de tolerancia — la cuota de ${inscripcion.nombre} ya estaba pagada y el club la retiene (sin reembolso). El lugar vuelve a estar disponible.`
+        : generaReembolso
+        ? reembolsoOk === false
+          ? `El lugar de ${inscripcion.nombre} se liberó, pero el reembolso a su Wallet falló — revísalo manualmente.`
+          : `Se liberó el lugar de ${inscripcion.nombre} y se reembolsaron ${formatoMoneda(monto)} a su Wallet.`
+        : `Se liberó el lugar de ${inscripcion.nombre}.`,
+      tono: generaAdeudo ? (penalizacionGuardada === false ? 'error' : 'aviso') : nuevoEstado === 'retenido' ? 'aviso' : reembolsoOk === false ? 'error' : 'ok',
     });
   }
 
@@ -30810,6 +30873,11 @@ function ModuloTorneosRetas({
   const [torneoGestion, setTorneoGestion] = useState(null);
   const [modalAgregarParticipante, setModalAgregarParticipante] = useState(false);
   const [liberandoBloqueoId, setLiberandoBloqueoId] = useState(null);
+  // Plan Integral de Cancelaciones (Torneos) — mismo `id`-como-lock que
+  // `cancelandoInscripcionId` en Retas: mientras tiene un valor, el botón
+  // "Cancelar Inscripción" de esa fila se deshabilita, así que un doble
+  // clic no puede disparar dos cancelaciones/reembolsos en paralelo.
+  const [cancelandoParticipanteId, setCancelandoParticipanteId] = useState(null);
 
   const participantesPorTorneo = useMemo(() => {
     const mapa = {};
@@ -30819,6 +30887,104 @@ function ModuloTorneosRetas({
     });
     return mapa;
   }, [participantesTorneo]);
+
+  // Plan Integral de Cancelaciones (Torneos) — "Cancelar Inscripción" desde
+  // la Mesa de Control (`ModalGestionTorneo`), mismo criterio de Política
+  // de Cancelación y Retención que `cancelarInscripcionReta` (Retas) y
+  // `DetalleReserva.cancelar` (Reservas): 2 ejes independientes, tolerancia
+  // × pago, NUNCA un solo estado que decida los dos a la vez.
+  //   - Dentro de tolerancia + pagada  → reembolso a la Wallet.
+  //   - Dentro de tolerancia + no pagada → cancelación libre.
+  //   - Fuera de tolerancia + pagada   → se RETIENE (sin reembolso, sin
+  //     adeudo nuevo — el club ya tiene el dinero).
+  //   - Fuera de tolerancia + no pagada → adeudo/penalización pendiente.
+  // `torneo_participantes` no tiene columna `estado` propia en este
+  // proyecto (ver nota de esquema al inicio del archivo) — cancelar SIEMPRE
+  // liberó el cupo borrando la fila, y eso sigue siendo así aquí: libera el
+  // lugar sin tocar el torneo/la cancha. Lo que cambia es que ahora, ANTES
+  // de borrar, se resuelve el reembolso o el adeudo según corresponda — el
+  // registro financiero (reembolso en `wallet_movimientos`, o el adeudo en
+  // `penalizaciones_pendientes`) sobrevive de todos modos, aunque la fila
+  // de `torneo_participantes` en sí desaparezca.
+  async function cancelarParticipanteTorneo(torneo, participante) {
+    if (cancelandoParticipanteId) return; // Prevención de doble clic/bucles.
+    setCancelandoParticipanteId(participante.id);
+    const config = configClub || CONFIG_CLUB_DEFAULT;
+    const { activa: toleranciaActiva, horas: toleranciaHoras } = politicaCancelacionModulo(config, 'torneos');
+    // Los Torneos solo guardan `fecha_inicio` (sin hora propia) — medianoche
+    // del día de arranque es suficiente precisión para una ventana medida
+    // en horas/días (mismo criterio que `historialUnificado`/Portal).
+    const fechaTorneoMs = timestampEvento(torneo?.fecha_inicio, '00:00');
+    const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaTorneoMs, toleranciaActiva ? toleranciaHoras : 0);
+    const pagada = inscripcionEstaPagada(participante);
+    const monto = Number(participante.monto) || montoInscripcionTorneo(torneo, null);
+    const generaAdeudo = !dentroDeTolerancia && !pagada && monto > 0;
+    const generaReembolso = dentroDeTolerancia && pagada && monto > 0;
+    const generaRetencion = !dentroDeTolerancia && pagada;
+
+    let reembolsoOk = null;
+    if (generaReembolso) {
+      const resultadoReembolso = await ajustarWalletJugador({
+        jugadorId: participante.jugador_id,
+        monto,
+        motivo: `Reembolso por cancelación en tiempo · Torneo ${torneo?.nombre || ''}`.trim(),
+        referenciaTipo: 'torneo',
+        referenciaId: participante.id,
+      });
+      reembolsoOk = !!resultadoReembolso?.ok;
+      if (!reembolsoOk) console.error('[Wallet] No se pudo reembolsar la inscripción del Torneo.', resultadoReembolso?.error);
+    }
+
+    let penalizacionGuardada = null;
+    if (generaAdeudo) {
+      const resultadoPenalizacion = await registrarPenalizacionPendiente({
+        jugadorId: participante.jugador_id,
+        jugadorNombre: participante.nombre,
+        tipoActividad: 'torneo',
+        referenciaTabla: 'torneo_participantes',
+        referenciaId: participante.id,
+        monto,
+        motivo: `Cancelación fuera de tolerancia · Torneo ${torneo?.nombre || ''}`.trim(),
+        fechaActividad: torneo?.fecha_inicio,
+      });
+      penalizacionGuardada = !!resultadoPenalizacion?.ok;
+      if (!penalizacionGuardada) console.error('[Penalizaciones] No se pudo registrar el adeudo del Torneo.', resultadoPenalizacion?.error);
+    }
+
+    const { error } = await supabase.from('torneo_participantes').delete().eq('id', participante.id);
+    setCancelandoParticipanteId(null);
+    if (error) {
+      mostrarToast({ titulo: 'No se pudo cancelar la inscripción', detalle: error.message, tono: 'error' });
+      return;
+    }
+    setParticipantesTorneo((prev) => prev.filter((p) => p.id !== participante.id));
+
+    mostrarToast({
+      titulo: generaAdeudo
+        ? penalizacionGuardada === false
+          ? 'Retención aplicada, pero el adeudo NO se guardó'
+          : 'Cancelación con adeudo pendiente'
+        : generaRetencion
+        ? 'Cancelación con retención'
+        : generaReembolso
+        ? reembolsoOk === false
+          ? 'Cancelada, pero el reembolso NO se aplicó'
+          : 'Cancelada y reembolsada a la Wallet'
+        : 'Inscripción cancelada',
+      detalle: generaAdeudo
+        ? penalizacionGuardada === false
+          ? `El lugar de ${participante.nombre} se liberó, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Smart POS). Regístralo ahí manualmente.`
+          : `Fuera de la ventana de tolerancia — nunca se cobró, así que queda como adeudo pendiente de cobro. El lugar vuelve a estar disponible.`
+        : generaRetencion
+        ? `Fuera de la ventana de tolerancia — la inscripción de ${participante.nombre} ya estaba pagada y el club la retiene (sin reembolso). El lugar vuelve a estar disponible.`
+        : generaReembolso
+        ? reembolsoOk === false
+          ? `El lugar de ${participante.nombre} se liberó, pero el reembolso a su Wallet falló — revísalo manualmente.`
+          : `Se liberó el lugar de ${participante.nombre} y se reembolsaron ${formatoMoneda(monto)} a su Wallet.`
+        : `Se liberó el lugar de ${participante.nombre}.`,
+      tono: generaAdeudo ? (penalizacionGuardada === false ? 'error' : 'aviso') : generaRetencion ? 'aviso' : reembolsoOk === false ? 'error' : 'ok',
+    });
+  }
 
   // Borrado Lógico (Soft Delete): un torneo con `deleted_at` queda fuera de
   // AMBOS tabs — mismo criterio que `retasVisibles`/`retasArchivadas` en
@@ -32152,6 +32318,8 @@ function ModuloTorneosRetas({
           onFinalizarTorneo={finalizarTorneo}
           finalizandoTorneo={finalizandoTorneo}
           onReasignarCasillero={(partido, slot, texto) => reasignarCasilleroCuadro({ partido, slot, texto })}
+          onCancelarParticipante={(participante) => cancelarParticipanteTorneo(torneoGestionVivo, participante)}
+          cancelandoParticipanteId={cancelandoParticipanteId}
         />
       )}
 
@@ -34033,6 +34201,7 @@ function ModalDetalleClase({
   onGuardarEdicion,
   onEliminarClase,
   onEliminarClaseDefinitivamente,
+  configClub,
 }) {
   const toast = useToast();
   // FIX (buscador "Agregar alumno"): las cuentas eliminadas/anonimizadas no
@@ -34052,6 +34221,12 @@ function ModalDetalleClase({
   // repita en cada re-render mientras el banner sigue visible).
   const [mostrarPromptClaseVacia, setMostrarPromptClaseVacia] = useState(false);
   const [liberandoClaseVacia, setLiberandoClaseVacia] = useState(false);
+  // Plan Integral de Cancelaciones (Academia) — mismo `id`-como-lock que
+  // `cancelandoInscripcionId`/`cancelandoParticipanteId` en Retas/Torneos:
+  // mientras tiene un valor, el botón "Dar de baja" de esa fila se
+  // deshabilita, así que un doble clic no puede disparar dos bajas/
+  // reembolsos en paralelo para el mismo alumno.
+  const [dandoDeBajaId, setDandoDeBajaId] = useState(null);
 
   const [subvista, setSubvista] = useState('alumnos'); // 'alumnos' | 'asistencia'
 
@@ -34200,10 +34375,96 @@ function ModalDetalleClase({
     setMostrarAlta(false);
   }
 
+  // Plan Integral de Cancelaciones (Academia — Clases & Clínicas) — mismo
+  // criterio de Política de Cancelación y Retención que
+  // `cancelarInscripcionReta` (Retas) y `cancelarParticipanteTorneo`
+  // (Torneos): 2 ejes independientes, tolerancia × pago.
+  //   - Dentro de tolerancia + pagada  → reembolso a la Wallet.
+  //   - Dentro de tolerancia + no pagada → baja libre.
+  //   - Fuera de tolerancia + pagada   → se RETIENE (sin reembolso, sin
+  //     adeudo nuevo — el club ya tiene el dinero).
+  //   - Fuera de tolerancia + no pagada → adeudo/penalización pendiente.
+  // `pagado_con_creditos` (mensualidad ya cubierta por un paquete) nunca
+  // genera reembolso en efectivo ni adeudo — mismo criterio que
+  // `cancelarInscripcionClase` del Portal (`huboReembolso` excluye
+  // créditos): no hay dinero real que mover, solo un cupo que liberar.
   async function darDeBaja(alumno) {
-    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, { estado: 'baja' }, []);
-    if (error) return toast({ titulo: 'No se pudo dar de baja al alumno', detalle: error.message, tono: 'error' });
-    onAlumnoActualizado({ ...alumno, estado: 'baja' });
+    if (dandoDeBajaId) return; // Prevención de doble clic/bucles.
+    setDandoDeBajaId(alumno.id);
+    const config = configClub || CONFIG_CLUB_DEFAULT;
+    const { activa: toleranciaActiva, horas: toleranciaHoras } = politicaCancelacionModulo(config, 'academia');
+    const fechaClaseMs = timestampEvento(clase?.fecha, clase?.hora_inicio);
+    const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaClaseMs, toleranciaActiva ? toleranciaHoras : 0);
+    const pagada = alumno.estado_pago === 'pagado' && !alumno.pagado_con_creditos;
+    const monto = Number(alumno.monto) || 0;
+    const generaAdeudo = !dentroDeTolerancia && !pagada && monto > 0;
+    const generaReembolso = dentroDeTolerancia && pagada && monto > 0;
+    const generaRetencion = !dentroDeTolerancia && pagada;
+
+    const cambios = { estado: 'baja', ...(generaReembolso ? { estado_pago: 'reembolsado' } : {}) };
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambios, ['estado_pago']);
+    if (error) {
+      setDandoDeBajaId(null);
+      return toast({ titulo: 'No se pudo dar de baja al alumno', detalle: error.message, tono: 'error' });
+    }
+    onAlumnoActualizado({ ...alumno, ...cambios });
+
+    let reembolsoOk = null;
+    if (generaReembolso) {
+      const resultadoReembolso = await ajustarWalletJugador({
+        jugadorId: alumno.jugador_id,
+        monto,
+        motivo: `Reembolso por cancelación en tiempo · Clase ${clase?.nombre || ''}`.trim(),
+        referenciaTipo: 'clase',
+        referenciaId: alumno.id,
+      });
+      reembolsoOk = !!resultadoReembolso?.ok;
+      if (!reembolsoOk) console.error('[Wallet] No se pudo reembolsar la clase.', resultadoReembolso?.error);
+    }
+
+    let penalizacionGuardada = null;
+    if (generaAdeudo) {
+      const resultadoPenalizacion = await registrarPenalizacionPendiente({
+        jugadorId: alumno.jugador_id,
+        jugadorNombre: alumno.nombre,
+        tipoActividad: 'clase',
+        referenciaTabla: 'academia_alumnos',
+        referenciaId: alumno.id,
+        monto,
+        motivo: `Cancelación fuera de tolerancia · Clase ${clase?.nombre || ''}`.trim(),
+        fechaActividad: clase?.fecha,
+      });
+      penalizacionGuardada = !!resultadoPenalizacion?.ok;
+      if (!penalizacionGuardada) console.error('[Penalizaciones] No se pudo registrar el adeudo de la Clase.', resultadoPenalizacion?.error);
+    }
+
+    setDandoDeBajaId(null);
+    toast({
+      titulo: generaAdeudo
+        ? penalizacionGuardada === false
+          ? 'Baja aplicada, pero el adeudo NO se guardó'
+          : 'Baja con adeudo pendiente'
+        : generaRetencion
+        ? 'Baja con retención'
+        : generaReembolso
+        ? reembolsoOk === false
+          ? 'Baja aplicada, pero el reembolso NO se aplicó'
+          : 'Baja y reembolso a la Wallet'
+        : 'Alumno dado de baja',
+      detalle: generaAdeudo
+        ? penalizacionGuardada === false
+          ? `Se liberó el cupo de ${alumno.nombre}, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Smart POS). Regístralo ahí manualmente.`
+          : `Fuera de la ventana de tolerancia — nunca se cobró, así que queda como adeudo pendiente de cobro.`
+        : generaRetencion
+        ? `Fuera de la ventana de tolerancia — la clase de ${alumno.nombre} ya estaba pagada y el club la retiene (sin reembolso).`
+        : generaReembolso
+        ? reembolsoOk === false
+          ? `Se liberó el cupo de ${alumno.nombre}, pero el reembolso a su Wallet falló — revísalo manualmente.`
+          : `Se liberó el cupo de ${alumno.nombre} y se reembolsaron ${formatoMoneda(monto)} a su Wallet.`
+        : `Se liberó el cupo de ${alumno.nombre}.`,
+      tono: generaAdeudo ? (penalizacionGuardada === false ? 'error' : 'aviso') : generaRetencion ? 'aviso' : reembolsoOk === false ? 'error' : 'ok',
+    });
+
     // Clase Privada / Personalizada que se quedó en 0/1 alumnos (item 2): si
     // ESTE era el último alumno activo y la clase es Privada, se ofrece de
     // inmediato liberar la cancha — sin esto, una "Clase Privada - Luis
@@ -34598,8 +34859,9 @@ function ModalDetalleClase({
                     </button>
                     <button
                       onClick={() => darDeBaja(a)}
+                      disabled={dandoDeBajaId === a.id}
                       title="Dar de baja"
-                      className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-1.5 text-rose-400 transition hover:bg-rose-500/15"
+                      className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-1.5 text-rose-400 transition hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <UserX size={13} />
                     </button>
@@ -37430,6 +37692,7 @@ function ModuloAcademiaClinicas({
           onGuardarEdicion={guardarEdicionClase}
           onEliminarClase={eliminarClaseSeleccionada}
           onEliminarClaseDefinitivamente={eliminarClaseDefinitivamente}
+          configClub={configClub}
         />
       )}
 
