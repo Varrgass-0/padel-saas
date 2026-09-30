@@ -7597,6 +7597,10 @@ function DetalleReserva({
               // — se manda también como `concepto`/`descripcion` (mismo
               // texto) y las 3 quedan opcionales, para tolerar cuál sea el
               // nombre real en este proyecto.
+              // FIX (DevTools — PGRST204 "'referencia_id' column of
+              // 'wallet_movimientos'"): tampoco existe `referencia_id` (ni
+              // `referencia_tipo`) en esta tabla — quedan opcionales
+              // también, mismo criterio que `ajustarWalletJugador`.
               const motivoAbonoTexto = `Saldo a favor por cancelación de reserva · ${cancha?.nombre || 'Cancha'} ${reserva.fecha || ''}`.trim();
               await insertarConColumnasOpcionales(
                 'wallet_movimientos',
@@ -7611,7 +7615,7 @@ function DetalleReserva({
                   referencia_tipo: 'reserva',
                   referencia_id: reserva.id,
                 },
-                ['motivo', 'concepto', 'descripcion']
+                ['motivo', 'concepto', 'descripcion', 'referencia_id', 'referencia_tipo']
               );
             } catch (_errMovimiento) {
               /* best-effort — el abono real ya quedó aplicado arriba */
@@ -44623,6 +44627,12 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
     // reporte como inexistente, hasta quedarse solo con el/los que sí
     // existen — así el insert nunca se rompe por completo por esta columna,
     // sin importar cuál de los 3 nombres sea el real en este club.
+    // FIX (DevTools — PGRST204 "'referencia_id' column of
+    // 'wallet_movimientos'"): esta tabla tampoco tiene `referencia_id` (ni
+    // `referencia_tipo`) — solo garantiza `jugador_id`, `tipo`, `monto` y
+    // `saldo_resultante`. Se mandan igual (best-effort, para el proyecto que
+    // sí las tenga) pero ahora como opcionales/descartables, para que el
+    // insert nunca se pierda por completo solo por esto.
     const motivoTexto = motivo || null;
     const { data: mov, error: errMov } = await insertarConColumnasOpcionales(
       'wallet_movimientos',
@@ -44640,7 +44650,7 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
         creado_por_id: creadoPorId ? Number(creadoPorId) : null,
         creado_por_nombre: creadoPorNombre || null,
       },
-      ['motivo', 'concepto', 'descripcion', 'metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']
+      ['motivo', 'concepto', 'descripcion', 'referencia_id', 'referencia_tipo', 'metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']
     );
     if (errMov) {
       console.error('[Wallet] Error detallado Supabase (insertar wallet_movimientos):', errMov);
@@ -44771,7 +44781,7 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
       referencia_id: referenciaIdTexto,
       creado_por_id: creadoPorId != null ? String(creadoPorId) : null,
       creado_por_nombre: creadoPorNombre || null,
-    }, ['motivo', 'concepto', 'descripcion', 'empleado_nombre', 'metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']);
+    }, ['motivo', 'concepto', 'descripcion', 'referencia_id', 'referencia_tipo', 'empleado_nombre', 'metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']);
     if (errMov) {
       console.error('[Wallet Operador] Error detallado Supabase (insertar wallet_movimientos_operador):', errMov);
       movimientoOk = false;
@@ -46938,6 +46948,9 @@ function PortalPublicoJugadores({ clubSlug }) {
         // FIX (DevTools — PGRST204 "'motivo' column of 'wallet_movimientos'"):
         // se manda también como `concepto`/`descripcion` (mismo texto), los
         // 3 opcionales, para tolerar cuál sea el nombre real de la columna.
+        // FIX (DevTools — PGRST204 "'referencia_id' column of
+        // 'wallet_movimientos'"): tampoco existe `referencia_id` (ni
+        // `referencia_tipo`) — quedan opcionales también.
         await insertarConColumnasOpcionales(
           'wallet_movimientos',
           {
@@ -46951,7 +46964,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             referencia_tipo: referenciaTipo,
             referencia_id: referenciaId,
           },
-          ['motivo', 'concepto', 'descripcion']
+          ['motivo', 'concepto', 'descripcion', 'referencia_id', 'referencia_tipo']
         );
       } catch (_errMovimiento) {
         /* best-effort — el abono real ya quedó aplicado arriba */
@@ -51907,20 +51920,22 @@ function AppInterno({ clubInicial } = {}) {
       let eventoCreado = null;
       try {
         // FIX (causa raíz confirmada por DevTools): en algunos proyectos
-        // `log_actividad` no tiene las columnas `detalle`, `empleado_id` ni
-        // `empleado_nombre` todavía — Supabase regresa `PGRST204: Could not
-        // find the 'detalle' column...` y, por separado, `...
-        // 'empleado_id'...`/`... 'empleado_nombre' column...`. Antes esto
-        // tronaba el insert COMPLETO y el evento siempre caía al modo local,
-        // aunque el resto de la tabla sí existiera. Ahora usa la misma
-        // Arquitectura Flexible (`insertarConColumnasOpcionales`) que el
-        // resto del archivo: reintenta quitando SOLO la columna puntual que
-        // Supabase reporte como faltante (una por intento, hasta 4 —
-        // `empleado_nombre`/`detalle`/`empleado_id`/`club_id`, este último
-        // agregado automáticamente por el helper) en vez de perder el
-        // registro completo — nunca aborta el flujo que lo disparó
-        // (cancelación/penalización), pase lo que pase aquí.
+        // `log_actividad` no tiene las columnas `detalle`, `empleado_id`,
+        // `empleado_nombre` ni `empleado_rol` todavía — Supabase regresa
+        // `PGRST204: Could not find the 'detalle' column...` y, por
+        // separado, `... 'empleado_id'...`/`... 'empleado_nombre'...`/`...
+        // 'empleado_rol' column...`. Antes esto tronaba el insert COMPLETO y
+        // el evento siempre caía al modo local, aunque el resto de la tabla
+        // sí existiera. Ahora usa la misma Arquitectura Flexible
+        // (`insertarConColumnasOpcionales`) que el resto del archivo:
+        // reintenta quitando SOLO la columna puntual que Supabase reporte
+        // como faltante (una por intento, hasta 5 —
+        // `empleado_rol`/`empleado_nombre`/`detalle`/`empleado_id`/
+        // `club_id`, este último agregado automáticamente por el helper) en
+        // vez de perder el registro completo — nunca aborta el flujo que lo
+        // disparó (cancelación/penalización), pase lo que pase aquí.
         const { data, error } = await insertarConColumnasOpcionales('log_actividad', payloadCompleto, [
+          'empleado_rol',
           'empleado_nombre',
           'empleado_id',
           'detalle',
