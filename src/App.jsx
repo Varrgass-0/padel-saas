@@ -7310,9 +7310,16 @@ function DetalleReserva({
   onCancelada,
   onReprogramada,
   onRegistrarAuditoria,
+  onCancelarClaseDesdeParrilla,
 }) {
   const toast = useToast();
   const [mostrarCancelacion, setMostrarCancelacion] = useState(false);
+  // Homologación Parrilla Operativa ↔ Academia (Unificación de Cancelación
+  // de Clases) — mientras se resuelve el `clase_id` real detrás de este
+  // bloqueo (ver `irACancelarClaseDesdeParrilla` en `AppInterno`) el botón
+  // "Cancelar Clase" de abajo se deshabilita, para que un doble clic no
+  // dispare dos consultas/navegaciones en paralelo.
+  const [resolviendoClaseParaCancelar, setResolviendoClaseParaCancelar] = useState(false);
   // Unificación del Motor de Cancelación (Panel Admin, Parte 3) — el Wallet
   // solo tiene sentido si algo se cobró de verdad. Antes `montoAbono`
   // arrancaba SIEMPRE en `reserva.monto_total`, sin ver `estado_pago`
@@ -7454,7 +7461,7 @@ function DetalleReserva({
           </div>
           <p className="mt-3 text-[11px] text-slate-500">
             {reserva.estado === 'Clase'
-              ? 'Gestiona alumnos/asistencia desde el módulo Academia & Clínicas. Liberar este bloqueo solo abre de nuevo el horario en la Parrilla para reservas regulares.'
+              ? 'Al cancelar se abre el mismo panel de Cancelación de Clase que en Academia & Clínicas: evalúa reembolso o penalización por alumno y libera la cancha de inmediato.'
               : 'Gestiona los cupos/participantes desde el módulo Torneos & Retas. Liberar este bloqueo solo abre de nuevo el horario en la Parrilla para reservas regulares.'}
           </p>
         </div>
@@ -7466,25 +7473,46 @@ function DetalleReserva({
           ) : (
             <span />
           )}
-          <button
-            onClick={async () => {
-              setProcesando(true);
-              const { error: errReserva } = await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', reserva.id);
-              setProcesando(false);
-              if (errReserva) {
-                toast({ titulo: 'No se pudo liberar', detalle: errReserva.message, tono: 'error' });
-                return;
-              }
-              toast({ titulo: 'Bloqueo liberado', detalle: 'El horario ya está disponible en la Parrilla.' });
-              onCancelada(reserva.id);
-              onClose();
-            }}
-            disabled={procesando}
-            className="inline-flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
-          >
-            {procesando ? <Loader2 size={15} className="animate-spin" /> : <Lock size={15} />}
-            Liberar Bloqueo
-          </button>
+          {reserva.estado === 'Clase' ? (
+            // Homologación (Requisito 3): ya NO se ofrece "Liberar Bloqueo"
+            // simple para Clases — se navega a Academia & Clínicas con la
+            // clase preseleccionada y su panel de cancelación YA abierto
+            // (mismo `ModalDetalleClase` unificado, ver
+            // `irACancelarClaseDesdeParrilla` en `AppInterno`).
+            <button
+              onClick={async () => {
+                setResolviendoClaseParaCancelar(true);
+                await onCancelarClaseDesdeParrilla?.(reserva);
+                setResolviendoClaseParaCancelar(false);
+                onClose();
+              }}
+              disabled={resolviendoClaseParaCancelar || !onCancelarClaseDesdeParrilla}
+              className="inline-flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
+            >
+              {resolviendoClaseParaCancelar ? <Loader2 size={15} className="animate-spin" /> : <Ban size={15} />}
+              Cancelar Clase
+            </button>
+          ) : (
+            <button
+              onClick={async () => {
+                setProcesando(true);
+                const { error: errReserva } = await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', reserva.id);
+                setProcesando(false);
+                if (errReserva) {
+                  toast({ titulo: 'No se pudo liberar', detalle: errReserva.message, tono: 'error' });
+                  return;
+                }
+                toast({ titulo: 'Bloqueo liberado', detalle: 'El horario ya está disponible en la Parrilla.' });
+                onCancelada(reserva.id);
+                onClose();
+              }}
+              disabled={procesando}
+              className="inline-flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
+            >
+              {procesando ? <Loader2 size={15} className="animate-spin" /> : <Lock size={15} />}
+              Liberar Bloqueo
+            </button>
+          )}
         </div>
       </div>
     );
@@ -7909,6 +7937,7 @@ function ModalDetalleCancha({
   onCancelada,
   onReprogramada,
   onRegistrarAuditoria,
+  onCancelarClaseDesdeParrilla,
 }) {
   const [reservaActiva, setReservaActiva] = useState(reservaInicial || null);
 
@@ -7940,6 +7969,7 @@ function ModalDetalleCancha({
           onCancelada={onCancelada}
           onReprogramada={onReprogramada}
           onRegistrarAuditoria={onRegistrarAuditoria}
+          onCancelarClaseDesdeParrilla={onCancelarClaseDesdeParrilla}
         />
       </ModalShell>
     );
@@ -8016,6 +8046,9 @@ function ModuloParrillaOperativa({
   // tope numérico ya resuelto por `AppInterno` (`limiteCanchasDelPlan`
   // sobre `planClubSeleccionado`); `null`/`undefined` = sin límite.
   limiteCanchasPlan,
+  // Homologación Parrilla Operativa ↔ Academia (Unificación de Cancelación
+  // de Clases) — ver `irACancelarClaseDesdeParrilla` en `AppInterno`.
+  onCancelarClaseDesdeParrilla,
 }) {
   // Horario de Operación del Club (item 4) — el Cronograma y "Nueva Reserva"
   // de este módulo dejan de usar el límite fijo 06:00–24:00 y respetan el
@@ -8374,6 +8407,7 @@ function ModuloParrillaOperativa({
           onCancelada={(id) => marcarReservaCancelada(id)}
           onReprogramada={(reserva) => upsertReserva(reserva)}
           onRegistrarAuditoria={onRegistrarAuditoria}
+          onCancelarClaseDesdeParrilla={onCancelarClaseDesdeParrilla}
         />
       )}
 
@@ -34201,7 +34235,16 @@ function ModalDetalleClase({
   onGuardarEdicion,
   onEliminarClase,
   onEliminarClaseDefinitivamente,
+  onRegistrarAuditoria,
   configClub,
+  // Homologación Parrilla Operativa ↔ Academia (Unificación de Cancelación
+  // de Clases): cuando este modal se abre por haber hecho clic en el
+  // bloqueo "Clase" desde la Parrilla Operativa (ver `DetalleReserva` →
+  // `irACancelarClaseDesdeParrilla` en `AppInterno`), llega en `true` para
+  // que el panel de cancelación se muestre de inmediato — así "Cancelar
+  // Clase" desde cualquiera de las dos parrillas abre EXACTAMENTE el mismo
+  // panel, sin un clic intermedio extra en este segundo caso.
+  abrirCancelacionInicial,
 }) {
   const toast = useToast();
   // FIX (buscador "Agregar alumno"): las cuentas eliminadas/anonimizadas no
@@ -34578,22 +34621,146 @@ function ModalDetalleClase({
     setEditando(false);
   }
 
-  // "Cancelar Clase" (reversible): cancela sesiones/bloqueo, libera la
-  // cancha en ambas parrillas, pero CONSERVA la fila y su historial de
-  // alumnos/asistencia — distinto de "Eliminar Clase Definitivamente"
-  // (`mostrarConfirmarEliminarDefinitivo` más abajo), que sí borra todo de
-  // Supabase de forma permanente.
-  const [confirmarEliminar, setConfirmarEliminar] = useState(false);
-  const [eliminando, setEliminando] = useState(false);
-  async function eliminarClase() {
-    setEliminando(true);
+  // "Cancelar Clase" (Unificación con Reservas) — MISMO modal/flujo estándar
+  // que `DetalleReserva.cancelar()` en la Parrilla Operativa: detección
+  // automática de tolerancia, reembolso a Wallet / retención automática
+  // para quien ya pagó, casilla "Generar penalización" (default marcada)
+  // para quien no pagó y cancela fuera de tolerancia, motivo de cancelación
+  // para el Log de Auditoría, y "Confirmar Cancelación". Generalizado a
+  // TODOS los alumnos activos de la clase a la vez (una Clase Privada tiene
+  // 1 solo alumno — se comporta idéntico a una Reserva; una Clase Grupal
+  // aplica el mismo criterio a cada alumno inscrito). Sigue siendo
+  // reversible: cancela sesiones/bloqueo y libera la cancha en ambas
+  // parrillas, pero CONSERVA la fila y su historial de alumnos/asistencia —
+  // distinto de "Eliminar Clase Definitivamente" (`mostrarConfirmarEliminarDefinitivo`
+  // más abajo), que sí borra todo de Supabase de forma permanente.
+  const [mostrarCancelacionClase, setMostrarCancelacionClase] = useState(!!abrirCancelacionInicial);
+  const config = configClub || CONFIG_CLUB_DEFAULT;
+  const { activa: toleranciaAcademiaActiva, horas: toleranciaAcademiaHoras } = politicaCancelacionModulo(config, 'academia');
+  const fechaClaseMsCancelacion = timestampEvento(clase?.fecha, clase?.hora_inicio);
+  const { dentroDeTolerancia: claseDentroDeTolerancia } = validarToleranciaCancelacion(
+    fechaClaseMsCancelacion,
+    toleranciaAcademiaActiva ? toleranciaAcademiaHoras : 0
+  );
+  const claseFueraDeTolerancia = toleranciaAcademiaActiva && !claseDentroDeTolerancia;
+  // "Pagada" excluye créditos de membresía (no hay dinero real que mover) —
+  // mismo criterio que `darDeBaja`/`cancelarInscripcionClase` del Portal.
+  const alumnosPagadosClase = useMemo(
+    () => alumnosActivos.filter((a) => a.estado_pago === 'pagado' && !a.pagado_con_creditos && Number(a.monto) > 0),
+    [alumnosActivos]
+  );
+  const alumnosSinPagarClase = useMemo(
+    () => alumnosActivos.filter((a) => !(a.estado_pago === 'pagado') && Number(a.monto) > 0),
+    [alumnosActivos]
+  );
+  const montoPagadoClaseTotal = alumnosPagadosClase.reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
+  const montoPenalizacionClaseTotal = alumnosSinPagarClase.reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
+  const mostrarPenalizacionClase = claseFueraDeTolerancia && alumnosSinPagarClase.length > 0;
+  const [abonarSaldoClase, setAbonarSaldoClase] = useState(true);
+  const [generarPenalizacionClase, setGenerarPenalizacionClase] = useState(true);
+  const [motivoCancelacionClase, setMotivoCancelacionClase] = useState('');
+  const [procesandoCancelacionClase, setProcesandoCancelacionClase] = useState(false);
+  const [errorCancelacionClase, setErrorCancelacionClase] = useState('');
+
+  async function cancelarClaseCompleta() {
+    if (procesandoCancelacionClase) return; // Prevención de doble clic/bucles.
+    setProcesandoCancelacionClase(true);
+    setErrorCancelacionClase('');
+    const motivo = motivoCancelacionClase.trim() || 'Cancelación de clase desde el Panel Admin';
+
+    let reembolsosOk = 0;
+    let reembolsosFallidos = 0;
+    let adeudosOk = 0;
+    let adeudosFallidos = 0;
+
+    for (const alumno of alumnosActivos) {
+      const pagada = alumno.estado_pago === 'pagado' && !alumno.pagado_con_creditos;
+      const monto = Number(alumno.monto) || 0;
+      const generaReembolso = claseDentroDeTolerancia && pagada && monto > 0 && abonarSaldoClase;
+      const generaAdeudo = claseFueraDeTolerancia && !pagada && monto > 0 && generarPenalizacionClase;
+
+      // NOTA: `hoyISO` aquí es el valor local memoizado de este componente
+      // (`const hoyISO = useMemo(...)`, más abajo) — NO la función
+      // module-scope del mismo nombre. Se usa sin `()` a propósito.
+      const cambiosAlumno = {
+        estado: 'baja',
+        motivo_baja: motivo,
+        fecha_baja: hoyISO,
+        ...(generaReembolso ? { estado_pago: 'reembolsado' } : {}),
+      };
+      const { error: errAlumno } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambiosAlumno, [
+        'motivo_baja',
+        'fecha_baja',
+        'estado_pago',
+      ]);
+      if (errAlumno) {
+        console.warn('[Academia & Clínicas] No se pudo dar de baja a un alumno al cancelar la clase.', errAlumno);
+        continue;
+      }
+      onAlumnoActualizado({ ...alumno, ...cambiosAlumno });
+
+      if (generaReembolso) {
+        const resultadoReembolso = await ajustarWalletJugador({
+          jugadorId: alumno.jugador_id,
+          monto,
+          motivo: `Reembolso por cancelación en tiempo · Clase ${clase?.nombre || ''}`.trim(),
+          referenciaTipo: 'clase',
+          referenciaId: alumno.id,
+        });
+        if (resultadoReembolso?.ok) reembolsosOk += 1;
+        else {
+          reembolsosFallidos += 1;
+          console.error('[Wallet] No se pudo reembolsar la clase.', resultadoReembolso?.error);
+        }
+      }
+
+      if (generaAdeudo) {
+        const resultadoPenalizacion = await registrarPenalizacionPendiente({
+          jugadorId: alumno.jugador_id,
+          jugadorNombre: alumno.nombre,
+          tipoActividad: 'clase',
+          referenciaTabla: 'academia_alumnos',
+          referenciaId: alumno.id,
+          monto,
+          motivo: `Cancelación fuera de tolerancia · Clase ${clase?.nombre || ''}`.trim(),
+          fechaActividad: clase?.fecha,
+        });
+        if (resultadoPenalizacion?.ok) adeudosOk += 1;
+        else {
+          adeudosFallidos += 1;
+          console.error('[Penalizaciones] No se pudo registrar el adeudo de la Clase.', resultadoPenalizacion?.error);
+        }
+      }
+    }
+
+    // Libera la cancha en ambas parrillas — cancela el bloqueo en `reservas`
+    // y las sesiones, y marca la clase como cancelada (ver `onEliminarClase`
+    // = `eliminarClaseSeleccionada` en `ModuloAcademiaClinicas`).
     const { error } = await onEliminarClase();
-    setEliminando(false);
+    setProcesandoCancelacionClase(false);
     if (error) {
+      setErrorCancelacionClase(error.message || 'No se pudo cancelar la clase.');
       toast({ titulo: 'No se pudo cancelar la clase', detalle: error.message, tono: 'error' });
       return;
     }
-    toast({ titulo: 'Clase cancelada', detalle: `${clase.nombre} — se liberó la cancha en ambas parrillas.` });
+
+    onRegistrarAuditoria?.('cancelacion_clase', {
+      clase: clase.nombre,
+      motivo,
+      alumnosAfectados: alumnosActivos.length,
+      reembolsos: reembolsosOk,
+      adeudos: adeudosOk,
+    });
+
+    const detalles = [];
+    if (reembolsosOk > 0) detalles.push(`${reembolsosOk} reembolso(s) a Wallet`);
+    if (adeudosOk > 0) detalles.push(`${adeudosOk} adeudo(s) pendiente(s) en Penalizaciones Pendientes`);
+    if (reembolsosFallidos > 0 || adeudosFallidos > 0) detalles.push('algunos movimientos financieros fallaron — revísalos manualmente');
+    toast({
+      titulo: 'Clase cancelada',
+      detalle: `${clase.nombre} — se liberó la cancha en ambas parrillas.${detalles.length ? ' ' + detalles.join(', ') + '.' : ''}`,
+      tono: reembolsosFallidos > 0 || adeudosFallidos > 0 ? 'aviso' : 'ok',
+    });
     onClose();
   }
 
@@ -34679,28 +34846,225 @@ function ModalDetalleClase({
           </span>
         </div>
 
-        <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
-          {[
-            { value: 'alumnos', label: 'Alumnos', icon: Users },
-            { value: 'asistencia', label: 'Pase de lista', icon: UserCheck },
-            { value: 'ajustes', label: 'Ajustes', icon: Settings2 },
-          ].map((v) => {
-            const Icon = v.icon;
-            return (
+        {/* Unificación de Interfaz (Plan Integral de Cancelaciones, Parte 2):
+            se eliminó la pestaña "Ajustes" — "Editar" y "Cancelar Clase"
+            ahora son acciones directas, siempre visibles sin importar qué
+            sub-vista esté activa, en vez de estar escondidas detrás de un
+            3er tab. */}
+        {!mostrarCancelacionClase && (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
+              {[
+                { value: 'alumnos', label: 'Alumnos', icon: Users },
+                { value: 'asistencia', label: 'Pase de lista', icon: UserCheck },
+              ].map((v) => {
+                const Icon = v.icon;
+                return (
+                  <button
+                    key={v.value}
+                    onClick={() => setSubvista(v.value)}
+                    className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md py-2 text-xs font-bold transition ${
+                      subvista === v.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Icon size={14} /> {v.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-1.5">
+              {!editando && (
+                <BotonSecundario onClick={() => setEditando(true)} className="px-2.5 py-1.5 text-xs">
+                  <Pencil size={13} /> Editar
+                </BotonSecundario>
+              )}
               <button
-                key={v.value}
-                onClick={() => setSubvista(v.value)}
-                className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md py-2 text-xs font-bold transition ${
-                  subvista === v.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
-                }`}
+                type="button"
+                onClick={() => setMostrarCancelacionClase(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1.5 text-xs font-bold text-rose-500 transition hover:bg-rose-500/20"
               >
-                <Icon size={14} /> {v.label}
+                <Ban size={13} /> Cancelar Clase
               </button>
-            );
-          })}
-        </div>
+            </div>
+          </div>
+        )}
 
-        {subvista === 'alumnos' && (
+        {editando && !mostrarCancelacionClase && (
+          <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/40 p-3">
+            <Campo label="Nombre de la clase">
+              <input value={nombreEdit} onChange={(e) => setNombreEdit(e.target.value)} className={inputClase} />
+            </Campo>
+            <div className="grid grid-cols-2 gap-3">
+              <Campo label="Nivel">
+                <select value={nivelEdit} onChange={(e) => setNivelEdit(e.target.value)} className={inputClase}>
+                  {NIVELES_ACADEMIA.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </Campo>
+              <Campo label="Capacidad máxima" hint={clase.tipo_clase === 'privada' ? 'Clase Privada — fija en 1 alumno' : undefined}>
+                <input
+                  type="number"
+                  min={alumnosActivos.length || 1}
+                  value={clase.tipo_clase === 'privada' ? '1' : capacidadEdit}
+                  onChange={(e) => setCapacidadEdit(e.target.value)}
+                  className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-50`}
+                  disabled={clase.tipo_clase === 'privada'}
+                />
+              </Campo>
+            </div>
+            <Campo label="Coach" hint={coachesDisponibles.length === 0 ? 'Sin empleados con rol Coach todavía — escribe su nombre.' : undefined}>
+              {coachesDisponibles.length > 0 ? (
+                <select value={coachEmpleadoIdEdit} onChange={(e) => setCoachEmpleadoIdEdit(e.target.value)} className={inputClase}>
+                  {coachesDisponibles.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nombre}
+                    </option>
+                  ))}
+                  <option value="">Otro (escribir nombre)…</option>
+                </select>
+              ) : null}
+              {(coachesDisponibles.length === 0 || !coachEmpleadoIdEdit) && (
+                <input
+                  value={coachNombreLibreEdit}
+                  onChange={(e) => setCoachNombreLibreEdit(e.target.value)}
+                  className={`${inputClase} mt-2`}
+                  placeholder="Nombre del coach"
+                />
+              )}
+            </Campo>
+            <div className="grid grid-cols-2 gap-3">
+              <Campo label="Precio mensualidad">
+                <input type="number" min="0" value={precioMensualidadEdit} onChange={(e) => setPrecioMensualidadEdit(e.target.value)} className={inputClase} />
+              </Campo>
+              <Campo label="Precio clase suelta">
+                <input type="number" min="0" value={precioClaseSueltaEdit} onChange={(e) => setPrecioClaseSueltaEdit(e.target.value)} className={inputClase} />
+              </Campo>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              El horario (cancha/día/hora) no se edita aquí — si necesitas cambiarlo, cancela esta clase y créala de nuevo desde el Cronograma.
+            </p>
+            {errorEdicion && <p className="text-xs font-semibold text-rose-400">{errorEdicion}</p>}
+            <div className="flex justify-end gap-2">
+              <BotonSecundario onClick={() => setEditando(false)}>Cancelar</BotonSecundario>
+              <BotonPrimario onClick={guardarEdicion} disabled={guardandoEdicion}>
+                {guardandoEdicion ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Guardar
+              </BotonPrimario>
+            </div>
+          </div>
+        )}
+
+        {mostrarCancelacionClase && (
+          <div className="space-y-3 rounded-xl border border-rose-200 bg-rose-50 p-4">
+            <p className="text-sm font-bold text-red-900">¿Confirmas cancelar "{clase.nombre}"?</p>
+            <p className="text-xs text-gray-700">
+              La cancha se liberará de inmediato en la Parrilla Operativa y en el Cronograma de Academia. El historial de alumnos y asistencia se conserva.
+            </p>
+
+            {alumnosPagadosClase.length > 0 && (
+              <>
+                {claseFueraDeTolerancia ? (
+                  <div className="rounded-lg bg-white p-3 ring-1 ring-rose-200">
+                    <p className="flex items-start gap-1.5 text-xs font-semibold text-gray-700">
+                      <ShieldAlert size={13} className="mt-0.5 shrink-0 text-rose-500" />
+                      Cancelación fuera de tiempo. De acuerdo a las políticas del club, el monto pagado no es reembolsable.
+                    </p>
+                    <p className="mt-1.5 text-[11px] text-slate-500">
+                      Se registrará como <b>Retenido</b> — {formatoMoneda(montoPagadoClaseTotal)} de {alumnosPagadosClase.length} alumno(s)
+                      que ya pagó/pagaron se queda(n) en el club; no se abona nada a su Wallet.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {toleranciaAcademiaActiva && (
+                      <p className="flex items-start gap-1.5 rounded-lg bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-900 ring-1 ring-amber-300">
+                        <ShieldAlert size={13} className="mt-0.5 shrink-0" />
+                        {`Dentro del tiempo de anticipación requerido (${toleranciaAcademiaHoras}h antes de la clase) — cancelación sin penalización, se sugiere abonar saldo a favor.`}
+                      </p>
+                    )}
+                    <label className="flex items-start gap-2.5 rounded-lg bg-white p-3">
+                      <input
+                        type="checkbox"
+                        checked={abonarSaldoClase}
+                        onChange={(e) => setAbonarSaldoClase(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 accent-orange-400"
+                      />
+                      <span className="text-xs text-gray-700">
+                        <span className="flex items-center gap-1.5 font-bold text-gray-900">
+                          <Wallet size={13} /> Abonar como Saldo a Favor al Wallet ({formatoMoneda(montoPagadoClaseTotal)}
+                          {alumnosPagadosClase.length > 1 ? ` · ${alumnosPagadosClase.length} alumnos` : ''})
+                        </span>
+                      </span>
+                    </label>
+                  </>
+                )}
+              </>
+            )}
+
+            {mostrarPenalizacionClase && (
+              <>
+                <p className="flex items-start gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-rose-200">
+                  <ShieldAlert size={13} className="mt-0.5 shrink-0 text-rose-500" />
+                  {`⚠️ Cancelación extemporánea fuera de tolerancia (requiere ${toleranciaAcademiaHoras}h de anticipación).`}
+                </p>
+                <label className="flex items-start gap-2.5 rounded-lg bg-white p-3">
+                  <input
+                    type="checkbox"
+                    checked={generarPenalizacionClase}
+                    onChange={(e) => setGenerarPenalizacionClase(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-rose-500"
+                  />
+                  <span className="text-xs text-gray-700">
+                    <span className="flex items-center gap-1.5 font-bold text-gray-900">
+                      <ShieldAlert size={13} /> Generar penalización / adeudo pendiente en POS ({formatoMoneda(montoPenalizacionClaseTotal)}
+                      {alumnosSinPagarClase.length > 1 ? ` · ${alumnosSinPagarClase.length} alumnos` : ''})
+                    </span>
+                    {!generarPenalizacionClase && (
+                      <span className="mt-1 block text-emerald-700">Se exonerará al/a los alumno(s): la cancelación quedará limpia, sin adeudo en Smart POS.</span>
+                    )}
+                  </span>
+                </label>
+              </>
+            )}
+
+            <Campo label="Motivo de cancelación" hint="Queda en el Log de Actividad para auditoría interna.">
+              <input value={motivoCancelacionClase} onChange={(e) => setMotivoCancelacionClase(e.target.value)} className={inputClase} />
+            </Campo>
+
+            {errorCancelacionClase && <p className="text-xs font-semibold text-red-900">{errorCancelacionClase}</p>}
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              {permisos?.puedeEliminarClaseAcademia ? (
+                <button
+                  type="button"
+                  onClick={() => setMostrarConfirmarEliminarDefinitivo(true)}
+                  className="text-[11px] font-bold text-slate-400 underline decoration-dotted transition hover:text-rose-500"
+                >
+                  Prefiero eliminarla definitivamente
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="flex justify-end gap-2">
+                <BotonSecundario onClick={() => setMostrarCancelacionClase(false)} disabled={procesandoCancelacionClase}>
+                  Regresar
+                </BotonSecundario>
+                <button
+                  onClick={cancelarClaseCompleta}
+                  disabled={procesandoCancelacionClase}
+                  className="inline-flex items-center gap-2 rounded-lg bg-rose-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-400 disabled:opacity-50"
+                >
+                  {procesandoCancelacionClase ? <Loader2 size={15} className="animate-spin" /> : <Ban size={15} />}
+                  Confirmar Cancelación
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!mostrarCancelacionClase && subvista === 'alumnos' && (
           <div className="space-y-3">
             {mostrarPromptClaseVacia && (
               <div className="flex flex-wrap items-center gap-2 rounded-xl border border-rose-300 bg-rose-50 p-3">
@@ -34889,7 +35253,7 @@ function ModalDetalleClase({
           </div>
         )}
 
-        {subvista === 'asistencia' && (
+        {!mostrarCancelacionClase && subvista === 'asistencia' && (
           <div className="space-y-3">
             {/* LIMPIEZA (item 1): se quitó el botón "Generar más sesiones" y
                 el aviso de "quedan pocas sesiones" que lo acompañaba — la
@@ -34943,179 +35307,6 @@ function ModalDetalleClase({
           </div>
         )}
 
-        {subvista === 'ajustes' && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-bold text-slate-500">Editar datos de la clase</p>
-              {!editando && (
-                <BotonSecundario onClick={() => setEditando(true)} className="px-2.5 py-1.5 text-xs">
-                  <Pencil size={13} /> Editar
-                </BotonSecundario>
-              )}
-            </div>
-
-            {editando ? (
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/40 p-3">
-                <Campo label="Nombre de la clase">
-                  <input value={nombreEdit} onChange={(e) => setNombreEdit(e.target.value)} className={inputClase} />
-                </Campo>
-                <div className="grid grid-cols-2 gap-3">
-                  <Campo label="Nivel">
-                    <select value={nivelEdit} onChange={(e) => setNivelEdit(e.target.value)} className={inputClase}>
-                      {NIVELES_ACADEMIA.map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
-                      ))}
-                    </select>
-                  </Campo>
-                  <Campo
-                    label="Capacidad máxima"
-                    hint={clase.tipo_clase === 'privada' ? 'Clase Privada — fija en 1 alumno' : undefined}
-                  >
-                    <input
-                      type="number"
-                      min={alumnosActivos.length || 1}
-                      value={clase.tipo_clase === 'privada' ? '1' : capacidadEdit}
-                      onChange={(e) => setCapacidadEdit(e.target.value)}
-                      className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-50`}
-                      disabled={clase.tipo_clase === 'privada'}
-                    />
-                  </Campo>
-                </div>
-                <Campo label="Coach" hint={coachesDisponibles.length === 0 ? 'Sin empleados con rol Coach todavía — escribe su nombre.' : undefined}>
-                  {coachesDisponibles.length > 0 ? (
-                    <select value={coachEmpleadoIdEdit} onChange={(e) => setCoachEmpleadoIdEdit(e.target.value)} className={inputClase}>
-                      {coachesDisponibles.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.nombre}
-                        </option>
-                      ))}
-                      <option value="">Otro (escribir nombre)…</option>
-                    </select>
-                  ) : null}
-                  {(coachesDisponibles.length === 0 || !coachEmpleadoIdEdit) && (
-                    <input
-                      value={coachNombreLibreEdit}
-                      onChange={(e) => setCoachNombreLibreEdit(e.target.value)}
-                      className={`${inputClase} mt-2`}
-                      placeholder="Nombre del coach"
-                    />
-                  )}
-                </Campo>
-                <div className="grid grid-cols-2 gap-3">
-                  <Campo label="Precio mensualidad">
-                    <input
-                      type="number"
-                      min="0"
-                      value={precioMensualidadEdit}
-                      onChange={(e) => setPrecioMensualidadEdit(e.target.value)}
-                      className={inputClase}
-                    />
-                  </Campo>
-                  <Campo label="Precio clase suelta">
-                    <input
-                      type="number"
-                      min="0"
-                      value={precioClaseSueltaEdit}
-                      onChange={(e) => setPrecioClaseSueltaEdit(e.target.value)}
-                      className={inputClase}
-                    />
-                  </Campo>
-                </div>
-                <p className="text-[11px] text-slate-500">
-                  El horario (cancha/día/hora) no se edita aquí — si necesitas cambiarlo, elimina esta clase y créala de nuevo desde el Cronograma.
-                </p>
-                {errorEdicion && <p className="text-xs font-semibold text-rose-400">{errorEdicion}</p>}
-                <div className="flex justify-end gap-2">
-                  <BotonSecundario onClick={() => setEditando(false)}>Cancelar</BotonSecundario>
-                  <BotonPrimario onClick={guardarEdicion} disabled={guardandoEdicion}>
-                    {guardandoEdicion ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Guardar
-                  </BotonPrimario>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Nivel</p>
-                  <p className="font-bold text-slate-900">{clase.nivel}</p>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Coach</p>
-                  <p className="font-bold text-slate-900">{clase.coach_nombre || '—'}</p>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Mensualidad</p>
-                  <p className="font-bold text-slate-900">{formatoMoneda(clase.precio_mensualidad)}</p>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Clase suelta</p>
-                  <p className="font-bold text-slate-900">{formatoMoneda(clase.precio_clase_suelta)}</p>
-                </div>
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center gap-2 pt-2">
-              {!confirmarEliminar ? (
-                <button
-                  type="button"
-                  onClick={() => setConfirmarEliminar(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15"
-                >
-                  <Ban size={12} /> Cancelar Clase
-                </button>
-              ) : (
-                // Mejora Visual (Motor Unificado de Confirmación/
-                // Cancelación, Parte 4) — antes esta alerta usaba
-                // `bg-rose-950/20` (casi negro) + `text-rose-200` (rosa
-                // clarito), un combo de contraste ilegible sobre el resto
-                // del modal, que es de tema claro. Mismo criterio de
-                // "Mejora de Contraste" ya aplicado en `DetalleReserva`
-                // (Panel Admin): tarjeta clara y texto oscuro contrastante,
-                // con el estilo sobrio exacto que se usa para el resto de
-                // avisos rojos de esta app.
-                <div className="flex w-full flex-wrap items-center gap-2 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
-                  <p className="min-w-0 flex-1">
-                    ¿Cancelar "{clase.nombre}"? Se cancelan sus sesiones y se libera la cancha en la Parrilla Operativa y en el Portal. El historial de alumnos y asistencia se conserva.
-                  </p>
-                  <div className="flex shrink-0 gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setConfirmarEliminar(false)}
-                      disabled={eliminando}
-                      className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
-                    >
-                      Regresar
-                    </button>
-                    <button
-                      type="button"
-                      onClick={eliminarClase}
-                      disabled={eliminando}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
-                    >
-                      {eliminando ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />}
-                      Confirmar
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Eliminar Clase Definitivamente (item 1) — borrado PERMANENTE
-                  de Supabase, distinto de "Cancelar Clase" de arriba
-                  (reversible, conserva historial). Solo Owner/Manager
-                  ("administradores y coordinadores"). */}
-              {permisos?.puedeEliminarClaseAcademia && (
-                <button
-                  type="button"
-                  onClick={() => setMostrarConfirmarEliminarDefinitivo(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500/10 px-2.5 py-1.5 text-[11px] font-bold text-rose-500 ring-1 ring-rose-500/40 transition hover:bg-rose-500/20"
-                >
-                  <Trash2 size={12} /> Eliminar Clase Definitivamente
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {mostrarConfirmarEliminarDefinitivo && (
@@ -36711,6 +36902,9 @@ function ModuloAcademiaClinicas({
   loadingEvaluacionesJugador,
   errorEvaluacionesJugador,
   onGuardarEvaluacionJugador,
+  onRegistrarAuditoria,
+  preseleccionarClaseId,
+  onClasePreseleccionadaConsumida,
 }) {
   const toast = useToast();
   // Coaches activos registrados en el club (mismo criterio que
@@ -36728,6 +36922,19 @@ function ModuloAcademiaClinicas({
   // pestaña "Reservas & Academia" (`SeccionReservasAcademia`) — ya no vive
   // aquí, para evitar duplicidad.
   const [claseSeleccionadaId, setClaseSeleccionadaId] = useState(null);
+  // Homologación Parrilla Operativa ↔ Academia — cuando el staff cancela
+  // una Clase desde el bloqueo en la Parrilla Operativa (ver
+  // `irACancelarClaseDesdeParrilla` en `AppInterno`), este módulo recibe el
+  // `clase_id` ya resuelto por `preseleccionarClaseId` y abre ESTE MISMO
+  // `ModalDetalleClase` directo en su panel de cancelación — el mismo modal
+  // unificado que se usa entrando por la Parrilla de Academia normal.
+  const [abrirCancelacionAlEntrar, setAbrirCancelacionAlEntrar] = useState(false);
+  useEffect(() => {
+    if (!preseleccionarClaseId) return;
+    setClaseSeleccionadaId(preseleccionarClaseId);
+    setAbrirCancelacionAlEntrar(true);
+    onClasePreseleccionadaConsumida?.();
+  }, [preseleccionarClaseId]);
   // Eliminar Clase Definitivamente (item 1) disparada directo desde la
   // tarjeta (`TarjetaClaseAcademia`), sin pasar primero por el detalle —
   // guarda la clase completa (no solo el id) porque `ModalConfirmarEliminarClase`
@@ -37685,14 +37892,19 @@ function ModuloAcademiaClinicas({
           jugadoresPorId={jugadoresPorId}
           empleados={empleados}
           permisos={permisos}
-          onClose={() => setClaseSeleccionadaId(null)}
+          onClose={() => {
+            setClaseSeleccionadaId(null);
+            setAbrirCancelacionAlEntrar(false);
+          }}
           onAlumnoAgregado={onAcademiaAlumnoAgregado}
           onAlumnoActualizado={onAcademiaAlumnoActualizado}
           onAsistenciaGuardada={onAcademiaAsistenciaGuardada}
           onGuardarEdicion={guardarEdicionClase}
           onEliminarClase={eliminarClaseSeleccionada}
           onEliminarClaseDefinitivamente={eliminarClaseDefinitivamente}
+          onRegistrarAuditoria={onRegistrarAuditoria}
           configClub={configClub}
+          abrirCancelacionInicial={abrirCancelacionAlEntrar}
         />
       )}
 
@@ -51850,6 +52062,34 @@ function AppInterno({ clubInicial } = {}) {
   const [sidebarAbierto, setSidebarAbierto] = useState(false);
   const [moduloActivo, setModuloActivo] = useState('parrilla'); // 'parrilla' | 'pos' | 'erp' | 'analytics' | 'torneos'
 
+  // Homologación Parrilla Operativa ↔ Academia (Unificación de Cancelación
+  // de Clases) — `academiaSesiones` vive local dentro de
+  // `ModuloAcademiaClinicas`, así que la Parrilla Operativa (que solo
+  // conoce la fila `reservas` del bloqueo) no puede resolver por sí misma a
+  // qué `academia_clases.id` pertenece. `irACancelarClaseDesdeParrilla`
+  // hace esa resolución con una consulta puntual a `academia_sesiones`
+  // (`reserva_bloqueo_id` → `clase_id`) y navega al módulo Academia con esa
+  // clase preseleccionada, abriendo YA en su panel de cancelación — el
+  // mismo `ModalDetalleClase`/panel que se usa entrando por la propia
+  // Parrilla de Academia.
+  const [academiaClasePreseleccionarId, setAcademiaClasePreseleccionarId] = useState(null);
+  async function irACancelarClaseDesdeParrilla(reserva) {
+    const { data, error } = await conClubId(supabase.from('academia_sesiones').select('clase_id'))
+      .eq('reserva_bloqueo_id', reserva.id)
+      .limit(1)
+      .maybeSingle();
+    if (error || !data?.clase_id) {
+      mostrarToast({
+        titulo: 'No se pudo abrir la clase',
+        detalle: error?.message || 'No se encontró la clase de Academia vinculada a este bloqueo.',
+        tono: 'error',
+      });
+      return;
+    }
+    setAcademiaClasePreseleccionarId(data.clase_id);
+    setModuloActivo('academia');
+  }
+
   // Navegación Reordenable (Sidebar + pestañas de TopHeader comparten el
   // mismo `navOrdenIds` — ver `ordenarNavModulos`/`LS_KEY_NAV_ORDEN`): un
   // solo arreglo de ids vive aquí, en `AppInterno`, y se le pasa YA
@@ -55308,6 +55548,7 @@ function AppInterno({ clubInicial } = {}) {
                 configClub={configClub}
                 tarifasHorarios={tarifasHorarios}
                 limiteCanchasPlan={limiteCanchasPlan}
+                onCancelarClaseDesdeParrilla={irACancelarClaseDesdeParrilla}
               />
             ) : moduloActivo === 'pos' ? (
               <ModuloSmartPOS
@@ -55564,6 +55805,9 @@ function AppInterno({ clubInicial } = {}) {
                 loadingEvaluacionesJugador={loadingEvaluacionesJugador}
                 errorEvaluacionesJugador={errorEvaluacionesJugador}
                 onGuardarEvaluacionJugador={guardarEvaluacionJugador}
+                onRegistrarAuditoria={registrarEventoAuditoria}
+                preseleccionarClaseId={academiaClasePreseleccionarId}
+                onClasePreseleccionadaConsumida={() => setAcademiaClasePreseleccionarId(null)}
               />
             ) : moduloActivo === 'seguridad' ? (
               <ModuloControlSeguridad
