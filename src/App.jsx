@@ -41505,52 +41505,46 @@ function SeccionGeneralClub({
           Cuenta & Suscripción" (`SeccionCuentaSuscripcion`, exclusiva
           Owner), junto con el Perfil de la Cuenta y el Plan/Suscripción —
           antes vivía al fondo de "General", mezclada con ajustes operativos
-          normales del día a día. `SeccionZonaPeligro` (el componente en sí)
-          no cambió, solo el lugar desde donde se invoca. */}
+          normales del día a día. `SeccionEliminarCuenta` (el componente en
+          sí, rediseñado post-QA a una sección discreta con Encuesta de
+          Salida) no vive aquí, solo se invoca desde el lugar nuevo. */}
     </div>
   );
 }
 
-// Zona de Peligro (Configuración del Club → General, item 5 del Refactor
-// Onboarding v67) — "Eliminar Club / Cancelar Cuenta". Requiere escribir el
-// nombre EXACTO del club en `ModalConfirmarEliminarClub` antes de habilitar
-// el botón de confirmación — mismo patrón de fricción intencional que
-// GitHub/Vercel usan para borrados irreversibles. Ver `onEliminarClub`
-// (`AppInterno`) para el detalle de qué hace realmente el borrado (BORRADO
-// SUAVE — columna `eliminado_en`, el resto de las tablas del club no se
-// tocan; ver comentario ahí y en migracion_v67).
-function SeccionZonaPeligro({ nombreClub, onEliminarClub, eliminandoClub }) {
+// Gestión de Cuenta / Eliminar Cuenta (rediseño post-QA — antes "Seguridad /
+// Zona de Peligro", banner rojo con ícono de escudo: se sentía agresivo
+// dentro de una pestaña por lo demás sobria como "Mi Cuenta & Suscripción").
+// Ahora es una sección discreta, sin contenedor ni color de alerta — mismo
+// criterio "danger zone silenciosa" de paneles tipo Stripe/Linear: el peso
+// visual vive en el MODAL (que sí advierte con claridad), no en la pantalla
+// de reposo. El flujo de borrado en sí no cambió — sigue siendo BORRADO
+// SUAVE (columna `eliminado_en`, ver `eliminarClub` en `AppInterno` y
+// migracion_v67) — solo se le antepuso una Encuesta de Salida de un paso
+// (`ModalEliminarCuenta`, ver abajo) para capturar el motivo antes de pedir
+// la confirmación por texto.
+function SeccionEliminarCuenta({ nombreClub, onEliminarClub, eliminandoClub }) {
   const [modalAbierto, setModalAbierto] = useState(false);
   return (
-    <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
-      <div className="mb-1 flex items-center gap-2">
-        <ShieldAlert size={16} className="text-rose-500" />
-        <h3 className="text-sm font-black text-rose-700">Seguridad / Zona de Peligro</h3>
-      </div>
-      <p className="mb-3 text-xs text-rose-600">
-        Eliminar tu club deshabilita el acceso de todo tu equipo de inmediato. Esta acción no se puede deshacer desde
-        la app.
+    <div className="border-t border-slate-100 pt-4">
+      <h3 className="text-sm font-semibold text-slate-700">Eliminar Cuenta y Club</h3>
+      <p className="mt-1 text-xs text-slate-500">
+        Si decides darte de baja, los datos de tu club se deshabilitarán de forma definitiva.
       </p>
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-300 bg-white p-3">
-        <div>
-          <p className="text-xs font-black text-slate-900">Eliminar Club / Cancelar Cuenta</p>
-          <p className="text-[11px] text-slate-500">Borra el acceso a "{nombreClub || 'tu club'}" de forma definitiva.</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setModalAbierto(true)}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-100 px-3 py-2 text-xs font-bold text-rose-700 transition hover:bg-rose-200"
-        >
-          <Trash2 size={14} /> Eliminar Club
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => setModalAbierto(true)}
+        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-red-300 hover:text-red-600"
+      >
+        Solicitar Eliminación de Club
+      </button>
       {modalAbierto && (
-        <ModalConfirmarEliminarClub
+        <ModalEliminarCuenta
           nombreClub={nombreClub}
           eliminando={eliminandoClub}
           onClose={() => setModalAbierto(false)}
-          onConfirmar={async () => {
-            await onEliminarClub?.();
+          onConfirmar={async (motivo) => {
+            await onEliminarClub?.(motivo);
           }}
         />
       )}
@@ -41558,25 +41552,91 @@ function SeccionZonaPeligro({ nombreClub, onEliminarClub, eliminandoClub }) {
   );
 }
 
-// Modal de confirmación de "Eliminar Club" — el botón de confirmación solo
-// se habilita cuando el texto escrito coincide EXACTO (case-sensitive) con
-// el nombre real del club, para evitar un borrado accidental por doble clic.
-function ModalConfirmarEliminarClub({ nombreClub, onClose, onConfirmar, eliminando }) {
+// Encuesta de Salida (6 motivos + "Otro" con comentario opcional) — el
+// motivo elegido aquí viaja tal cual hasta `eliminarClub` en `AppInterno`,
+// que lo guarda en `log_actividad` (auditoría) ANTES del borrado suave. Sin
+// tabla/columna nueva: reutiliza el mismo mecanismo de auditoría de siempre.
+const MOTIVOS_ELIMINACION_CLUB = [
+  { id: 'cierre_administracion', label: 'El club cerró o cambió de administración' },
+  { id: 'faltan_funciones', label: 'Faltan funciones que necesito' },
+  { id: 'costo_alto', label: 'Considero alto el costo del plan' },
+  { id: 'dificultad_uso', label: 'Dificultad de uso / Experiencia compleja' },
+  { id: 'migracion_plataforma', label: 'Migración a otra plataforma' },
+  { id: 'otro', label: 'Otro' },
+];
+
+// Modal de eliminación en 2 pasos — Paso 1 "Encuesta de Salida" (recolecta
+// el motivo, "Continuar" solo se habilita con una opción elegida) → Paso 2
+// "Confirmación Definitiva por Texto" (mismo patrón de fricción intencional
+// que GitHub/Vercel para borrados irreversibles: el botón final solo se
+// habilita cuando el texto escrito coincide EXACTO —case-sensitive— con el
+// nombre real del club). "Atrás" en el Paso 2 regresa al Paso 1 sin perder
+// el motivo ya elegido (mismo estado del componente, nunca se desmonta).
+function ModalEliminarCuenta({ nombreClub, onClose, onConfirmar, eliminando }) {
+  const [paso, setPaso] = useState('motivo'); // 'motivo' | 'confirmar'
+  const [motivoId, setMotivoId] = useState(null);
+  const [comentario, setComentario] = useState('');
   const [texto, setTexto] = useState('');
   const nombreEsperado = (nombreClub || '').trim();
   const coincide = nombreEsperado.length > 0 && texto.trim() === nombreEsperado;
+  const motivoElegido = MOTIVOS_ELIMINACION_CLUB.find((m) => m.id === motivoId);
   // Mientras `eliminando` está en curso, Escape/click fuera no deben cerrar
   // el modal a medio proceso — mismo criterio que el resto de modales
   // destructivos de este archivo (ver `ModalDevolucionPOS`/`ModalArqueo`).
   const cerrar = () => {
     if (!eliminando) onClose?.();
   };
+
+  if (paso === 'motivo') {
+    return (
+      <ModalShell titulo="¿Nos puedes decir el motivo de tu salida?" onClose={cerrar} ancho="max-w-md">
+        <div className="space-y-2">
+          {MOTIVOS_ELIMINACION_CLUB.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setMotivoId(m.id)}
+              className={`flex w-full items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left text-sm font-semibold transition ${
+                motivoId === m.id ? 'border-orange-400 bg-orange-50 text-slate-900' : 'border-slate-200 text-slate-600 hover:border-slate-300'
+              }`}
+            >
+              <span
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
+                  motivoId === m.id ? 'border-orange-400' : 'border-slate-300'
+                }`}
+              >
+                {motivoId === m.id && <span className="h-2 w-2 rounded-full bg-orange-400" />}
+              </span>
+              {m.label}
+            </button>
+          ))}
+        </div>
+        {motivoId === 'otro' && (
+          <textarea
+            value={comentario}
+            onChange={(e) => setComentario(e.target.value)}
+            placeholder="Cuéntanos un poco más (opcional)..."
+            rows={3}
+            className={`${inputClase} mt-3 resize-none`}
+          />
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <BotonSecundario onClick={cerrar}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={() => setPaso('confirmar')} disabled={!motivoId}>
+            Continuar
+          </BotonPrimario>
+        </div>
+      </ModalShell>
+    );
+  }
+
   return (
-    <ModalShell titulo={`Eliminar "${nombreEsperado || 'este club'}"`} onClose={cerrar} ancho="max-w-md" icon={AlertTriangle}>
+    <ModalShell titulo="Confirmación de Eliminación Definitiva" onClose={cerrar} ancho="max-w-md" icon={AlertTriangle}>
       <p className="mb-4 text-sm text-slate-600">
-        Esta acción bloquea el acceso al club para ti y todo tu equipo de inmediato. Para confirmar, escribe el
-        nombre exacto de tu club abajo:
+        Eliminar tu club deshabilita el acceso de todo tu equipo de inmediato. Esta acción no se puede deshacer desde
+        la app.
       </p>
+      <p className="mb-2 text-xs font-semibold text-slate-600">Para confirmar, escribe el nombre exacto de tu club:</p>
       <p className="mb-2 select-all rounded-lg bg-slate-100 px-3 py-2 text-center text-sm font-bold text-slate-800">
         {nombreEsperado || '—'}
       </p>
@@ -41588,19 +41648,29 @@ function ModalConfirmarEliminarClub({ nombreClub, onClose, onConfirmar, eliminan
         className={inputClase}
         autoFocus
       />
-      <div className="mt-5 flex justify-end gap-2">
-        <BotonSecundario onClick={cerrar} disabled={eliminando}>
-          Cancelar
-        </BotonSecundario>
+      <div className="mt-5 flex items-center justify-between gap-2">
         <button
           type="button"
-          disabled={!coincide || eliminando}
-          onClick={onConfirmar}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={() => setPaso('motivo')}
+          disabled={eliminando}
+          className="text-xs font-semibold text-slate-500 transition hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {eliminando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
-          Eliminar definitivamente
+          Atrás
         </button>
+        <div className="flex gap-2">
+          <BotonSecundario onClick={cerrar} disabled={eliminando}>
+            Cancelar
+          </BotonSecundario>
+          <button
+            type="button"
+            disabled={!coincide || eliminando}
+            onClick={() => onConfirmar?.({ motivoId, motivoLabel: motivoElegido?.label, comentario: comentario.trim() || null })}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {eliminando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+            Eliminar Club Definitivamente
+          </button>
+        </div>
       </div>
     </ModalShell>
   );
@@ -41615,9 +41685,10 @@ function ModalConfirmarEliminarClub({ nombreClub, onClose, onConfirmar, eliminan
 // aquí), (b) Plan y Suscripción (snapshot real del plan elegido en el
 // Onboarding — `planClubSeleccionado`/`guardarPlanSeleccionadoClub`, mismo
 // estado y mismo guardado de siempre, reutilizados tal cual) preparado para
-// Stripe, y (c) la Zona de Peligro ("Eliminar Club"), reubicada aquí desde
-// el fondo de "General" — `SeccionZonaPeligro`/`ModalConfirmarEliminarClub`
-// (arriba) NO cambiaron, solo el lugar desde donde se invocan.
+// Stripe, y (c) Eliminar Cuenta ("Eliminar Club"), reubicada aquí desde el
+// fondo de "General" y rediseñada post-QA a una sección discreta con
+// Encuesta de Salida de 2 pasos — ver `SeccionEliminarCuenta`/
+// `ModalEliminarCuenta` (arriba).
 // ============================================================================
 function SeccionCuentaSuscripcion({
   configClub,
@@ -41725,7 +41796,7 @@ function SeccionCuentaSuscripcion({
       </div>
 
       {/* c) Eliminación de Cuenta (Zona Crítica) — discreta, al final. */}
-      <SeccionZonaPeligro nombreClub={nombreClub} onEliminarClub={onEliminarClub} eliminandoClub={eliminandoClub} />
+      <SeccionEliminarCuenta nombreClub={nombreClub} onEliminarClub={onEliminarClub} eliminandoClub={eliminandoClub} />
 
       {modalCambiarPlan && (
         <ModalCambiarPlan
@@ -41827,8 +41898,8 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar }) {
 }
 
 // Modal "Cancelar Suscripción" — explica el fin del período pagado (mismo
-// criterio de fricción/claridad que `ModalConfirmarEliminarClub`, aunque
-// esta acción es reversible y mucho menos destructiva). Preparado para
+// criterio de fricción/claridad que el Paso 2 de `ModalEliminarCuenta`,
+// aunque esta acción es reversible y mucho menos destructiva). Preparado para
 // Stripe Webhooks: `onConfirmar` hoy solo marca el estado local de
 // `SeccionCuentaSuscripcion` (ver su comentario) — el día que haya cobro
 // real, este mismo botón dispara la llamada que cancela la suscripción en
@@ -51897,28 +51968,49 @@ function AppInterno({ clubInicial } = {}) {
   // Login de inmediato, sin dejar al dueño viendo un Panel que ya no debería
   // poder usar.
   const [eliminandoClub, setEliminandoClub] = useState(false);
-  const eliminarClub = useCallback(async () => {
-    if (!CLUB_ACTIVO_ID) return;
-    setEliminandoClub(true);
-    try {
-      const { error } = await actualizarConColumnasOpcionales(
-        'configuracion_club',
-        CLUB_ACTIVO_ID,
-        { eliminado_en: new Date().toISOString() },
-        ['eliminado_en']
-      );
-      if (error) throw error;
-      await supabase.auth.signOut();
-    } catch (err) {
-      console.error('[Club] No se pudo eliminar el club.', err);
-      mostrarToast({
-        titulo: 'No se pudo eliminar el club',
-        detalle: detalleErrorSupabase(err) || 'Intenta de nuevo en unos segundos — si sigue fallando, corre migracion_v67 en Supabase.',
-        tono: 'error',
-      });
-      setEliminandoClub(false);
-    }
-  }, [mostrarToast]);
+  // Encuesta de Salida (rediseño "Gestión de Cuenta", modal de 2 pasos) — el
+  // motivo elegido en el Paso 1 (`ModalEliminarCuenta`) viaja como parámetro
+  // opcional hasta aquí y se guarda en `log_actividad` (vía
+  // `registrarEventoAuditoria`, la MISMA tabla/mecanismo de auditoría que ya
+  // usa el resto del sistema — sin columna ni tabla nueva) ANTES del borrado
+  // suave, para que quede registro de por qué se fue el club incluso después
+  // de que `eliminado_en` bloquee su acceso. `motivo`/`comentario` son
+  // opcionales a propósito: un caller viejo que siga llamando
+  // `eliminarClub()` sin argumentos (ninguno queda en este archivo, pero por
+  // si acaso) no se rompe, simplemente no deja motivo registrado.
+  const eliminarClub = useCallback(
+    async (motivo) => {
+      if (!CLUB_ACTIVO_ID) return;
+      setEliminandoClub(true);
+      try {
+        if (motivo?.motivoLabel) {
+          await registrarEventoAuditoria('eliminacion_club', {
+            club: configClub?.nombre || null,
+            motivo_id: motivo.motivoId || null,
+            motivo: motivo.motivoLabel,
+            comentario: motivo.comentario || null,
+          });
+        }
+        const { error } = await actualizarConColumnasOpcionales(
+          'configuracion_club',
+          CLUB_ACTIVO_ID,
+          { eliminado_en: new Date().toISOString() },
+          ['eliminado_en']
+        );
+        if (error) throw error;
+        await supabase.auth.signOut();
+      } catch (err) {
+        console.error('[Club] No se pudo eliminar el club.', err);
+        mostrarToast({
+          titulo: 'No se pudo eliminar el club',
+          detalle: detalleErrorSupabase(err) || 'Intenta de nuevo en unos segundos — si sigue fallando, corre migracion_v67 en Supabase.',
+          tono: 'error',
+        });
+        setEliminandoClub(false);
+      }
+    },
+    [mostrarToast, registrarEventoAuditoria, configClub]
+  );
 
   // Interactive Onboarding Canvas (migracion_v66) — Paso 1 "Selección de
   // Plan": guarda el snapshot del plan elegido (rango de canchas, nombre,
