@@ -3419,6 +3419,12 @@ const CONFIG_CLUB_DEFAULT = {
   // preserva encendida por default para no cambiar el comportamiento actual.
   toleranciaRetasEnabled: true,
   toleranciaRetasHoras: 6,
+  // Academia/Clases (Unificación del Motor de Cancelación) — mismo criterio
+  // que Reservas/Torneos: arranca en OFF a propósito (Academia nunca tuvo
+  // esta política, un club que nunca la toca no ve ningún cambio de
+  // comportamiento en su cancelación autoservicio del Portal).
+  toleranciaAcademiaEnabled: false,
+  toleranciaAcademiaHoras: 24,
   // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
   // Academia, migracion_v71) — precios/paquete SUGERIDOS que prellenan
   // "Nueva Clase" (`ModalNuevaClase`) y que usa el Portal para redactar las
@@ -3430,6 +3436,58 @@ const CONFIG_CLUB_DEFAULT = {
   academiaPrecioBaseMensualidad: 1200,
   academiaClasesIncluidasMensualidad: 4,
 };
+
+// ============================================================================
+// MOTOR UNIFICADO DE TOLERANCIA DE CANCELACIÓN — usado por el Portal de
+// Jugadores (aviso de políticas al confirmar + cancelación autoservicio en
+// Historial/Academia) y por el Panel de Administración (`DetalleReserva` y
+// el resto de cancelaciones de Staff). Antes cada módulo calculaba esto por
+// su cuenta (Reservas en `DetalleReserva`, Retas en
+// `cancelarInscripcionReta`) y Academia no lo calculaba en absoluto — ahora
+// todos leen la MISMA regla desde un solo lugar.
+// ============================================================================
+
+// Lee la política de cancelación vigente de un módulo
+// (`'reservas' | 'torneos' | 'retas' | 'academia'`) desde `configClub`,
+// respetando el Switch Master ("Políticas y Tolerancia de Cancelación" en
+// Configuración del Club → Reservas & Academia, `SeccionReservasAcademia`).
+// `activa` ya incluye el Switch Master: si está apagado, `activa` siempre es
+// `false` sin importar el switch del módulo. Un club que nunca corrió la
+// migración de un campo nuevo (ej. `toleranciaAcademiaEnabled` en un
+// proyecto viejo) simplemente lee `undefined` → `enabled` cae a `false`,
+// mismo comportamiento tolerante de siempre.
+function politicaCancelacionModulo(configClub, modulo) {
+  const config = configClub || CONFIG_CLUB_DEFAULT;
+  const masterActivo = config.toleranciaCancelacionMaster !== false;
+  const CAMPOS_POR_MODULO = {
+    reservas: ['toleranciaReservasEnabled', 'toleranciaReservasHoras'],
+    torneos: ['toleranciaTorneosEnabled', 'toleranciaTorneosHoras'],
+    retas: ['toleranciaRetasEnabled', 'toleranciaRetasHoras'],
+    academia: ['toleranciaAcademiaEnabled', 'toleranciaAcademiaHoras'],
+  };
+  const [campoEnabled, campoHoras] = CAMPOS_POR_MODULO[modulo] || CAMPOS_POR_MODULO.reservas;
+  const enabled = config[campoEnabled] === true;
+  const horas = Number(config[campoHoras]) > 0 ? Number(config[campoHoras]) : CONFIG_CLUB_DEFAULT[campoHoras];
+  return { activa: masterActivo && enabled, horas };
+}
+
+// Evalúa si TODAVÍA se puede cancelar dentro de la ventana de tolerancia
+// (con anticipación suficiente — cancelación libre/con reembolso) o si ya
+// está FUERA de ella (muy pegado al evento — se retiene la cuota/lugar en
+// el Panel, o se bloquea la cancelación autoservicio en el Portal).
+// `fechaEventoMs` es el timestamp (ms) del inicio real del evento —
+// normalmente `timestampEvento(fechaISO, horaStr)`. Si la política no está
+// activa (`toleranciaHoras <= 0`, o el caller directamente no debió llamar
+// esto porque `politicaCancelacionModulo(...).activa` era `false`), siempre
+// resuelve `dentroDeTolerancia: true` (cancelación libre) para no bloquear
+// nada por accidente.
+function validarToleranciaCancelacion(fechaEventoMs, toleranciaHoras) {
+  const horas = Number(toleranciaHoras) || 0;
+  if (!fechaEventoMs || horas <= 0) return { horasParaEvento: Infinity, dentroDeTolerancia: true };
+  const horasParaEvento = (Number(fechaEventoMs) - Date.now()) / 3600000;
+  return { horasParaEvento, dentroDeTolerancia: horasParaEvento >= horas };
+}
+
 // Opciones fijas del selector de "Duración de Bloques/Turnos" — 60/90/120
 // min, tal como se pidió (1h / 1h30 / 2h).
 const OPCIONES_DURACION_BLOQUE = [
@@ -6961,34 +7019,43 @@ function DetalleReserva({
 }) {
   const toast = useToast();
   const [mostrarCancelacion, setMostrarCancelacion] = useState(false);
+  // Unificación del Motor de Cancelación (Panel Admin, Parte 3) — el Wallet
+  // solo tiene sentido si algo se cobró de verdad. Antes `montoAbono`
+  // arrancaba SIEMPRE en `reserva.monto_total`, sin ver `estado_pago`
+  // (bug señalado en la auditoría): una reserva PENDIENTE de pago (pago
+  // presencial, nada cobrado todavía) sugería abonar el precio completo
+  // como si ya se hubiera pagado. Ahora `montoPagado` es 0 salvo que el
+  // pago ya esté marcado `pagado`, y toda la sección de Wallet se oculta
+  // por completo cuando no hay nada que devolver (ver el render más abajo).
+  const montoPagado = reserva.estado_pago === 'pagado' ? Number(reserva.monto_total) || 0 : 0;
+  const reservaSinPago = montoPagado <= 0;
   const [abonarSaldo, setAbonarSaldo] = useState(true);
-  const [montoAbono, setMontoAbono] = useState(String(reserva.monto_total ?? 0));
+  const [montoAbono, setMontoAbono] = useState(String(montoPagado || reserva.monto_total || 0));
   const [motivoCancelacion, setMotivoCancelacion] = useState('');
   const [procesando, setProcesando] = useState(false);
   const [error, setError] = useState('');
 
-  // Tolerancia de Cancelación para Reservas de Cancha (centralizada,
-  // Configuración del Club → "Reservas & Academia" → "Políticas y
-  // Tolerancia de Cancelación") — Reservas NUNCA tuvo esta política antes
-  // (a diferencia de Retas), así que aquí no se bloquea/penaliza nada
-  // automáticamente: el staff sigue decidiendo manualmente si abona saldo o
-  // no (mismo criterio de siempre). Lo único nuevo es que, si el club activó
-  // esta política para Reservas, se le muestra al staff un aviso informativo
-  // de si esta cancelación cae dentro o fuera de la ventana configurada, y
-  // el checkbox "Abonar Saldo a Favor" arranca desmarcado por default
-  // cuando cae DENTRO de la ventana (recomendando no reembolsar), sin
-  // impedir que el staff lo vuelva a marcar si así lo decide.
+  // Tolerancia de Cancelación para Reservas de Cancha — MOTOR UNIFICADO
+  // (mismos `politicaCancelacionModulo`/`validarToleranciaCancelacion` que
+  // usa el Portal de Jugadores para el aviso al confirmar y la cancelación
+  // autoservicio, ver cerca de `CONFIG_CLUB_DEFAULT`). Reservas nunca
+  // bloquea/penaliza nada automáticamente aquí: el staff sigue decidiendo
+  // manualmente si abona saldo o no. Lo único que hace la política es
+  // sugerir el valor inicial del checkbox y mostrar el aviso de si esta
+  // cancelación cae dentro o fuera de la ventana configurada.
   const config = configClub || CONFIG_CLUB_DEFAULT;
-  const toleranciaReservasActiva = config.toleranciaCancelacionMaster !== false && config.toleranciaReservasEnabled === true;
-  const toleranciaReservasHoras = Number(config.toleranciaReservasHoras) || CONFIG_CLUB_DEFAULT.toleranciaReservasHoras;
-  const horasParaLaReserva = (() => {
-    if (!reserva?.fecha) return Infinity;
-    const [y, m, d] = reserva.fecha.split('-').map(Number);
-    const horaMin = parseHoraAMinutos(reserva.hora_inicio) ?? 0;
-    const inicio = new Date(y, m - 1, d, Math.floor(horaMin / 60), horaMin % 60);
-    return (inicio.getTime() - Date.now()) / 3600000;
-  })();
-  const dentroDeVentanaTolerancia = toleranciaReservasActiva && horasParaLaReserva < toleranciaReservasHoras;
+  const { activa: toleranciaReservasActiva, horas: toleranciaReservasHoras } = politicaCancelacionModulo(config, 'reservas');
+  const fechaReservaMs = timestampEvento(reserva?.fecha, reserva?.hora_inicio);
+  const { horasParaEvento: horasParaLaReserva, dentroDeTolerancia } = validarToleranciaCancelacion(
+    fechaReservaMs,
+    toleranciaReservasActiva ? toleranciaReservasHoras : 0
+  );
+  // "Fuera de tolerancia" = cancelando ya muy tarde (menos de X horas antes
+  // del juego) — mismo lenguaje que usa la cancelación autoservicio del
+  // Portal (Parte 2). Cuando la política está inactiva, `dentroDeTolerancia`
+  // siempre es `true` (ver `validarToleranciaCancelacion`), así que esta
+  // "zona de penalización" nunca se activa.
+  const fueraDeTolerancia = toleranciaReservasActiva && !dentroDeTolerancia;
 
   // Control Interno — "Modificación de horarios o canchas": reprograma el
   // bloque horario de esta MISMA reserva/cancha (día y jugador se quedan
@@ -7127,7 +7194,7 @@ function DetalleReserva({
     }
 
     let saldoAplicado = 0;
-    if (abonarSaldo && reserva.jugador_id && Number(montoAbono) > 0) {
+    if (!reservaSinPago && abonarSaldo && reserva.jugador_id && Number(montoAbono) > 0) {
       try {
         const { data: jugadorActual, error: errJugador } = await supabase
           .from('jugadores')
@@ -7241,10 +7308,12 @@ function DetalleReserva({
             {permisos?.puedeCancelarReservas !== false && (
               <button
                 onClick={() => {
-                  // Ver comentario junto a `dentroDeVentanaTolerancia`: solo
-                  // ajusta el valor INICIAL sugerido del checkbox, el staff
-                  // lo puede volver a marcar libremente en el paso siguiente.
-                  if (dentroDeVentanaTolerancia) setAbonarSaldo(false);
+                  // Ver comentario junto a `fueraDeTolerancia`: solo ajusta
+                  // el valor INICIAL sugerido del checkbox, el staff lo
+                  // puede volver a marcar libremente en el paso siguiente.
+                  // Sin pago real (`reservaSinPago`) el Wallet ni se
+                  // muestra, así que esto no aplica en ese caso.
+                  if (fueraDeTolerancia) setAbonarSaldo(false);
                   setMostrarCancelacion(true);
                 }}
                 className="inline-flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold text-rose-300 transition hover:bg-rose-500/20"
@@ -7300,49 +7369,60 @@ function DetalleReserva({
           <p className="text-sm font-bold text-red-900">¿Confirmas cancelar esta reserva?</p>
           <p className="text-xs text-gray-700">El horario se liberará de inmediato en la parrilla y el cronograma.</p>
 
-          {toleranciaReservasActiva && (
-            <p
-              className={`flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
-                dentroDeVentanaTolerancia ? 'bg-amber-100 text-amber-900 ring-1 ring-amber-300' : 'bg-white text-gray-700 ring-1 ring-rose-200'
-              }`}
-            >
-              <ShieldAlert size={13} className="mt-0.5 shrink-0" />
-              {dentroDeVentanaTolerancia
-                ? `Dentro de la ventana de tolerancia (${toleranciaReservasHoras}h antes del juego) — se sugiere NO abonar saldo, pero puedes ajustarlo abajo.`
-                : `Fuera de la ventana de tolerancia (${toleranciaReservasHoras}h antes del juego) — cancelación sin penalización.`}
-            </p>
-          )}
-
-          <label className="flex items-start gap-2.5 rounded-lg bg-white p-3">
-            <input
-              type="checkbox"
-              checked={abonarSaldo}
-              onChange={(e) => setAbonarSaldo(e.target.checked)}
-              className="mt-0.5 h-4 w-4 accent-orange-400"
-              disabled={!reserva.jugador_id}
-            />
-            <span className="text-xs text-gray-700">
-              <span className="flex items-center gap-1.5 font-bold text-gray-900">
-                <Wallet size={13} /> Abonar como Saldo a Favor al Wallet del Jugador
-              </span>
-              {!reserva.jugador_id && (
-                <span className="mt-1 block text-amber-700">
-                  Esta reserva no tiene un jugador vinculado, así que no se puede abonar saldo.
-                </span>
+          {/* Unificación del Motor de Cancelación (Panel Admin, Parte 3):
+              sin pago real (`reservaSinPago` — nunca se cobró, sea porque
+              `estado_pago` sigue "pendiente" o porque el monto es $0) no
+              tiene ningún sentido ofrecer abonar Wallet, así que toda esa
+              sección se oculta por completo — solo queda el mensaje de
+              arriba y "Confirmar Cancelación" abajo. Con pago real, se
+              conserva el aviso de tolerancia + checkbox de siempre. */}
+          {!reservaSinPago && (
+            <>
+              {toleranciaReservasActiva && (
+                <p
+                  className={`flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
+                    fueraDeTolerancia ? 'bg-white text-gray-700 ring-1 ring-rose-200' : 'bg-amber-100 text-amber-900 ring-1 ring-amber-300'
+                  }`}
+                >
+                  <ShieldAlert size={13} className="mt-0.5 shrink-0" />
+                  {fueraDeTolerancia
+                    ? `Cancelación fuera de tiempo (a menos de ${toleranciaReservasHoras}h del juego) — tiempo de tolerancia expirado. Tú decides si de todas formas abonas saldo.`
+                    : `Dentro del tiempo de anticipación requerido (${toleranciaReservasHoras}h antes del juego) — cancelación sin penalización, se sugiere abonar saldo a favor.`}
+                </p>
               )}
-            </span>
-          </label>
 
-          {abonarSaldo && reserva.jugador_id && (
-            <Campo label="Monto a abonar (MXN)">
-              <input
-                type="number"
-                min="0"
-                value={montoAbono}
-                onChange={(e) => setMontoAbono(e.target.value)}
-                className={inputClase}
-              />
-            </Campo>
+              <label className="flex items-start gap-2.5 rounded-lg bg-white p-3">
+                <input
+                  type="checkbox"
+                  checked={abonarSaldo}
+                  onChange={(e) => setAbonarSaldo(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-orange-400"
+                  disabled={!reserva.jugador_id}
+                />
+                <span className="text-xs text-gray-700">
+                  <span className="flex items-center gap-1.5 font-bold text-gray-900">
+                    <Wallet size={13} /> Abonar como Saldo a Favor al Wallet del Jugador
+                  </span>
+                  {!reserva.jugador_id && (
+                    <span className="mt-1 block text-amber-700">
+                      Esta reserva no tiene un jugador vinculado, así que no se puede abonar saldo.
+                    </span>
+                  )}
+                </span>
+              </label>
+
+              {abonarSaldo && reserva.jugador_id && (
+                <Campo label="Monto a abonar (MXN)">
+                  <input
+                    type="number"
+                    min="0"
+                    value={montoAbono}
+                    onChange={(e) => setMontoAbono(e.target.value)}
+                    className={inputClase}
+                  />
+                </Campo>
+              )}
+            </>
           )}
 
           <Campo label="Motivo de cancelación" hint="Queda en el Log de Actividad para auditoría interna.">
@@ -27029,8 +27109,11 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
   // `ModuloTorneosRetas` es quien lee esas horas en el momento de cancelar,
   // no un valor guardado por reta.
   const config = configClub || CONFIG_CLUB_DEFAULT;
-  const toleranciaActiva = config.toleranciaCancelacionMaster !== false && config.toleranciaRetasEnabled !== false;
-  const toleranciaHorasActiva = Number(config.toleranciaRetasHoras) || TOLERANCIA_HORAS_DEFAULT;
+  // Auditoría de Jerarquía en Cascada (Motor Unificado): antes este
+  // componente duplicaba a mano el chequeo Switch Master + sub-switch de
+  // Retas en vez de leerlo de `politicaCancelacionModulo` — misma regla,
+  // pero un segundo lugar que mantener sincronizado si la jerarquía cambia.
+  const { activa: toleranciaActiva, horas: toleranciaHorasActiva } = politicaCancelacionModulo(config, 'retas');
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
@@ -30096,23 +30179,21 @@ function ModuloTorneosRetas({
   // libera igual para que el club pueda revenderlo.
   async function cancelarInscripcionReta(reta, inscripcion) {
     setCancelandoInscripcionId(inscripcion.id);
-    const [y, m, d] = reta.fecha.split('-').map(Number);
-    const horaMin = parseHoraAMinutos(reta.hora_inicio) ?? 0;
-    const inicioReta = new Date(y, m - 1, d, Math.floor(horaMin / 60), horaMin % 60);
-    const horasParaJuego = (inicioReta.getTime() - Date.now()) / 3600000;
-    // Tolerancia de Cancelación (centralizada, Configuración del Club →
-    // "Reservas & Academia" → "Políticas y Tolerancia de Cancelación") — ya
-    // NO se lee de `reta.tolerancia_horas` (columna que este módulo dejó de
-    // escribir, ver `ModalNuevaReta`): ahora la política vive en `configClub`
-    // y aplica pareja a TODAS las Retas, nuevas y viejas. Si el Switch
-    // Master o el switch de Retas está OFF, no hay penalización — se cancela
-    // siempre sin retención (mismo criterio "!== false" que el resto de
-    // `CONFIG_CLUB_DEFAULT`, para no cambiar el comportamiento de un club que
-    // nunca ha tocado este ajuste nuevo: Master y Retas arrancan en ON).
+    // Tolerancia de Cancelación — MOTOR UNIFICADO (Auditoría de Jerarquía en
+    // Cascada): ya NO se lee de `reta.tolerancia_horas` (columna que este
+    // módulo dejó de escribir, ver `ModalNuevaReta`), ni se recalcula el
+    // Switch Master + sub-switch a mano aquí — se lee de la MISMA
+    // `politicaCancelacionModulo`/`validarToleranciaCancelacion` que usa el
+    // Portal de Jugadores y `DetalleReserva`, para que la jerarquía (Master
+    // → módulo → horas) se evalúe en un solo lugar. Si el Switch Master o el
+    // switch de Retas está OFF, `activa` es `false` y
+    // `validarToleranciaCancelacion` siempre resuelve `dentroDeTolerancia:
+    // true` (cancelación libre, sin retención).
     const config = configClub || CONFIG_CLUB_DEFAULT;
-    const toleranciaActiva = config.toleranciaCancelacionMaster !== false && config.toleranciaRetasEnabled !== false;
-    const tolerancia = Number(config.toleranciaRetasHoras) || TOLERANCIA_HORAS_DEFAULT;
-    const nuevoEstado = toleranciaActiva && horasParaJuego < tolerancia ? 'retenido' : 'cancelado';
+    const { activa: toleranciaActiva, horas: toleranciaHoras } = politicaCancelacionModulo(config, 'retas');
+    const fechaRetaMs = timestampEvento(reta?.fecha, reta?.hora_inicio);
+    const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaRetaMs, toleranciaActiva ? toleranciaHoras : 0);
+    const nuevoEstado = dentroDeTolerancia ? 'cancelado' : 'retenido';
 
     const { error } = await supabase.from('reta_inscripciones').update({ estado: nuevoEstado }).eq('id', inscripcion.id);
     setCancelandoInscripcionId(null);
@@ -34129,8 +34210,17 @@ function ModalDetalleClase({
                   <Ban size={12} /> Cancelar Clase
                 </button>
               ) : (
-                <div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2.5">
-                  <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-200">
+                // Mejora Visual (Motor Unificado de Confirmación/
+                // Cancelación, Parte 4) — antes esta alerta usaba
+                // `bg-rose-950/20` (casi negro) + `text-rose-200` (rosa
+                // clarito), un combo de contraste ilegible sobre el resto
+                // del modal, que es de tema claro. Mismo criterio de
+                // "Mejora de Contraste" ya aplicado en `DetalleReserva`
+                // (Panel Admin): tarjeta clara y texto oscuro contrastante,
+                // con el estilo sobrio exacto que se usa para el resto de
+                // avisos rojos de esta app.
+                <div className="flex w-full flex-wrap items-center gap-2 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
+                  <p className="min-w-0 flex-1">
                     ¿Cancelar "{clase.nombre}"? Se cancelan sus sesiones y se libera la cancha en la Parrilla Operativa y en el Portal. El historial de alumnos y asistencia se conserva.
                   </p>
                   <div className="flex shrink-0 gap-1.5">
@@ -40377,6 +40467,23 @@ function normalizarFilaClub(fila, tabla) {
     academia_precio_base_mensualidad: Number(fila.academia_precio_base_mensualidad) >= 0 ? Number(fila.academia_precio_base_mensualidad) : undefined,
     academia_clases_incluidas_mensualidad:
       Number(fila.academia_clases_incluidas_mensualidad) > 0 ? Number(fila.academia_clases_incluidas_mensualidad) : undefined,
+    // Políticas y Tolerancia de Cancelación (Unificación del Motor de
+    // Confirmación/Cancelación en el Portal) — hasta ahora esta función NO
+    // exponía ninguna de estas columnas al Portal (lista blanca), así que el
+    // Portal nunca pudo leer la configuración real del club para mostrar el
+    // aviso de políticas al confirmar ni para la cancelación autoservicio.
+    // Mismo criterio tolerante que el resto de esta función: proyecto sin
+    // migración → `undefined` → cae a los defaults de `CONFIG_CLUB_DEFAULT`
+    // (ver el adaptador `configTolerancia` dentro de `PortalPublicoJugadores`).
+    tolerancia_cancelacion_master: fila.tolerancia_cancelacion_master,
+    tolerancia_reservas_enabled: fila.tolerancia_reservas_enabled,
+    tolerancia_reservas_horas: fila.tolerancia_reservas_horas,
+    tolerancia_torneos_enabled: fila.tolerancia_torneos_enabled,
+    tolerancia_torneos_horas: fila.tolerancia_torneos_horas,
+    tolerancia_retas_enabled: fila.tolerancia_retas_enabled,
+    tolerancia_retas_horas: fila.tolerancia_retas_horas,
+    tolerancia_academia_enabled: fila.tolerancia_academia_enabled,
+    tolerancia_academia_horas: fila.tolerancia_academia_horas,
     _tabla: tabla,
   };
 }
@@ -41355,6 +41462,8 @@ function SeccionGeneralClub({
       toleranciaTorneosHoras: config.toleranciaTorneosHoras,
       toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
       toleranciaRetasHoras: config.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
+      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
       // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
       // Academia, migracion_v71) — este bloque no las edita, se reenvían
       // TAL CUAL para no resetearlas a su default en cada guardado
@@ -41395,6 +41504,8 @@ function SeccionGeneralClub({
       toleranciaTorneosHoras: config.toleranciaTorneosHoras,
       toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
       toleranciaRetasHoras: config.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
+      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
       // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
       // Academia, migracion_v71) — este bloque no las edita, se reenvían
       // TAL CUAL para no resetearlas a su default en cada guardado
@@ -41990,6 +42101,8 @@ function SeccionTarifasFranjas({
       toleranciaTorneosHoras: config.toleranciaTorneosHoras,
       toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
       toleranciaRetasHoras: config.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
+      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
       // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
       // Academia, migracion_v71) — este bloque no las edita, se reenvían
       // TAL CUAL para no resetearlas a su default en cada guardado
@@ -42021,6 +42134,8 @@ function SeccionTarifasFranjas({
       toleranciaTorneosHoras: config.toleranciaTorneosHoras,
       toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
       toleranciaRetasHoras: config.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
+      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
       // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
       // Academia, migracion_v71) — este bloque no las edita, se reenvían
       // TAL CUAL para no resetearlas a su default en cada guardado
@@ -42529,6 +42644,8 @@ function SeccionReservasAcademia({
       toleranciaTorneosHoras: config.toleranciaTorneosHoras,
       toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
       toleranciaRetasHoras: config.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
+      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
       // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
       // Academia, migracion_v71) — este bloque no las edita, se reenvían
       // TAL CUAL para no resetearlas a su default en cada guardado
@@ -42560,6 +42677,12 @@ function SeccionReservasAcademia({
   const [toleranciaRetasHoras, setToleranciaRetasHoras] = useState(
     String(config.toleranciaRetasHoras || CONFIG_CLUB_DEFAULT.toleranciaRetasHoras)
   );
+  // Academia/Clases (Unificación del Motor de Cancelación) — 4º módulo,
+  // mismo patrón exacto que Reservas/Torneos/Retas de arriba.
+  const [toleranciaAcademiaEnabled, setToleranciaAcademiaEnabled] = useState(config.toleranciaAcademiaEnabled === true);
+  const [toleranciaAcademiaHoras, setToleranciaAcademiaHoras] = useState(
+    String(config.toleranciaAcademiaHoras || CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras)
+  );
 
   useEffect(() => {
     setToleranciaMaster(config.toleranciaCancelacionMaster !== false);
@@ -42569,6 +42692,8 @@ function SeccionReservasAcademia({
     setToleranciaTorneosHoras(String(config.toleranciaTorneosHoras || CONFIG_CLUB_DEFAULT.toleranciaTorneosHoras));
     setToleranciaRetasEnabled(config.toleranciaRetasEnabled !== false);
     setToleranciaRetasHoras(String(config.toleranciaRetasHoras || CONFIG_CLUB_DEFAULT.toleranciaRetasHoras));
+    setToleranciaAcademiaEnabled(config.toleranciaAcademiaEnabled === true);
+    setToleranciaAcademiaHoras(String(config.toleranciaAcademiaHoras || CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras));
   }, [
     config.toleranciaCancelacionMaster,
     config.toleranciaReservasEnabled,
@@ -42577,6 +42702,8 @@ function SeccionReservasAcademia({
     config.toleranciaTorneosHoras,
     config.toleranciaRetasEnabled,
     config.toleranciaRetasHoras,
+    config.toleranciaAcademiaEnabled,
+    config.toleranciaAcademiaHoras,
   ]);
 
   // `overrides` deja que los switches (que guardan de inmediato) manden su
@@ -42591,6 +42718,8 @@ function SeccionReservasAcademia({
       toleranciaTorneosHoras: Number(toleranciaTorneosHoras) > 0 ? Number(toleranciaTorneosHoras) : CONFIG_CLUB_DEFAULT.toleranciaTorneosHoras,
       toleranciaRetasEnabled,
       toleranciaRetasHoras: Number(toleranciaRetasHoras) > 0 ? Number(toleranciaRetasHoras) : CONFIG_CLUB_DEFAULT.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled,
+      toleranciaAcademiaHoras: Number(toleranciaAcademiaHoras) > 0 ? Number(toleranciaAcademiaHoras) : CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras,
       ...overrides,
     };
     await onGuardarConfigClub?.({
@@ -42655,6 +42784,8 @@ function SeccionReservasAcademia({
       toleranciaTorneosHoras: config.toleranciaTorneosHoras,
       toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
       toleranciaRetasHoras: config.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
+      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
       academiaPrecioBaseClaseSuelta: Number(precioBaseClaseSuelta) >= 0 ? Number(precioBaseClaseSuelta) : CONFIG_CLUB_DEFAULT.academiaPrecioBaseClaseSuelta,
       academiaPrecioBaseMensualidad: Number(precioBaseMensualidad) >= 0 ? Number(precioBaseMensualidad) : CONFIG_CLUB_DEFAULT.academiaPrecioBaseMensualidad,
       academiaClasesIncluidasMensualidad:
@@ -42896,6 +43027,15 @@ function SeccionReservasAcademia({
               setEnabled: setToleranciaRetasEnabled,
               horas: toleranciaRetasHoras,
               setHoras: setToleranciaRetasHoras,
+            },
+            {
+              key: 'academia',
+              campo: 'toleranciaAcademiaEnabled',
+              titulo: 'Academia / Clases',
+              enabled: toleranciaAcademiaEnabled,
+              setEnabled: setToleranciaAcademiaEnabled,
+              horas: toleranciaAcademiaHoras,
+              setHoras: setToleranciaAcademiaHoras,
             },
           ].map((modulo) => (
             <div key={modulo.key} className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
@@ -44206,6 +44346,29 @@ function PortalPublicoJugadores({ clubSlug }) {
   const [walletMovimientos, setWalletMovimientos] = useState([]);
   const [cargandoWallet, setCargandoWallet] = useState(false);
 
+  // Políticas y Tolerancia de Cancelación (Motor Unificado de Confirmación/
+  // Cancelación) — adapta el objeto `club` del Portal (columnas en
+  // snake_case, ver `normalizarFilaClub`) al shape camelCase que esperan
+  // `politicaCancelacionModulo`/`validarToleranciaCancelacion` (los mismos
+  // 2 helpers que usa Configuración del Club y, más abajo, el Panel de
+  // Administración) — mismos defaults exactos que `CONFIG_CLUB_DEFAULT`
+  // para que un club que nunca tocó esta configuración vea el mismo
+  // comportamiento de siempre (Retas ON por 6h, el resto OFF).
+  const configTolerancia = useMemo(
+    () => ({
+      toleranciaCancelacionMaster: club?.tolerancia_cancelacion_master !== false,
+      toleranciaReservasEnabled: club?.tolerancia_reservas_enabled === true,
+      toleranciaReservasHoras: club?.tolerancia_reservas_horas,
+      toleranciaTorneosEnabled: club?.tolerancia_torneos_enabled === true,
+      toleranciaTorneosHoras: club?.tolerancia_torneos_horas,
+      toleranciaRetasEnabled: club?.tolerancia_retas_enabled !== false,
+      toleranciaRetasHoras: club?.tolerancia_retas_horas,
+      toleranciaAcademiaEnabled: club?.tolerancia_academia_enabled === true,
+      toleranciaAcademiaHoras: club?.tolerancia_academia_horas,
+    }),
+    [club]
+  );
+
   // Tienda (Pro-Shop) — carrito propio del Portal, independiente del
   // carrito del mostrador (Smart POS): un visitante del Portal nunca debe
   // tocar la comanda que un cajero tenga abierta en ese momento.
@@ -44242,6 +44405,10 @@ function PortalPublicoJugadores({ clubSlug }) {
   // alterna DENTRO de ese mismo modal en vez de uno nuevo encima).
   const [resumenClase, setResumenClase] = useState(null); // { clase, alumno } | null
   const [resumenReta, setResumenReta] = useState(null); // reta completa | null
+  // Auto-Cancelación desde Historial (Motor Unificado, Parte 2) — item de
+  // `historialUnificado` (reserva/torneo/reta/clase) que el jugador acaba de
+  // tocar, o `null` si el modal de detalle está cerrado.
+  const [historialDetalle, setHistorialDetalle] = useState(null);
 
   // PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO (refinamiento UX) —
   // banner destacado arriba del catálogo '/Clases'.
@@ -45878,6 +46045,15 @@ function PortalPublicoJugadores({ clubSlug }) {
           metodoPago: r.metodo_pago || null,
           monto: Number(r.monto_total || 0) + Number(r.monto_addons || 0),
           fechaOrden: `${r.fecha || ''}T${r.hora_inicio || '00:00'}`,
+          // Auto-Cancelación desde Historial (Motor Unificado, Parte 2): cada
+          // item activo/futuro trae su entidad cruda + el módulo de política
+          // + el timestamp real del evento, para que el modal de detalle
+          // pueda evaluar `politicaCancelacionModulo`/
+          // `validarToleranciaCancelacion` sin volver a adivinar el shape.
+          raw: r,
+          modulo: 'reservas',
+          fechaEventoMs: timestampEvento(r.fecha, r.hora_inicio),
+          activo: r.estado !== 'Cancelada',
         };
       });
 
@@ -45891,49 +46067,77 @@ function PortalPublicoJugadores({ clubSlug }) {
       metodoPago: v.metodo_pago || null,
       monto: Number(v.total) || 0,
       fechaOrden: v.created_at || '',
+      // Una compra de Tienda no es cancelable desde aquí (no reserva
+      // cupo/horario) — nunca lleva `raw`/`modulo`, así que la tarjeta no se
+      // vuelve clicable (ver el `.map()` del render).
     }));
 
     const itemsTorneos = (participantes || [])
       .filter((p) => esMiRegistro(p))
-      .map((p) => ({
-        id: `torneo-${p.id}`,
-        tipo: 'torneo',
-        icon: Trophy,
-        titulo: `Torneo · ${torneosPorId[p.torneo_id]?.nombre || 'Torneo'}`,
-        detalle: p.categoria || '',
-        estadoPago: p.estado_pago || p.estatus_pago,
-        metodoPago: etiquetaMetodoPagoInscripcion(p.metodo_pago),
-        monto: Number(p.monto) || 0,
-        fechaOrden: p.created_at || '',
-      }));
+      .map((p) => {
+        const torneo = torneosPorId[p.torneo_id];
+        return {
+          id: `torneo-${p.id}`,
+          tipo: 'torneo',
+          icon: Trophy,
+          titulo: `Torneo · ${torneo?.nombre || 'Torneo'}`,
+          detalle: p.categoria || '',
+          estadoPago: p.estado_pago || p.estatus_pago,
+          metodoPago: etiquetaMetodoPagoInscripcion(p.metodo_pago),
+          monto: Number(p.monto) || 0,
+          fechaOrden: p.created_at || '',
+          raw: p,
+          modulo: 'torneos',
+          // Los Torneos no guardan hora de arranque propia (solo
+          // `fecha_inicio`) — medianoche del día de arranque es suficiente
+          // precisión para una ventana de tolerancia medida en horas/días.
+          fechaEventoMs: timestampEvento(torneo?.fecha_inicio, '00:00'),
+          activo: true,
+        };
+      });
 
     const itemsRetas = (inscripciones || [])
       .filter((i) => esMiRegistro(i))
-      .map((i) => ({
-        id: `reta-${i.id}`,
-        tipo: 'reta',
-        icon: Swords,
-        titulo: `Reta · ${retasPorId[i.reta_id]?.nombre || 'Reta'}`,
-        detalle: '',
-        estadoPago: i.estado_pago || i.estatus_pago,
-        metodoPago: etiquetaMetodoPagoInscripcion(i.metodo_pago),
-        monto: Number(i.monto) || 0,
-        fechaOrden: i.created_at || '',
-      }));
+      .map((i) => {
+        const reta = retasPorId[i.reta_id];
+        return {
+          id: `reta-${i.id}`,
+          tipo: 'reta',
+          icon: Swords,
+          titulo: `Reta · ${reta?.nombre || 'Reta'}`,
+          detalle: '',
+          estadoPago: i.estado_pago || i.estatus_pago,
+          metodoPago: etiquetaMetodoPagoInscripcion(i.metodo_pago),
+          monto: Number(i.monto) || 0,
+          fechaOrden: i.created_at || '',
+          raw: i,
+          modulo: 'retas',
+          fechaEventoMs: timestampEvento(reta?.fecha, reta?.hora_inicio),
+          activo: i.estado !== 'cancelado' && i.estado !== 'retenido',
+        };
+      });
 
     const itemsClases = (academiaAlumnosPortal || [])
       .filter((a) => a.estado !== 'baja' && esMiRegistro(a))
-      .map((a) => ({
-        id: `clase-${a.id}`,
-        tipo: 'clase',
-        icon: GraduationCap,
-        titulo: `Clase · ${clasesPorId[a.clase_id]?.nombre || 'Clase'}`,
-        detalle: a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta',
-        estadoPago: a.estado_pago,
-        metodoPago: etiquetaMetodoPagoInscripcion(a.metodo_pago) || (a.pagado_con_creditos ? 'Crédito' : null),
-        monto: Number(a.monto) || 0,
-        fechaOrden: a.created_at || '',
-      }));
+      .map((a) => {
+        const clase = clasesPorId[a.clase_id];
+        return {
+          id: `clase-${a.id}`,
+          tipo: 'clase',
+          icon: GraduationCap,
+          titulo: `Clase · ${clase?.nombre || 'Clase'}`,
+          detalle: a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta',
+          estadoPago: a.estado_pago,
+          metodoPago: etiquetaMetodoPagoInscripcion(a.metodo_pago) || (a.pagado_con_creditos ? 'Crédito' : null),
+          monto: Number(a.monto) || 0,
+          fechaOrden: a.created_at || '',
+          raw: a,
+          claseRaw: clase,
+          modulo: 'academia',
+          fechaEventoMs: timestampEvento(clase?.fecha, clase?.hora_inicio),
+          activo: true,
+        };
+      });
 
     return [...itemsReservas, ...itemsCompras, ...itemsTorneos, ...itemsRetas, ...itemsClases].sort((a, b) =>
       (b.fechaOrden || '').localeCompare(a.fechaOrden || '')
@@ -45954,6 +46158,39 @@ function PortalPublicoJugadores({ clubSlug }) {
     setAcademiaAlumnosPortal((prev) => prev.map((a) => (a.id === alumno.id ? { ...a, ...cambios } : a)));
     mostrarToast({ titulo: 'Asistencia cancelada', detalle: `Ya no estás inscrito en ${clase?.nombre || 'esa clase'}.` });
     setResumenClase(null);
+  }
+
+  // Cancelación Autoservicio desde Historial (Motor Unificado, Parte 2) —
+  // Reservas/Torneos/Retas nunca tuvieron una cancelación self-service en el
+  // Portal (solo Academia, arriba). Mismo criterio de Sincronización
+  // Silenciosa que el resto del módulo en las 3 funciones que siguen:
+  // intenta guardar en Supabase, pero si falla el estado local se actualiza
+  // igual para que el jugador vea su horario/cupo liberado de inmediato. El
+  // gate de tolerancia (`validarToleranciaCancelacion`) vive en
+  // `ModalDetalleHistorialPortal`, así que para cuando estas funciones se
+  // llaman, ya se validó que la cancelación está permitida.
+  async function cancelarReservaPortal(reserva) {
+    const { error } = await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', reserva.id);
+    if (error) console.warn('[Portal] No se pudo sincronizar la cancelación de la reserva, se aplicó solo local.', error);
+    setReservas((prev) => prev.map((r) => (r.id === reserva.id ? { ...r, estado: 'Cancelada' } : r)));
+    mostrarToast({ titulo: 'Reserva cancelada', detalle: 'El horario quedó liberado de inmediato.' });
+    setHistorialDetalle(null);
+  }
+
+  async function cancelarInscripcionTorneoPortal(participante) {
+    const { error } = await supabase.from('torneo_participantes').delete().eq('id', participante.id);
+    if (error) console.warn('[Portal] No se pudo sincronizar la baja del torneo, se aplicó solo local.', error);
+    setParticipantes((prev) => prev.filter((p) => p.id !== participante.id));
+    mostrarToast({ titulo: 'Inscripción cancelada', detalle: 'Tu lugar en el torneo quedó liberado.' });
+    setHistorialDetalle(null);
+  }
+
+  async function cancelarInscripcionRetaPortal(inscripcion) {
+    const { error } = await actualizarConColumnasOpcionales('reta_inscripciones', inscripcion.id, { estado: 'cancelado' }, []);
+    if (error) console.warn('[Portal] No se pudo sincronizar la cancelación de la reta, se aplicó solo local.', error);
+    setInscripciones((prev) => prev.map((i) => (i.id === inscripcion.id ? { ...i, estado: 'cancelado' } : i)));
+    mostrarToast({ titulo: 'Inscripción cancelada', detalle: 'Tu lugar en la reta quedó liberado.' });
+    setHistorialDetalle(null);
   }
 
   // PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO — guarda la petición
@@ -47288,8 +47525,20 @@ function PortalPublicoJugadores({ clubSlug }) {
                         <div className="divide-y divide-slate-200">
                           {historialUnificado.map((h) => {
                             const Icon = h.icon;
+                            // Auto-Cancelación desde Historial (Motor
+                            // Unificado, Parte 2): solo los 4 tipos con
+                            // `raw`/`modulo` (Reserva/Torneo/Reta/Clase) son
+                            // clicables — "Compra en Tienda" no reserva
+                            // cupo/horario, así que se queda como antes.
+                            const esClicable = !!h.raw;
                             return (
-                              <div key={h.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                              <div
+                                key={h.id}
+                                onClick={esClicable ? () => setHistorialDetalle(h) : undefined}
+                                className={`flex items-center justify-between gap-2 px-4 py-2.5 transition ${
+                                  esClicable ? 'cursor-pointer hover:border-slate-300 hover:bg-slate-100/60' : ''
+                                }`}
+                              >
                                 <div className="flex min-w-0 items-start gap-2.5">
                                   <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-orange-400">
                                     <Icon size={14} />
@@ -47454,6 +47703,14 @@ function PortalPublicoJugadores({ clubSlug }) {
                 ? `${flujoPago.evento.nombre} · ${flujoPago.tipoPago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta'}`
                 : flujoPago.evento.nombre
             }
+            politica={politicaCancelacionModulo(
+              configTolerancia,
+              flujoPago.tipo === 'reta'
+                ? 'retas'
+                : flujoPago.tipo === 'academia'
+                ? 'academia'
+                : 'torneos'
+            )}
             onClose={() => setFlujoPago(null)}
             onConfirmar={async (metodo) => {
               if (flujoPago.tipo === 'reta') await inscribirseAReta(flujoPago.evento, metodo);
@@ -47568,6 +47825,21 @@ function PortalPublicoJugadores({ clubSlug }) {
           />
         )}
 
+        {/* Auto-Cancelación desde Historial (Motor Unificado, Parte 2). */}
+        {historialDetalle && (
+          <ModalDetalleHistorialPortal
+            item={historialDetalle}
+            configTolerancia={configTolerancia}
+            onClose={() => setHistorialDetalle(null)}
+            onCancelar={(item) => {
+              if (item.modulo === 'reservas') return cancelarReservaPortal(item.raw);
+              if (item.modulo === 'torneos') return cancelarInscripcionTorneoPortal(item.raw);
+              if (item.modulo === 'retas') return cancelarInscripcionRetaPortal(item.raw);
+              return cancelarInscripcionClase(item.raw, item.claseRaw);
+            }}
+          />
+        )}
+
         {/* FLUJO UNIFICADO "YA ESTÁS INSCRITO" — resúmenes de Clase y Reta
             (Torneo vive DENTRO de `ModalDetalleTorneo`, ver arriba). */}
         {resumenClase && (
@@ -47575,6 +47847,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             clase={resumenClase.clase}
             alumno={resumenClase.alumno}
             cancha={canchasPorId[resumenClase.clase.cancha_id]}
+            politica={politicaCancelacionModulo(configTolerancia, 'academia')}
             onClose={() => setResumenClase(null)}
             onCancelar={cancelarInscripcionClase}
           />
@@ -47844,6 +48117,118 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
             <ChevronRight size={15} />
           </button>
         ))}
+      </div>
+    </ModalShell>
+  );
+}
+
+// Aviso de Políticas de Cancelación (Motor Unificado de Confirmación/
+// Cancelación) — bloque compartido que se muestra en TODOS los flujos de
+// confirmación del Portal (Reservar Cancha, Torneos, Retas, Clases de
+// Academia) justo antes del botón "Aceptar y Confirmar", leyendo la MISMA
+// política (`politicaCancelacionModulo`) que después evalúa la cancelación
+// autoservicio en Historial/Academia — así el jugador siempre ve la regla
+// real del club, nunca un texto genérico.
+function AvisoPoliticaCancelacion({ activa, horas }) {
+  return (
+    <div
+      className={`rounded-xl border p-3 text-xs ${
+        activa ? 'border-amber-400/40 bg-amber-400/10 text-amber-800 dark:text-amber-200' : 'border-slate-300 bg-slate-100/60 text-slate-600 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300'
+      }`}
+    >
+      <p className="mb-0.5 flex items-center gap-1.5 font-bold">
+        <ShieldAlert size={13} className={activa ? 'text-amber-600' : 'text-slate-400'} />
+        Políticas de Cancelación del Club
+      </p>
+      {activa ? (
+        <p>
+          Recuerda que para cancelar sin penalización debes hacerlo con al menos <b>{horas} horas</b> de anticipación.
+        </p>
+      ) : (
+        <p>Cancelación libre disponible según disponibilidad del club.</p>
+      )}
+    </div>
+  );
+}
+
+// Modal de Detalle + Cancelación Autoservicio desde Historial (Motor
+// Unificado, Parte 2) — un solo modal genérico para los 4 tipos clicables de
+// `historialUnificado` (Reserva/Torneo/Reta/Clase; "Compra en Tienda" nunca
+// llega aquí, no es clicable). Evalúa la MISMA
+// `politicaCancelacionModulo`/`validarToleranciaCancelacion` que ya usa el
+// resto del Motor Unificado (aviso al confirmar, Academia, Panel Admin):
+// DENTRO DE TOLERANCIA o política inactiva → botón habilitado; FUERA DE
+// TOLERANCIA → botón deshabilitado + aviso de contactar recepción.
+function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancelar }) {
+  const [confirmando, setConfirmando] = useState(false);
+  const [cancelando, setCancelando] = useState(false);
+
+  const politica = politicaCancelacionModulo(configTolerancia, item.modulo);
+  const { dentroDeTolerancia } = validarToleranciaCancelacion(item.fechaEventoMs, politica.activa ? politica.horas : 0);
+  const puedeCancelar = !!item.raw && item.activo !== false && dentroDeTolerancia;
+
+  async function cancelar() {
+    if (!puedeCancelar) return;
+    setCancelando(true);
+    await onCancelar(item);
+    setCancelando(false);
+  }
+
+  return (
+    <ModalShell titulo={item.titulo} subtitulo={item.detalle || 'Detalle de tu actividad'} onClose={onClose} icon={item.icon} ancho="max-w-md">
+      <div className="space-y-3.5">
+        <dl className="space-y-2 rounded-xl border border-slate-200 bg-slate-100/60 p-3.5 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-slate-500">Monto</dt>
+            <dd className="font-bold text-slate-800">{formatoMoneda(item.monto)}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-slate-500">Estatus de pago</dt>
+            <dd>
+              <BadgePago estadoPago={item.estadoPago} />
+            </dd>
+          </div>
+        </dl>
+
+        {!item.raw || item.activo === false ? (
+          <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-[11px] text-slate-500">
+            Esta actividad ya no está activa — no hay nada que cancelar.
+          </p>
+        ) : !puedeCancelar ? (
+          <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
+            Cancelación fuera de tiempo (requiere {politica.horas} hrs de anticipación según las políticas del club). Para
+            asistencia, contacta a la recepción del club.
+          </div>
+        ) : confirmando ? (
+          <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5">
+            <p className="text-xs font-bold text-rose-700">¿Seguro que quieres cancelar?</p>
+            <p className="mt-1 text-[11px] text-slate-500">Se libera de inmediato en el club — si cambias de opinión, tendrás que volver a inscribirte/reservar.</p>
+            <div className="mt-2.5 flex justify-end gap-2">
+              <BotonSecundario onClick={() => setConfirmando(false)} className="px-2.5 py-1.5 text-xs">
+                Ya no
+              </BotonSecundario>
+              <button
+                onClick={cancelar}
+                disabled={cancelando}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-600 disabled:opacity-60"
+              >
+                {cancelando ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+                Sí, cancelar
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setConfirmando(true)}
+            className="w-full rounded-lg border border-rose-500/20 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"
+          >
+            Cancelar
+          </button>
+        )}
+
+        <div className="flex justify-end pt-1">
+          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+        </div>
       </div>
     </ModalShell>
   );
@@ -48475,6 +48860,18 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   // `minutosOperacionDelClub`), mismo rango que "Reservar Cancha". Respaldo a
   // `HORA_INICIO_MIN`/`HORA_FIN_MIN` si el club no configuró nada.
   const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(club);
+  // Políticas y Tolerancia de Cancelación (Motor Unificado) — mismo
+  // adaptador snake_case → camelCase que `configTolerancia` en
+  // `PortalPublicoJugadores`, repetido aquí porque este modal solo recibe
+  // el objeto `club`, no el adaptador ya armado del padre.
+  const politicaClase = politicaCancelacionModulo(
+    {
+      toleranciaCancelacionMaster: club?.tolerancia_cancelacion_master !== false,
+      toleranciaAcademiaEnabled: club?.tolerancia_academia_enabled === true,
+      toleranciaAcademiaHoras: club?.tolerancia_academia_horas,
+    },
+    'academia'
+  );
   // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
   // Academia", migracion_v42) — el paso entre horarios de inicio y la
   // duración de cada bloque de clase ya NO son 60 min fijos: salen de
@@ -48817,11 +49214,13 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
+        <AvisoPoliticaCancelacion activa={politicaClase.activa} horas={politicaClase.horas} />
+
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={enviar} disabled={enviando}>
             {enviando ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-            Enviar solicitud
+            Aceptar y Enviar Solicitud
           </BotonPrimario>
         </div>
       </div>
@@ -48832,11 +49231,24 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
 // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX, item 2) — "Ver
 // Resumen" de una Clase de Academia: Fecha, cancha, coach, tipo de pago y
 // botón de cancelar asistencia, tal cual lo pidió el club.
-function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
+function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancelar }) {
   const [confirmandoCancelar, setConfirmandoCancelar] = useState(false);
   const [cancelando, setCancelando] = useState(false);
 
+  // Cancelación Autoservicio (Motor Unificado, Parte 2) — antes esta
+  // cancelación era SIEMPRE posible sin importar qué tan cerca estuviera la
+  // clase; ahora respeta la MISMA política que ya evalúa
+  // `politicaCancelacionModulo`/`validarToleranciaCancelacion` en el resto
+  // del Portal y del Panel Admin.
+  const fechaClaseMs = timestampEvento(clase?.fecha, clase?.hora_inicio);
+  const { horasParaEvento, dentroDeTolerancia } = validarToleranciaCancelacion(
+    fechaClaseMs,
+    politica?.activa ? politica.horas : 0
+  );
+  const puedeCancelar = dentroDeTolerancia;
+
   async function cancelar() {
+    if (!puedeCancelar) return;
     setCancelando(true);
     await onCancelar(alumno, clase);
     setCancelando(false);
@@ -48881,6 +49293,13 @@ function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
           </div>
         </dl>
 
+        {!puedeCancelar && (
+          <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
+            Cancelación fuera de tiempo (requiere {politica?.horas ?? CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras} hrs de anticipación). Contacta a la
+            recepción del club.
+          </div>
+        )}
+
         {confirmandoCancelar ? (
           <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5">
             <p className="text-xs font-bold text-rose-700">¿Seguro que quieres cancelar tu asistencia a esta clase?</p>
@@ -48902,7 +49321,8 @@ function ModalResumenClase({ clase, alumno, cancha, onClose, onCancelar }) {
         ) : (
           <button
             onClick={() => setConfirmandoCancelar(true)}
-            className="w-full rounded-lg border border-rose-500/20 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"
+            disabled={!puedeCancelar}
+            className="w-full rounded-lg border border-rose-500/20 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
           >
             Cancelar asistencia
           </button>
@@ -49140,7 +49560,7 @@ function SelectorMetodoPagoPortal({
 // Reserva de Cancha: si el saldo alcanza para cubrir todo, "Pagar con
 // Wallet" liquida el concepto de una vez; si no alcanza, cubre lo que
 // pueda y dice cuánto queda pendiente en recepción.
-function ModalElegirPago({ monto, saldoWallet, concepto, onClose, onConfirmar }) {
+function ModalElegirPago({ monto, saldoWallet, concepto, politica, onClose, onConfirmar }) {
   const [metodo, setMetodo] = useState(SHOW_BETA_PORTAL_PAGO_WALLET && saldoWallet > 0 ? 'wallet' : 'recepcion');
   const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
   const [enviando, setEnviando] = useState(false);
@@ -49168,11 +49588,12 @@ function ModalElegirPago({ monto, saldoWallet, concepto, onClose, onConfirmar })
           datosTarjeta={datosTarjeta}
           onCambiarDatosTarjeta={setDatosTarjeta}
         />
+        {politica && <AvisoPoliticaCancelacion activa={politica.activa} horas={politica.horas} />}
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={confirmar} disabled={enviando || !puedeConfirmar}>
             {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Confirmar
+            Aceptar y Confirmar
           </BotonPrimario>
         </div>
       </div>
@@ -49516,6 +49937,19 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   // Horario de Operación del Club (item 4) — respaldo a
   // `HORA_INICIO_MIN`/`HORA_FIN_MIN` si el club no configuró nada.
   const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(club);
+
+  // Políticas y Tolerancia de Cancelación (Motor Unificado) — mismo
+  // adaptador snake_case → camelCase que `configTolerancia` en
+  // `PortalPublicoJugadores`, repetido aquí porque este modal solo recibe
+  // el objeto `club`, no el adaptador ya armado del padre.
+  const politicaReserva = politicaCancelacionModulo(
+    {
+      toleranciaCancelacionMaster: club?.tolerancia_cancelacion_master !== false,
+      toleranciaReservasEnabled: club?.tolerancia_reservas_enabled === true,
+      toleranciaReservasHoras: club?.tolerancia_reservas_horas,
+    },
+    'reservas'
+  );
 
   // VISUALIZACIÓN DE DISPONIBILIDAD DE HORARIOS: TODAS las franjas del día
   // (no solo las libres), cada una con su estado `ocupado` — así se puede
@@ -49964,11 +50398,13 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
+        <AvisoPoliticaCancelacion activa={politicaReserva.activa} horas={politicaReserva.horas} />
+
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={confirmar} disabled={enviando || !horaInicio || !puedeConfirmarPago}>
             {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Confirmar reserva
+            Aceptar y Confirmar Reserva
           </BotonPrimario>
         </div>
       </div>
@@ -51214,6 +51650,17 @@ function AppInterno({ clubInicial } = {}) {
             toleranciaTorneosHoras: Number(data.tolerancia_torneos_horas) > 0 ? Number(data.tolerancia_torneos_horas) : CONFIG_CLUB_DEFAULT.toleranciaTorneosHoras,
             toleranciaRetasEnabled: data.tolerancia_retas_enabled !== false,
             toleranciaRetasHoras: Number(data.tolerancia_retas_horas) > 0 ? Number(data.tolerancia_retas_horas) : CONFIG_CLUB_DEFAULT.toleranciaRetasHoras,
+            // Academia/Clases (migracion_v73) — BUG FIX (auditoría de
+            // Jerarquía en Cascada): este loader nunca leía estas 2
+            // columnas, así que en el Panel Admin `configClub.toleranciaAcademia*`
+            // SIEMPRE caía al default (`false`/24h) sin importar lo que el
+            // club hubiera guardado — `politicaCancelacionModulo(configClub,
+            // 'academia')` del lado Staff quedaba desincronizado del Portal
+            // (que sí las leía bien vía `normalizarFilaClub`). Mismo
+            // criterio tolerante que el resto de este objeto.
+            toleranciaAcademiaEnabled: data.tolerancia_academia_enabled === true,
+            toleranciaAcademiaHoras:
+              Number(data.tolerancia_academia_horas) > 0 ? Number(data.tolerancia_academia_horas) : CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras,
             // Tarifas y Paquetes de Academia (Configuración del Club →
             // Reservas & Academia, migracion_v71) — mismo criterio tolerante
             // que el resto de este objeto: proyecto sin la migración →
@@ -51823,6 +52270,10 @@ function AppInterno({ clubInicial } = {}) {
         toleranciaTorneosHoras: Number(nuevaConfig.toleranciaTorneosHoras) > 0 ? Number(nuevaConfig.toleranciaTorneosHoras) : CONFIG_CLUB_DEFAULT.toleranciaTorneosHoras,
         toleranciaRetasEnabled: nuevaConfig.toleranciaRetasEnabled !== false,
         toleranciaRetasHoras: Number(nuevaConfig.toleranciaRetasHoras) > 0 ? Number(nuevaConfig.toleranciaRetasHoras) : CONFIG_CLUB_DEFAULT.toleranciaRetasHoras,
+        // Academia/Clases (Unificación del Motor de Cancelación) — arranca en
+        // OFF por default (mismo criterio "=== true" que Reservas/Torneos).
+        toleranciaAcademiaEnabled: nuevaConfig.toleranciaAcademiaEnabled === true,
+        toleranciaAcademiaHoras: Number(nuevaConfig.toleranciaAcademiaHoras) > 0 ? Number(nuevaConfig.toleranciaAcademiaHoras) : CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras,
         // Tarifas y Paquetes de Academia (Configuración del Club → Reservas
         // & Academia, migracion_v71) — mismo criterio que el resto de este
         // objeto: `>= 0`/`> 0 ? valor : default` para que un caller que no
@@ -51863,6 +52314,8 @@ function AppInterno({ clubInicial } = {}) {
           tolerancia_torneos_horas: limpia.toleranciaTorneosHoras,
           tolerancia_retas_enabled: limpia.toleranciaRetasEnabled,
           tolerancia_retas_horas: limpia.toleranciaRetasHoras,
+          tolerancia_academia_enabled: limpia.toleranciaAcademiaEnabled,
+          tolerancia_academia_horas: limpia.toleranciaAcademiaHoras,
           academia_precio_base_clase_suelta: limpia.academiaPrecioBaseClaseSuelta,
           academia_precio_base_mensualidad: limpia.academiaPrecioBaseMensualidad,
           academia_clases_incluidas_mensualidad: limpia.academiaClasesIncluidasMensualidad,
@@ -51890,6 +52343,8 @@ function AppInterno({ clubInicial } = {}) {
           'tolerancia_torneos_horas',
           'tolerancia_retas_enabled',
           'tolerancia_retas_horas',
+          'tolerancia_academia_enabled',
+          'tolerancia_academia_horas',
           'academia_precio_base_clase_suelta',
           'academia_precio_base_mensualidad',
           'academia_clases_incluidas_mensualidad',
