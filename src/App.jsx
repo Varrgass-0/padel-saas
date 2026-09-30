@@ -4702,48 +4702,18 @@ function MetricCard({ icon: Icon, etiqueta, valor, sub, tono = 'orange', onClick
  * TARJETA DE CANCHA (Vista Tarjetas)
  * ==========================================================================*/
 
-function MenuEstatus({ estadoActual, onSeleccionar, onCerrar }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    function onClick(e) {
-      if (ref.current && !ref.current.contains(e.target)) onCerrar();
-    }
-    document.addEventListener('mousedown', onClick);
-    return () => document.removeEventListener('mousedown', onClick);
-  }, [onCerrar]);
-
-  return (
-    <div
-      ref={ref}
-      className="absolute right-0 top-full z-40 mt-1.5 w-64 overflow-hidden rounded-xl border border-slate-300 bg-slate-100 shadow-2xl"
-    >
-      <p className="border-b border-slate-300 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">
-        Estatus de la cancha
-      </p>
-      {ESTATUS_CANCHA_OPTIONS.map((op) => {
-        const esMantenimiento = op.value === 'mantenimiento';
-        return (
-          <button
-            key={op.value}
-            onClick={() => onSeleccionar(op.value)}
-            className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm font-semibold transition hover:bg-slate-200 ${
-              estadoActual === op.value ? 'bg-slate-200/60' : ''
-            }`}
-          >
-            <span className={`h-2 w-2 rounded-full ${op.dot}`} />
-            <span className="text-slate-900">{op.label}</span>
-            {estadoActual === op.value && <CheckCircle2 size={14} className="ml-auto text-orange-400" />}
-          </button>
-        );
-      })}
-      <p className="border-t border-slate-300 px-3 py-2 text-[10px] leading-snug text-slate-500">
-        Disponible, Reservada y En Juego se calculan solos según las reservas de hoy.
-        Solo Mantenimiento se bloquea manualmente; elegir cualquier otra opción libera el bloqueo.
-      </p>
-    </div>
-  );
-}
-
+// Simplificación (post-QA): el menú "Cambiar Estatus" con las 4 opciones
+// (Disponible/Reservada/En Juego/Mantenimiento) se reemplazó por un solo
+// botón de dos estados — `MenuEstatus` con su dropdown quedó eliminado.
+// Disponible/Reservada/En Juego NUNCA fueron estatus manuales de verdad (los
+// calcula `estadoActualCancha` en vivo a partir de `reservas`); elegir
+// cualquiera de esas 3 en el menú viejo solo servía para LIBERAR el bloqueo
+// de Mantenimiento — exactamente lo mismo que hace ahora el botón único de
+// abajo, sin el paso extra de abrir el menú y elegir entre 3 opciones que en
+// realidad eran la misma acción. `actualizarEstatusCancha` (el handler) no
+// cambió: sigue tratando CUALQUIER valor distinto de 'mantenimiento' como
+// "liberar", así que este botón sigue usando exactamente la misma lógica de
+// bloqueo/desbloqueo que antes.
 function CanchaCard({
   cancha,
   estadoActual,
@@ -4765,7 +4735,6 @@ function CanchaCard({
   puedeRenombrarCancha = false,
   onRenombrarCancha,
 }) {
-  const [menuAbierto, setMenuAbierto] = useState(false);
   const meta = ESTATUS_META[estadoActual];
   const bloqueada = estadoActual === 'mantenimiento';
 
@@ -4930,24 +4899,27 @@ function CanchaCard({
               >
                 <ImagePlus size={13} /> Foto
               </button>
-              <div className="relative col-span-2">
-                <button
-                  onClick={() => setMenuAbierto((v) => !v)}
-                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-2 text-[11px] font-semibold text-slate-800 transition hover:bg-slate-200"
-                >
-                  <Settings2 size={13} /> Cambiar Estatus <ChevronDown size={12} />
-                </button>
-                {menuAbierto && (
-                  <MenuEstatus
-                    estadoActual={estadoActual}
-                    onCerrar={() => setMenuAbierto(false)}
-                    onSeleccionar={(valor) => {
-                      setMenuAbierto(false);
-                      onCambiarEstatus(cancha, valor);
-                    }}
-                  />
+              {/* Botón único (ya no dropdown): Mantenimiento es el ÚNICO
+                  estatus manual real — ver nota arriba de `CanchaCard`. Un
+                  clic bloquea/desbloquea directo, sin menú intermedio. */}
+              <button
+                onClick={() => onCambiarEstatus(cancha, bloqueada ? 'disponible' : 'mantenimiento')}
+                className={`col-span-2 inline-flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-[11px] font-semibold transition ${
+                  bloqueada
+                    ? 'border-amber-400/40 bg-amber-400/10 text-amber-500 hover:bg-amber-400/20'
+                    : 'border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200'
+                }`}
+              >
+                {bloqueada ? (
+                  <>
+                    <CheckCircle2 size={13} /> Liberar Cancha
+                  </>
+                ) : (
+                  <>
+                    <Wrench size={13} /> Mantenimiento / Bloquear
+                  </>
                 )}
-              </div>
+              </button>
             </>
           )}
         </div>
@@ -7725,6 +7697,7 @@ function ModuloParrillaOperativa({
         puedeCrearCancha={!alcanzoLimiteCanchasPlan}
       />
 
+      <TransicionPestana activeKey={vista}>
       {loading ? (
         <SkeletonGrid />
       ) : canchas.length === 0 ? (
@@ -7812,6 +7785,7 @@ function ModuloParrillaOperativa({
           <HeatmapOcupacion modo="semana" filas={heatmapCronograma.filas} celdas={heatmapCronograma.celdas} />
         </div>
       )}
+      </TransicionPestana>
 
       {modalNuevaCancha && (
         <ModalNuevaCancha onClose={() => setModalNuevaCancha(false)} onCreada={(cancha) => upsertCancha(cancha)} />
@@ -36341,6 +36315,7 @@ function ModuloAcademiaClinicas({
         <div className="space-y-4">
           {!tablaAcademiaExiste && <BannerTablaFaltante tabla="academia_clases (corre migracion_v16_academia_creditos.sql)" />}
 
+          <TransicionPestana activeKey={modoParrillaClases}>
           {modoParrillaClases === 'calendario' ? (
             // Nueva Vista de Calendario Mensual — cuadrícula del mes con
             // badges de Clases Grupales/Privadas por día (ver
@@ -36406,6 +36381,7 @@ function ModuloAcademiaClinicas({
                   </button>
                 </div>
               )}
+              <TransicionPestana activeKey={filtroClase}>
               {loadingSesiones && clasesVisibles.length === 0 ? (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {[0, 1, 2].map((i) => (
@@ -36453,6 +36429,7 @@ function ModuloAcademiaClinicas({
                   ))}
                 </div>
               )}
+              </TransicionPestana>
 
               {/* Cronograma interactivo por Cancha × Hora — MISMO componente que
                   el Cronograma de la Parrilla Operativa principal
@@ -36495,6 +36472,7 @@ function ModuloAcademiaClinicas({
               <HeatmapAcademia clases={clasesActivas} alumnosPorClase={alumnosActivosPorClase} />
             </>
           )}
+          </TransicionPestana>
         </div>
       )}
 
