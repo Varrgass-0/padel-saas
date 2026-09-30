@@ -44566,6 +44566,13 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
   // `id::text = p_jugador_id` castea el bigint a texto adentro de la función.
   const jugadorIdTexto = String(jugadorId);
   const jugadorIdNumerico = Number(jugadorId);
+  // FIX (confirmado en Supabase — migración de columnas estándar):
+  // `wallet_movimientos` ya tiene `saldo_anterior`. Se lee ANTES del ajuste
+  // para dejar una traza correcta en el historial — esta lectura es solo
+  // informativa (para el INSERT de abajo); la fuente de verdad de cuánto se
+  // mueve sigue siendo el RPC atómico (o su respaldo no atómico) de aquí
+  // abajo, no esta lectura.
+  const saldoAnterior = await leerSaldoWalletFresco(jugadorId);
   let saldoNuevo = null;
   try {
     const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorIdTexto, p_delta: delta });
@@ -44606,52 +44613,33 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
   let movimientoId = null;
   let movimientoOk = true;
   try {
-    // FIX (Cleanup de columnas inexistentes): este insert era directo
-    // (`supabase.from(...).insert(withClubId({...}))`), así que un proyecto
-    // sin la columna `club_id` en `wallet_movimientos` (PGRST204: "Could not
-    // find the 'club_id' column of 'wallet_movimientos'") perdía el registro
-    // COMPLETO del movimiento, no solo esa columna. Ahora usa
-    // `insertarConColumnasOpcionales` — mismo criterio "Arquitectura
-    // Flexible" que el resto del archivo — así que si `club_id` (o
-    // `metodo_aplicacion`/`creado_por_id`/`creado_por_nombre`, agregadas en
-    // v56 y también opcionales) no existen todavía, reintenta sin esa
-    // columna puntual en vez de perder el movimiento entero. `jugador_id`/
-    // `creado_por_id` van como entero (bigint confirmado en Supabase) — NO
-    // como texto.
-    // FIX (DevTools — PGRST204 "'motivo' column of 'wallet_movimientos'"):
-    // la columna real en este proyecto NO se llama `motivo` — el mensaje de
-    // Supabase confirma que esa columna no existe. Como no está 100%
-    // confirmado si el nombre real es `concepto` o `descripcion`, se mandan
-    // los 3 con el mismo texto y los 3 quedan como opcionales/descartables:
-    // `conColumnasOpcionales` va tirando, uno por uno, el que Supabase
-    // reporte como inexistente, hasta quedarse solo con el/los que sí
-    // existen — así el insert nunca se rompe por completo por esta columna,
-    // sin importar cuál de los 3 nombres sea el real en este club.
-    // FIX (DevTools — PGRST204 "'referencia_id' column of
-    // 'wallet_movimientos'"): esta tabla tampoco tiene `referencia_id` (ni
-    // `referencia_tipo`) — solo garantiza `jugador_id`, `tipo`, `monto` y
-    // `saldo_resultante`. Se mandan igual (best-effort, para el proyecto que
-    // sí las tenga) pero ahora como opcionales/descartables, para que el
-    // insert nunca se pierda por completo solo por esto.
-    const motivoTexto = motivo || null;
-    const { data: mov, error: errMov } = await insertarConColumnasOpcionales(
-      'wallet_movimientos',
-      {
-        jugador_id: jugadorIdNumerico,
-        tipo: delta >= 0 ? 'abono' : 'cargo',
-        monto: delta,
-        saldo_resultante: saldoNuevo,
-        motivo: motivoTexto,
-        concepto: motivoTexto,
-        descripcion: motivoTexto,
-        metodo_aplicacion: metodoAplicacion || null,
-        referencia_tipo: referenciaTipo || null,
-        referencia_id: referenciaId || null,
-        creado_por_id: creadoPorId ? Number(creadoPorId) : null,
-        creado_por_nombre: creadoPorNombre || null,
-      },
-      ['motivo', 'concepto', 'descripcion', 'referencia_id', 'referencia_tipo', 'metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']
-    );
+    // FIX (Supabase confirmó columnas estándar agregadas a
+    // `wallet_movimientos` — `saldo_resultante`, `concepto`, `jugador_id`,
+    // `referencia_id`, etc. — y recargó la caché del esquema): insert
+    // directo y limpio, SIN el reintento por arreglos dinámicos
+    // (`insertarConColumnasOpcionales`) que se usaba mientras el esquema
+    // real era incierto — ya no hace falta, la tabla tiene todo lo que
+    // manda esta app. `jugador_id`/`creado_por_id` van como entero (bigint
+    // confirmado en Supabase). `withClubId` estampa `club_id`.
+    const { data: mov, error: errMov } = await supabase
+      .from('wallet_movimientos')
+      .insert(
+        withClubId({
+          jugador_id: jugadorIdNumerico,
+          tipo: delta >= 0 ? 'abono' : 'cargo',
+          monto: delta,
+          concepto: motivo || null,
+          saldo_resultante: saldoNuevo,
+          saldo_anterior: saldoAnterior,
+          metodo_aplicacion: metodoAplicacion || null,
+          referencia_tipo: referenciaTipo || null,
+          referencia_id: referenciaId || null,
+          creado_por_id: creadoPorId ? Number(creadoPorId) : null,
+          creado_por_nombre: creadoPorNombre || null,
+        })
+      )
+      .select()
+      .single();
     if (errMov) {
       console.error('[Wallet] Error detallado Supabase (insertar wallet_movimientos):', errMov);
       movimientoOk = false;
@@ -51915,31 +51903,22 @@ function AppInterno({ clubInicial } = {}) {
         empleado_nombre: operador.nombre || 'Operador',
         empleado_rol: operador.rol || null,
         tipo,
+        // `accion` — mismo valor que `tipo` (la tabla ya tiene ambas
+        // columnas tras la migración de columnas estándar; se manda
+        // duplicado para no depender de cuál de las dos use el resto del
+        // Panel/reportes de auditoría).
+        accion: tipo,
         detalle: detalle || {},
       };
       let eventoCreado = null;
       try {
-        // FIX (causa raíz confirmada por DevTools): en algunos proyectos
-        // `log_actividad` no tiene las columnas `detalle`, `empleado_id`,
-        // `empleado_nombre` ni `empleado_rol` todavía — Supabase regresa
-        // `PGRST204: Could not find the 'detalle' column...` y, por
-        // separado, `... 'empleado_id'...`/`... 'empleado_nombre'...`/`...
-        // 'empleado_rol' column...`. Antes esto tronaba el insert COMPLETO y
-        // el evento siempre caía al modo local, aunque el resto de la tabla
-        // sí existiera. Ahora usa la misma Arquitectura Flexible
-        // (`insertarConColumnasOpcionales`) que el resto del archivo:
-        // reintenta quitando SOLO la columna puntual que Supabase reporte
-        // como faltante (una por intento, hasta 5 —
-        // `empleado_rol`/`empleado_nombre`/`detalle`/`empleado_id`/
-        // `club_id`, este último agregado automáticamente por el helper) en
-        // vez de perder el registro completo — nunca aborta el flujo que lo
-        // disparó (cancelación/penalización), pase lo que pase aquí.
-        const { data, error } = await insertarConColumnasOpcionales('log_actividad', payloadCompleto, [
-          'empleado_rol',
-          'empleado_nombre',
-          'empleado_id',
-          'detalle',
-        ]);
+        // FIX (Supabase confirmó columnas estándar agregadas a
+        // `log_actividad` — `tipo`, `detalle`, `empleado_id`,
+        // `empleado_nombre`, `empleado_rol`, `accion`, etc. — y recargó la
+        // caché del esquema): insert directo y limpio, SIN el reintento por
+        // arreglos dinámicos (`insertarConColumnasOpcionales`) que se usaba
+        // mientras el esquema real era incierto.
+        const { data, error } = await supabase.from('log_actividad').insert(withClubId(payloadCompleto)).select().single();
         if (error) throw error;
         eventoCreado = data;
       } catch (err) {
