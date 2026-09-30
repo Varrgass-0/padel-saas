@@ -3203,6 +3203,38 @@ function BotonSecundario({ children, className = '', ...props }) {
   );
 }
 
+// Contenedor compartido de transición fluida al cambiar de pestaña/submenú
+// — estandarización post-QA (antes SOLO vivía inline dentro de
+// `ModuloConfiguracionClub`; cada módulo del Panel Operativo tenía su
+// cambio de pestaña seco, sin animación). Un solo componente, reutilizado
+// en TODOS los módulos con sub-pestañas (Academia & Clínicas, Torneos &
+// Retas, Analytics BI, Contabilidad & Compras, Inventario, Smart POS,
+// Jugadores, Control & Seguridad, Configuración del Club) — DRY: ajustar
+// duración/easing/desplazamiento se hace UNA sola vez, acá, y se propaga a
+// todo el sistema. `activeKey` es el valor de la pestaña activa (el string
+// de tu `useState`, ej. `vista`/`subvista`/`tab`/`modo`) — cambiarlo
+// dispara el fade + slide vertical corto (`opacity 0 -> 1`, `y: 6px ->
+// 0px`); `mode="wait"` evita que el contenido saliente y el entrante
+// queden montados a la vez. `initial={false}`: el primer render de cada
+// módulo (al entrar por primera vez) no anima, solo los cambios de
+// pestaña posteriores.
+function TransicionPestana({ activeKey, children, className }) {
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      <motion.div
+        key={activeKey}
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -6 }}
+        transition={{ duration: 0.2, ease: 'easeOut' }}
+        className={className}
+      >
+        {children}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
 function BadgePago({ estadoPago }) {
   if (!estadoPago) return null;
   const meta = ESTADOS_PAGO.find((e) => e.value === estadoPago);
@@ -16149,6 +16181,7 @@ function ModuloSmartPOS({
         )}
       </div>
 
+      <TransicionPestana activeKey={vistaPOS}>
       {vistaPOS === 'cuentas' ? (
         <CuentasAbiertasPanel
           grupos={gruposCuentasAbiertas}
@@ -16415,6 +16448,7 @@ function ModuloSmartPOS({
           </div>
         </>
       )}
+      </TransicionPestana>
 
       {canjeCortesiaCategoria && (
         <ModalCanjearCortesia
@@ -19466,6 +19500,7 @@ function ModuloERPInventario({
 
       {errorProductos && <ErrorBanner mensaje={errorProductos} onReintentar={() => cargarProductos()} />}
 
+      <TransicionPestana activeKey={vista}>
       {vista === 'modificadores' && !esRolBar ? (
         <ListaGruposModificadores
           grupos={gruposModificadores}
@@ -19503,6 +19538,7 @@ function ModuloERPInventario({
       ) : (
         <TablaKardex kardex={kardex} productos={productos} loading={loadingKardex} error={errorKardex} onReintentar={() => cargarKardex()} />
       )}
+      </TransicionPestana>
 
       {modalGrupoModificador && (
         <ModalGrupoModificador
@@ -22597,6 +22633,7 @@ function ModuloContabilidadCompras({
         </button>
       </div>
 
+      <TransicionPestana activeKey={vista}>
       {vista === 'egresos' && (
         <div className="space-y-5">
           {!tablaEgresosExiste && <BannerTablaFaltante tabla="compras_gastos" />}
@@ -23736,6 +23773,7 @@ function ModuloContabilidadCompras({
           </div>
         </div>
       )}
+      </TransicionPestana>
     </div>
   );
 }
@@ -24621,6 +24659,7 @@ function ModuloAnalyticsBI({
         onExportar={exportarReporte}
       />
 
+      <TransicionPestana activeKey={modoFiltro}>
       {errorPeriodo && (
         <ErrorBanner
           mensaje={errorPeriodo}
@@ -24698,6 +24737,7 @@ function ModuloAnalyticsBI({
           separado del ranking de productos físicos de arriba — ver
           `TopModificadoresTabla`. */}
       <TopModificadoresTabla filas={analisis.topModificadores} cargando={cargandoFinanciero} />
+      </TransicionPestana>
     </>
   );
 }
@@ -31197,6 +31237,7 @@ function ModuloTorneosRetas({
         )}
       </div>
 
+      <TransicionPestana activeKey={subvista}>
       {subvista === 'retas' && (
         <>
           {errorRetas && <ErrorBanner mensaje={errorRetas} onReintentar={() => cargarRetas()} />}
@@ -31362,6 +31403,7 @@ function ModuloTorneosRetas({
           puedeVerMontos={permisos?.puedeVerMontos !== false}
         />
       )}
+      </TransicionPestana>
 
       {modalNuevaReta && (
         <ModalNuevaReta
@@ -36294,6 +36336,7 @@ function ModuloAcademiaClinicas({
         )}
       </div>
 
+      <TransicionPestana activeKey={subvista}>
       {subvista === 'operativa' && (
         <div className="space-y-4">
           {!tablaAcademiaExiste && <BannerTablaFaltante tabla="academia_clases (corre migracion_v16_academia_creditos.sql)" />}
@@ -36657,6 +36700,7 @@ function ModuloAcademiaClinicas({
           configClub={configClub}
         />
       )}
+      </TransicionPestana>
 
       {modalNuevaClase && (
         <ModalNuevaClase
@@ -39621,6 +39665,7 @@ function ModuloJugadores({
         })}
       </div>
 
+      <TransicionPestana activeKey={subvista}>
       {subvista === 'crm' && (
         <DirectorioJugadoresCRM
           canchas={canchas}
@@ -39680,6 +39725,7 @@ function ModuloJugadores({
       {subvista === 'ranking' && (
         <RankingDelClub ranking={rankingJugadores} loading={loadingRanking} error={errorRanking} onReintentar={cargarRanking} />
       )}
+      </TransicionPestana>
     </div>
   );
 }
@@ -40082,6 +40128,7 @@ function ModuloControlSeguridad({
         })}
       </div>
 
+      <TransicionPestana activeKey={subvista}>
       {subvista === 'empleados' && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
@@ -40180,6 +40227,7 @@ function ModuloControlSeguridad({
           )}
         </div>
       )}
+      </TransicionPestana>
 
       {modalEmpleado && (
         <ModalGestionEmpleados
@@ -40482,18 +40530,13 @@ function ModuloConfiguracionClub({
         })}
       </div>
 
-      {/* Transición fluida al cambiar de pestaña/módulo (fade + slide corto)
-          — envoltura genérica, NO toca el contenido interno de cada
-          `Seccion*` (compartidas con el Panel Operativo fuera del
-          Onboarding): solo anima el contenedor que las intercambia. */}
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.div
-          key={tab}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -8 }}
-          transition={{ duration: 0.2, ease: 'easeOut' }}
-        >
+      {/* Transición fluida al cambiar de pestaña/módulo — `TransicionPestana`
+          (componente compartido, ver su definición junto a `BotonPrimario`)
+          es la MISMA envoltura que usan ahora todos los módulos del Panel
+          Operativo; NO toca el contenido interno de cada `Seccion*`
+          (compartidas con el Panel Operativo fuera del Onboarding), solo
+          anima el contenedor que las intercambia. */}
+      <TransicionPestana activeKey={tab}>
       {tab === 'portal' ? (
         <SeccionPortalTiendaWeb
           productos={productos}
@@ -40566,8 +40609,7 @@ function ModuloConfiguracionClub({
           </p>
         </div>
       )}
-        </motion.div>
-      </AnimatePresence>
+      </TransicionPestana>
 
       {modoOnboarding && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-300 bg-white p-3">
@@ -40979,20 +41021,23 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
           ícono `Sparkles`) — esa "barra oscura" se sentía como un bloque
           pesado y redundante debajo de las 3 tarjetas. Ahora el texto vive
           directo sobre el fondo limpio de la pantalla, en dos tramos de
-          color/peso distintos (dos `TextoAnimadoPorPalabras` separados, no
-          uno solo con highlight, porque acá SON dos oraciones con jerarquía
-          visual propia, no una palabra suelta resaltada dentro de una
-          frase neutra): "Tu dinero es tuyo." en `#FF6B35`/`font-bold`
-          (el mensaje que vende) y "0% comisiones..." en
-          `text-slate-800`/`font-medium` (el detalle que respalda). El
-          segundo tramo arranca su `delayInicial` justo donde termina el
-          stagger del primero (4 palabras × 0.06s) para que se lea como una
-          sola entrada continua, no dos animaciones desconectadas. */}
+          color distinto pero MISMO peso (dos `TextoAnimadoPorPalabras`
+          separados, no uno solo con highlight, porque acá SON dos oraciones
+          con jerarquía visual propia, no una palabra suelta resaltada
+          dentro de una frase neutra): "Tu dinero es tuyo." en
+          `#FF6B35`/`font-black` (el mensaje que vende) y "0%
+          comisiones..." en `text-slate-800`/`font-black` (el detalle que
+          respalda — corrección post-QA: antes `font-medium` se sentía más
+          liviano que el encabezado; ahora pesa exactamente igual, `font-
+          black` en ambos tramos, solo cambia el color). El segundo tramo
+          arranca su `delayInicial` justo donde termina el stagger del
+          primero (4 palabras × 0.06s) para que se lea como una sola entrada
+          continua, no dos animaciones desconectadas. */}
       <p className="mt-6 text-center text-sm sm:text-base">
-        <span className="font-bold text-[#FF6B35]">
+        <span className="font-black text-[#FF6B35]">
           <TextoAnimadoPorPalabras texto="Tu dinero es tuyo." delayInicial={0.5} />
         </span>{' '}
-        <span className="font-medium text-slate-800">
+        <span className="font-black text-slate-800">
           <TextoAnimadoPorPalabras texto="0% comisiones por reserva o transacción." delayInicial={0.5 + 4 * 0.06} />
         </span>
       </p>
