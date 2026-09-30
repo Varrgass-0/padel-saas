@@ -7587,15 +7587,15 @@ function DetalleReserva({
             // Flexible): si `wallet_movimientos` no existe todavía en este
             // proyecto, la cancelación/abono ya quedó aplicada de todos modos.
             try {
-              // FIX (Cleanup de columnas inexistentes + tipo de jugador_id,
-              // migracion_v75): insert directo → `insertarConColumnasOpcionales`,
-              // mismo criterio que `ajustarWalletJugador` — tolera que
-              // `club_id` no exista (PGRST204) y manda `jugador_id` como
-              // texto explícito.
+              // FIX (Cleanup de columnas inexistentes; `jugador_id` es
+              // bigint confirmado en Supabase, no texto): insert directo →
+              // `insertarConColumnasOpcionales`, mismo criterio que
+              // `ajustarWalletJugador` — tolera que `club_id` no exista
+              // (PGRST204) y manda `jugador_id` como entero.
               await insertarConColumnasOpcionales(
                 'wallet_movimientos',
                 {
-                  jugador_id: String(reserva.jugador_id),
+                  jugador_id: Number(reserva.jugador_id),
                   tipo: 'abono',
                   monto: Math.abs(Number(montoAbono)),
                   saldo_resultante: nuevoSaldo,
@@ -44542,23 +44542,23 @@ async function leerSaldoWalletFresco(jugadorId) {
 async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, referenciaId, metodoAplicacion, creadoPorId, creadoPorNombre }) {
   const delta = Number(monto) || 0;
   if (!jugadorId || !delta) return { ok: true, saldoNuevo: null };
-  // FIX (migracion_v75) — `jugadores.id` NO es uuid en este proyecto (es un
-  // id numérico/serial, mismo caso que `empleados.id` en v57): el RPC/tabla
-  // de la Wallet de Jugadores se mandan tipados como TEXT (`p_jugador_id
-  // text` / `wallet_movimientos.jugador_id text` desde v75) — aquí se manda
-  // siempre como string explícito, sin importar si `jugadorId` llegó como
-  // número o como string, para que nunca dependa de cómo Supabase/PostgREST
-  // decida serializar un valor numérico.
-  const jugadorIdTexto = String(jugadorId);
+  // FIX (confirmado en Supabase — migracion_v75 corregida): `jugadores.id` y
+  // la FK de `wallet_movimientos` son `bigint`, NO uuid ni text. La función
+  // ya quedó corregida en Supabase como `fn_wallet_ajustar_jugador(p_jugador_id
+  // bigint, p_delta numeric)`. Aquí se manda `jugadorId` SIEMPRE parseado
+  // como entero (`Number(...)`) — nunca como string — para que PostgREST lo
+  // serialice como número JSON real (`162`) y no como texto entre comillas
+  // (`"162"`), que es justo lo que un parámetro `bigint` rechaza.
+  const jugadorIdNumerico = Number(jugadorId);
   let saldoNuevo = null;
   try {
-    const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorIdTexto, p_delta: delta });
+    const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorIdNumerico, p_delta: delta });
     if (!error) {
       saldoNuevo = Number(data) || 0;
     } else {
-      if (error.code === '22P02') {
+      if (error.code === '22P02' || error.code === '42883') {
         console.warn(
-          '[Wallet] fn_wallet_ajustar_jugador rechazó el id por tipo (22P02 - invalid input syntax for type uuid). Corre migracion_v75_fix_tipo_jugador_id_wallet.sql — mientras tanto, usando ajuste no atómico de respaldo.',
+          '[Wallet] fn_wallet_ajustar_jugador rechazó el id o no encontró una función con esta firma (bigint, numeric). Verifica que la función en Supabase quede exactamente como fn_wallet_ajustar_jugador(p_jugador_id bigint, p_delta numeric) — mientras tanto, usando ajuste no atómico de respaldo.',
           error
         );
       } else {
@@ -44600,11 +44600,12 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
     // `metodo_aplicacion`/`creado_por_id`/`creado_por_nombre`, agregadas en
     // v56 y también opcionales) no existen todavía, reintenta sin esa
     // columna puntual en vez de perder el movimiento entero. `jugador_id`/
-    // `creado_por_id` van como texto explícito (migracion_v75).
+    // `creado_por_id` van como entero (bigint confirmado en Supabase) — NO
+    // como texto.
     const { data: mov, error: errMov } = await insertarConColumnasOpcionales(
       'wallet_movimientos',
       {
-        jugador_id: jugadorIdTexto,
+        jugador_id: jugadorIdNumerico,
         tipo: delta >= 0 ? 'abono' : 'cargo',
         monto: delta,
         saldo_resultante: saldoNuevo,
@@ -44612,7 +44613,7 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
         metodo_aplicacion: metodoAplicacion || null,
         referencia_tipo: referenciaTipo || null,
         referencia_id: referenciaId || null,
-        creado_por_id: creadoPorId ? String(creadoPorId) : null,
+        creado_por_id: creadoPorId ? Number(creadoPorId) : null,
         creado_por_nombre: creadoPorNombre || null,
       },
       ['metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']
@@ -46894,14 +46895,14 @@ function PortalPublicoJugadores({ clubSlug }) {
       if (errUpdate) return false;
       setSaldoWallet(nuevoSaldo);
       try {
-        // FIX (Cleanup de columnas inexistentes + tipo de jugador_id,
-        // migracion_v75): mismo criterio que `ajustarWalletJugador` —
-        // tolera `club_id` faltante (PGRST204) y manda `jugador_id` como
-        // texto explícito.
+        // FIX (Cleanup de columnas inexistentes; `jugador_id` es bigint
+        // confirmado en Supabase, no texto): mismo criterio que
+        // `ajustarWalletJugador` — tolera `club_id` faltante (PGRST204) y
+        // manda `jugador_id` como entero.
         await insertarConColumnasOpcionales(
           'wallet_movimientos',
           {
-            jugador_id: String(jugador.id),
+            jugador_id: Number(jugador.id),
             tipo: 'reembolso_cancelacion',
             monto: Math.abs(Number(monto)),
             saldo_resultante: nuevoSaldo,
