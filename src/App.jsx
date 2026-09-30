@@ -7592,6 +7592,12 @@ function DetalleReserva({
               // `insertarConColumnasOpcionales`, mismo criterio que
               // `ajustarWalletJugador` — tolera que `club_id` no exista
               // (PGRST204) y manda `jugador_id` como entero.
+              // FIX (DevTools — PGRST204 "'motivo' column of
+              // 'wallet_movimientos'"): la columna real no se llama `motivo`
+              // — se manda también como `concepto`/`descripcion` (mismo
+              // texto) y las 3 quedan opcionales, para tolerar cuál sea el
+              // nombre real en este proyecto.
+              const motivoAbonoTexto = `Saldo a favor por cancelación de reserva · ${cancha?.nombre || 'Cancha'} ${reserva.fecha || ''}`.trim();
               await insertarConColumnasOpcionales(
                 'wallet_movimientos',
                 {
@@ -7599,11 +7605,13 @@ function DetalleReserva({
                   tipo: 'abono',
                   monto: Math.abs(Number(montoAbono)),
                   saldo_resultante: nuevoSaldo,
-                  motivo: `Saldo a favor por cancelación de reserva · ${cancha?.nombre || 'Cancha'} ${reserva.fecha || ''}`.trim(),
+                  motivo: motivoAbonoTexto,
+                  concepto: motivoAbonoTexto,
+                  descripcion: motivoAbonoTexto,
                   referencia_tipo: 'reserva',
                   referencia_id: reserva.id,
                 },
-                []
+                ['motivo', 'concepto', 'descripcion']
               );
             } catch (_errMovimiento) {
               /* best-effort — el abono real ya quedó aplicado arriba */
@@ -44542,23 +44550,27 @@ async function leerSaldoWalletFresco(jugadorId) {
 async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, referenciaId, metodoAplicacion, creadoPorId, creadoPorNombre }) {
   const delta = Number(monto) || 0;
   if (!jugadorId || !delta) return { ok: true, saldoNuevo: null };
-  // FIX (confirmado en Supabase — migracion_v75 corregida): `jugadores.id` y
-  // la FK de `wallet_movimientos` son `bigint`, NO uuid ni text. La función
-  // ya quedó corregida en Supabase como `fn_wallet_ajustar_jugador(p_jugador_id
-  // bigint, p_delta numeric)`. Aquí se manda `jugadorId` SIEMPRE parseado
-  // como entero (`Number(...)`) — nunca como string — para que PostgREST lo
-  // serialice como número JSON real (`162`) y no como texto entre comillas
-  // (`"162"`), que es justo lo que un parámetro `bigint` rechaza.
+  // FIX (migracion_v77 — vuelve a corregir el TIPO del parámetro de la
+  // función, no el de la columna): la función `fn_wallet_ajustar_jugador`
+  // quedó re-actualizada en Supabase para recibir `p_jugador_id text` (con
+  // `WHERE id::text = p_jugador_id` adentro), así que aquí el RPC se manda
+  // SIEMPRE como string explícito (`String(...)`). Esto es independiente de
+  // `wallet_movimientos.jugador_id`/`jugadores.id`, que migracion_v76 dejó
+  // confirmados como `bigint` — ese lado NO cambia, sigue mandándose como
+  // entero (`jugadorIdNumerico`, usado más abajo en el INSERT de historial y
+  // en el respaldo no atómico) — ambos tipos conviven sin problema porque
+  // `id::text = p_jugador_id` castea el bigint a texto adentro de la función.
+  const jugadorIdTexto = String(jugadorId);
   const jugadorIdNumerico = Number(jugadorId);
   let saldoNuevo = null;
   try {
-    const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorIdNumerico, p_delta: delta });
+    const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorIdTexto, p_delta: delta });
     if (!error) {
       saldoNuevo = Number(data) || 0;
     } else {
       if (error.code === '22P02' || error.code === '42883') {
         console.warn(
-          '[Wallet] fn_wallet_ajustar_jugador rechazó el id o no encontró una función con esta firma (bigint, numeric). Verifica que la función en Supabase quede exactamente como fn_wallet_ajustar_jugador(p_jugador_id bigint, p_delta numeric) — mientras tanto, usando ajuste no atómico de respaldo.',
+          '[Wallet] fn_wallet_ajustar_jugador rechazó el id o no encontró una función con esta firma (text, numeric). Verifica que la función en Supabase quede exactamente como fn_wallet_ajustar_jugador(p_jugador_id text, p_delta numeric) — mientras tanto, usando ajuste no atómico de respaldo.',
           error
         );
       } else {
@@ -44602,6 +44614,16 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
     // columna puntual en vez de perder el movimiento entero. `jugador_id`/
     // `creado_por_id` van como entero (bigint confirmado en Supabase) — NO
     // como texto.
+    // FIX (DevTools — PGRST204 "'motivo' column of 'wallet_movimientos'"):
+    // la columna real en este proyecto NO se llama `motivo` — el mensaje de
+    // Supabase confirma que esa columna no existe. Como no está 100%
+    // confirmado si el nombre real es `concepto` o `descripcion`, se mandan
+    // los 3 con el mismo texto y los 3 quedan como opcionales/descartables:
+    // `conColumnasOpcionales` va tirando, uno por uno, el que Supabase
+    // reporte como inexistente, hasta quedarse solo con el/los que sí
+    // existen — así el insert nunca se rompe por completo por esta columna,
+    // sin importar cuál de los 3 nombres sea el real en este club.
+    const motivoTexto = motivo || null;
     const { data: mov, error: errMov } = await insertarConColumnasOpcionales(
       'wallet_movimientos',
       {
@@ -44609,14 +44631,16 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
         tipo: delta >= 0 ? 'abono' : 'cargo',
         monto: delta,
         saldo_resultante: saldoNuevo,
-        motivo: motivo || null,
+        motivo: motivoTexto,
+        concepto: motivoTexto,
+        descripcion: motivoTexto,
         metodo_aplicacion: metodoAplicacion || null,
         referencia_tipo: referenciaTipo || null,
         referencia_id: referenciaId || null,
         creado_por_id: creadoPorId ? Number(creadoPorId) : null,
         creado_por_nombre: creadoPorNombre || null,
       },
-      ['metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']
+      ['motivo', 'concepto', 'descripcion', 'metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']
     );
     if (errMov) {
       console.error('[Wallet] Error detallado Supabase (insertar wallet_movimientos):', errMov);
@@ -44722,20 +44746,32 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
     // como texto simple (nunca se le fuerza forma de uuid) — la columna es
     // `text` desde v57/v58, así que cualquier string es válido.
     const referenciaIdTexto = referenciaId != null ? String(referenciaId) : null;
-    const objetoAInsertar = withClubId({
+    // FIX (Cleanup de columnas inexistentes, mismo criterio que
+    // `ajustarWalletJugador`/DevTools — PGRST204 "'motivo' column"): este
+    // insert era directo (`supabase.from(...).insert(withClubId({...}))`),
+    // así que cualquier columna faltante (`club_id`, `empleado_nombre`, o
+    // `motivo` si en esta tabla tampoco se llama así) perdía el registro
+    // COMPLETO en vez de solo esa columna. Ahora pasa por
+    // `insertarConColumnasOpcionales` — que ya agrega `club_id` y hace
+    // `withClubId` internamente — y manda `motivo`/`concepto`/`descripcion`
+    // con el mismo texto, los 3 como opcionales, para tolerar cuál sea el
+    // nombre real de esa columna en este proyecto.
+    const motivoOperadorTexto = motivo || null;
+    const { data: mov, error: errMov } = await insertarConColumnasOpcionales('wallet_movimientos_operador', {
       empleado_id: empleadoIdTexto,
       empleado_nombre: empleadoNombre || null,
       tipo: delta >= 0 ? 'abono' : 'cargo',
       monto: delta,
       saldo_resultante: saldoNuevo,
-      motivo: motivo || null,
+      motivo: motivoOperadorTexto,
+      concepto: motivoOperadorTexto,
+      descripcion: motivoOperadorTexto,
       metodo_aplicacion: metodoAplicacion || null,
       referencia_tipo: referenciaTipo || null,
       referencia_id: referenciaIdTexto,
       creado_por_id: creadoPorId != null ? String(creadoPorId) : null,
       creado_por_nombre: creadoPorNombre || null,
-    });
-    const { data: mov, error: errMov } = await supabase.from('wallet_movimientos_operador').insert(objetoAInsertar).select('id').single();
+    }, ['motivo', 'concepto', 'descripcion', 'empleado_nombre', 'metodo_aplicacion', 'creado_por_id', 'creado_por_nombre']);
     if (errMov) {
       console.error('[Wallet Operador] Error detallado Supabase (insertar wallet_movimientos_operador):', errMov);
       movimientoOk = false;
@@ -46899,6 +46935,9 @@ function PortalPublicoJugadores({ clubSlug }) {
         // confirmado en Supabase, no texto): mismo criterio que
         // `ajustarWalletJugador` — tolera `club_id` faltante (PGRST204) y
         // manda `jugador_id` como entero.
+        // FIX (DevTools — PGRST204 "'motivo' column of 'wallet_movimientos'"):
+        // se manda también como `concepto`/`descripcion` (mismo texto), los
+        // 3 opcionales, para tolerar cuál sea el nombre real de la columna.
         await insertarConColumnasOpcionales(
           'wallet_movimientos',
           {
@@ -46907,10 +46946,12 @@ function PortalPublicoJugadores({ clubSlug }) {
             monto: Math.abs(Number(monto)),
             saldo_resultante: nuevoSaldo,
             motivo,
+            concepto: motivo,
+            descripcion: motivo,
             referencia_tipo: referenciaTipo,
             referencia_id: referenciaId,
           },
-          []
+          ['motivo', 'concepto', 'descripcion']
         );
       } catch (_errMovimiento) {
         /* best-effort — el abono real ya quedó aplicado arriba */
@@ -51866,19 +51907,24 @@ function AppInterno({ clubInicial } = {}) {
       let eventoCreado = null;
       try {
         // FIX (causa raíz confirmada por DevTools): en algunos proyectos
-        // `log_actividad` no tiene las columnas `detalle` ni `empleado_id`
-        // todavía — Supabase regresa `PGRST204: Could not find the 'detalle'
-        // column...` y, por separado, `... 'empleado_id' column...`. Antes
-        // esto tronaba el insert COMPLETO y el evento siempre caía al modo
-        // local, aunque el resto de la tabla sí existiera. Ahora usa la
-        // misma Arquitectura Flexible (`insertarConColumnasOpcionales`) que
-        // el resto del archivo: reintenta quitando SOLO la columna puntual
-        // que Supabase reporte como faltante (una por intento, hasta 3 —
-        // `detalle`/`empleado_id`/`club_id`, este último agregado
-        // automáticamente por el helper) en vez de perder el registro
-        // completo — nunca aborta el flujo que lo disparó (cancelación/
-        // penalización), pase lo que pase aquí.
-        const { data, error } = await insertarConColumnasOpcionales('log_actividad', payloadCompleto, ['detalle', 'empleado_id']);
+        // `log_actividad` no tiene las columnas `detalle`, `empleado_id` ni
+        // `empleado_nombre` todavía — Supabase regresa `PGRST204: Could not
+        // find the 'detalle' column...` y, por separado, `...
+        // 'empleado_id'...`/`... 'empleado_nombre' column...`. Antes esto
+        // tronaba el insert COMPLETO y el evento siempre caía al modo local,
+        // aunque el resto de la tabla sí existiera. Ahora usa la misma
+        // Arquitectura Flexible (`insertarConColumnasOpcionales`) que el
+        // resto del archivo: reintenta quitando SOLO la columna puntual que
+        // Supabase reporte como faltante (una por intento, hasta 4 —
+        // `empleado_nombre`/`detalle`/`empleado_id`/`club_id`, este último
+        // agregado automáticamente por el helper) en vez de perder el
+        // registro completo — nunca aborta el flujo que lo disparó
+        // (cancelación/penalización), pase lo que pase aquí.
+        const { data, error } = await insertarConColumnasOpcionales('log_actividad', payloadCompleto, [
+          'empleado_nombre',
+          'empleado_id',
+          'detalle',
+        ]);
         if (error) throw error;
         eventoCreado = data;
       } catch (err) {
@@ -52621,7 +52667,16 @@ function AppInterno({ clubInicial } = {}) {
   const cargarPartidosTorneo = useCallback(async (opts = {}) => {
     if (!opts.silencioso) setLoadingPartidosTorneo(true);
     setErrorPartidosTorneo('');
-    const { data, error } = await conClubId(supabase.from('torneo_partidos').select('*')).order('ronda_orden', { ascending: true });
+    // FIX (limpieza de consultas fallidas): antes esto ordenaba en el propio
+    // query (`.order('ronda_orden', ...)`) — en un proyecto donde esa
+    // columna no existe o se llama distinto, Supabase regresa 400/404 y el
+    // error se mostraba como "No se pudieron cargar los partidos.", aunque
+    // la tabla sí exista y sí tenga datos. El orden por ronda ya se vuelve a
+    // calcular en memoria donde se usa (ver `.sort((a, b) => a.ronda_orden -
+    // b.ronda_orden)` en el armado del bracket), así que no hace falta
+    // pedírselo a Supabase — se trae la tabla tal cual y se ordena en el
+    // cliente, sin depender de que esa columna exista con ese nombre exacto.
+    const { data, error } = await conClubId(supabase.from('torneo_partidos').select('*'));
     if (error) {
       // Igual criterio que `cargarTorneos`: tabla ausente = fallback silencioso.
       if (!esErrorTablaInexistente(error)) setErrorPartidosTorneo(error.message || 'No se pudieron cargar los partidos.');
