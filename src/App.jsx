@@ -34678,6 +34678,14 @@ function ModalDetalleClase({
       const monto = Number(alumno.monto) || 0;
       const generaReembolso = claseDentroDeTolerancia && pagada && monto > 0 && abonarSaldoClase;
       const generaAdeudo = claseFueraDeTolerancia && !pagada && monto > 0 && generarPenalizacionClase;
+      // Retención por Política (Sincronización Portal, item 3): fuera de
+      // tolerancia + YA PAGADA — el club se queda con el pago, sin
+      // reembolso. Mismo marcador `estado_pago: 'retenido'` que usan
+      // Reservas (`DetalleReserva.cancelar`) y Retas
+      // (`cancelarInscripcionReta`) — sin esto, el Portal seguía mostrando
+      // "Pagado" a secas, sin dejar claro que fue una retención por
+      // cancelación tardía.
+      const generaRetencion = claseFueraDeTolerancia && pagada;
 
       // NOTA: `hoyISO` aquí es el valor local memoizado de este componente
       // (`const hoyISO = useMemo(...)`, más abajo) — NO la función
@@ -34687,6 +34695,16 @@ function ModalDetalleClase({
         motivo_baja: motivo,
         fecha_baja: hoyISO,
         ...(generaReembolso ? { estado_pago: 'reembolsado' } : {}),
+        // Sincronización del Estado de Pago en el Portal (item 3): sin
+        // marcar `estado_pago: 'penalizacion_pendiente'` aquí, la fila de
+        // `academia_alumnos` se quedaba con su `estado_pago` original (o
+        // 'pendiente' a secas) — el Portal no tenía forma de distinguir un
+        // "adeudo por cancelación" de una inscripción normal sin cobrar
+        // todavía, y `itemsClases` (Historial Unificado del Portal) nunca
+        // llegaba a mapearla como "Adeudo Pendiente" ni, más adelante, como
+        // liquidada tras cobrarse en POS.
+        ...(generaAdeudo ? { estado_pago: 'penalizacion_pendiente' } : {}),
+        ...(generaRetencion ? { estado_pago: 'retenido' } : {}),
       };
       const { error: errAlumno } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambiosAlumno, [
         'motivo_baja',
@@ -34863,7 +34881,7 @@ function ModalDetalleClase({
                   <button
                     key={v.value}
                     onClick={() => setSubvista(v.value)}
-                    className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md py-2 text-xs font-bold transition ${
+                    className={`inline-flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3 py-2 text-xs font-bold transition ${
                       subvista === v.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
@@ -34873,11 +34891,9 @@ function ModalDetalleClase({
               })}
             </div>
             <div className="flex items-center gap-1.5">
-              {!editando && (
-                <BotonSecundario onClick={() => setEditando(true)} className="px-2.5 py-1.5 text-xs">
-                  <Pencil size={13} /> Editar
-                </BotonSecundario>
-              )}
+              {/* Corrección UI: se removió por completo el botón "Editar" de
+                  la cabecera — la edición de la clase ya no se ofrece desde
+                  aquí (ver instrucción explícita del Panel Admin). */}
               <button
                 type="button"
                 onClick={() => setMostrarCancelacionClase(true)}
@@ -35210,6 +35226,10 @@ function ModalDetalleClase({
                       )}
                     </p>
                   </div>
+                  {/* Corrección UI: se removió el botón rojo de baja
+                      individual (UserX) — la baja/cancelación de alumnos
+                      ahora se gestiona EXCLUSIVAMENTE desde "Cancelar Clase"
+                      (panel unificado), nunca fila por fila desde aquí. */}
                   <div className="flex shrink-0 items-center gap-1.5">
                     <button
                       onClick={() => alternarEstadoPago(a)}
@@ -35220,14 +35240,6 @@ function ModalDetalleClase({
                       }`}
                     >
                       {a.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
-                    </button>
-                    <button
-                      onClick={() => darDeBaja(a)}
-                      disabled={dandoDeBajaId === a.id}
-                      title="Dar de baja"
-                      className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-1.5 text-rose-400 transition hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      <UserX size={13} />
                     </button>
                   </div>
                 </div>
@@ -37022,46 +37034,47 @@ function ModuloAcademiaClinicas({
   // ver `eliminarClaseSeleccionada`) — Archivar es la Limpieza Visual
   // reversible nueva, ortogonal a esa.
   const [filtroClase, setFiltroClase] = useState('activas'); // 'activas' | 'archivadas'
-  // AUTO-ARCHIVADO AUTOMÁTICO AL CONCLUIR (item 2): antes, una clase
-  // concluida (`claseYaConcluyoHoy`) solo desaparecía de "Activas" pero
-  // nunca aterrizaba en "Archivadas" (esa pestaña solo miraba la columna
-  // persistida `archivado === true`, que el reloj nunca tocaba) — quedaba
-  // en un limbo invisible en ambas pestañas, como si nunca hubiera
-  // existido. Ahora "Archivadas" es la unión de el archivado MANUAL
-  // (`archivado === true`, botón Archivar/Restaurar) Y el archivado
-  // AUTOMÁTICO por tiempo (`now() >= fecha+hora_fin`) — apenas concluye, la
-  // clase se mueve sola a "Archivadas" sin esperar clic del operador. Las
-  // CANCELADAS quedan excluidas del archivado automático por tiempo (igual
-  // que antes): se quedan visibles en "Activas" con badge "Cancelada" hasta
-  // que el operador las archive a mano — si el reloj también las archivara
-  // solas, el botón Archivar jamás podría alcanzarlas.
+  // AUTO-ARCHIVADO AUTOMÁTICO AL CONCLUIR/CANCELAR (item 2, Corrección UI):
+  // antes, una clase concluida (`claseYaConcluyoHoy`) solo desaparecía de
+  // "Activas" pero nunca aterrizaba en "Archivadas" (esa pestaña solo
+  // miraba la columna persistida `archivado === true`, que el reloj nunca
+  // tocaba) — quedaba en un limbo invisible en ambas pestañas, como si
+  // nunca hubiera existido. Ahora "Archivadas" es la unión de el archivado
+  // MANUAL (`archivado === true`, botón Archivar/Restaurar), el archivado
+  // AUTOMÁTICO por tiempo (`now() >= fecha+hora_fin`) Y el archivado
+  // AUTOMÁTICO por cancelación (`estado === 'cancelada'`, Panel Admin) —
+  // apenas concluye o se cancela, la clase se mueve sola a "Archivadas" sin
+  // esperar clic del operador ni recarga manual: `todasLasClasesAcademia`
+  // se recalcula en cuanto `onAcademiaClaseActualizada` refleja el
+  // `estado: 'cancelada'` en el arreglo local de `AppInterno` (ver
+  // `eliminarClaseSeleccionada`), así que este `useMemo` responde de
+  // inmediato.
   const clasesArchivadas = useMemo(
     () =>
       todasLasClasesAcademia.filter(
-        (c) => c.archivado === true || (c.estado !== 'cancelada' && claseYaConcluyoHoy(c, new Date(tickAcademia)))
+        (c) => c.archivado === true || c.estado === 'cancelada' || claseYaConcluyoHoy(c, new Date(tickAcademia))
       ),
     [todasLasClasesAcademia, tickAcademia]
   );
-  // PURGA ESTRICTA DE CLASES PASADAS (item 3) + BOTÓN MANUAL DE ARCHIVADO
-  // (item 5, Turno 3): la pestaña "Activas" de la Parrilla de Clases aplica
-  // el mismo criterio riguroso que el Portal (`claseYaConcluyoHoy` — futuras
-  // o EN CURSO se quedan, solo se oculta una vez que su horario de HOY ya
-  // concluyó del todo). Las clases CANCELADAS son la excepción: se quedan
-  // visibles en "Activas" (con badge "Cancelada" en `TarjetaClaseAcademia`)
-  // hasta que el operador las archive a mano — si se ocultaran solas junto
-  // con las concluidas, el botón Archivar jamás podría alcanzarlas y
-  // desaparecerían sin dejar rastro en ninguna pestaña. La pestaña
-  // "Archivadas" ahora refleja `clasesArchivadas` de arriba (manual + por
-  // tiempo), así que una clase concluida sí se ve reflejada ahí, no solo
-  // "desaparece" de Activas.
+  // PURGA ESTRICTA DE CLASES PASADAS Y CANCELADAS (item 3, Turno 3 +
+  // Corrección UI): la pestaña "Activas" de la Parrilla de Clases aplica el
+  // mismo criterio riguroso que el Portal (`claseYaConcluyoHoy` — futuras o
+  // EN CURSO se quedan, solo se oculta una vez que su horario de HOY ya
+  // concluyó del todo). Las clases CANCELADAS (`estado === 'cancelada'`) se
+  // excluyen explícitamente de "Activas" — ya NO se quedan ahí con badge
+  // "Cancelada" esperando archivado manual, porque ahora `clasesArchivadas`
+  // (arriba) las incluye automáticamente, así que archivarlas a mano deja
+  // de ser necesario para que dejen de "estorbar" en Activas: al cancelar,
+  // la clase desaparece de inmediato de Activas y aparece reflejada en
+  // Archivadas, sin quedar en ningún limbo.
   const clasesVisibles = useMemo(
     () =>
       todasLasClasesAcademia.filter((c) => {
         if (filtroClase === 'archivadas') {
-          return c.archivado === true || (c.estado !== 'cancelada' && claseYaConcluyoHoy(c, new Date(tickAcademia)));
+          return c.archivado === true || c.estado === 'cancelada' || claseYaConcluyoHoy(c, new Date(tickAcademia));
         }
         if (c.archivado === true) return false;
-        if (c.estado === 'cancelada') return true;
+        if (c.estado === 'cancelada') return false;
         return !claseYaConcluyoHoy(c, new Date(tickAcademia));
       }),
     [todasLasClasesAcademia, filtroClase, tickAcademia]
@@ -47336,8 +47349,38 @@ function PortalPublicoJugadores({ clubSlug }) {
           modulo: 'academia',
           fechaEventoMs: timestampEvento(clase?.fecha, clase?.hora_inicio),
           activo: a.estado !== 'baja',
-          estadoActividad: a.estado === 'baja' ? 'cancelada' : 'activa',
-          estatusFinanciero: a.estado_pago === 'reembolsado' ? 'reembolsado' : a.estado_pago === 'pagado' ? 'pagado' : 'pendiente',
+          // Sincronización del Estado de Pago en el Portal (item 3, fix):
+          // antes esta tarjeta solo distinguía 'reembolsado'/'pagado'/
+          // "todo lo demás → pendiente" — una vez que el staff cobraba la
+          // penalización en Smart POS (`resolverPenalizacionPendiente`
+          // escribe `estado_pago: 'penalizacion_liquidada'` en ESTA MISMA
+          // fila de `academia_alumnos`, ver `referencia_tabla`/
+          // `referencia_id` en `cancelarClaseCompleta`/`darDeBaja`), esa
+          // rama nunca se contemplaba y la tarjeta se quedaba mostrando
+          // "Pago Pendiente en Club" para siempre. Ahora usa el MISMO mapeo
+          // completo que ya tienen Reservas/Retas (`itemsReservas`/
+          // `itemsRetas`, arriba) para que "Penalización Liquidada"/
+          // "Adeudo Pendiente"/"Pago Retenido" se reflejen de inmediato.
+          estadoActividad:
+            a.estado === 'baja'
+              ? a.estado_pago === 'penalizacion_pendiente' || a.estado_pago === 'retenido'
+                ? 'penalizada'
+                : 'cancelada'
+              : 'activa',
+          estatusFinanciero:
+            a.estado_pago === 'penalizacion_liquidada'
+              ? 'liquidada'
+              : a.estado_pago === 'exonerado'
+              ? 'exonerada'
+              : a.estado_pago === 'reembolsado'
+              ? 'reembolsado'
+              : a.estado_pago === 'retenido'
+              ? 'retenido'
+              : a.estado_pago === 'penalizacion_pendiente'
+              ? 'adeudo'
+              : a.estado_pago === 'pagado'
+              ? 'pagado'
+              : 'pendiente',
         };
       });
 
