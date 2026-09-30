@@ -3334,6 +3334,23 @@ function SeccionPenalizacionesPendientes({ jugadorId, onIrACobrarEnComanda, ocul
     cargar();
   }, [cargar]);
 
+  // Refresco e Integración Realtime (fix): sin esto, si el adeudo se generó
+  // desde otra pestaña/dispositivo (Parrilla Operativa, Retas) mientras
+  // esta sub-pestaña de Smart POS ya estaba abierta, la lista se quedaba
+  // vieja hasta un F5. Escucha INSERT/UPDATE/DELETE sobre
+  // `penalizaciones_pendientes` — filtrado al club activo, mismo patrón que
+  // `cierres_caja`/`log_actividad` (`canalClubFiltro`) — y recarga en
+  // cuanto Supabase avisa un cambio, sin recargar la página.
+  useEffect(() => {
+    const canal = supabase
+      .channel(`penalizaciones-pendientes${jugadorId ? `-jugador-${jugadorId}` : ''}`)
+      .on('postgres_changes', canalClubFiltro('penalizaciones_pendientes'), () => cargar())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargar, jugadorId]);
+
   async function cobrar(p) {
     setProcesandoId(p.id);
     const resultado = await resolverPenalizacionPendiente(p, { accion: 'liquidar' });
@@ -3694,6 +3711,18 @@ function esPagoPendiente(entidad) {
 // generaba un "adeudo" real antes de este motor).
 // ============================================================================
 
+// Tratamiento de RLS (fix, reutilizado por registrar/resolver): un `42501`
+// de Postgres SIEMPRE significa que una política de Row Level Security
+// bloqueó la operación — nunca una tabla/columna faltante. Convierte ese
+// código en el mensaje accionable que pidió el blindaje, dejando cualquier
+// otro error tal cual venga de Supabase.
+function errorConMensajeRLS(error) {
+  if (error?.code === '42501') {
+    return new Error('Error de permisos RLS en Supabase: Ejecuta la política de acceso para penalizaciones_pendientes');
+  }
+  return error;
+}
+
 async function registrarPenalizacionPendiente({ jugadorId, jugadorNombre, tipoActividad, referenciaTabla, referenciaId, monto, motivo, fechaActividad }) {
   if (!(Number(monto) > 0)) return { ok: false, error: new Error('Monto inválido para registrar penalización.') };
   // FIX CRÍTICO (blindaje): el cliente de Supabase NO lanza excepción
@@ -3720,6 +3749,13 @@ async function registrarPenalizacionPendiente({ jugadorId, jugadorNombre, tipoAc
       })
     );
     if (error) {
+      if (error.code === '42501') {
+        console.error(
+          '[Penalizaciones] RLS bloqueó el insert en penalizaciones_pendientes (42501). Falta una policy de INSERT para este rol/club_id en esa tabla.',
+          error
+        );
+        return { ok: false, error: errorConMensajeRLS(error) };
+      }
       console.error('[Penalizaciones] Falló el insert en penalizaciones_pendientes (¿corriste migracion_v74_motor_penalizaciones_pendientes.sql?).', error);
       return { ok: false, error };
     }
@@ -3739,7 +3775,12 @@ async function resolverPenalizacionPendiente(penalizacion, { accion, motivoResol
     resuelto_en: new Date().toISOString(),
   };
   const { error } = await supabase.from('penalizaciones_pendientes').update(cambios).eq('id', penalizacion.id);
-  if (error) return { ok: false, error };
+  if (error) {
+    if (error.code === '42501') {
+      console.error('[Penalizaciones] RLS bloqueó el update en penalizaciones_pendientes (42501). Falta una policy de UPDATE para este rol/club_id.', error);
+    }
+    return { ok: false, error: errorConMensajeRLS(error) };
+  }
   // Sincronización con el Portal (Parte 4): refleja el mismo estado en la
   // fila de origen (hoy: Retas, único módulo que ya genera penalizaciones
   // reales) para que `historialUnificado` del Portal lo muestre de
@@ -51726,21 +51767,31 @@ function AppInterno({ clubInicial } = {}) {
   // `localStorage`) — nunca se pierde ni bloquea la acción que lo disparó.
   const registrarEventoAuditoria = useCallback(
     async (tipo, detalle) => {
-      const payload = withClubId({
+      const payloadCompleto = {
         empleado_id: operador.id || null,
         empleado_nombre: operador.nombre || 'Operador',
         empleado_rol: operador.rol || null,
         tipo,
         detalle: detalle || {},
-      });
+      };
       let eventoCreado = null;
       try {
-        const { data, error } = await supabase.from('log_actividad').insert(payload).select().single();
+        // FIX (causa raíz confirmada por DevTools): en algunos proyectos
+        // `log_actividad` no tiene la columna `detalle` todavía — Supabase
+        // regresa `PGRST204: Could not find the 'detalle' column of
+        // 'log_actividad'`. Antes esto tronaba el insert COMPLETO y el
+        // evento siempre caía al modo local, aunque el resto de la tabla sí
+        // existiera. Ahora usa la misma Arquitectura Flexible
+        // (`insertarConColumnasOpcionales`) que el resto del archivo: si
+        // `detalle` (o `club_id`) no existe, reintenta sin esa columna en
+        // vez de perder el registro completo — nunca aborta el flujo que lo
+        // disparó (cancelación/penalización), pase lo que pase aquí.
+        const { data, error } = await insertarConColumnasOpcionales('log_actividad', payloadCompleto, ['detalle']);
         if (error) throw error;
         eventoCreado = data;
       } catch (err) {
         console.warn('[Auditoría] No se pudo guardar el evento en Supabase — se usa modo local.', err);
-        eventoCreado = { ...payload, id: idLocal('evento'), created_at: new Date().toISOString(), _local: true };
+        eventoCreado = { ...withClubId(payloadCompleto), id: idLocal('evento'), created_at: new Date().toISOString(), _local: true };
         guardarRegistroLocal(LS_KEY_LOG_ACTIVIDAD_LOCAL, eventoCreado);
       }
       setLogActividad((prev) => [eventoCreado, ...prev]);
