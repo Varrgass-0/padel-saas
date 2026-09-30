@@ -7290,6 +7290,21 @@ function DetalleReserva({
   // "zona de penalización" nunca se activa.
   const fueraDeTolerancia = toleranciaReservasActiva && !dentroDeTolerancia;
 
+  // Motor de Gestión de Penalizaciones Pendientes (v74), conexión con la
+  // Parrilla Operativa: cuando el staff cancela una reserva SIN pago real
+  // (`reservaSinPago` — el jugador todavía le debe al club, no al revés)
+  // Y la cancelación cae fuera de la ventana de tolerancia, esa reserva
+  // pendiente de pago se vuelve un adeudo real que antes se perdía sin
+  // dejar rastro en `penalizaciones_pendientes`. Checkbox marcado por
+  // default = generar el adeudo; desmarcarlo exonera al jugador de una vez
+  // (cancelación limpia, sin insertar deuda) — mismo resultado que activar
+  // un futuro "Exonerar jugador", así que un solo control cubre ambos casos
+  // de la Parte 2.
+  const montoPenalizacionSugerido = Number(reserva.monto_total) || 0;
+  const mostrarPenalizacionParrilla =
+    reservaSinPago && toleranciaReservasActiva && fueraDeTolerancia && Boolean(reserva.jugador_id) && montoPenalizacionSugerido > 0;
+  const [generarPenalizacion, setGenerarPenalizacion] = useState(true);
+
   // Control Interno — "Modificación de horarios o canchas": reprograma el
   // bloque horario de esta MISMA reserva/cancha (día y jugador se quedan
   // igual). Gateado por `permisos.puedeReprogramarReservas`.
@@ -7414,9 +7429,16 @@ function DetalleReserva({
     setProcesando(true);
     setError('');
 
+    // Motor de Gestión de Penalizaciones Pendientes (v74): si esta
+    // cancelación va a generar el adeudo (ver `mostrarPenalizacionParrilla`),
+    // la reserva queda marcada `estado_pago: 'penalizacion_pendiente'` en el
+    // mismo update — así `historialUnificado` la refleja como
+    // "Penalizada"/"Adeudo Pendiente" en el Portal de inmediato, sin esperar
+    // un segundo round-trip.
+    const generaPenalizacionAhora = mostrarPenalizacionParrilla && generarPenalizacion;
     const { error: errReserva } = await supabase
       .from('reservas')
-      .update({ estado: 'Cancelada' })
+      .update({ estado: 'Cancelada', ...(generaPenalizacionAhora ? { estado_pago: 'penalizacion_pendiente' } : {}) })
       .eq('id', reserva.id);
 
     if (errReserva) {
@@ -7424,6 +7446,19 @@ function DetalleReserva({
       setError(errReserva.message || 'No se pudo cancelar la reserva.');
       toast({ titulo: 'Error al cancelar', detalle: errReserva.message, tono: 'error' });
       return;
+    }
+
+    if (generaPenalizacionAhora) {
+      await registrarPenalizacionPendiente({
+        jugadorId: reserva.jugador_id,
+        jugadorNombre: reserva.jugador_nombre,
+        tipoActividad: 'reserva',
+        referenciaTabla: 'reservas',
+        referenciaId: reserva.id,
+        monto: montoPenalizacionSugerido,
+        motivo: motivoCancelacion.trim() || 'Cancelación extemporánea desde Parrilla Operativa',
+        fechaActividad: reserva.fecha,
+      });
     }
 
     let saldoAplicado = 0;
@@ -7478,7 +7513,12 @@ function DetalleReserva({
     setProcesando(false);
     toast({
       titulo: 'Reserva cancelada',
-      detalle: saldoAplicado > 0 ? `Se abonaron ${formatoMoneda(saldoAplicado)} de saldo a favor.` : 'El horario quedó liberado.',
+      detalle:
+        saldoAplicado > 0
+          ? `Se abonaron ${formatoMoneda(saldoAplicado)} de saldo a favor.`
+          : generaPenalizacionAhora
+          ? `Se generó un adeudo de ${formatoMoneda(montoPenalizacionSugerido)} en Penalizaciones Pendientes (Smart POS).`
+          : 'El horario quedó liberado.',
     });
     // Control Interno — "Cancelaciones de reservas y motivos".
     onRegistrarAuditoria?.('cancelacion_reserva', {
@@ -7655,6 +7695,39 @@ function DetalleReserva({
                   />
                 </Campo>
               )}
+            </>
+          )}
+
+          {/* Motor de Gestión de Penalizaciones Pendientes (v74), conexión
+              con la Parrilla Operativa: cuando NO hubo pago real
+              (`reservaSinPago`) pero la cancelación llega fuera de la
+              ventana de tolerancia, el jugador le queda debiendo al club —
+              antes esto se perdía en silencio al cancelar. */}
+          {mostrarPenalizacionParrilla && (
+            <>
+              <p className="flex items-start gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-rose-200">
+                <ShieldAlert size={13} className="mt-0.5 shrink-0 text-rose-500" />
+                {`⚠️ Cancelación extemporánea fuera de tolerancia (requiere ${toleranciaReservasHoras}h de anticipación).`}
+              </p>
+
+              <label className="flex items-start gap-2.5 rounded-lg bg-white p-3">
+                <input
+                  type="checkbox"
+                  checked={generarPenalizacion}
+                  onChange={(e) => setGenerarPenalizacion(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-rose-500"
+                />
+                <span className="text-xs text-gray-700">
+                  <span className="flex items-center gap-1.5 font-bold text-gray-900">
+                    <ShieldAlert size={13} /> Generar penalización / adeudo pendiente en POS ({formatoMoneda(montoPenalizacionSugerido)})
+                  </span>
+                  {!generarPenalizacion && (
+                    <span className="mt-1 block text-emerald-700">
+                      Se exonerará al jugador: la cancelación quedará limpia, sin adeudo en Smart POS.
+                    </span>
+                  )}
+                </span>
+              </label>
             </>
           )}
 
@@ -46378,11 +46451,24 @@ function PortalPublicoJugadores({ clubSlug }) {
           fechaEventoMs: timestampEvento(r.fecha, r.hora_inicio),
           activo: r.estado !== 'Cancelada',
           // Historial Informativo (Parte 4) — dos badges independientes.
-          // Reservas todavía no tiene un concepto de "penalizada/no-show"
-          // en el esquema (a diferencia de Retas, que ya usa `retenido`),
-          // así que solo distingue Activa/Cancelada por ahora.
-          estadoActividad: r.estado === 'Cancelada' ? 'cancelada' : 'activa',
-          estatusFinanciero: r.estado_pago === 'reembolsado' ? 'reembolsado' : r.estado_pago === 'pagado' ? 'pagado' : 'pendiente',
+          // Motor de Gestión de Penalizaciones Pendientes, conexión con la
+          // Parrilla Operativa: `estado_pago === 'penalizacion_pendiente'`
+          // (ver `DetalleReserva.cancelar`) es el equivalente en Reservas al
+          // 'retenido' que ya usaba Retas — cancelación extemporánea sin
+          // pago real, ahora sí deja un adeudo real y visible aquí.
+          estadoActividad: r.estado === 'Cancelada' ? (r.estado_pago === 'penalizacion_pendiente' ? 'penalizada' : 'cancelada') : 'activa',
+          estatusFinanciero:
+            r.estado_pago === 'penalizacion_liquidada'
+              ? 'liquidada'
+              : r.estado_pago === 'exonerado'
+              ? 'exonerada'
+              : r.estado_pago === 'reembolsado'
+              ? 'reembolsado'
+              : r.estado_pago === 'penalizacion_pendiente'
+              ? 'adeudo'
+              : r.estado_pago === 'pagado'
+              ? 'pagado'
+              : 'pendiente',
         };
       });
 
