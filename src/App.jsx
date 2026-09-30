@@ -3265,6 +3265,33 @@ function BadgePago({ estadoPago }) {
   );
 }
 
+// Historial Informativo (Motor Unificado, Parte 4) — dos badges explícitos e
+// independientes por tarjeta: Estado de la ACTIVIDAD (¿sigue en pie o se
+// canceló/penalizó?) y Estatus FINANCIERO (¿qué se debe o se pagó?). Antes
+// el Historial solo mostraba `BadgePago`, que no distinguía "cancelada pero
+// sigue apareciendo como Pendiente" — confuso para el jugador.
+function BadgeEstadoActividad({ estado }) {
+  const CONFIG = {
+    activa: { texto: 'Reserva Activa / Confirmada', clase: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
+    cancelada: { texto: 'Cancelada', clase: 'bg-slate-100 text-slate-600 border border-slate-200' },
+    penalizada: { texto: 'Penalizada / No-show', clase: 'bg-red-50 text-red-700 border border-red-200' },
+  };
+  const cfg = CONFIG[estado] || CONFIG.activa;
+  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${cfg.clase}`}>{cfg.texto}</span>;
+}
+
+function BadgeEstatusFinanciero({ estatus }) {
+  const CONFIG = {
+    pendiente: { texto: 'Pago Pendiente en Club', clase: 'bg-amber-50 text-amber-700 border border-amber-200' },
+    pagado: { texto: 'Pagado', clase: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
+    adeudo: { texto: 'Adeudo Pendiente', clase: 'bg-red-50 text-red-700 border border-red-200' },
+    liquidada: { texto: 'Penalización Liquidada', clase: 'bg-slate-100 text-slate-600 border border-slate-200' },
+    exonerada: { texto: 'Penalización Exonerada', clase: 'bg-slate-100 text-slate-600 border border-slate-200' },
+  };
+  const cfg = CONFIG[estatus] || CONFIG.pendiente;
+  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${cfg.clase}`}>{cfg.texto}</span>;
+}
+
 /* ============================================================================
  * SIDEBAR / HEADER
  * ==========================================================================*/
@@ -46054,6 +46081,12 @@ function PortalPublicoJugadores({ clubSlug }) {
           modulo: 'reservas',
           fechaEventoMs: timestampEvento(r.fecha, r.hora_inicio),
           activo: r.estado !== 'Cancelada',
+          // Historial Informativo (Parte 4) — dos badges independientes.
+          // Reservas todavía no tiene un concepto de "penalizada/no-show"
+          // en el esquema (a diferencia de Retas, que ya usa `retenido`),
+          // así que solo distingue Activa/Cancelada por ahora.
+          estadoActividad: r.estado === 'Cancelada' ? 'cancelada' : 'activa',
+          estatusFinanciero: r.estado_pago === 'pagado' ? 'pagado' : 'pendiente',
         };
       });
 
@@ -46093,6 +46126,17 @@ function PortalPublicoJugadores({ clubSlug }) {
           // precisión para una ventana de tolerancia medida en horas/días.
           fechaEventoMs: timestampEvento(torneo?.fecha_inicio, '00:00'),
           activo: true,
+          // Limitación conocida (Parte 4): cancelar una inscripción de
+          // Torneo hoy BORRA la fila (`torneo_participantes`, ver
+          // `cancelarInscripcionTorneoPortal`/`cancelarInscripcionEvento`),
+          // así que nunca llega a verse aquí como "Cancelada" — simplemente
+          // desaparece de este listado (que solo lee filas vivas). Volverla
+          // persistente (badge Cancelada real) requiere una migración que
+          // agregue `estado`/`cancelado_en` a `torneo_participantes` y
+          // cambiar el borrado por un soft-cancel en ambos flujos (Staff +
+          // Portal) — no incluido en este alcance.
+          estadoActividad: 'activa',
+          estatusFinanciero: (p.estado_pago || p.estatus_pago) === 'pagado' ? 'pagado' : 'pendiente',
         };
       });
 
@@ -46114,11 +46158,22 @@ function PortalPublicoJugadores({ clubSlug }) {
           modulo: 'retas',
           fechaEventoMs: timestampEvento(reta?.fecha, reta?.hora_inicio),
           activo: i.estado !== 'cancelado' && i.estado !== 'retenido',
+          // 'retenido' (ver `cancelarInscripcionReta`/`cancelarInscripcionRetaPortal`)
+          // es exactamente el caso "cancelaste fuera de tolerancia, se
+          // retiene la cuota" — se mapea 1:1 a Penalizada/Adeudo.
+          estadoActividad: i.estado === 'cancelado' ? 'cancelada' : i.estado === 'retenido' ? 'penalizada' : 'activa',
+          estatusFinanciero: i.estado === 'retenido' ? 'adeudo' : (i.estado_pago || i.estatus_pago) === 'pagado' ? 'pagado' : 'pendiente',
         };
       });
 
+    // Historial Informativo (Parte 4): las clases dadas de baja YA NO se
+    // excluyen aquí — antes desaparecían del Historial en cuanto el
+    // jugador cancelaba, ahora se quedan con el badge "Cancelada" en vez de
+    // esfumarse o quedarse con la etiqueta engañosa "Pendiente". El filtro
+    // de "Tus Próximas Clases" (pestaña Academia, otra vista) sigue
+    // excluyendo bajas por separado — no se toca.
     const itemsClases = (academiaAlumnosPortal || [])
-      .filter((a) => a.estado !== 'baja' && esMiRegistro(a))
+      .filter((a) => esMiRegistro(a))
       .map((a) => {
         const clase = clasesPorId[a.clase_id];
         return {
@@ -46135,7 +46190,9 @@ function PortalPublicoJugadores({ clubSlug }) {
           claseRaw: clase,
           modulo: 'academia',
           fechaEventoMs: timestampEvento(clase?.fecha, clase?.hora_inicio),
-          activo: true,
+          activo: a.estado !== 'baja',
+          estadoActividad: a.estado === 'baja' ? 'cancelada' : 'activa',
+          estatusFinanciero: a.estado_pago === 'pagado' ? 'pagado' : 'pendiente',
         };
       });
 
@@ -46177,12 +46234,19 @@ function PortalPublicoJugadores({ clubSlug }) {
     setHistorialDetalle(null);
   }
 
+  // Gestión Directa en Módulos (Parte 3) — `cancelarInscripcionTorneoPortal`/
+  // `cancelarInscripcionRetaPortal` ahora se llaman tanto desde el modal de
+  // Historial como desde el resumen propio de cada módulo
+  // (`ModalDetalleTorneo`/`ModalResumenReta`), así que cierran CUALQUIERA de
+  // los dos que esté abierto — nunca dejan un modal huérfano apuntando a una
+  // inscripción que ya no existe.
   async function cancelarInscripcionTorneoPortal(participante) {
     const { error } = await supabase.from('torneo_participantes').delete().eq('id', participante.id);
     if (error) console.warn('[Portal] No se pudo sincronizar la baja del torneo, se aplicó solo local.', error);
     setParticipantes((prev) => prev.filter((p) => p.id !== participante.id));
     mostrarToast({ titulo: 'Inscripción cancelada', detalle: 'Tu lugar en el torneo quedó liberado.' });
     setHistorialDetalle(null);
+    setTorneoDetalle(null);
   }
 
   async function cancelarInscripcionRetaPortal(inscripcion) {
@@ -46191,6 +46255,7 @@ function PortalPublicoJugadores({ clubSlug }) {
     setInscripciones((prev) => prev.map((i) => (i.id === inscripcion.id ? { ...i, estado: 'cancelado' } : i)));
     mostrarToast({ titulo: 'Inscripción cancelada', detalle: 'Tu lugar en la reta quedó liberado.' });
     setHistorialDetalle(null);
+    setResumenReta(null);
   }
 
   // PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO — guarda la petición
@@ -47007,8 +47072,46 @@ function PortalPublicoJugadores({ clubSlug }) {
           ) : (
             <>
               {vista === 'canchas' && (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {canchasActivas.length === 0 && (
+                <div className="space-y-4">
+                  {/* Gestión Directa en Módulos (Parte 3) — "Tus Próximas
+                      Reservas", mismo diseño que "Tus Próximas Clases
+                      Privadas" de Academia: tarjetas clicables que abren el
+                      mismo modal de detalle/cancelación que ya usa
+                      Historial (`ModalDetalleHistorialPortal`), reutilizando
+                      los items ya armados por `historialUnificado` en vez de
+                      recalcular el shape de una reserva desde cero aquí. */}
+                  {jugador &&
+                    (() => {
+                      const misReservasProximas = (historialUnificado || []).filter(
+                        (h) => h.tipo === 'reserva' && h.activo && h.fechaEventoMs && h.fechaEventoMs > Date.now()
+                      );
+                      if (misReservasProximas.length === 0) return null;
+                      return (
+                        <div className="space-y-2">
+                          <p className="text-xs font-bold uppercase tracking-wide text-orange-400">Tus Próximas Reservas</p>
+                          {misReservasProximas.map((h) => (
+                            <div
+                              key={h.id}
+                              onClick={() => setHistorialDetalle(h)}
+                              className="cursor-pointer rounded-2xl border border-orange-400/20 bg-orange-400/[0.04] p-4 backdrop-blur-sm transition hover:border-orange-400/40 hover:bg-orange-400/[0.08]"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <p className="font-black text-slate-900">{h.titulo}</p>
+                                  <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
+                                    <CalendarClock size={12} /> {h.detalle}
+                                  </p>
+                                </div>
+                                <BadgeEstadoActividad estado={h.estadoActividad} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {canchasActivas.length === 0 && (
                     <p className="col-span-full py-10 text-center text-sm text-slate-500">Este club todavía no tiene canchas publicadas.</p>
                   )}
                   {canchasActivas.map((c) => {
@@ -47047,6 +47150,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                       </button>
                     );
                   })}
+                  </div>
                 </div>
               )}
 
@@ -47378,8 +47482,22 @@ function PortalPublicoJugadores({ clubSlug }) {
                       {misClasesPrivadasProximas.map((c) => {
                         const cancha = canchasPorId[c.cancha_id];
                         const diaFecha = c.fecha ? formatoFechaLarga(c.fecha) : 'Sin fecha';
+                        // Gestión Directa en Módulos (Parte 3) — tarjeta
+                        // clicable: abre el MISMO `ModalResumenClase` que ya
+                        // usa el catálogo grupal ("Ver Resumen"), con la
+                        // inscripción (`academia_alumnos`) real de este
+                        // jugador para esta clase privada.
+                        const miAlumno = (academiaAlumnosPortal || []).find(
+                          (a) => a.clase_id === c.id && a.estado !== 'baja' && esMiRegistro(a)
+                        );
                         return (
-                          <div key={c.id} className="rounded-2xl border border-orange-400/20 bg-orange-400/[0.04] p-4 backdrop-blur-sm">
+                          <div
+                            key={c.id}
+                            onClick={miAlumno ? () => setResumenClase({ clase: c, alumno: miAlumno }) : undefined}
+                            className={`rounded-2xl border border-orange-400/20 bg-orange-400/[0.04] p-4 backdrop-blur-sm transition ${
+                              miAlumno ? 'cursor-pointer hover:border-orange-400/40 hover:bg-orange-400/[0.08]' : ''
+                            }`}
+                          >
                             <div className="flex items-start justify-between gap-2">
                               <div>
                                 <p className="font-black text-slate-900">{c.nombre}</p>
@@ -47552,9 +47670,16 @@ function PortalPublicoJugadores({ clubSlug }) {
                                     </p>
                                   </div>
                                 </div>
-                                <div className="shrink-0 text-right">
+                                <div className="shrink-0 flex flex-col items-end gap-1 text-right">
                                   <p className="text-sm font-black text-slate-900">{formatoMoneda(h.monto)}</p>
-                                  <BadgePago estadoPago={h.estadoPago} />
+                                  {h.estadoActividad ? (
+                                    <>
+                                      <BadgeEstadoActividad estado={h.estadoActividad} />
+                                      <BadgeEstatusFinanciero estatus={h.estatusFinanciero} />
+                                    </>
+                                  ) : (
+                                    <BadgePago estadoPago={h.estadoPago} />
+                                  )}
                                 </div>
                               </div>
                             );
@@ -47728,7 +47853,9 @@ function PortalPublicoJugadores({ clubSlug }) {
             participantes={participantesPorTorneo[torneoDetalle.id] || []}
             jugador={jugador}
             partidos={torneoPartidosPortal}
+            politica={politicaCancelacionModulo(configTolerancia, 'torneos')}
             onClose={() => setTorneoDetalle(null)}
+            onCancelar={cancelarInscripcionTorneoPortal}
             onBuscarJugadores={buscarJugadoresRegistrados}
             onRequerirIdentificacion={() => setModalIdentificacion(true)}
             onInscribirme={(categoria, pareja) => {
@@ -47859,7 +47986,9 @@ function PortalPublicoJugadores({ clubSlug }) {
             cancha={canchasPorId[resumenReta.cancha_id]}
             inscritos={(inscripcionesPorReta[resumenReta.id] || []).filter((i) => i.estado !== 'cancelado')}
             jugador={jugador}
+            politica={politicaCancelacionModulo(configTolerancia, 'retas')}
             onClose={() => setResumenReta(null)}
+            onCancelar={cancelarInscripcionRetaPortal}
           />
         )}
 
@@ -48130,23 +48259,30 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
 // autoservicio en Historial/Academia — así el jugador siempre ve la regla
 // real del club, nunca un texto genérico.
 function AvisoPoliticaCancelacion({ activa, horas }) {
+  // Reestructuración UX/UI (Checkout, Parte 1) — dos estilos sobrios y de
+  // alto contraste, uno por estado, en vez de un solo estilo ámbar
+  // reutilizado para ambos casos (el bug de contraste original: texto
+  // amarillo sobre fondo claro cuando `activa` era `true`).
+  if (!activa) {
+    return (
+      <div className="bg-slate-50 border border-slate-200 text-slate-700 p-3 rounded-lg text-xs">
+        <p className="mb-0.5 flex items-center gap-1.5 font-semibold text-slate-800">
+          <ShieldAlert size={13} className="text-slate-400" />
+          Sin políticas de cancelación
+        </p>
+        <p>Puedes solicitar la cancelación o cambio de horario de tu reserva sin penalización directamente en la recepción del club.</p>
+      </div>
+    );
+  }
   return (
-    <div
-      className={`rounded-xl border p-3 text-xs ${
-        activa ? 'border-amber-400/40 bg-amber-400/10 text-amber-800 dark:text-amber-200' : 'border-slate-300 bg-slate-100/60 text-slate-600 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300'
-      }`}
-    >
-      <p className="mb-0.5 flex items-center gap-1.5 font-bold">
-        <ShieldAlert size={13} className={activa ? 'text-amber-600' : 'text-slate-400'} />
+    <div className="bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-lg text-xs font-medium">
+      <p className="mb-0.5 flex items-center gap-1.5 font-semibold text-amber-800">
+        <ShieldAlert size={13} className="text-amber-600" />
         Políticas de Cancelación del Club
       </p>
-      {activa ? (
-        <p>
-          Recuerda que para cancelar sin penalización debes hacerlo con al menos <b>{horas} horas</b> de anticipación.
-        </p>
-      ) : (
-        <p>Cancelación libre disponible según disponibilidad del club.</p>
-      )}
+      <p>
+        Recuerda que para cancelar sin penalización debes hacerlo con al menos <b>{horas} horas</b> de anticipación.
+      </p>
     </div>
   );
 }
@@ -48174,6 +48310,14 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
     setCancelando(false);
   }
 
+  // Historial Informativo (Parte 4): un item ya cancelado/penalizado
+  // (`item.estadoActividad !== 'activa'`) se muestra de forma TRANSPARENTE
+  // — nunca con el texto vago "ya no está activa". Se distingue
+  // Cancelada (gris, el jugador o el club la canceló a tiempo) de
+  // Penalizada (roja, `retenido` — se retuvo la cuota).
+  const yaResuelto = !!item.raw && item.activo === false;
+  const esPenalizada = item.estadoActividad === 'penalizada';
+
   return (
     <ModalShell titulo={item.titulo} subtitulo={item.detalle || 'Detalle de tu actividad'} onClose={onClose} icon={item.icon} ancho="max-w-md">
       <div className="space-y-3.5">
@@ -48183,21 +48327,48 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
             <dd className="font-bold text-slate-800">{formatoMoneda(item.monto)}</dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="text-slate-500">Estatus de pago</dt>
+            <dt className="text-slate-500">Estado de la actividad</dt>
             <dd>
-              <BadgePago estadoPago={item.estadoPago} />
+              <BadgeEstadoActividad estado={item.estadoActividad || (item.activo === false ? 'cancelada' : 'activa')} />
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-slate-500">Estatus financiero</dt>
+            <dd>
+              {item.estatusFinanciero ? (
+                <BadgeEstatusFinanciero estatus={item.estatusFinanciero} />
+              ) : (
+                <BadgePago estadoPago={item.estadoPago} />
+              )}
             </dd>
           </div>
         </dl>
 
-        {!item.raw || item.activo === false ? (
+        {!item.raw ? (
           <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-[11px] text-slate-500">
-            Esta actividad ya no está activa — no hay nada que cancelar.
+            Esta actividad no admite cancelación autoservicio.
           </p>
+        ) : yaResuelto ? (
+          <div className="bg-slate-50 border border-slate-200 text-slate-700 p-3 rounded-lg text-xs">
+            <p className="mb-0.5 font-semibold text-slate-800">{esPenalizada ? 'Reserva Penalizada' : 'Reserva Cancelada'}</p>
+            <p>
+              {esPenalizada
+                ? `Se canceló fuera del periodo de tolerancia y el club retuvo la cuota como adeudo pendiente en tu cuenta.`
+                : `Esta reserva/inscripción ya está cancelada — el horario/cupo quedó liberado.`}
+            </p>
+          </div>
         ) : !puedeCancelar ? (
+          // Claridad en Modal Fuera de Tiempo (Parte 2) — la actividad SIGUE
+          // ACTIVA (no se auto-cancela sola): se explica qué pasa si el
+          // jugador no se presenta ni pasa por recepción, sin ofrecer el
+          // botón de auto-cancelación (ya se dejó de mostrar arriba).
           <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
-            Cancelación fuera de tiempo (requiere {politica.horas} hrs de anticipación según las políticas del club). Para
-            asistencia, contacta a la recepción del club.
+            <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
+            <p>
+              El periodo de cancelación libre ({politica.horas} hrs de anticipación) ha expirado. Si no te presentas o
+              solicitas la cancelación en recepción, el club registrará un adeudo/penalización pendiente de{' '}
+              {formatoMoneda(item.monto)} en tu cuenta para tu próxima visita.
+            </p>
           </div>
         ) : confirmando ? (
           <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5">
@@ -48227,7 +48398,7 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
         )}
 
         <div className="flex justify-end pt-1">
-          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+          <BotonSecundario onClick={onClose}>{item.raw && !yaResuelto && !puedeCancelar ? 'Entendido / Cerrar' : 'Cerrar'}</BotonSecundario>
         </div>
       </div>
     </ModalShell>
@@ -48241,7 +48412,53 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
 // (b) registrar una pareja nueva a mano (nombre + teléfono/correo), o
 // (c) inscribirse sin pareja ("En busca de pareja") — visible aquí mismo
 // para que otro jugador se una desde "Unirme" en la lista de abajo.
-function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme }) {
+// Gestión Directa en Módulos (Parte 3) — botón de cancelación autoservicio
+// de `ModalDetalleTorneo`, en su propio componente porque necesita hooks de
+// estado propios (confirmar/cancelando) y se renderiza condicionalmente
+// dentro de una función flecha — un Hook ahí adentro rompería las reglas de
+// Hooks de React.
+function BotonCancelarInscripcionTorneo({ miInscripcion, onCancelar }) {
+  const [confirmando, setConfirmando] = useState(false);
+  const [cancelando, setCancelando] = useState(false);
+
+  async function cancelar() {
+    setCancelando(true);
+    await onCancelar(miInscripcion);
+    setCancelando(false);
+  }
+
+  if (confirmando) {
+    return (
+      <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5">
+        <p className="text-xs font-bold text-rose-700">¿Seguro que quieres cancelar tu inscripción a este torneo?</p>
+        <p className="mt-1 text-[11px] text-slate-500">Liberas tu lugar de inmediato — si cambias de opinión, tendrás que volver a inscribirte.</p>
+        <div className="mt-2.5 flex justify-end gap-2">
+          <BotonSecundario onClick={() => setConfirmando(false)} className="px-2.5 py-1.5 text-xs">
+            Ya no
+          </BotonSecundario>
+          <button
+            onClick={cancelar}
+            disabled={cancelando}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-600 disabled:opacity-60"
+          >
+            {cancelando ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+            Sí, cancelar
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={() => setConfirmando(true)}
+      className="w-full rounded-lg border border-rose-500/20 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"
+    >
+      Cancelar mi inscripción
+    </button>
+  );
+}
+
+function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme, onCancelar }) {
   const tieneCategorias = Array.isArray(torneo.categorias) && torneo.categorias.length > 0;
 
   // Mi propia inscripción a este Torneo (si ya existe) — se calcula ANTES
@@ -48630,6 +48847,30 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, onClose,
                 </dd>
               </div>
             </dl>
+
+            {/* Gestión Directa en Módulos (Parte 3) — cancelar directamente
+                desde el propio módulo de Torneos, reutilizando
+                `cancelarInscripcionTorneoPortal`. Solo el TITULAR puede
+                cancelar aquí (cancelar como pareja unida requeriría
+                desvincular en vez de borrar — fuera de este alcance; ese
+                caso se sigue gestionando por recepción). */}
+            {soyTitularDeMiInscripcion && (() => {
+              const fechaTorneoMs = timestampEvento(torneo?.fecha_inicio, '00:00');
+              const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaTorneoMs, politica?.activa ? politica.horas : 0);
+              if (!dentroDeTolerancia) {
+                return (
+                  <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
+                    <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
+                    <p>
+                      El periodo de cancelación libre ({politica?.horas ?? 24} hrs de anticipación) ha expirado. Si no
+                      te presentas o solicitas la cancelación en recepción, el club registrará un adeudo/penalización
+                      pendiente de {formatoMoneda(miInscripcion?.monto)} en tu cuenta para tu próxima visita.
+                    </p>
+                  </div>
+                );
+              }
+              return <BotonCancelarInscripcionTorneo miInscripcion={miInscripcion} onCancelar={onCancelar} />;
+            })()}
           </div>
         ) : modoPareja === 'unirme' && parejaParaUnirme ? (
           // Modo "Unirme a pareja seleccionada": la UI queda fija en ESTA
@@ -49282,25 +49523,37 @@ function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancela
             <dt className="flex items-center gap-1.5 text-slate-500">
               <DollarSign size={13} /> Tipo de pago
             </dt>
-            <dd className="text-right font-bold text-slate-800">
-              {alumno.tipo_pago === 'mensualidad' ? 'Mensualidad' : alumno.pagado_con_creditos ? 'Con crédito de membresía' : 'Clase suelta'}
-              <span className={`ml-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                alumno.estado_pago === 'pagado' ? 'bg-emerald-400/10 text-emerald-400' : 'bg-amber-400/10 text-amber-400'
-              }`}>
-                {alumno.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
-              </span>
+            <dd className="text-right font-bold text-slate-800">{alumno.tipo_pago === 'mensualidad' ? 'Mensualidad' : alumno.pagado_con_creditos ? 'Con crédito de membresía' : 'Clase suelta'}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-slate-500">Estado de la actividad</dt>
+            <dd>
+              <BadgeEstadoActividad estado="activa" />
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-slate-500">Estatus financiero</dt>
+            <dd>
+              <BadgeEstatusFinanciero estatus={alumno.estado_pago === 'pagado' ? 'pagado' : 'pendiente'} />
             </dd>
           </div>
         </dl>
 
         {!puedeCancelar && (
+          // Claridad en Modal Fuera de Tiempo (Parte 2) — misma redacción
+          // estructurada que `ModalDetalleHistorialPortal`: la clase SIGUE
+          // activa, sin botón de auto-cancelación en este estado.
           <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
-            Cancelación fuera de tiempo (requiere {politica?.horas ?? CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras} hrs de anticipación). Contacta a la
-            recepción del club.
+            <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
+            <p>
+              El periodo de cancelación libre ({politica?.horas ?? CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras} hrs de
+              anticipación) ha expirado. Si no te presentas o solicitas la cancelación en recepción, el club registrará
+              un adeudo/penalización pendiente de {formatoMoneda(alumno.monto)} en tu cuenta para tu próxima visita.
+            </p>
           </div>
         )}
 
-        {confirmandoCancelar ? (
+        {puedeCancelar && confirmandoCancelar ? (
           <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5">
             <p className="text-xs font-bold text-rose-700">¿Seguro que quieres cancelar tu asistencia a esta clase?</p>
             <p className="mt-1 text-[11px] text-slate-500">Liberas tu lugar de inmediato — si cambias de opinión, tendrás que volver a inscribirte.</p>
@@ -49318,18 +49571,17 @@ function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancela
               </button>
             </div>
           </div>
-        ) : (
+        ) : puedeCancelar ? (
           <button
             onClick={() => setConfirmandoCancelar(true)}
-            disabled={!puedeCancelar}
-            className="w-full rounded-lg border border-rose-500/20 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+            className="w-full rounded-lg border border-rose-500/20 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"
           >
             Cancelar asistencia
           </button>
-        )}
+        ) : null}
 
         <div className="flex justify-end pt-1">
-          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+          <BotonSecundario onClick={onClose}>{puedeCancelar ? 'Cerrar' : 'Entendido / Cerrar'}</BotonSecundario>
         </div>
       </div>
     </ModalShell>
@@ -49339,11 +49591,28 @@ function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancela
 // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX, item 2) — "Ver
 // Resumen" de una Reta: Cancha, hora, nivel, lista de los 4 jugadores y
 // estatus de pago, tal cual lo pidió el club.
-function ModalResumenReta({ reta, cancha, inscritos, jugador, onClose }) {
+function ModalResumenReta({ reta, cancha, inscritos, jugador, politica, onClose, onCancelar }) {
   const miInscripcion = (inscritos || []).find(
     (i) => (jugador?.id && i.jugador_id === jugador.id) || (jugador?.telefono && claveTelefono(i.telefono) === claveTelefono(jugador.telefono))
   );
   const lugares = Array.from({ length: CUPOS_RETA }, (_, idx) => inscritos[idx] || null);
+
+  // Gestión Directa en Módulos (Parte 3) — "Cancelar mi lugar" directamente
+  // desde Torneos & Retas, mismo patrón de `ModalResumenClase`: gate de
+  // tolerancia con `validarToleranciaCancelacion`, sin botón de
+  // auto-cancelación cuando ya expiró.
+  const [confirmandoCancelar, setConfirmandoCancelar] = useState(false);
+  const [cancelando, setCancelando] = useState(false);
+  const fechaRetaMs = timestampEvento(reta?.fecha, reta?.hora_inicio);
+  const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaRetaMs, politica?.activa ? politica.horas : 0);
+  const puedeCancelar = !!miInscripcion && dentroDeTolerancia;
+
+  async function cancelar() {
+    if (!puedeCancelar) return;
+    setCancelando(true);
+    await onCancelar(miInscripcion);
+    setCancelando(false);
+  }
 
   return (
     <ModalShell titulo={reta.nombre} subtitulo="Resumen de tu inscripción" onClose={onClose} icon={Swords} ancho="max-w-md">
@@ -49413,8 +49682,46 @@ function ModalResumenReta({ reta, cancha, inscritos, jugador, onClose }) {
           </div>
         </div>
 
+        {miInscripcion && !puedeCancelar && (
+          <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
+            <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
+            <p>
+              El periodo de cancelación libre ({politica?.horas ?? TOLERANCIA_HORAS_DEFAULT} hrs de anticipación) ha
+              expirado. Si no te presentas o solicitas la cancelación en recepción, el club registrará un
+              adeudo/penalización pendiente de {formatoMoneda(precioDeReta(reta))} en tu cuenta para tu próxima visita.
+            </p>
+          </div>
+        )}
+
+        {miInscripcion && puedeCancelar && confirmandoCancelar ? (
+          <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5">
+            <p className="text-xs font-bold text-rose-700">¿Seguro que quieres cancelar tu lugar en esta reta?</p>
+            <p className="mt-1 text-[11px] text-slate-500">Liberas tu lugar de inmediato — si cambias de opinión, tendrás que volver a inscribirte.</p>
+            <div className="mt-2.5 flex justify-end gap-2">
+              <BotonSecundario onClick={() => setConfirmandoCancelar(false)} className="px-2.5 py-1.5 text-xs">
+                Ya no
+              </BotonSecundario>
+              <button
+                onClick={cancelar}
+                disabled={cancelando}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-600 disabled:opacity-60"
+              >
+                {cancelando ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+                Sí, cancelar
+              </button>
+            </div>
+          </div>
+        ) : miInscripcion && puedeCancelar ? (
+          <button
+            onClick={() => setConfirmandoCancelar(true)}
+            className="w-full rounded-lg border border-rose-500/20 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"
+          >
+            Cancelar mi lugar
+          </button>
+        ) : null}
+
         <div className="flex justify-end pt-1">
-          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+          <BotonSecundario onClick={onClose}>{miInscripcion && !puedeCancelar ? 'Entendido / Cerrar' : 'Cerrar'}</BotonSecundario>
         </div>
       </div>
     </ModalShell>
