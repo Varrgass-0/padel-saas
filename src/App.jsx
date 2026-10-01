@@ -3274,7 +3274,12 @@ function BadgeEstadoActividad({ estado }) {
   const CONFIG = {
     activa: { texto: 'Reserva Activa / Confirmada', clase: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
     cancelada: { texto: 'Cancelada', clase: 'bg-slate-100 text-slate-600 border border-slate-200' },
-    penalizada: { texto: 'Penalizada / No-show', clase: 'bg-red-50 text-red-700 border border-red-200' },
+    // FIX (item C): "No-show" (incomparecencia) es un concepto DISTINTO de
+    // una cancelación fuera de tolerancia — este badge solo se dispara por
+    // cancelaciones extemporáneas (`estado === 'retenido'`/`'penalizacion_pendiente'`,
+    // nunca por una ausencia real sin cancelar), así que concatenar
+    // "/ No-show" era impreciso. Texto limpio, sin esa coletilla.
+    penalizada: { texto: 'Penalizada', clase: 'bg-red-50 text-red-700 border border-red-200' },
   };
   const cfg = CONFIG[estado] || CONFIG.activa;
   return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${cfg.clase}`}>{cfg.texto}</span>;
@@ -15299,8 +15304,14 @@ function ModuloSmartPOS({
     // tickets separados (titular y pareja, ej. $700 + $700), cada uno con su
     // propio botón "Cobrar" para que cada jugador liquide su parte por
     // separado en caja sin depender de que el otro también pague.
+    // Fix (soft-cancel, migracion_v83): `participantesTorneo` ahora puede
+    // traer filas 'cancelado'/'retenido' (antes se borraban al cancelar, así
+    // que nunca llegaban hasta aquí). Se excluyen con `inscripcionOcupaLugar`
+    // — mismo criterio ya aplicado a `filasRetas` (Turn F/G) — para que una
+    // inscripción de Torneo cancelada (con o sin penalización) desaparezca
+    // de "Inscripciones Pendientes en Recepción" en vez de seguir cobrable.
     const filasTorneos = (participantesTorneo || [])
-      .filter((p) => esPendiente(estadoPagoInscripcion(p)))
+      .filter((p) => inscripcionOcupaLugar(p) && esPendiente(estadoPagoInscripcion(p)))
       .map((p) => {
         const torneo = torneosPorId.get(p.torneo_id);
         return {
@@ -15600,6 +15611,18 @@ function ModuloSmartPOS({
       );
     }
 
+    // FIX (23503 — "ventas_cancha_id_fkey"): `fila.canchaId` ya nace `null`
+    // para Torneos (sin cancha propia) y debería traer un `cancha_id` real
+    // para Retas/Academia (el de la reta/clase) — pero una cancha borrada
+    // DESPUÉS de crear esa reta/clase (o cualquier otro valor que ya no
+    // exista en `canchas`) dejaba un id "huérfano" que SÍ viaja como no-nulo
+    // y truena el FK al insertar en `ventas`. Blindaje: se valida contra la
+    // lista de canchas que el club tiene de verdad ahora mismo — si no
+    // matchea ninguna, se manda `null` en vez de un id inválido. El
+    // comprobante (`ventas.detalles`, jsonb) no tiene FK, así que conserva
+    // el id original tal cual para no perder el dato histórico.
+    const canchaIdParaVenta = fila.canchaId && (canchas || []).some((c) => c.id === fila.canchaId) ? fila.canchaId : null;
+
     const itemsComprobante = [
       {
         tipo: 'inscripcion_evento',
@@ -15629,7 +15652,7 @@ function ModuloSmartPOS({
             turno: turno?.valor || null,
             operador: operador?.nombre || null,
             reserva_id: null,
-            cancha_id: fila.canchaId,
+            cancha_id: canchaIdParaVenta,
             detalles: { items: itemsComprobante, pagos_divididos: null, mixto: metodoPago === 'mixto' ? mixto || null : null },
             estado_pago: 'pagado',
           })
@@ -15684,11 +15707,13 @@ function ModuloSmartPOS({
   //   - academia_alumnos: `estado: 'baja'` (+ `motivo_baja`/`fecha_baja`,
   //     igual que `cancelarInscripcionClase` del Portal) — libera el cupo en
   //     `alumnosActivos` (filtra `estado !== 'baja'`).
-  //   - torneo_participantes: esta tabla NO tiene columna `estado` (ver nota
-  //     de esquema al inicio del archivo) y los Torneos de este proyecto no
-  //     tienen un tope de cupo — se DA DE BAJA eliminando la fila
-  //     directamente, que es lo que la propia Mesa de Control/Portal ya usan
-  //     para contar inscritos (`participantesTorneo.length`).
+  //   - torneo_participantes: `estado: 'cancelado'` (migracion_v83 — ya NO
+  //     se borra la fila, mismo criterio de soft-cancel que
+  //     `reta_inscripciones`, para que sobreviva en el Historial del
+  //     Portal). Los Torneos de este proyecto no tienen tope de cupo, así
+  //     que "liberar el lugar" es, sobre todo, dejar de contar como
+  //     "ya inscrito" — ver `inscripcionOcupaLugar`, reutilizado también
+  //     aquí.
   // Mismo criterio de Sincronización Silenciosa que `cobrarInscripcionEvento`
   // (documentado arriba, en su primer comentario): el estado local se
   // actualiza de inmediato para que la UI libere el lugar al instante, sin
@@ -15754,15 +15779,29 @@ function ModuloSmartPOS({
         if (quedanActivos === 0) setClaseVaciaParaLiberar(clase);
       }
     } else {
+      // FIX (item 2B — Historial de Torneos, migracion_v83): ya NO se borra
+      // la fila — soft-cancel igual que `reta_inscripciones`, mismo criterio
+      // de columnas opcionales por si el proyecto no ha corrido la migración
+      // todavía (en ese caso el UPDATE simplemente no persiste `estado`,
+      // pero el estado local sigue liberando el lugar igual).
+      const cambiosTorneo = { estado: 'cancelado', motivo_cancelacion: motivo };
       if (!fila.esLocal) {
-        const { error: errDelete } = await supabase.from('torneo_participantes').delete().eq('id', fila.id);
-        if (errDelete) {
-          console.warn('[Smart POS] No se pudo eliminar la inscripción de torneo en Supabase, se quita solo local:', errDelete);
+        const { error: errEstado } = await actualizarConColumnasOpcionales('torneo_participantes', fila.id, cambiosTorneo, [
+          'motivo_cancelacion',
+          'estado',
+        ]);
+        if (errEstado) {
+          console.warn('[Smart POS] No se pudo sincronizar la cancelación de torneo en Supabase, se aplica solo local:', errEstado);
         }
-      } else {
-        quitarRegistroLocal(LS_KEY_TORNEO_PARTICIPANTES_LOCAL, fila.id);
       }
-      setParticipantesTorneo((prev) => prev.filter((p) => p.id !== fila.id));
+      setParticipantesTorneo((prev) =>
+        prev.map((p) => {
+          if (p.id !== fila.id) return p;
+          const actualizado = { ...p, ...cambiosTorneo };
+          if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTICIPANTES_LOCAL, actualizado);
+          return actualizado;
+        })
+      );
     }
 
     setCancelandoInscripcionId(null);
@@ -28477,8 +28516,16 @@ function TarjetaTorneo({
   onEliminarVisual,
   eliminandoVisual,
 }) {
-  const recaudado = participantes.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
-  const pendiente = participantes
+  // Fix (soft-cancel, migracion_v83): `participantes` ahora puede traer
+  // filas 'cancelado'/'retenido' — mismo criterio que `confirmados` en
+  // `TarjetaReta` (`inscripcionOcupaLugar`), para que el conteo de
+  // "inscritos" y los montos Cobrado/Pendiente de esta tarjeta no incluyan
+  // una baja. `puedeEliminarse` abajo sigue usando `participantes.length`
+  // crudo a propósito, para seguir protegiendo el torneo de "Eliminación
+  // Definitiva" si tiene CUALQUIER historial (activo o cancelado).
+  const confirmados = participantes.filter(inscripcionOcupaLugar);
+  const recaudado = confirmados.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const pendiente = confirmados
     .filter((p) => !inscripcionEstaPagada(p) && estadoPagoInscripcion(p) != null)
     .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
   const archivado = torneo.archivado === true;
@@ -28557,7 +28604,7 @@ function TarjetaTorneo({
           )}
         </span>
         <span className="flex items-center gap-1.5">
-          <Users size={11} /> {participantes.length} inscritos
+          <Users size={11} /> {confirmados.length} inscritos
         </span>
       </div>
 
@@ -29166,8 +29213,17 @@ function ModalGestionTorneo({
   onCancelarParticipante,
   cancelandoParticipanteId,
 }) {
-  const recaudado = participantes.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
-  const pendiente = participantes
+  // Fix (soft-cancel, migracion_v83): `participantes` ya puede traer filas
+  // 'cancelado'/'retenido' (antes se borraban). Los totales de arriba
+  // (Cobrado/Pendiente/Participantes) solo deben contar inscripciones
+  // activas — mismo criterio que `confirmados` en `TarjetaTorneo`/
+  // `TarjetaReta`. La TABLA de abajo, en cambio, sigue mostrando
+  // `participantes` sin filtrar a propósito (incluye bajas), para que el
+  // staff conserve visibilidad del historial — cada fila se distingue con
+  // su propio badge de estado (ver `tbody`).
+  const confirmados = participantes.filter(inscripcionOcupaLugar);
+  const recaudado = confirmados.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  const pendiente = confirmados
     .filter((p) => !inscripcionEstaPagada(p) && estadoPagoInscripcion(p) != null)
     .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
   const bloqueosActivos = torneo.bloqueos || [];
@@ -29212,7 +29268,7 @@ function ModalGestionTorneo({
               </div>
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="text-[10px] font-bold uppercase text-slate-500">Participantes</p>
-                <p className="text-lg font-black text-slate-900">{participantes.length}</p>
+                <p className="text-lg font-black text-slate-900">{confirmados.length}</p>
               </div>
             </div>
 
@@ -29298,41 +29354,58 @@ function ModalGestionTorneo({
                       </tr>
                     </thead>
                     <tbody>
-                      {participantes.map((p) => (
-                        <tr key={p.id} className="border-b border-slate-200/70 last:border-0">
-                          <td className="px-3 py-2 font-bold text-slate-900">{p.nombre}</td>
-                          <td className="px-3 py-2 text-slate-600">{p.categoria || '—'}</td>
-                          <td className="px-3 py-2 text-slate-600">{p.nivel || '—'}</td>
-                          <td className="px-3 py-2 text-slate-500">
-                            {p.telefono && <span className="mr-2">{p.telefono}</span>}
-                            {p.correo}
-                          </td>
-                          <td className="px-3 py-2 text-right font-bold text-slate-800">{formatoMoneda(p.monto)}</td>
-                          <td className="px-3 py-2">
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                                inscripcionEstaPagada(p)
-                                  ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
-                                  : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
-                              }`}
-                            >
-                              {inscripcionEstaPagada(p) ? 'Pagado' : 'Pendiente'}
-                            </span>
-                          </td>
-                          {onCancelarParticipante && (
-                            <td className="px-3 py-2 text-right">
-                              <button
-                                type="button"
-                                onClick={() => onCancelarParticipante(p)}
-                                disabled={cancelandoParticipanteId === p.id}
-                                className="rounded-md px-2 py-1 text-[10px] font-bold text-red-500 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-                              >
-                                {cancelandoParticipanteId === p.id ? 'Cancelando…' : 'Cancelar Inscripción'}
-                              </button>
+                      {participantes.map((p) => {
+                        // Fix (soft-cancel, migracion_v83): una fila ya
+                        // 'cancelado'/'retenido' se sigue mostrando (historial
+                        // visible para el staff), pero con su propio badge en
+                        // vez del de Pago, y sin botón "Cancelar Inscripción"
+                        // activo — ya está dada de baja, evita un segundo
+                        // intento sobre la misma fila.
+                        const yaCancelada = !inscripcionOcupaLugar(p);
+                        return (
+                          <tr key={p.id} className={`border-b border-slate-200/70 last:border-0 ${yaCancelada ? 'opacity-50' : ''}`}>
+                            <td className="px-3 py-2 font-bold text-slate-900">{p.nombre}</td>
+                            <td className="px-3 py-2 text-slate-600">{p.categoria || '—'}</td>
+                            <td className="px-3 py-2 text-slate-600">{p.nivel || '—'}</td>
+                            <td className="px-3 py-2 text-slate-500">
+                              {p.telefono && <span className="mr-2">{p.telefono}</span>}
+                              {p.correo}
                             </td>
-                          )}
-                        </tr>
-                      ))}
+                            <td className="px-3 py-2 text-right font-bold text-slate-800">{formatoMoneda(p.monto)}</td>
+                            <td className="px-3 py-2">
+                              {yaCancelada ? (
+                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">
+                                  {p.estado === 'retenido' ? 'Cancelación Extemporánea' : 'Cancelada'}
+                                </span>
+                              ) : (
+                                <span
+                                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                    inscripcionEstaPagada(p)
+                                      ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
+                                      : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
+                                  }`}
+                                >
+                                  {inscripcionEstaPagada(p) ? 'Pagado' : 'Pendiente'}
+                                </span>
+                              )}
+                            </td>
+                            {onCancelarParticipante && (
+                              <td className="px-3 py-2 text-right">
+                                {!yaCancelada && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onCancelarParticipante(p)}
+                                    disabled={cancelandoParticipanteId === p.id}
+                                    className="rounded-md px-2 py-1 text-[10px] font-bold text-red-500 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    {cancelandoParticipanteId === p.id ? 'Cancelando…' : 'Cancelar Inscripción'}
+                                  </button>
+                                )}
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -29344,7 +29417,11 @@ function ModalGestionTorneo({
             torneo={torneo}
             partidos={partidos}
             canchas={canchas}
-            participantes={participantes}
+            // Fix (soft-cancel, migracion_v83): el Cuadro/Bracket solo debe
+            // poder armarse con participantes activos — un jugador que dio
+            // de baja su inscripción no debe aparecer disponible para
+            // asignar a una casilla.
+            participantes={confirmados}
             loadingPartidos={loadingPartidos}
             onGenerarCuadro={onGenerarCuadro}
             onAsignarHorario={onAsignarHorarioPartido}
@@ -29394,17 +29471,18 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
   // Participante"): antes el directorio/autocompletado y el submit no
   // sabían nada de quién YA está inscrito en ESTE torneo, así que un
   // operador podía volver a agregar dos veces al mismo jugador por error.
-  // `torneo_participantes` no tiene columna `estado` (cancelar borra la
-  // fila directamente, ver comentario en `DirectorioJugadoresCRM`), así que
-  // CUALQUIER fila presente en `participantesExistentes` es, por
-  // definición, un inscrito activo de este torneo — se identifica por
-  // teléfono normalizado (siempre presente, es obligatorio en este mismo
-  // formulario) y, de respaldo, por `jugador_id` cuando la fila viene
+  // `torneo_participantes` ahora SÍ tiene `estado` (soft-cancel, ver
+  // migracion_v83 + `cancelarParticipanteTorneo`), así que una fila
+  // 'cancelado'/'retenido' en `participantesExistentes` ya NO cuenta como
+  // "inscrito activo" — se filtra con `inscripcionOcupaLugar` para permitir
+  // volver a inscribir a un jugador que dio de baja su lugar. Se identifica
+  // por teléfono normalizado (siempre presente, es obligatorio en este
+  // mismo formulario) y, de respaldo, por `jugador_id` cuando la fila viene
   // vinculada al directorio.
   const clavesInscritas = useMemo(() => {
     const telefonos = new Set();
     const jugadorIds = new Set();
-    (participantesExistentes || []).forEach((p) => {
+    (participantesExistentes || []).filter(inscripcionOcupaLugar).forEach((p) => {
       const tel = claveTelefono(p.telefono);
       if (tel) telefonos.add(tel);
       if (p.jugador_id != null) jugadorIds.add(String(p.jugador_id));
@@ -30753,7 +30831,11 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo, pue
 
   const participantesFiltrados = useMemo(() => {
     if (tipoFiltro === 'reta') return [];
-    return participantesTorneo.filter((p) => tipoFiltro !== 'torneo' || p.torneo_id === idFiltro);
+    // Fix (soft-cancel, migracion_v83): `participantesTorneo` ahora puede
+    // traer filas 'cancelado'/'retenido' (antes no existían, se borraban) —
+    // se excluyen aquí, mismo criterio que `inscripcionesFiltradas` arriba
+    // para Retas, para que esta Mesa de Control no cuente/sume una baja.
+    return participantesTorneo.filter((p) => inscripcionOcupaLugar(p) && (tipoFiltro !== 'torneo' || p.torneo_id === idFiltro));
   }, [participantesTorneo, tipoFiltro, idFiltro]);
 
   const resumen = useMemo(() => {
@@ -31271,14 +31353,17 @@ function ModuloTorneosRetas({
   //   - Fuera de tolerancia + pagada   → se RETIENE (sin reembolso, sin
   //     adeudo nuevo — el club ya tiene el dinero).
   //   - Fuera de tolerancia + no pagada → adeudo/penalización pendiente.
-  // `torneo_participantes` no tiene columna `estado` propia en este
-  // proyecto (ver nota de esquema al inicio del archivo) — cancelar SIEMPRE
-  // liberó el cupo borrando la fila, y eso sigue siendo así aquí: libera el
-  // lugar sin tocar el torneo/la cancha. Lo que cambia es que ahora, ANTES
-  // de borrar, se resuelve el reembolso o el adeudo según corresponda — el
-  // registro financiero (reembolso en `wallet_movimientos`, o el adeudo en
-  // `penalizaciones_pendientes`) sobrevive de todos modos, aunque la fila
-  // de `torneo_participantes` en sí desaparezca.
+  // FIX (item 2B — Historial de Torneos, migracion_v83): `torneo_participantes`
+  // ya tiene columna `estado` (opcional/tolerante, igual criterio que
+  // `reta_inscripciones`) — cancelar ya NO borra la fila, la marca
+  // `'cancelado'`/`'retenido'` (mismos 2 valores y mismo criterio de
+  // tolerancia×pago que Retas) y libera el lugar igual (los Torneos de este
+  // proyecto no tienen tope de cupo, así que "liberar el lugar" aquí es
+  // sobre todo dejar de contar como "ya inscrito"/ocupar un casillero del
+  // cuadro — ver `inscripcionOcupaLugar`, reutilizado también para
+  // `torneo_participantes`). El registro financiero (reembolso en
+  // `wallet_movimientos`, o el adeudo en `penalizaciones_pendientes`) sigue
+  // igual que antes.
   async function cancelarParticipanteTorneo(torneo, participante) {
     if (cancelandoParticipanteId) return; // Prevención de doble clic/bucles.
     setCancelandoParticipanteId(participante.id);
@@ -31324,13 +31409,21 @@ function ModuloTorneosRetas({
       if (!penalizacionGuardada) console.error('[Penalizaciones] No se pudo registrar el adeudo del Torneo.', resultadoPenalizacion?.error);
     }
 
-    const { error } = await supabase.from('torneo_participantes').delete().eq('id', participante.id);
+    const nuevoEstado = dentroDeTolerancia ? 'cancelado' : 'retenido';
+    const cambiosEstado = {
+      estado: nuevoEstado,
+      ...(generaReembolso ? { estado_pago: 'reembolsado' } : {}),
+    };
+    const { error } = await actualizarConColumnasOpcionales('torneo_participantes', participante.id, cambiosEstado, [
+      'estado_pago',
+      'estado',
+    ]);
     setCancelandoParticipanteId(null);
     if (error) {
       mostrarToast({ titulo: 'No se pudo cancelar la inscripción', detalle: error.message, tono: 'error' });
       return;
     }
-    setParticipantesTorneo((prev) => prev.filter((p) => p.id !== participante.id));
+    setParticipantesTorneo((prev) => prev.map((p) => (p.id === participante.id ? { ...p, ...cambiosEstado } : p)));
 
     mostrarToast({
       titulo: generaAdeudo
@@ -32711,7 +32804,12 @@ function ModuloTorneosRetas({
       {modalGenerarCuadro && torneoGestionVivo && (
         <ModalGenerarCuadro
           torneo={torneoGestionVivo}
-          participantes={participantesPorTorneo[torneoGestionVivo.id] || []}
+          // Fix (soft-cancel, migracion_v83): `participantesPorTorneo` es el
+          // mapa CRUDO (incluye bajas 'cancelado'/'retenido', necesario para
+          // el historial de `ModalGestionTorneo`) — para armar el Cuadro
+          // solo deben ofrecerse como sugerencia/auto-llenado los
+          // participantes con lugar activo.
+          participantes={(participantesPorTorneo[torneoGestionVivo.id] || []).filter(inscripcionOcupaLugar)}
           categoriaInicial={categoriaCuadroGenerar}
           // Partidos de Ronda 0 YA GUARDADOS para esta categoría (si los
           // hay) — mismo criterio de filtro que `SeccionCuadroPartidos`
@@ -46370,7 +46468,13 @@ function PortalPublicoJugadores({ clubSlug }) {
   }, [inscripciones]);
   const participantesPorTorneo = useMemo(() => {
     const mapa = {};
-    participantes.forEach((p) => {
+    // Fix (soft-cancel, migracion_v83): `participantes` ahora puede traer
+    // filas 'cancelado'/'retenido' (antes se borraban de la tabla, así que
+    // nunca aparecían aquí). Se filtran con `inscripcionOcupaLugar` para que
+    // "ya inscrito"/conteo de inscritos/"busca pareja" en este Portal nunca
+    // cuenten una baja — el Historial (que sí necesita verlas) lee
+    // `participantes` sin filtrar, no este mapa.
+    participantes.filter(inscripcionOcupaLugar).forEach((p) => {
       if (!mapa[p.torneo_id]) mapa[p.torneo_id] = [];
       mapa[p.torneo_id].push(p);
     });
@@ -47634,18 +47738,31 @@ function PortalPublicoJugadores({ clubSlug }) {
           // `fecha_inicio`) — medianoche del día de arranque es suficiente
           // precisión para una ventana de tolerancia medida en horas/días.
           fechaEventoMs: timestampEvento(torneo?.fecha_inicio, '00:00'),
-          activo: true,
-          // Limitación conocida (Parte 4): cancelar una inscripción de
-          // Torneo hoy BORRA la fila (`torneo_participantes`, ver
-          // `cancelarInscripcionTorneoPortal`/`cancelarInscripcionEvento`),
-          // así que nunca llega a verse aquí como "Cancelada" — simplemente
-          // desaparece de este listado (que solo lee filas vivas). Volverla
-          // persistente (badge Cancelada real) requiere una migración que
-          // agregue `estado`/`cancelado_en` a `torneo_participantes` y
-          // cambiar el borrado por un soft-cancel en ambos flujos (Staff +
-          // Portal) — no incluido en este alcance.
-          estadoActividad: 'activa',
-          estatusFinanciero: (p.estado_pago || p.estatus_pago) === 'pagado' ? 'pagado' : 'pendiente',
+          // Fix (Parte 4, resuelto): `torneo_participantes` ahora usa
+          // soft-cancel (`estado: 'cancelado'|'retenido'`, ver
+          // migracion_v83 + `cancelarInscripcionTorneoPortal`/
+          // `cancelarParticipanteTorneo`/`cancelarInscripcionEvento`) en vez
+          // de un DELETE — así que esta fila sigue viva en el historial y
+          // puede mostrarse correctamente como Cancelada/Penalizada, igual
+          // que Retas/Reservas/Academia.
+          activo: p.estado !== 'cancelado' && p.estado !== 'retenido',
+          estadoActividad: p.estado === 'cancelado' ? 'cancelada' : p.estado === 'retenido' ? 'penalizada' : 'activa',
+          estatusFinanciero:
+            p.estado_pago === 'penalizacion_liquidada'
+              ? 'liquidada'
+              : p.estado_pago === 'exonerado'
+              ? 'exonerada'
+              : p.estado_pago === 'reembolsado'
+              ? 'reembolsado'
+              : p.estado === 'retenido' && p.estado_pago === 'pagado'
+              ? 'retenido'
+              : p.estado === 'retenido'
+              ? 'adeudo'
+              : (p.estado_pago || p.estatus_pago) === 'pagado'
+              ? 'pagado'
+              : p.estado === 'cancelado'
+              ? 'sin_costo'
+              : 'pendiente',
         };
       });
 
@@ -47914,17 +48031,25 @@ function PortalPublicoJugadores({ clubSlug }) {
   async function cancelarInscripcionTorneoPortal(participante) {
     const monto = Number(participante.monto) || 0;
     const huboReembolso = (participante.estado_pago || participante.estatus_pago) === 'pagado' && monto > 0;
-    // Limitación conocida (ver `itemsTorneos` en `historialUnificado`): esta
-    // fila se BORRA al cancelar (torneo_participantes no tiene soft-cancel
-    // todavía), así que el reembolso se abona a la Wallet igual, pero la
-    // tarjeta de Historial de este torneo simplemente desaparece en vez de
-    // quedar como "Reembolsado a Wallet".
-    const { error } = await supabase.from('torneo_participantes').delete().eq('id', participante.id);
+    // FIX (item 2B — Historial de Torneos): esta fila ya NO se borra al
+    // cancelar — soft-cancel igual que Retas/Reservas/Academia
+    // (`estado: 'cancelado'`, ver migracion_v83_soft_cancel_torneo_participantes.sql),
+    // así que la tarjeta de Historial de este torneo sobrevive mostrando
+    // "Cancelada"/"Reembolsada a Wallet" en vez de desaparecer. Este
+    // Portal solo llega aquí DENTRO de tolerancia (el gate vive río arriba,
+    // en `ModalDetalleTorneo`/`ModalDetalleHistorialPortal` — mismo criterio
+    // que `cancelarInscripcionRetaPortal`), así que reembolsa
+    // incondicionalmente si había pago, sin recalcular tolerancia aquí.
+    const cambios = huboReembolso ? { estado: 'cancelado', estado_pago: 'reembolsado' } : { estado: 'cancelado' };
+    const { error } = await actualizarConColumnasOpcionales('torneo_participantes', participante.id, cambios, [
+      'estado_pago',
+      'estado',
+    ]);
     if (error) console.warn('[Portal] No se pudo sincronizar la baja del torneo, se aplicó solo local.', error);
     if (huboReembolso) {
       await reembolsarAWalletPortal(monto, `Reembolso por cancelación en tiempo · Torneo`, 'torneo', participante.id);
     }
-    setParticipantes((prev) => prev.filter((p) => p.id !== participante.id));
+    setParticipantes((prev) => prev.map((p) => (p.id === participante.id ? { ...p, ...cambios } : p)));
     mostrarToast({
       titulo: 'Inscripción cancelada',
       detalle: huboReembolso ? `Tu lugar quedó liberado y se reembolsaron ${formatoMoneda(monto)} a tu Wallet.` : 'Tu lugar en el torneo quedó liberado.',
