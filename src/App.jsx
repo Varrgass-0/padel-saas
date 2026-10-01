@@ -42186,11 +42186,49 @@ function ModuloConfiguracionClub({
   const tabActual = tabsVisibles.find((t) => t.value === tab) || tabsVisibles[0];
   const indiceTabActual = tabsVisibles.findIndex((t) => t.value === tabActual.value);
   const esUltimoModuloOnboarding = modoOnboarding && indiceTabActual === tabsVisibles.length - 1;
-  // Módulo 1 (General) exige el "Nombre del Administrador / Dueño" antes de
-  // dejar avanzar el wizard (item 2 del Refactor Onboarding v67) — fuera del
-  // Onboarding (`!modoOnboarding`) este candado no aplica, el dueño puede
-  // guardar Configuración del Club en cualquier orden como siempre.
-  const bloqueadoPorNombreAdministrador = modoOnboarding && tabActual.value === 'general' && !(configClub?.nombreAdministrador || '').trim();
+
+  // Persistencia Atómica al Avanzar de Módulo (Onboarding) — cada `Seccion*`
+  // visible durante el wizard se registra aquí (vía `onRegistrarGuardadoModulo`,
+  // pasado solo cuando `modoOnboarding`) con su propia función "guardar TODO
+  // lo de este módulo en UNA sola llamada" — la que antes disparaban sus
+  // botones individuales ("Guardar nombre"/"Guardar horario"/"Guardar Tarifa
+  // Base"/"Guardar Políticas"..., ahora ocultos solo dentro del wizard, ver
+  // cada `Seccion*`). El registro se re-ejecuta en CADA render (sin lista de
+  // dependencias) para que el ref nunca quede con un cierre viejo de un
+  // tecleo anterior — target barato (solo reasigna un ref), nunca dispara un
+  // guardado por sí mismo. "Siguiente Módulo"/"Finalizar Configuración" ya NO
+  // avanzan la pestaña directo: primero AWAIT a `guardarModuloActualRef`, y
+  // solo si no devuelve `false` (validación local fallida, ej. nombre vacío
+  // u horario inválido) se avanza — así, para cuando el dueño llega a "Tu
+  // club está listo" y presiona "Activar mi club", `configuracion_club` ya
+  // refleja EXACTAMENTE lo capturado en los 5 módulos, sin depender de que
+  // recordara pulsar cada botón individual de guardado por separado.
+  const guardarModuloActualRef = useRef(async () => true);
+  const [guardandoModulo, setGuardandoModulo] = useState(false);
+  const [errorAvanzarModulo, setErrorAvanzarModulo] = useState('');
+  const registrarGuardadoModulo = modoOnboarding ? (fn) => { guardarModuloActualRef.current = fn; } : undefined;
+
+  async function avanzarModulo() {
+    setErrorAvanzarModulo('');
+    setGuardandoModulo(true);
+    let ok = true;
+    try {
+      ok = (await guardarModuloActualRef.current?.()) !== false;
+    } catch (err) {
+      console.error('[Onboarding] Falló el guardado atómico del módulo.', err);
+      ok = false;
+    }
+    setGuardandoModulo(false);
+    if (!ok) {
+      setErrorAvanzarModulo('Revisa los campos marcados arriba antes de continuar.');
+      return;
+    }
+    if (esUltimoModuloOnboarding) {
+      onFinalizarOnboarding?.();
+    } else {
+      setTab(tabsVisibles[indiceTabActual + 1].value);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -42226,6 +42264,7 @@ function ModuloConfiguracionClub({
           productosAddonsIds={productosAddonsIds}
           onGuardarAddonsConfig={onGuardarAddonsConfig}
           guardandoAddonsConfig={guardandoAddonsConfig}
+          onRegistrarGuardadoModulo={registrarGuardadoModulo}
         />
       ) : tab === 'general' ? (
         <SeccionGeneralClub
@@ -42237,9 +42276,14 @@ function ModuloConfiguracionClub({
           guardandoTarifaHorario={guardandoTarifaHorario}
           onEliminarTarifaHorario={onEliminarTarifaHorario}
           modoOnboarding={modoOnboarding}
+          onRegistrarGuardadoModulo={registrarGuardadoModulo}
         />
       ) : tab === 'staff' ? (
-        <SeccionOperadoresStaff empleados={empleados} onCrearEmpleado={onCrearEmpleado} />
+        <SeccionOperadoresStaff
+          empleados={empleados}
+          onCrearEmpleado={onCrearEmpleado}
+          onRegistrarGuardadoModulo={registrarGuardadoModulo}
+        />
       ) : tab === 'jugadores' ? (
         <SeccionJugadoresFidelizacion
           productos={productos}
@@ -42266,6 +42310,7 @@ function ModuloConfiguracionClub({
           recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
           onGuardarCortesiasFrecuencia={onGuardarCortesiasFrecuencia}
           guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
+          onRegistrarGuardadoModulo={registrarGuardadoModulo}
         />
       ) : tab === 'reservas' ? (
         <SeccionReservasAcademia
@@ -42276,6 +42321,8 @@ function ModuloConfiguracionClub({
           configClub={configClub}
           onGuardarConfigClub={onGuardarConfigClub}
           guardandoConfigClub={guardandoConfigClub}
+          modoOnboarding={modoOnboarding}
+          onRegistrarGuardadoModulo={registrarGuardadoModulo}
         />
       ) : tab === 'wallet' ? (
         <SeccionWallet jugadoresPorId={jugadoresPorId} empleados={empleados} operador={operador} permisos={permisos} />
@@ -42319,27 +42366,26 @@ function ModuloConfiguracionClub({
           </div>
           <div className="flex items-center gap-2">
             {indiceTabActual > 0 && (
-              <BotonSecundario onClick={() => setTab(tabsVisibles[indiceTabActual - 1].value)}>Atrás</BotonSecundario>
+              <BotonSecundario onClick={() => setTab(tabsVisibles[indiceTabActual - 1].value)} disabled={guardandoModulo}>
+                Atrás
+              </BotonSecundario>
             )}
             {esUltimoModuloOnboarding ? (
-              <BotonPrimarioWizard onClick={onFinalizarOnboarding} disabled={bloqueadoPorNombreAdministrador}>
+              <BotonPrimarioWizard onClick={avanzarModulo} disabled={guardandoModulo}>
+                {guardandoModulo ? <Loader2 size={14} className="animate-spin" /> : null}
                 Finalizar Configuración <ArrowRight size={14} />
               </BotonPrimarioWizard>
             ) : (
-              <BotonPrimarioWizard
-                onClick={() => setTab(tabsVisibles[indiceTabActual + 1].value)}
-                disabled={bloqueadoPorNombreAdministrador}
-              >
+              <BotonPrimarioWizard onClick={avanzarModulo} disabled={guardandoModulo}>
+                {guardandoModulo ? <Loader2 size={14} className="animate-spin" /> : null}
                 Siguiente Módulo <ArrowRight size={14} />
               </BotonPrimarioWizard>
             )}
           </div>
         </div>
       )}
-      {bloqueadoPorNombreAdministrador && (
-        <p className="text-right text-[11px] font-semibold text-rose-500">
-          Captura y guarda el Nombre del Administrador/Dueño arriba para continuar.
-        </p>
+      {errorAvanzarModulo && (
+        <p className="text-right text-[11px] font-semibold text-rose-500">{errorAvanzarModulo}</p>
       )}
     </div>
   );
@@ -42357,9 +42403,16 @@ function ModuloConfiguracionClub({
 // alta a nadie más (el Owner auto-provisionado siempre existe, ver
 // "Auto-provisión del Propietario" en `AppInterno`) — no hay ningún gate
 // que bloquee "Siguiente Módulo" aquí.
-function SeccionOperadoresStaff({ empleados, onCrearEmpleado }) {
+function SeccionOperadoresStaff({ empleados, onCrearEmpleado, onRegistrarGuardadoModulo }) {
   const [modalAbierto, setModalAbierto] = useState(false);
   const lista = Array.isArray(empleados) ? empleados : [];
+  // Persistencia Atómica al Avanzar de Módulo — esta pestaña no tiene ningún
+  // campo "pendiente de guardar" (solo "Agregar Operador", que abre un modal
+  // con su propia alta inmediata), así que su registro ante el padre
+  // (`ModuloConfiguracionClub`) es un no-op que siempre resuelve éxito.
+  useEffect(() => {
+    onRegistrarGuardadoModulo?.(async () => true);
+  });
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -42464,92 +42517,14 @@ function LienzoOnboardingClub({ children, ancho = 'max-w-3xl' }) {
   );
 }
 
-// Insignia "PASO X DE 5" compartida por TODO el flujo de entrada — Registro
-// (`ClubAuthScreen`, Paso 1) + Kickoff/Plan/Setup/Confirmación (este
-// wizard, Pasos 2-5) — mismo estilo de píldora en las 5 pantallas para que
-// el dueño sienta un único recorrido continuo, nunca 2 flujos distintos
-// pegados. Orden cronológico exacto (versión definitiva del copy):
-//   Paso 1 — Registro del Club ("Pon tu club en marcha.", en `ClubAuthScreen`)
-//   Paso 2 — Bienvenida/Kickoff ("Hagamos que QLUBOS funcione como tu club.")
-//   Paso 3 — Selección de Plan ("Un sistema. Una suscripción. Todo incluido.")
-//   Paso 4 — Configuración del Club/Setup (formulario operativo, reutiliza
-//            `ModuloConfiguracionClub`)
-//   Paso 5 — Confirmación y Activación ("Tu club está listo.")
-// Rediseño Premium (Stripe/Linear-style, ver requerimiento de animaciones del
-// Wizard): la píldora estática "PASO X DE 5" se convirtió en un encabezado de
-// progreso — Stepper único (sin la barra lineal simple que traía antes:
-// quedaba redundante encima del Stepper, dos indicadores diciendo lo mismo)
-// con 5 círculos numerados + línea conectora entre cada par, ambos animados
-// en Naranja QLUBOS (`#FF6B35`) — la línea se llena de izquierda a derecha
-// al completarse el paso anterior, y cada círculo hace bounce a checkmark.
-// Mismo componente, mismos props (`paso`/`total`) — drop-in en las 5
-// pantallas del flujo de entrada, cero cambios en cada call site.
-function InsigniaPasoOnboarding({ paso, total = 5 }) {
-  const pasos = Array.from({ length: total }, (_, i) => i + 1);
-  return (
-    <div className="mb-5 w-full text-left">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-300 bg-orange-50 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-orange-700">
-          <Sparkles size={12} /> Paso {paso} de {total}
-        </span>
-      </div>
-      <div className="flex items-center justify-between">
-        {pasos.map((n) => {
-          const completado = n < paso;
-          const activo = n === paso;
-          return (
-            <React.Fragment key={n}>
-              <motion.div
-                initial={false}
-                animate={{
-                  backgroundColor: completado || activo ? '#FF6B35' : '#e2e8f0',
-                  scale: activo ? 1.12 : 1,
-                }}
-                transition={{ duration: 0.25, ease: 'easeOut' }}
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
-              >
-                <AnimatePresence mode="wait" initial={false}>
-                  {completado ? (
-                    <motion.span
-                      key="check"
-                      initial={{ scale: 0, opacity: 0 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      exit={{ scale: 0, opacity: 0 }}
-                      transition={{ type: 'spring', stiffness: 500, damping: 20 }}
-                      className="flex items-center justify-center text-white"
-                    >
-                      <Check size={11} strokeWidth={3} />
-                    </motion.span>
-                  ) : (
-                    <motion.span
-                      key="num"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className={`text-[10px] font-bold ${activo ? 'text-white' : 'text-slate-500'}`}
-                    >
-                      {n}
-                    </motion.span>
-                  )}
-                </AnimatePresence>
-              </motion.div>
-              {n !== total && (
-                <div className="mx-1 h-0.5 flex-1 overflow-hidden rounded-full bg-slate-200">
-                  <motion.div
-                    className="h-full bg-[#FF6B35]"
-                    initial={false}
-                    animate={{ width: completado ? '100%' : '0%' }}
-                    transition={{ duration: 0.3, ease: 'easeOut' }}
-                  />
-                </div>
-              )}
-            </React.Fragment>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
+// Insignia "PASO X DE 5" — ELIMINADA a pedido del club (Corrección de
+// Onboarding): el flujo de entrada (Registro → Kickoff → Plan → Setup →
+// Confirmación) ya NO muestra ningún indicador numérico de progreso
+// ("Paso X de 5", ni el stepper de círculos numerados que la reemplazó en
+// el rediseño Premium) en ninguna de sus 5 pantallas, incluida "Tu club
+// está listo." — el componente `InsigniaPasoOnboarding` (antes aquí) se
+// quitó por completo junto con sus 5 usos; cada pantalla conserva el resto
+// de su contenido tal cual.
 
 // Botón primario con micro-interacciones (hover/tap) SOLO para el Wizard de
 // Registro/Onboarding — mismas clases visuales exactas que `BotonPrimario`
@@ -42627,7 +42602,6 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
   return (
     <LienzoOnboardingClub ancho="max-w-4xl">
       <div className="mb-8 text-center">
-        <InsigniaPasoOnboarding paso={3} />
         {onAtras && (
           <div className="text-left">
             <EnlaceAtrasWizard onClick={onAtras} />
@@ -42747,7 +42721,6 @@ function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
       <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
-        <InsigniaPasoOnboarding paso={2} />
         <motion.div
           initial={{ scale: 0, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -42779,7 +42752,6 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
           que TODO este árbol (incluida esta tarjeta) hace zoom-out + fade-out
           como una sola pieza al desmontarse — ver ese wrapper, no acá. */}
       <div className="flex flex-col items-center gap-5 rounded-3xl border border-slate-200/70 bg-white/90 p-10 text-center shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-12">
-        <InsigniaPasoOnboarding paso={5} />
         {onAtras && <EnlaceAtrasWizard onClick={onAtras} />}
         {/* Entrada triunfal (Paso final del Wizard) — el badge de éxito ya no
             aparece de golpe: escala desde 0 con un rebote spring, como el
@@ -42918,7 +42890,6 @@ function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan,
       <div className="relative min-h-screen min-h-dvh bg-[#f8fafc] px-4 py-8 sm:px-8">
         <FondoGlowQlubOS />
         <div className="relative z-10 mx-auto mb-6 max-w-5xl text-center">
-          <InsigniaPasoOnboarding paso={4} />
           <div className="text-left">
             <EnlaceAtrasWizard onClick={() => irA('plan', -1)}>Cambiar de plan</EnlaceAtrasWizard>
           </div>
@@ -42973,18 +42944,35 @@ function SeccionGeneralClub({
   guardandoTarifaHorario,
   onEliminarTarifaHorario,
   modoOnboarding = false,
+  onRegistrarGuardadoModulo,
 }) {
   const config = configClub || CONFIG_CLUB_DEFAULT;
   const [horaApertura, setHoraApertura] = useState(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
   const [horaCierre, setHoraCierre] = useState(config.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
   const [error, setError] = useState('');
   // Nombre del Administrador/Dueño (Refactor Onboarding v67) — tarjeta
-  // propia con su propio estado local + botón "Guardar", mismo patrón que
-  // "Horario de Apertura y Cierre" arriba (cada tarjeta de esta sección es
-  // su propio mini-formulario, todas reenvían el resto de `configClub` tal
-  // cual para no pisar los demás campos al guardar).
+  // propia con su propio estado local, mismo patrón que "Horario de
+  // Apertura y Cierre" arriba (cada tarjeta de esta sección es su propio
+  // mini-formulario, todas reenvían el resto de `configClub` tal cual para
+  // no pisar los demás campos al guardar). Persistencia Atómica al Avanzar
+  // de Módulo: su botón "Guardar nombre" propio se quitó (ver más abajo,
+  // `modoOnboarding` es la ÚNICA forma en que esta tarjeta se muestra), el
+  // guardado real ahora ocurre dentro de `guardarTodo`.
   const [nombreAdministrador, setNombreAdministrador] = useState(config.nombreAdministrador || '');
   const [errorNombreAdministrador, setErrorNombreAdministrador] = useState('');
+  // Tarifa Base / Estándar (Tarifas Dinámicas por Franja Horaria,
+  // migracion_v43) — ANTES vivía como estado local dentro de
+  // `SeccionTarifasFranjas` (su propia tarjeta, con su propio botón
+  // "Guardar Tarifa Base"). Persistencia Atómica al Avanzar de Módulo: se
+  // SUBE aquí (controlado, reenviado a `SeccionTarifasFranjas` como prop)
+  // para que `guardarTodo` (abajo) pueda combinarlo con
+  // nombreAdministrador/horario en UNA sola llamada a `onGuardarConfigClub`
+  // — si cada tarjeta siguiera llamando a `onGuardarConfigClub` por su
+  // cuenta con su propio snapshot de `config`, dos guardados casi
+  // simultáneos (ej. al dar "Siguiente Módulo") podrían pisarse entre sí
+  // (el último en responder gana, con datos desactualizados de la otra
+  // tarjeta — "last write wins").
+  const [tarifaBaseHora, setTarifaBaseHora] = useState(config.tarifaBaseHora > 0 ? String(config.tarifaBaseHora) : '');
 
   // Sincroniza los selectores si `configClub` llega/cambia después de montar
   // este componente (ej. la primera carga desde Supabase todavía no había
@@ -42993,43 +42981,13 @@ function SeccionGeneralClub({
     setHoraApertura(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
     setHoraCierre(config.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
     setNombreAdministrador(config.nombreAdministrador || '');
-  }, [config.horaApertura, config.horaCierre, config.nombreAdministrador]);
+    setTarifaBaseHora(config.tarifaBaseHora > 0 ? String(config.tarifaBaseHora) : '');
+  }, [config.horaApertura, config.horaCierre, config.nombreAdministrador, config.tarifaBaseHora]);
 
-  async function guardarNombreAdministrador() {
-    setErrorNombreAdministrador('');
-    if (!nombreAdministrador.trim()) {
-      setErrorNombreAdministrador('Escribe el nombre del Administrador/Dueño del club.');
-      return;
-    }
-    await onGuardarConfigClub?.({
-      nombre: config.nombre,
-      logoUrl: config.logoUrl,
-      nombreAdministrador: nombreAdministrador.trim(),
-      horaApertura: config.horaApertura,
-      horaCierre: config.horaCierre,
-      duracionReservaMinutos: config.duracionReservaMinutos,
-      duracionClaseMinutos: config.duracionClaseMinutos,
-      tarifaBaseHora: config.tarifaBaseHora,
-      tarifasHabilitadas: config.tarifasHabilitadas !== false,
-      toleranciaCancelacionMaster: config.toleranciaCancelacionMaster !== false,
-      toleranciaReservasEnabled: config.toleranciaReservasEnabled === true,
-      toleranciaReservasHoras: config.toleranciaReservasHoras,
-      toleranciaTorneosEnabled: config.toleranciaTorneosEnabled === true,
-      toleranciaTorneosHoras: config.toleranciaTorneosHoras,
-      toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
-      toleranciaRetasHoras: config.toleranciaRetasHoras,
-      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
-      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
-      // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
-      // Academia, migracion_v71) — este bloque no las edita, se reenvían
-      // TAL CUAL para no resetearlas a su default en cada guardado
-      // (`guardarConfigClub` escribe el objeto de configuración completo).
-      academiaPrecioBaseClaseSuelta: config.academiaPrecioBaseClaseSuelta,
-      academiaPrecioBaseMensualidad: config.academiaPrecioBaseMensualidad,
-      academiaClasesIncluidasMensualidad: config.academiaClasesIncluidasMensualidad,
-    });
-  }
-
+  // Guardado INMEDIATO de "Horario de Apertura y Cierre" — SOLO se usa fuera
+  // del Onboarding (panel regular de Configuración del Club, ver el botón
+  // condicionado a `!modoOnboarding` más abajo). Dentro del wizard, este
+  // campo se persiste exclusivamente vía `guardarTodo`.
   async function guardar() {
     setError('');
     if ((parseHoraAMinutos(horaCierre) ?? 0) <= (parseHoraAMinutos(horaApertura) ?? 0)) {
@@ -43072,18 +43030,105 @@ function SeccionGeneralClub({
     });
   }
 
+  // Guardado INMEDIATO de "Tarifa Base / Estándar" — SOLO se usa fuera del
+  // Onboarding (botón "Guardar Tarifa Base" dentro de `SeccionTarifasFranjas`,
+  // oculto durante el wizard). Mismo criterio que `guardar()` arriba.
+  async function guardarTarifaBaseAhora() {
+    await onGuardarConfigClub?.({
+      nombre: config.nombre,
+      logoUrl: config.logoUrl,
+      nombreAdministrador: config.nombreAdministrador,
+      horaApertura: config.horaApertura,
+      horaCierre: config.horaCierre,
+      duracionReservaMinutos: config.duracionReservaMinutos,
+      duracionClaseMinutos: config.duracionClaseMinutos,
+      tarifaBaseHora: Number(tarifaBaseHora) > 0 ? Number(tarifaBaseHora) : 0,
+      tarifasHabilitadas: config.tarifasHabilitadas !== false,
+      toleranciaCancelacionMaster: config.toleranciaCancelacionMaster !== false,
+      toleranciaReservasEnabled: config.toleranciaReservasEnabled === true,
+      toleranciaReservasHoras: config.toleranciaReservasHoras,
+      toleranciaTorneosEnabled: config.toleranciaTorneosEnabled === true,
+      toleranciaTorneosHoras: config.toleranciaTorneosHoras,
+      toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
+      toleranciaRetasHoras: config.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
+      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
+      academiaPrecioBaseClaseSuelta: config.academiaPrecioBaseClaseSuelta,
+      academiaPrecioBaseMensualidad: config.academiaPrecioBaseMensualidad,
+      academiaClasesIncluidasMensualidad: config.academiaClasesIncluidasMensualidad,
+    });
+  }
+
+  // Persistencia Atómica al Avanzar de Módulo (Onboarding) — consolida los 3
+  // guardados independientes de arriba (nombre/horario/tarifa base) en UNA
+  // sola llamada a `onGuardarConfigClub`, invocada por "Siguiente Módulo" en
+  // el componente padre (`ModuloConfiguracionClub`, vía
+  // `onRegistrarGuardadoModulo`). Valida localmente primero (nombre
+  // obligatorio solo durante el Onboarding — esta tarjeta nunca se ve fuera
+  // de él — y horario coherente) y devuelve `false` sin guardar si algo no
+  // pasa, para que el padre NO avance de módulo y el dueño vea el error
+  // justo donde está el campo.
+  async function guardarTodo() {
+    setError('');
+    setErrorNombreAdministrador('');
+    if (!nombreAdministrador.trim()) {
+      setErrorNombreAdministrador('Escribe el nombre del Administrador/Dueño del club.');
+      return false;
+    }
+    if ((parseHoraAMinutos(horaCierre) ?? 0) <= (parseHoraAMinutos(horaApertura) ?? 0)) {
+      setError('La Hora de Cierre debe ser posterior a la Hora de Apertura.');
+      return false;
+    }
+    await onGuardarConfigClub?.({
+      nombre: config.nombre,
+      logoUrl: config.logoUrl,
+      nombreAdministrador: nombreAdministrador.trim(),
+      horaApertura,
+      horaCierre,
+      duracionReservaMinutos: config.duracionReservaMinutos,
+      duracionClaseMinutos: config.duracionClaseMinutos,
+      tarifaBaseHora: Number(tarifaBaseHora) > 0 ? Number(tarifaBaseHora) : 0,
+      tarifasHabilitadas: config.tarifasHabilitadas !== false,
+      // Políticas y Tolerancia de Cancelación + Tarifas y Paquetes de
+      // Academia — esta tarjeta no las edita (viven en "Reservas &
+      // Academia"), se reenvían TAL CUAL para no pisarlas.
+      toleranciaCancelacionMaster: config.toleranciaCancelacionMaster !== false,
+      toleranciaReservasEnabled: config.toleranciaReservasEnabled === true,
+      toleranciaReservasHoras: config.toleranciaReservasHoras,
+      toleranciaTorneosEnabled: config.toleranciaTorneosEnabled === true,
+      toleranciaTorneosHoras: config.toleranciaTorneosHoras,
+      toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
+      toleranciaRetasHoras: config.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
+      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
+      academiaPrecioBaseClaseSuelta: config.academiaPrecioBaseClaseSuelta,
+      academiaPrecioBaseMensualidad: config.academiaPrecioBaseMensualidad,
+      academiaClasesIncluidasMensualidad: config.academiaClasesIncluidasMensualidad,
+    });
+    return true;
+  }
+
+  // Se re-registra en CADA render (sin lista de dependencias) para que el
+  // padre siempre tenga el cierre más reciente de `guardarTodo` — ver el
+  // comentario de `guardarModuloActualRef` en `ModuloConfiguracionClub`.
+  useEffect(() => {
+    if (modoOnboarding) onRegistrarGuardadoModulo?.(guardarTodo);
+  });
+
   return (
     <div className="space-y-4">
       {/* Nombre del Administrador/Dueño (Refactor Onboarding v67) — a
           pedido del club, esta tarjeta SOLO aplica durante el
           Onboarding/registro inicial (el wizard la exige antes de dejar
-          avanzar, ver `bloqueadoPorNombreAdministrador` en el componente
-          padre) — fuera de él, en la Configuración del Club de uso diario,
-          ya no se muestra. El campo (`configClub.nombreAdministrador` /
-          `configuracion_club.nombre_administrador`) y su guardado
-          (`guardarNombreAdministrador`) siguen existiendo tal cual, solo se
-          oculta esta tarjeta para no duplicar un paso que ya es de
-          registro único. */}
+          avanzar, ver `guardarTodo` arriba) — fuera de él, en la
+          Configuración del Club de uso diario, ya no se muestra. El campo
+          (`configClub.nombreAdministrador` /
+          `configuracion_club.nombre_administrador`) sigue existiendo tal
+          cual, solo se oculta esta tarjeta para no duplicar un paso que ya
+          es de registro único. Persistencia Atómica al Avanzar de Módulo:
+          ya no tiene su propio botón "Guardar" — como esta tarjeta SOLO
+          vive dentro del wizard, su guardado ocurre exclusivamente al
+          presionar "Siguiente Módulo" (`guardarTodo`). */}
       {modoOnboarding && (
         <div className="rounded-2xl border border-slate-200 bg-white p-4">
           <div className="mb-1 flex items-center gap-2">
@@ -43106,13 +43151,6 @@ function SeccionGeneralClub({
           </Campo>
 
           {errorNombreAdministrador && <p className="mt-3 text-xs font-semibold text-rose-400">{errorNombreAdministrador}</p>}
-
-          <div className="mt-4 flex justify-end">
-            <BotonPrimario onClick={guardarNombreAdministrador} disabled={guardandoConfigClub}>
-              {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-              Guardar nombre
-            </BotonPrimario>
-          </div>
         </div>
       )}
 
@@ -43149,12 +43187,18 @@ function SeccionGeneralClub({
 
         {error && <p className="mt-3 text-xs font-semibold text-rose-400">{error}</p>}
 
-        <div className="mt-4 flex justify-end">
-          <BotonPrimario onClick={guardar} disabled={guardandoConfigClub}>
-            {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Guardar horario
-          </BotonPrimario>
-        </div>
+        {/* Persistencia Atómica al Avanzar de Módulo: el botón "Guardar
+            horario" propio solo se muestra fuera del Onboarding — dentro del
+            wizard, "Siguiente Módulo" guarda este campo junto con el resto
+            (ver `guardarTodo`). */}
+        {!modoOnboarding && (
+          <div className="mt-4 flex justify-end">
+            <BotonPrimario onClick={guardar} disabled={guardandoConfigClub}>
+              {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              Guardar horario
+            </BotonPrimario>
+          </div>
+        )}
       </div>
 
       <SeccionTarifasFranjas
@@ -43165,6 +43209,10 @@ function SeccionGeneralClub({
         onGuardarTarifaHorario={onGuardarTarifaHorario}
         guardandoTarifaHorario={guardandoTarifaHorario}
         onEliminarTarifaHorario={onEliminarTarifaHorario}
+        modoOnboarding={modoOnboarding}
+        tarifaBaseHora={tarifaBaseHora}
+        onTarifaBaseHoraChange={setTarifaBaseHora}
+        onGuardarTarifaBaseAhora={guardarTarifaBaseAhora}
       />
 
       {/* Zona de Peligro ("Eliminar Club / Cancelar Cuenta") — reubicada
@@ -43620,11 +43668,17 @@ function SeccionTarifasFranjas({
   onGuardarTarifaHorario,
   guardandoTarifaHorario,
   onEliminarTarifaHorario,
+  modoOnboarding = false,
+  // Tarifa Base / Estándar — Persistencia Atómica al Avanzar de Módulo: el
+  // estado ahora vive en el padre (`SeccionGeneralClub`), controlado aquí
+  // vía props, para que su guardado pueda combinarse con
+  // nombre/horario en una sola llamada al avanzar de módulo durante el
+  // Onboarding (ver comentario de `guardarTodo` en `SeccionGeneralClub`).
+  tarifaBaseHora,
+  onTarifaBaseHoraChange,
+  onGuardarTarifaBaseAhora,
 }) {
   const config = configClub || CONFIG_CLUB_DEFAULT;
-  const [tarifaBaseHora, setTarifaBaseHora] = useState(
-    config.tarifaBaseHora > 0 ? String(config.tarifaBaseHora) : ''
-  );
   const [modalTarifa, setModalTarifa] = useState(null); // null = cerrado, {} = nueva, {...} = editar
   const [tarifaParaEliminar, setTarifaParaEliminar] = useState(null);
   const [eliminando, setEliminando] = useState(false);
@@ -43636,47 +43690,17 @@ function SeccionTarifasFranjas({
   // `ModalReservarCancha`, que devuelven `[]` cuando este switch está OFF).
   const tarifasHabilitadas = config.tarifasHabilitadas !== false;
 
-  useEffect(() => {
-    setTarifaBaseHora(config.tarifaBaseHora > 0 ? String(config.tarifaBaseHora) : '');
-  }, [config.tarifaBaseHora]);
-
-  async function guardarTarifaBase() {
-    await onGuardarConfigClub?.({
-      nombre: config.nombre,
-      logoUrl: config.logoUrl,
-      horaApertura: config.horaApertura,
-      horaCierre: config.horaCierre,
-      duracionReservaMinutos: config.duracionReservaMinutos,
-      duracionClaseMinutos: config.duracionClaseMinutos,
-      tarifaBaseHora: Number(tarifaBaseHora) > 0 ? Number(tarifaBaseHora) : 0,
-      tarifasHabilitadas,
-      toleranciaCancelacionMaster: config.toleranciaCancelacionMaster !== false,
-      toleranciaReservasEnabled: config.toleranciaReservasEnabled === true,
-      toleranciaReservasHoras: config.toleranciaReservasHoras,
-      toleranciaTorneosEnabled: config.toleranciaTorneosEnabled === true,
-      toleranciaTorneosHoras: config.toleranciaTorneosHoras,
-      toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
-      toleranciaRetasHoras: config.toleranciaRetasHoras,
-      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
-      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
-      // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
-      // Academia, migracion_v71) — este bloque no las edita, se reenvían
-      // TAL CUAL para no resetearlas a su default en cada guardado
-      // (`guardarConfigClub` escribe el objeto de configuración completo).
-      academiaPrecioBaseClaseSuelta: config.academiaPrecioBaseClaseSuelta,
-      academiaPrecioBaseMensualidad: config.academiaPrecioBaseMensualidad,
-      academiaClasesIncluidasMensualidad: config.academiaClasesIncluidasMensualidad,
-    });
-  }
-
   // MISMO diseño/contenedor/estilo que el switch de Quick Sell/Metas de
   // Cortesía (`SeccionJugadoresFidelizacion`/`alternarActivo`) — a pedido
   // explícito del club, para que todos los Switch Master de "Configuración
-  // del Club" se vean idénticos.
+  // del Club" se vean idénticos. Este switch guarda de inmediato siempre
+  // (dentro y fuera del Onboarding) — nunca tuvo su propio botón "Guardar",
+  // así que no hay nada que diferir.
   async function alternarTarifasHabilitadas() {
     await onGuardarConfigClub?.({
       nombre: config.nombre,
       logoUrl: config.logoUrl,
+      nombreAdministrador: config.nombreAdministrador,
       horaApertura: config.horaApertura,
       horaCierre: config.horaCierre,
       duracionReservaMinutos: config.duracionReservaMinutos,
@@ -43767,16 +43791,22 @@ function SeccionTarifasFranjas({
                 min="0"
                 step="1"
                 value={tarifaBaseHora}
-                onChange={(e) => setTarifaBaseHora(e.target.value)}
+                onChange={(e) => onTarifaBaseHoraChange?.(e.target.value)}
                 placeholder="Sin definir — usa el precio/hora de cada cancha"
                 className={inputClase}
               />
             </Campo>
           </div>
-          <BotonSecundario onClick={guardarTarifaBase} disabled={guardandoConfigClub} className="shrink-0">
-            {guardandoConfigClub ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-            Guardar Tarifa Base
-          </BotonSecundario>
+          {/* Persistencia Atómica al Avanzar de Módulo: este botón propio
+              solo se muestra fuera del Onboarding — dentro del wizard,
+              "Siguiente Módulo" guarda este campo junto con nombre/horario
+              (ver `guardarTodo` en `SeccionGeneralClub`). */}
+          {!modoOnboarding && (
+            <BotonSecundario onClick={onGuardarTarifaBaseAhora} disabled={guardandoConfigClub} className="shrink-0">
+              {guardandoConfigClub ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+              Guardar Tarifa Base
+            </BotonSecundario>
+          )}
         </div>
         <p className="mb-4 text-[11px] text-slate-500">
           Se aplica en cualquier horario que no caiga dentro de ninguna franja personalizada de abajo. Déjala vacía
@@ -43911,8 +43941,16 @@ function SeccionJugadoresFidelizacion({
   recompensaValorFrecuenciaClases,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
+  onRegistrarGuardadoModulo,
 }) {
   const [mostrarModalMetas, setMostrarModalMetas] = useState(false);
+  // Persistencia Atómica al Avanzar de Módulo — esta pestaña no tiene campos
+  // "pendientes de guardar": los 2 switches guardan de inmediato y "Editar
+  // Metas"/"Editar Frecuencia" abren un modal con su propio guardado — así
+  // que el registro ante el padre es un no-op que siempre resuelve éxito.
+  useEffect(() => {
+    onRegistrarGuardadoModulo?.(async () => true);
+  });
   const activo = cortesiasActivas !== false;
   const [mostrarModalFrecuencia, setMostrarModalFrecuencia] = useState(false);
   // A diferencia del motor de gasto (arriba, `!== false` — activo por
@@ -44150,6 +44188,8 @@ function SeccionReservasAcademia({
   configClub,
   onGuardarConfigClub,
   guardandoConfigClub,
+  modoOnboarding = false,
+  onRegistrarGuardadoModulo,
 }) {
   const [modalRangosHorario, setModalRangosHorario] = useState(false);
   // Mismo criterio que `ModuloAcademiaClinicas`/`ModalNuevaClase`/`ModalDetalleClase`.
@@ -44179,6 +44219,7 @@ function SeccionReservasAcademia({
     await onGuardarConfigClub?.({
       nombre: config.nombre,
       logoUrl: config.logoUrl,
+      nombreAdministrador: config.nombreAdministrador,
       horaApertura: config.horaApertura,
       horaCierre: config.horaCierre,
       duracionReservaMinutos,
@@ -44283,6 +44324,7 @@ function SeccionReservasAcademia({
       // reenvía TAL CUAL para no pisarla.
       nombre: config.nombre,
       logoUrl: config.logoUrl,
+      nombreAdministrador: config.nombreAdministrador,
       horaApertura: config.horaApertura,
       horaCierre: config.horaCierre,
       duracionReservaMinutos: config.duracionReservaMinutos,
@@ -44327,6 +44369,7 @@ function SeccionReservasAcademia({
       // reenvía TAL CUAL para no pisarla.
       nombre: config.nombre,
       logoUrl: config.logoUrl,
+      nombreAdministrador: config.nombreAdministrador,
       horaApertura: config.horaApertura,
       horaCierre: config.horaCierre,
       duracionReservaMinutos: config.duracionReservaMinutos,
@@ -44348,6 +44391,53 @@ function SeccionReservasAcademia({
         Number(clasesIncluidasMensualidad) > 0 ? Number(clasesIncluidasMensualidad) : CONFIG_CLUB_DEFAULT.academiaClasesIncluidasMensualidad,
     });
   }
+
+  // Persistencia Atómica al Avanzar de Módulo (Onboarding) — consolida los 3
+  // guardados independientes de arriba (Tarifas de Academia/Duración de
+  // Bloques/Políticas de Cancelación) en UNA sola llamada a
+  // `onGuardarConfigClub`, invocada por "Siguiente Módulo" en el componente
+  // padre (`ModuloConfiguracionClub`, vía `onRegistrarGuardadoModulo`) — ver
+  // el comentario detallado de `guardarTodo` en `SeccionGeneralClub` sobre
+  // por qué 3 llamadas independientes con el mismo `config` de fondo
+  // pueden pisarse entre sí ("last write wins") y por qué hace falta
+  // combinarlas en una sola. Los switches de Políticas de Cancelación
+  // siguen guardando de inmediato al tocarlos (sin cambios) — ya estaban
+  // sincronizados por diseño, esta función solo consolida los 3 campos
+  // numéricos que antes requerían su propio botón "Guardar".
+  async function guardarTodo() {
+    await onGuardarConfigClub?.({
+      nombre: config.nombre,
+      logoUrl: config.logoUrl,
+      nombreAdministrador: config.nombreAdministrador,
+      horaApertura: config.horaApertura,
+      horaCierre: config.horaCierre,
+      duracionReservaMinutos,
+      duracionClaseMinutos,
+      tarifaBaseHora: config.tarifaBaseHora,
+      tarifasHabilitadas: config.tarifasHabilitadas !== false,
+      toleranciaCancelacionMaster: toleranciaMaster,
+      toleranciaReservasEnabled,
+      toleranciaReservasHoras: Number(toleranciaReservasHoras) > 0 ? Number(toleranciaReservasHoras) : CONFIG_CLUB_DEFAULT.toleranciaReservasHoras,
+      toleranciaTorneosEnabled,
+      toleranciaTorneosHoras: Number(toleranciaTorneosHoras) > 0 ? Number(toleranciaTorneosHoras) : CONFIG_CLUB_DEFAULT.toleranciaTorneosHoras,
+      toleranciaRetasEnabled,
+      toleranciaRetasHoras: Number(toleranciaRetasHoras) > 0 ? Number(toleranciaRetasHoras) : CONFIG_CLUB_DEFAULT.toleranciaRetasHoras,
+      toleranciaAcademiaEnabled,
+      toleranciaAcademiaHoras: Number(toleranciaAcademiaHoras) > 0 ? Number(toleranciaAcademiaHoras) : CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras,
+      academiaPrecioBaseClaseSuelta: Number(precioBaseClaseSuelta) >= 0 ? Number(precioBaseClaseSuelta) : CONFIG_CLUB_DEFAULT.academiaPrecioBaseClaseSuelta,
+      academiaPrecioBaseMensualidad: Number(precioBaseMensualidad) >= 0 ? Number(precioBaseMensualidad) : CONFIG_CLUB_DEFAULT.academiaPrecioBaseMensualidad,
+      academiaClasesIncluidasMensualidad:
+        Number(clasesIncluidasMensualidad) > 0 ? Number(clasesIncluidasMensualidad) : CONFIG_CLUB_DEFAULT.academiaClasesIncluidasMensualidad,
+    });
+    return true;
+  }
+
+  // Se re-registra en CADA render (sin lista de dependencias) para que el
+  // padre siempre tenga el cierre más reciente de `guardarTodo` — ver el
+  // comentario de `guardarModuloActualRef` en `ModuloConfiguracionClub`.
+  useEffect(() => {
+    if (modoOnboarding) onRegistrarGuardadoModulo?.(guardarTodo);
+  });
 
   return (
     <div className="space-y-4">
@@ -44401,12 +44491,17 @@ function SeccionReservasAcademia({
             />
           </Campo>
         </div>
-        <div className="mt-4 flex justify-end">
-          <BotonPrimario onClick={guardarTarifasAcademia} disabled={guardandoConfigClub}>
-            {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Guardar Tarifas de Academia
-          </BotonPrimario>
-        </div>
+        {/* Persistencia Atómica al Avanzar de Módulo: este botón propio solo
+            se muestra fuera del Onboarding — dentro del wizard, "Siguiente
+            Módulo" guarda este campo junto con el resto (ver `guardarTodo`). */}
+        {!modoOnboarding && (
+          <div className="mt-4 flex justify-end">
+            <BotonPrimario onClick={guardarTarifasAcademia} disabled={guardandoConfigClub}>
+              {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              Guardar Tarifas de Academia
+            </BotonPrimario>
+          </div>
+        )}
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -44492,12 +44587,17 @@ function SeccionReservasAcademia({
           </div>
         </div>
 
-        <div className="mt-4 flex justify-end">
-          <BotonPrimario onClick={guardarDuraciones} disabled={guardandoConfigClub}>
-            {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Guardar duración
-          </BotonPrimario>
-        </div>
+        {/* Persistencia Atómica al Avanzar de Módulo: este botón propio solo
+            se muestra fuera del Onboarding — dentro del wizard, "Siguiente
+            Módulo" guarda este campo junto con el resto (ver `guardarTodo`). */}
+        {!modoOnboarding && (
+          <div className="mt-4 flex justify-end">
+            <BotonPrimario onClick={guardarDuraciones} disabled={guardandoConfigClub}>
+              {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              Guardar duración
+            </BotonPrimario>
+          </div>
+        )}
       </div>
 
       {/* Políticas y Tolerancia de Cancelación (nuevo bloque) — centraliza en
@@ -44642,12 +44742,19 @@ function SeccionReservasAcademia({
           ))}
         </div>
 
-        <div className="mt-4 flex justify-end">
-          <BotonPrimario onClick={() => guardarTolerancia()} disabled={guardandoConfigClub}>
-            {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Guardar Políticas de Cancelación
-          </BotonPrimario>
-        </div>
+        {/* Persistencia Atómica al Avanzar de Módulo: este botón propio solo
+            se muestra fuera del Onboarding — los switches de arriba siguen
+            guardando de inmediato en ambos casos (no tienen botón propio);
+            dentro del wizard, "Siguiente Módulo" guarda las 3 horas junto
+            con el resto (ver `guardarTodo`). */}
+        {!modoOnboarding && (
+          <div className="mt-4 flex justify-end">
+            <BotonPrimario onClick={() => guardarTolerancia()} disabled={guardandoConfigClub}>
+              {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              Guardar Políticas de Cancelación
+            </BotonPrimario>
+          </div>
+        )}
       </div>
 
       {modalRangosHorario && (
@@ -45020,8 +45127,22 @@ function ModalCargarCreditoWallet({ persona, guardando, onClose, onConfirmar }) 
 // ON/OFF + curación de productos de Pro-Shop), pero vive en su propia
 // sección para que sea fácil sumarle más ajustes del Portal más adelante
 // (ej. banners, mensajes de bienvenida) sin reordenar `ModuloConfiguracionClub`.
-function SeccionPortalTiendaWeb({ productos, addonsHabilitados, productosAddonsIds, onGuardarAddonsConfig, guardandoAddonsConfig }) {
+function SeccionPortalTiendaWeb({
+  productos,
+  addonsHabilitados,
+  productosAddonsIds,
+  onGuardarAddonsConfig,
+  guardandoAddonsConfig,
+  onRegistrarGuardadoModulo,
+}) {
   const [modalSeleccion, setModalSeleccion] = useState(false);
+  // Persistencia Atómica al Avanzar de Módulo — el switch de Quick Sell
+  // guarda de inmediato y "Elegir productos" abre un modal con su propio
+  // guardado, así que esta pestaña no tiene nada pendiente que consolidar —
+  // el registro ante el padre es un no-op que siempre resuelve éxito.
+  useEffect(() => {
+    onRegistrarGuardadoModulo?.(async () => true);
+  });
 
   // Ampliación Multi-Categoría (refactor): antes esta franja solo curaba
   // Pro-Shop — ahora el club puede elegir Add-ons de CUALQUIER categoría del
@@ -56840,12 +56961,6 @@ function ClubAuthScreen({ onAutenticado }) {
               transition={{ duration: 0.25, ease: 'easeOut' }}
             >
           <div className="mb-6 text-center">
-            {/* Insignia "Paso 1 de 5" — SOLO en 'registro': es la puerta de
-                entrada al flujo completo (Registro → Kickoff → Plan → Setup
-                → Confirmación, ver `InsigniaPasoOnboarding`). 'login' y
-                'recuperar' no son parte de ese recorrido numerado (un
-                dueño que ya tiene cuenta no "avanza pasos" al entrar). */}
-            {modo === 'registro' && <InsigniaPasoOnboarding paso={1} />}
             <h2 className="text-xl font-black text-slate-900">{titulos[modo].titulo}</h2>
             {titulos[modo].subtitulo && <p className="mt-1.5 text-sm text-slate-500">{titulos[modo].subtitulo}</p>}
           </div>
@@ -56995,7 +57110,7 @@ function ClubAuthScreen({ onAutenticado }) {
                 <span>
                   Acepto los{' '}
                   <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-slate-500 underline hover:text-[#FF6B35]">
-                    Términos y Condiciones para Clubes (SaaS B2B) y la Política de Privacidad
+                    Términos y Condiciones para Clubes y la Política de Privacidad
                   </a>
                   .
                 </span>
@@ -57504,9 +57619,9 @@ const DOCUMENTOS_LEGALES = [
   },
   {
     id: 'clubes',
-    tab: 'Clubes (SaaS B2B)',
+    tab: 'Clubes',
     icon: Building2,
-    titulo: 'Términos y Condiciones de Uso — Clubes y Administradores (SaaS B2B)',
+    titulo: 'Términos y Condiciones de Uso — Clubes y Administradores',
     contenido: [
       { t: 'h', texto: '1. Objeto del Servicio SaaS' },
       {
