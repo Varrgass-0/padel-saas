@@ -15645,11 +15645,16 @@ function ModuloSmartPOS({
 
     if (fila.tabla === 'reta_inscripciones') {
       if (!fila.esLocal) {
+        // FIX DE RAÍZ (mismo bug PGRST204 "Could not find the 'estado'
+        // column" que `cancelarInscripcionReta`/`cancelarInscripcionRetaPortal`
+        // — ver migracion_v79): `estado` va en la lista de columnas
+        // opcionales, nunca como obligatoria, para que un proyecto sin esa
+        // columna física no truene el UPDATE completo.
         const { error: errEstado } = await actualizarConColumnasOpcionales(
           'reta_inscripciones',
           fila.id,
           { estado: 'cancelado', motivo_cancelacion: motivo },
-          ['motivo_cancelacion']
+          ['motivo_cancelacion', 'estado']
         );
         if (errEstado) {
           console.warn('[Smart POS] No se pudo sincronizar la cancelación de la inscripción con Supabase, se aplica solo local:', errEstado);
@@ -27395,6 +27400,187 @@ function ConfirmarEliminacionVisual({ mensaje, eliminando, onCancelar, onConfirm
   );
 }
 
+// Modal de Gestión de Inscripción — Retas (requerimiento 2C, Panel del
+// Club): se abre al dar clic en el NOMBRE de un jugador inscrito dentro de
+// `TarjetaReta`, exactamente igual que ya funciona en Reservas de Cancha
+// (`DetalleReserva`) y Academia (`ModalDetalleClase`) — la cancelación deja
+// de depender EXCLUSIVAMENTE del icono "X" suelto (que se conserva como
+// atajo rápido). Desde aquí el staff ve el detalle completo, puede alternar
+// el estado de pago (`alternarEstadoPagoReta`), y cancelar con el MISMO
+// motor de Política de Cancelación y Retención (tolerancia × pago) que ya
+// usa `cancelarInscripcionReta` — este modal solo recolecta las opciones
+// (`abonarSaldo`/`generarPenalizacion`/`motivo`) y se las pasa tal cual,
+// nunca duplica esa lógica de negocio.
+function ModalGestionInscripcionReta({ reta, inscripcion, configClub, cancelando, actualizandoPago, onClose, onCancelar, onTogglePago }) {
+  const [mostrarCancelacion, setMostrarCancelacion] = useState(false);
+  const [abonarSaldo, setAbonarSaldo] = useState(true);
+  const [generarPenalizacion, setGenerarPenalizacion] = useState(true);
+  const [motivo, setMotivo] = useState('');
+
+  const config = configClub || CONFIG_CLUB_DEFAULT;
+  const { activa: toleranciaActiva, horas: toleranciaHoras } = politicaCancelacionModulo(config, 'retas');
+  const fechaRetaMs = timestampEvento(reta?.fecha, reta?.hora_inicio);
+  const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaRetaMs, toleranciaActiva ? toleranciaHoras : 0);
+  const fueraDeTolerancia = toleranciaActiva && !dentroDeTolerancia;
+  const pagada = inscripcionEstaPagada(inscripcion);
+  const monto = Number(inscripcion?.monto) || precioDeReta(reta);
+  const yaResuelta = inscripcion?.estado === 'cancelado' || inscripcion?.estado === 'retenido';
+
+  async function confirmarCancelar() {
+    await onCancelar(reta, inscripcion, { abonarSaldo, generarPenalizacion, motivo });
+  }
+
+  return (
+    <ModalShell
+      titulo={inscripcion?.nombre || 'Jugador'}
+      subtitulo={`${reta?.nombre || 'Reta'} · ${formatoFechaLarga(reta?.fecha)} · ${formatoHora12(reta?.hora_inicio)}–${formatoHora12(reta?.hora_fin)}`}
+      onClose={onClose}
+      icon={Swords}
+      ancho="max-w-md"
+    >
+      <div className="space-y-3.5">
+        <dl className="space-y-2 rounded-xl border border-slate-200 bg-slate-100/60 p-3.5 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-slate-500">Monto</dt>
+            <dd className="font-bold text-slate-800">{formatoMoneda(monto)}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-slate-500">Estado de pago</dt>
+            <dd className={`font-bold ${pagada ? 'text-emerald-500' : 'text-amber-500'}`}>{pagada ? 'Pagado' : 'Pendiente'}</dd>
+          </div>
+          {inscripcion?.estado && (
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-slate-500">Estado de la inscripción</dt>
+              <dd className="font-bold capitalize text-slate-800">{inscripcion.estado}</dd>
+            </div>
+          )}
+        </dl>
+
+        {yaResuelta ? (
+          <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-[11px] text-slate-500">
+            Esta inscripción ya está {inscripcion.estado === 'retenido' ? 'retenida (cancelada sin reembolso)' : 'cancelada'} — el lugar ya
+            quedó liberado.
+          </p>
+        ) : !mostrarCancelacion ? (
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => onTogglePago(inscripcion)}
+              disabled={actualizandoPago}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 text-sm font-bold text-emerald-600 transition hover:bg-emerald-500/20 disabled:opacity-50"
+            >
+              {actualizandoPago ? <Loader2 size={15} className="animate-spin" /> : <DollarSign size={15} />}
+              {pagada ? 'Marcar como Pendiente' : 'Marcar como Pagado'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                // Ver comentario junto a `fueraDeTolerancia` en
+                // `DetalleReserva`: solo ajusta el valor INICIAL sugerido del
+                // checkbox, el staff lo puede volver a marcar libremente.
+                if (fueraDeTolerancia) setAbonarSaldo(false);
+                setMostrarCancelacion(true);
+              }}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2.5 text-sm font-bold text-rose-500 transition hover:bg-rose-500/20"
+            >
+              <Ban size={15} /> Cancelar Inscripción
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3 rounded-xl border border-rose-200 bg-rose-50 p-4">
+            <p className="text-sm font-bold text-red-900">¿Confirmas cancelar esta inscripción?</p>
+            <p className="text-xs text-gray-700">El lugar se libera de inmediato para que el club pueda revenderlo.</p>
+
+            {pagada && fueraDeTolerancia ? (
+              <div className="rounded-lg bg-white p-3 ring-1 ring-rose-200">
+                <p className="flex items-start gap-1.5 text-xs font-semibold text-gray-700">
+                  <ShieldAlert size={13} className="mt-0.5 shrink-0 text-rose-500" />
+                  Cancelación fuera de tiempo. De acuerdo a las políticas del club, el monto pagado no es reembolsable.
+                </p>
+                <p className="mt-1.5 text-[11px] text-slate-500">
+                  Se registrará como <b>Retenido</b> — el pago de {formatoMoneda(monto)} se queda en el club; no se abona nada a
+                  la Wallet.
+                </p>
+              </div>
+            ) : pagada ? (
+              <>
+                {toleranciaActiva && (
+                  <p className="flex items-start gap-1.5 rounded-lg bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-900 ring-1 ring-amber-300">
+                    <ShieldAlert size={13} className="mt-0.5 shrink-0" />
+                    {`Dentro del tiempo de anticipación requerido (${toleranciaHoras}h antes del juego) — cancelación sin penalización, se sugiere abonar saldo a favor.`}
+                  </p>
+                )}
+                <label className="flex items-start gap-2.5 rounded-lg bg-white p-3">
+                  <input
+                    type="checkbox"
+                    checked={abonarSaldo}
+                    onChange={(e) => setAbonarSaldo(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-orange-400"
+                  />
+                  <span className="text-xs text-gray-700">
+                    <span className="flex items-center gap-1.5 font-bold text-gray-900">
+                      <Wallet size={13} /> Abonar {formatoMoneda(monto)} como Saldo a Favor al Wallet del Jugador
+                    </span>
+                  </span>
+                </label>
+              </>
+            ) : fueraDeTolerancia ? (
+              <>
+                <p className="flex items-start gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-rose-200">
+                  <ShieldAlert size={13} className="mt-0.5 shrink-0 text-rose-500" />
+                  {`Cancelación extemporánea fuera de tolerancia (requiere ${toleranciaHoras}h de anticipación).`}
+                </p>
+                <label className="flex items-start gap-2.5 rounded-lg bg-white p-3">
+                  <input
+                    type="checkbox"
+                    checked={generarPenalizacion}
+                    onChange={(e) => setGenerarPenalizacion(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-rose-500"
+                  />
+                  <span className="text-xs text-gray-700">
+                    <span className="flex items-center gap-1.5 font-bold text-gray-900">
+                      <ShieldAlert size={13} /> Generar penalización / adeudo pendiente en POS ({formatoMoneda(monto)})
+                    </span>
+                    {!generarPenalizacion && (
+                      <span className="mt-1 block text-emerald-700">
+                        Se exonerará al jugador: la cancelación quedará limpia, sin adeudo en Smart POS.
+                      </span>
+                    )}
+                  </span>
+                </label>
+              </>
+            ) : null}
+
+            <Campo label="Motivo de cancelación" hint="Queda registrado en la inscripción para auditoría interna.">
+              <input value={motivo} onChange={(e) => setMotivo(e.target.value)} className={inputClase} />
+            </Campo>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <BotonSecundario onClick={() => setMostrarCancelacion(false)} disabled={cancelando}>
+                Regresar
+              </BotonSecundario>
+              <button
+                onClick={confirmarCancelar}
+                disabled={cancelando}
+                className="inline-flex items-center gap-2 rounded-lg bg-rose-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-400 disabled:opacity-50"
+              >
+                {cancelando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+                Confirmar Cancelación
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!mostrarCancelacion && (
+          <div className="flex justify-end pt-1">
+            <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+          </div>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
 function TarjetaReta({
   reta,
   cancha,
@@ -27403,6 +27589,7 @@ function TarjetaReta({
   onInscribir,
   onCancelarInscripcion,
   cancelandoId,
+  onGestionarInscripcion,
   onDescartarLocal,
   onRenombrar,
   onArchivar,
@@ -27575,16 +27762,28 @@ function TarjetaReta({
           }
           return (
             <div key={jugador.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs">
-              <span className="flex min-w-0 items-center gap-1.5 truncate font-semibold text-slate-800">
+              {/* Gestión en Panel del Club (requerimiento 2C): el NOMBRE ya
+                  no es texto plano — igual que en Reservas de Cancha/
+                  Academia, un clic abre el modal completo de gestión
+                  (detalle, alternar pago, cancelación con Política de
+                  Cancelación y Retención). El icono "X" de al lado se
+                  conserva como atajo rápido, pero la cancelación deja de
+                  depender EXCLUSIVAMENTE de él. */}
+              <button
+                type="button"
+                onClick={() => onGestionarInscripcion?.(reta, jugador)}
+                title="Ver detalle / gestionar inscripción"
+                className="flex min-w-0 items-center gap-1.5 truncate text-left font-semibold text-slate-800 transition hover:text-fuchsia-500"
+              >
                 <CheckCircle2 size={12} className="shrink-0 text-emerald-400" />
                 <span className="truncate">{jugador.nombre}</span>
-              </span>
+              </button>
               <div className="flex shrink-0 items-center gap-1.5">
                 {estadoPagoInscripcion(jugador) === 'pendiente' && <AlertTriangle size={11} className="text-amber-400" />}
                 <button
                   onClick={() => onCancelarInscripcion(reta, jugador)}
                   disabled={cancelandoId === jugador.id}
-                  title="Cancelar inscripción"
+                  title="Cancelar inscripción (atajo rápido)"
                   className="text-slate-400 transition hover:text-rose-400 disabled:opacity-40"
                 >
                   {cancelandoId === jugador.id ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
@@ -30783,6 +30982,12 @@ function ModuloTorneosRetas({
   const [modalNuevaReta, setModalNuevaReta] = useState(false);
   const [retaParaInscribir, setRetaParaInscribir] = useState(null);
   const [cancelandoInscripcionId, setCancelandoInscripcionId] = useState(null);
+  // Modal de Gestión de Inscripción (requerimiento 2C — Panel del Club,
+  // Retas): `{ reta, inscripcion }` del jugador cuyo NOMBRE se dio clic en
+  // `TarjetaReta`, o `null` si el modal está cerrado. Mismo patrón que
+  // `torneoGestion`/`retaMarcador` de aquí abajo.
+  const [inscripcionGestion, setInscripcionGestion] = useState(null);
+  const [actualizandoPagoRetaId, setActualizandoPagoRetaId] = useState(null);
 
   const inscripcionesPorReta = useMemo(() => {
     const mapa = {};
@@ -30813,7 +31018,7 @@ function ModuloTorneosRetas({
   // tolerancia (por defecto 6h antes del juego) NO reembolsa — la
   // inscripción pasa a 'retenido' en vez de 'cancelado', pero el lugar se
   // libera igual para que el club pueda revenderlo.
-  async function cancelarInscripcionReta(reta, inscripcion) {
+  async function cancelarInscripcionReta(reta, inscripcion, opciones = {}) {
     if (cancelandoInscripcionId) return; // Prevención de doble clic/bucles.
     setCancelandoInscripcionId(inscripcion.id);
     // Tolerancia de Cancelación — MOTOR UNIFICADO (Auditoría de Jerarquía en
@@ -30847,11 +31052,46 @@ function ModuloTorneosRetas({
     const pagada = inscripcionEstaPagada(inscripcion);
     const monto = Number(inscripcion.monto) || precioDeReta(reta);
     const nuevoEstado = dentroDeTolerancia ? 'cancelado' : 'retenido';
-    const generaAdeudo = !dentroDeTolerancia && !pagada && monto > 0;
-    const generaReembolso = dentroDeTolerancia && pagada && monto > 0;
+    // Modal Unificado de Gestión de Inscripción (mismo patrón que
+    // `DetalleReserva.cancelar`/`cancelarClaseCompleta`): el staff puede
+    // destildar "Abonar a Wallet"/"Generar penalización" desde los
+    // checkboxes del modal — `opciones.abonarSaldo`/
+    // `opciones.generarPenalizacion` llegan `undefined` cuando se llama sin
+    // pasar por el modal, y `!== false` los trata como `true` por default
+    // para no cambiar el comportamiento automático de siempre si nadie
+    // manda nada explícito.
+    const abonarSaldo = opciones.abonarSaldo !== false;
+    const generarPenalizacion = opciones.generarPenalizacion !== false;
+    const generaAdeudo = !dentroDeTolerancia && !pagada && monto > 0 && generarPenalizacion;
+    const generaReembolso = dentroDeTolerancia && pagada && monto > 0 && abonarSaldo;
+    // Motivo de Cancelación (Corrección de Esquema — item A): columna
+    // NUEVA (`motivo_cancelacion`, ver migracion_v79), opcional igual que
+    // `estado` — un proyecto que todavía no corrió esa migración sigue
+    // cancelando igual, solo sin guardar el motivo de texto libre.
+    const motivoLimpio = (opciones.motivo || '').trim() || null;
 
-    const cambiosEstado = generaReembolso ? { estado: nuevoEstado, estado_pago: 'reembolsado' } : { estado: nuevoEstado };
-    const { error } = await actualizarConColumnasOpcionales('reta_inscripciones', inscripcion.id, cambiosEstado, ['estado_pago']);
+    const cambiosEstado = {
+      estado: nuevoEstado,
+      ...(motivoLimpio ? { motivo_cancelacion: motivoLimpio } : {}),
+      ...(generaReembolso ? { estado_pago: 'reembolsado' } : {}),
+    };
+    // FIX DE RAÍZ (Bug Report — PGRST204 "Could not find the 'estado'
+    // column of 'reta_inscripciones'"): `estado` SIEMPRE se mandaba como
+    // columna obligatoria aquí, nunca como opcional — a diferencia del
+    // INSERT original (`inscribirseAReta`), que SÍ la trata como opcional
+    // desde siempre (ver comentario de cabecera ahí). Cualquier proyecto
+    // sin esa columna física (o que todavía no corrió
+    // migracion_v79_fix_reta_inscripciones_cancelacion.sql) hacía fallar
+    // el UPDATE completo con un 400 — la cancelación se veía "exitosa" en
+    // el Portal (Sincronización Silenciosa) pero la fila seguía activa en
+    // Supabase de verdad, dejando el cupo ocupado para siempre. Ahora
+    // `estado`/`motivo_cancelacion` van en la lista de columnas opcionales,
+    // igual criterio que el resto de la Arquitectura Flexible del proyecto.
+    const { error } = await actualizarConColumnasOpcionales('reta_inscripciones', inscripcion.id, cambiosEstado, [
+      'estado_pago',
+      'estado',
+      'motivo_cancelacion',
+    ]);
     if (error) {
       setCancelandoInscripcionId(null);
       mostrarToast({ titulo: 'No se pudo cancelar la inscripción', detalle: error.message, tono: 'error' });
@@ -30928,6 +31168,34 @@ function ModuloTorneosRetas({
           : `Se liberó el lugar de ${inscripcion.nombre} y se reembolsaron ${formatoMoneda(monto)} a su Wallet.`
         : `Se liberó el lugar de ${inscripcion.nombre}.`,
       tono: generaAdeudo ? (penalizacionGuardada === false ? 'error' : 'aviso') : nuevoEstado === 'retenido' ? 'aviso' : reembolsoOk === false ? 'error' : 'ok',
+    });
+  }
+
+  // Alternar Estado de Pago (requerimiento 2C — Gestión desde el Panel del
+  // Club): mismo patrón "toggle rápido" que `alternarEstadoPago` de
+  // Academia (`ModalDetalleClase`) — permite marcar/desmarcar el pago de
+  // una inscripción de Reta directamente desde `ModalGestionInscripcionReta`,
+  // sin tener que pasar por Smart POS. Al marcar "Pagado" se asume Efectivo
+  // por default (igual criterio que Academia) salvo que ya traiga otro
+  // método guardado; al revertir a "pendiente" se limpia.
+  async function alternarEstadoPagoReta(inscripcion) {
+    if (actualizandoPagoRetaId) return; // Prevención de doble clic/bucles.
+    setActualizandoPagoRetaId(inscripcion.id);
+    const nuevoEstado = inscripcion.estado_pago === 'pagado' ? 'pendiente' : 'pagado';
+    const cambios = {
+      estado_pago: nuevoEstado,
+      metodo_pago: nuevoEstado === 'pagado' ? inscripcion.metodo_pago || 'efectivo' : null,
+    };
+    const { error } = await actualizarConColumnasOpcionales('reta_inscripciones', inscripcion.id, cambios, ['metodo_pago', 'estado_pago']);
+    setActualizandoPagoRetaId(null);
+    if (error) {
+      mostrarToast({ titulo: 'No se pudo actualizar el pago', detalle: error.message, tono: 'error' });
+      return;
+    }
+    setInscripciones((prev) => prev.map((i) => (i.id === inscripcion.id ? { ...i, ...cambios } : i)));
+    mostrarToast({
+      titulo: nuevoEstado === 'pagado' ? 'Marcado como pagado' : 'Marcado como pendiente',
+      detalle: inscripcion.nombre,
     });
   }
 
@@ -32197,6 +32465,7 @@ function ModuloTorneosRetas({
                   onInscribir={setRetaParaInscribir}
                   onCancelarInscripcion={cancelarInscripcionReta}
                   cancelandoId={cancelandoInscripcionId}
+                  onGestionarInscripcion={(retaDeInscripcion, jugador) => setInscripcionGestion({ reta: retaDeInscripcion, inscripcion: jugador })}
                   onDescartarLocal={descartarRetaLocal}
                   onRenombrar={renombrarReta}
                   onArchivar={archivarReta}
@@ -32438,6 +32707,25 @@ function ModuloTorneosRetas({
           onClose={() => setPartidoMarcador(null)}
           onGuardar={cargarMarcadorPartidoHandler}
           guardando={guardandoMarcador}
+        />
+      )}
+
+      {inscripcionGestion && (
+        <ModalGestionInscripcionReta
+          reta={inscripcionGestion.reta}
+          inscripcion={
+            (inscripcionesPorReta[inscripcionGestion.reta?.id] || []).find((i) => i.id === inscripcionGestion.inscripcion.id) ||
+            inscripcionGestion.inscripcion
+          }
+          configClub={configClub}
+          cancelando={cancelandoInscripcionId === inscripcionGestion.inscripcion.id}
+          actualizandoPago={actualizandoPagoRetaId === inscripcionGestion.inscripcion.id}
+          onClose={() => setInscripcionGestion(null)}
+          onTogglePago={alternarEstadoPagoReta}
+          onCancelar={async (reta, inscripcion, opciones) => {
+            await cancelarInscripcionReta(reta, inscripcion, opciones);
+            setInscripcionGestion(null);
+          }}
         />
       )}
 
@@ -47576,7 +47864,22 @@ function PortalPublicoJugadores({ clubSlug }) {
     const monto = Number(inscripcion.monto) || 0;
     const huboReembolso = (inscripcion.estado_pago || inscripcion.estatus_pago) === 'pagado' && monto > 0;
     const cambios = huboReembolso ? { estado: 'cancelado', estado_pago: 'reembolsado' } : { estado: 'cancelado' };
-    const { error } = await actualizarConColumnasOpcionales('reta_inscripciones', inscripcion.id, cambios, ['estado_pago']);
+    // FIX DE RAÍZ (Bug Report — PGRST204 "Could not find the 'estado' column
+    // of 'reta_inscripciones'"): esta era la causa exacta del error de
+    // consola reportado — `estado` se mandaba como columna obligatoria, así
+    // que el UPDATE fallaba con 400 y la cancelación se veía "exitosa" en el
+    // Portal (Sincronización Silenciosa de abajo) pero la inscripción seguía
+    // ACTIVA de verdad en Supabase, con el cupo sin liberar. `estado` ahora
+    // va en la lista de columnas opcionales (ver migracion_v79), igual
+    // criterio que el resto de la Arquitectura Flexible del proyecto. Nota:
+    // esta función solo se llama cuando `dentroDeTolerancia` ya fue
+    // validado río arriba (`ModalDetalleHistorialPortal`/`ModalResumenReta`
+    // — ver sus comentarios de cabecera), por eso reembolsa
+    // incondicionalmente si había pago, sin recalcular tolerancia aquí.
+    const { error } = await actualizarConColumnasOpcionales('reta_inscripciones', inscripcion.id, cambios, [
+      'estado_pago',
+      'estado',
+    ]);
     if (error) console.warn('[Portal] No se pudo sincronizar la cancelación de la reta, se aplicó solo local.', error);
     if (huboReembolso) {
       await reembolsarAWalletPortal(monto, `Reembolso por cancelación en tiempo · Reta`, 'reta', inscripcion.id);
