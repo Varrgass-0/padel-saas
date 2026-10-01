@@ -42598,7 +42598,56 @@ function TextoAnimadoPorPalabras({ texto, resaltar = [], claseResaltado = 'text-
 }
 
 // ---- Paso 3: Selección de Plan (Tiers) ------------------------------------
-function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSeleccionarPlan, onContinuar, onAtras }) {
+function PantallaSeleccionPlanOnboarding({
+  nombreClub,
+  planSeleccionado,
+  onSeleccionarPlan,
+  onContinuar,
+  onAtras,
+  onActivarPrueba,
+  activandoPrueba,
+}) {
+  // Periodo de Prueba / Free Trial mediante Códigos Promocionales
+  // (migracion_v84) — campo opcional debajo de las 3 tarjetas de plan.
+  // `codigoPromoAplicado` guarda la fila YA validada de
+  // `codigos_promocionales` (id/codigo/diasPrueba/usosActuales) — se
+  // consulta directo aquí (lectura simple, sin tocar ningún estado de
+  // `AppInterno`); el GUARDADO real (escribir en `configuracion_club` +
+  // incrementar `usos_actuales`) sí vive en `AppInterno`
+  // (`activarPruebaGratuita`, reenviado como `onActivarPrueba`) porque ahí
+  // es donde vive `configClub`/`CLUB_ACTIVO_ID`.
+  const [codigoPromoInput, setCodigoPromoInput] = useState('');
+  const [codigoPromoAplicado, setCodigoPromoAplicado] = useState(null);
+  const [validandoCodigoPromo, setValidandoCodigoPromo] = useState(false);
+  const [errorCodigoPromo, setErrorCodigoPromo] = useState('');
+
+  async function aplicarCodigoPromo() {
+    const codigoNormalizado = (codigoPromoInput || '').trim().toUpperCase();
+    if (!codigoNormalizado) return;
+    setErrorCodigoPromo('');
+    setCodigoPromoAplicado(null);
+    setValidandoCodigoPromo(true);
+    try {
+      const { data, error } = await supabase.from('codigos_promocionales').select('*').eq('codigo', codigoNormalizado).maybeSingle();
+      if (error) throw error;
+      const valido = data && data.activo !== false && (data.usos_maximos == null || Number(data.usos_actuales || 0) < Number(data.usos_maximos));
+      if (!valido) {
+        setErrorCodigoPromo('Ese código no es válido o ya no está disponible.');
+      } else {
+        setCodigoPromoAplicado({
+          id: data.id,
+          codigo: data.codigo,
+          diasPrueba: Number(data.dias_prueba) || 0,
+          usosActuales: Number(data.usos_actuales || 0),
+        });
+      }
+    } catch (err) {
+      console.warn('[Onboarding] No se pudo validar el código promocional.', err);
+      setErrorCodigoPromo('No se pudo validar el código — intenta de nuevo en unos segundos.');
+    }
+    setValidandoCodigoPromo(false);
+  }
+
   return (
     <LienzoOnboardingClub ancho="max-w-4xl">
       <div className="mb-8 text-center">
@@ -42705,10 +42754,72 @@ function PantallaSeleccionPlanOnboarding({ nombreClub, planSeleccionado, onSelec
         </span>
       </p>
 
-      <div className="mt-8 flex justify-center">
-        <BotonPrimarioWizard onClick={onContinuar} disabled={!planSeleccionado} className="px-8 py-3 text-base">
-          Continuar <ArrowRight size={16} />
-        </BotonPrimarioWizard>
+      {/* Periodo de Prueba / Free Trial mediante Códigos Promocionales
+          (migracion_v84) — campo opcional, debajo del mensaje "Tu dinero es
+          tuyo.". Un club que no tiene código simplemente no lo toca y sigue
+          el flujo normal ("Continuar" de siempre, debajo). */}
+      <div className="mx-auto mt-6 max-w-sm">
+        {codigoPromoAplicado ? (
+          <motion.div
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex items-start gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-left"
+          >
+            <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-emerald-600" />
+            <p className="text-sm font-bold text-emerald-700">
+              ¡Código aplicado! Prueba gratuita de {codigoPromoAplicado.diasPrueba} días activada.
+            </p>
+          </motion.div>
+        ) : (
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wide text-slate-400">¿Tienes un código promocional o de prueba?</label>
+            <div className="mt-1.5 flex gap-2">
+              <input
+                type="text"
+                value={codigoPromoInput}
+                onChange={(e) => {
+                  setCodigoPromoInput(e.target.value);
+                  if (errorCodigoPromo) setErrorCodigoPromo('');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    aplicarCodigoPromo();
+                  }
+                }}
+                placeholder="Ej. DEMQLUBOS15"
+                className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold uppercase tracking-wide text-slate-900 outline-none placeholder:font-normal placeholder:normal-case placeholder:text-slate-400 focus:border-orange-400"
+              />
+              <button
+                type="button"
+                onClick={aplicarCodigoPromo}
+                disabled={!codigoPromoInput.trim() || validandoCodigoPromo}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {validandoCodigoPromo && <Loader2 size={14} className="animate-spin" />}
+                Aplicar
+              </button>
+            </div>
+            {errorCodigoPromo && <p className="mt-1.5 text-xs font-semibold text-red-600">{errorCodigoPromo}</p>}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6 flex justify-center">
+        {codigoPromoAplicado ? (
+          <BotonPrimarioWizard
+            onClick={() => onActivarPrueba?.(codigoPromoAplicado)}
+            disabled={!planSeleccionado || activandoPrueba}
+            className="px-8 py-3 text-base"
+          >
+            {activandoPrueba ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
+            Activar prueba gratuita de {codigoPromoAplicado.diasPrueba} días
+          </BotonPrimarioWizard>
+        ) : (
+          <BotonPrimarioWizard onClick={onContinuar} disabled={!planSeleccionado} className="px-8 py-3 text-base">
+            Continuar <ArrowRight size={16} />
+          </BotonPrimarioWizard>
+        )}
       </div>
     </LienzoOnboardingClub>
   );
@@ -42812,6 +42923,127 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
   );
 }
 
+// ---- Periodo de Prueba / Free Trial — Bloqueo por Expiración (migracion_v84)
+// --------------------------------------------------------------------------
+// "Tu periodo de prueba ha finalizado": pantalla completa fija que
+// `AppInterno` renderiza EN VEZ del layout principal del Panel de
+// Administración del Club (Sidebar/TopHeader/módulos) en cuanto
+// `estado_suscripcion === 'prueba'` Y `now() > fecha_fin_prueba` (ver el
+// chequeo global más abajo, justo antes del `else` que arma ese layout).
+// Mismo lenguaje visual que el resto del Onboarding (`LienzoOnboardingClub`,
+// `FondoGlowQlubOS`) para que se sienta como la continuación natural del
+// wizard, no como una pantalla de error aparte. Mock de pasarela de pago —
+// mismo criterio que `PantallaConfirmacionOnboarding`/`finalizarOnboardingClub`:
+// HOY no se cobra nada real, los campos de tarjeta son solo visuales,
+// listos para reemplazarse por un Checkout real de Stripe. Al "reactivar",
+// `onRestaurarAcceso` (→ `restaurarAccesoClub` en `AppInterno`) SOLO cambia
+// `estado_suscripcion` de vuelta a 'activa' — ningún dato operativo del club
+// (canchas, reservas, jugadores, ventas, Kárdex, etc.) se toca ni se pierde.
+function PantallaPruebaVencida({ nombreClub, planActual, restaurando, onRestaurarAcceso }) {
+  const [planElegido, setPlanElegido] = useState(planActual || null);
+  // Campos de tarjeta — mock visual únicamente (ver comentario de cabecera):
+  // no se validan con ningún procesador real todavía, solo se exige que no
+  // estén vacíos para que el flujo se sienta "real" sin fingir una
+  // validación que no existe.
+  const [numeroTarjeta, setNumeroTarjeta] = useState('');
+  const [vencimientoTarjeta, setVencimientoTarjeta] = useState('');
+  const [cvvTarjeta, setCvvTarjeta] = useState('');
+
+  const datosTarjetaCompletos = numeroTarjeta.trim().length >= 12 && vencimientoTarjeta.trim().length >= 4 && cvvTarjeta.trim().length >= 3;
+
+  return (
+    <div className="fixed inset-0 z-[100] overflow-y-auto bg-[#f8fafc]">
+      <div className="relative flex min-h-full flex-col items-center px-4 py-10">
+        <FondoGlowQlubOS />
+        <div className="relative z-10 w-full max-w-4xl">
+          <div className="flex flex-col items-center gap-3 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-100 text-red-600">
+              <Lock size={26} strokeWidth={1.75} />
+            </div>
+            <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">Tu periodo de prueba ha finalizado</h1>
+            <p className="max-w-xl text-sm font-medium text-slate-500">
+              {nombreClub ? `${nombreClub} queda` : 'Tu club queda'} en pausa hasta elegir un plan y agregar un método de pago — toda tu
+              configuración, canchas, reservas y datos siguen exactamente como los dejaste, no se pierde nada.
+            </p>
+          </div>
+
+          <div className="mt-8 grid gap-4 sm:grid-cols-3">
+            {PLANES_ONBOARDING_CLUB.map((plan) => {
+              const activo = planElegido?.canchas === plan.canchas;
+              return (
+                <button
+                  key={plan.canchas}
+                  type="button"
+                  onClick={() => setPlanElegido(plan)}
+                  className={`flex flex-col items-start gap-2 rounded-2xl border-2 bg-white p-5 text-left shadow-sm transition ${
+                    activo ? 'border-[#FF6B35] shadow-[0_0_0_4px_rgba(255,107,53,0.25)]' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
+                  }`}
+                >
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
+                  <p className="text-2xl font-black text-slate-900">
+                    {formatoPrecioPlanOnboarding(plan.precioMensual)}
+                    <span className="text-sm font-semibold text-slate-400"> / mes</span>
+                  </p>
+                  <p className="text-xs leading-snug text-slate-500">{plan.descripcion}</p>
+                  {activo && (
+                    <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-orange-600">
+                      <CheckCircle2 size={14} /> Plan seleccionado
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mx-auto mt-6 max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
+              <CreditCard size={14} /> Tarjeta de crédito o débito
+            </p>
+            <div className="mt-3 space-y-2.5">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={numeroTarjeta}
+                onChange={(e) => setNumeroTarjeta(e.target.value)}
+                placeholder="Número de tarjeta"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400 focus:border-orange-400"
+              />
+              <div className="flex gap-2.5">
+                <input
+                  type="text"
+                  value={vencimientoTarjeta}
+                  onChange={(e) => setVencimientoTarjeta(e.target.value)}
+                  placeholder="MM/AA"
+                  className="w-1/2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400 focus:border-orange-400"
+                />
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={cvvTarjeta}
+                  onChange={(e) => setCvvTarjeta(e.target.value)}
+                  placeholder="CVV"
+                  className="w-1/2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400 focus:border-orange-400"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 flex justify-center">
+            <BotonPrimarioWizard
+              onClick={() => onRestaurarAcceso?.(planElegido)}
+              disabled={!planElegido || !datosTarjetaCompletos || restaurando}
+              className="px-8 py-3 text-base"
+            >
+              {restaurando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
+              Restaurar acceso a mi club
+            </BotonPrimarioWizard>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- Orquestador: máquina de 4 etapas (Pasos 2 a 5 del flujo de entrada) --
 // Orden cronológico definitivo (item 1): Registro (Paso 1, fuera de este
 // componente, en `ClubAuthScreen`) → Kickoff (Paso 2: Bienvenida) → Plan
@@ -42846,7 +43078,16 @@ const VARIANTES_IMPACTO_ENTRADA = {
   exit: { opacity: 0, scale: 0.95 },
 };
 
-function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan, guardandoActivacion, onConfirmarActivacion, moduloConfigProps }) {
+function OnboardingCanvasClub({
+  nombreClub,
+  planSeleccionado,
+  onSeleccionarPlan,
+  guardandoActivacion,
+  onConfirmarActivacion,
+  moduloConfigProps,
+  onActivarPruebaGratuita,
+  activandoPruebaGratuita,
+}) {
   const [etapa, setEtapa] = useState('kickoff'); // 'kickoff' | 'plan' | 'setup' | 'confirmacion'
   const [direccion, setDireccion] = useState(1); // 1 = avanzar (Siguiente), -1 = retroceder (Atrás)
 
@@ -42866,6 +43107,19 @@ function OnboardingCanvasClub({ nombreClub, planSeleccionado, onSeleccionarPlan,
         onSeleccionarPlan={onSeleccionarPlan}
         onContinuar={() => irA('setup', 1)}
         onAtras={() => irA('kickoff', -1)}
+        // Periodo de Prueba / Free Trial (migracion_v84) — "avanza al paso
+        // final del registro" se interpreta igual que "Continuar" normal
+        // (sigue a 'setup'), NO se salta la Configuración del Club: el
+        // Setup Canvas captura datos operativos reales (horario, nombre del
+        // administrador, canchas…) que el club necesita sin importar si
+        // está en prueba o ya pagando — saltarlo dejaría un club sin
+        // configurar. El guardado del código/estado de prueba en sí
+        // (`onActivarPruebaGratuita`) ya ocurrió antes de avanzar.
+        onActivarPrueba={async (codigoInfo) => {
+          await onActivarPruebaGratuita?.(codigoInfo);
+          irA('setup', 1);
+        }}
+        activandoPrueba={activandoPruebaGratuita}
       />
     );
   } else if (etapa === 'confirmacion') {
@@ -53342,6 +53596,25 @@ function AppInterno({ clubInicial } = {}) {
       : null
   );
   const [guardandoActivacionOnboarding, setGuardandoActivacionOnboarding] = useState(false);
+  // Periodo de Prueba / Free Trial mediante Códigos Promocionales
+  // (migracion_v84) — mismo criterio que `onboardingCompletedClub`/
+  // `planClubSeleccionado` arriba: el primer render ya conoce el estado real
+  // (sin esperar el round-trip de `cargarConfigClubSupabase`) leyendo
+  // `clubInicial`, que viene del mismo `select('*')` sobre
+  // `configuracion_club` que ya resuelve `ClubAuthGate`. A PROPÓSITO quedan
+  // FUERA del objeto `configClub` (no se agregan a `CONFIG_CLUB_DEFAULT`):
+  // `guardarConfigClub` REEMPLAZA el objeto `configClub` completo en cada
+  // guardado de Horario/Tarifas/Tolerancia (ver su `setConfigClub(limpia)`),
+  // construido solo con los campos que ESA función conoce — si estos 3
+  // campos vivieran ahí, cualquier guardado de otra tarjeta de Configuración
+  // los resetearía a 'activa'/null sin que el dueño lo pidiera, el mismo bug
+  // de "last write wins" ya corregido para `nombreAdministrador` (Refactor
+  // Onboarding v67). Mantenerlos como estado propio evita el problema de raíz.
+  const [estadoSuscripcionClub, setEstadoSuscripcionClub] = useState(() => clubInicial?.estado_suscripcion || 'activa');
+  const [fechaFinPruebaClub, setFechaFinPruebaClub] = useState(() => clubInicial?.fecha_fin_prueba || null);
+  const [codigoPromoUsadoClub, setCodigoPromoUsadoClub] = useState(() => clubInicial?.codigo_promo_usado || null);
+  const [activandoPruebaGratuita, setActivandoPruebaGratuita] = useState(false);
+  const [restaurandoAccesoClub, setRestaurandoAccesoClub] = useState(false);
   // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) —
   // tope numérico derivado del plan snapshot de arriba (`null` = sin
   // límite, ver `limiteCanchasDelPlan`). Memoizado para no recalcular en
@@ -54116,6 +54389,16 @@ function AppInterno({ clubInicial } = {}) {
             precioMensual: data.plan_precio_mensual != null ? Number(data.plan_precio_mensual) : null,
           });
         }
+        // Periodo de Prueba / Free Trial mediante Códigos Promocionales
+        // (migracion_v84) — mismo `select('*')` de arriba, sin consulta
+        // nueva. A PROPÓSITO se guardan en su propio estado (NO dentro de
+        // `configClub`, ver el comentario donde se declaran estos 3
+        // `useState` más arriba) — en un proyecto sin esta migración, los 3
+        // campos vienen `undefined` y caen a sus defaults de siempre
+        // ('activa'/null), cero impacto.
+        setEstadoSuscripcionClub(data.estado_suscripcion || 'activa');
+        setFechaFinPruebaClub(data.fecha_fin_prueba || null);
+        setCodigoPromoUsadoClub(data.codigo_promo_usado || null);
       }
     } catch (err) {
       if (!esErrorTablaInexistente(err) && !opts.silencioso) {
@@ -54852,6 +55135,60 @@ function AppInterno({ clubInicial } = {}) {
     }
   }, []);
 
+  // Periodo de Prueba / Free Trial mediante Códigos Promocionales
+  // (migracion_v84) — Paso 3 "Selección de Plan": se dispara cuando el dueño
+  // aplica un código válido y aprieta "Activar prueba gratuita de X días"
+  // (ver `PantallaSeleccionPlanOnboarding`). `codigoInfo` es la fila YA
+  // validada/leída de `codigos_promocionales` (id/codigo/diasPrueba/
+  // usosActuales) — esta función no vuelve a consultarla, solo la usa para
+  // calcular `fecha_fin_prueba` e incrementar `usos_actuales`. Mismo
+  // criterio de Sincronización Silenciosa que `guardarPlanSeleccionadoClub`:
+  // el estado local (`estadoSuscripcionClub`/`fechaFinPruebaClub`/
+  // `codigoPromoUsadoClub`) avanza de inmediato y NUNCA bloquea el wizard —
+  // un fallo de red aquí no debe trabar el registro de un club nuevo; si
+  // Supabase no guardó el estado "prueba", el club simplemente sigue
+  // operando como 'activa' (sin bloqueo indebido) y el dueño puede
+  // reintentar el código desde Configuración del Club más adelante.
+  const activarPruebaGratuita = useCallback(async (codigoInfo) => {
+    if (!codigoInfo?.codigo || !(Number(codigoInfo.diasPrueba) > 0)) return;
+    setActivandoPruebaGratuita(true);
+    const fechaFinPrueba = new Date(Date.now() + Number(codigoInfo.diasPrueba) * 24 * 60 * 60 * 1000).toISOString();
+    if (CLUB_ACTIVO_ID) {
+      try {
+        const { error } = await actualizarConColumnasOpcionales(
+          'configuracion_club',
+          CLUB_ACTIVO_ID,
+          {
+            estado_suscripcion: 'prueba',
+            fecha_fin_prueba: fechaFinPrueba,
+            codigo_promo_usado: codigoInfo.codigo,
+          },
+          ['estado_suscripcion', 'fecha_fin_prueba', 'codigo_promo_usado']
+        );
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Onboarding Canvas] No se pudo activar la prueba gratuita en Supabase todavía.', err);
+      }
+      // Incremento de `usos_actuales` — best-effort, igual criterio que el
+      // resto de esta función: un código "gastado de más" por una
+      // condición de carrera rarísima es preferible a trabar el registro de
+      // un club nuevo por un error de red en un contador.
+      try {
+        const { error: errorIncremento } = await supabase
+          .from('codigos_promocionales')
+          .update({ usos_actuales: Number(codigoInfo.usosActuales || 0) + 1 })
+          .eq('id', codigoInfo.id);
+        if (errorIncremento) throw errorIncremento;
+      } catch (err) {
+        console.warn('[Onboarding Canvas] No se pudo incrementar usos_actuales del código promocional.', err);
+      }
+    }
+    setEstadoSuscripcionClub('prueba');
+    setFechaFinPruebaClub(fechaFinPrueba);
+    setCodigoPromoUsadoClub(codigoInfo.codigo);
+    setActivandoPruebaGratuita(false);
+  }, []);
+
   // Interactive Onboarding Canvas (migracion_v66) — Paso 4 "Confirmación":
   // marca `onboarding_completed: true` (además de re-confirmar el plan, por
   // si el guardado del Paso 1 no había llegado a Supabase) — este es el
@@ -54892,6 +55229,45 @@ function AppInterno({ clubInicial } = {}) {
     }
     setGuardandoActivacionOnboarding(false);
   }, [planClubSeleccionado, mostrarToast]);
+
+  // Periodo de Prueba / Free Trial mediante Códigos Promocionales
+  // (migracion_v84) — "Tu periodo de prueba ha finalizado"
+  // (`PantallaPruebaVencida`, bloqueo global del layout principal del Panel
+  // de Administración, ver `AppInterno` más abajo): el dueño ingresa su
+  // tarjeta (mock, mismo placeholder "listo para Stripe" que
+  // `finalizarOnboardingClub`/`PantallaConfirmacionOnboarding` — HOY no se
+  // cobra nada real) y esta función SOLO cambia `estado_suscripcion` de
+  // vuelta a 'activa' (opcionalmente actualiza el plan si el dueño cambió de
+  // tier al reactivar) — nunca toca/borra ningún dato operativo del club
+  // (canchas, reservas, jugadores, ventas, etc.), tal como pide la
+  // especificación ("restaurar el acceso sin perder ningún dato
+  // configurado").
+  const restaurarAccesoClub = useCallback(
+    async (plan) => {
+      setRestaurandoAccesoClub(true);
+      try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
+        const payload = { estado_suscripcion: 'activa' };
+        const columnasOpcionales = ['estado_suscripcion'];
+        if (plan) {
+          payload.plan_canchas = plan.canchas || null;
+          payload.plan_nombre = plan.nombre || null;
+          payload.plan_precio_mensual = plan.precioMensual != null ? plan.precioMensual : null;
+          columnasOpcionales.push('plan_canchas', 'plan_nombre', 'plan_precio_mensual');
+        }
+        const { error } = await actualizarConColumnasOpcionales('configuracion_club', CLUB_ACTIVO_ID, payload, columnasOpcionales);
+        if (error) throw error;
+        setEstadoSuscripcionClub('activa');
+        if (plan) setPlanClubSeleccionado(plan);
+        mostrarToast({ titulo: '¡Acceso restaurado!', detalle: 'Tu club sigue exactamente como lo configuraste — ningún dato se perdió.' });
+      } catch (err) {
+        console.warn('[Panel] No se pudo restaurar el acceso del club.', err);
+        mostrarToast({ titulo: 'No se pudo restaurar el acceso', detalle: err?.message || 'Intenta de nuevo en unos segundos.', tono: 'error' });
+      }
+      setRestaurandoAccesoClub(false);
+    },
+    [mostrarToast]
+  );
 
   useEffect(() => {
     cargarRetas();
@@ -56170,6 +56546,8 @@ function AppInterno({ clubInicial } = {}) {
           guardandoActivacion={guardandoActivacionOnboarding}
           onConfirmarActivacion={finalizarOnboardingClub}
           moduloConfigProps={moduloConfigProps}
+          onActivarPruebaGratuita={activarPruebaGratuita}
+          activandoPruebaGratuita={activandoPruebaGratuita}
         />
         <ToastHost toasts={toasts} />
       </ToastContext.Provider>
@@ -56195,6 +56573,31 @@ function AppInterno({ clubInicial } = {}) {
           onEntrarComoColaborador={entrarComoColaborador}
           onCrearPinColaborador={crearPinColaborador}
           onCerrarSesionMaster={cerrarSesionClub}
+        />
+        <ToastHost toasts={toasts} />
+      </ToastContext.Provider>
+    );
+  } else if (estadoSuscripcionClub === 'prueba' && fechaFinPruebaClub && Date.now() > new Date(fechaFinPruebaClub).getTime()) {
+    // Periodo de Prueba / Free Trial mediante Códigos Promocionales
+    // (migracion_v84) — verificación GLOBAL de vencimiento, más alta que el
+    // router de módulos del Panel: gatea TODO el layout principal del Panel
+    // de Administración del Club (Sidebar/TopHeader/módulos, el `else` de
+    // abajo) en cuanto la prueba vence, sin importar en qué módulo estuviera
+    // el dueño — exactamente "el layout principal del Panel de
+    // Administración del Club" que pide la especificación. El Kiosko/PIN
+    // (arriba) NO queda bloqueado a propósito: el candado es del Panel
+    // Admin, no de la Terminal de Operadores. `PantallaPruebaVencida` SOLO
+    // cambia `estado_suscripcion` al reactivar (`restaurarAccesoClub`) —
+    // ningún dato operativo del club se toca ni se pierde mientras está
+    // bloqueado.
+    faseEntrada = 'prueba-vencida';
+    contenido = (
+      <ToastContext.Provider value={mostrarToast}>
+        <PantallaPruebaVencida
+          nombreClub={configClub?.nombre}
+          planActual={planClubSeleccionado}
+          restaurando={restaurandoAccesoClub}
+          onRestaurarAcceso={restaurarAccesoClub}
         />
         <ToastHost toasts={toasts} />
       </ToastContext.Provider>
