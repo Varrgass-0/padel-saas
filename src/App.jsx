@@ -3324,7 +3324,9 @@ function SeccionPenalizacionesPendientes({ jugadorId, onIrACobrarEnComanda, ocul
     setCargando(true);
     setError('');
     let query = conClubId(supabase.from('penalizaciones_pendientes').select('*').eq('estado', 'pendiente').order('created_at', { ascending: false }));
-    if (jugadorId) query = query.eq('jugador_id', jugadorId);
+    // `jugador_id` es `text` desde migracion_v81 (ver `registrarPenalizacionPendiente`)
+    // — se compara como texto explícito, nunca el id crudo.
+    if (jugadorId) query = query.eq('jugador_id', String(jugadorId).trim());
     const { data, error: errQuery } = await query;
     setCargando(false);
     if (errQuery) {
@@ -3735,7 +3737,17 @@ async function registrarPenalizacionPendiente({ jugadorId, jugadorNombre, tipoAc
   try {
     const { error } = await supabase.from('penalizaciones_pendientes').insert(
       withClubId({
-        jugador_id: jugadorId ?? null,
+        // FIX DE RAÍZ (error 22P02 "invalid input syntax for type bigint:
+        // '<uuid>'"): MISMA lección ya aprendida con `cortesias_otorgadas`
+        // (ver `otorgarCortesiaCRM`/`otorgarCortesiaFrecuenciaCRM`, migracion
+        // _v36_fix_absoluto_text) — `jugadores.id` NO es siempre un bigint
+        // numérico; en varios proyectos de este SaaS es un uuid de verdad
+        // (36 caracteres). `penalizaciones_pendientes.jugador_id` se
+        // redeclaró como `text` en migracion_v81 precisamente para aceptar
+        // cualquiera de las dos formas — pero el valor SIEMPRE se manda como
+        // `String(...).trim()`, nunca el id crudo, para no depender de cómo
+        // `supabase-js` serialice un número vs un uuid.
+        jugador_id: jugadorId != null ? String(jugadorId).trim() : null,
         jugador_nombre: jugadorNombre || 'Jugador',
         tipo_actividad: tipoActividad,
         referencia_tabla: referenciaTabla,
@@ -12293,6 +12305,16 @@ function InscripcionesEventoPanel({
                   <td className="px-3 py-2.5 text-right font-black text-amber-400">{formatoMoneda(f.monto)}</td>
                   <td className="px-3 py-2.5 text-right">
                     <div className="ml-auto flex items-center justify-end gap-1.5">
+                      {/* FIX (item 2B — Limpieza en Smart POS/Recepción):
+                          se eliminó POR COMPLETO el botón de bote de basura
+                          que vivía aquí al lado de "Cobrar". Las
+                          cancelaciones de Reta/Torneo/Academia ahora se
+                          gestionan EXCLUSIVAMENTE desde su módulo de origen
+                          (Torneos & Retas / Academia & Clínicas) o desde el
+                          Portal del Jugador — nunca desde Recepción/Smart
+                          POS, que solo cobra. `onCancelar`/`cancelandoClave`
+                          se conservan en las props por compatibilidad, pero
+                          ya no se usan para renderizar nada aquí. */}
                       <BotonPrimario
                         onClick={() => onCobrar(f)}
                         disabled={cobrandoClave === f.clave || cancelandoClave === f.clave}
@@ -12301,17 +12323,6 @@ function InscripcionesEventoPanel({
                         {cobrandoClave === f.clave ? <Loader2 size={13} className="animate-spin" /> : <DollarSign size={13} />}
                         Cobrar
                       </BotonPrimario>
-                      {onCancelar && (
-                        <button
-                          type="button"
-                          onClick={() => onCancelar(f)}
-                          disabled={cobrandoClave === f.clave || cancelandoClave === f.clave}
-                          title="Cancelar inscripción y liberar el lugar"
-                          className="inline-flex shrink-0 items-center justify-center rounded-lg border border-rose-400/30 bg-rose-400/5 p-1.5 text-rose-400 transition hover:bg-rose-400/10 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {cancelandoClave === f.clave ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-                        </button>
-                      )}
                     </div>
                   </td>
                 </tr>
@@ -13540,8 +13551,14 @@ function ModuloSmartPOS({
     }
     (async () => {
       try {
+        // `jugador_id` es `text` desde migracion_v81 (ver `registrarPenalizacionPendiente`)
+        // — se compara como texto explícito, nunca el id crudo.
         const { data } = await conClubId(
-          supabase.from('penalizaciones_pendientes').select('*').eq('estado', 'pendiente').eq('jugador_id', clienteSeleccionadoId)
+          supabase
+            .from('penalizaciones_pendientes')
+            .select('*')
+            .eq('estado', 'pendiente')
+            .eq('jugador_id', String(clienteSeleccionadoId).trim())
         );
         if (!cancelado) setPenalizacionesClienteComanda(data || []);
       } catch (_e) {
@@ -27615,8 +27632,6 @@ function TarjetaReta({
   canchasAdicionales,
   inscritos,
   onInscribir,
-  onCancelarInscripcion,
-  cancelandoId,
   onGestionarInscripcion,
   onDescartarLocal,
   onRenombrar,
@@ -27789,35 +27804,26 @@ function TarjetaReta({
             );
           }
           return (
-            <div key={jugador.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs">
-              {/* Gestión en Panel del Club (requerimiento 2C): el NOMBRE ya
-                  no es texto plano — igual que en Reservas de Cancha/
-                  Academia, un clic abre el modal completo de gestión
-                  (detalle, alternar pago, cancelación con Política de
-                  Cancelación y Retención). El icono "X" de al lado se
-                  conserva como atajo rápido, pero la cancelación deja de
-                  depender EXCLUSIVAMENTE de él. */}
-              <button
-                type="button"
-                onClick={() => onGestionarInscripcion?.(reta, jugador)}
-                title="Ver detalle / gestionar inscripción"
-                className="flex min-w-0 items-center gap-1.5 truncate text-left font-semibold text-slate-800 transition hover:text-fuchsia-500"
-              >
+            // Gestión en Panel del Club (item 2C — mejora de interfaz): TODA
+            // la fila es ahora el contenedor cliqueable (`cursor-pointer`),
+            // igual que ya funciona en Reservas de Cancha/Academia — no solo
+            // el nombre. Se eliminó DE FORMA DEFINITIVA el icono "X" suelto:
+            // la cancelación (y cualquier otra gestión — alternar pago, ver
+            // detalle) vive exclusivamente dentro de
+            // `ModalGestionInscripcionReta`, que esta fila abre.
+            <button
+              type="button"
+              key={jugador.id}
+              onClick={() => onGestionarInscripcion?.(reta, jugador)}
+              title="Ver detalle / gestionar inscripción"
+              className="flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-left text-xs transition hover:bg-slate-100"
+            >
+              <span className="flex min-w-0 items-center gap-1.5 truncate font-semibold text-slate-800">
                 <CheckCircle2 size={12} className="shrink-0 text-emerald-400" />
                 <span className="truncate">{jugador.nombre}</span>
-              </button>
-              <div className="flex shrink-0 items-center gap-1.5">
-                {estadoPagoInscripcion(jugador) === 'pendiente' && <AlertTriangle size={11} className="text-amber-400" />}
-                <button
-                  onClick={() => onCancelarInscripcion(reta, jugador)}
-                  disabled={cancelandoId === jugador.id}
-                  title="Cancelar inscripción (atajo rápido)"
-                  className="text-slate-400 transition hover:text-rose-400 disabled:opacity-40"
-                >
-                  {cancelandoId === jugador.id ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-                </button>
-              </div>
-            </div>
+              </span>
+              {estadoPagoInscripcion(jugador) === 'pendiente' && <AlertTriangle size={11} className="shrink-0 text-amber-400" />}
+            </button>
           );
         })}
       </div>
@@ -32491,8 +32497,6 @@ function ModuloTorneosRetas({
                     .filter(Boolean)}
                   inscritos={inscripcionesPorReta[reta.id] || []}
                   onInscribir={setRetaParaInscribir}
-                  onCancelarInscripcion={cancelarInscripcionReta}
-                  cancelandoId={cancelandoInscripcionId}
                   onGestionarInscripcion={(retaDeInscripcion, jugador) => setInscripcionGestion({ reta: retaDeInscripcion, inscripcion: jugador })}
                   onDescartarLocal={descartarRetaLocal}
                   onRenombrar={renombrarReta}
@@ -48979,7 +48983,17 @@ function PortalPublicoJugadores({ clubSlug }) {
                     <p className="py-10 text-center text-sm text-slate-500">No hay retas abiertas por ahora — vuelve pronto.</p>
                   )}
                   {retasAbiertas.map((r) => {
-                    const inscritos = (inscripcionesPorReta[r.id] || []).filter((i) => i.estado !== 'cancelado');
+                    // FIX (Persistencia en Portal — item 2A): este filtro solo
+                    // excluía `estado === 'cancelado'`, nunca `'retenido'`
+                    // (el estado que deja una cancelación fuera de
+                    // tolerancia, ver `cancelarInscripcionReta` en el Panel
+                    // del Club) — así que una reta cancelada desde el Panel
+                    // seguía contando como "ocupada" aquí y la tarjeta del
+                    // jugador se quedaba en "Ya estás inscrito" para
+                    // siempre. Ahora usa `inscripcionOcupaLugar` (el mismo
+                    // helper tolerante que ya usa `TarjetaReta` en el Panel
+                    // Admin), que excluye AMBOS estados terminales.
+                    const inscritos = (inscripcionesPorReta[r.id] || []).filter(inscripcionOcupaLugar);
                     const lugares = Math.max(0, CUPOS_RETA - inscritos.length);
                     const cancha = canchasPorId[r.cancha_id];
                     // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX)
@@ -49680,7 +49694,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           <ModalResumenReta
             reta={resumenReta}
             cancha={canchasPorId[resumenReta.cancha_id]}
-            inscritos={(inscripcionesPorReta[resumenReta.id] || []).filter((i) => i.estado !== 'cancelado')}
+            inscritos={(inscripcionesPorReta[resumenReta.id] || []).filter(inscripcionOcupaLugar)}
             jugador={jugador}
             politica={politicaCancelacionModulo(configTolerancia, 'retas')}
             onClose={() => setResumenReta(null)}
