@@ -3001,6 +3001,24 @@ function ToastHost({ toasts }) {
  * PRIMITIVOS UI
  * ==========================================================================*/
 
+// Unificación Visual Portal de Jugadores ↔ Portal de Clubes — animación de
+// apertura/cierre compartida por TODO modal que use `ModalShell` (base única
+// de ambos portales): fondo con fade simple, tarjeta con fade + scale + slide
+// corto (mismos valores de duración/easing que `TransicionPestana`, el
+// estándar ya establecido para transiciones de pestaña). El `exit` solo se
+// reproduce si el caller envuelve su render condicional en `<AnimatePresence>`
+// (ver `ModalMiPerfilJugador`/demás modales del Portal de Jugadores) — un
+// caller que NO lo envuelve (la mayoría de los modales ya existentes, en
+// ambos portales) simplemente gana la animación de entrada gratis, sin
+// ningún cambio de comportamiento al cerrar (desmontaje instantáneo, igual
+// que antes).
+const VARIANTES_FONDO_MODAL = { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } };
+const VARIANTES_TARJETA_MODAL = {
+  initial: { opacity: 0, scale: 0.97, y: 8 },
+  animate: { opacity: 1, scale: 1, y: 0 },
+  exit: { opacity: 0, scale: 0.97, y: 8 },
+};
+
 function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', icon: Icon }) {
   useEffect(() => {
     const onKey = (e) => {
@@ -3011,8 +3029,20 @@ function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', 
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm">
-      <div
+    <motion.div
+      variants={VARIANTES_FONDO_MODAL}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      transition={{ duration: 0.2, ease: 'easeOut' }}
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm"
+    >
+      <motion.div
+        variants={VARIANTES_TARJETA_MODAL}
+        initial="initial"
+        animate="animate"
+        exit="exit"
+        transition={{ duration: 0.2, ease: 'easeOut' }}
         className={`relative w-full ${ancho} max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl`}
       >
         <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur">
@@ -3035,8 +3065,8 @@ function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', 
           </button>
         </div>
         <div className="px-5 py-4">{children}</div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -33521,13 +33551,24 @@ function ModalMiPerfilJugador({
           ) : null}
         </div>
 
-        {/* ZONA DE SEGURIDAD — Cambiar Contraseña + Zona de Peligro
-            (Eliminar mi cuenta) + Cerrar Sesión al pie. */}
+        {/* ZONA DE SEGURIDAD — Cambiar Contraseña (desplegable animado, mismo
+            estándar de transición `TransicionPestana`/`AnimatePresence
+            mode="wait"` del Panel de Club) + Cerrar Sesión al pie.
+            "Eliminar Cuenta" (antes "Zona de Peligro", banner rojo) ya NO
+            vive adentro de este contenedor — ver el bloque estandarizado
+            justo abajo, con el MISMO diseño discreto que
+            `SeccionEliminarCuenta` del Portal de Clubes (Unificación Visual
+            Portal de Jugadores ↔ Portal de Clubes). */}
         <div className="border-t border-slate-200 pt-5">
           <p className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Zona de Seguridad</p>
-          <div className="space-y-3">
+          <AnimatePresence mode="wait" initial={false}>
             {!cambiandoPassword ? (
-              <button
+              <motion.button
+                key="boton-cambiar-password"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
                 type="button"
                 onClick={() => setCambiandoPassword(true)}
                 className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/50 px-4 py-3 text-left text-sm font-bold text-slate-700 transition hover:border-orange-400/40 hover:text-slate-900"
@@ -33536,9 +33577,16 @@ function ModalMiPerfilJugador({
                   <Lock size={15} className="text-slate-400" /> Cambiar Contraseña
                 </span>
                 <ChevronRight size={15} className="text-slate-400" />
-              </button>
+              </motion.button>
             ) : (
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-white/50 p-4">
+              <motion.div
+                key="form-cambiar-password"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                className="space-y-3 rounded-xl border border-slate-200 bg-white/50 p-4"
+              >
                 <Campo label="Contraseña actual">
                   <input
                     type="password"
@@ -33586,21 +33634,29 @@ function ModalMiPerfilJugador({
                     Guardar contraseña
                   </BotonPrimario>
                 </div>
-              </div>
+              </motion.div>
             )}
+          </AnimatePresence>
+        </div>
 
-            <div className="rounded-xl border border-rose-300 bg-rose-50 p-4">
-              <p className="text-xs font-bold uppercase tracking-wide text-rose-700">Zona de Peligro</p>
-              <p className="mt-1 text-[11px] text-slate-500">Elimina tu cuenta y anonimiza tus datos personales — esta acción no se puede deshacer.</p>
-              <button
-                type="button"
-                onClick={onAbrirEliminarCuenta}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-1.5 text-xs font-bold text-rose-400 transition hover:bg-rose-400/10"
-              >
-                <Trash2 size={13} /> Eliminar mi cuenta
-              </button>
-            </div>
-          </div>
+        {/* Eliminar Cuenta — Estandarización post-QA (Unificación Visual):
+            mismo título/descripción/botón gris-neutro que
+            `SeccionEliminarCuenta` (Portal de Clubes, "Mi Cuenta &
+            Suscripción") en vez del banner rojo "Zona de Peligro"/"Eliminar
+            mi cuenta" de antes. El flujo de borrado en sí NO cambió — sigue
+            abriendo `ModalConfirmarEliminarCuentaPortal` vía
+            `onAbrirEliminarCuenta` (mismo borrado suave de siempre, ver
+            `eliminarCuentaJugador`). */}
+        <div className="border-t border-slate-100 pt-4">
+          <h3 className="text-sm font-semibold text-slate-700">Eliminar Cuenta</h3>
+          <p className="mt-1 text-xs text-slate-500">Si decides darte de baja, los datos de tu cuenta se deshabilitarán de forma definitiva.</p>
+          <button
+            type="button"
+            onClick={onAbrirEliminarCuenta}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-red-300 hover:text-red-600"
+          >
+            Solicitar Eliminación de Cuenta
+          </button>
         </div>
 
         {/* Única acción de todo el Portal que destruye la sesión local —
@@ -49225,12 +49281,20 @@ function PortalPublicoJugadores({ clubSlug }) {
                 // vive EXCLUSIVAMENTE dentro de `ModalMiPerfilJugador`
                 // ("Cerrar Sesión" al pie del modal, ver requerimiento: debe
                 // ser la ÚNICA acción que destruye la sesión local).
-                <button
+                // Unificación Visual Portal de Jugadores ↔ Portal de Clubes
+                // — micro-interacción al presionar (mismo
+                // `whileHover`/`whileTap` que `BotonPrimarioWizard`, el
+                // estándar ya establecido del Portal de Clubes para botones
+                // interactivos).
+                <motion.button
+                  whileHover={{ y: -2, scale: 1.02 }}
+                  whileTap={{ scale: 0.97 }}
+                  transition={{ duration: 0.15, ease: 'easeOut' }}
                   onClick={() => setMostrarMiPerfil(true)}
                   className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/60 px-2.5 py-1.5 text-xs font-bold text-slate-600 backdrop-blur hover:text-slate-900"
                 >
                   <User size={13} /> {jugador.nombre.split(' ')[0]}
-                </button>
+                </motion.button>
               ) : (
                 <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
                   <User size={13} /> Identificarme
@@ -49278,7 +49342,14 @@ function PortalPublicoJugadores({ clubSlug }) {
               <Loader2 size={20} className="animate-spin" />
             </div>
           ) : (
-            <>
+            // Unificación Visual Portal de Jugadores ↔ Portal de Clubes —
+            // mismo estándar de transición de pestañas que ya usan TODOS los
+            // módulos del Panel Operativo (`TransicionPestana`, fade + slide
+            // vertical corto, `mode="wait"`): antes el cambio entre
+            // Canchas/Tienda/Torneos/Retas/Academia/Historial/Wallet era
+            // seco, sin animación, mientras el Panel de Club ya la tenía en
+            // todos sus módulos con sub-pestañas.
+            <TransicionPestana activeKey={vista}>
               {vista === 'canchas' && (
                 <div className="space-y-4">
                   {/* Gestión Directa en Módulos (Parte 3) — "Tus Próximas
@@ -49962,7 +50033,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                   )}
                 </div>
               )}
-            </>
+            </TransicionPestana>
           )}
         </main>
 
@@ -49995,38 +50066,48 @@ function PortalPublicoJugadores({ clubSlug }) {
           </button>
         )}
 
-        {modalIdentificacion && (
-          <ModalAutenticacionPortal
-            onClose={() => {
-              setModalIdentificacion(false);
-              setEventoParaInscribir(null);
-            }}
-            onIniciarSesion={async (correo, password) => {
-              const ok = await iniciarSesionJugador(correo, password);
-              manejarPostAutenticacionPortal(ok);
-              return ok;
-            }}
-            onCrearCuenta={async (datos) => {
-              const ok = await crearCuentaJugador(datos);
-              manejarPostAutenticacionPortal(ok);
-              return ok;
-            }}
-          />
-        )}
+        {/* Unificación Visual Portal de Jugadores ↔ Portal de Clubes — cada
+            modal del Portal se envuelve en su propio `<AnimatePresence>`
+            para que `ModalShell` (ver su animación de entrada/salida
+            compartida, arriba) también anime el CIERRE, no solo la
+            apertura. */}
+        <AnimatePresence>
+          {modalIdentificacion && (
+            <ModalAutenticacionPortal
+              onClose={() => {
+                setModalIdentificacion(false);
+                setEventoParaInscribir(null);
+              }}
+              onIniciarSesion={async (correo, password) => {
+                const ok = await iniciarSesionJugador(correo, password);
+                manejarPostAutenticacionPortal(ok);
+                return ok;
+              }}
+              onCrearCuenta={async (datos) => {
+                const ok = await crearCuentaJugador(datos);
+                manejarPostAutenticacionPortal(ok);
+                return ok;
+              }}
+            />
+          )}
+        </AnimatePresence>
 
-        {eventoParaInscribir?.tipo === 'torneo-categoria' && (
-          <ModalElegirCategoriaTorneo
-            torneo={eventoParaInscribir.evento}
-            onClose={() => setEventoParaInscribir(null)}
-            onElegir={(categoria) => {
-              const t = eventoParaInscribir.evento;
-              setFlujoPago({ tipo: 'torneo', evento: t, categoria, monto: montoInscripcionTorneo(t, null) });
-              setEventoParaInscribir(null);
-            }}
-          />
-        )}
+        <AnimatePresence>
+          {eventoParaInscribir?.tipo === 'torneo-categoria' && (
+            <ModalElegirCategoriaTorneo
+              torneo={eventoParaInscribir.evento}
+              onClose={() => setEventoParaInscribir(null)}
+              onElegir={(categoria) => {
+                const t = eventoParaInscribir.evento;
+                setFlujoPago({ tipo: 'torneo', evento: t, categoria, monto: montoInscripcionTorneo(t, null) });
+                setEventoParaInscribir(null);
+              }}
+            />
+          )}
+        </AnimatePresence>
 
-        {flujoPago && (
+        <AnimatePresence>
+          {flujoPago && (
           <ModalElegirPago
             monto={flujoPago.monto}
             saldoWallet={saldoWallet}
@@ -50063,9 +50144,11 @@ function PortalPublicoJugadores({ clubSlug }) {
               setFlujoPago(null);
             }}
           />
-        )}
+          )}
+        </AnimatePresence>
 
-        {torneoDetalle && (
+        <AnimatePresence>
+          {torneoDetalle && (
           <ModalDetalleTorneo
             torneo={torneoDetalle}
             participantes={participantesPorTorneo[torneoDetalle.id] || []}
@@ -50108,7 +50191,8 @@ function PortalPublicoJugadores({ clubSlug }) {
               setTorneoDetalle(null);
             }}
           />
-        )}
+          )}
+        </AnimatePresence>
 
         {/* MI PERFIL — Datos Personales + Ficha Informativa editables +
             Zona de Seguridad (cambiar contraseña, eliminar cuenta, cerrar
@@ -50116,7 +50200,8 @@ function PortalPublicoJugadores({ clubSlug }) {
             "Cerrar Sesión" en todo el Portal (ver requerimiento). NO incluye
             nada de desempeño de Academia — ver `ModalMiPerfilDeportivo`
             abajo. */}
-        {mostrarMiPerfil && jugador && (
+        <AnimatePresence>
+          {mostrarMiPerfil && jugador && (
           <ModalMiPerfilJugador
             jugador={jugador}
             ficha={fichaJugador}
@@ -50133,21 +50218,25 @@ function PortalPublicoJugadores({ clubSlug }) {
               setMostrarMiPerfil(false);
             }}
           />
-        )}
+          )}
+        </AnimatePresence>
 
         {/* MI PERFIL DEPORTIVO — Nivel Oficial, Skill Radar Chart e
             Historial de Observaciones. Modal EXCLUSIVO de Academia, sin
             edición de datos ni Zona de Seguridad (ver requerimiento). */}
-        {mostrarMiPerfilDeportivo && jugador && (
+        <AnimatePresence>
+          {mostrarMiPerfilDeportivo && jugador && (
           <ModalMiPerfilDeportivo
             jugador={jugador}
             evaluaciones={evaluacionesJugadorPortal}
             loadingEvaluaciones={cargandoEvaluacionesPortal}
             onClose={() => setMostrarMiPerfilDeportivo(false)}
           />
-        )}
+          )}
+        </AnimatePresence>
 
-        {mostrarConfirmarEliminarCuenta && jugador && (
+        <AnimatePresence>
+          {mostrarConfirmarEliminarCuenta && jugador && (
           <ModalConfirmarEliminarCuentaPortal
             onClose={() => setMostrarConfirmarEliminarCuenta(false)}
             eliminando={eliminandoCuenta}
@@ -50156,9 +50245,11 @@ function PortalPublicoJugadores({ clubSlug }) {
               if (ok) setMostrarConfirmarEliminarCuenta(false);
             }}
           />
-        )}
+          )}
+        </AnimatePresence>
 
-        {modalSolicitudClase && (
+        <AnimatePresence>
+          {modalSolicitudClase && (
           <ModalSolicitarClase
             onClose={() => setModalSolicitudClase(false)}
             onEnviar={enviarSolicitudClase}
@@ -50168,10 +50259,12 @@ function PortalPublicoJugadores({ clubSlug }) {
             rangosHorario={club?.rangos_horario_clases}
             club={club}
           />
-        )}
+          )}
+        </AnimatePresence>
 
         {/* Auto-Cancelación desde Historial (Motor Unificado, Parte 2). */}
-        {historialDetalle && (
+        <AnimatePresence>
+          {historialDetalle && (
           <ModalDetalleHistorialPortal
             item={historialDetalle}
             configTolerancia={configTolerancia}
@@ -50183,11 +50276,13 @@ function PortalPublicoJugadores({ clubSlug }) {
               return cancelarInscripcionClase(item.raw, item.claseRaw);
             }}
           />
-        )}
+          )}
+        </AnimatePresence>
 
         {/* FLUJO UNIFICADO "YA ESTÁS INSCRITO" — resúmenes de Clase y Reta
             (Torneo vive DENTRO de `ModalDetalleTorneo`, ver arriba). */}
-        {resumenClase && (
+        <AnimatePresence>
+          {resumenClase && (
           <ModalResumenClase
             clase={resumenClase.clase}
             alumno={resumenClase.alumno}
@@ -50196,9 +50291,11 @@ function PortalPublicoJugadores({ clubSlug }) {
             onClose={() => setResumenClase(null)}
             onCancelar={cancelarInscripcionClase}
           />
-        )}
+          )}
+        </AnimatePresence>
 
-        {resumenReta && (
+        <AnimatePresence>
+          {resumenReta && (
           <ModalResumenReta
             reta={resumenReta}
             cancha={canchasPorId[resumenReta.cancha_id]}
@@ -50208,9 +50305,11 @@ function PortalPublicoJugadores({ clubSlug }) {
             onClose={() => setResumenReta(null)}
             onCancelar={cancelarInscripcionRetaPortal}
           />
-        )}
+          )}
+        </AnimatePresence>
 
-        {productoParaVariantePortal && (
+        <AnimatePresence>
+          {productoParaVariantePortal && (
           <ModalSeleccionarVariante
             producto={productoParaVariantePortal.producto}
             variantes={variantesPorProductoPortal[productoParaVariantePortal.producto.id] || []}
@@ -50220,9 +50319,11 @@ function PortalPublicoJugadores({ clubSlug }) {
               setProductoParaVariantePortal(null);
             }}
           />
-        )}
+          )}
+        </AnimatePresence>
 
-        {productoParaGaleriaPortal && (
+        <AnimatePresence>
+          {productoParaGaleriaPortal && (
           <ModalGaleriaProducto
             producto={productoParaGaleriaPortal}
             variantes={variantesPorProductoPortal[productoParaGaleriaPortal.id] || []}
@@ -50232,9 +50333,11 @@ function PortalPublicoJugadores({ clubSlug }) {
               setProductoParaGaleriaPortal(null);
             }}
           />
-        )}
+          )}
+        </AnimatePresence>
 
-        {modalCarritoAbierto && (
+        <AnimatePresence>
+          {modalCarritoAbierto && (
           <ModalCarritoTienda
             carrito={carritoTienda}
             total={totalCarritoTienda}
@@ -50248,9 +50351,11 @@ function PortalPublicoJugadores({ clubSlug }) {
             variantesPorProducto={variantesPorProductoPortal}
             onAgregarSugerido={agregarSugeridoDesdeCarrito}
           />
-        )}
+          )}
+        </AnimatePresence>
 
-        {canchaParaReservar && (
+        <AnimatePresence>
+          {canchaParaReservar && (
           <ModalReservarCancha
             cancha={canchaParaReservar}
             club={club}
@@ -50268,7 +50373,8 @@ function PortalPublicoJugadores({ clubSlug }) {
               return resultado;
             }}
           />
-        )}
+          )}
+        </AnimatePresence>
 
         <ToastHost toasts={toasts} />
       </div>
