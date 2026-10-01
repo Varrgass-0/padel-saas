@@ -3292,6 +3292,14 @@ function BadgeEstatusFinanciero({ estatus }) {
     // Corrección de Lógica de Negocio (fix): reserva YA PAGADA cancelada
     // fuera de tolerancia — el club retuvo el pago, no hubo reembolso.
     retenido: { texto: 'Pago Retenido (Política de Cancelación)', clase: 'bg-red-50 text-red-700 border border-red-200' },
+    // FIX (Estatus Financiero Confuso en Cancelación Libre — Retas/Reservas/
+    // Academia): cancelación DENTRO de tolerancia y sin ningún pago real de
+    // por medio (nunca se cobró nada) no tiene ni reembolso ni adeudo que
+    // mostrar — antes caía por default en 'pendiente' ("Pago Pendiente en
+    // Club"), dando a entender que todavía se le debía cobrar algo a una
+    // actividad que ya está cancelada y liberada. Badge neutro/verde, nunca
+    // de alerta.
+    sin_costo: { texto: 'Cancelado sin cargo', clase: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
   };
   const cfg = CONFIG[estatus] || CONFIG.pendiente;
   return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${cfg.clase}`}>{cfg.texto}</span>;
@@ -3746,7 +3754,17 @@ async function registrarPenalizacionPendiente({ jugadorId, jugadorNombre, tipoAc
         );
         return { ok: false, error: errorConMensajeRLS(error) };
       }
-      console.error('[Penalizaciones] Falló el insert en penalizaciones_pendientes (¿corriste migracion_v74_motor_penalizaciones_pendientes.sql?).', error);
+      // FIX (Error al Generar Adeudo — Motor de Penalizaciones): la causa
+      // real más común de este error NO es que falte correr la migración
+      // v74 (la tabla ya puede existir), sino que PostgREST nunca refrescó
+      // su caché de esquema después de crearla — v74 fue la única migración
+      // de este proyecto que no terminaba con `NOTIFY pgrst, 'reload
+      // schema';`. Ver migracion_v80_fix_penalizaciones_pendientes_schema.sql,
+      // que reaplica la tabla de forma idempotente y SÍ dispara el reload.
+      console.error(
+        '[Penalizaciones] Falló el insert en penalizaciones_pendientes — revisa que exista la tabla y que PostgREST haya recargado su caché de esquema (corre migracion_v80_fix_penalizaciones_pendientes_schema.sql).',
+        error
+      );
       return { ok: false, error };
     }
     return { ok: true };
@@ -15219,8 +15237,18 @@ function ModuloSmartPOS({
     // inscripciones pendientes reales.
     const esPendiente = (estadoPago) => estadoPago === 'pendiente' || estadoPago === 'cobro_recepcion' || estadoPago === 'pendiente_recepcion';
 
+    // FIX (Limpieza en Smart POS — Recepción, item 3): este filtro solo
+    // excluía `estado === 'cancelado'` — una inscripción cancelada FUERA de
+    // tolerancia queda marcada `'retenido'` (ver `cancelarInscripcionReta`),
+    // así que se seguía mostrando aquí como "pendiente de cobro en
+    // Recepción" para siempre, aunque el lugar ya estuviera liberado y el
+    // adeudo (si lo hay) ya viviera en `penalizaciones_pendientes`
+    // (`SeccionPenalizacionesPendientes`, justo arriba en esta misma
+    // pantalla). `'retenido'` es un estado TERMINAL igual que `'cancelado'`
+    // — ambos se excluyen ahora, para que la fila desaparezca de esta lista
+    // en cuanto se cancela, sea con o sin penalización.
     const filasRetas = (inscripciones || [])
-      .filter((i) => i.estado !== 'cancelado' && esPendiente(estadoPagoInscripcion(i)))
+      .filter((i) => i.estado !== 'cancelado' && i.estado !== 'retenido' && esPendiente(estadoPagoInscripcion(i)))
       .map((i) => {
         const reta = retasPorId.get(i.reta_id);
         return {
@@ -47547,6 +47575,14 @@ function PortalPublicoJugadores({ clubSlug }) {
               ? 'adeudo'
               : r.estado_pago === 'pagado'
               ? 'pagado'
+              // FIX (Estatus Financiero Confuso — item B): cancelada dentro
+              // de tolerancia y sin ninguno de los marcadores financieros de
+              // arriba (nunca se pagó, nunca se generó adeudo) → no hay nada
+              // que cobrar ni que reembolsar. Antes caía en 'pendiente' por
+              // default, mostrando "Pago Pendiente en Club" sobre una
+              // reserva ya cancelada y liberada.
+              : r.estado === 'Cancelada'
+              ? 'sin_costo'
               : 'pendiente',
         };
       });
@@ -47635,10 +47671,28 @@ function PortalPublicoJugadores({ clubSlug }) {
               ? 'exonerada'
               : i.estado_pago === 'reembolsado'
               ? 'reembolsado'
+              // FIX (Estatus Financiero — Retas): `'retenido'` (fuera de
+              // tolerancia) cubre 2 casos bien distintos de
+              // `cancelarInscripcionReta` — (a) YA estaba pagada → el club
+              // RETIENE ese pago (badge "Pago Retenido", nunca "Adeudo",
+              // porque no se le está cobrando nada nuevo al jugador); (b)
+              // NUNCA se pagó → sí se genera un adeudo real en
+              // `penalizaciones_pendientes` (badge "Adeudo Pendiente").
+              // Antes ambos casos mostraban "Adeudo Pendiente" por igual,
+              // aunque en (a) no hubiera ningún adeudo nuevo que cobrar.
+              : i.estado === 'retenido' && i.estado_pago === 'pagado'
+              ? 'retenido'
               : i.estado === 'retenido'
               ? 'adeudo'
               : (i.estado_pago || i.estatus_pago) === 'pagado'
               ? 'pagado'
+              // FIX (Estatus Financiero Confuso — item B): cancelada dentro
+              // de tolerancia (`'cancelado'`) y sin pago real de por medio →
+              // nada que cobrar ni reembolsar. Antes caía en 'pendiente' por
+              // default, mostrando "Pago Pendiente en Club" sobre una
+              // inscripción ya cancelada y con el lugar liberado.
+              : i.estado === 'cancelado'
+              ? 'sin_costo'
               : 'pendiente',
         };
       });
@@ -47699,6 +47753,13 @@ function PortalPublicoJugadores({ clubSlug }) {
               ? 'adeudo'
               : a.estado_pago === 'pagado'
               ? 'pagado'
+              // FIX (Estatus Financiero Confuso — item B, mismo criterio que
+              // Reservas/Retas): baja dentro de tolerancia y sin pago real
+              // de por medio → nada que cobrar ni reembolsar. Antes caía en
+              // 'pendiente' por default, mostrando "Pago Pendiente en Club"
+              // sobre una clase ya cancelada y con el cupo liberado.
+              : a.estado === 'baja'
+              ? 'sin_costo'
               : 'pendiente',
         };
       });
