@@ -26725,6 +26725,35 @@ function esErrorCorreoRegistrado(error) {
   return msg.includes('already registered') || msg.includes('already exists');
 }
 
+// Solución Definitiva de Registro de Jugadores — detecta el error de
+// Supabase Auth "correo sin confirmar" al hacer `signInWithPassword`
+// (variantes de redacción/código según versión del SDK de GoTrue:
+// `email_not_confirmed` es el código moderno, "Email not confirmed" el
+// mensaje clásico) — se usa en `iniciarSesionJugador` para mostrarle al
+// jugador un mensaje claro en vez del genérico "Correo o contraseña
+// incorrectos", que lo haría pensar que escribió mal su contraseña cuando
+// en realidad el problema es que su cuenta sigue esperando que confirme su
+// correo (proyecto con "Confirm email" ACTIVADO en el Dashboard de
+// Supabase).
+function esErrorCorreoNoConfirmado(error) {
+  if (!error) return false;
+  if (error.code === 'email_not_confirmed') return true;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('email not confirmed') || msg.includes('confirm your email') || msg.includes('correo no confirmado');
+}
+
+// Detecta el mensaje que lanza el trigger `fn_crear_perfil_jugador` (ver
+// migracion_v78_trigger_registro_jugadores.sql) cuando el teléfono
+// capturado en "Crear Cuenta" ya tiene una cuenta vinculada en ESTE club —
+// Postgres regresa esto como un error genérico de `signUp()` (la excepción
+// del trigger revierte el `INSERT` completo en `auth.users`), así que se
+// detecta por texto en vez de por código.
+function esErrorTelefonoYaVinculadoPorTrigger(error) {
+  if (!error) return false;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('ese teléfono ya tiene una cuenta en este club') || msg.includes('ese telefono ya tiene una cuenta en este club');
+}
+
 // Id sintético para un registro que se queda solo en memoria local (modo
 // fallback): nunca se confunde con un UUID real de Supabase, así que
 // cualquier intento posterior de `.update()`/`.delete()` contra ese id
@@ -46063,20 +46092,46 @@ function PortalPublicoJugadores({ clubSlug }) {
   // -----------------------------------------------------------------------
   // AUTENTICACIÓN DEL PORTAL (Correo + Contraseña) — `ModalAutenticacionPortal`
   // -----------------------------------------------------------------------
-  // `crearCuentaJugador` (pestaña "Crear Cuenta"): crea una cuenta real de
-  // Supabase Auth (correo + contraseña) y la VINCULA ("claim") a la fila de
-  // `jugadores` que corresponda por teléfono, EN VEZ de crear siempre un
-  // expediente nuevo — así un jugador que la recepción ya dio de alta antes
-  // (solo con nombre/teléfono, sin cuenta) conserva su historial completo
-  // de reservas, Wallet e inscripciones al crear su cuenta. El checkbox
-  // legal ("Acepto los Términos...") es obligatorio SOLO aquí — nunca en
-  // `iniciarSesionJugador` (login no vuelve a pedirlo: si el jugador ya
-  // tiene `terminos_aceptados` en su fila, no hace falta volver a
-  // preguntarle, y si no lo tiene —expediente legacy— se le pide una sola
-  // vez al crear su cuenta, no en cada login).
+  // SOLUCIÓN DEFINITIVA DE REGISTRO (Trigger `SECURITY DEFINER`, ver
+  // migracion_v78_trigger_registro_jugadores.sql): `crearCuentaJugador` ya
+  // NO hace ningún INSERT/UPDATE directo sobre `jugadores` desde el
+  // cliente — eso es exactamente lo que violaba la policy de RLS
+  // ("new row violates row-level security policy for table 'jugadores'"),
+  // porque justo después de `signUp()` la petición todavía corre como
+  // `anon` (sin JWT autenticado) cuando el proyecto tiene "Confirm Email"
+  // ACTIVADO en el Dashboard de Supabase — y, aunque estuviera
+  // DESACTIVADO, el cliente AISLADO del Portal (`clienteAuthDelPortal`) es
+  // el que recibe la sesión de `signUp()`, nunca el cliente `supabase`
+  // compartido que usa el INSERT, así que ese INSERT corría como `anon`
+  // en AMBOS casos.
+  //
+  // Ahora el perfil se crea del lado del servidor, vía un trigger
+  // `AFTER INSERT ON auth.users` con privilegios `SECURITY DEFINER` (bypasa
+  // RLS por diseño, de forma seguro/acotada) — se dispara EN EL MISMO
+  // INSTANTE en que `auth.users` recibe la fila nueva, sin importar si el
+  // proyecto exige confirmar correo o no. Este cliente solo tiene que
+  // mandarle los metadatos del perfil (`nombre`/`telefono`/`club_id`/
+  // `tipo_usuario`) dentro de `options.data` de `signUp()` — el trigger los
+  // lee de `raw_user_meta_data` y hace EXACTAMENTE el mismo "claim por
+  // teléfono" que antes vivía aquí (vincula el expediente existente de
+  // recepción sin duplicarlo, o crea uno nuevo si no hay ninguno).
+  //
+  // El checkbox legal ("Acepto los Términos...") es obligatorio SOLO aquí
+  // — nunca en `iniciarSesionJugador` (login no vuelve a pedirlo: si el
+  // jugador ya tiene `terminos_aceptados` en su fila, no hace falta volver
+  // a preguntarle, y si no lo tiene —expediente legacy— se le pide una
+  // sola vez al crear su cuenta, no en cada login). La aceptación
+  // (`terminos_aceptados`/`fecha_aceptacion`/`version_legal`) también la
+  // escribe el trigger, no el cliente.
+  //
+  // Devuelve `true` (sesión activa — "Confirm Email" desactivado, el
+  // jugador queda logueado de inmediato), `'pendiente'` (cuenta y perfil
+  // creados, pero Supabase exige confirmar el correo antes de dar sesión —
+  // ver `manejarPostAutenticacionPortal`) o `false` (error).
   async function crearCuentaJugador({ nombre, telefono, correo, password }) {
     const nombreLimpio = (nombre || '').trim();
     const correoLimpio = (correo || '').trim().toLowerCase();
+    const telefonoLimpio = (telefono || '').trim();
     const claveTel = claveTelefono(telefono);
     if (!nombreLimpio) {
       mostrarToast({ titulo: 'Falta tu nombre', detalle: 'Escribe tu nombre completo.', tono: 'aviso' });
@@ -46094,122 +46149,71 @@ function PortalPublicoJugadores({ clubSlug }) {
       mostrarToast({ titulo: 'Contraseña muy corta', detalle: 'Debe tener al menos 6 caracteres.', tono: 'aviso' });
       return false;
     }
+    if (!club?.id) {
+      mostrarToast({ titulo: 'No se pudo identificar el club', detalle: 'Recarga la página e intenta de nuevo.', tono: 'error' });
+      return false;
+    }
     try {
-      const { data, error } = await conAuthDelPortal((cliente) => cliente.auth.signUp({ email: correoLimpio, password }));
+      const { data, error } = await conAuthDelPortal((cliente) =>
+        cliente.auth.signUp({
+          email: correoLimpio,
+          password,
+          options: {
+            // `fn_crear_perfil_jugador` (trigger SECURITY DEFINER) lee
+            // estos 4 campos de `raw_user_meta_data` — `tipo_usuario:
+            // 'jugador'` es el discriminador que le dice al trigger que SÍ
+            // debe crear una fila en `jugadores` (el registro de Dueños/
+            // Operadores de club, en `ClubAuthScreen`, nunca manda este
+            // campo, así que esa fila de `auth.users` pasa de largo sin
+            // tocar `jugadores`).
+            data: {
+              tipo_usuario: 'jugador',
+              nombre: nombreLimpio,
+              telefono: telefonoLimpio,
+              club_id: club.id,
+            },
+          },
+        })
+      );
       if (error) throw error;
       const usuario = data?.user;
       if (!usuario) throw new Error('No se pudo crear tu cuenta.');
 
-      // CLAIM DE PERFIL POR TELÉFONO: mismo cruce que `resolverJugadorId`
-      // (búsqueda del lado de Supabase, acotada por club vía `conClubId` —
-      // así que un teléfono que YA existe pero en OTRO club nunca aparece
-      // aquí como "existente", ver comentario de cabecera de
-      // `migracion_v68_jugadores_unico_por_club.sql`), pero aquí nunca cae a
-      // "crear si no encuentra" dentro del mismo helper — el alta/
-      // actualización se decide explícitamente abajo, porque además de
-      // crear/encontrar el expediente hay que escribir
-      // `auth_user_id`/`correo`/los campos legales. Se trae `auth_user_id`
-      // en el `select` (antes no venía) para poder distinguir CASO 1a/1b de
-      // abajo.
-      const { data: candidatos } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono, auth_user_id'))
-        .not('telefono', 'is', null)
-        .limit(500);
-      const existente = (candidatos || []).find((j) => claveTelefono(j.telefono) === claveTel);
-
-      // FIX (Registro Multi-Club, migracion_v68): si el expediente que ya
-      // existe EN ESTE CLUB ya tiene una cuenta vinculada (`auth_user_id` no
-      // nulo), NO se debe re-vincular/sobreescribir en silencio — eso
-      // "secuestraría" la cuenta de quien sea que ya la creó. En vez de
-      // seguir con el alta, se avisa que ya existe una cuenta con ese
-      // teléfono en este club e invita a iniciar sesión. Un expediente sin
-      // `auth_user_id` (alta vieja de recepción, nunca reclamada) SÍ se
-      // puede vincular normalmente — ver CASO 1 más abajo.
-      if (existente?.auth_user_id) {
+      // Sin `data.session` (proyecto con "Confirm Email" ACTIVADO en el
+      // Dashboard de Supabase): el trigger YA creó/vinculó la fila en
+      // `jugadores` (corre en la misma transacción del INSERT en
+      // `auth.users`, sin depender de que el cliente tenga sesión), pero
+      // este cliente no puede iniciar sesión todavía — eso ocurre hasta que
+      // el jugador confirme su correo. Se avisa con el mensaje exacto
+      // pedido y se corta aquí: `setJugador`/`guardarSesionPortalLocal` NO
+      // se llaman sin una sesión real detrás.
+      if (!data.session) {
         mostrarToast({
-          titulo: 'Ese teléfono ya tiene una cuenta en este club',
-          detalle: 'Mejor inicia sesión con el correo que usaste para crearla.',
-          tono: 'aviso',
+          titulo: '¡Registro exitoso!',
+          detalle: 'Revisa tu correo electrónico para confirmar tu cuenta.',
+          tono: 'ok',
         });
-        return false;
+        return 'pendiente';
       }
 
-      const camposLegalesYAuth = {
-        correo: correoLimpio,
-        auth_user_id: usuario.id,
-        terminos_aceptados: true,
-        fecha_aceptacion: new Date().toISOString(),
-        version_legal: VERSION_LEGAL_ACTUAL,
-        tipo_usuario: 'jugador',
-      };
-      const columnasOpcionalesAuth = ['correo', 'auth_user_id', 'terminos_aceptados', 'fecha_aceptacion', 'version_legal', 'tipo_usuario'];
-
-      let jugadorId = existente?.id || null;
-      let nombreFinal = nombreLimpio;
-      if (jugadorId) {
-        // CASO 1 — expediente ya existía EN ESTE CLUB pero sin cuenta
-        // vinculada (alta previa de recepción): se vincula sobre la MISMA
-        // fila, nunca se duplica. El nombre solo se sobreescribe si el
-        // expediente existente no traía uno de verdad.
-        nombreFinal = (existente.nombre || '').trim() || nombreLimpio;
-        const { error: errUpdate } = await actualizarConColumnasOpcionales(
-          'jugadores',
-          jugadorId,
-          { nombre: nombreFinal, ...camposLegalesYAuth },
-          [...columnasOpcionalesAuth]
-        );
-        if (errUpdate) throw errUpdate;
-      } else {
-        // CASO 2 — jugador nuevo.
-        let { data: nuevo, error: errInsert } = await insertarConColumnasOpcionales(
-          'jugadores',
-          { nombre: nombreLimpio, telefono: telefono.trim(), saldo_a_favor: 0, ...camposLegalesYAuth },
-          columnasOpcionalesAuth
-        );
-        // RED DE SEGURIDAD (migracion_v69): si el proyecto todavía no corrió
-        // esa migración, este INSERT puede chocar contra el índice único
-        // GLOBAL heredado sobre `telefono_normalizado` — ver
-        // `esErrorTelefonoNormalizadoDuplicado`. Antes de rendirse, se
-        // repite EXACTAMENTE la misma búsqueda "claim por teléfono" de
-        // arriba, scoped a este club (mismo criterio de recuperación que ya
-        // usa `resolverJugadorId` para el 23505 de `idx_jugadores_telefono_unico`):
-        // cubre el caso real de una carrera dentro del MISMO club (dos
-        // pestañas/dispositivos dando de alta el mismo teléfono casi al
-        // mismo tiempo) de forma transparente, sin mostrarle nada al
-        // jugador. Si tras reintentar tampoco aparece nada en ESTE club, la
-        // colisión es contra la fila de OTRO club — ahí sí no hay forma de
-        // crear la fila desde el cliente sin la migración (ver el `catch`
-        // de más abajo, que entonces explica la causa real en vez de un
-        // 409 críptico).
-        if (errInsert && esErrorTelefonoNormalizadoDuplicado(errInsert)) {
-          const { data: candidatosTrasColision } = await conClubId(
-            supabase.from('jugadores').select('id, nombre, telefono, auth_user_id')
-          )
-            .not('telefono', 'is', null)
-            .limit(500);
-          const existenteTrasColision = (candidatosTrasColision || []).find((j) => claveTelefono(j.telefono) === claveTel);
-          if (existenteTrasColision && !existenteTrasColision.auth_user_id) {
-            nombreFinal = (existenteTrasColision.nombre || '').trim() || nombreLimpio;
-            const { error: errUpdateTrasColision } = await actualizarConColumnasOpcionales(
-              'jugadores',
-              existenteTrasColision.id,
-              { nombre: nombreFinal, ...camposLegalesYAuth },
-              [...columnasOpcionalesAuth]
-            );
-            if (!errUpdateTrasColision) {
-              nuevo = { id: existenteTrasColision.id };
-              errInsert = null;
-            }
-          }
-        }
-        if (errInsert) throw errInsert;
-        jugadorId = nuevo?.id || null;
+      // Con `data.session` (proyecto con "Confirm Email" DESACTIVADO): el
+      // trigger ya insertó/vinculó la fila — se busca por `auth_user_id`
+      // (recién escrito por el trigger) para traer el `id`/`nombre` reales
+      // y continuar con sesión activa de inmediato, sin pedirle nada más
+      // al jugador.
+      const { data: filaJugador, error: errLookup } = await conClubId(
+        supabase.from('jugadores').select('id, nombre, telefono')
+      )
+        .eq('auth_user_id', usuario.id)
+        .maybeSingle();
+      if (errLookup || !filaJugador) {
+        throw new Error('Tu cuenta se creó, pero no encontramos tu perfil todavía — intenta iniciar sesión en un momento.');
       }
-      if (!jugadorId) throw new Error('No se pudo vincular tu cuenta a tu expediente de jugador.');
 
-      const nuevoJugador = { id: jugadorId, nombre: nombreFinal, telefono: telefono.trim() };
+      const nuevoJugador = { id: filaJugador.id, nombre: filaJugador.nombre || nombreLimpio, telefono: filaJugador.telefono || telefonoLimpio };
       setJugador(nuevoJugador);
       guardarSesionPortalLocal(club?.id, nuevoJugador);
-      mostrarToast({ titulo: `¡Bienvenido, ${nombreFinal}!`, detalle: 'Tu cuenta quedó creada — ya puedes inscribirte a Retas y Torneos abiertos.' });
+      mostrarToast({ titulo: `¡Bienvenido, ${nuevoJugador.nombre}!`, detalle: 'Tu cuenta quedó creada — ya puedes inscribirte a Retas y Torneos abiertos.' });
       return true;
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (crear cuenta del jugador):', err);
@@ -46217,8 +46221,8 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: 'No se pudo crear tu cuenta',
         detalle: esErrorCorreoRegistrado(err)
           ? 'Ese correo ya tiene una cuenta — mejor inicia sesión.'
-          : esErrorTelefonoNormalizadoDuplicado(err) || esErrorJugadorDuplicadoGlobal(err)
-          ? 'Tu club todavía no tiene el ajuste de base de datos que permite jugar en más de un club con el mismo teléfono/correo (corre migracion_v68 y migracion_v69 en Supabase) — repórtalo con tu club.'
+          : esErrorTelefonoYaVinculadoPorTrigger(err)
+          ? 'Ese teléfono ya tiene una cuenta en este club — mejor inicia sesión con el correo que usaste para crearla.'
           : err?.message || 'Intenta de nuevo en un momento.',
         tono: 'error',
       });
@@ -46259,9 +46263,21 @@ function PortalPublicoJugadores({ clubSlug }) {
       return true;
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (iniciar sesión del jugador):', err);
+      // Solución Definitiva de Registro — Flujo Dual "Confirm Email"
+      // ON/OFF (item B): con "Confirm Email" ACTIVADO, un jugador que
+      // acaba de crear su cuenta pero todavía no abrió el correo de
+      // confirmación va a intentar iniciar sesión y Supabase lo rechaza
+      // con "Email not confirmed" — sin este `if`, el mensaje genérico
+      // ("Correo o contraseña incorrectos") lo haría pensar que escribió
+      // mal su contraseña, cuando el problema real es otro y la solución
+      // es simplemente revisar su bandeja de entrada.
       mostrarToast({
         titulo: 'No se pudo iniciar sesión',
-        detalle: err?.message === 'Invalid login credentials' ? 'Correo o contraseña incorrectos.' : err?.message || 'Intenta de nuevo en un momento.',
+        detalle: esErrorCorreoNoConfirmado(err)
+          ? 'Todavía no confirmas tu correo electrónico — revisa tu bandeja de entrada (y spam) y confirma tu cuenta antes de iniciar sesión.'
+          : err?.message === 'Invalid login credentials'
+          ? 'Correo o contraseña incorrectos.'
+          : err?.message || 'Intenta de nuevo en un momento.',
         tono: 'error',
       });
       return false;
@@ -46282,6 +46298,21 @@ function PortalPublicoJugadores({ clubSlug }) {
   // `enviarCrearCuenta`) para ese caso.
   function manejarPostAutenticacionPortal(ok) {
     if (!ok) return;
+    // Registro Exitoso con Confirmación de Correo Pendiente (Solución
+    // Definitiva de Registro — Flujo Dual "Confirm Email" ON/OFF):
+    // `crearCuentaJugador` regresa el string `'pendiente'` (en vez de
+    // `true`) cuando Supabase todavía no entrega una sesión activa — la
+    // cuenta Y el perfil en `jugadores` SÍ se crearon (vía el trigger
+    // `fn_crear_perfil_jugador`), pero no hay sesión/identidad con la que
+    // continuar ninguna inscripción o pago en curso todavía. Se cierra el
+    // modal (la cuenta sí se creó, no hay nada más que corregir en el
+    // formulario) pero se corta aquí, sin intentar retomar
+    // `eventoParaInscribir` sin un jugador real detrás — eso se resuelve
+    // solo hasta que el jugador confirme su correo e inicie sesión.
+    if (ok === 'pendiente') {
+      setModalIdentificacion(false);
+      return;
+    }
     if (eventoParaInscribir) {
       if (eventoParaInscribir.tipo === 'reta') {
         setFlujoPago({ tipo: 'reta', evento: eventoParaInscribir.evento, categoria: null, monto: precioDeReta(eventoParaInscribir.evento) });
