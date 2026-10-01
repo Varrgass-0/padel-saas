@@ -42787,7 +42787,7 @@ function PantallaSeleccionPlanOnboarding({
                     aplicarCodigoPromo();
                   }
                 }}
-                placeholder="Ej. DEMQLUBOS15"
+                placeholder="Ingresa tu código"
                 className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold uppercase tracking-wide text-slate-900 outline-none placeholder:font-normal placeholder:normal-case placeholder:text-slate-400 focus:border-orange-400"
               />
               <button
