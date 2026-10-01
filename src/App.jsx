@@ -3751,7 +3751,15 @@ async function registrarPenalizacionPendiente({ jugadorId, jugadorNombre, tipoAc
         jugador_nombre: jugadorNombre || 'Jugador',
         tipo_actividad: tipoActividad,
         referencia_tabla: referenciaTabla,
-        referencia_id: referenciaId ?? null,
+        // FIX DE RAÍZ v82 (el 22P02 persistía tras v81 con un uuid DISTINTO):
+        // `referencia_id` es el `id` de la fila de ORIGEN (`reta_inscripciones.id`/
+        // `academia_alumnos.id`/`reservas.id`, según `referenciaTabla`) — ese
+        // `id` tampoco es siempre bigint (mismo caso que `jugadores.id`). Ya
+        // existía este MISMO patrón resuelto en `wallet_movimientos_operador.
+        // referencia_id` (texto desde v57/v58, ver `referenciaIdTexto` en
+        // `ajustarSaldoWalletOperador`) — aquí se aplica igual: nunca se manda
+        // el id crudo, siempre como texto.
+        referencia_id: referenciaId != null ? String(referenciaId).trim() : null,
         monto: Number(monto),
         motivo: motivo || 'Cancelación extemporánea',
         fecha_actividad: fechaActividad || null,
