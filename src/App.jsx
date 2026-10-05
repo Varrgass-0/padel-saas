@@ -34359,7 +34359,7 @@ async function generarSesionesClase({ clase, reservasExistentes = [] }) {
 // Privada / Personalizada — selector de alumno del directorio (en vez del
 // nombre libre), alta automática como primer inscrito (cupo 1/1) en
 // `academia_alumnos`, y notificación al jugador (`crearNotificacionJugador`).
-function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen, configClub, permisos }) {
+function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen, configClub, permisos, tarifasHorarios }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
@@ -34427,17 +34427,48 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   // clase; Coach/Manager/Recepción/etc. ven los 2 campos bloqueados y
   // SIEMPRE tomando el valor vigente de la configuración del club.
   const puedeEditarPreciosAcademia = Boolean(permisos?.puedeGestionarEmpleados);
+  // PRECIO DINÁMICO DE CLASE SUELTA (migracion_v88/v89): el campo ya no
+  // arranca siempre en el precio base estático —
+  //   1) Al abrir desde una solicitud web que trae `precio_clase_suelta` (lo
+  //      que el jugador vio en el Portal para su horario, ej. $700), ese
+  //      monto se precarga tal cual.
+  //   2) Si el operador cambia HORA INICIO (o la fecha / hora de fin, que
+  //      también definen qué franja cubre el bloque), el precio se RECALCULA
+  //      con las franjas de Clase Suelta configuradas para ese día de la
+  //      semana (`tarifasAcademiaActivasDelDia`): si alguna franja cubre el
+  //      bloque completo, su valor; si no, el precio base estándar del club.
+  // `claveHorarioInicial` recuerda el horario con el que abrió el modal para
+  // saber cuándo todavía aplica el precio de la solicitud.
+  const claveHorarioInicial = useRef(`${fecha}|${horaInicio}|${horaFin}`);
+  const precioSolicitudClase = Number(solicitudOrigen?.precio_clase_suelta);
+  const precioDinamicoClase = useMemo(() => {
+    const dow = fecha ? new Date(`${fecha}T12:00:00`).getDay() : null;
+    const franjas = dow === null || Number.isNaN(dow) ? [] : tarifasAcademiaActivasDelDia(tarifasHorarios, dow);
+    const ini = parseHoraAMinutos(horaInicio);
+    const fin = parseHoraAMinutos(horaFin);
+    const duracion = ini !== null && fin !== null && fin > ini ? fin - ini : 60;
+    return precioClaseSueltaEnHorario(horaInicio, duracion, franjas, tarifasAcademiaClub.precioBaseClaseSuelta);
+  }, [fecha, horaInicio, horaFin, tarifasHorarios, tarifasAcademiaClub.precioBaseClaseSuelta]);
+  const precioClaseSugerido =
+    Number.isFinite(precioSolicitudClase) && precioSolicitudClase > 0 && `${fecha}|${horaInicio}|${horaFin}` === claveHorarioInicial.current
+      ? precioSolicitudClase
+      : precioDinamicoClase;
   const [precioMensualidad, setPrecioMensualidad] = useState(String(tarifasAcademiaClub.precioBaseMensualidad));
-  const [precioClaseSuelta, setPrecioClaseSuelta] = useState(String(tarifasAcademiaClub.precioBaseClaseSuelta));
-  // Si el campo está bloqueado (no-Owner/Admin), estos 2 valores siempre
-  // reflejan la configuración vigente del club — nunca un valor editado a
+  const [precioClaseSuelta, setPrecioClaseSuelta] = useState(String(precioClaseSugerido));
+  // El precio de Clase Suelta se re-sugiere cada vez que cambia el horario
+  // (o las franjas/config llegan por Realtime) — también para Coach/Staff,
+  // que ven el campo bloqueado pero SIEMPRE con el valor dinámico vigente.
+  useEffect(() => {
+    setPrecioClaseSuelta(String(precioClaseSugerido));
+  }, [precioClaseSugerido]);
+  // Si el campo está bloqueado (no-Owner/Admin), la mensualidad siempre
+  // refleja la configuración vigente del club — nunca un valor editado a
   // mano, ni siquiera si `configClub` llega/cambia después de montar el
   // modal (ej. Realtime).
   useEffect(() => {
     if (puedeEditarPreciosAcademia) return;
     setPrecioMensualidad(String(tarifasAcademiaClub.precioBaseMensualidad));
-    setPrecioClaseSuelta(String(tarifasAcademiaClub.precioBaseClaseSuelta));
-  }, [puedeEditarPreciosAcademia, tarifasAcademiaClub.precioBaseMensualidad, tarifasAcademiaClub.precioBaseClaseSuelta]);
+  }, [puedeEditarPreciosAcademia, tarifasAcademiaClub.precioBaseMensualidad]);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
@@ -37602,6 +37633,7 @@ function ModuloAcademiaClinicas({
   onRegistrarAuditoria,
   preseleccionarClaseId,
   onClasePreseleccionadaConsumida,
+  tarifasHorarios,
 }) {
   const toast = useToast();
   // Coaches activos registrados en el club (mismo criterio que
@@ -38558,6 +38590,7 @@ function ModuloAcademiaClinicas({
           solicitudOrigen={solicitudParaNuevaClase}
           configClub={configClub}
           permisos={permisos}
+          tarifasHorarios={tarifasHorarios}
           onClose={() => {
             setModalNuevaClase(false);
             setCeldaParaNuevaClase(null);
@@ -49594,6 +49627,11 @@ function PortalPublicoJugadores({ clubSlug }) {
       // el club al atender la solicitud (ver `ModalNuevaClase`), este campo
       // es solo la intención del jugador para que Solicitudes la vea.
       tipo_pago_deseado: datos.tipoPagoDeseado || null,
+      // Precio dinámico de Clase Suelta calculado en el Portal para el horario
+      // elegido (migracion_v89) — `null` si el modal no lo mandó.
+      precio_clase_suelta: Number.isFinite(Number(datos.precioClaseSuelta)) && datos.precioClaseSuelta !== null && datos.precioClaseSuelta !== undefined
+        ? Number(datos.precioClaseSuelta)
+        : null,
       estado: 'pendiente',
     });
     try {
@@ -49607,6 +49645,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         'hora_hasta',
         'numero_participantes',
         'tipo_pago_deseado',
+        'precio_clase_suelta',
         'estado',
       ]);
       if (error) throw error;
@@ -52603,6 +52642,16 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       // que no corresponde al tipo de solicitud.
       numeroParticipantes: tipo === 'grupal' ? numeroParticipantes : null,
       tipoPagoDeseado,
+      // Precio Dinámico de Clase Suelta (migracion_v89): el monto EXACTO que el
+      // jugador vio para el horario que eligió (franja que cubre el bloque, o
+      // el precio estándar) — se guarda en la solicitud para que "Nueva
+      // Clase" (Panel Admin) lo precargue en vez del precio base estático.
+      precioClaseSuelta: precioClaseSueltaEnHorario(
+        horaInicio,
+        duracionClaseMinutos,
+        franjasClaseDelDia,
+        tarifasAcademiaClub.precioBaseClaseSuelta
+      ),
     });
     setEnviando(false);
   }
@@ -58193,6 +58242,7 @@ function AppInterno({ clubInicial } = {}) {
                 onRegistrarAuditoria={registrarEventoAuditoria}
                 preseleccionarClaseId={academiaClasePreseleccionarId}
                 onClasePreseleccionadaConsumida={() => setAcademiaClasePreseleccionarId(null)}
+                tarifasHorarios={tarifasHorarios}
               />
             ) : moduloActivo === 'seguridad' ? (
               <ModuloControlSeguridad
