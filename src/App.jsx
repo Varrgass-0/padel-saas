@@ -1907,6 +1907,12 @@ const PERMISOS_POR_ROL = {
     puedeVerAuditoria: true,
     puedeGestionarProductos: true,
     puedeCambiarEstatusCancha: true,
+    // Edición directa del PRECIO POR HORA de la cancha (Parrilla Operativa):
+    // solo Dueño (`owner`) y Administrador (`manager`, el rol de
+    // administración de esta matriz — no existe un rol 'admin' aparte).
+    // Cualquier otro rol (Recepción/Bar/Coach/Contador) no lo trae → `undefined`
+    // → se trata como `false` (`permisos?.puedeEditarPrecioCancha === true`).
+    puedeEditarPrecioCancha: true,
     puedeVerMontos: true,
     soloLecturaParrilla: false,
     soloLecturaInventario: false,
@@ -1945,6 +1951,7 @@ const PERMISOS_POR_ROL = {
     puedeVerAuditoria: true,
     puedeGestionarProductos: true,
     puedeCambiarEstatusCancha: true,
+    puedeEditarPrecioCancha: true,
     puedeVerMontos: true,
     soloLecturaParrilla: false,
     soloLecturaInventario: false,
@@ -5170,7 +5177,13 @@ function CanchaCard({
   // `PERMISOS_POR_ROL`: Recepción/Bar/Coach/Contador nunca lo tienen en
   // `true`). `onRenombrarCancha` viene de `ModuloParrillaOperativa`.
   puedeRenombrarCancha = false,
-  onRenombrarCancha,
+  // Edición directa del Precio por Hora — solo Dueño/Administrador (ver
+  // `puedeEditarPrecioCancha` en `PERMISOS_POR_ROL`). Sin permiso, el campo de
+  // precio simplemente no se muestra en el editor.
+  puedeEditarPrecio = false,
+  // `onEditarCancha(cancha, { nombre, precioPorHora })` — ver `editarCancha`
+  // en `AppInterno`.
+  onEditarCancha,
 }) {
   const meta = ESTATUS_META[estadoActual];
   const bloqueada = estadoActual === 'mantenimiento';
@@ -5182,20 +5195,42 @@ function CanchaCard({
   const [editandoNombre, setEditandoNombre] = useState(false);
   const [nombreEditado, setNombreEditado] = useState(cancha.nombre || '');
   const [guardandoNombre, setGuardandoNombre] = useState(false);
+  // Precio por Hora (edición directa, solo Dueño/Admin) — mismo editor
+  // inline que el nombre: un solo Guardar/Cancelar para ambos campos.
+  const precioActual = precioPorHoraDeCancha(cancha);
+  const [precioEditado, setPrecioEditado] = useState(String(precioActual));
+  const puedeEditarAlgo = puedeRenombrarCancha || puedeEditarPrecio;
 
   useEffect(() => {
-    if (!editandoNombre) setNombreEditado(cancha.nombre || '');
-  }, [cancha.nombre, editandoNombre]);
+    if (!editandoNombre) {
+      setNombreEditado(cancha.nombre || '');
+      setPrecioEditado(String(precioPorHoraDeCancha(cancha)));
+    }
+  }, [cancha, editandoNombre]);
+
+  function cancelarEdicionCancha() {
+    setEditandoNombre(false);
+    setNombreEditado(cancha.nombre || '');
+    setPrecioEditado(String(precioActual));
+  }
+
+  const precioEditadoNum = Number(precioEditado);
+  const precioValido = !puedeEditarPrecio || (Number.isFinite(precioEditadoNum) && precioEditadoNum > 0);
 
   async function guardarNombreCancha() {
-    const limpio = nombreEditado.trim();
-    if (!limpio || limpio === cancha.nombre) {
-      setEditandoNombre(false);
-      setNombreEditado(cancha.nombre || '');
+    const limpio = puedeRenombrarCancha ? nombreEditado.trim() : cancha.nombre;
+    if (!limpio || !precioValido) return;
+    const cambioNombre = limpio !== cancha.nombre;
+    const cambioPrecio = puedeEditarPrecio && precioEditadoNum !== precioActual;
+    if (!cambioNombre && !cambioPrecio) {
+      cancelarEdicionCancha();
       return;
     }
     setGuardandoNombre(true);
-    await onRenombrarCancha?.(cancha, limpio);
+    await onEditarCancha?.(cancha, {
+      nombre: cambioNombre ? limpio : undefined,
+      precioPorHora: cambioPrecio ? precioEditadoNum : undefined,
+    });
     setGuardandoNombre(false);
     setEditandoNombre(false);
   }
@@ -5257,27 +5292,44 @@ function CanchaCard({
                 onChange={(e) => setNombreEditado(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') guardarNombreCancha();
-                  if (e.key === 'Escape') {
-                    setEditandoNombre(false);
-                    setNombreEditado(cancha.nombre || '');
-                  }
+                  if (e.key === 'Escape') cancelarEdicionCancha();
                 }}
-                disabled={guardandoNombre}
+                disabled={guardandoNombre || !puedeRenombrarCancha}
+                aria-label="Nombre de la cancha"
                 className="w-full min-w-0 rounded-lg border border-orange-400 bg-white px-2 py-1 text-sm font-black text-slate-900 outline-none"
               />
+              {puedeEditarPrecio && (
+                <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-orange-400 bg-white px-1.5 py-1">
+                  <span className="text-xs font-bold text-slate-400">$</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="any"
+                    inputMode="decimal"
+                    value={precioEditado}
+                    onChange={(e) => setPrecioEditado(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') guardarNombreCancha();
+                      if (e.key === 'Escape') cancelarEdicionCancha();
+                    }}
+                    disabled={guardandoNombre}
+                    aria-label="Precio por hora (MXN)"
+                    title="Precio por hora (MXN)"
+                    className="w-16 min-w-0 bg-transparent text-sm font-black text-slate-900 outline-none"
+                  />
+                  <span className="text-[10px] font-semibold text-slate-400">/hr</span>
+                </div>
+              )}
               <button
                 onClick={guardarNombreCancha}
-                disabled={guardandoNombre || !nombreEditado.trim()}
+                disabled={guardandoNombre || (puedeRenombrarCancha && !nombreEditado.trim()) || !precioValido}
                 className="shrink-0 rounded-lg bg-orange-400 p-1.5 text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Guardar nombre"
+                title="Guardar cambios"
               >
                 {guardandoNombre ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
               </button>
               <button
-                onClick={() => {
-                  setEditandoNombre(false);
-                  setNombreEditado(cancha.nombre || '');
-                }}
+                onClick={cancelarEdicionCancha}
                 disabled={guardandoNombre}
                 className="shrink-0 rounded-lg border border-slate-300 bg-slate-100 p-1.5 text-slate-500 transition hover:bg-slate-200"
                 title="Cancelar"
@@ -5288,7 +5340,7 @@ function CanchaCard({
           ) : (
             <>
               <h3 className="truncate text-sm font-black text-slate-900">{cancha.nombre}</h3>
-              {puedeRenombrarCancha && (
+              {puedeEditarAlgo && (
                 // FIX Táctil/iPad: `opacity-0` + `group-hover:opacity-100`
                 // dejaba este botón invisible/imposible de tocar en
                 // cualquier dispositivo sin cursor real (iPad, tablet,
@@ -5301,7 +5353,7 @@ function CanchaCard({
                 <button
                   onClick={() => setEditandoNombre(true)}
                   className="shrink-0 rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
-                  title="Renombrar cancha (ej. patrocinio de marca)"
+                  title={puedeEditarPrecio ? 'Editar nombre y precio por hora' : 'Renombrar cancha (ej. patrocinio de marca)'}
                 >
                   <Pencil size={13} />
                 </button>
@@ -5758,7 +5810,7 @@ function Toolbar({
             <CalendarRange size={14} /> Calendario
           </button>
         </div>
-        {!soloLectura && puedeCrearCancha && (
+        {!soloLectura && (
           <BotonPrimario onClick={onNuevaCancha} className="whitespace-nowrap">
             <Plus size={15} /> Nueva Cancha
           </BotonPrimario>
@@ -6718,31 +6770,6 @@ function ModalNuevaCancha({ onClose, onCreada }) {
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
             Crear cancha
           </BotonPrimario>
-        </div>
-      </div>
-    </ModalShell>
-  );
-}
-
-// Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) —
-// modal informativo que reemplaza a `ModalNuevaCancha` en cuanto el club
-// alcanza el tope de canchas de su plan suscrito (ver `abrirModalNuevaCancha`
-// en `ModuloParrillaOperativa`, el único punto que decide cuál de los dos
-// modales abrir). Puramente informativo por ahora — "Actualizar Plan" no
-// dispara ningún cambio real todavía (no hay Billing/Stripe conectado), solo
-// cierra el modal; el mensaje deja claro que debe contactar/actualizar su
-// plan.
-function ModalLimiteCanchasPlan({ limiteCanchasPlan, onClose }) {
-  return (
-    <ModalShell titulo="Llegaste al límite de tu plan" onClose={onClose} icon={Lock}>
-      <div className="space-y-4">
-        <p className="text-sm text-slate-600">
-          Tu plan actual incluye hasta <span className="font-bold text-slate-900">{limiteCanchasPlan}</span>{' '}
-          {limiteCanchasPlan === 1 ? 'cancha' : 'canchas'}, y ya las tienes todas registradas. Para agregar más
-          canchas, actualiza tu plan.
-        </p>
-        <div className="flex justify-end gap-2 pt-2">
-          <BotonSecundario onClick={onClose}>Entendido</BotonSecundario>
         </div>
       </div>
     </ModalShell>
@@ -8103,9 +8130,9 @@ function ModuloParrillaOperativa({
   upsertReserva,
   marcarReservaCancelada,
   actualizarEstatusCancha,
-  // Edición rápida de Nombre de Cancha (Patrocinios/Sponsorships) — ver
-  // `renombrarCancha` en `AppInterno`.
-  onRenombrarCancha,
+  // Edición directa de Nombre + Precio por Hora de la cancha — ver
+  // `editarCancha` en `AppInterno`.
+  onEditarCancha,
   onReservaParaCobro,
   bloqueosMaestroTorneoIds,
   jugadoresPorId,
@@ -8119,6 +8146,11 @@ function ModuloParrillaOperativa({
   // tope numérico ya resuelto por `AppInterno` (`limiteCanchasDelPlan`
   // sobre `planClubSeleccionado`); `null`/`undefined` = sin límite.
   limiteCanchasPlan,
+  // Plan contratado (snapshot `{canchas, nombre, precioMensual, ...}`) y su
+  // guardado (`guardarPlanSeleccionadoClub`) — alimentan el modal de Upselling
+  // ("Cambiar Plan") que se abre al intentar crear una cancha en el tope.
+  planActual,
+  onCambiarPlan,
   // Homologación Parrilla Operativa ↔ Academia (Unificación de Cancelación
   // de Clases) — ver `irACancelarClaseDesdeParrilla` en `AppInterno`.
   onCancelarClaseDesdeParrilla,
@@ -8147,11 +8179,12 @@ function ModuloParrillaOperativa({
     return { anio: hoy.getFullYear(), mes: hoy.getMonth() };
   });
   const cambiarMesCalendario = (delta) => setCalendarioMes((prev) => sumarMeses(prev.anio, prev.mes, delta));
-  // Único punto que abre `ModalNuevaCancha` en todo este módulo (Toolbar +
-  // EmptyState ya ocultan el botón que llega aquí, pero este guard es la
-  // defensa real — es el ÚNICO choke point que inserta en `canchas`, ver
-  // `ModalNuevaCancha`): si el plan ya está en su tope, jamás se abre el
-  // formulario de alta, se abre el modal informativo en su lugar.
+  // Único punto que abre `ModalNuevaCancha` en todo este módulo. El botón
+  // "+ Nueva Cancha" SIEMPRE se muestra (Toolbar + EmptyState); aquí se decide
+  // qué abre: si `canchas.length < limitePlan` → formulario de alta; si ya se
+  // alcanzó el tope del plan → NUNCA se abre el alta, se abre el modal de
+  // Upselling ("Cambiar Plan") con la leyenda de límite alcanzado. Este guard
+  // es la defensa real — es el ÚNICO choke point que inserta en `canchas`.
   const abrirModalNuevaCancha = () => {
     if (alcanzoLimiteCanchasPlan) {
       setModalLimiteCanchasPlan(true);
@@ -8336,14 +8369,13 @@ function ModuloParrillaOperativa({
         onFiltroEstatus={setFiltroEstatus}
         onNuevaCancha={abrirModalNuevaCancha}
         soloLectura={permisos?.soloLecturaParrilla === true}
-        puedeCrearCancha={!alcanzoLimiteCanchasPlan}
       />
 
       <TransicionPestana activeKey={vista}>
       {loading ? (
         <SkeletonGrid />
       ) : canchas.length === 0 ? (
-        <EmptyState onNuevaCancha={abrirModalNuevaCancha} puedeCrearCancha={!alcanzoLimiteCanchasPlan} />
+        <EmptyState onNuevaCancha={abrirModalNuevaCancha} puedeCrearCancha={permisos?.soloLecturaParrilla !== true} />
       ) : vista === 'tarjetas' ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {canchasFiltradas.map((c) => (
@@ -8362,7 +8394,8 @@ function ModuloParrillaOperativa({
               }
               soloLectura={permisos?.soloLecturaParrilla === true}
               puedeRenombrarCancha={permisos?.puedeCambiarEstatusCancha === true}
-              onRenombrarCancha={onRenombrarCancha}
+              puedeEditarPrecio={permisos?.puedeEditarPrecioCancha === true}
+              onEditarCancha={onEditarCancha}
             />
           ))}
         </div>
@@ -8434,7 +8467,20 @@ function ModuloParrillaOperativa({
       )}
 
       {modalLimiteCanchasPlan && (
-        <ModalLimiteCanchasPlan limiteCanchasPlan={limiteCanchasPlan} onClose={() => setModalLimiteCanchasPlan(false)} />
+        <ModalCambiarPlan
+          planActual={planActual}
+          titulo="Actualiza tu plan"
+          mensajeLimite={`Has alcanzado el límite de ${limiteCanchasPlan} canchas de tu plan actual. Actualiza tu suscripción para agregar más canchas.`}
+          soloPlanesSuperioresA={limiteCanchasPlan}
+          onClose={() => setModalLimiteCanchasPlan(false)}
+          onConfirmar={async (plan) => {
+            await onCambiarPlan?.(plan);
+            setModalLimiteCanchasPlan(false);
+            // Con el plan superior ya contratado, se retoma justo donde iba:
+            // el alta de la nueva cancha.
+            setModalNuevaCancha(true);
+          }}
+        />
       )}
 
       {modalCambiarFoto && (
@@ -44029,12 +44075,22 @@ function SeccionCuentaSuscripcion({
 // en `AppInterno`) que ya escribe `plan_canchas`/`plan_nombre`/
 // `plan_precio_mensual` en `configuracion_club` — ningún estado ni columna
 // nueva, solo un segundo punto de entrada a la misma lógica.
-function ModalCambiarPlan({ planActual, onClose, onConfirmar }) {
+function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo = 'Cambiar Plan', mensajeLimite, soloPlanesSuperioresA }) {
+  // Modo Upselling (tope de canchas alcanzado desde la Parrilla): solo se
+  // ofrecen los planes cuyo límite de canchas supera al actual
+  // (`soloPlanesSuperioresA` = límite actual), y se preselecciona el
+  // inmediato superior. Sin esa prop, el modal funciona igual que siempre.
+  const planesVisibles = PLANES_ONBOARDING_CLUB.filter(
+    (p) => soloPlanesSuperioresA == null || (limiteCanchasDelPlan(p.canchas) ?? 0) > soloPlanesSuperioresA
+  );
   const [frecuencia, setFrecuencia] = useState(planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual');
   // `canchasElegidas` (no el objeto plan) — el snapshot con el precio de la
   // frecuencia vigente se arma al confirmar (`snapshotPlanRegular`).
   const [canchasElegidas, setCanchasElegidas] = useState(
-    () => PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planActual?.canchas)?.canchas || null
+    () =>
+      soloPlanesSuperioresA != null
+        ? planesVisibles[0]?.canchas || null
+        : PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planActual?.canchas)?.canchas || null
   );
   const planElegido = PLANES_ONBOARDING_CLUB.find((p) => p.canchas === canchasElegidas) || null;
   const [guardando, setGuardando] = useState(false);
@@ -44050,18 +44106,31 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar }) {
 
   return (
     <ModalShell
-      titulo="Cambiar Plan"
-      subtitulo="Upgrade o downgrade — el nuevo precio aplica desde tu siguiente ciclo de facturación."
+      titulo={titulo}
+      subtitulo={
+        mensajeLimite ? undefined : 'Upgrade o downgrade — el nuevo precio aplica desde tu siguiente ciclo de facturación.'
+      }
       onClose={onClose}
       ancho="max-w-2xl"
       icon={CreditCard}
     >
+      {mensajeLimite && (
+        <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600" />
+          <p className="text-sm font-semibold text-amber-800">{mensajeLimite}</p>
+        </div>
+      )}
       <div className="mb-4 flex justify-center">
         <SelectorFrecuenciaPlan frecuencia={frecuencia} onChange={setFrecuencia} />
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        {PLANES_ONBOARDING_CLUB.map((plan) => {
+      {planesVisibles.length === 0 && (
+        <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          Ya tienes el plan más alto disponible (hasta 12 canchas). Para agregar más, contacta a soporte de QLUBOS.
+        </p>
+      )}
+      <div className={`grid gap-3 ${planesVisibles.length >= 3 ? 'sm:grid-cols-3' : planesVisibles.length === 2 ? 'sm:grid-cols-2' : ''}`}>
+        {planesVisibles.map((plan) => {
           const activo = planElegido?.canchas === plan.canchas;
           const esPlanActual = planActual?.canchas === plan.canchas;
           return (
@@ -56716,31 +56785,55 @@ function AppInterno({ clubInicial } = {}) {
     });
   }
 
-  // Edición rápida de Nombre de Cancha (Patrocinios/Sponsorships) — permite
-  // renombrar una cancha ya creada (ej. "Cancha 1" → "Cancha Wilson") sin
-  // pasar por ningún modal, directo desde el lápiz de `CanchaCard` en la
-  // Parrilla Operativa. Gateado a Owner/Manager en el llamador (ver
-  // `puedeRenombrarCancha` en `ModuloParrillaOperativa`), mismo criterio de
-  // permisos que `puedeCambiarEstatusCancha`. Optimista (Sincronización
-  // Silenciosa): el nombre nuevo se ve de inmediato en la tarjeta; si
-  // Supabase falla, se revierte y se avisa con un toast.
-  async function renombrarCancha(cancha, nuevoNombre) {
-    const limpio = (nuevoNombre || '').trim();
-    if (!limpio || limpio === cancha.nombre) return;
-    const anterior = { ...cancha };
-    upsertCancha({ ...cancha, nombre: limpio });
-    const { error: err } = await supabase.from('canchas').update({ nombre: limpio }).eq('id', cancha.id);
-    if (err) {
-      upsertCancha(anterior); // rollback
-      mostrarToast({ titulo: 'No se pudo renombrar la cancha', detalle: err.message, tono: 'error' });
+  // Edición directa de la cancha desde su tarjeta en la Parrilla Operativa:
+  // NOMBRE (ej. "Cancha 1" → "Cancha Wilson", Patrocinios) y/o PRECIO POR HORA.
+  // `cambios = { nombre?, precioPorHora? }` — solo viaja lo que cambió. El
+  // gate de permisos vive en `CanchaCard` (`puedeRenombrarCancha` /
+  // `puedeEditarPrecio`, solo Dueño/Administrador para el precio), pero aquí
+  // se REVALIDA (`permisos`) para que ninguna otra ruta que llegue a esta
+  // función pueda cambiar un precio sin el rol. Optimista (Sincronización
+  // Silenciosa): la tarjeta se actualiza de inmediato y, si Supabase falla,
+  // se revierte y se avisa con un toast. El precio se escribe en la columna
+  // que la fila REALMENTE trae (`precio_por_hora` por defecto; ver
+  // `CAMPOS_PRECIO_HORA_CANCHA`) para no inventar una columna inexistente.
+  async function editarCancha(cancha, cambios) {
+    const nombreNuevo = typeof cambios?.nombre === 'string' ? cambios.nombre.trim() : undefined;
+    const precioNuevo = cambios?.precioPorHora != null ? Number(cambios.precioPorHora) : undefined;
+    const quiereNombre = nombreNuevo !== undefined && nombreNuevo !== '' && nombreNuevo !== cancha.nombre;
+    const quierePrecio = precioNuevo !== undefined;
+    if (quierePrecio && permisos?.puedeEditarPrecioCancha !== true) {
+      mostrarToast({ titulo: 'Sin permiso', detalle: 'Solo el Dueño o Administrador puede cambiar el precio de una cancha.', tono: 'error' });
       return;
     }
-    mostrarToast({ titulo: 'Cancha renombrada', detalle: `"${anterior.nombre}" ahora es "${limpio}".` });
+    if (quierePrecio && !(Number.isFinite(precioNuevo) && precioNuevo > 0)) {
+      mostrarToast({ titulo: 'Precio inválido', detalle: 'Escribe un precio por hora mayor a 0.', tono: 'error' });
+      return;
+    }
+    if (!quiereNombre && !quierePrecio) return;
+
+    const columnaPrecio = CAMPOS_PRECIO_HORA_CANCHA.find((c) => Object.prototype.hasOwnProperty.call(cancha, c)) || 'precio_por_hora';
+    const anterior = { ...cancha };
+    const payload = {};
+    if (quiereNombre) payload.nombre = nombreNuevo;
+    if (quierePrecio) payload[columnaPrecio] = precioNuevo;
+
+    upsertCancha({ ...cancha, ...payload });
+    const { error: err } = await supabase.from('canchas').update(payload).eq('id', cancha.id);
+    if (err) {
+      upsertCancha(anterior); // rollback
+      mostrarToast({ titulo: 'No se pudo guardar la cancha', detalle: err.message, tono: 'error' });
+      return;
+    }
+    const nombreFinal = quiereNombre ? nombreNuevo : anterior.nombre;
+    const partes = [];
+    if (quiereNombre) partes.push(`nombre "${anterior.nombre}" → "${nombreNuevo}"`);
+    if (quierePrecio) partes.push(`precio ${formatoMoneda(precioPorHoraDeCancha(anterior))}/hr → ${formatoMoneda(precioNuevo)}/hr`);
+    mostrarToast({ titulo: 'Cancha actualizada', detalle: `${nombreFinal}: ${partes.join(' · ')}.` });
     // Auditoría — Control Interno: "Modificación de horarios o canchas".
     registrarEventoAuditoria('modificacion_cancha', {
-      cancha: limpio,
-      antes: `Nombre: ${anterior.nombre}`,
-      despues: `Nombre: ${limpio}`,
+      cancha: nombreFinal,
+      antes: [quiereNombre ? `Nombre: ${anterior.nombre}` : null, quierePrecio ? `Precio/hr: ${precioPorHoraDeCancha(anterior)}` : null].filter(Boolean).join(' | '),
+      despues: [quiereNombre ? `Nombre: ${nombreNuevo}` : null, quierePrecio ? `Precio/hr: ${precioNuevo}` : null].filter(Boolean).join(' | '),
     });
   }
 
@@ -56938,13 +57031,15 @@ function AppInterno({ clubInicial } = {}) {
                 upsertReserva={upsertReserva}
                 marcarReservaCancelada={marcarReservaCancelada}
                 actualizarEstatusCancha={actualizarEstatusCancha}
-                onRenombrarCancha={renombrarCancha}
+                onEditarCancha={editarCancha}
                 onReservaParaCobro={enviarReservaAPOS}
                 bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
                 jugadoresPorId={jugadoresPorId}
                 configClub={configClub}
                 tarifasHorarios={tarifasHorarios}
                 limiteCanchasPlan={limiteCanchasPlan}
+                planActual={planClubSeleccionado}
+                onCambiarPlan={guardarPlanSeleccionadoClub}
                 onCancelarClaseDesdeParrilla={irACancelarClaseDesdeParrilla}
               />
             ) : moduloActivo === 'pos' ? (
