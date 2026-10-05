@@ -42533,11 +42533,75 @@ function SeccionOperadoresStaff({ empleados, onCrearEmpleado, onRegistrarGuardad
 // un cambio de texto SIEMPRE se hace aquí, nunca solo en el JSX/comentarios
 // de esa pantalla, o el render sigue mostrando este string sin importar qué
 // diga el comentario de al lado).
+// Estructura de Precios (MXN, IVA incluido en TODOS los montos):
+//  - `precioMensual`: precio REGULAR de lista (referencia / tachado).
+//  - `precioFundadorMensual`: modo "Mensual" con promo "Precio Fundador" 15% OFF
+//    durante los primeros 6 meses.
+//  - `precioAnualMensual` / `precioAnualTotal`: modo "Anual" (25% OFF) — el
+//    equivalente mensual y el total facturado una vez al año (montos exactos
+//    definidos por negocio, no se recalculan con redondeo aquí).
+//  - `cuadros`: cantidad de cuadros del ícono-grid de la tarjeta (ver
+//    `IconoGridCanchas`).
 const PLANES_ONBOARDING_CLUB = [
-  { canchas: '1-3', nombre: '1 – 3 Canchas', precioMensual: 1499, descripcion: 'Diseñado para clubes ágiles y en crecimiento.' },
-  { canchas: '4-7', nombre: '4 – 7 Canchas', precioMensual: 2990, descripcion: 'Ideal para clubes de capacidad intermedia.' },
-  { canchas: '8-12', nombre: '8 – 12 Canchas', precioMensual: 4990, descripcion: 'Optimizado para complejos de gran escala.' },
+  {
+    canchas: '1-3',
+    nombre: '1 – 3 Canchas',
+    precioMensual: 1599,
+    precioFundadorMensual: 1359,
+    precioAnualMensual: 1199,
+    precioAnualTotal: 14390,
+    cuadros: 3,
+    descripcion: 'Diseñado para clubes ágiles y en crecimiento.',
+  },
+  {
+    canchas: '4-7',
+    nombre: '4 – 7 Canchas',
+    precioMensual: 2499,
+    precioFundadorMensual: 2124,
+    precioAnualMensual: 1874,
+    precioAnualTotal: 22490,
+    cuadros: 4,
+    descripcion: 'Ideal para clubes de capacidad intermedia.',
+  },
+  {
+    canchas: '8-12',
+    nombre: '8 – 12 Canchas',
+    precioMensual: 3499,
+    precioFundadorMensual: 2974,
+    precioAnualMensual: 2624,
+    precioAnualTotal: 31490,
+    cuadros: 8,
+    descripcion: 'Optimizado para complejos de gran escala.',
+  },
 ];
+
+// Precio vigente de un plan según la frecuencia elegida en el Toggle
+// (`'mensual'` | `'anual'`). `mensual` = lo que realmente se cobra por mes en
+// esa modalidad (es lo que se guarda como snapshot en `plan_precio_mensual`);
+// `tachado` = precio regular de referencia (solo en modo mensual, promo
+// Fundador); `totalAnual` = monto facturado una vez al año (solo modo anual).
+function precioPlanSegunFrecuencia(plan, frecuencia) {
+  if (frecuencia === 'anual') return { mensual: plan.precioAnualMensual, tachado: null, totalAnual: plan.precioAnualTotal };
+  return { mensual: plan.precioFundadorMensual, tachado: plan.precioMensual, totalAnual: null };
+}
+
+// Ícono-grid de canchas: representa visualmente el tamaño del plan con N
+// cuadritos (3 → fila de 3, 4 → 2×2, 8 → 4×2).
+function IconoGridCanchas({ cuadros, activo }) {
+  const columnas = cuadros === 3 ? 3 : cuadros === 4 ? 2 : 4;
+  return (
+    <div
+      className={`flex h-11 w-11 items-center justify-center rounded-xl ${activo ? 'bg-orange-400' : 'bg-slate-100'}`}
+      aria-hidden="true"
+    >
+      <div className="grid gap-[3px]" style={{ gridTemplateColumns: `repeat(${columnas}, minmax(0, 1fr))` }}>
+        {Array.from({ length: cuadros }).map((_, i) => (
+          <span key={i} className={`block h-2 w-2 rounded-[2px] ${activo ? 'bg-slate-950' : 'bg-slate-400'}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) — el
 // tope NUMÉRICO de canchas de cada rango elegido en `PLANES_ONBOARDING_CLUB`
@@ -42677,6 +42741,25 @@ function PantallaSeleccionPlanOnboarding({
   const [validandoCodigoPromo, setValidandoCodigoPromo] = useState(false);
   const [errorCodigoPromo, setErrorCodigoPromo] = useState('');
 
+  // Frecuencia de facturación elegida en el Toggle. Arranca con la del
+  // snapshot en memoria (si el dueño regresa desde Setup con "Cambiar de
+  // plan", conserva su elección); si no hay, 'mensual'.
+  const [frecuencia, setFrecuencia] = useState(planSeleccionado?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual');
+
+  // Snapshot del plan con el precio MENSUAL EFECTIVO de la frecuencia elegida
+  // (es lo que `guardarPlanSeleccionadoClub` persiste en `plan_precio_mensual`).
+  function snapshotPlanConFrecuencia(plan, freq) {
+    return { ...plan, precioMensual: precioPlanSegunFrecuencia(plan, freq).mensual, frecuenciaFacturacion: freq };
+  }
+
+  function cambiarFrecuencia(nueva) {
+    setFrecuencia(nueva);
+    if (planSeleccionado) {
+      const base = PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planSeleccionado.canchas);
+      if (base) onSeleccionarPlan(snapshotPlanConFrecuencia(base, nueva));
+    }
+  }
+
   async function aplicarCodigoPromo() {
     const codigoNormalizado = (codigoPromoInput || '').trim().toUpperCase();
     if (!codigoNormalizado) return;
@@ -42726,14 +42809,44 @@ function PantallaSeleccionPlanOnboarding({
         <p className="mt-2 text-sm font-medium text-slate-500">Elige tu plan según el tamaño de tu club.</p>
       </div>
 
+      {/* Toggle de frecuencia (Mensual / Anual) + leyenda de IVA. Cambiarlo
+          con un plan ya elegido re-envía el snapshot (`onSeleccionarPlan`)
+          con el precio de la nueva frecuencia, para que Confirmación y
+          `plan_precio_mensual` reflejen lo que el dueño está viendo. */}
+      <div className="mb-6 flex flex-col items-center gap-2">
+        <div role="group" aria-label="Frecuencia de facturación" className="inline-flex rounded-full border border-slate-200 bg-white p-1 shadow-sm">
+          {[
+            { value: 'mensual', label: 'Mensual' },
+            { value: 'anual', label: 'Anual — Ahorra 25%' },
+          ].map((op) => {
+            const sel = frecuencia === op.value;
+            return (
+              <button
+                key={op.value}
+                type="button"
+                aria-pressed={sel}
+                onClick={() => cambiarFrecuencia(op.value)}
+                className={`rounded-full px-4 py-1.5 text-xs font-bold transition sm:text-sm ${
+                  sel ? 'bg-orange-400 text-slate-950 shadow' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {op.label}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[11px] font-semibold text-slate-400">Todos los precios incluyen IVA</p>
+      </div>
+
       <div className="grid gap-4 sm:grid-cols-3">
         {PLANES_ONBOARDING_CLUB.map((plan, i) => {
           const activo = planSeleccionado?.canchas === plan.canchas;
+          const precio = precioPlanSegunFrecuencia(plan, frecuencia);
           return (
             <motion.button
               key={plan.canchas}
               type="button"
-              onClick={() => onSeleccionarPlan(plan)}
+              onClick={() => onSeleccionarPlan(snapshotPlanConFrecuencia(plan, frecuencia))}
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.3, delay: i * 0.05, ease: 'easeOut' }}
@@ -42752,14 +42865,29 @@ function PantallaSeleccionPlanOnboarding({
               <div className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-orange-300 bg-orange-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-orange-700">
                 <CheckCircle2 size={10} /> Todas las funciones incluidas
               </div>
-              <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${activo ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-500'}`}>
-                <LayoutGrid size={18} />
-              </div>
+              <IconoGridCanchas cuadros={plan.cuadros} activo={activo} />
               <div className="pr-2">
                 <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
-                <p className="mt-1 text-2xl font-black text-slate-900">
-                  {formatoPrecioPlanOnboarding(plan.precioMensual)}
-                  <span className="text-sm font-semibold text-slate-400"> / mes</span>
+                {frecuencia === 'mensual' ? (
+                  <span className="mt-1.5 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                    15% OFF — Precio Fundador (6 meses)
+                  </span>
+                ) : (
+                  <span className="mt-1.5 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                    Ahorras 25% anual
+                  </span>
+                )}
+                {precio.tachado != null && (
+                  <p className="mt-1 text-sm font-semibold text-slate-400 line-through">{formatoPrecioPlanOnboarding(precio.tachado)}</p>
+                )}
+                <p className={`${precio.tachado != null ? '' : 'mt-1 '}text-2xl font-black text-slate-900`}>
+                  {formatoPrecioPlanOnboarding(precio.mensual)}
+                  <span className="text-sm font-semibold text-slate-400"> MXN / mes</span>
+                </p>
+                <p className="text-[11px] font-medium text-slate-400">
+                  {precio.totalAnual != null
+                    ? `facturado anualmente ${formatoPrecioPlanOnboarding(precio.totalAnual)} MXN - IVA incl.`
+                    : 'IVA incluido'}
                 </p>
                 {/* Descripción por tarjeta (versión definitiva del copy) —
                     una línea corta que explica el tier sin repetir el rango
@@ -42803,7 +42931,7 @@ function PantallaSeleccionPlanOnboarding({
           continua, no dos animaciones desconectadas. */}
       <p className="mt-6 text-center text-sm sm:text-base">
         <span className="font-black text-[#FF6B35]">
-          <TextoAnimadoPorPalabras texto="Tu dinero es tuyo." delayInicial={0.5} />
+          <TextoAnimadoPorPalabras texto="Tu club. Tu dinero." delayInicial={0.5} />
         </span>{' '}
         <span className="font-black text-slate-800">
           <TextoAnimadoPorPalabras texto="0% comisiones por reserva o transacción." delayInicial={0.5 + 4 * 0.06} />
@@ -42942,7 +43070,7 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
             {planSeleccionado ? `${planSeleccionado.canchas} Canchas`.toUpperCase() : 'Sin plan seleccionado'}
           </p>
           {planSeleccionado?.precioMensual != null && (
-            <p className="text-sm font-semibold text-slate-500">{formatoPrecioPlanOnboarding(planSeleccionado.precioMensual)} MXN / mes</p>
+            <p className="text-sm font-semibold text-slate-500">{formatoPrecioPlanOnboarding(planSeleccionado.precioMensual)} MXN / mes · IVA incluido</p>
           )}
           <p className="mt-2 text-xs font-semibold text-orange-600">Todo QLUBOS incluido.</p>
         </div>
