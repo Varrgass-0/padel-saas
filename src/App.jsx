@@ -2464,6 +2464,88 @@ function hoyISO() {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+// -----------------------------------------------------------------------------
+// CUMPLEAÑOS DE JUGADORES (`jugadores.fecha_nacimiento`, migracion_v54) —
+// helpers puros, todos con fechas ISO "YYYY-MM-DD" en hora LOCAL (mismo
+// criterio que `hoyISO`):
+//   • `esCumpleanosHoy`        → tarjeta festiva del Directorio & CRM + pancarta
+//                                de la Vista 360° (solo el día exacto; al día
+//                                siguiente deja de coincidir y todo vuelve solo
+//                                al diseño estándar, sin estado que limpiar).
+//   • `diasParaCumpleanos`     → alertas del Centro de Notificaciones del club
+//                                a 7 días y a 1 día de anticipación.
+// Un 29 de febrero se celebra el 28 de febrero en los años no bisiestos.
+// -----------------------------------------------------------------------------
+function parseFechaNacimiento(fechaNac) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(fechaNac || ''));
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mes = Number(m[2]);
+  const d = Number(m[3]);
+  if (!y || mes < 1 || mes > 12 || d < 1 || d > 31) return null;
+  return { y, m: mes, d };
+}
+
+function esAnioBisiesto(anio) {
+  return (anio % 4 === 0 && anio % 100 !== 0) || anio % 400 === 0;
+}
+
+// Fecha (ISO) en que cae el cumpleaños dentro de `anio`.
+function fechaCumpleanosEnAnio(fechaNac, anio) {
+  const f = parseFechaNacimiento(fechaNac);
+  if (!f) return null;
+  const dia = f.m === 2 && f.d === 29 && !esAnioBisiesto(anio) ? 28 : f.d;
+  return `${anio}-${pad2(f.m)}-${pad2(dia)}`;
+}
+
+function esCumpleanosHoy(fechaNac, hoy = hoyISO()) {
+  const anio = Number(String(hoy).slice(0, 4));
+  return !!fechaNac && fechaCumpleanosEnAnio(fechaNac, anio) === hoy;
+}
+
+// Próxima fecha de cumpleaños a partir de `hoy` (incluye hoy) → ISO, o `null`.
+function proximoCumpleanos(fechaNac, hoy = hoyISO()) {
+  const anio = Number(String(hoy).slice(0, 4));
+  const esteAnio = fechaCumpleanosEnAnio(fechaNac, anio);
+  if (!esteAnio) return null;
+  return esteAnio >= hoy ? esteAnio : fechaCumpleanosEnAnio(fechaNac, anio + 1);
+}
+
+function diasEntreFechasISO(desdeISO, hastaISO) {
+  const [y1, m1, d1] = String(desdeISO).split('-').map(Number);
+  const [y2, m2, d2] = String(hastaISO).split('-').map(Number);
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000);
+}
+
+// Días que faltan para el próximo cumpleaños (0 = hoy), o `null` sin fecha válida.
+function diasParaCumpleanos(fechaNac, hoy = hoyISO()) {
+  const proximo = proximoCumpleanos(fechaNac, hoy);
+  return proximo ? diasEntreFechasISO(hoy, proximo) : null;
+}
+
+// Edad que cumple en la fecha de cumpleaños `fechaCumpleISO` (null si el año
+// de nacimiento no es plausible — evita mostrar "cumple 2026 años").
+function edadAlCumplir(fechaNac, fechaCumpleISO) {
+  const f = parseFechaNacimiento(fechaNac);
+  if (!f || !fechaCumpleISO) return null;
+  const edad = Number(String(fechaCumpleISO).slice(0, 4)) - f.y;
+  return edad >= 1 && edad <= 120 ? edad : null;
+}
+
+// Día actual que se actualiza solo (cada minuto) — así la tarjeta festiva
+// aparece/desaparece a medianoche sin recargar el panel.
+function useDiaActual() {
+  const [dia, setDia] = useState(() => hoyISO());
+  useEffect(() => {
+    const id = setInterval(() => {
+      const ahora = hoyISO();
+      setDia((prev) => (prev === ahora ? prev : ahora));
+    }, 60000);
+    return () => clearInterval(id);
+  }, []);
+  return dia;
+}
+
 function minutosAhora() {
   const d = new Date();
   return d.getHours() * 60 + d.getMinutes();
@@ -5053,6 +5135,9 @@ const TIPO_ALERTA_META = {
   // meta de cortesía (Pro-Shop o Restaurante/Bar), mismo criterio interno
   // que `reabastecimiento`.
   cortesia_lista: { icon: Gift, color: 'text-orange-400', bg: 'bg-orange-400/10' },
+  // Cumpleaños de jugadores (aviso a 7 días y a 1 día) — alerta interna del
+  // club generada por el escáner diario de `AppInterno` (`fecha_nacimiento`).
+  cumpleanos: { icon: PartyPopper, color: 'text-fuchsia-400', bg: 'bg-fuchsia-400/10' },
 };
 
 // Centro de Alertas del Club: campana con contador de no leídas + dropdown,
@@ -39780,6 +39865,10 @@ function DirectorioJugadoresCRM({
     };
   }, [perfiles]);
 
+  // Día actual que se refresca solo (medianoche) — alimenta la tarjeta
+  // festiva de cumpleaños (`TarjetaJugadorCRM`) y la pancarta de la Vista 360°.
+  const diaHoy = useDiaActual();
+
   /* ---- Búsqueda, filtros y resumen ejecutivo ---- */
   const [busqueda, setBusqueda] = useState('');
   const [filtroSegmento, setFiltroSegmento] = useState('todos');
@@ -39939,7 +40028,7 @@ function DirectorioJugadoresCRM({
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {perfilesFiltrados.map((p) => (
-            <TarjetaJugadorCRM key={p.id} perfil={p} onVerDetalle={() => setJugadorSeleccionadoId(p.id)} permisos={permisos} />
+            <TarjetaJugadorCRM key={p.id} perfil={p} onVerDetalle={() => setJugadorSeleccionadoId(p.id)} permisos={permisos} diaHoy={diaHoy} />
           ))}
         </div>
       )}
@@ -39947,6 +40036,7 @@ function DirectorioJugadoresCRM({
       {jugadorSeleccionado && (
         <ModalPerfilJugadorCRM
           perfil={jugadorSeleccionado}
+          diaHoy={diaHoy}
           onClose={() => setJugadorSeleccionadoId(null)}
           onActualizarTelefono={onActualizarTelefonoJugador}
           onActualizarFechaNacimiento={onActualizarFechaNacimientoJugador}
@@ -40447,18 +40537,31 @@ function ModalCortesiasFrecuencia({
   );
 }
 
-function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos }) {
+function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos, diaHoy }) {
   const metaSeg = SEGMENTO_META[perfil.segmento];
   const SegIcon = metaSeg.icon;
   const colorBarra = perfil.chs.puntaje >= 80 ? 'bg-emerald-400' : perfil.chs.puntaje >= 60 ? 'bg-amber-400' : 'bg-rose-400';
   const colorTexto = perfil.chs.puntaje >= 80 ? 'text-emerald-400' : perfil.chs.puntaje >= 60 ? 'text-amber-400' : 'text-rose-400';
+  // Cumpleaños: SOLO el día exacto (día y mes de `fecha_nacimiento` == hoy).
+  // Al día siguiente `esCumple` es false y la tarjeta vuelve sola al diseño
+  // estándar — no hay nada guardado que limpiar.
+  const esCumple = esCumpleanosHoy(perfil.fechaNacimiento, diaHoy);
 
-  return (
+  const tarjeta = (
     <button
       type="button"
       onClick={onVerDetalle}
-      className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-slate-300 hover:bg-slate-100/60"
+      className={
+        esCumple
+          ? 'flex h-full w-full flex-col gap-3 rounded-[14px] bg-gradient-to-br from-amber-50 via-white to-fuchsia-50 p-4 text-left transition hover:brightness-[0.98]'
+          : 'flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-slate-300 hover:bg-slate-100/60'
+      }
     >
+      {esCumple && (
+        <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-gradient-to-r from-fuchsia-500 to-amber-400 px-2.5 py-1 text-[11px] font-black text-white shadow-sm">
+          <span aria-hidden="true">🎂</span> ¡Hoy cumple años!
+        </span>
+      )}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-bold text-slate-900">{perfil.nombre}</p>
@@ -40504,6 +40607,21 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos }) {
         <div className={`h-full rounded-full ${colorBarra}`} style={{ width: `${perfil.chs.puntaje}%` }} />
       </div>
     </button>
+  );
+
+  if (!esCumple) return tarjeta;
+  // Borde degradado brillante: un marco de 2px con degradado animado
+  // (el fondo se desliza en bucle) alrededor de la tarjeta festiva.
+  return (
+    <motion.div
+      initial={{ scale: 0.97, opacity: 0.8 }}
+      animate={{ scale: 1, opacity: 1, backgroundPosition: ['0% 50%', '100% 50%', '0% 50%'] }}
+      transition={{ scale: { duration: 0.3 }, opacity: { duration: 0.3 }, backgroundPosition: { duration: 6, repeat: Infinity, ease: 'linear' } }}
+      style={{ backgroundImage: 'linear-gradient(120deg, #d946ef, #fbbf24, #fb7185, #a855f7, #fbbf24, #d946ef)', backgroundSize: '300% 300%' }}
+      className="rounded-2xl p-[2px] shadow-lg shadow-fuchsia-500/25"
+    >
+      {tarjeta}
+    </motion.div>
   );
 }
 
@@ -40874,6 +40992,7 @@ function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPo
 
 function ModalPerfilJugadorCRM({
   perfil,
+  diaHoy,
   onClose,
   onActualizarTelefono,
   onActualizarFechaNacimiento,
@@ -41080,6 +41199,43 @@ function ModalPerfilJugadorCRM({
     <>
     <ModalShell titulo={perfil.nombre} subtitulo="Vista 360° · Gasto Total Histórico & Nivel de Fidelidad" onClose={onClose} ancho="max-w-2xl" icon={HeartPulse}>
       <div className="space-y-5">
+        {/* Pancarta de Cumpleaños — solo el día exacto (`esCumpleanosHoy`):
+            felicitación + recordatorio de gestionar una cortesía/detalle, y
+            atajo para felicitarlo por WhatsApp si tiene teléfono. */}
+        {esCumpleanosHoy(perfil.fechaNacimiento, diaHoy) && (() => {
+          const primerNombre = (perfil.nombre || '').trim().split(/\s+/)[0] || 'jugador';
+          const edad = edadAlCumplir(perfil.fechaNacimiento, diaHoy || hoyISO());
+          const mensaje = `¡Feliz cumpleaños, ${primerNombre}! 🎉🎂 De parte de todo el equipo${nombreClub ? ` de ${nombreClub}` : ''}, te deseamos un día increíble. ¡Te esperamos en la cancha para celebrarlo!`;
+          return (
+            <motion.div
+              initial={{ opacity: 0, y: -8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ type: 'spring', stiffness: 260, damping: 20 }}
+              className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-fuchsia-500 via-pink-500 to-amber-400 p-4 text-white shadow-lg shadow-fuchsia-500/25"
+            >
+              <span aria-hidden="true" className="pointer-events-none absolute -right-2 -top-3 text-6xl opacity-20">🎉</span>
+              <div className="relative flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-lg font-black leading-tight">🎂 ¡Feliz cumpleaños, {primerNombre}!</p>
+                  <p className="mt-0.5 text-xs font-semibold text-white/90">
+                    {edad ? `Hoy cumple ${edad} años. ` : 'Hoy es su cumpleaños. '}
+                    Es un buen día para ofrecerle una cortesía o un detalle especial.
+                  </p>
+                </div>
+                {perfil.telefono && (
+                  <a
+                    href={construirEnlaceWhatsApp({ telefono: perfil.telefono, mensaje })}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white/95 px-3 py-1.5 text-xs font-black text-fuchsia-600 shadow-sm transition hover:bg-white"
+                  >
+                    <Gift size={13} /> Felicitar por WhatsApp
+                  </a>
+                )}
+              </div>
+            </motion.div>
+          );
+        })()}
         <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
           {editandoTelefono ? (
             <div className="flex flex-1 flex-wrap items-center gap-2">
@@ -43522,6 +43678,293 @@ const VARIANTES_IMPACTO_ENTRADA = {
   exit: { opacity: 0, scale: 0.95 },
 };
 
+// ---- Paso 3.5: Configuración de Canchas (Onboarding) ----------------------
+// Etapa nueva del Wizard (Plan → CANCHAS → Configuración del Club): el dueño
+// da de alta sus canchas reales ANTES de configurar horarios/tarifas, en una
+// grilla interactiva de tarjetas + una tarjeta punteada "+ Agregar Cancha"
+// que abre un modal compacto (Nombre, Tipo, Superficie). Todo vive como
+// BORRADOR local (se puede agregar, editar y eliminar libremente) y SOLO al
+// presionar "Continuar" se guarda de golpe en Supabase
+// (`guardarCanchasOnboarding` en `AppInterno`, insert masivo con `club_id`).
+const TIPOS_CANCHA_ONBOARDING = ['Indoor', 'Outdoor'];
+const SUPERFICIES_CANCHA_ONBOARDING = ['Césped sintético', 'Cemento', 'Alfombra', 'Cristal', 'Otra'];
+
+// Límite orientativo de canchas del plan elegido ('1-3', '4-7', '8-12',
+// '13+'…): devuelve el máximo numérico, o `null` si no hay tope claro.
+function maximoCanchasDelPlan(planSeleccionado) {
+  const texto = String(planSeleccionado?.canchas ?? '');
+  const rango = texto.match(/(\d+)\s*[-–]\s*(\d+)/);
+  if (rango) return Number(rango[2]);
+  return null;
+}
+
+function canchaABorrador(c) {
+  return {
+    clave: `db-${c.id}`,
+    id: c.id,
+    nombre: c.nombre || '',
+    tipo: c.tipo || TIPOS_CANCHA_ONBOARDING[1],
+    superficie: c.superficie || SUPERFICIES_CANCHA_ONBOARDING[0],
+  };
+}
+
+function ModalCanchaOnboarding({ cancha, nombresEnUso, nombreSugerido, onGuardar, onClose }) {
+  const [nombre, setNombre] = useState(cancha?.nombre || nombreSugerido || '');
+  const [tipo, setTipo] = useState(cancha?.tipo || TIPOS_CANCHA_ONBOARDING[1]);
+  const [superficie, setSuperficie] = useState(cancha?.superficie || SUPERFICIES_CANCHA_ONBOARDING[0]);
+  const [error, setError] = useState('');
+
+  function guardar() {
+    const limpio = nombre.trim();
+    if (!limpio) return setError('Ponle un nombre a la cancha (ej. "Cancha 1").');
+    if (nombresEnUso.some((n) => n.trim().toLowerCase() === limpio.toLowerCase())) {
+      return setError('Ya tienes una cancha con ese nombre.');
+    }
+    onGuardar({ nombre: limpio, tipo, superficie });
+  }
+
+  return (
+    <ModalShell
+      titulo={cancha ? 'Editar Cancha' : 'Agregar Cancha'}
+      subtitulo="Podrás ajustar precios y horarios después"
+      onClose={onClose}
+      icon={cancha ? Pencil : Plus}
+      ancho="max-w-md"
+    >
+      <div className="space-y-4">
+        <Campo label="Nombre de la cancha">
+          <input
+            autoFocus
+            value={nombre}
+            onChange={(e) => {
+              setNombre(e.target.value);
+              setError('');
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') guardar();
+            }}
+            maxLength={40}
+            placeholder="Cancha 1"
+            className={inputClaseWizard}
+          />
+        </Campo>
+        <div>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Tipo</span>
+          <div className="grid grid-cols-2 gap-2">
+            {TIPOS_CANCHA_ONBOARDING.map((t) => (
+              <button
+                key={t}
+                type="button"
+                aria-pressed={tipo === t}
+                onClick={() => setTipo(t)}
+                className={`rounded-lg border px-3 py-2 text-sm font-bold transition ${
+                  tipo === t ? 'border-orange-400 bg-orange-50 text-orange-700 ring-1 ring-orange-400' : 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Superficie</span>
+          <div className="flex flex-wrap gap-2">
+            {SUPERFICIES_CANCHA_ONBOARDING.map((sup) => (
+              <button
+                key={sup}
+                type="button"
+                aria-pressed={superficie === sup}
+                onClick={() => setSuperficie(sup)}
+                className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
+                  superficie === sup ? 'border-orange-400 bg-orange-50 text-orange-700 ring-1 ring-orange-400' : 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                {sup}
+              </button>
+            ))}
+          </div>
+        </div>
+        {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar}>
+            <Check size={15} />
+            {cancha ? 'Guardar cambios' : 'Agregar cancha'}
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guardando, onContinuar, onAtras }) {
+  const [borrador, setBorrador] = useState(() => (Array.isArray(canchas) ? canchas.map(canchaABorrador) : []));
+  // `modal`: null | { modo: 'nueva' } | { modo: 'editar', clave }
+  const [modal, setModal] = useState(null);
+  const [error, setError] = useState('');
+  const tocadoRef = useRef(false);
+  const contadorRef = useRef(0);
+
+  // Si las canchas del club llegan de Supabase DESPUÉS de montar esta pantalla
+  // (la carga inicial todavía no había respondido) y el dueño aún no ha
+  // tocado nada, se siembra el borrador con ellas — así un refresh a mitad del
+  // Onboarding no duplica canchas ya guardadas.
+  useEffect(() => {
+    if (tocadoRef.current) return;
+    if (Array.isArray(canchas) && canchas.length > 0) setBorrador(canchas.map(canchaABorrador));
+  }, [canchas]);
+
+  const maximoPlan = maximoCanchasDelPlan(planSeleccionado);
+  const excedePlan = maximoPlan !== null && borrador.length > maximoPlan;
+  const canchaEnEdicion = modal?.modo === 'editar' ? borrador.find((b) => b.clave === modal.clave) : null;
+  const nombresEnUso = borrador.filter((b) => b.clave !== canchaEnEdicion?.clave).map((b) => b.nombre);
+
+  function sugerirNombre() {
+    let n = borrador.length + 1;
+    const usados = new Set(borrador.map((b) => b.nombre.trim().toLowerCase()));
+    while (usados.has(`cancha ${n}`)) n += 1;
+    return `Cancha ${n}`;
+  }
+
+  function guardarDesdeModal(datos) {
+    tocadoRef.current = true;
+    setError('');
+    if (canchaEnEdicion) {
+      setBorrador((prev) => prev.map((b) => (b.clave === canchaEnEdicion.clave ? { ...b, ...datos } : b)));
+    } else {
+      contadorRef.current += 1;
+      setBorrador((prev) => [...prev, { clave: `nueva-${Date.now()}-${contadorRef.current}`, id: null, ...datos }]);
+    }
+    setModal(null);
+  }
+
+  function eliminar(clave) {
+    tocadoRef.current = true;
+    setBorrador((prev) => prev.filter((b) => b.clave !== clave));
+  }
+
+  async function continuar() {
+    setError('');
+    if (borrador.length === 0) {
+      setError('Agrega al menos una cancha para continuar.');
+      return;
+    }
+    await onContinuar(borrador);
+  }
+
+  return (
+    <LienzoOnboardingClub ancho="max-w-4xl">
+      <div className="rounded-3xl border border-slate-200/70 bg-white/90 p-6 shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-10">
+        {onAtras && <EnlaceAtrasWizard onClick={onAtras}>Cambiar de plan</EnlaceAtrasWizard>}
+        <div className="text-center">
+          <h2 className="text-2xl font-black text-slate-900 sm:text-3xl">Configuración de Canchas</h2>
+          <p className="mx-auto mt-2 max-w-xl text-sm font-medium text-slate-500">
+            Da de alta las canchas de {nombreClub || 'tu club'}. Puedes editarlas o eliminarlas antes de continuar, y agregar más cuando quieras desde el Panel.
+          </p>
+          <p className="mt-3 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600">
+            {borrador.length} {borrador.length === 1 ? 'cancha' : 'canchas'}
+            {planSeleccionado?.nombre ? <span className="text-slate-400">· Plan {planSeleccionado.nombre}</span> : null}
+          </p>
+          {excedePlan && (
+            <p className="mx-auto mt-2 max-w-md text-xs font-semibold text-amber-600">
+              Superas las {maximoPlan} canchas de tu plan actual — puedes continuar y ajustar el plan más adelante.
+            </p>
+          )}
+        </div>
+
+        <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <AnimatePresence mode="popLayout" initial={false}>
+            {borrador.map((c) => (
+              <motion.div
+                key={c.clave}
+                layout
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.8 }}
+                transition={{ type: 'spring', stiffness: 320, damping: 24 }}
+                className="group relative flex min-h-[140px] flex-col justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-orange-300 hover:shadow-lg hover:shadow-orange-500/10"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-100 text-orange-600">
+                    <Trophy size={18} />
+                  </div>
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setModal({ modo: 'editar', clave: c.clave })}
+                      aria-label={`Editar ${c.nombre}`}
+                      className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => eliminar(c.clave)}
+                      aria-label={`Eliminar ${c.nombre}`}
+                      className="rounded-lg p-1.5 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <p className="truncate text-base font-black text-slate-900">{c.nombre}</p>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-slate-600">{c.tipo}</span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-slate-600">{c.superficie}</span>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+            <motion.button
+              key="agregar-cancha"
+              layout
+              type="button"
+              onClick={() => setModal({ modo: 'nueva' })}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              transition={{ type: 'spring', stiffness: 320, damping: 24 }}
+              className="flex min-h-[140px] flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/60 p-4 text-slate-500 transition hover:border-orange-400 hover:bg-orange-50/50 hover:text-orange-600"
+            >
+              <Plus size={24} />
+              <span className="text-sm font-bold">+ Agregar Cancha</span>
+            </motion.button>
+          </AnimatePresence>
+        </div>
+
+        {error && <p className="mt-4 text-center text-xs font-semibold text-rose-500">{error}</p>}
+
+        <div className="mt-8 flex justify-end">
+          <BotonPrimarioWizard onClick={continuar} disabled={guardando} className="px-6 py-3 text-base">
+            {guardando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
+            Continuar
+          </BotonPrimarioWizard>
+        </div>
+      </div>
+
+      {/* Portal a <body>: el Wizard anima la pantalla con `transform`, y un
+          `fixed` dentro de un ancestro transformado se posicionaría respecto
+          a ese ancestro (no a la ventana) y quedaría recortado. */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {modal && (
+              <ModalCanchaOnboarding
+                key={modal.clave || 'nueva'}
+                cancha={canchaEnEdicion}
+                nombresEnUso={nombresEnUso}
+                nombreSugerido={sugerirNombre()}
+                onGuardar={guardarDesdeModal}
+                onClose={() => setModal(null)}
+              />
+            )}
+          </AnimatePresence>,
+          document.body
+        )}
+    </LienzoOnboardingClub>
+  );
+}
+
 function OnboardingCanvasClub({
   nombreClub,
   planSeleccionado,
@@ -43531,8 +43974,11 @@ function OnboardingCanvasClub({
   moduloConfigProps,
   onActivarPruebaGratuita,
   activandoPruebaGratuita,
+  canchas,
+  onGuardarCanchas,
+  guardandoCanchas,
 }) {
-  const [etapa, setEtapa] = useState('kickoff'); // 'kickoff' | 'plan' | 'setup' | 'confirmacion'
+  const [etapa, setEtapa] = useState('kickoff'); // 'kickoff' | 'plan' | 'canchas' | 'setup' | 'confirmacion'
   const [direccion, setDireccion] = useState(1); // 1 = avanzar (Siguiente), -1 = retroceder (Atrás)
 
   function irA(nuevaEtapa, direction) {
@@ -43549,11 +43995,11 @@ function OnboardingCanvasClub({
         nombreClub={nombreClub}
         planSeleccionado={planSeleccionado}
         onSeleccionarPlan={onSeleccionarPlan}
-        onContinuar={() => irA('setup', 1)}
+        onContinuar={() => irA('canchas', 1)}
         onAtras={() => irA('kickoff', -1)}
         // Periodo de Prueba / Free Trial (migracion_v84) — "avanza al paso
         // final del registro" se interpreta igual que "Continuar" normal
-        // (sigue a 'setup'), NO se salta la Configuración del Club: el
+        // (sigue a 'canchas' → 'setup'), NO se salta la Configuración del Club: el
         // Setup Canvas captura datos operativos reales (horario, nombre del
         // administrador, canchas…) que el club necesita sin importar si
         // está en prueba o ya pagando — saltarlo dejaría un club sin
@@ -43561,9 +44007,26 @@ function OnboardingCanvasClub({
         // (`onActivarPruebaGratuita`) ya ocurrió antes de avanzar.
         onActivarPrueba={async (codigoInfo) => {
           await onActivarPruebaGratuita?.(codigoInfo);
-          irA('setup', 1);
+          irA('canchas', 1);
         }}
         activandoPrueba={activandoPruebaGratuita}
+      />
+    );
+  } else if (etapa === 'canchas') {
+    // Configuración de Canchas (inmediatamente después del Plan y antes de la
+    // Configuración General del Club): "Continuar" guarda el borrador completo
+    // en Supabase y SOLO avanza a 'setup' si el guardado salió bien.
+    contenido = (
+      <PantallaCanchasOnboarding
+        nombreClub={nombreClub}
+        planSeleccionado={planSeleccionado}
+        canchas={canchas}
+        guardando={guardandoCanchas}
+        onAtras={() => irA('plan', -1)}
+        onContinuar={async (borrador) => {
+          const ok = await onGuardarCanchas?.(borrador);
+          if (ok !== false) irA('setup', 1);
+        }}
       />
     );
   } else if (etapa === 'confirmacion') {
@@ -43589,7 +44052,7 @@ function OnboardingCanvasClub({
         <FondoGlowQlubOS />
         <div className="relative z-10 mx-auto mb-6 max-w-5xl text-center">
           <div className="text-left">
-            <EnlaceAtrasWizard onClick={() => irA('plan', -1)}>Cambiar de plan</EnlaceAtrasWizard>
+            <EnlaceAtrasWizard onClick={() => irA('canchas', -1)}>Volver a Canchas</EnlaceAtrasWizard>
           </div>
           <h2 className="text-2xl font-black text-slate-900">Configuremos {nombreClub || 'tu club'}</h2>
           <p className="mt-1 text-sm text-slate-500">Puedes ajustar cualquiera de estos módulos después, desde Configuración del Club.</p>
@@ -54842,6 +55305,7 @@ function AppInterno({ clubInicial } = {}) {
       : null
   );
   const [guardandoActivacionOnboarding, setGuardandoActivacionOnboarding] = useState(false);
+  const [guardandoCanchasOnboarding, setGuardandoCanchasOnboarding] = useState(false);
   // Periodo de Prueba / Free Trial mediante Códigos Promocionales
   // (migracion_v84) — mismo criterio que `onboardingCompletedClub`/
   // `planClubSeleccionado` arriba: el primer render ya conoce el estado real
@@ -56528,6 +56992,88 @@ function AppInterno({ clubInicial } = {}) {
     setGuardandoActivacionOnboarding(false);
   }, [planClubSeleccionado, mostrarToast]);
 
+  // Configuración de Canchas (Onboarding) — guardado MASIVO del borrador de
+  // `PantallaCanchasOnboarding` al presionar "Continuar". Compara el borrador
+  // contra las canchas que el club ya tiene en estado (`canchas`, cargadas de
+  // Supabase) para que volver a esta etapa y re-guardar NUNCA duplique filas:
+  //   • sin `id` → INSERT masivo (todas en una sola llamada, con `club_id`),
+  //   • con `id` y datos cambiados → UPDATE,
+  //   • canchas existentes que ya no están en el borrador → DELETE.
+  // `tipo`/`superficie` son columnas nuevas y opcionales
+  // (`migracion_v90_canchas_tipo_superficie.sql`): si el proyecto todavía no la
+  // corrió, el guardado se reintenta sin ellas (Arquitectura Flexible) y las
+  // canchas igual se crean. Devuelve `true` si todo quedó guardado (para que el
+  // Wizard avance) o `false` si falló (se queda en la etapa con un toast).
+  const guardarCanchasOnboarding = useCallback(
+    async (borrador) => {
+      setGuardandoCanchasOnboarding(true);
+      try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
+        const lista = Array.isArray(borrador) ? borrador : [];
+        const idsEnBorrador = new Set(lista.filter((b) => b.id != null).map((b) => String(b.id)));
+
+        const aEliminar = canchas.filter((c) => !idsEnBorrador.has(String(c.id)));
+        if (aEliminar.length > 0) {
+          const { error: errEliminar } = await conClubId(supabase.from('canchas').delete()).in(
+            'id',
+            aEliminar.map((c) => c.id)
+          );
+          if (errEliminar) throw errEliminar;
+        }
+
+        const actualizadas = [];
+        for (const b of lista.filter((x) => x.id != null)) {
+          const original = canchas.find((c) => String(c.id) === String(b.id));
+          const cambio =
+            original && (original.nombre !== b.nombre || (original.tipo || '') !== b.tipo || (original.superficie || '') !== b.superficie);
+          if (!cambio) {
+            if (original) actualizadas.push(original);
+            continue;
+          }
+          const { error: errActualizar } = await actualizarConColumnasOpcionales(
+            'canchas',
+            b.id,
+            { nombre: b.nombre, tipo: b.tipo, superficie: b.superficie },
+            ['tipo', 'superficie']
+          );
+          if (errActualizar) throw errActualizar;
+          actualizadas.push({ ...original, nombre: b.nombre, tipo: b.tipo, superficie: b.superficie });
+        }
+
+        const nuevas = lista.filter((b) => b.id == null);
+        let insertadas = [];
+        if (nuevas.length > 0) {
+          const { data, error: errInsertar } = await insertarMuchosConColumnasOpcionales(
+            'canchas',
+            nuevas.map((b) => ({
+              nombre: b.nombre,
+              tipo: b.tipo,
+              superficie: b.superficie,
+              precio_por_hora: 0,
+              activa: true,
+              estatus_manual: 'disponible',
+            })),
+            ['tipo', 'superficie', 'estatus_manual']
+          );
+          if (errInsertar) throw errInsertar;
+          insertadas = data || [];
+        }
+
+        setCanchas(
+          [...actualizadas, ...insertadas].sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { numeric: true }))
+        );
+        return true;
+      } catch (err) {
+        console.warn('[Onboarding Canvas] No se pudieron guardar las canchas.', err);
+        mostrarToast({ titulo: 'No se pudieron guardar las canchas', detalle: err?.message || 'Intenta de nuevo en unos segundos.', tono: 'error' });
+        return false;
+      } finally {
+        setGuardandoCanchasOnboarding(false);
+      }
+    },
+    [canchas, mostrarToast]
+  );
+
   // Periodo de Prueba / Free Trial mediante Códigos Promocionales
   // (migracion_v84) — "Tu periodo de prueba ha finalizado"
   // (`PantallaPruebaVencida`, bloqueo global del layout principal del Panel
@@ -56956,7 +57502,12 @@ function AppInterno({ clubInicial } = {}) {
       // son actividad real del Portal Web) — mismo `tipo: 'cortesia_lista'`
       // que inserta `DirectorioJugadoresCRM` en `notificaciones_club`.
       mostrarToast({
-        titulo: tipo === 'cortesia_lista' ? '🎁 Cortesía de Fidelidad Lista' : 'Nueva actividad del Portal Web',
+        titulo:
+          tipo === 'cortesia_lista'
+            ? '🎁 Cortesía de Fidelidad Lista'
+            : tipo === 'cumpleanos'
+              ? '🎂 Cumpleaños de un jugador'
+              : 'Nueva actividad del Portal Web',
         detalle: titulo,
       });
     },
@@ -57410,6 +57961,69 @@ function AppInterno({ clubInicial } = {}) {
     };
   }, []);
 
+  // Recordatorios de CUMPLEAÑOS de jugadores (`jugadores.fecha_nacimiento`):
+  // una vez por día (y cada vez que cambia el directorio) se buscan los
+  // cumpleaños que caen exactamente en 7 días y en 1 día, y se crea UNA
+  // notificación del club por jugador + año + anticipación (`clave` única en
+  // el `payload`). Antes de insertar se consulta qué claves ya existen en
+  // `notificaciones_club` (leídas o no), así recargar el panel, abrirlo en
+  // otro dispositivo o que el jugador siga en el directorio NUNCA duplica el
+  // aviso. Llega a la campana por el mismo canal Realtime de siempre
+  // (`notificaciones_club_*`) y al hacer clic abre la ficha del jugador.
+  const diaActualClub = useDiaActual();
+  const cumpleanosRevisadosRef = useRef('');
+  useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return;
+    const conFecha = Object.values(jugadoresPorId || {}).filter((j) => j && !esJugadorEliminado(j) && parseFechaNacimiento(j.fecha_nacimiento));
+    if (conFecha.length === 0) return;
+    const firma = `${diaActualClub}|${conFecha.map((j) => `${j.id}:${j.fecha_nacimiento}`).join(',')}`;
+    if (cumpleanosRevisadosRef.current === firma) return;
+    cumpleanosRevisadosRef.current = firma;
+
+    const candidatos = [];
+    conFecha.forEach((j) => {
+      const dias = diasParaCumpleanos(j.fecha_nacimiento, diaActualClub);
+      if (dias !== 7 && dias !== 1) return;
+      const fechaCumple = proximoCumpleanos(j.fecha_nacimiento, diaActualClub);
+      candidatos.push({ jugador: j, dias, fechaCumple, clave: `cumple-${j.id}-${fechaCumple.slice(0, 4)}-${dias}d` });
+    });
+    if (candidatos.length === 0) return;
+
+    let cancelado = false;
+    (async () => {
+      const { data: existentes, error } = await conClubId(supabase.from('notificaciones_club').select('payload'))
+        .eq('tipo', 'cumpleanos')
+        .in('payload->>clave', candidatos.map((c) => c.clave));
+      if (cancelado) return;
+      if (error) {
+        if (!esErrorTablaInexistente(error)) console.warn('[ClubOS] No se pudo revisar los avisos de cumpleaños ya generados.', error);
+        return;
+      }
+      const yaCreadas = new Set((existentes || []).map((r) => r?.payload?.clave).filter(Boolean));
+      for (const c of candidatos) {
+        if (cancelado) return;
+        if (yaCreadas.has(c.clave)) continue;
+        const nombre = (c.jugador.nombre || 'Un jugador').trim();
+        const edad = edadAlCumplir(c.jugador.fecha_nacimiento, c.fechaCumple);
+        const fechaTexto = formatoFechaDiaMesCorto(c.fechaCumple);
+        const titulo =
+          c.dias === 1
+            ? `🎂 Mañana cumple años ${nombre}${edad ? ` (cumplirá ${edad})` : ''}. ¡Buen momento para gestionar una cortesía o detalle!`
+            : `🎂 ${nombre} cumple años en 7 días (${fechaTexto})${edad ? ` — cumplirá ${edad}` : ''}. Prepara detalles o cortesías.`;
+        await crearNotificacionClub({
+          tipo: 'cumpleanos',
+          titulo,
+          jugadorId: c.jugador.id,
+          jugadorNombre: nombre,
+          payload: { clave: c.clave, dias_anticipacion: c.dias, fecha_cumpleanos: c.fechaCumple, modulo_destino: 'jugadores' },
+        });
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [jugadoresPorId, diaActualClub]);
+
   // FIX (persistencia de "leída"): las alertas que vienen del respaldo
   // inicial de `notificaciones_club` (id con prefijo `db-`, ver el `useEffect`
   // de arriba) tienen que marcarse `leida = true` TAMBIÉN en Supabase —si no,
@@ -57520,7 +58134,9 @@ function AppInterno({ clubInicial } = {}) {
       const moduloDefecto = tipo && TIPO_MODULO_DEFECTO[tipo] ? TIPO_MODULO_DEFECTO[tipo] : null;
 
       // 0) Cortesía/Fidelidad — el único tipo con permiso de ir al jugador.
-      if (tipo === 'cortesia_lista') {
+      // (`cumpleanos` comparte este destino: abre la ficha del jugador para
+      // gestionar su cortesía/detalle.)
+      if (tipo === 'cortesia_lista' || tipo === 'cumpleanos') {
         if (alerta?.jugadorId) {
           setModuloActivo('jugadores');
           setJugadorAAbrirId(alerta.jugadorId);
@@ -57871,6 +58487,9 @@ function AppInterno({ clubInicial } = {}) {
           moduloConfigProps={moduloConfigProps}
           onActivarPruebaGratuita={activarPruebaGratuita}
           activandoPruebaGratuita={activandoPruebaGratuita}
+          canchas={canchas}
+          onGuardarCanchas={guardarCanchasOnboarding}
+          guardandoCanchas={guardandoCanchasOnboarding}
         />
         <ToastHost toasts={toasts} />
       </ToastContext.Provider>
