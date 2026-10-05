@@ -3635,6 +3635,12 @@ const CONFIG_CLUB_DEFAULT = {
   // las franjas y sus precios NUNCA se tocan/borran — quedan intactas en
   // Supabase/estado para cuando el club vuelva a encenderlo.
   tarifasHabilitadas: true,
+  // Teléfono de Contacto del Club / Recepción (migracion_v87) — lo usa el
+  // botón "Contactar al Club" del Portal de Jugadores cuando ya no se puede
+  // cancelar libremente. '' = no configurado. Se persiste con SU PROPIO
+  // update (`guardarTelefonoContactoClub`), nunca dentro del guardado del
+  // objeto completo de `configClub` (evita "last write wins").
+  telefonoContacto: '',
   // Políticas y Tolerancia de Cancelación (Configuración del Club → Reservas
   // & Academia) — centraliza en un solo lugar lo que antes SOLO existía por
   // Reta individual (`retas.tolerancia_horas`, ver `TOLERANCIA_HORAS_DEFAULT`
@@ -3936,6 +3942,7 @@ function leerConfigClubLocal() {
       duracionReservaMinutos: Number(parsed.duracionReservaMinutos) > 0 ? Number(parsed.duracionReservaMinutos) : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
       duracionClaseMinutos: Number(parsed.duracionClaseMinutos) > 0 ? Number(parsed.duracionClaseMinutos) : CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
       tarifasHabilitadas: parsed.tarifasHabilitadas !== false,
+      telefonoContacto: String(parsed.telefonoContacto || '').replace(/\D/g, ''),
       toleranciaCancelacionMaster: parsed.toleranciaCancelacionMaster !== false,
       toleranciaReservasEnabled: parsed.toleranciaReservasEnabled === true,
       toleranciaReservasHoras: Number(parsed.toleranciaReservasHoras) > 0 ? Number(parsed.toleranciaReservasHoras) : CONFIG_CLUB_DEFAULT.toleranciaReservasHoras,
@@ -26025,6 +26032,77 @@ function IconoWhatsApp({ size = 14, className = '' }) {
   );
 }
 
+// Teléfono de Contacto del Club (migracion_v87): limpia lo capturado a mano
+// (espacios, guiones, paréntesis, +52/521) y deja SOLO dígitos — 10 dígitos
+// para México, o el número internacional completo. '' = quitar el teléfono.
+function normalizarTelefonoContactoClub(raw) {
+  let d = String(raw || '').replace(/\D/g, '');
+  if (!d) return { ok: true, valor: '' };
+  if (d.length === 13 && d.startsWith('521')) d = d.slice(3);
+  else if (d.length === 12 && d.startsWith('52')) d = d.slice(2);
+  if (d.length === 10 || (d.length >= 11 && d.length <= 15)) return { ok: true, valor: d };
+  return { ok: false, error: 'Ingresa un teléfono válido de 10 dígitos (ej. 5512345678).' };
+}
+
+function enlacesContactoClub(telefono) {
+  const d = String(telefono || '').replace(/\D/g, '');
+  if (!d) return null;
+  return {
+    visible: d.length === 10 ? `${d.slice(0, 2)} ${d.slice(2, 6)} ${d.slice(6)}` : `+${d}`,
+    tel: `tel:+${d.length === 10 ? `52${d}` : d}`,
+    whatsapp: `https://wa.me/${normalizarTelefonoWhatsApp(d)}`,
+  };
+}
+
+// Botón "Contactar al Club" del Portal de Jugadores — se muestra en los
+// modales de Reserva/Torneo/Reta/Clase cuando la cancelación ya está FUERA
+// DE TOLERANCIA (ya no se puede cancelar libre en autoservicio). Con
+// teléfono configurado: número + "Llamar" (tel:) + "Enviar WhatsApp"
+// (wa.me). Sin teléfono: mensaje amable de contactar a recepción.
+function BotonContactarClub({ telefono }) {
+  const [abierto, setAbierto] = useState(false);
+  const enlaces = enlacesContactoClub(telefono);
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => setAbierto((v) => !v)}
+        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-100"
+      >
+        📞 Contactar al Club
+      </button>
+      {abierto &&
+        (enlaces ? (
+          <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="text-center text-xs text-slate-600">
+              Recepción del club · <span className="font-black text-slate-900">{enlaces.visible}</span>
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <a
+                href={enlaces.tel}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-slate-700"
+              >
+                <Phone size={13} /> Llamar
+              </a>
+              <a
+                href={enlaces.whatsapp}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-600"
+              >
+                <IconoWhatsApp size={13} /> Enviar WhatsApp
+              </a>
+            </div>
+          </div>
+        ) : (
+          <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center text-xs text-slate-600">
+            Ponte en contacto directo con la recepción de tu club para gestionar tu solicitud.
+          </p>
+        ))}
+    </div>
+  );
+}
+
 /* ============================================================================
  * CRM DE JUGADORES — cruce por jugador_id/teléfono, LTV y Customer Health
  * Score (CHS). Ver `DirectorioJugadoresCRM` para el módulo completo.
@@ -42110,6 +42188,10 @@ function normalizarFilaClub(fila, tabla) {
     // columna trae `undefined` y el Portal sigue aplicando las franjas
     // (Activado) tal como siempre.
     tarifas_habilitadas: fila.tarifas_habilitadas !== false,
+    // Teléfono de Contacto del Club (migracion_v87) — vacío si el club no lo
+    // configuró o el proyecto no corrió la migración: el botón "Contactar al
+    // Club" muestra entonces el mensaje genérico.
+    telefono_contacto: String(fila.telefono_contacto || '').replace(/\D/g, ''),
     // Configuración del Club → Add-ons (módulo nuevo) — mismo respaldo que
     // el resto de columnas opcionales de esta función: un proyecto sin la
     // migración simplemente trae `undefined`/`[]` y el Portal no muestra
@@ -42216,6 +42298,7 @@ function ModuloConfiguracionClub({
   guardandoAddonsConfig,
   configClub,
   onGuardarConfigClub,
+  onGuardarTelefonoContacto,
   guardandoConfigClub,
   empleados,
   onCrearEmpleado,
@@ -42381,6 +42464,7 @@ function ModuloConfiguracionClub({
         <SeccionGeneralClub
           configClub={configClub}
           onGuardarConfigClub={onGuardarConfigClub}
+          onGuardarTelefonoContacto={onGuardarTelefonoContacto}
           guardandoConfigClub={guardandoConfigClub}
           tarifasHorarios={tarifasHorarios}
           onGuardarTarifaHorario={onGuardarTarifaHorario}
@@ -43479,6 +43563,7 @@ function OnboardingCanvasClub({
 function SeccionGeneralClub({
   configClub,
   onGuardarConfigClub,
+  onGuardarTelefonoContacto,
   guardandoConfigClub,
   tarifasHorarios,
   onGuardarTarifaHorario,
@@ -43491,6 +43576,29 @@ function SeccionGeneralClub({
   const [horaApertura, setHoraApertura] = useState(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
   const [horaCierre, setHoraCierre] = useState(config.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
   const [error, setError] = useState('');
+  // Teléfono de Contacto del Club / Recepción (migracion_v87) — tarjeta con
+  // su PROPIO guardado independiente (`onGuardarTelefonoContacto`, un update
+  // de una sola columna), ajeno al guardado del objeto completo de abajo.
+  const [telefonoContacto, setTelefonoContacto] = useState(config.telefonoContacto || '');
+  const [errorTelefono, setErrorTelefono] = useState('');
+  const [guardandoTelefono, setGuardandoTelefono] = useState(false);
+  useEffect(() => {
+    setTelefonoContacto(config.telefonoContacto || '');
+  }, [config.telefonoContacto]);
+
+  async function guardarTelefono() {
+    setErrorTelefono('');
+    const resultado = normalizarTelefonoContactoClub(telefonoContacto);
+    if (!resultado.ok) {
+      setErrorTelefono(resultado.error);
+      return false;
+    }
+    if (resultado.valor === (config.telefonoContacto || '')) return true;
+    setGuardandoTelefono(true);
+    const ok = await onGuardarTelefonoContacto?.(resultado.valor);
+    setGuardandoTelefono(false);
+    return ok !== false;
+  }
   // Nombre del Administrador/Dueño (Refactor Onboarding v67) — tarjeta
   // propia con su propio estado local, mismo patrón que "Horario de
   // Apertura y Cierre" arriba (cada tarjeta de esta sección es su propio
@@ -43574,6 +43682,17 @@ function SeccionGeneralClub({
     if ((parseHoraAMinutos(horaCierre) ?? 0) <= (parseHoraAMinutos(horaApertura) ?? 0)) {
       setError('La Hora de Cierre debe ser posterior a la Hora de Apertura.');
       return false;
+    }
+    // Teléfono de contacto (opcional): solo se valida el formato; su guardado
+    // es independiente (si falla, ya se avisó con un toast y NO se bloquea
+    // el avance del Onboarding).
+    const telefonoNormalizado = normalizarTelefonoContactoClub(telefonoContacto);
+    if (!telefonoNormalizado.ok) {
+      setErrorTelefono(telefonoNormalizado.error);
+      return false;
+    }
+    if (telefonoNormalizado.valor !== (config.telefonoContacto || '')) {
+      await onGuardarTelefonoContacto?.(telefonoNormalizado.valor);
     }
     await onGuardarConfigClub?.({
       nombre: config.nombre,
@@ -43691,6 +43810,36 @@ function SeccionGeneralClub({
             <BotonPrimario onClick={guardar} disabled={guardandoConfigClub}>
               {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
               Guardar horario
+            </BotonPrimario>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <Phone size={16} className="text-orange-500" />
+          <h3 className="text-sm font-black text-slate-900">Teléfono de Contacto del Club / Recepción</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Los jugadores lo ven en el Portal cuando ya no pueden cancelar por estar fuera de tolerancia: podrán llamar o
+          escribirte por WhatsApp con un toque. Déjalo vacío para mostrar solo un mensaje genérico de contacto.
+        </p>
+        <Campo label="Teléfono (10 dígitos)">
+          <input
+            type="tel"
+            inputMode="tel"
+            value={telefonoContacto}
+            onChange={(e) => setTelefonoContacto(e.target.value)}
+            placeholder="Ej. 5512345678"
+            className={inputClase}
+          />
+        </Campo>
+        {errorTelefono && <p className="mt-3 text-xs font-semibold text-rose-400">{errorTelefono}</p>}
+        {!modoOnboarding && (
+          <div className="mt-4 flex justify-end">
+            <BotonPrimario onClick={guardarTelefono} disabled={guardandoTelefono}>
+              {guardandoTelefono ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              Guardar teléfono
             </BotonPrimario>
           </div>
         )}
@@ -50864,6 +51013,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         <AnimatePresence>
           {torneoDetalle && (
           <ModalDetalleTorneo
+            telefonoClub={club?.telefono_contacto}
             torneo={torneoDetalle}
             participantes={participantesPorTorneo[torneoDetalle.id] || []}
             jugador={jugador}
@@ -50983,6 +51133,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             item={historialDetalle}
             configTolerancia={configTolerancia}
             onClose={() => setHistorialDetalle(null)}
+            telefonoClub={club?.telefono_contacto}
             onCancelar={(item) => {
               if (item.modulo === 'reservas') return cancelarReservaPortal(item.raw);
               if (item.modulo === 'torneos') return cancelarInscripcionTorneoPortal(item.raw);
@@ -51002,6 +51153,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             alumno={resumenClase.alumno}
             cancha={canchasPorId[resumenClase.clase.cancha_id]}
             politica={politicaCancelacionModulo(configTolerancia, 'academia')}
+            telefonoClub={club?.telefono_contacto}
             onClose={() => setResumenClase(null)}
             onCancelar={cancelarInscripcionClase}
           />
@@ -51016,6 +51168,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             inscritos={(inscripcionesPorReta[resumenReta.id] || []).filter(inscripcionOcupaLugar)}
             jugador={jugador}
             politica={politicaCancelacionModulo(configTolerancia, 'retas')}
+            telefonoClub={club?.telefono_contacto}
             onClose={() => setResumenReta(null)}
             onCancelar={cancelarInscripcionRetaPortal}
           />
@@ -51333,7 +51486,7 @@ function AvisoPoliticaCancelacion({ activa, horas }) {
 // resto del Motor Unificado (aviso al confirmar, Academia, Panel Admin):
 // DENTRO DE TOLERANCIA o política inactiva → botón habilitado; FUERA DE
 // TOLERANCIA → botón deshabilitado + aviso de contactar recepción.
-function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancelar }) {
+function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancelar, telefonoClub }) {
   const [confirmando, setConfirmando] = useState(false);
   const [cancelando, setCancelando] = useState(false);
 
@@ -51400,14 +51553,17 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
           // ACTIVA (no se auto-cancela sola): se explica qué pasa si el
           // jugador no se presenta ni pasa por recepción, sin ofrecer el
           // botón de auto-cancelación (ya se dejó de mostrar arriba).
-          <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
-            <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
-            <p>
-              El periodo de cancelación libre ({politica.horas} hrs de anticipación) ha expirado. Si no te presentas o
-              solicitas la cancelación en recepción, el club registrará un adeudo/penalización pendiente de{' '}
-              {formatoMoneda(item.monto)} en tu cuenta para tu próxima visita.
-            </p>
-          </div>
+          <>
+            <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
+              <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
+              <p>
+                El periodo de cancelación libre ({politica.horas} hrs de anticipación) ha expirado. Si no te presentas o
+                solicitas la cancelación en recepción, el club registrará un adeudo/penalización pendiente de{' '}
+                {formatoMoneda(item.monto)} en tu cuenta para tu próxima visita.
+              </p>
+            </div>
+            <BotonContactarClub telefono={telefonoClub} />
+          </>
         ) : confirmando ? (
           <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5">
             <p className="text-xs font-bold text-rose-700">¿Seguro que quieres cancelar?</p>
@@ -51514,7 +51670,7 @@ function BotonCancelarInscripcionTorneo({ miInscripcion, onCancelar }) {
   );
 }
 
-function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme, onCancelar }) {
+function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica, telefonoClub, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme, onCancelar }) {
   const tieneCategorias = Array.isArray(torneo.categorias) && torneo.categorias.length > 0;
 
   // Mi propia inscripción a este Torneo (si ya existe) — se calcula ANTES
@@ -51915,14 +52071,17 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
               const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaTorneoMs, politica?.activa ? politica.horas : 0);
               if (!dentroDeTolerancia) {
                 return (
-                  <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
-                    <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
-                    <p>
-                      El periodo de cancelación libre ({politica?.horas ?? 24} hrs de anticipación) ha expirado. Si no
-                      te presentas o solicitas la cancelación en recepción, el club registrará un adeudo/penalización
-                      pendiente de {formatoMoneda(miInscripcion?.monto)} en tu cuenta para tu próxima visita.
-                    </p>
-                  </div>
+                  <>
+                    <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
+                      <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
+                      <p>
+                        El periodo de cancelación libre ({politica?.horas ?? 24} hrs de anticipación) ha expirado. Si no
+                        te presentas o solicitas la cancelación en recepción, el club registrará un adeudo/penalización
+                        pendiente de {formatoMoneda(miInscripcion?.monto)} en tu cuenta para tu próxima visita.
+                      </p>
+                    </div>
+                    <BotonContactarClub telefono={telefonoClub} />
+                  </>
                 );
               }
               return <BotonCancelarInscripcionTorneo miInscripcion={miInscripcion} onCancelar={onCancelar} />;
@@ -52528,7 +52687,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
 // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX, item 2) — "Ver
 // Resumen" de una Clase de Academia: Fecha, cancha, coach, tipo de pago y
 // botón de cancelar asistencia, tal cual lo pidió el club.
-function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancelar }) {
+function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancelar, telefonoClub }) {
   const [confirmandoCancelar, setConfirmandoCancelar] = useState(false);
   const [cancelando, setCancelando] = useState(false);
 
@@ -52599,14 +52758,17 @@ function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancela
           // Claridad en Modal Fuera de Tiempo (Parte 2) — misma redacción
           // estructurada que `ModalDetalleHistorialPortal`: la clase SIGUE
           // activa, sin botón de auto-cancelación en este estado.
-          <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
-            <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
-            <p>
-              El periodo de cancelación libre ({politica?.horas ?? CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras} hrs de
-              anticipación) ha expirado. Si no te presentas o solicitas la cancelación en recepción, el club registrará
-              un adeudo/penalización pendiente de {formatoMoneda(alumno.monto)} en tu cuenta para tu próxima visita.
-            </p>
-          </div>
+          <>
+            <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
+              <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
+              <p>
+                El periodo de cancelación libre ({politica?.horas ?? CONFIG_CLUB_DEFAULT.toleranciaAcademiaHoras} hrs de
+                anticipación) ha expirado. Si no te presentas o solicitas la cancelación en recepción, el club registrará
+                un adeudo/penalización pendiente de {formatoMoneda(alumno.monto)} en tu cuenta para tu próxima visita.
+              </p>
+            </div>
+            <BotonContactarClub telefono={telefonoClub} />
+          </>
         )}
 
         {puedeCancelar && confirmandoCancelar ? (
@@ -52656,7 +52818,7 @@ function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancela
 // FLUJO UNIFICADO "YA ESTÁS INSCRITO" (refinamiento UX, item 2) — "Ver
 // Resumen" de una Reta: Cancha, hora, nivel, lista de los 4 jugadores y
 // estatus de pago, tal cual lo pidió el club.
-function ModalResumenReta({ reta, cancha, inscritos, jugador, politica, onClose, onCancelar }) {
+function ModalResumenReta({ reta, cancha, inscritos, jugador, politica, onClose, onCancelar, telefonoClub }) {
   const miInscripcion = (inscritos || []).find(
     (i) => (jugador?.id && i.jugador_id === jugador.id) || (jugador?.telefono && claveTelefono(i.telefono) === claveTelefono(jugador.telefono))
   );
@@ -52748,14 +52910,17 @@ function ModalResumenReta({ reta, cancha, inscritos, jugador, politica, onClose,
         </div>
 
         {miInscripcion && !puedeCancelar && (
-          <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
-            <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
-            <p>
-              El periodo de cancelación libre ({politica?.horas ?? TOLERANCIA_HORAS_DEFAULT} hrs de anticipación) ha
-              expirado. Si no te presentas o solicitas la cancelación en recepción, el club registrará un
-              adeudo/penalización pendiente de {formatoMoneda(precioDeReta(reta))} en tu cuenta para tu próxima visita.
-            </p>
-          </div>
+          <>
+            <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
+              <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
+              <p>
+                El periodo de cancelación libre ({politica?.horas ?? TOLERANCIA_HORAS_DEFAULT} hrs de anticipación) ha
+                expirado. Si no te presentas o solicitas la cancelación en recepción, el club registrará un
+                adeudo/penalización pendiente de {formatoMoneda(precioDeReta(reta))} en tu cuenta para tu próxima visita.
+              </p>
+            </div>
+            <BotonContactarClub telefono={telefonoClub} />
+          </>
         )}
 
         {miInscripcion && puedeCancelar && confirmandoCancelar ? (
@@ -54387,6 +54552,15 @@ function AppInterno({ clubInicial } = {}) {
   const [configuracionClubId, setConfiguracionClubId] = useState(null);
   const [configClub, setConfigClub] = useState(() => leerConfigClubLocal());
   const [guardandoConfigClub, setGuardandoConfigClub] = useState(false);
+  // Teléfono de Contacto del Club (migracion_v87) — espejo en un ref para que
+  // `guardarConfigClub` (que REEMPLAZA todo `configClub` desde una lista
+  // explícita de campos y NUNCA escribe `telefono_contacto`) lo conserve
+  // siempre, sin importar qué caller lo invoque ni con qué snapshot viejo:
+  // el teléfono solo cambia vía `guardarTelefonoContactoClub`.
+  const telefonoContactoRef = useRef(configClub?.telefonoContacto || '');
+  useEffect(() => {
+    telefonoContactoRef.current = configClub?.telefonoContacto || '';
+  }, [configClub?.telefonoContacto]);
 
   // Interactive Onboarding Canvas (migracion_v66) — semilla desde
   // `clubInicial` (fix urgente de condición de carrera, ver `ClubAuthGate`):
@@ -55045,6 +55219,7 @@ function AppInterno({ clubInicial } = {}) {
           data.duracion_reserva_minutos != null ||
           data.duracion_clase_minutos != null ||
           data.tarifas_habilitadas != null ||
+          data.telefono_contacto != null ||
           data.tolerancia_cancelacion_master != null ||
           data.tolerancia_reservas_enabled != null ||
           data.tolerancia_reservas_horas != null ||
@@ -55080,6 +55255,10 @@ function AppInterno({ clubInicial } = {}) {
             // trae `undefined` y este respaldo lo deja en `true` (Activado),
             // el comportamiento de siempre.
             tarifasHabilitadas: data.tarifas_habilitadas !== false,
+            // Teléfono de Contacto (migracion_v87) — proyecto sin la columna
+            // (`undefined`): se conserva el valor local en vez de borrarlo.
+            telefonoContacto:
+              data.telefono_contacto === undefined ? telefonoContactoRef.current : String(data.telefono_contacto || '').replace(/\D/g, ''),
             // Políticas y Tolerancia de Cancelación (Configuración del Club
             // → Reservas & Academia, migracion_v55) — mismo criterio
             // tolerante: proyecto sin la migración → columnas `undefined` →
@@ -55683,6 +55862,11 @@ function AppInterno({ clubInicial } = {}) {
       const limpia = {
         nombre: (nuevaConfig.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
         logoUrl: nuevaConfig.logoUrl || '',
+        // Teléfono de Contacto (migracion_v87): SIEMPRE el valor vigente del
+        // ref — este guardado jamás lo escribe en Supabase (ver `campos`),
+        // solo lo conserva en el estado local para no borrarlo al reemplazar
+        // el objeto completo.
+        telefonoContacto: telefonoContactoRef.current,
         // Nombre del Administrador/Dueño (Refactor Onboarding v67) — se
         // limpia igual que `nombre` (trim + respaldo a lo anterior si viene
         // vacío) PERO el sync hacia auth/empleados de abajo solo se dispara
@@ -55845,6 +56029,44 @@ function AppInterno({ clubInicial } = {}) {
       }
       mostrarToast({ titulo: 'Club actualizado', detalle: `${limpia.nombre} — ya se ve igual en todos los dispositivos.` });
       setGuardandoConfigClub(false);
+    },
+    [mostrarToast]
+  );
+
+  // Teléfono de Contacto del Club / Recepción (migracion_v87) — guardado
+  // INDEPENDIENTE: un `update` de UNA sola columna (`telefono_contacto`), sin
+  // pasar por `guardarConfigClub` (que reenvía el objeto completo y podría
+  // pisar —o ser pisado por— otro guardado concurrente: "last write wins").
+  // Optimista con rollback + aviso si Supabase lo rechaza (p. ej. falta
+  // correr migracion_v87). `valor` ya viene normalizado (solo dígitos).
+  const guardarTelefonoContactoClub = useCallback(
+    async (valor) => {
+      const nuevo = String(valor || '');
+      const anterior = telefonoContactoRef.current;
+      telefonoContactoRef.current = nuevo;
+      setConfigClub((prev) => ({ ...prev, telefonoContacto: nuevo }));
+      guardarConfigClubLocal({ ...leerConfigClubLocal(), telefonoContacto: nuevo });
+      try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
+        const { error } = await supabase.from('configuracion_club').update({ telefono_contacto: nuevo || null }).eq('id', CLUB_ACTIVO_ID);
+        if (error) throw error;
+        mostrarToast({
+          titulo: nuevo ? 'Teléfono de contacto guardado' : 'Teléfono de contacto eliminado',
+          detalle: nuevo ? 'Los jugadores podrán llamar o escribir por WhatsApp a tu recepción desde el Portal.' : 'El Portal mostrará un mensaje genérico de contacto.',
+        });
+        return true;
+      } catch (err) {
+        console.error('[Club] No se pudo guardar el teléfono de contacto.', err);
+        telefonoContactoRef.current = anterior;
+        setConfigClub((prev) => ({ ...prev, telefonoContacto: anterior }));
+        guardarConfigClubLocal({ ...leerConfigClubLocal(), telefonoContacto: anterior });
+        mostrarToast({
+          titulo: 'No se pudo guardar el teléfono',
+          detalle: 'Verifica tu conexión y que hayas corrido migracion_v87 en Supabase.',
+          tono: 'error',
+        });
+        return false;
+      }
     },
     [mostrarToast]
   );
@@ -57327,6 +57549,7 @@ function AppInterno({ clubInicial } = {}) {
       guardandoAddonsConfig,
       configClub,
       onGuardarConfigClub: guardarConfigClub,
+      onGuardarTelefonoContacto: guardarTelefonoContactoClub,
       guardandoConfigClub,
       empleados,
       onCrearEmpleado: crearEmpleado,
@@ -57786,6 +58009,7 @@ function AppInterno({ clubInicial } = {}) {
                 guardandoAddonsConfig={guardandoAddonsConfig}
                 configClub={configClub}
                 onGuardarConfigClub={guardarConfigClub}
+                onGuardarTelefonoContacto={guardarTelefonoContactoClub}
                 guardandoConfigClub={guardandoConfigClub}
                 empleados={empleados}
                 onCrearEmpleado={crearEmpleado}
