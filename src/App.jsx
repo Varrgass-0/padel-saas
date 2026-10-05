@@ -4890,14 +4890,21 @@ function ModalMiWallet({ operador, onClose }) {
   const [saldo, setSaldo] = useState(0);
   const [movimientos, setMovimientos] = useState([]);
   const [cargando, setCargando] = useState(true);
+  // Vigencia de saldos (v86) + detalle clicable de Tickets de Smart POS.
+  const [lotes, setLotes] = useState([]);
+  const [movimientoTicket, setMovimientoTicket] = useState(null);
 
   useEffect(() => {
     let cancelado = false;
     async function cargar() {
       setCargando(true);
+      // Leer el saldo expira primero los lotes vencidos; los lotes que
+      // quedan vigentes se leen después, ya netos.
       const saldoFresco = await leerSaldoWalletOperadorFresco(operador.id);
       if (cancelado) return;
       setSaldo(saldoFresco);
+      const lotesVigentes = await leerLotesVigentesWallet('operador', operador.id);
+      if (!cancelado) setLotes(lotesVigentes);
       try {
         const { data, error } = await supabase
           .from('wallet_movimientos_operador')
@@ -4918,11 +4925,13 @@ function ModalMiWallet({ operador, onClose }) {
   }, [operador.id]);
 
   return (
+    <>
     <ModalShell titulo={`Mi Wallet - ${operador.nombre}`} subtitulo="Saldo y movimientos de tu Wallet" onClose={onClose} icon={Wallet} ancho="max-w-md">
       <div className="space-y-4">
         <div className="rounded-xl border border-orange-400/30 bg-orange-400/10 p-4 text-center">
           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Saldo Disponible</p>
           <p className="mt-1 text-2xl font-black text-orange-700">{cargando ? '…' : formatoMoneda(saldo)}</p>
+          {!cargando && <LeyendaVencimientosWallet lotes={lotes} className="mt-1.5 flex flex-col items-center" />}
         </div>
 
         <div>
@@ -4940,25 +4949,43 @@ function ModalMiWallet({ operador, onClose }) {
             </p>
           ) : (
             <div className="max-h-80 space-y-1.5 overflow-y-auto">
-              {movimientos.map((m) => (
-                <div key={m.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2">
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-bold text-slate-800">{m.motivo || (m.tipo === 'abono' ? 'Recarga' : 'Consumo')}</p>
-                    <p className="text-[10px] text-slate-500">
-                      {m.created_at ? new Date(m.created_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
-                    </p>
+              {movimientos.map((m) => {
+                const esTicket = esMovimientoTicketPOS(m);
+                return (
+                  <div
+                    key={m.id}
+                    onClick={esTicket ? () => setMovimientoTicket(m) : undefined}
+                    onKeyDown={esTicket ? (e) => (e.key === 'Enter' || e.key === ' ') && setMovimientoTicket(m) : undefined}
+                    role={esTicket ? 'button' : undefined}
+                    tabIndex={esTicket ? 0 : undefined}
+                    title={esTicket ? 'Ver desglose del ticket' : undefined}
+                    className={`flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 ${
+                      esTicket ? 'cursor-pointer transition hover:border-orange-400/50 hover:bg-orange-400/5' : ''
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-1 truncate text-xs font-bold text-slate-800">
+                        {esTicket && <Receipt size={11} className="shrink-0 text-orange-500" />}
+                        <span className="truncate">{conceptoMovimientoWallet(m)}</span>
+                      </p>
+                      <p className="text-[10px] text-slate-500">
+                        {m.created_at ? new Date(m.created_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                      </p>
+                    </div>
+                    <span className={`shrink-0 text-sm font-black ${Number(m.monto) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {Number(m.monto) >= 0 ? '+' : ''}
+                      {formatoMoneda(Number(m.monto) || 0)}
+                    </span>
                   </div>
-                  <span className={`shrink-0 text-sm font-black ${Number(m.monto) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    {Number(m.monto) >= 0 ? '+' : ''}
-                    {formatoMoneda(Number(m.monto) || 0)}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
       </div>
     </ModalShell>
+    {movimientoTicket && <ModalTicketMovimientoWallet movimiento={movimientoTicket} onClose={() => setMovimientoTicket(null)} />}
+    </>
   );
 }
 
@@ -45244,6 +45271,9 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
   const [cargando, setCargando] = useState(false);
   const [modalCredito, setModalCredito] = useState(false);
   const [guardandoCredito, setGuardandoCredito] = useState(false);
+  // Vigencia de saldos (v86) + detalle clicable de Tickets de Smart POS.
+  const [lotes, setLotes] = useState([]);
+  const [movimientoTicket, setMovimientoTicket] = useState(null);
 
   const puedeGestionar = permisos?.puedeGestionarWalletOperadores !== false;
 
@@ -45287,6 +45317,7 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
       const saldoFresco =
         persona.tipo === 'jugador' ? await leerSaldoWalletFresco(persona.id) : await leerSaldoWalletOperadorFresco(persona.id);
       setSaldo(saldoFresco);
+      setLotes(await leerLotesVigentesWallet(persona.tipo, persona.id));
       const tabla = persona.tipo === 'jugador' ? 'wallet_movimientos' : 'wallet_movimientos_operador';
       const columnaId = persona.tipo === 'jugador' ? 'jugador_id' : 'empleado_id';
       const { data, error } = await supabase.from(tabla).select('*').eq(columnaId, persona.id).order('created_at', { ascending: false }).limit(100);
@@ -45307,9 +45338,24 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
     if (personaSeleccionada) cargarSaldoYMovimientos(personaSeleccionada);
   }, [personaSeleccionada, cargarSaldoYMovimientos]);
 
-  async function confirmarCargarCredito({ monto, concepto, metodoAplicacion }) {
+  async function confirmarCargarCredito({ monto, concepto, metodoAplicacion, vigencia: vigenciaElegida }) {
     if (!personaSeleccionada || !(Number(monto) > 0)) return;
     setGuardandoCredito(true);
+    // Vigencia de saldos (v86):
+    //  - Operador: todo abono es periódico → 30 días automáticos, y al
+    //    renovar, el remanente NO consumido del periodo anterior expira.
+    //  - Jugador: sin vigencia salvo que el staff la defina en un Bono/
+    //    Cortesía (`vigenciaElegida`).
+    let vigencia = null;
+    if (personaSeleccionada.tipo === 'operador') {
+      await expirarLotesVencidosWallet('operador', personaSeleccionada.id, {
+        todos: true,
+        motivo: 'Saldo no consumido del periodo anterior (no acumulable)',
+      });
+      vigencia = { fechaVencimiento: fechaVencimientoDesdeDias(DIAS_VIGENCIA_WALLET_OPERADOR), origen: 'abono_periodico' };
+    } else if (vigenciaElegida?.fechaVencimiento) {
+      vigencia = { fechaVencimiento: vigenciaElegida.fechaVencimiento, origen: 'bono_cortesia' };
+    }
     const base = {
       monto: Number(monto),
       motivo: concepto.trim() || 'Recarga Manual',
@@ -45317,6 +45363,7 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
       referenciaTipo: 'ajuste_admin',
       creadoPorId: operador?.id || null,
       creadoPorNombre: operador?.nombre || null,
+      vigencia,
     };
     const resultado =
       personaSeleccionada.tipo === 'jugador'
@@ -45328,7 +45375,20 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
       return;
     }
     setModalCredito(false);
-    toast({ titulo: 'Crédito cargado', detalle: `${formatoMoneda(Number(monto))} agregados a la Wallet de ${personaSeleccionada.nombre}.` });
+    if (vigencia && resultado.loteOk === false) {
+      toast({
+        titulo: 'Crédito cargado SIN vigencia',
+        detalle: 'No se pudo registrar el vencimiento (¿falta correr migracion_v86?). El saldo quedó sin expiración.',
+        tono: 'aviso',
+      });
+    } else {
+      toast({
+        titulo: 'Crédito cargado',
+        detalle: `${formatoMoneda(Number(monto))} agregados a la Wallet de ${personaSeleccionada.nombre}.${
+          vigencia ? ` Vence el ${formatoFechaVigenciaWallet(vigencia.fechaVencimiento)}.` : ''
+        }`,
+      });
+    }
     cargarSaldoYMovimientos(personaSeleccionada);
   }
 
@@ -45422,6 +45482,7 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
                     <div className="text-right">
                       <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Saldo Disponible</p>
                       <p className="text-lg font-black text-orange-600">{cargando ? '…' : formatoMoneda(saldo)}</p>
+                      {!cargando && <LeyendaVencimientosWallet lotes={lotes} className="mt-0.5 flex flex-col items-end" />}
                     </div>
                     {puedeGestionar && (
                       <BotonPrimario onClick={() => setModalCredito(true)} className="shrink-0">
@@ -45457,28 +45518,46 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {movimientos.map((m) => (
-                            <tr key={m.id}>
+                          {movimientos.map((m) => {
+                            const esTicket = esMovimientoTicketPOS(m);
+                            return (
+                            <tr
+                              key={m.id}
+                              onClick={esTicket ? () => setMovimientoTicket(m) : undefined}
+                              onKeyDown={esTicket ? (e) => (e.key === 'Enter' || e.key === ' ') && setMovimientoTicket(m) : undefined}
+                              role={esTicket ? 'button' : undefined}
+                              tabIndex={esTicket ? 0 : undefined}
+                              title={esTicket ? 'Ver desglose del ticket' : undefined}
+                              className={esTicket ? 'cursor-pointer transition hover:bg-orange-400/10' : ''}
+                            >
                               <td className="whitespace-nowrap px-3 py-2 text-slate-500">
                                 {m.created_at ? new Date(m.created_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
                               </td>
                               <td className="px-3 py-2">
                                 <span
                                   className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                                    m.tipo === 'abono' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                                    m.referencia_tipo === 'expiracion_wallet'
+                                      ? 'bg-amber-100 text-amber-700'
+                                      : m.tipo === 'abono'
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : 'bg-rose-100 text-rose-700'
                                   }`}
                                 >
-                                  {m.tipo === 'abono' ? 'Recarga' : 'Consumo'}
+                                  {etiquetaTipoMovimientoWallet(m)}
                                 </span>
                               </td>
-                              <td className="max-w-[160px] truncate px-3 py-2 text-slate-600">{m.motivo || '—'}</td>
+                              <td className="max-w-[200px] truncate px-3 py-2 text-slate-600">
+                                {esTicket && <Receipt size={11} className="mr-1 inline text-orange-500" />}
+                                {conceptoMovimientoWallet(m) || '—'}
+                              </td>
                               <td className={`whitespace-nowrap px-3 py-2 text-right font-bold ${Number(m.monto) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                                 {Number(m.monto) >= 0 ? '+' : ''}
                                 {formatoMoneda(Number(m.monto) || 0)}
                               </td>
                               <td className="whitespace-nowrap px-3 py-2 text-right text-slate-500">{formatoMoneda(Number(m.saldo_resultante) || 0)}</td>
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -45498,6 +45577,8 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
           onConfirmar={confirmarCargarCredito}
         />
       )}
+
+      {movimientoTicket && <ModalTicketMovimientoWallet movimiento={movimientoTicket} onClose={() => setMovimientoTicket(null)} />}
     </div>
   );
 }
@@ -45507,14 +45588,47 @@ function ModalCargarCreditoWallet({ persona, guardando, onClose, onConfirmar }) 
   const [concepto, setConcepto] = useState('');
   const [metodoAplicacion, setMetodoAplicacion] = useState(METODOS_APLICACION_WALLET[0]);
   const [error, setError] = useState('');
+  // Vigencia de saldos (v86) — SOLO para Bono/Cortesía a un Jugador: una
+  // recarga comprada o un reembolso nunca expira. En Operadores la vigencia
+  // es automática (30 días, no acumulable), sin selector.
+  const [vigenciaModo, setVigenciaModo] = useState('sin'); // 'sin' | 'definir'
+  const [vigenciaTipo, setVigenciaTipo] = useState('dias'); // 'dias' | 'fecha'
+  const [vigenciaDias, setVigenciaDias] = useState('30');
+  const [vigenciaFecha, setVigenciaFecha] = useState('');
+  const esOperador = persona.tipo === 'operador';
+  const permiteVigenciaManual = !esOperador && metodoAplicacion === 'Cortesía/Bono';
+  const definiendoVigencia = permiteVigenciaManual && vigenciaModo === 'definir';
+  const vencimientoElegido = definiendoVigencia
+    ? vigenciaTipo === 'dias'
+      ? Number(vigenciaDias) >= 1
+        ? fechaVencimientoDesdeDias(vigenciaDias)
+        : null
+      : fechaVencimientoDesdeFechaLocal(vigenciaFecha)
+    : null;
+  const hoyInput = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 
   function confirmar() {
     if (!(Number(monto) > 0)) {
       setError('Ingresa un monto mayor a 0.');
       return;
     }
+    if (definiendoVigencia) {
+      if (vigenciaTipo === 'dias' && !(Number(vigenciaDias) >= 1)) {
+        setError('Ingresa los días de vigencia (mínimo 1).');
+        return;
+      }
+      if (vigenciaTipo === 'fecha' && (!vencimientoElegido || new Date(vencimientoElegido).getTime() <= Date.now())) {
+        setError('Elige una fecha límite posterior a hoy.');
+        return;
+      }
+    }
     setError('');
-    onConfirmar({ monto: Number(monto), concepto, metodoAplicacion });
+    onConfirmar({
+      monto: Number(monto),
+      concepto,
+      metodoAplicacion,
+      vigencia: definiendoVigencia && vencimientoElegido ? { fechaVencimiento: vencimientoElegido } : null,
+    });
   }
 
   return (
@@ -45558,6 +45672,77 @@ function ModalCargarCreditoWallet({ persona, guardando, onClose, onConfirmar }) 
             ))}
           </select>
         </Campo>
+
+        {esOperador && (
+          <p className="rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+            <span className="font-bold">Vigencia automática de {DIAS_VIGENCIA_WALLET_OPERADOR} días</span> (hasta el{' '}
+            {formatoFechaVigenciaWallet(fechaVencimientoDesdeDias(DIAS_VIGENCIA_WALLET_OPERADOR))}). El abono no es acumulable: al
+            renovarlo, el saldo no consumido del periodo anterior expira.
+          </p>
+        )}
+
+        {permiteVigenciaManual && (
+          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+            <p className="text-[11px] font-bold text-slate-700">Vigencia del Bono</p>
+            <div className="flex gap-1 rounded-lg border border-slate-300 bg-slate-100 p-1">
+              {[
+                { value: 'sin', label: 'Sin expiración' },
+                { value: 'definir', label: 'Definir vigencia' },
+              ].map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => setVigenciaModo(o.value)}
+                  className={`flex-1 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                    vigenciaModo === o.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            {vigenciaModo === 'definir' && (
+              <div className="space-y-2">
+                <div className="flex gap-1.5">
+                  {[
+                    { value: 'dias', label: 'Por días' },
+                    { value: 'fecha', label: 'Fecha límite' },
+                  ].map((o) => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      onClick={() => setVigenciaTipo(o.value)}
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+                        vigenciaTipo === o.value ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                {vigenciaTipo === 'dias' ? (
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={vigenciaDias}
+                    onChange={(e) => setVigenciaDias(e.target.value)}
+                    className={inputClase}
+                    placeholder="Días de vigencia"
+                  />
+                ) : (
+                  <input type="date" min={hoyInput} value={vigenciaFecha} onChange={(e) => setVigenciaFecha(e.target.value)} className={inputClase} />
+                )}
+                {vencimientoElegido && (
+                  <p className="text-[11px] font-semibold text-amber-600">
+                    Vence el {formatoFechaVigenciaWallet(vencimientoElegido)}: el saldo no usado de este bono expirará.
+                  </p>
+                )}
+              </div>
+            )}
+            {vigenciaModo === 'sin' && <p className="text-[11px] text-slate-500">El bono no caduca nunca.</p>}
+          </div>
+        )}
 
         {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
 
@@ -46039,8 +46224,12 @@ function franjasDelDiaConEstado(canchaId, fecha, duracionHoras, reservas, academ
 // verdad, solo saldo interno del club). Wallet de Operadores/Colaboradores
 // (más abajo) hereda EXACTAMENTE el mismo modelo de seguridad a propósito,
 // para no crear una inconsistencia entre las dos wallets.
-async function leerSaldoWalletFresco(jugadorId) {
+async function leerSaldoWalletFresco(jugadorId, { sinExpirar = false } = {}) {
   if (!jugadorId) return 0;
+  // Vigencia de saldos (v86): antes de leer, los lotes vencidos se expiran
+  // (se descuenta su remanente) — así TODO consumidor del saldo (Portal,
+  // Smart POS, Wallet del Panel) ve siempre el saldo ya neto de vencidos.
+  if (!sinExpirar) await expirarLotesVencidosWallet('jugador', jugadorId);
   try {
     const { data, error } = await supabase.from('jugadores').select('saldo_a_favor').eq('id', jugadorId).maybeSingle();
     if (error) {
@@ -46067,7 +46256,7 @@ async function leerSaldoWalletFresco(jugadorId) {
 // cae de vuelta al patrón anterior LEER-LUEGO-ESCRIBIR — Arquitectura
 // Flexible: no atómico, pero es EXACTAMENTE el comportamiento de antes de
 // esta migración, cero regresión para un proyecto que no la haya corrido.
-async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, referenciaId, metodoAplicacion, creadoPorId, creadoPorNombre }) {
+async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, referenciaId, metodoAplicacion, creadoPorId, creadoPorNombre, vigencia = null, omitirLotes = false }) {
   const delta = Number(monto) || 0;
   if (!jugadorId || !delta) return { ok: true, saldoNuevo: null };
   // FIX (migracion_v77 — vuelve a corregir el TIPO del parámetro de la
@@ -46088,7 +46277,7 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
   // informativa (para el INSERT de abajo); la fuente de verdad de cuánto se
   // mueve sigue siendo el RPC atómico (o su respaldo no atómico) de aquí
   // abajo, no esta lectura.
-  const saldoAnterior = await leerSaldoWalletFresco(jugadorId);
+  const saldoAnterior = await leerSaldoWalletFresco(jugadorId, { sinExpirar: true });
   let saldoNuevo = null;
   try {
     const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorIdTexto, p_delta: delta });
@@ -46103,7 +46292,7 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
       } else {
         console.warn('[Wallet] fn_wallet_ajustar_jugador no disponible todavía (falta migracion_v56) — usando ajuste no atómico de respaldo.', error);
       }
-      const saldoActual = await leerSaldoWalletFresco(jugadorId);
+      const saldoActual = await leerSaldoWalletFresco(jugadorId, { sinExpirar: true });
       saldoNuevo = Math.max(0, Math.round((saldoActual + delta) * 100) / 100);
       const { error: errUpdate } = await supabase.from('jugadores').update({ saldo_a_favor: saldoNuevo }).eq('id', jugadorId);
       if (errUpdate) {
@@ -46166,7 +46355,26 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
     console.error('[Wallet] Error detallado Supabase (excepción en wallet_movimientos, tabla probablemente no existe todavía):', eMov);
     movimientoOk = false;
   }
-  return { ok: true, saldoNuevo, movimientoId, movimientoOk };
+  // Vigencia de saldos (v86) — best effort, nunca bloquea ni revierte el
+  // movimiento ya hecho: un CARGO se descuenta primero de los lotes que
+  // vencen antes (FEFO); un ABONO con `vigencia` registra un lote nuevo.
+  let loteOk = true;
+  if (!omitirLotes) {
+    if (delta < 0) {
+      await consumirLotesWallet('jugador', jugadorId, -delta);
+    } else if (vigencia?.fechaVencimiento) {
+      const r = await registrarLoteWallet({
+        titularTipo: 'jugador',
+        titularId: jugadorId,
+        monto: delta,
+        fechaVencimiento: vigencia.fechaVencimiento,
+        origen: vigencia.origen || 'bono_cortesia',
+        movimientoId,
+      });
+      loteOk = r.ok;
+    }
+  }
+  return { ok: true, saldoNuevo, movimientoId, movimientoOk, loteOk };
 }
 
 // `aplicarCargoWallet` se conserva TAL CUAL (mismo nombre/firma) porque ya
@@ -46182,8 +46390,10 @@ async function aplicarCargoWallet({ jugadorId, monto, motivo, referenciaTipo, re
 // Wallet del Operador/Colaborador (nuevo, migracion_v56) — mismo patrón que
 // la Wallet del Jugador de arriba, en `empleados.saldo_wallet` +
 // `wallet_movimientos_operador`.
-async function leerSaldoWalletOperadorFresco(empleadoId) {
+async function leerSaldoWalletOperadorFresco(empleadoId, { sinExpirar = false } = {}) {
   if (!empleadoId) return 0;
+  // Vigencia de saldos (v86): mismo criterio que `leerSaldoWalletFresco`.
+  if (!sinExpirar) await expirarLotesVencidosWallet('operador', empleadoId);
   try {
     const { data, error } = await supabase.from('empleados').select('saldo_wallet').eq('id', empleadoId).maybeSingle();
     if (error) {
@@ -46197,7 +46407,7 @@ async function leerSaldoWalletOperadorFresco(empleadoId) {
   }
 }
 
-async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo, referenciaTipo, referenciaId, metodoAplicacion, creadoPorId, creadoPorNombre }) {
+async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo, referenciaTipo, referenciaId, metodoAplicacion, creadoPorId, creadoPorNombre, vigencia = null, omitirLotes = false }) {
   const delta = Number(monto) || 0;
   if (!empleadoId || !delta) return { ok: true, saldoNuevo: null };
   let saldoNuevo = null;
@@ -46215,7 +46425,7 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
       saldoNuevo = Number(data) || 0;
     } else {
       console.warn('[Wallet Operador] fn_wallet_ajustar_operador no disponible todavía (falta migracion_v56/v57) — usando ajuste no atómico de respaldo.', error);
-      const saldoActual = await leerSaldoWalletOperadorFresco(empleadoId);
+      const saldoActual = await leerSaldoWalletOperadorFresco(empleadoId, { sinExpirar: true });
       saldoNuevo = Math.max(0, Math.round((saldoActual + delta) * 100) / 100);
       const { error: errUpdate } = await supabase.from('empleados').update({ saldo_wallet: saldoNuevo }).eq('id', empleadoId);
       if (errUpdate) {
@@ -46296,7 +46506,363 @@ async function ajustarWalletOperador({ empleadoId, empleadoNombre, monto, motivo
     console.error('[Wallet Operador] Error detallado Supabase (excepción en wallet_movimientos_operador, tabla probablemente no existe todavía):', eMov);
     movimientoOk = false;
   }
-  return { ok: true, saldoNuevo, movimientoId, movimientoOk };
+  // Vigencia de saldos (v86): mismo criterio que `ajustarWalletJugador`.
+  let loteOk = true;
+  if (!omitirLotes) {
+    if (delta < 0) {
+      await consumirLotesWallet('operador', empleadoId, -delta);
+    } else if (vigencia?.fechaVencimiento) {
+      const r = await registrarLoteWallet({
+        titularTipo: 'operador',
+        titularId: empleadoId,
+        monto: delta,
+        fechaVencimiento: vigencia.fechaVencimiento,
+        origen: vigencia.origen || 'abono_periodico',
+        movimientoId,
+      });
+      loteOk = r.ok;
+    }
+  }
+  return { ok: true, saldoNuevo, movimientoId, movimientoOk, loteOk };
+}
+
+// =============================================================================
+// VIGENCIA DE SALDOS DE WALLET (migracion_v86_wallet_vigencia_lotes.sql)
+// =============================================================================
+// El saldo total sigue en `jugadores.saldo_a_favor` / `empleados.saldo_wallet`
+// (fuente de verdad intacta). Los "lotes" (`wallet_lotes_vigencia`) solo
+// registran la porción de un abono que CADUCA y cuándo — todo lo que no esté
+// en un lote vigente es saldo sin expiración:
+//   - Wallet de Operadores: abono periódico → 30 días, NO acumulable (al
+//     renovar, el remanente del periodo anterior expira).
+//   - Wallet de Jugadores: recargas compradas y reembolsos NUNCA expiran;
+//     solo un Bono/Cortesía del Panel puede llevar vigencia.
+// Arquitectura Flexible: si la tabla todavía no existe (falta v86), todo se
+// salta en silencio y la Wallet se comporta EXACTAMENTE como antes.
+const TABLA_LOTES_WALLET = 'wallet_lotes_vigencia';
+const DIAS_VIGENCIA_WALLET_OPERADOR = 30;
+let walletLotesDisponible = null; // null = aún no se sabe; false = tabla inexistente (se deja de consultar)
+
+function esErrorTablaLotesInexistente(error) {
+  const texto = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  return (
+    error?.code === '42P01' ||
+    error?.code === 'PGRST205' ||
+    (texto.includes(TABLA_LOTES_WALLET) && (texto.includes('does not exist') || texto.includes('schema cache') || texto.includes('could not find')))
+  );
+}
+
+// Fin del día LOCAL (23:59:59) — "vence el 26/10" significa que se puede
+// usar durante todo el 26/10, no que muere a medianoche del 25.
+function finDelDiaISO(fecha) {
+  const d = fecha instanceof Date ? new Date(fecha.getTime()) : new Date(fecha);
+  d.setHours(23, 59, 59, 0);
+  return d.toISOString();
+}
+function fechaVencimientoDesdeDias(dias) {
+  const d = new Date();
+  d.setDate(d.getDate() + Math.max(1, Math.round(Number(dias) || 0)));
+  return finDelDiaISO(d);
+}
+function fechaVencimientoDesdeFechaLocal(fechaYYYYMMDD) {
+  if (!fechaYYYYMMDD) return null;
+  const d = new Date(`${fechaYYYYMMDD}T23:59:59`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+function formatoFechaVigenciaWallet(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+function formatoMontoVigenciaWallet(valor) {
+  return (Number(valor) || 0).toLocaleString('es-MX', { style: 'currency', currency: 'MXN', minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+// Lotes con saldo y aún sin marcar como vencidos, del que vence primero al
+// que vence al final (base de FEFO y de la leyenda de la UI).
+async function leerLotesVigentesWallet(titularTipo, titularId) {
+  if (!titularId || walletLotesDisponible === false) return [];
+  try {
+    const { data, error } = await supabase
+      .from(TABLA_LOTES_WALLET)
+      .select('*')
+      .eq('titular_tipo', titularTipo)
+      .eq('titular_id', String(titularId))
+      .eq('estado', 'vigente')
+      .gt('monto_restante', 0)
+      .order('fecha_vencimiento', { ascending: true });
+    if (error) {
+      if (esErrorTablaLotesInexistente(error)) walletLotesDisponible = false;
+      else console.warn('[Wallet] No se pudieron leer los lotes de vigencia.', error);
+      return [];
+    }
+    walletLotesDisponible = true;
+    return data || [];
+  } catch (e) {
+    console.warn('[Wallet] Excepción leyendo lotes de vigencia.', e);
+    return [];
+  }
+}
+
+async function registrarLoteWallet({ titularTipo, titularId, monto, fechaVencimiento, origen, movimientoId }) {
+  const montoLote = Math.round((Number(monto) || 0) * 100) / 100;
+  if (!titularId || !(montoLote > 0) || !fechaVencimiento || walletLotesDisponible === false) return { ok: false };
+  try {
+    const { error } = await insertarConColumnasOpcionales(
+      TABLA_LOTES_WALLET,
+      {
+        titular_tipo: titularTipo,
+        titular_id: String(titularId),
+        monto_original: montoLote,
+        monto_restante: montoLote,
+        fecha_vencimiento: fechaVencimiento,
+        origen: origen || null,
+        movimiento_id: movimientoId != null ? String(movimientoId) : null,
+        estado: 'vigente',
+      },
+      ['origen', 'movimiento_id']
+    );
+    if (error) {
+      if (esErrorTablaLotesInexistente(error)) walletLotesDisponible = false;
+      console.warn('[Wallet] No se pudo registrar la vigencia del abono (¿falta migracion_v86?).', error);
+      return { ok: false };
+    }
+    walletLotesDisponible = true;
+    return { ok: true };
+  } catch (e) {
+    console.warn('[Wallet] Excepción registrando la vigencia del abono.', e);
+    return { ok: false };
+  }
+}
+
+// Un cargo se descuenta primero del lote que vence antes (FEFO): el bono se
+// gasta antes que el saldo permanente. Best effort.
+async function consumirLotesWallet(titularTipo, titularId, monto) {
+  let pendiente = Math.round((Number(monto) || 0) * 100) / 100;
+  if (!(pendiente > 0) || walletLotesDisponible === false) return;
+  const lotes = await leerLotesVigentesWallet(titularTipo, titularId);
+  const ahora = Date.now();
+  for (const lote of lotes) {
+    if (pendiente <= 0) break;
+    if (new Date(lote.fecha_vencimiento).getTime() <= ahora) continue; // ya vencido: lo procesa la expiración
+    const restante = Number(lote.monto_restante) || 0;
+    const usar = Math.min(restante, pendiente);
+    const nuevoRestante = Math.round((restante - usar) * 100) / 100;
+    try {
+      await supabase
+        .from(TABLA_LOTES_WALLET)
+        .update({ monto_restante: nuevoRestante, estado: nuevoRestante <= 0 ? 'consumido' : 'vigente' })
+        .eq('id', lote.id);
+    } catch (e) {
+      console.warn('[Wallet] No se pudo descontar el consumo del lote de vigencia.', e);
+    }
+    pendiente = Math.round((pendiente - usar) * 100) / 100;
+  }
+}
+
+// Expira lotes: por default solo los ya vencidos; con `todos: true` expira
+// TODOS los vigentes (renovación del abono periódico del operador — el
+// remanente del periodo anterior no se acumula). Se marca el lote ANTES de
+// descontar (update condicionado a `estado = 'vigente'`), así dos clientes
+// leyendo a la vez no descuentan dos veces. Devuelve el monto expirado.
+async function expirarLotesVencidosWallet(titularTipo, titularId, { todos = false, motivo } = {}) {
+  if (!titularId || walletLotesDisponible === false) return { expirado: 0 };
+  const lotes = await leerLotesVigentesWallet(titularTipo, titularId);
+  const ahora = Date.now();
+  const aExpirar = lotes.filter((l) => todos || new Date(l.fecha_vencimiento).getTime() <= ahora);
+  if (aExpirar.length === 0) return { expirado: 0 };
+  let total = 0;
+  let fechaRef = null;
+  for (const lote of aExpirar) {
+    const restante = Number(lote.monto_restante) || 0;
+    try {
+      const { data, error } = await supabase
+        .from(TABLA_LOTES_WALLET)
+        .update({ estado: 'expirado', monto_restante: 0, expirado_en: new Date().toISOString() })
+        .eq('id', lote.id)
+        .eq('estado', 'vigente')
+        .select('id');
+      if (error || !data || data.length === 0) continue; // otro cliente ya lo expiró (o falló)
+      total += restante;
+      fechaRef = fechaRef || lote.fecha_vencimiento;
+    } catch (e) {
+      console.warn('[Wallet] No se pudo expirar un lote de vigencia.', e);
+    }
+  }
+  total = Math.round(total * 100) / 100;
+  if (!(total > 0)) return { expirado: 0 };
+  const saldoActual =
+    titularTipo === 'jugador'
+      ? await leerSaldoWalletFresco(titularId, { sinExpirar: true })
+      : await leerSaldoWalletOperadorFresco(titularId, { sinExpirar: true });
+  const montoDescontar = Math.round(Math.min(total, saldoActual) * 100) / 100;
+  if (montoDescontar > 0) {
+    const base = {
+      monto: -montoDescontar,
+      motivo: motivo || `Saldo vencido${fechaRef ? ` · ${formatoFechaVigenciaWallet(fechaRef)}` : ''}`,
+      referenciaTipo: 'expiracion_wallet',
+      metodoAplicacion: 'Vencimiento automático',
+      omitirLotes: true,
+    };
+    if (titularTipo === 'jugador') await ajustarWalletJugador({ ...base, jugadorId: titularId });
+    else await ajustarWalletOperador({ ...base, empleadoId: titularId, empleadoNombre: null });
+  }
+  return { expirado: montoDescontar };
+}
+
+// Leyenda de saldo por vencer: agrupa los lotes vigentes por día de
+// vencimiento — [{ monto, fecha }] — para "$60 vencen el 26/10/2026".
+function resumenVencimientosWallet(lotes) {
+  const porDia = new Map();
+  (lotes || []).forEach((l) => {
+    const restante = Number(l.monto_restante) || 0;
+    if (!(restante > 0) || !l.fecha_vencimiento) return;
+    const clave = formatoFechaVigenciaWallet(l.fecha_vencimiento);
+    const previo = porDia.get(clave) || { monto: 0, orden: new Date(l.fecha_vencimiento).getTime() };
+    previo.monto = Math.round((previo.monto + restante) * 100) / 100;
+    previo.orden = Math.min(previo.orden, new Date(l.fecha_vencimiento).getTime());
+    porDia.set(clave, previo);
+  });
+  return [...porDia.entries()].map(([fecha, v]) => ({ fecha, monto: v.monto, orden: v.orden })).sort((a, b) => a.orden - b.orden);
+}
+
+// Sin caducidad → no renderiza nada (ni espacio).
+function LeyendaVencimientosWallet({ lotes, className = '' }) {
+  const items = resumenVencimientosWallet(lotes);
+  if (items.length === 0) return null;
+  return (
+    <div className={`space-y-0.5 ${className}`}>
+      {items.map((i) => (
+        <p key={i.fecha} className="flex items-center gap-1 text-[11px] font-semibold text-amber-600">
+          <CalendarClock size={11} className="shrink-0" /> {formatoMontoVigenciaWallet(i.monto)} vencen el {i.fecha}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+// Concepto limpio del movimiento (en vez de "Cobro Smart POS · venta_pos —
+// 2x ...") y detección de las filas que son un Ticket de Smart POS.
+function textoMotivoMovimientoWallet(m) {
+  return String(m?.motivo ?? m?.concepto ?? m?.descripcion ?? '').trim();
+}
+function folioTicketDeMovimientoWallet(m) {
+  return String(m?.referencia_id ?? '').slice(0, 8).toUpperCase() || 'S/F';
+}
+function esMovimientoTicketPOS(m) {
+  const rt = String(m?.referencia_tipo || '');
+  return rt === 'venta_pos' || rt === 'liquidacion_cuenta' || /venta_pos|liquidacion_cuenta/i.test(textoMotivoMovimientoWallet(m));
+}
+function conceptoMovimientoWallet(m) {
+  if (esMovimientoTicketPOS(m)) {
+    const esLiquidacion = String(m?.referencia_tipo || '') === 'liquidacion_cuenta' || /liquidacion_cuenta/i.test(textoMotivoMovimientoWallet(m));
+    return `${esLiquidacion ? 'Liquidación de Cuenta' : 'Venta Smart POS'} · Ticket #${folioTicketDeMovimientoWallet(m)}`;
+  }
+  return textoMotivoMovimientoWallet(m) || (Number(m?.monto) >= 0 ? 'Recarga' : 'Consumo');
+}
+function etiquetaTipoMovimientoWallet(m) {
+  if (String(m?.referencia_tipo || '') === 'expiracion_wallet') return 'Vencimiento';
+  return m?.tipo === 'abono' ? 'Recarga' : 'Consumo';
+}
+
+// Desglose del Ticket de un consumo de Smart POS (clic en la fila del
+// historial) — lee la venta real vinculada por `referencia_id`.
+function ModalTicketMovimientoWallet({ movimiento, onClose }) {
+  const [venta, setVenta] = useState(null);
+  const [cargando, setCargando] = useState(Boolean(movimiento?.referencia_id));
+  useEffect(() => {
+    let cancelado = false;
+    async function cargar() {
+      if (!movimiento?.referencia_id) {
+        setCargando(false);
+        return;
+      }
+      try {
+        const { data, error } = await supabase.from('ventas').select('*').eq('id', movimiento.referencia_id).maybeSingle();
+        if (!cancelado) setVenta(error ? null : data || null);
+      } catch (e) {
+        if (!cancelado) setVenta(null);
+      }
+      if (!cancelado) setCargando(false);
+    }
+    cargar();
+    return () => {
+      cancelado = true;
+    };
+  }, [movimiento?.referencia_id]);
+
+  const folio = folioTicketDeMovimientoWallet(movimiento);
+  const items = Array.isArray(venta?.detalles?.items) ? venta.detalles.items : [];
+  const fechaRaw = venta?.fecha || venta?.created_at || movimiento?.created_at;
+  const fechaObj = fechaRaw ? new Date(fechaRaw) : null;
+  const fechaValida = fechaObj && !Number.isNaN(fechaObj.getTime());
+  const totalTicket = venta ? Number(venta.total) || items.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0) : Math.abs(Number(movimiento?.monto) || 0);
+  const montoWallet = Math.abs(Number(movimiento?.monto) || 0);
+
+  return (
+    <ModalShell titulo="Ticket de Venta" subtitulo={`Folio #${folio}`} onClose={onClose} icon={Receipt} ancho="max-w-sm">
+      {cargando ? (
+        <p className="flex items-center justify-center gap-1.5 py-8 text-xs text-slate-500">
+          <Loader2 size={13} className="animate-spin" /> Cargando ticket…
+        </p>
+      ) : (
+        <div className="space-y-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 font-mono text-xs text-slate-800">
+          <div className="space-y-0.5 text-center text-slate-500">
+            <p className="font-bold text-slate-800">Folio: #{folio}</p>
+            <p>
+              {fechaValida
+                ? `${fechaObj.toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' })} · ${fechaObj.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}`
+                : '—'}
+            </p>
+            {venta?.operador && <p>Operador: {venta.operador}</p>}
+          </div>
+
+          {venta && items.length > 0 ? (
+            <div className="space-y-1 border-t border-dashed border-slate-300 pt-3">
+              {items.map((it, i) => {
+                const cantidad = Number(it.cantidad) || 1;
+                const subtotal = Number(it.subtotal) || (Number(it.precio) || 0) * cantidad;
+                const precioUnit = Number(it.precio) || subtotal / cantidad;
+                return (
+                  <div key={i}>
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="min-w-0 flex-1 truncate">{it.nombre}</span>
+                      <span className="shrink-0 font-bold">{formatoMoneda(subtotal)}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      {cantidad} × {formatoMoneda(precioUnit)}
+                      {Array.isArray(it.modificadores) && it.modificadores.length > 0 ? ` · ${it.modificadores.map((mo) => mo.nombre).filter(Boolean).join(', ')}` : ''}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="border-t border-dashed border-slate-300 pt-3 text-center text-[11px] text-slate-500">
+              No se encontró el desglose de productos de este ticket
+              {textoMotivoMovimientoWallet(movimiento).includes('—') ? `: ${textoMotivoMovimientoWallet(movimiento).split('—').slice(1).join('—').trim()}` : '.'}
+            </p>
+          )}
+
+          <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-2 text-sm font-black text-slate-900">
+            <span>TOTAL</span>
+            <span>{formatoMoneda(totalTicket)}</span>
+          </div>
+          {venta && montoWallet > 0 && Math.abs(montoWallet - totalTicket) > 0.009 && (
+            <div className="flex items-center justify-between text-slate-600">
+              <span>Pagado con Wallet</span>
+              <span className="font-bold">{formatoMoneda(montoWallet)}</span>
+            </div>
+          )}
+          {venta?.metodo_pago && (
+            <div className="flex items-center justify-between text-slate-500">
+              <span>Método</span>
+              <span className="font-bold">{METODOS_PAGO_POS.find((m) => m.value === venta.metodo_pago)?.label || venta.metodo_pago}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </ModalShell>
+  );
 }
 
 // Reparte un monto entre Wallet (hasta donde alcance el saldo) y el resto —
@@ -46521,6 +47087,9 @@ function PortalPublicoJugadores({ clubSlug }) {
   const [saldoWallet, setSaldoWallet] = useState(0);
   const [walletMovimientos, setWalletMovimientos] = useState([]);
   const [cargandoWallet, setCargandoWallet] = useState(false);
+  // Vigencia de saldos (v86): lotes de saldo con vencimiento (bonos), para
+  // la leyenda bajo "Saldo disponible". Sin lotes → no se muestra nada.
+  const [walletLotes, setWalletLotes] = useState([]);
 
   // Políticas y Tolerancia de Cancelación (Motor Unificado de Confirmación/
   // Cancelación) — adapta el objeto `club` del Portal (columnas en
@@ -46874,11 +47443,13 @@ function PortalPublicoJugadores({ clubSlug }) {
     if (!jugadorId) {
       setSaldoWallet(0);
       setWalletMovimientos([]);
+      setWalletLotes([]);
       return;
     }
     setCargandoWallet(true);
     const saldo = await leerSaldoWalletFresco(jugadorId);
     setSaldoWallet(saldo);
+    setWalletLotes(await leerLotesVigentesWallet('jugador', jugadorId));
     try {
       const { data, error } = await supabase
         .from('wallet_movimientos')
@@ -50149,6 +50720,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                         <p className="mt-1 text-3xl font-black text-slate-900">
                           {cargandoWallet ? <Loader2 size={22} className="animate-spin text-orange-400" /> : formatoMoneda(saldoWallet)}
                         </p>
+                        {!cargandoWallet && <LeyendaVencimientosWallet lotes={walletLotes} className="mt-1" />}
                         <p className="mt-1 text-xs text-slate-600">
                           Úsalo para pagar canchas, torneos, retas o compras en la Tienda — cubre lo que alcance, el resto se paga en recepción.
                         </p>
