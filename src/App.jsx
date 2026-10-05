@@ -42585,6 +42585,64 @@ function precioPlanSegunFrecuencia(plan, frecuencia) {
   return { mensual: plan.precioFundadorMensual, tachado: plan.precioMensual, totalAnual: null };
 }
 
+// Precio REGULAR (sin promo "Precio Fundador") según frecuencia — lo usan las
+// pantallas secundarias (`PantallaPruebaVencida`, `ModalCambiarPlan`).
+// Mensual = precio de lista; Anual = equivalente mensual con 25% OFF.
+function precioRegularPlanSegunFrecuencia(plan, frecuencia) {
+  if (frecuencia === 'anual') return { mensual: plan.precioAnualMensual, totalAnual: plan.precioAnualTotal };
+  return { mensual: plan.precioMensual, totalAnual: null };
+}
+
+// Snapshot del plan (shape que persiste `guardarPlanSeleccionadoClub`) con el
+// precio mensual efectivo REGULAR de la frecuencia elegida.
+function snapshotPlanRegular(plan, frecuencia) {
+  return { ...plan, precioMensual: precioRegularPlanSegunFrecuencia(plan, frecuencia).mensual, frecuenciaFacturacion: frecuencia };
+}
+
+// Toggle Switch de frecuencia [Mensual] | [Anual — Ahorra 25%], compartido por
+// la selección de plan del Onboarding y las pantallas secundarias.
+function SelectorFrecuenciaPlan({ frecuencia, onChange }) {
+  return (
+    <div role="group" aria-label="Frecuencia de facturación" className="inline-flex rounded-full border border-slate-200 bg-white p-1 shadow-sm">
+      {[
+        { value: 'mensual', label: 'Mensual' },
+        { value: 'anual', label: 'Anual — Ahorra 25%' },
+      ].map((op) => {
+        const sel = frecuencia === op.value;
+        return (
+          <button
+            key={op.value}
+            type="button"
+            aria-pressed={sel}
+            onClick={() => onChange(op.value)}
+            className={`rounded-full px-4 py-1.5 text-xs font-bold transition sm:text-sm ${
+              sel ? 'bg-orange-400 text-slate-950 shadow' : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            {op.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Líneas de precio regular de una tarjeta (precio/mes + leyenda IVA o total anual).
+function PrecioPlanRegular({ plan, frecuencia, tamano = 'text-2xl' }) {
+  const p = precioRegularPlanSegunFrecuencia(plan, frecuencia);
+  return (
+    <div>
+      <p className={`${tamano} font-black text-slate-900`}>
+        {formatoPrecioPlanOnboarding(p.mensual)}
+        <span className="text-sm font-semibold text-slate-400"> MXN / mes</span>
+      </p>
+      <p className="text-[11px] font-medium text-slate-400">
+        {p.totalAnual != null ? `facturado anualmente ${formatoPrecioPlanOnboarding(p.totalAnual)} MXN - IVA incl.` : '(IVA incl.)'}
+      </p>
+    </div>
+  );
+}
+
 // Ícono-grid de canchas: representa visualmente el tamaño del plan con N
 // cuadritos (3 → fila de 3, 4 → 2×2, 8 → 4×2).
 function IconoGridCanchas({ cuadros, activo }) {
@@ -42809,33 +42867,13 @@ function PantallaSeleccionPlanOnboarding({
         <p className="mt-2 text-sm font-medium text-slate-500">Elige tu plan según el tamaño de tu club.</p>
       </div>
 
-      {/* Toggle de frecuencia (Mensual / Anual) + leyenda de IVA. Cambiarlo
-          con un plan ya elegido re-envía el snapshot (`onSeleccionarPlan`)
-          con el precio de la nueva frecuencia, para que Confirmación y
-          `plan_precio_mensual` reflejen lo que el dueño está viendo. */}
-      <div className="mb-6 flex flex-col items-center gap-2">
-        <div role="group" aria-label="Frecuencia de facturación" className="inline-flex rounded-full border border-slate-200 bg-white p-1 shadow-sm">
-          {[
-            { value: 'mensual', label: 'Mensual' },
-            { value: 'anual', label: 'Anual — Ahorra 25%' },
-          ].map((op) => {
-            const sel = frecuencia === op.value;
-            return (
-              <button
-                key={op.value}
-                type="button"
-                aria-pressed={sel}
-                onClick={() => cambiarFrecuencia(op.value)}
-                className={`rounded-full px-4 py-1.5 text-xs font-bold transition sm:text-sm ${
-                  sel ? 'bg-orange-400 text-slate-950 shadow' : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                {op.label}
-              </button>
-            );
-          })}
-        </div>
-        <p className="text-[11px] font-semibold text-slate-400">Todos los precios incluyen IVA</p>
+      {/* Toggle de frecuencia (Mensual / Anual). Cambiarlo con un plan ya
+          elegido re-envía el snapshot (`onSeleccionarPlan`) con el precio de
+          la nueva frecuencia, para que Confirmación y `plan_precio_mensual`
+          reflejen lo que el dueño está viendo. La leyenda de IVA vive en
+          cada tarjeta (ya no hay texto global debajo del toggle). */}
+      <div className="mb-6 flex justify-center">
+        <SelectorFrecuenciaPlan frecuencia={frecuencia} onChange={cambiarFrecuencia} />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -43125,6 +43163,9 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
 // (canchas, reservas, jugadores, ventas, Kárdex, etc.) se toca ni se pierde.
 function PantallaPruebaVencida({ nombreClub, planActual, restaurando, onRestaurarAcceso }) {
   const [planElegido, setPlanElegido] = useState(planActual || null);
+  // Frecuencia de facturación (Toggle Mensual/Anual) — precios REGULARES, sin
+  // la promo "Precio Fundador" (esa solo aplica en el Onboarding).
+  const [frecuencia, setFrecuencia] = useState(planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual');
   // Campos de tarjeta — mock visual únicamente (ver comentario de cabecera):
   // no se validan con ningún procesador real todavía, solo se exige que no
   // estén vacíos para que el flujo se sienta "real" sin fingir una
@@ -43151,23 +43192,30 @@ function PantallaPruebaVencida({ nombreClub, planActual, restaurando, onRestaura
             </p>
           </div>
 
-          <div className="mt-8 grid gap-4 sm:grid-cols-3">
+          <div className="mt-8 flex justify-center">
+            <SelectorFrecuenciaPlan
+              frecuencia={frecuencia}
+              onChange={(f) => {
+                setFrecuencia(f);
+                if (planElegido) setPlanElegido(snapshotPlanRegular(PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planElegido.canchas) || planElegido, f));
+              }}
+            />
+          </div>
+
+          <div className="mt-6 grid gap-4 sm:grid-cols-3">
             {PLANES_ONBOARDING_CLUB.map((plan) => {
               const activo = planElegido?.canchas === plan.canchas;
               return (
                 <button
                   key={plan.canchas}
                   type="button"
-                  onClick={() => setPlanElegido(plan)}
+                  onClick={() => setPlanElegido(snapshotPlanRegular(plan, frecuencia))}
                   className={`flex flex-col items-start gap-2 rounded-2xl border-2 bg-white p-5 text-left shadow-sm transition ${
                     activo ? 'border-[#FF6B35] shadow-[0_0_0_4px_rgba(255,107,53,0.25)]' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
                   }`}
                 >
                   <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
-                  <p className="text-2xl font-black text-slate-900">
-                    {formatoPrecioPlanOnboarding(plan.precioMensual)}
-                    <span className="text-sm font-semibold text-slate-400"> / mes</span>
-                  </p>
+                  <PrecioPlanRegular plan={plan} frecuencia={frecuencia} />
                   <p className="text-xs leading-snug text-slate-500">{plan.descripcion}</p>
                   {activo && (
                     <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-orange-600">
@@ -43982,16 +44030,21 @@ function SeccionCuentaSuscripcion({
 // `plan_precio_mensual` en `configuracion_club` — ningún estado ni columna
 // nueva, solo un segundo punto de entrada a la misma lógica.
 function ModalCambiarPlan({ planActual, onClose, onConfirmar }) {
-  const [planElegido, setPlanElegido] = useState(
-    () => PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planActual?.canchas) || null
+  const [frecuencia, setFrecuencia] = useState(planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual');
+  // `canchasElegidas` (no el objeto plan) — el snapshot con el precio de la
+  // frecuencia vigente se arma al confirmar (`snapshotPlanRegular`).
+  const [canchasElegidas, setCanchasElegidas] = useState(
+    () => PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planActual?.canchas)?.canchas || null
   );
+  const planElegido = PLANES_ONBOARDING_CLUB.find((p) => p.canchas === canchasElegidas) || null;
   const [guardando, setGuardando] = useState(false);
-  const cambioReal = planElegido && planElegido.canchas !== planActual?.canchas;
+  const cambioReal =
+    planElegido && (planElegido.canchas !== planActual?.canchas || frecuencia !== (planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual'));
 
   async function confirmar() {
     if (!planElegido || !cambioReal) return;
     setGuardando(true);
-    await onConfirmar?.(planElegido);
+    await onConfirmar?.(snapshotPlanRegular(planElegido, frecuencia));
     setGuardando(false);
   }
 
@@ -44003,6 +44056,10 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar }) {
       ancho="max-w-2xl"
       icon={CreditCard}
     >
+      <div className="mb-4 flex justify-center">
+        <SelectorFrecuenciaPlan frecuencia={frecuencia} onChange={setFrecuencia} />
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-3">
         {PLANES_ONBOARDING_CLUB.map((plan) => {
           const activo = planElegido?.canchas === plan.canchas;
@@ -44011,7 +44068,7 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar }) {
             <button
               key={plan.canchas}
               type="button"
-              onClick={() => setPlanElegido(plan)}
+              onClick={() => setCanchasElegidas(plan.canchas)}
               className={`relative flex flex-col items-start gap-2 rounded-2xl border-2 bg-white p-4 text-left transition ${
                 activo ? 'border-orange-400 shadow-[0_0_0_4px_rgba(251,146,60,0.15)]' : 'border-slate-200 hover:border-slate-300'
               }`}
@@ -44022,10 +44079,7 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar }) {
                 </span>
               )}
               <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
-              <p className="text-xl font-black text-slate-900">
-                {formatoPrecioPlanOnboarding(plan.precioMensual)}
-                <span className="text-xs font-semibold text-slate-400"> / mes</span>
-              </p>
+              <PrecioPlanRegular plan={plan} frecuencia={frecuencia} tamano="text-xl" />
               <p className="text-[11px] leading-snug text-slate-500">{plan.descripcion}</p>
               {activo && (
                 <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-orange-600">
