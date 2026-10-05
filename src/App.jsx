@@ -2215,11 +2215,13 @@ function tarifasActivasDelDia(listaTarifas, diaSemana) {
 // precio/hora) ya multiplicado por la duración, redondeado a centavos.
 // Una franja SOLO aplica si cubre el bloque COMPLETO (hora de inicio Y hora
 // de fin de la reserva caen dentro de la franja) — si la reserva cruza el
-// límite de una franja, o ninguna franja aplica, se usa `precioBase` (la
-// Tarifa Base/Estándar del club, o el precio/hora normal de la cancha si el
-// club no configuró una Tarifa Base — ver `SeccionGeneralClub`/
-// `ModalNuevaReserva`/`ModalReservarCancha`) — NUNCA se inventa un precio
-// mixto entre dos franjas o entre una franja y la base.
+// límite de una franja, o ninguna franja aplica, se usa `precioBase` — que
+// SIEMPRE es el `precio_por_hora` de la cancha elegida (ver
+// `ModalNuevaReserva`/`ModalReservarCancha`); el club ya NO tiene una "Tarifa
+// Base" global. El `precio_hora` de una franja es un valor ABSOLUTO: se
+// aplica tal cual, sin escalarlo ni multiplicarlo contra ninguna otra tarifa
+// — NUNCA se inventa un precio mixto entre dos franjas o entre una franja y
+// la base.
 function calcularPrecioReserva(horaInicio, duracionMinutos, listaTarifas, precioBase) {
   const inicioMin = parseHoraAMinutos(horaInicio);
   const duracion = Number(duracionMinutos) > 0 ? Number(duracionMinutos) : 60;
@@ -3610,11 +3612,6 @@ const LS_KEY_CLUB_CONFIG = 'smashpadel_club_config_v1';
 // nueva (Parrilla Operativa/Portal) y de cada clase (Portal → "Solicitar
 // Clase"). 60 min es el comportamiento histórico de siempre, así que un club
 // que nunca toca este ajuste no ve ningún cambio.
-// Tarifa Base/Estándar (Tarifas Dinámicas por Franja Horaria, migracion_v43)
-// — `0` significa "sin Tarifa Base propia": los cálculos de precio (ver
-// `calcularPrecioReserva`) caen al precio/hora normal de cada cancha
-// (`precioPorHoraDeCancha`), EXACTAMENTE el comportamiento de siempre, para
-// que un club que nunca toca este ajuste no vea ningún cambio.
 const CONFIG_CLUB_DEFAULT = {
   nombre: '',
   logoUrl: '',
@@ -3630,12 +3627,11 @@ const CONFIG_CLUB_DEFAULT = {
   horaCierre: '24:00',
   duracionReservaMinutos: 60,
   duracionClaseMinutos: 60,
-  tarifaBaseHora: 0,
   // Switch ON/OFF de "Tarifas y Franjas Horarias" (Configuración del Club →
   // General) — `true` por defecto (Arquitectura Flexible: un club que nunca
   // toca este ajuste sigue viendo el comportamiento de siempre, franjas
   // aplicadas si las configuró). En OFF, `calcularPrecioReserva` deja de
-  // consultar las franjas (usa siempre la Tarifa Base/precio de cancha) pero
+  // consultar las franjas (usa siempre el precio/hora de la cancha) pero
   // las franjas y sus precios NUNCA se tocan/borran — quedan intactas en
   // Supabase/estado para cuando el club vuelva a encenderlo.
   tarifasHabilitadas: true,
@@ -3939,7 +3935,6 @@ function leerConfigClubLocal() {
       horaCierre: parsed.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
       duracionReservaMinutos: Number(parsed.duracionReservaMinutos) > 0 ? Number(parsed.duracionReservaMinutos) : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
       duracionClaseMinutos: Number(parsed.duracionClaseMinutos) > 0 ? Number(parsed.duracionClaseMinutos) : CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
-      tarifaBaseHora: Number(parsed.tarifaBaseHora) > 0 ? Number(parsed.tarifaBaseHora) : CONFIG_CLUB_DEFAULT.tarifaBaseHora,
       tarifasHabilitadas: parsed.tarifasHabilitadas !== false,
       toleranciaCancelacionMaster: parsed.toleranciaCancelacionMaster !== false,
       toleranciaReservasEnabled: parsed.toleranciaReservasEnabled === true,
@@ -4284,11 +4279,6 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
       horaCierre: configActual.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre,
       duracionReservaMinutos: configActual.duracionReservaMinutos || CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
       duracionClaseMinutos: configActual.duracionClaseMinutos || CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
-      // Tarifa Base/Estándar (Tarifas Dinámicas por Franja Horaria,
-      // migracion_v43, editable desde "Configuración del Club" → "General" →
-      // "Tarifas y Franjas Horarias") — mismo criterio que las líneas de
-      // arriba: este modal no la edita, se reenvía TAL CUAL para no pisarla.
-      tarifaBaseHora: configActual.tarifaBaseHora || CONFIG_CLUB_DEFAULT.tarifaBaseHora,
       // Switch ON/OFF de "Tarifas y Franjas Horarias" — este modal no lo
       // edita (ver "Configuración del Club" → "General" →
       // `SeccionTarifasFranjas`), se reenvía TAL CUAL para no pisarlo.
@@ -7016,14 +7006,12 @@ function ModalNuevaReserva({
   // Tarifas Dinámicas por Franja Horaria (Peak & Off-Peak Pricing,
   // migracion_v43) — lista completa de `tarifas_horarios` del club (sin
   // filtrar por día todavía, eso pasa más abajo según la `fecha` elegida en
-  // este mismo formulario) y la Tarifa Base/Estándar configurada
-  // (`configuracion_club.tarifa_base_hora`, `0` = "sin Tarifa Base propia").
+  // este mismo formulario).
   tarifasHorarios = [],
-  tarifaBaseHora = 0,
   // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora) — `true` por
   // defecto (Activado, comportamiento de siempre). En OFF, `tarifasDelDia`
   // se queda vacía a propósito para que `calcularPrecioReserva` caiga
-  // siempre a `tarifaBaseHora`/precio de cancha, SIN tocar `tarifasHorarios`.
+  // siempre al precio/hora de la cancha, SIN tocar `tarifasHorarios`.
   tarifasHabilitadas = true,
 }) {
   const toast = useToast();
@@ -7125,11 +7113,11 @@ function ModalNuevaReserva({
   // el genérico) cuando `precio_por_hora` viene null/undefined/0 desde
   // Supabase — así el cálculo nunca se queda en $0 por un dato faltante.
   const precioPorHora = canchaSeleccionada ? precioPorHoraDeCancha(canchaSeleccionada) : 0;
-  // Tarifa Base efectiva: la del club (`tarifaBaseHora`) si la configuró, o
-  // si no, el precio/hora normal de la cancha — EXACTAMENTE el
-  // comportamiento de siempre para un club que nunca toca "Tarifas y
-  // Franjas Horarias".
-  const precioBaseEfectivo = tarifaBaseHora > 0 ? tarifaBaseHora : precioPorHora;
+  // Precio estándar de cualquier horario = EXACTAMENTE el `precio_por_hora`
+  // de la cancha elegida (editable en su tarjeta de la Parrilla). No existe
+  // una "Tarifa Base" global del club: cada cancha define su precio de forma
+  // 100% independiente.
+  const precioBaseEfectivo = precioPorHora;
 
   // Duración válida en horas (null si la hora de fin todavía no supera a la
   // de inicio) — misma regla que `validar()`, aquí solo para el cálculo.
@@ -7152,7 +7140,7 @@ function ModalNuevaReserva({
 
   // Monto = franja de "Tarifas y Franjas Horarias" que cubra por completo el
   // bloque de Hora Inicio–Hora Fin (si hay una configurada para esa hora y
-  // ese día), o si no, la Tarifa Base/precio de cancha de siempre
+  // ese día), o si no, el precio/hora de la cancha
   // (`calcularPrecioReserva`, ver su comentario para el detalle del
   // criterio de "cobertura completa").
   const montoCalculado =
@@ -8505,7 +8493,6 @@ function ModuloParrillaOperativa({
           horaCierreMin={horaCierreMin}
           duracionReservaMinutos={duracionReservaMinutos}
           tarifasHorarios={tarifasHorarios}
-          tarifaBaseHora={Number(configClub?.tarifaBaseHora) || 0}
           tarifasHabilitadas={configClub?.tarifasHabilitadas !== false}
           onCreada={(reserva, cancha) => {
             upsertReserva(reserva);
@@ -42091,11 +42078,6 @@ function normalizarFilaClub(fila, tabla) {
     // por "Solicitar Clase").
     duracion_reserva_minutos: Number(fila.duracion_reserva_minutos) > 0 ? Number(fila.duracion_reserva_minutos) : 60,
     duracion_clase_minutos: Number(fila.duracion_clase_minutos) > 0 ? Number(fila.duracion_clase_minutos) : 60,
-    // Tarifa Base/Estándar (Tarifas Dinámicas por Franja Horaria,
-    // migracion_v43) — `0` = "sin Tarifa Base propia", el Portal cae al
-    // precio/hora normal de cada cancha (`precioPorHoraDeCancha`), mismo
-    // criterio que el resto de columnas opcionales de esta función.
-    tarifa_base_hora: Number(fila.tarifa_base_hora) > 0 ? Number(fila.tarifa_base_hora) : 0,
     // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora) — mismo
     // respaldo tolerante que `addons_habilitados`: un proyecto sin la
     // columna trae `undefined` y el Portal sigue aplicando las franjas
@@ -43492,19 +43474,6 @@ function SeccionGeneralClub({
   // guardado real ahora ocurre dentro de `guardarTodo`.
   const [nombreAdministrador, setNombreAdministrador] = useState(config.nombreAdministrador || '');
   const [errorNombreAdministrador, setErrorNombreAdministrador] = useState('');
-  // Tarifa Base / Estándar (Tarifas Dinámicas por Franja Horaria,
-  // migracion_v43) — ANTES vivía como estado local dentro de
-  // `SeccionTarifasFranjas` (su propia tarjeta, con su propio botón
-  // "Guardar Tarifa Base"). Persistencia Atómica al Avanzar de Módulo: se
-  // SUBE aquí (controlado, reenviado a `SeccionTarifasFranjas` como prop)
-  // para que `guardarTodo` (abajo) pueda combinarlo con
-  // nombreAdministrador/horario en UNA sola llamada a `onGuardarConfigClub`
-  // — si cada tarjeta siguiera llamando a `onGuardarConfigClub` por su
-  // cuenta con su propio snapshot de `config`, dos guardados casi
-  // simultáneos (ej. al dar "Siguiente Módulo") podrían pisarse entre sí
-  // (el último en responder gana, con datos desactualizados de la otra
-  // tarjeta — "last write wins").
-  const [tarifaBaseHora, setTarifaBaseHora] = useState(config.tarifaBaseHora > 0 ? String(config.tarifaBaseHora) : '');
 
   // Sincroniza los selectores si `configClub` llega/cambia después de montar
   // este componente (ej. la primera carga desde Supabase todavía no había
@@ -43513,8 +43482,7 @@ function SeccionGeneralClub({
     setHoraApertura(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
     setHoraCierre(config.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
     setNombreAdministrador(config.nombreAdministrador || '');
-    setTarifaBaseHora(config.tarifaBaseHora > 0 ? String(config.tarifaBaseHora) : '');
-  }, [config.horaApertura, config.horaCierre, config.nombreAdministrador, config.tarifaBaseHora]);
+  }, [config.horaApertura, config.horaCierre, config.nombreAdministrador]);
 
   // Guardado INMEDIATO de "Horario de Apertura y Cierre" — SOLO se usa fuera
   // del Onboarding (panel regular de Configuración del Club, ver el botón
@@ -43532,13 +43500,11 @@ function SeccionGeneralClub({
       nombreAdministrador: config.nombreAdministrador,
       horaApertura,
       horaCierre,
-      // Duración de Bloques/Turnos (migracion_v42) y Tarifa Base/Estándar
-      // (Tarifas Dinámicas por Franja Horaria, migracion_v43) — este bloque
-      // no las edita, se reenvían TAL CUAL para no pisarlas
-      // (`guardarConfigClub` escribe el objeto completo en cada guardado).
+      // Duración de Bloques/Turnos (migracion_v42) — este bloque no las
+      // edita, se reenvían TAL CUAL para no pisarlas (`guardarConfigClub`
+      // escribe el objeto completo en cada guardado).
       duracionReservaMinutos: config.duracionReservaMinutos,
       duracionClaseMinutos: config.duracionClaseMinutos,
-      tarifaBaseHora: config.tarifaBaseHora,
       tarifasHabilitadas: config.tarifasHabilitadas !== false,
       // Políticas y Tolerancia de Cancelación — este bloque no las edita, se
       // reenvían TAL CUAL para no pisarlas (`guardarConfigClub` escribe el
@@ -43562,37 +43528,8 @@ function SeccionGeneralClub({
     });
   }
 
-  // Guardado INMEDIATO de "Tarifa Base / Estándar" — SOLO se usa fuera del
-  // Onboarding (botón "Guardar Tarifa Base" dentro de `SeccionTarifasFranjas`,
-  // oculto durante el wizard). Mismo criterio que `guardar()` arriba.
-  async function guardarTarifaBaseAhora() {
-    await onGuardarConfigClub?.({
-      nombre: config.nombre,
-      logoUrl: config.logoUrl,
-      nombreAdministrador: config.nombreAdministrador,
-      horaApertura: config.horaApertura,
-      horaCierre: config.horaCierre,
-      duracionReservaMinutos: config.duracionReservaMinutos,
-      duracionClaseMinutos: config.duracionClaseMinutos,
-      tarifaBaseHora: Number(tarifaBaseHora) > 0 ? Number(tarifaBaseHora) : 0,
-      tarifasHabilitadas: config.tarifasHabilitadas !== false,
-      toleranciaCancelacionMaster: config.toleranciaCancelacionMaster !== false,
-      toleranciaReservasEnabled: config.toleranciaReservasEnabled === true,
-      toleranciaReservasHoras: config.toleranciaReservasHoras,
-      toleranciaTorneosEnabled: config.toleranciaTorneosEnabled === true,
-      toleranciaTorneosHoras: config.toleranciaTorneosHoras,
-      toleranciaRetasEnabled: config.toleranciaRetasEnabled !== false,
-      toleranciaRetasHoras: config.toleranciaRetasHoras,
-      toleranciaAcademiaEnabled: config.toleranciaAcademiaEnabled === true,
-      toleranciaAcademiaHoras: config.toleranciaAcademiaHoras,
-      academiaPrecioBaseClaseSuelta: config.academiaPrecioBaseClaseSuelta,
-      academiaPrecioBaseMensualidad: config.academiaPrecioBaseMensualidad,
-      academiaClasesIncluidasMensualidad: config.academiaClasesIncluidasMensualidad,
-    });
-  }
-
-  // Persistencia Atómica al Avanzar de Módulo (Onboarding) — consolida los 3
-  // guardados independientes de arriba (nombre/horario/tarifa base) en UNA
+  // Persistencia Atómica al Avanzar de Módulo (Onboarding) — consolida los
+  // guardados independientes de arriba (nombre/horario) en UNA
   // sola llamada a `onGuardarConfigClub`, invocada por "Siguiente Módulo" en
   // el componente padre (`ModuloConfiguracionClub`, vía
   // `onRegistrarGuardadoModulo`). Valida localmente primero (nombre
@@ -43619,7 +43556,6 @@ function SeccionGeneralClub({
       horaCierre,
       duracionReservaMinutos: config.duracionReservaMinutos,
       duracionClaseMinutos: config.duracionClaseMinutos,
-      tarifaBaseHora: Number(tarifaBaseHora) > 0 ? Number(tarifaBaseHora) : 0,
       tarifasHabilitadas: config.tarifasHabilitadas !== false,
       // Políticas y Tolerancia de Cancelación + Tarifas y Paquetes de
       // Academia — esta tarjeta no las edita (viven en "Reservas &
@@ -43742,9 +43678,6 @@ function SeccionGeneralClub({
         guardandoTarifaHorario={guardandoTarifaHorario}
         onEliminarTarifaHorario={onEliminarTarifaHorario}
         modoOnboarding={modoOnboarding}
-        tarifaBaseHora={tarifaBaseHora}
-        onTarifaBaseHoraChange={setTarifaBaseHora}
-        onGuardarTarifaBaseAhora={guardarTarifaBaseAhora}
       />
 
       {/* Zona de Peligro ("Eliminar Club / Cancelar Cuenta") — reubicada
@@ -44208,15 +44141,10 @@ function ModalCancelarSuscripcion({ onClose, onConfirmar }) {
 
 // Tarifas Dinámicas por Franja Horaria (Peak & Off-Peak Pricing) —
 // Configuración del Club → "General" → "Tarifas y Franjas Horarias"
-// (migracion_v43, tabla `tarifas_horarios`). Dos piezas independientes, cada
-// una con su propio guardado (mismo criterio que "Horarios Habilitados" +
-// "Duración de Bloques/Turnos" en `SeccionReservasAcademia`, dos tarjetas
-// dentro de la misma sección):
-//   1) Tarifa Base/Estándar — un campo suelto en `configuracion_club`
-//      (`tarifa_base_hora`), reutiliza `onGuardarConfigClub` → `guardarConfigClub`
-//      en `AppInterno` (reenvía el resto de `configClub` TAL CUAL, mismo
-//      criterio que el resto de esta pantalla).
-//   2) Franjas horarias — CRUD completo sobre la tabla `tarifas_horarios`
+// (migracion_v43, tabla `tarifas_horarios`). Ya NO existe una "Tarifa Base"
+// global del club: el precio estándar lo define cada cancha con su
+// `precio_por_hora` (editable en su tarjeta de la Parrilla Operativa). Esta
+// sección solo administra las Franjas horarias — CRUD completo sobre la tabla `tarifas_horarios`
 //      (`onGuardarTarifaHorario`/`onEliminarTarifaHorario` →
 //      `guardarTarifaHorario`/`eliminarTarifaHorario` en `AppInterno`, ver
 //      ahí el criterio de Arquitectura Flexible/Sincronización Silenciosa:
@@ -44230,14 +44158,6 @@ function SeccionTarifasFranjas({
   guardandoTarifaHorario,
   onEliminarTarifaHorario,
   modoOnboarding = false,
-  // Tarifa Base / Estándar — Persistencia Atómica al Avanzar de Módulo: el
-  // estado ahora vive en el padre (`SeccionGeneralClub`), controlado aquí
-  // vía props, para que su guardado pueda combinarse con
-  // nombre/horario en una sola llamada al avanzar de módulo durante el
-  // Onboarding (ver comentario de `guardarTodo` en `SeccionGeneralClub`).
-  tarifaBaseHora,
-  onTarifaBaseHoraChange,
-  onGuardarTarifaBaseAhora,
 }) {
   const config = configClub || CONFIG_CLUB_DEFAULT;
   const [modalTarifa, setModalTarifa] = useState(null); // null = cerrado, {} = nueva, {...} = editar
@@ -44245,7 +44165,7 @@ function SeccionTarifasFranjas({
   const [eliminando, setEliminando] = useState(false);
   // Switch ON/OFF (mejora) — `true` = "Activado" (comportamiento de
   // siempre). En OFF, el club deja de cobrar diferenciado por franja SIN
-  // borrar nada: las franjas y la Tarifa Base de abajo se quedan
+  // borrar nada: las franjas de abajo se quedan
   // guardadas/visibles tal cual, solo se dejan de APLICAR al calcular el
   // monto de una reserva (ver `tarifasDelDia` en `ModalNuevaReserva` y
   // `ModalReservarCancha`, que devuelven `[]` cuando este switch está OFF).
@@ -44266,7 +44186,6 @@ function SeccionTarifasFranjas({
       horaCierre: config.horaCierre,
       duracionReservaMinutos: config.duracionReservaMinutos,
       duracionClaseMinutos: config.duracionClaseMinutos,
-      tarifaBaseHora: config.tarifaBaseHora,
       tarifasHabilitadas: !tarifasHabilitadas,
       toleranciaCancelacionMaster: config.toleranciaCancelacionMaster !== false,
       toleranciaReservasEnabled: config.toleranciaReservasEnabled === true,
@@ -44339,45 +44258,21 @@ function SeccionTarifasFranjas({
         </button>
         {!tarifasHabilitadas && (
           <p className="mb-4 rounded-lg border border-dashed border-slate-300 bg-slate-100/40 px-3 py-2.5 text-[11px] text-slate-500">
-            Desactivado — todas las reservas usan la Tarifa Base/Estándar (o el precio/hora de cada cancha). La
-            Tarifa Base y las franjas de abajo se quedan guardadas tal cual para cuando vuelvas a activarlo.
+            Desactivado — todas las reservas cobran exactamente el precio/hora de cada cancha. Las franjas de abajo
+            se quedan guardadas tal cual para cuando vuelvas a activarlo.
           </p>
         )}
 
-        <div className="mb-4 flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3 sm:flex-row sm:items-end sm:gap-3">
-          <div className="flex-1">
-            <Campo label="Tarifa Base / Estándar (MXN por hora)">
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={tarifaBaseHora}
-                onChange={(e) => onTarifaBaseHoraChange?.(e.target.value)}
-                placeholder="Sin definir — usa el precio/hora de cada cancha"
-                className={inputClase}
-              />
-            </Campo>
-          </div>
-          {/* Persistencia Atómica al Avanzar de Módulo: este botón propio
-              solo se muestra fuera del Onboarding — dentro del wizard,
-              "Siguiente Módulo" guarda este campo junto con nombre/horario
-              (ver `guardarTodo` en `SeccionGeneralClub`). */}
-          {!modoOnboarding && (
-            <BotonSecundario onClick={onGuardarTarifaBaseAhora} disabled={guardandoConfigClub} className="shrink-0">
-              {guardandoConfigClub ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-              Guardar Tarifa Base
-            </BotonSecundario>
-          )}
-        </div>
         <p className="mb-4 text-[11px] text-slate-500">
-          Se aplica en cualquier horario que no caiga dentro de ninguna franja personalizada de abajo. Déjala vacía
-          para seguir usando el precio/hora propio de cada cancha (comportamiento de siempre).
+          El precio estándar de cada horario es el precio por hora de la cancha (se edita en su tarjeta de la
+          Parrilla Operativa). Una franja cobra su precio por hora exactamente tal cual lo configures, sin escalarlo
+          contra ninguna otra tarifa, y solo aplica si cubre por completo el bloque reservado.
         </p>
 
         {lista.length === 0 ? (
           <p className="rounded-lg border border-dashed border-slate-300 bg-slate-100/40 px-3 py-4 text-center text-xs text-slate-500">
-            Sin franjas horarias configuradas — todas las reservas usan la Tarifa Base (o el precio/hora de la
-            cancha).
+            Sin franjas horarias configuradas — todas las reservas cobran exactamente el precio/hora de cada
+            cancha.
           </p>
         ) : (
           <div className="space-y-2">
@@ -44785,12 +44680,11 @@ function SeccionReservasAcademia({
       horaCierre: config.horaCierre,
       duracionReservaMinutos,
       duracionClaseMinutos,
-      // Tarifa Base/Estándar y Switch ON/OFF de "Tarifas y Franjas Horarias"
-      // (migracion_v43/mejora) — esta sección no las edita, se reenvían TAL
-      // CUAL para no pisarlas (`guardarConfigClub` escribe el objeto de
-      // configuración completo en cada guardado; omitirlas aquí las
-      // resetearía a su valor por defecto en cada "Guardar duración").
-      tarifaBaseHora: config.tarifaBaseHora,
+      // Switch ON/OFF de "Tarifas y Franjas Horarias" (migracion_v43/mejora)
+      // — esta sección no lo edita, se reenvía TAL CUAL para no pisarlo
+      // (`guardarConfigClub` escribe el objeto de configuración completo en
+      // cada guardado; omitirlo aquí lo resetearía a su valor por defecto en
+      // cada "Guardar duración").
       tarifasHabilitadas: config.tarifasHabilitadas !== false,
       // Políticas y Tolerancia de Cancelación — mismo criterio: esta tarjeta
       // no las edita, se reenvían TAL CUAL para no resetearlas en cada
@@ -44890,7 +44784,6 @@ function SeccionReservasAcademia({
       horaCierre: config.horaCierre,
       duracionReservaMinutos: config.duracionReservaMinutos,
       duracionClaseMinutos: config.duracionClaseMinutos,
-      tarifaBaseHora: config.tarifaBaseHora,
       tarifasHabilitadas: config.tarifasHabilitadas !== false,
       // Tarifas y Paquetes de Academia — esta tarjeta tampoco las edita, se
       // reenvían TAL CUAL para no resetearlas (mismo criterio que arriba).
@@ -44935,7 +44828,6 @@ function SeccionReservasAcademia({
       horaCierre: config.horaCierre,
       duracionReservaMinutos: config.duracionReservaMinutos,
       duracionClaseMinutos: config.duracionClaseMinutos,
-      tarifaBaseHora: config.tarifaBaseHora,
       tarifasHabilitadas: config.tarifasHabilitadas !== false,
       toleranciaCancelacionMaster: config.toleranciaCancelacionMaster !== false,
       toleranciaReservasEnabled: config.toleranciaReservasEnabled === true,
@@ -44974,7 +44866,6 @@ function SeccionReservasAcademia({
       horaCierre: config.horaCierre,
       duracionReservaMinutos,
       duracionClaseMinutos,
-      tarifaBaseHora: config.tarifaBaseHora,
       tarifasHabilitadas: config.tarifasHabilitadas !== false,
       toleranciaCancelacionMaster: toleranciaMaster,
       toleranciaReservasEnabled,
@@ -46591,7 +46482,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   // resto de tablas de este Promise.all) para que "Reservar Cancha" muestre
   // el precio de cada franja horaria directo en la tarjeta de selección de
   // hora. Un proyecto sin la migración (o su policy `anon` de lectura)
-  // simplemente trae `[]` — el Portal cae a la Tarifa Base/precio de cancha
+  // simplemente trae `[]` — el Portal cae al precio/hora de la cancha
   // de siempre, sin romper nada.
   const [tarifasHorariosPortal, setTarifasHorariosPortal] = useState([]);
 
@@ -46924,7 +46815,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       // Tarifas Dinámicas por Franja Horaria (migracion_v43) — solo lectura
       // aquí (el Portal nunca las edita, eso vive en Configuración del Club).
       // Si la tabla o su policy `anon` todavía no existen, `data` llega
-      // `null` y "Reservar Cancha" cae a la Tarifa Base/precio de cancha.
+      // `null` y "Reservar Cancha" cae al precio/hora de la cancha.
       conClubId(supabase.from('tarifas_horarios').select('*')),
     ]);
     setCanchas(resCanchas.data || []);
@@ -50608,7 +50499,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         <AnimatePresence>
           {canchaParaReservar && (
           <ModalReservarCancha
-            cancha={canchaParaReservar}
+            cancha={canchasActivas.find((c) => c.id === canchaParaReservar.id) || canchaParaReservar}
             club={club}
             jugador={jugador}
             reservas={reservas}
@@ -52939,7 +52830,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora, Configuración del
   // Club → General) — `true` por defecto (Activado). En OFF, `tarifasDelDia`
   // se queda vacía A PROPÓSITO para que `calcularPrecioReserva`/
-  // `precioDelBloque` caigan siempre a la Tarifa Base/precio de cancha, SIN
+  // `precioDelBloque` caigan siempre al precio/hora de la cancha, SIN
   // tocar `tarifasHorarios` (las franjas siguen intactas en Supabase/estado
   // para cuando el club vuelva a encenderlo).
   const tarifasHabilitadas = club?.tarifas_habilitadas !== false;
@@ -52951,18 +52842,19 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
     const dow = fecha ? new Date(`${fecha}T12:00:00`).getDay() : null;
     return dow === null ? [] : tarifasActivasDelDia(tarifasHorarios, dow);
   }, [tarifasHorarios, fecha, tarifasHabilitadas]);
-  // Tarifa Base efectiva: la del club (`club.tarifa_base_hora`) si la
-  // configuró, o si no, el precio/hora normal de la cancha — EXACTAMENTE el
-  // comportamiento de siempre para un club que nunca toca "Tarifas y
-  // Franjas Horarias".
-  const precioBaseEfectivo = Number(club?.tarifa_base_hora) > 0 ? Number(club.tarifa_base_hora) : precioPorHoraDeCancha(cancha);
+  // Precio estándar de cada slot = EXACTAMENTE el `precio_por_hora` ACTUAL de
+  // la cancha elegida (y sus variantes de columna, ver
+  // `precioPorHoraDeCancha`). No existe una "Tarifa Base" global del club.
+  // Sin franjas, un bloque de N horas cuesta `precio_por_hora × N`; una
+  // franja configurada aplica su valor ABSOLUTO, sin escalarlo.
+  const precioBaseEfectivo = precioPorHoraDeCancha(cancha);
   // Extensión Opción 2 Horas — precio total de un bloque que empieza a
   // `hora`, respetando la duración ELEGIDA (`duracionHoras`): con 2 horas es
   // la SUMA de 2 tarifas horarias INDEPENDIENTES (cada hora puede caer en
   // una franja distinta) — nunca un solo `calcularPrecioReserva` de 120 min,
   // que solo aplicaría precio si UNA franja cubriera el bloque completo y
-  // ocultaría un precio mixto entre 2 franjas (o entre una franja y la
-  // Tarifa Base).
+  // ocultaría un precio mixto entre 2 franjas (o entre una franja y el
+  // precio de la cancha).
   function precioDelBloque(hora) {
     if (permiteDosHoras && duracionHoras === 2) {
       const horaSegunda = minutosAHora((parseHoraAMinutos(hora) || 0) + 60);
@@ -54580,7 +54472,6 @@ function AppInterno({ clubInicial } = {}) {
           data.hora_cierre != null ||
           data.duracion_reserva_minutos != null ||
           data.duracion_clase_minutos != null ||
-          data.tarifa_base_hora != null ||
           data.tarifas_habilitadas != null ||
           data.tolerancia_cancelacion_master != null ||
           data.tolerancia_reservas_enabled != null ||
@@ -54612,11 +54503,6 @@ function AppInterno({ clubInicial } = {}) {
             // siempre (`CONFIG_CLUB_DEFAULT`).
             duracionReservaMinutos: Number(data.duracion_reserva_minutos) > 0 ? Number(data.duracion_reserva_minutos) : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
             duracionClaseMinutos: Number(data.duracion_clase_minutos) > 0 ? Number(data.duracion_clase_minutos) : CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
-            // Tarifa Base/Estándar (Tarifas Dinámicas por Franja Horaria,
-            // migracion_v43) — mismo criterio: proyecto sin la migración →
-            // `undefined` → cae a `0` ("sin Tarifa Base propia", usa el
-            // precio/hora normal de cada cancha).
-            tarifaBaseHora: Number(data.tarifa_base_hora) > 0 ? Number(data.tarifa_base_hora) : CONFIG_CLUB_DEFAULT.tarifaBaseHora,
             // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora) — mismo
             // criterio que `addons_habilitados`: un proyecto sin la columna
             // trae `undefined` y este respaldo lo deja en `true` (Activado),
@@ -55239,13 +55125,6 @@ function AppInterno({ clubInicial } = {}) {
         // Academia", migracion_v42).
         duracionReservaMinutos: Number(nuevaConfig.duracionReservaMinutos) > 0 ? Number(nuevaConfig.duracionReservaMinutos) : CONFIG_CLUB_DEFAULT.duracionReservaMinutos,
         duracionClaseMinutos: Number(nuevaConfig.duracionClaseMinutos) > 0 ? Number(nuevaConfig.duracionClaseMinutos) : CONFIG_CLUB_DEFAULT.duracionClaseMinutos,
-        // Tarifa Base/Estándar (Tarifas Dinámicas por Franja Horaria,
-        // migracion_v43) — `0`/vacío es válido a propósito (significa "sin
-        // Tarifa Base propia", ver `CONFIG_CLUB_DEFAULT`), así que aquí NO se
-        // usa el mismo respaldo "> 0 ? valor : default" que duración/horario
-        // (eso le impediría al club volver a dejarlo en blanco una vez
-        // capturado) — solo se limpia a número o `0`.
-        tarifaBaseHora: Number(nuevaConfig.tarifaBaseHora) > 0 ? Number(nuevaConfig.tarifaBaseHora) : 0,
         // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora) — `false`
         // solo si se manda explícitamente `false`; cualquier otro valor
         // (incluido `undefined`, de un caller que todavía no lo reenvía)
@@ -55300,7 +55179,6 @@ function AppInterno({ clubInicial } = {}) {
           hora_cierre: limpia.horaCierre,
           duracion_reserva_minutos: limpia.duracionReservaMinutos,
           duracion_clase_minutos: limpia.duracionClaseMinutos,
-          tarifa_base_hora: limpia.tarifaBaseHora,
           tarifas_habilitadas: limpia.tarifasHabilitadas,
           tolerancia_cancelacion_master: limpia.toleranciaCancelacionMaster,
           tolerancia_reservas_enabled: limpia.toleranciaReservasEnabled,
@@ -55317,9 +55195,8 @@ function AppInterno({ clubInicial } = {}) {
         };
         // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo
         // (como antes de este cambio): `hora_apertura`/`hora_cierre`/
-        // `duracion_reserva_minutos`/`duracion_clase_minutos`/
-        // `tarifa_base_hora` son columnas NUEVAS (migracion_v31/
-        // migracion_v42/migracion_v43) — sin este reintento tolerante, un
+        // `duracion_reserva_minutos`/`duracion_clase_minutos`
+        // son columnas NUEVAS (migracion_v31/migracion_v42) — sin este reintento tolerante, un
         // proyecto que no haya corrido la migración vería fallar TODO el
         // guardado (incluyendo nombre/logo, que sí existen desde siempre)
         // por columnas que ni siquiera se están mostrando en pantalla.
@@ -55329,7 +55206,6 @@ function AppInterno({ clubInicial } = {}) {
           'hora_cierre',
           'duracion_reserva_minutos',
           'duracion_clase_minutos',
-          'tarifa_base_hora',
           'tarifas_habilitadas',
           'tolerancia_cancelacion_master',
           'tolerancia_reservas_enabled',
