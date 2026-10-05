@@ -2195,10 +2195,44 @@ function precioPorHoraDeCancha(cancha) {
 // que le corresponde.
 function tarifasActivasDelDia(listaTarifas, diaSemana) {
   return (Array.isArray(listaTarifas) ? listaTarifas : []).filter((t) => {
+    // Las franjas de Academia (`modulo = 'academia'`, migracion_v88) viven en
+    // la misma tabla pero NUNCA aplican al precio de una cancha.
+    if (esTarifaDeAcademia(t)) return false;
     if (t?.activo === false) return false;
     const dias = Array.isArray(t?.dias_semana) ? t.dias_semana : null;
     return !dias || dias.length === 0 || dias.includes(diaSemana);
   });
+}
+
+// Franjas Horarias de CLASE SUELTA de Academia (migracion_v88) — comparten la
+// tabla `tarifas_horarios` con las de cancha, diferenciadas por la columna
+// `modulo` ('cancha' por default / 'academia'). `precio_hora` de una franja
+// de Academia es el precio de UNA CLASE SUELTA completa (no por hora).
+function esTarifaDeAcademia(t) {
+  return String(t?.modulo || '').toLowerCase() === 'academia';
+}
+function tarifasAcademiaActivasDelDia(listaTarifas, diaSemana) {
+  return (Array.isArray(listaTarifas) ? listaTarifas : []).filter((t) => {
+    if (!esTarifaDeAcademia(t) || t?.activo === false) return false;
+    const dias = Array.isArray(t?.dias_semana) ? t.dias_semana : null;
+    return !dias || dias.length === 0 || dias.includes(diaSemana);
+  });
+}
+// Precio de UNA Clase Suelta que ocupa [horaInicio, horaInicio + duración]:
+// el valor ABSOLUTO de la franja que cubra el bloque completo, o el precio
+// estándar de Clase Suelta del club si ninguna lo cubre (o no hay franjas).
+function precioClaseSueltaEnHorario(horaInicio, duracionMinutos, franjasDelDia, precioEstandar) {
+  const estandar = Number(precioEstandar) >= 0 ? Number(precioEstandar) : 0;
+  const ini = parseHoraAMinutos(horaInicio);
+  if (ini === null) return estandar;
+  const fin = ini + (Number(duracionMinutos) > 0 ? Number(duracionMinutos) : 60);
+  const franja = (Array.isArray(franjasDelDia) ? franjasDelDia : []).find((t) => {
+    const desde = parseHoraAMinutos(t?.hora_inicio ?? t?.horaInicio);
+    const hasta = parseHoraAMinutos(t?.hora_fin ?? t?.horaFin);
+    return desde !== null && hasta !== null && ini >= desde && fin <= hasta;
+  });
+  const precioFranja = franja ? Number(franja.precio_hora ?? franja.precioHora) : NaN;
+  return Number.isFinite(precioFranja) && precioFranja > 0 ? precioFranja : estandar;
 }
 
 // Helper Centralizado de Cálculo de Precios (requerimiento explícito de
@@ -37375,8 +37409,9 @@ function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardan
 // selectores de Configuración del Club) y `DIAS_SEMANA_ACADEMIA` (mismo
 // criterio `Date.prototype.getDay()` que el resto de la app) para no
 // inventar un catálogo de horas/días paralelo.
-function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando }) {
+function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'cancha' }) {
   const editando = !!tarifa;
+  const esAcademia = modulo === 'academia';
   const [nombre, setNombre] = useState(tarifa?.nombre || '');
   const [horaInicio, setHoraInicio] = useState(tarifa?.hora_inicio || '07:00');
   const [horaFin, setHoraFin] = useState(tarifa?.hora_fin || '12:00');
@@ -37402,7 +37437,7 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando }) {
       return;
     }
     if (!(Number(precioHora) > 0)) {
-      setError('Captura un Precio por Hora mayor a $0.');
+      setError(esAcademia ? 'Captura un Precio por Clase mayor a $0.' : 'Captura un Precio por Hora mayor a $0.');
       return;
     }
     if (diasSemana.length === 0) {
@@ -37417,6 +37452,7 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando }) {
       diasSemana,
       precioHora: Number(precioHora),
       activo,
+      modulo: esAcademia ? 'academia' : 'cancha',
     });
     onClose();
   }
@@ -37424,7 +37460,7 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando }) {
   return (
     <ModalShell
       titulo={editando ? 'Editar Franja Horaria' : 'Nueva Franja Horaria'}
-      subtitulo="Tarifas Dinámicas por Franja Horaria"
+      subtitulo={esAcademia ? 'Franja de Clase Suelta (Academia)' : 'Tarifas Dinámicas por Franja Horaria'}
       onClose={onClose}
       icon={DollarSign}
       ancho="max-w-md"
@@ -37459,7 +37495,7 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando }) {
           </Campo>
         </div>
 
-        <Campo label="Precio por Hora (MXN)">
+        <Campo label={esAcademia ? 'Precio por Clase Suelta (MXN)' : 'Precio por Hora (MXN)'}>
           <input
             type="number"
             min="0"
@@ -42516,6 +42552,10 @@ function ModuloConfiguracionClub({
           configClub={configClub}
           onGuardarConfigClub={onGuardarConfigClub}
           guardandoConfigClub={guardandoConfigClub}
+          tarifasHorarios={tarifasHorarios}
+          onGuardarTarifaHorario={onGuardarTarifaHorario}
+          guardandoTarifaHorario={guardandoTarifaHorario}
+          onEliminarTarifaHorario={onEliminarTarifaHorario}
           modoOnboarding={modoOnboarding}
           onRegistrarGuardadoModulo={registrarGuardadoModulo}
         />
@@ -44382,7 +44422,7 @@ function SeccionTarifasFranjas({
     });
   }
 
-  const lista = Array.isArray(tarifasHorarios) ? [...tarifasHorarios].sort((a, b) => (a.hora_inicio || '').localeCompare(b.hora_inicio || '')) : [];
+  const lista = Array.isArray(tarifasHorarios) ? [...tarifasHorarios].filter((t) => !esTarifaDeAcademia(t)).sort((a, b) => (a.hora_inicio || '').localeCompare(b.hora_inicio || '')) : [];
 
   async function confirmarEliminar() {
     if (!tarifaParaEliminar) return;
@@ -44820,10 +44860,34 @@ function SeccionReservasAcademia({
   configClub,
   onGuardarConfigClub,
   guardandoConfigClub,
+  tarifasHorarios,
+  onGuardarTarifaHorario,
+  guardandoTarifaHorario,
+  onEliminarTarifaHorario,
   modoOnboarding = false,
   onRegistrarGuardadoModulo,
 }) {
   const [modalRangosHorario, setModalRangosHorario] = useState(false);
+  // Franjas Horarias de Clase Suelta (migracion_v88) — mismo CRUD de
+  // `tarifas_horarios` que las franjas de cancha, filtrado a `modulo =
+  // 'academia'`.
+  const [modalFranjaClase, setModalFranjaClase] = useState(null); // null = cerrado, {} = nueva, {...} = editar
+  const [franjaClaseParaEliminar, setFranjaClaseParaEliminar] = useState(null);
+  const [eliminandoFranjaClase, setEliminandoFranjaClase] = useState(false);
+  const franjasClase = useMemo(
+    () =>
+      (Array.isArray(tarifasHorarios) ? tarifasHorarios : [])
+        .filter((t) => esTarifaDeAcademia(t))
+        .sort((a, b) => (a.hora_inicio || '').localeCompare(b.hora_inicio || '')),
+    [tarifasHorarios]
+  );
+  async function confirmarEliminarFranjaClase() {
+    if (!franjaClaseParaEliminar) return;
+    setEliminandoFranjaClase(true);
+    await onEliminarTarifaHorario?.(franjaClaseParaEliminar);
+    setEliminandoFranjaClase(false);
+    setFranjaClaseParaEliminar(null);
+  }
   // Mismo criterio que `ModuloAcademiaClinicas`/`ModalNuevaClase`/`ModalDetalleClase`.
   const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
   const totalBloques = (rangosHorarioClases || []).length;
@@ -45131,6 +45195,116 @@ function SeccionReservasAcademia({
           </div>
         )}
       </div>
+
+      {/* Franjas Horarias de Clase Suelta (migracion_v88) — extiende "Tarifas
+          y Franjas Horarias" al módulo de Academia: el precio estándar es el
+          "Precio Base Clase Suelta" de arriba; cada franja fija el precio de
+          una clase suelta en ese rango (ej. 12:00–17:00 = $600). Sin franjas,
+          el Portal cobra solo el precio estándar. */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <DollarSign size={16} className="text-orange-500" />
+          <h3 className="text-sm font-black text-slate-900">Franjas Horarias de Clase Suelta</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Cobra un precio distinto por Clase Suelta según el horario (ej. 12:00 pm a 5:00 pm = $600). Fuera de
+          cualquier franja se cobra el Precio Base Clase Suelta ({formatoMoneda(Number(precioBaseClaseSuelta) >= 0 ? Number(precioBaseClaseSuelta) : CONFIG_CLUB_DEFAULT.academiaPrecioBaseClaseSuelta)}). Sin
+          franjas, solo se usa ese precio estándar.
+        </p>
+
+        {franjasClase.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-100/40 px-3 py-4 text-center text-xs text-slate-500">
+            Sin franjas configuradas — todas las clases sueltas cuestan el precio estándar.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {franjasClase.map((t) => (
+              <div
+                key={t.id}
+                className={`flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 ${
+                  t.activo === false ? 'border-slate-200 bg-slate-100/50 opacity-60' : 'border-slate-200 bg-slate-50/60'
+                }`}
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-bold text-slate-800">
+                    {t.nombre || 'Franja sin nombre'} {t.activo === false && <span className="font-semibold text-slate-400">(Desactivada)</span>}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    {formatoHora12(t.hora_inicio)} – {formatoHora12(t.hora_fin)} ·{' '}
+                    {Array.isArray(t.dias_semana) && t.dias_semana.length > 0 && t.dias_semana.length < 7
+                      ? t.dias_semana
+                          .slice()
+                          .sort()
+                          .map((d) => DIAS_SEMANA_ACADEMIA.find((ds) => ds.indice === d)?.label.slice(0, 3) || '?')
+                          .join(', ')
+                      : 'Todos los días'}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-xs font-black text-orange-600">{formatoMoneda(t.precio_hora)}/clase</span>
+                  <button
+                    type="button"
+                    onClick={() => setModalFranjaClase(t)}
+                    className="rounded-md bg-slate-200/70 p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-700"
+                    title="Editar franja"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFranjaClaseParaEliminar(t)}
+                    className="rounded-md bg-rose-500/10 p-1.5 text-rose-400 hover:bg-rose-500/20"
+                    title="Eliminar franja"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setModalFranjaClase({})}
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-2 text-xs font-bold text-slate-500 hover:border-orange-400/40 hover:text-orange-600"
+        >
+          <Plus size={13} /> Nueva Franja de Clase Suelta
+        </button>
+      </div>
+
+      {modalFranjaClase && (
+        <ModalTarifaHorario
+          modulo="academia"
+          tarifa={modalFranjaClase.id ? modalFranjaClase : null}
+          onClose={() => setModalFranjaClase(null)}
+          onGuardar={onGuardarTarifaHorario}
+          guardando={guardandoTarifaHorario}
+        />
+      )}
+
+      {franjaClaseParaEliminar && (
+        <ModalShell titulo="Eliminar Franja de Clase Suelta" onClose={() => setFranjaClaseParaEliminar(null)} icon={Trash2} ancho="max-w-sm">
+          <div className="space-y-4">
+            <p className="text-xs text-slate-600">
+              ¿Eliminar "{franjaClaseParaEliminar.nombre || 'esta franja'}"? Las solicitudes ya hechas no cambian — solo
+              deja de aplicarse a partir de ahora.
+            </p>
+            <div className="flex justify-end gap-2">
+              <BotonSecundario onClick={() => setFranjaClaseParaEliminar(null)}>Cancelar</BotonSecundario>
+              <button
+                type="button"
+                onClick={confirmarEliminarFranjaClase}
+                disabled={eliminandoFranjaClase}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {eliminandoFranjaClase ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                Eliminar
+              </button>
+            </div>
+          </div>
+        </ModalShell>
+      )}
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
@@ -51115,6 +51289,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         <AnimatePresence>
           {modalSolicitudClase && (
           <ModalSolicitarClase
+            tarifasHorarios={tarifasHorariosPortal}
             onClose={() => setModalSolicitudClase(false)}
             onEnviar={enviarSolicitudClase}
             canchas={canchas}
@@ -52269,7 +52444,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
 // activas a esa hora (`estadoOcupacionAgregado`) — 100% derivado de
 // `reservas`/`academiaClases` que el Portal ya tiene cargadas, sin ninguna
 // consulta ni suscripción nueva (Regla de Oro de Realtime intacta).
-function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club }) {
+function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club, tarifasHorarios }) {
   // Arquitectura de Tarifas Academia (Corrección — item 4): esta solicitud
   // ("modal genérico de horarios") no tenía forma de capturar si el
   // jugador busca una Clase Suelta o el Plan Mensual — ahora se pide con
@@ -52379,6 +52554,30 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fecha, slots]);
 
+  // Precio Dinámico de Clase Suelta por Franja Horaria (migracion_v88) —
+  // SOLO afecta la tarjeta superior "Clase Suelta" (la cuadrícula de horarios
+  // no cambia). Sin horario elegido: precio estándar, o "Desde $X" (la tarifa
+  // mínima entre los horarios disponibles) si las franjas hacen variar el
+  // precio. Con un horario elegido: el valor exacto de esa hora (franja o
+  // estándar). El Plan Mensual no depende del horario.
+  const franjasClaseDelDia = useMemo(() => {
+    const dow = fecha ? new Date(`${fecha}T12:00:00`).getDay() : null;
+    return dow === null ? [] : tarifasAcademiaActivasDelDia(tarifasHorarios, dow);
+  }, [tarifasHorarios, fecha]);
+  const precioClaseSueltaTarjeta = useMemo(() => {
+    const estandar = tarifasAcademiaClub.precioBaseClaseSuelta;
+    const precioDe = (slot) => precioClaseSueltaEnHorario(slot.horaInicio, duracionClaseMinutos, franjasClaseDelDia, estandar);
+    const elegido = horaInicio ? slots.find((sl) => sl.horaInicio === horaInicio) : null;
+    if (elegido) return { monto: precioDe(elegido), desde: false };
+    if (franjasClaseDelDia.length === 0) return { monto: estandar, desde: false };
+    let candidatos = slots.filter((sl) => sl.tipo === 'disponible' && !sl.pasado);
+    if (candidatos.length === 0) candidatos = slots.filter((sl) => sl.tipo !== 'fuera_horario');
+    const precios = candidatos.map(precioDe);
+    if (precios.length === 0) return { monto: estandar, desde: false };
+    const minimo = Math.min(...precios);
+    return { monto: minimo, desde: minimo !== Math.max(...precios) };
+  }, [slots, horaInicio, franjasClaseDelDia, tarifasAcademiaClub, duracionClaseMinutos]);
+
   async function enviar() {
     setError('');
     if (fecha < hoyISO()) return setError('Elige una fecha a partir de hoy.');
@@ -52441,7 +52640,10 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                 />
               </div>
               <p className="text-[10.5px] leading-snug text-slate-500">Asiste a una sesión individual sin compromisos periódicos</p>
-              <p className="text-base font-black text-slate-900">{formatoMoneda(tarifasAcademiaClub.precioBaseClaseSuelta)}</p>
+              <p className="text-base font-black text-slate-900">
+                {precioClaseSueltaTarjeta.desde && <span className="mr-1 text-[11px] font-bold text-slate-500">Desde</span>}
+                {formatoMoneda(precioClaseSueltaTarjeta.monto)}
+              </p>
             </button>
             <button
               type="button"
@@ -55529,7 +55731,13 @@ function AppInterno({ clubInicial } = {}) {
         dias_semana: Array.isArray(tarifa?.diasSemana) ? tarifa.diasSemana : [],
         precio_hora: Number(tarifa?.precioHora) || 0,
         activo: tarifa?.activo !== false,
+        // Franjas de Clase Suelta de Academia (migracion_v88): 'cancha' es el
+        // default histórico de la tabla, así que solo se manda `modulo`
+        // cuando es 'academia' (un proyecto sin v88 sigue guardando franjas
+        // de cancha exactamente igual que siempre).
+        modulo: tarifa?.modulo === 'academia' ? 'academia' : 'cancha',
       };
+      let guardadoSoloLocal = false;
       setGuardandoTarifaHorario(true);
       setTarifasHorarios((prev) => {
         const existe = prev.some((t) => t.id === idOptimista);
@@ -55546,7 +55754,11 @@ function AppInterno({ clubInicial } = {}) {
           dias_semana: limpia.dias_semana,
           precio_hora: limpia.precio_hora,
           activo: limpia.activo,
+          ...(limpia.modulo === 'academia' ? { modulo: 'academia' } : {}),
         };
+        // `modulo` NO es columna opcional a propósito: si falta (sin v88), un
+        // intento tolerante la descartaría y la franja de Academia quedaría
+        // guardada como franja de CANCHA, alterando precios de renta.
         const { data, error } = editando
           ? await actualizarConColumnasOpcionales('tarifas_horarios', idPrevio, campos, ['dias_semana', 'activo'])
           : await insertarConColumnasOpcionales('tarifas_horarios', campos, ['dias_semana', 'activo']);
@@ -55560,14 +55772,24 @@ function AppInterno({ clubInicial } = {}) {
           return siguiente;
         });
       } catch (err) {
+        guardadoSoloLocal = true;
         if (!esErrorTablaInexistente(err)) {
           console.warn('[Tarifas y Franjas Horarias] No se pudo guardar la franja en Supabase — se guardó en modo local.', err);
         }
       }
       setGuardandoTarifaHorario(false);
+      const unidadPrecio = limpia.modulo === 'academia' ? '/clase' : '/h';
+      if (guardadoSoloLocal && limpia.modulo === 'academia') {
+        mostrarToast({
+          titulo: 'Franja guardada solo en este dispositivo',
+          detalle: 'No llegó a Supabase (¿falta correr migracion_v88?) — los jugadores aún no la verán en el Portal.',
+          tono: 'aviso',
+        });
+        return;
+      }
       mostrarToast({
         titulo: editando ? 'Franja actualizada' : 'Franja creada',
-        detalle: `${limpia.nombre} · ${formatoHora12(limpia.hora_inicio)}–${formatoHora12(limpia.hora_fin)} · ${formatoMoneda(limpia.precio_hora)}/h`,
+        detalle: `${limpia.nombre} · ${formatoHora12(limpia.hora_inicio)}–${formatoHora12(limpia.hora_fin)} · ${formatoMoneda(limpia.precio_hora)}${unidadPrecio}`,
       });
     },
     [mostrarToast]
