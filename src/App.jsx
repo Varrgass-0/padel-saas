@@ -1015,6 +1015,11 @@ const CSS_MODO_OSCURO_CLUBOS = `
 html.dark, html.dark body, html.dark #root { background-color: #0b1329; }
 
 html.dark [class~="bg-slate-50"] { background-color: #0b1329; }
+/* Lienzo de pantalla completa de Login/Registro/Onboarding (y su fondo de
+   orbes): usan el color arbitrario \`bg-[#f8fafc]\`, que ninguna regla de
+   arriba alcanzaba — por eso, en Modo Oscuro, la tarjeta se veía oscura sobre
+   un viewport blanco. */
+html.dark [class~="bg-[#f8fafc]"] { background-color: #0b1329; }
 html.dark [class~="bg-slate-50/20"] { background-color: rgba(11, 19, 41, 0.2); }
 html.dark [class~="bg-slate-50/30"] { background-color: rgba(11, 19, 41, 0.3); }
 html.dark [class~="bg-slate-50/40"] { background-color: rgba(11, 19, 41, 0.4); }
@@ -44649,10 +44654,11 @@ function SeccionEliminarCuenta({ nombreClub, onEliminarClub, eliminandoClub }) {
   );
 }
 
-// Encuesta de Salida (6 motivos + "Otro" con comentario opcional) — el
+// Encuesta de Salida (6 motivos; "Otro" exige un comentario de mínimo 30 caracteres) — el
 // motivo elegido aquí viaja tal cual hasta `eliminarClub` en `AppInterno`,
 // que lo guarda en `log_actividad` (auditoría) ANTES del borrado suave. Sin
 // tabla/columna nueva: reutiliza el mismo mecanismo de auditoría de siempre.
+const MIN_CARACTERES_COMENTARIO_BAJA = 30;
 const MOTIVOS_ELIMINACION_CLUB = [
   { id: 'cierre_administracion', label: 'El club cerró o cambió de administración' },
   { id: 'faltan_funciones', label: 'Faltan funciones que necesito' },
@@ -44677,6 +44683,11 @@ function ModalEliminarCuenta({ nombreClub, onClose, onConfirmar, eliminando }) {
   const nombreEsperado = (nombreClub || '').trim();
   const coincide = nombreEsperado.length > 0 && texto.trim() === nombreEsperado;
   const motivoElegido = MOTIVOS_ELIMINACION_CLUB.find((m) => m.id === motivoId);
+  const comentarioLongitud = comentario.trim().length;
+  // El comentario (mínimo 30 caracteres) es obligatorio SOLO al elegir "Otro";
+  // con cualquier otro motivo no se muestra el cuadro ni se exige texto.
+  const requiereComentario = motivoId === 'otro';
+  const comentarioValido = !requiereComentario || comentarioLongitud >= MIN_CARACTERES_COMENTARIO_BAJA;
   // Mientras `eliminando` está en curso, Escape/click fuera no deben cerrar
   // el modal a medio proceso — mismo criterio que el resto de modales
   // destructivos de este archivo (ver `ModalDevolucionPOS`/`ModalArqueo`).
@@ -44693,33 +44704,49 @@ function ModalEliminarCuenta({ nombreClub, onClose, onConfirmar, eliminando }) {
               key={m.id}
               type="button"
               onClick={() => setMotivoId(m.id)}
+              aria-pressed={motivoId === m.id}
+              // Contraste (Modo Claro y Oscuro): la opción elegida va con fondo
+              // OSCURO fijo (`bg-slate-800`), borde/acento naranja corporativo y
+              // texto BLANCO — antes `bg-orange-50` quedaba casi blanco en Modo
+              // Oscuro con texto claro encima (ilegible).
               className={`flex w-full items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left text-sm font-semibold transition ${
-                motivoId === m.id ? 'border-orange-400 bg-orange-50 text-slate-900' : 'border-slate-200 text-slate-600 hover:border-slate-300'
+                motivoId === m.id
+                  ? 'border-orange-500 bg-slate-800 text-white ring-1 ring-orange-500/50'
+                  : 'border-slate-200 text-slate-600 hover:border-slate-300'
               }`}
             >
               <span
                 className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
-                  motivoId === m.id ? 'border-orange-400' : 'border-slate-300'
+                  motivoId === m.id ? 'border-orange-500' : 'border-slate-300'
                 }`}
               >
-                {motivoId === m.id && <span className="h-2 w-2 rounded-full bg-orange-400" />}
+                {motivoId === m.id && <span className="h-2 w-2 rounded-full bg-orange-500" />}
               </span>
               {m.label}
             </button>
           ))}
         </div>
-        {motivoId === 'otro' && (
-          <textarea
-            value={comentario}
-            onChange={(e) => setComentario(e.target.value)}
-            placeholder="Cuéntanos un poco más (opcional)..."
-            rows={3}
-            className={`${inputClase} mt-3 resize-none`}
-          />
+        {/* Comentario OBLIGATORIO (mínimo 30 caracteres, sin contar espacios
+            al inicio/fin) SOLO cuando el motivo es "Otro": "Continuar" no se
+            habilita hasta cumplirlo. */}
+        {requiereComentario && (
+          <div className="mt-3">
+            <textarea
+              value={comentario}
+              onChange={(e) => setComentario(e.target.value)}
+              placeholder="Cuéntanos un poco más (obligatorio, mínimo 30 caracteres)..."
+              aria-label="Cuéntanos un poco más (obligatorio, mínimo 30 caracteres)"
+              rows={3}
+              className={`${inputClase} resize-none`}
+            />
+            <p className={`mt-1 text-right text-[11px] font-semibold ${comentarioLongitud >= MIN_CARACTERES_COMENTARIO_BAJA ? 'text-emerald-500' : 'text-slate-500'}`}>
+              {comentarioLongitud}/{MIN_CARACTERES_COMENTARIO_BAJA}
+            </p>
+          </div>
         )}
         <div className="mt-5 flex justify-end gap-2">
           <BotonSecundario onClick={cerrar}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={() => setPaso('confirmar')} disabled={!motivoId}>
+          <BotonPrimario onClick={() => setPaso('confirmar')} disabled={!motivoId || !comentarioValido}>
             Continuar
           </BotonPrimario>
         </div>
@@ -44761,7 +44788,7 @@ function ModalEliminarCuenta({ nombreClub, onClose, onConfirmar, eliminando }) {
           <button
             type="button"
             disabled={!coincide || eliminando}
-            onClick={() => onConfirmar?.({ motivoId, motivoLabel: motivoElegido?.label, comentario: comentario.trim() || null })}
+            onClick={() => onConfirmar?.({ motivoId, motivoLabel: motivoElegido?.label, comentario: requiereComentario ? comentario.trim() || null : null })}
             className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {eliminando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
@@ -44944,8 +44971,12 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo = 'Cambiar 
   );
   const planElegido = PLANES_ONBOARDING_CLUB.find((p) => p.canchas === canchasElegidas) || null;
   const [guardando, setGuardando] = useState(false);
-  const cambioReal =
-    planElegido && (planElegido.canchas !== planActual?.canchas || frecuencia !== (planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual'));
+  // Periodicidad realmente contratada ('mensual' | 'anual') — "PLAN ACTUAL" solo
+  // se marca cuando coinciden la categoría de canchas Y esta periodicidad con
+  // la pestaña que se está viendo (un club en Mensual no tiene "plan actual"
+  // en la pestaña Anual, y viceversa).
+  const frecuenciaContratada = planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual';
+  const cambioReal = planElegido && (planElegido.canchas !== planActual?.canchas || frecuencia !== frecuenciaContratada);
 
   async function confirmar() {
     if (!planElegido || !cambioReal) return;
@@ -44958,7 +44989,7 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo = 'Cambiar 
     <ModalShell
       titulo={titulo}
       subtitulo={
-        mensajeLimite ? undefined : 'Upgrade o downgrade — el nuevo precio aplica desde tu siguiente ciclo de facturación.'
+        mensajeLimite ? undefined : 'Upgrade — el nuevo precio aplica desde tu siguiente ciclo de facturación.'
       }
       onClose={onClose}
       ancho="max-w-2xl"
@@ -44982,7 +45013,7 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo = 'Cambiar 
       <div className={`grid gap-3 ${planesVisibles.length >= 3 ? 'sm:grid-cols-3' : planesVisibles.length === 2 ? 'sm:grid-cols-2' : ''}`}>
         {planesVisibles.map((plan) => {
           const activo = planElegido?.canchas === plan.canchas;
-          const esPlanActual = planActual?.canchas === plan.canchas;
+          const esPlanActual = planActual?.canchas === plan.canchas && frecuencia === frecuenciaContratada;
           return (
             <button
               key={plan.canchas}
@@ -45220,7 +45251,7 @@ function SeccionTarifasFranjas({
                   <button
                     type="button"
                     onClick={() => setModalTarifa(t)}
-                    className="rounded-md bg-slate-200/70 p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-700"
+                    className="rounded-md border border-slate-600 bg-slate-800 p-1.5 text-orange-400 transition hover:border-orange-400/60 hover:bg-slate-700 hover:text-orange-300"
                     title="Editar franja"
                   >
                     <Pencil size={13} />
@@ -45228,7 +45259,7 @@ function SeccionTarifasFranjas({
                   <button
                     type="button"
                     onClick={() => setTarifaParaEliminar(t)}
-                    className="rounded-md bg-rose-500/10 p-1.5 text-rose-400 hover:bg-rose-500/20"
+                    className="rounded-md border border-slate-600 bg-slate-800 p-1.5 text-rose-400 transition hover:border-rose-400/60 hover:bg-slate-700 hover:text-rose-300"
                     title="Eliminar franja"
                   >
                     <Trash2 size={13} />
@@ -45946,7 +45977,7 @@ function SeccionReservasAcademia({
                   <button
                     type="button"
                     onClick={() => setModalFranjaClase(t)}
-                    className="rounded-md bg-slate-200/70 p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-700"
+                    className="rounded-md border border-slate-600 bg-slate-800 p-1.5 text-orange-400 transition hover:border-orange-400/60 hover:bg-slate-700 hover:text-orange-300"
                     title="Editar franja"
                   >
                     <Pencil size={13} />
@@ -45954,7 +45985,7 @@ function SeccionReservasAcademia({
                   <button
                     type="button"
                     onClick={() => setFranjaClaseParaEliminar(t)}
-                    className="rounded-md bg-rose-500/10 p-1.5 text-rose-400 hover:bg-rose-500/20"
+                    className="rounded-md border border-slate-600 bg-slate-800 p-1.5 text-rose-400 transition hover:border-rose-400/60 hover:bg-slate-700 hover:text-rose-300"
                     title="Eliminar franja"
                   >
                     <Trash2 size={13} />
