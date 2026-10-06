@@ -1744,6 +1744,46 @@ const ESTATUS_CANCHA_OPTIONS = [
 // no aplica ahí: una cancha con reserva futura hoy cuenta como "Disponible").
 const ESTATUS_FILTRO_OPTIONS = ESTATUS_CANCHA_OPTIONS.filter((op) => op.value !== 'reservada');
 
+// Tipo de cancha (`canchas.tipo`, migracion_v90): 'Indoor' | 'Outdoor'. Es la
+// ÚNICA fuente del dato — el Onboarding, el Panel (Parrilla/Cronograma/Nueva
+// Cancha) y el Portal del Jugador (tarjetas y resumen de reserva) leen la
+// misma columna a través de `normalizarTipoCancha`/`BadgeTipoCancha`. Una
+// cancha sin tipo (creada antes de esta columna) simplemente no muestra
+// insignia.
+const TIPOS_CANCHA = ['Indoor', 'Outdoor'];
+
+function normalizarTipoCancha(tipo) {
+  const t = String(tipo || '').trim().toLowerCase();
+  if (t === 'indoor') return 'Indoor';
+  if (t === 'outdoor') return 'Outdoor';
+  return null;
+}
+
+// Insignia elegante de Tipo: Indoor = azul suave + ícono de edificio/techo,
+// Outdoor = ámbar/naranja suave + ícono de sol. `sobreImagen` agrega un fondo
+// translúcido con blur para que se lea encima de la foto de la cancha.
+function BadgeTipoCancha({ tipo, sobreImagen = false, className = '' }) {
+  const t = normalizarTipoCancha(tipo);
+  if (!t) return null;
+  const esIndoor = t === 'Indoor';
+  const Icono = esIndoor ? Building2 : Sun;
+  const color = esIndoor
+    ? sobreImagen
+      ? 'bg-white/85 text-sky-700 ring-sky-300/70 backdrop-blur'
+      : 'bg-sky-50 text-sky-700 ring-sky-200'
+    : sobreImagen
+      ? 'bg-white/85 text-amber-700 ring-amber-300/70 backdrop-blur'
+      : 'bg-amber-50 text-amber-700 ring-amber-200';
+  return (
+    <span
+      title={esIndoor ? 'Cancha techada (Indoor)' : 'Cancha al aire libre (Outdoor)'}
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${color} ${className}`}
+    >
+      <Icono size={11} className="shrink-0" /> {t}
+    </span>
+  );
+}
+
 const ESTATUS_META = {
   disponible: {
     label: 'Disponible',
@@ -5342,12 +5382,16 @@ function CanchaCard({
   // inline que el nombre: un solo Guardar/Cancelar para ambos campos.
   const precioActual = precioPorHoraDeCancha(cancha);
   const [precioEditado, setPrecioEditado] = useState(String(precioActual));
+  // Tipo (Indoor/Outdoor, `canchas.tipo`) — editable por quien puede
+  // renombrar la cancha; vacío = "sin tipo" (cancha anterior a la columna).
+  const [tipoEditado, setTipoEditado] = useState(normalizarTipoCancha(cancha.tipo) || '');
   const puedeEditarAlgo = puedeRenombrarCancha || puedeEditarPrecio;
 
   useEffect(() => {
     if (!editandoNombre) {
       setNombreEditado(cancha.nombre || '');
       setPrecioEditado(String(precioPorHoraDeCancha(cancha)));
+      setTipoEditado(normalizarTipoCancha(cancha.tipo) || '');
     }
   }, [cancha, editandoNombre]);
 
@@ -5355,6 +5399,7 @@ function CanchaCard({
     setEditandoNombre(false);
     setNombreEditado(cancha.nombre || '');
     setPrecioEditado(String(precioActual));
+    setTipoEditado(normalizarTipoCancha(cancha.tipo) || '');
   }
 
   const precioEditadoNum = Number(precioEditado);
@@ -5365,7 +5410,8 @@ function CanchaCard({
     if (!limpio || !precioValido) return;
     const cambioNombre = limpio !== cancha.nombre;
     const cambioPrecio = puedeEditarPrecio && precioEditadoNum !== precioActual;
-    if (!cambioNombre && !cambioPrecio) {
+    const cambioTipo = puedeRenombrarCancha && tipoEditado !== '' && tipoEditado !== (normalizarTipoCancha(cancha.tipo) || '');
+    if (!cambioNombre && !cambioPrecio && !cambioTipo) {
       cancelarEdicionCancha();
       return;
     }
@@ -5373,6 +5419,7 @@ function CanchaCard({
     await onEditarCancha?.(cancha, {
       nombre: cambioNombre ? limpio : undefined,
       precioPorHora: cambioPrecio ? precioEditadoNum : undefined,
+      tipo: cambioTipo ? tipoEditado : undefined,
     });
     setGuardandoNombre(false);
     setEditandoNombre(false);
@@ -5401,6 +5448,7 @@ function CanchaCard({
             <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
             {meta.label}
           </span>
+          <BadgeTipoCancha tipo={cancha.tipo} sobreImagen />
           {/* Secundario: la cancha está libre AHORITA, pero ya tiene un juego agendado más tarde hoy. */}
           {estadoActual === 'disponible' && proximaReserva && (
             <span className="inline-flex items-center gap-1 rounded-full bg-slate-50/70 px-2 py-0.5 text-[10px] font-semibold text-slate-600 backdrop-blur">
@@ -5428,7 +5476,8 @@ function CanchaCard({
       <div className="p-3.5">
         <div className="mb-3 flex items-center justify-between gap-2">
           {editandoNombre ? (
-            <div className="flex min-w-0 flex-1 items-center gap-1">
+            <div className="min-w-0 flex-1 space-y-1.5">
+            <div className="flex min-w-0 items-center gap-1">
               <input
                 autoFocus
                 value={nombreEditado}
@@ -5479,6 +5528,25 @@ function CanchaCard({
               >
                 <X size={13} />
               </button>
+            </div>
+            {puedeRenombrarCancha && (
+              <div className="flex items-center gap-1.5" role="group" aria-label="Tipo de cancha">
+                {TIPOS_CANCHA.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    aria-pressed={tipoEditado === t}
+                    disabled={guardandoNombre}
+                    onClick={() => setTipoEditado(t)}
+                    className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold ring-1 transition ${
+                      tipoEditado === t ? 'bg-orange-50 text-orange-700 ring-orange-300' : 'bg-slate-50 text-slate-500 ring-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    {t === 'Indoor' ? <Building2 size={11} /> : <Sun size={11} />} {t}
+                  </button>
+                ))}
+              </div>
+            )}
             </div>
           ) : (
             <>
@@ -5810,7 +5878,10 @@ function VistaCronograma({
                 className="flex items-center gap-2 border-b border-slate-200/70 px-3"
               >
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`} />
-                <span className="truncate text-xs font-bold text-slate-800">{c.nombre}</span>
+                <div className="flex min-w-0 flex-col items-start gap-0.5">
+                  <span className="max-w-full truncate text-xs font-bold text-slate-800">{c.nombre}</span>
+                  <BadgeTipoCancha tipo={c.tipo} className="!px-1.5 !py-0 !text-[9px]" />
+                </div>
               </div>
             );
           })}
@@ -6841,6 +6912,7 @@ function ModalNuevaCancha({ onClose, onCreada }) {
   const toast = useToast();
   const [nombre, setNombre] = useState('');
   const [precio, setPrecio] = useState('');
+  const [tipo, setTipo] = useState('Outdoor');
   const [imagenUrl, setImagenUrl] = useState('');
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
@@ -6852,19 +6924,20 @@ function ModalNuevaCancha({ onClose, onCreada }) {
     }
     setGuardando(true);
     setError('');
-    const { data, error: err } = await supabase
-      .from('canchas')
-      .insert(
-        withClubId({
-          nombre: nombre.trim(),
-          precio_por_hora: precio ? Number(precio) : 0,
-          imagen_url: imagenUrl.trim() || null,
-          activa: true,
-          estatus_manual: 'disponible',
-        })
-      )
-      .select()
-      .single();
+    // `tipo` (migracion_v90) es columna opcional: si el proyecto aún no la
+    // tiene, se reintenta sin ella y la cancha igual se crea.
+    const { data, error: err } = await insertarConColumnasOpcionales(
+      'canchas',
+      {
+        nombre: nombre.trim(),
+        tipo,
+        precio_por_hora: precio ? Number(precio) : 0,
+        imagen_url: imagenUrl.trim() || null,
+        activa: true,
+        estatus_manual: 'disponible',
+      },
+      ['tipo']
+    );
     setGuardando(false);
     if (err) {
       setError(err.message || 'No se pudo crear la cancha.');
@@ -6882,6 +6955,24 @@ function ModalNuevaCancha({ onClose, onCreada }) {
         <Campo label="Nombre de la cancha">
           <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} />
         </Campo>
+        <div>
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Tipo</span>
+          <div className="grid grid-cols-2 gap-2">
+            {TIPOS_CANCHA.map((t) => (
+              <button
+                key={t}
+                type="button"
+                aria-pressed={tipo === t}
+                onClick={() => setTipo(t)}
+                className={`inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-bold transition ${
+                  tipo === t ? 'border-orange-400 bg-orange-50 text-orange-700 ring-1 ring-orange-400' : 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                {t === 'Indoor' ? <Building2 size={15} /> : <Sun size={15} />} {t}
+              </button>
+            ))}
+          </div>
+        </div>
         <Campo label="Precio por hora (MXN)">
           <input
             type="number"
@@ -7423,6 +7514,7 @@ function ModalNuevaReserva({
               {canchasDisponibles.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.nombre}
+                  {normalizarTipoCancha(c.tipo) ? ` · ${normalizarTipoCancha(c.tipo)}` : ''}
                 </option>
               ))}
             </select>
@@ -43679,18 +43771,17 @@ const VARIANTES_IMPACTO_ENTRADA = {
 };
 
 // ---- Paso 3.5: Configuración de Canchas (Onboarding) ----------------------
-// Etapa nueva del Wizard (Plan → CANCHAS → Configuración del Club): el dueño
-// da de alta sus canchas reales ANTES de configurar horarios/tarifas, en una
-// grilla interactiva de tarjetas + una tarjeta punteada "+ Agregar Cancha"
-// que abre un modal compacto (Nombre, Tipo, Superficie). Todo vive como
-// BORRADOR local (se puede agregar, editar y eliminar libremente) y SOLO al
-// presionar "Continuar" se guarda de golpe en Supabase
-// (`guardarCanchasOnboarding` en `AppInterno`, insert masivo con `club_id`).
-const TIPOS_CANCHA_ONBOARDING = ['Indoor', 'Outdoor'];
-const SUPERFICIES_CANCHA_ONBOARDING = ['Césped sintético', 'Cemento', 'Alfombra', 'Cristal', 'Otra'];
+// Etapa del Wizard (Plan → CANCHAS → Configuración del Club): el dueño da de
+// alta sus canchas reales ANTES de configurar horarios/tarifas, en una grilla
+// interactiva de tarjetas + una tarjeta punteada "+ Agregar Cancha" que abre
+// un modal compacto (Nombre → Tipo → Precio por hora). Todo vive como
+// BORRADOR local (agregar, editar y eliminar libremente) y SOLO al presionar
+// "Continuar" se guarda de golpe en Supabase (`guardarCanchasOnboarding` en
+// `AppInterno`, insert masivo con `club_id`). El número de canchas está
+// topado ESTRICTAMENTE por el plan elegido (`maximoCanchasDelPlan`).
 
-// Límite orientativo de canchas del plan elegido ('1-3', '4-7', '8-12',
-// '13+'…): devuelve el máximo numérico, o `null` si no hay tope claro.
+// Máximo de canchas del plan elegido ('1-3' → 3, '4-7' → 7, '8-12' → 12), o
+// `null` si no hay plan/tope numérico (ej. período de prueba sin plan).
 function maximoCanchasDelPlan(planSeleccionado) {
   const texto = String(planSeleccionado?.canchas ?? '');
   const rango = texto.match(/(\d+)\s*[-–]\s*(\d+)/);
@@ -43699,20 +43790,29 @@ function maximoCanchasDelPlan(planSeleccionado) {
 }
 
 function canchaABorrador(c) {
+  const precio = Number(c.precio_por_hora);
   return {
     clave: `db-${c.id}`,
     id: c.id,
     nombre: c.nombre || '',
-    tipo: c.tipo || TIPOS_CANCHA_ONBOARDING[1],
-    superficie: c.superficie || SUPERFICIES_CANCHA_ONBOARDING[0],
+    tipo: normalizarTipoCancha(c.tipo) || 'Outdoor',
+    precio: Number.isFinite(precio) && precio > 0 ? precio : 0,
   };
 }
 
 function ModalCanchaOnboarding({ cancha, nombresEnUso, nombreSugerido, onGuardar, onClose }) {
   const [nombre, setNombre] = useState(cancha?.nombre || nombreSugerido || '');
-  const [tipo, setTipo] = useState(cancha?.tipo || TIPOS_CANCHA_ONBOARDING[1]);
-  const [superficie, setSuperficie] = useState(cancha?.superficie || SUPERFICIES_CANCHA_ONBOARDING[0]);
+  const [tipo, setTipo] = useState(cancha?.tipo || 'Outdoor');
+  const [precio, setPrecio] = useState(cancha?.precio > 0 ? String(cancha.precio) : '');
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   function guardar() {
     const limpio = nombre.trim();
@@ -43720,80 +43820,119 @@ function ModalCanchaOnboarding({ cancha, nombresEnUso, nombreSugerido, onGuardar
     if (nombresEnUso.some((n) => n.trim().toLowerCase() === limpio.toLowerCase())) {
       return setError('Ya tienes una cancha con ese nombre.');
     }
-    onGuardar({ nombre: limpio, tipo, superficie });
+    const precioNum = Number(precio);
+    if (!precio || !Number.isFinite(precioNum) || precioNum <= 0) return setError('Escribe el precio por hora (mayor a $0).');
+    onGuardar({ nombre: limpio, tipo, precio: precioNum });
   }
 
   return (
-    <ModalShell
-      titulo={cancha ? 'Editar Cancha' : 'Agregar Cancha'}
-      subtitulo="Podrás ajustar precios y horarios después"
-      onClose={onClose}
-      icon={cancha ? Pencil : Plus}
-      ancho="max-w-md"
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.25, ease: 'easeOut' }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-900/40 p-4 backdrop-blur-md"
     >
-      <div className="space-y-4">
-        <Campo label="Nombre de la cancha">
-          <input
-            autoFocus
-            value={nombre}
-            onChange={(e) => {
-              setNombre(e.target.value);
-              setError('');
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') guardar();
-            }}
-            maxLength={40}
-            placeholder="Cancha 1"
-            className={inputClaseWizard}
-          />
-        </Campo>
-        <div>
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Tipo</span>
-          <div className="grid grid-cols-2 gap-2">
-            {TIPOS_CANCHA_ONBOARDING.map((t) => (
-              <button
-                key={t}
-                type="button"
-                aria-pressed={tipo === t}
-                onClick={() => setTipo(t)}
-                className={`rounded-lg border px-3 py-2 text-sm font-bold transition ${
-                  tipo === t ? 'border-orange-400 bg-orange-50 text-orange-700 ring-1 ring-orange-400' : 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {t}
-              </button>
-            ))}
+      <motion.div
+        role="dialog"
+        aria-modal="true"
+        aria-label={cancha ? 'Editar cancha' : 'Agregar cancha'}
+        initial={{ opacity: 0, scale: 0.86, y: 28 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.94, y: 12 }}
+        transition={{ type: 'spring', stiffness: 340, damping: 26, mass: 0.9 }}
+        className="relative w-full max-w-md rounded-3xl border border-white/70 bg-white p-6 shadow-2xl shadow-slate-900/20"
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Cerrar"
+          className="absolute right-4 top-4 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+        >
+          <X size={18} />
+        </button>
+        <div className="mb-5 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-100 text-orange-500">
+            <LayoutGrid size={20} />
+          </div>
+          <h2 className="text-lg font-black text-slate-900">{cancha ? 'Editar Cancha' : 'Agregar Cancha'}</h2>
+        </div>
+        <div className="space-y-4">
+          <Campo label="Nombre de la cancha">
+            <input
+              autoFocus
+              value={nombre}
+              onChange={(e) => {
+                setNombre(e.target.value);
+                setError('');
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') guardar();
+              }}
+              maxLength={40}
+              placeholder="Cancha 1"
+              className={inputClaseWizard}
+            />
+          </Campo>
+          <div>
+            <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Tipo</span>
+            <div className="grid grid-cols-2 gap-2">
+              {TIPOS_CANCHA.map((t) => {
+                const Icono = t === 'Indoor' ? Building2 : Sun;
+                const activo = tipo === t;
+                return (
+                  <motion.button
+                    key={t}
+                    type="button"
+                    aria-pressed={activo}
+                    whileTap={{ scale: 0.97 }}
+                    onClick={() => setTipo(t)}
+                    className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${
+                      activo ? 'border-orange-400 bg-orange-50 text-orange-700 ring-2 ring-orange-400/30' : 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Icono size={16} /> {t}
+                  </motion.button>
+                );
+              })}
+            </div>
+          </div>
+          <Campo label="Precio por hora ($)">
+            <div className="relative">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">$</span>
+              <input
+                type="number"
+                min="1"
+                step="any"
+                inputMode="decimal"
+                value={precio}
+                onChange={(e) => {
+                  setPrecio(e.target.value);
+                  setError('');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') guardar();
+                }}
+                placeholder="600"
+                className={`${inputClaseWizard} pl-7 pr-12`}
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">/hr</span>
+            </div>
+          </Campo>
+          {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
+          <div className="flex justify-end gap-2 pt-1">
+            <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+            <BotonPrimario onClick={guardar}>
+              <Check size={15} />
+              {cancha ? 'Guardar cambios' : 'Agregar cancha'}
+            </BotonPrimario>
           </div>
         </div>
-        <div>
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Superficie</span>
-          <div className="flex flex-wrap gap-2">
-            {SUPERFICIES_CANCHA_ONBOARDING.map((sup) => (
-              <button
-                key={sup}
-                type="button"
-                aria-pressed={superficie === sup}
-                onClick={() => setSuperficie(sup)}
-                className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
-                  superficie === sup ? 'border-orange-400 bg-orange-50 text-orange-700 ring-1 ring-orange-400' : 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {sup}
-              </button>
-            ))}
-          </div>
-        </div>
-        {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
-        <div className="flex justify-end gap-2 pt-1">
-          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar}>
-            <Check size={15} />
-            {cancha ? 'Guardar cambios' : 'Agregar cancha'}
-          </BotonPrimario>
-        </div>
-      </div>
-    </ModalShell>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -43814,8 +43953,14 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
     if (Array.isArray(canchas) && canchas.length > 0) setBorrador(canchas.map(canchaABorrador));
   }, [canchas]);
 
+  // Restricción ESTRICTA del plan: al llegar al máximo desaparece la tarjeta
+  // "+ Agregar Cancha" y se muestra un mensaje limpio — no hay forma de
+  // sobrepasarlo. Si el borrador ya trae MÁS canchas que el plan (ej. el
+  // dueño bajó de plan), "Continuar" se bloquea hasta quitar las sobrantes.
   const maximoPlan = maximoCanchasDelPlan(planSeleccionado);
-  const excedePlan = maximoPlan !== null && borrador.length > maximoPlan;
+  const limiteAlcanzado = maximoPlan !== null && borrador.length >= maximoPlan;
+  const sobreElLimite = maximoPlan !== null && borrador.length > maximoPlan;
+  const porcentaje = maximoPlan ? Math.min(100, Math.round((borrador.length / maximoPlan) * 100)) : 0;
   const canchaEnEdicion = modal?.modo === 'editar' ? borrador.find((b) => b.clave === modal.clave) : null;
   const nombresEnUso = borrador.filter((b) => b.clave !== canchaEnEdicion?.clave).map((b) => b.nombre);
 
@@ -43831,7 +43976,7 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
     setError('');
     if (canchaEnEdicion) {
       setBorrador((prev) => prev.map((b) => (b.clave === canchaEnEdicion.clave ? { ...b, ...datos } : b)));
-    } else {
+    } else if (!limiteAlcanzado) {
       contadorRef.current += 1;
       setBorrador((prev) => [...prev, { clave: `nueva-${Date.now()}-${contadorRef.current}`, id: null, ...datos }]);
     }
@@ -43840,6 +43985,7 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
 
   function eliminar(clave) {
     tocadoRef.current = true;
+    setError('');
     setBorrador((prev) => prev.filter((b) => b.clave !== clave));
   }
 
@@ -43847,6 +43993,15 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
     setError('');
     if (borrador.length === 0) {
       setError('Agrega al menos una cancha para continuar.');
+      return;
+    }
+    if (sobreElLimite) {
+      setError(`Tu plan permite hasta ${maximoPlan} canchas — elimina ${borrador.length - maximoPlan} para continuar o cambia de plan.`);
+      return;
+    }
+    const sinPrecio = borrador.find((b) => !(Number(b.precio) > 0));
+    if (sinPrecio) {
+      setError(`Define el precio por hora de "${sinPrecio.nombre}" (edítala con el lápiz).`);
       return;
     }
     await onContinuar(borrador);
@@ -43857,18 +44012,43 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
       <div className="rounded-3xl border border-slate-200/70 bg-white/90 p-6 shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-10">
         {onAtras && <EnlaceAtrasWizard onClick={onAtras}>Cambiar de plan</EnlaceAtrasWizard>}
         <div className="text-center">
-          <h2 className="text-2xl font-black text-slate-900 sm:text-3xl">Configuración de Canchas</h2>
+          <h2 className="text-2xl font-black text-orange-500 sm:text-3xl">Configuración de Canchas</h2>
           <p className="mx-auto mt-2 max-w-xl text-sm font-medium text-slate-500">
-            Da de alta las canchas de {nombreClub || 'tu club'}. Puedes editarlas o eliminarlas antes de continuar, y agregar más cuando quieras desde el Panel.
+            Da de alta las canchas de {nombreClub || 'tu club'}. Puedes editarlas o eliminarlas antes de continuar.
           </p>
-          <p className="mt-3 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600">
-            {borrador.length} {borrador.length === 1 ? 'cancha' : 'canchas'}
-            {planSeleccionado?.nombre ? <span className="text-slate-400">· Plan {planSeleccionado.nombre}</span> : null}
-          </p>
-          {excedePlan && (
-            <p className="mx-auto mt-2 max-w-md text-xs font-semibold text-amber-600">
-              Superas las {maximoPlan} canchas de tu plan actual — puedes continuar y ajustar el plan más adelante.
-            </p>
+        </div>
+
+        {/* Barra de progreso animada "X / Y canchas configuradas" — se llena
+            con un resorte suave cada vez que se agrega/quita una cancha. */}
+        <div className="mx-auto mt-6 max-w-md">
+          <div className="mb-1.5 flex items-center justify-between text-xs font-bold text-slate-600">
+            <span>
+              {maximoPlan !== null ? (
+                <>
+                  <motion.span key={borrador.length} initial={{ y: -6, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="inline-block text-orange-500">
+                    {borrador.length}
+                  </motion.span>{' '}
+                  / {maximoPlan} canchas configuradas
+                </>
+              ) : (
+                `${borrador.length} ${borrador.length === 1 ? 'cancha configurada' : 'canchas configuradas'}`
+              )}
+            </span>
+            {maximoPlan !== null && limiteAlcanzado && (
+              <motion.span initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 400, damping: 15 }} className="text-emerald-500">
+                <CheckCircle2 size={15} />
+              </motion.span>
+            )}
+          </div>
+          {maximoPlan !== null && (
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200/80">
+              <motion.div
+                initial={false}
+                animate={{ width: `${porcentaje}%` }}
+                transition={{ type: 'spring', stiffness: 120, damping: 20 }}
+                className={`h-full rounded-full ${limiteAlcanzado ? 'bg-gradient-to-r from-emerald-400 to-emerald-500' : 'bg-gradient-to-r from-orange-400 to-amber-400'}`}
+              />
+            </div>
           )}
         </div>
 
@@ -43878,15 +44058,15 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
               <motion.div
                 key={c.clave}
                 layout
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.8 }}
-                transition={{ type: 'spring', stiffness: 320, damping: 24 }}
-                className="group relative flex min-h-[140px] flex-col justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-orange-300 hover:shadow-lg hover:shadow-orange-500/10"
+                initial={{ opacity: 0, scale: 0.55, y: 28 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.7, transition: { duration: 0.18 } }}
+                transition={{ type: 'spring', stiffness: 380, damping: 17, mass: 0.9 }}
+                className="group relative flex min-h-[140px] flex-col justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:border-orange-300 hover:shadow-lg hover:shadow-orange-500/10"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-100 text-orange-600">
-                    <Trophy size={18} />
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-100 text-orange-500">
+                    <LayoutGrid size={19} />
                   </div>
                   <div className="flex gap-1">
                     <button
@@ -43909,28 +44089,53 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
                 </div>
                 <div className="mt-3">
                   <p className="truncate text-base font-black text-slate-900">{c.nombre}</p>
-                  <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-slate-600">{c.tipo}</span>
-                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-slate-600">{c.superficie}</span>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <BadgeTipoCancha tipo={c.tipo} />
+                    {c.precio > 0 ? (
+                      <span className="rounded-full bg-orange-50 px-2.5 py-0.5 text-[11px] font-black text-orange-600 ring-1 ring-orange-200">
+                        {formatoMoneda(c.precio)}/hr
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-[11px] font-bold text-rose-600 ring-1 ring-rose-200">Sin precio</span>
+                    )}
                   </div>
                 </div>
               </motion.div>
             ))}
-            <motion.button
-              key="agregar-cancha"
-              layout
-              type="button"
-              onClick={() => setModal({ modo: 'nueva' })}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              transition={{ type: 'spring', stiffness: 320, damping: 24 }}
-              className="flex min-h-[140px] flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/60 p-4 text-slate-500 transition hover:border-orange-400 hover:bg-orange-50/50 hover:text-orange-600"
-            >
-              <Plus size={24} />
-              <span className="text-sm font-bold">+ Agregar Cancha</span>
-            </motion.button>
+            {!limiteAlcanzado && (
+              <motion.button
+                key="agregar-cancha"
+                layout
+                type="button"
+                onClick={() => setModal({ modo: 'nueva' })}
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.15 } }}
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                transition={{ type: 'spring', stiffness: 320, damping: 22 }}
+                className="flex min-h-[140px] flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/60 p-4 text-slate-500 transition-colors hover:border-orange-400 hover:bg-orange-50/50 hover:text-orange-600"
+              >
+                <Plus size={24} />
+                <span className="text-sm font-bold">+ Agregar Cancha</span>
+              </motion.button>
+            )}
           </AnimatePresence>
         </div>
+
+        <AnimatePresence initial={false}>
+          {maximoPlan !== null && limiteAlcanzado && (
+            <motion.p
+              key="limite-plan"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="mt-5 text-center text-sm font-semibold text-slate-500"
+            >
+              Has alcanzado el límite de {maximoPlan} canchas de tu plan
+            </motion.p>
+          )}
+        </AnimatePresence>
 
         {error && <p className="mt-4 text-center text-xs font-semibold text-rose-500">{error}</p>}
 
@@ -50951,6 +51156,8 @@ function PortalPublicoJugadores({ clubSlug }) {
                             alt={c.nombre}
                             className="h-full w-full object-cover"
                           />
+                          {/* Tipo de cancha (columna `tipo`): Indoor = techada, Outdoor = al aire libre. */}
+                          {normalizarTipoCancha(c.tipo) && <BadgeTipoCancha tipo={c.tipo} sobreImagen className="absolute left-2.5 top-2.5 shadow-sm" />}
                         </div>
                         <div className="p-3.5">
                           <div className="flex items-center justify-between gap-2">
@@ -54395,6 +54602,14 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   return (
     <ModalShell titulo={`Reservar ${cancha.nombre}`} subtitulo={club?.nombre} onClose={onClose} icon={CalendarIcon} ancho="max-w-lg">
       <div className="space-y-4">
+        {normalizarTipoCancha(cancha.tipo) && (
+          <div className="flex items-center gap-2">
+            <BadgeTipoCancha tipo={cancha.tipo} />
+            <span className="text-[11px] font-semibold text-slate-500">
+              {normalizarTipoCancha(cancha.tipo) === 'Indoor' ? 'Cancha techada' : 'Cancha al aire libre'}
+            </span>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Campo label="Fecha">
             <input
@@ -54621,6 +54836,12 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
         )}
 
         <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-100/40 p-3">
+          {normalizarTipoCancha(cancha.tipo) && (
+            <div className="flex items-center justify-between text-xs text-slate-500">
+              <span>{cancha.nombre}</span>
+              <BadgeTipoCancha tipo={cancha.tipo} />
+            </div>
+          )}
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Cancha ({duracionHoras}h)</span>
             <span>{formatoMoneda(costoCancha)}</span>
@@ -56999,17 +57220,23 @@ function AppInterno({ clubInicial } = {}) {
   //   • sin `id` → INSERT masivo (todas en una sola llamada, con `club_id`),
   //   • con `id` y datos cambiados → UPDATE,
   //   • canchas existentes que ya no están en el borrador → DELETE.
-  // `tipo`/`superficie` son columnas nuevas y opcionales
-  // (`migracion_v90_canchas_tipo_superficie.sql`): si el proyecto todavía no la
-  // corrió, el guardado se reintenta sin ellas (Arquitectura Flexible) y las
-  // canchas igual se crean. Devuelve `true` si todo quedó guardado (para que el
-  // Wizard avance) o `false` si falló (se queda en la etapa con un toast).
+  // `tipo` es una columna nueva y opcional (`migracion_v90…sql`): si el
+  // proyecto todavía no la corrió, el guardado se reintenta sin ella
+  // (Arquitectura Flexible) y las canchas igual se crean. `precio_por_hora`
+  // en cambio es crítico — NUNCA es opcional (si falla, se avisa). El tope de
+  // canchas del plan se revalida aquí también (no solo en la pantalla).
+  // Devuelve `true` si todo quedó guardado (para que el Wizard avance) o
+  // `false` si falló (se queda en la etapa con un toast).
   const guardarCanchasOnboarding = useCallback(
     async (borrador) => {
       setGuardandoCanchasOnboarding(true);
       try {
         if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
         const lista = Array.isArray(borrador) ? borrador : [];
+        const maximoPlanCanchas = maximoCanchasDelPlan(planClubSeleccionado);
+        if (maximoPlanCanchas !== null && lista.length > maximoPlanCanchas) {
+          throw new Error(`Tu plan permite hasta ${maximoPlanCanchas} canchas.`);
+        }
         const idsEnBorrador = new Set(lista.filter((b) => b.id != null).map((b) => String(b.id)));
 
         const aEliminar = canchas.filter((c) => !idsEnBorrador.has(String(c.id)));
@@ -57025,7 +57252,10 @@ function AppInterno({ clubInicial } = {}) {
         for (const b of lista.filter((x) => x.id != null)) {
           const original = canchas.find((c) => String(c.id) === String(b.id));
           const cambio =
-            original && (original.nombre !== b.nombre || (original.tipo || '') !== b.tipo || (original.superficie || '') !== b.superficie);
+            original &&
+            (original.nombre !== b.nombre ||
+              (normalizarTipoCancha(original.tipo) || '') !== b.tipo ||
+              (Number(original.precio_por_hora) || 0) !== Number(b.precio));
           if (!cambio) {
             if (original) actualizadas.push(original);
             continue;
@@ -57033,11 +57263,11 @@ function AppInterno({ clubInicial } = {}) {
           const { error: errActualizar } = await actualizarConColumnasOpcionales(
             'canchas',
             b.id,
-            { nombre: b.nombre, tipo: b.tipo, superficie: b.superficie },
-            ['tipo', 'superficie']
+            { nombre: b.nombre, tipo: b.tipo, precio_por_hora: Number(b.precio) },
+            ['tipo']
           );
           if (errActualizar) throw errActualizar;
-          actualizadas.push({ ...original, nombre: b.nombre, tipo: b.tipo, superficie: b.superficie });
+          actualizadas.push({ ...original, nombre: b.nombre, tipo: b.tipo, precio_por_hora: Number(b.precio) });
         }
 
         const nuevas = lista.filter((b) => b.id == null);
@@ -57048,12 +57278,11 @@ function AppInterno({ clubInicial } = {}) {
             nuevas.map((b) => ({
               nombre: b.nombre,
               tipo: b.tipo,
-              superficie: b.superficie,
-              precio_por_hora: 0,
+              precio_por_hora: Number(b.precio),
               activa: true,
               estatus_manual: 'disponible',
             })),
-            ['tipo', 'superficie', 'estatus_manual']
+            ['tipo', 'estatus_manual']
           );
           if (errInsertar) throw errInsertar;
           insertadas = data || [];
@@ -57071,7 +57300,7 @@ function AppInterno({ clubInicial } = {}) {
         setGuardandoCanchasOnboarding(false);
       }
     },
-    [canchas, mostrarToast]
+    [canchas, planClubSeleccionado, mostrarToast]
   );
 
   // Periodo de Prueba / Free Trial mediante Códigos Promocionales
@@ -58358,6 +58587,12 @@ function AppInterno({ clubInicial } = {}) {
     const precioNuevo = cambios?.precioPorHora != null ? Number(cambios.precioPorHora) : undefined;
     const quiereNombre = nombreNuevo !== undefined && nombreNuevo !== '' && nombreNuevo !== cancha.nombre;
     const quierePrecio = precioNuevo !== undefined;
+    const tipoNuevo = normalizarTipoCancha(cambios?.tipo);
+    const quiereTipo = tipoNuevo !== null && tipoNuevo !== normalizarTipoCancha(cancha.tipo);
+    if (quiereTipo && permisos?.puedeCambiarEstatusCancha !== true) {
+      mostrarToast({ titulo: 'Sin permiso', detalle: 'Tu rol no puede cambiar el tipo de cancha.', tono: 'error' });
+      return;
+    }
     if (quierePrecio && permisos?.puedeEditarPrecioCancha !== true) {
       mostrarToast({ titulo: 'Sin permiso', detalle: 'Solo el Dueño o Administrador puede cambiar el precio de una cancha.', tono: 'error' });
       return;
@@ -58366,16 +58601,18 @@ function AppInterno({ clubInicial } = {}) {
       mostrarToast({ titulo: 'Precio inválido', detalle: 'Escribe un precio por hora mayor a 0.', tono: 'error' });
       return;
     }
-    if (!quiereNombre && !quierePrecio) return;
+    if (!quiereNombre && !quierePrecio && !quiereTipo) return;
 
     const columnaPrecio = CAMPOS_PRECIO_HORA_CANCHA.find((c) => Object.prototype.hasOwnProperty.call(cancha, c)) || 'precio_por_hora';
     const anterior = { ...cancha };
     const payload = {};
     if (quiereNombre) payload.nombre = nombreNuevo;
     if (quierePrecio) payload[columnaPrecio] = precioNuevo;
+    if (quiereTipo) payload.tipo = tipoNuevo;
 
     upsertCancha({ ...cancha, ...payload });
-    const { error: err } = await supabase.from('canchas').update(payload).eq('id', cancha.id);
+    // `tipo` es columna opcional (migracion_v90): si aún no existe se reintenta sin ella.
+    const { error: err } = await actualizarConColumnasOpcionales('canchas', cancha.id, payload, ['tipo']);
     if (err) {
       upsertCancha(anterior); // rollback
       mostrarToast({ titulo: 'No se pudo guardar la cancha', detalle: err.message, tono: 'error' });
@@ -58385,12 +58622,21 @@ function AppInterno({ clubInicial } = {}) {
     const partes = [];
     if (quiereNombre) partes.push(`nombre "${anterior.nombre}" → "${nombreNuevo}"`);
     if (quierePrecio) partes.push(`precio ${formatoMoneda(precioPorHoraDeCancha(anterior))}/hr → ${formatoMoneda(precioNuevo)}/hr`);
+    if (quiereTipo) partes.push(`tipo ${normalizarTipoCancha(anterior.tipo) || 'sin tipo'} → ${tipoNuevo}`);
     mostrarToast({ titulo: 'Cancha actualizada', detalle: `${nombreFinal}: ${partes.join(' · ')}.` });
     // Auditoría — Control Interno: "Modificación de horarios o canchas".
     registrarEventoAuditoria('modificacion_cancha', {
       cancha: nombreFinal,
-      antes: [quiereNombre ? `Nombre: ${anterior.nombre}` : null, quierePrecio ? `Precio/hr: ${precioPorHoraDeCancha(anterior)}` : null].filter(Boolean).join(' | '),
-      despues: [quiereNombre ? `Nombre: ${nombreNuevo}` : null, quierePrecio ? `Precio/hr: ${precioNuevo}` : null].filter(Boolean).join(' | '),
+      antes: [
+        quiereNombre ? `Nombre: ${anterior.nombre}` : null,
+        quierePrecio ? `Precio/hr: ${precioPorHoraDeCancha(anterior)}` : null,
+        quiereTipo ? `Tipo: ${normalizarTipoCancha(anterior.tipo) || 'sin tipo'}` : null,
+      ].filter(Boolean).join(' | '),
+      despues: [
+        quiereNombre ? `Nombre: ${nombreNuevo}` : null,
+        quierePrecio ? `Precio/hr: ${precioNuevo}` : null,
+        quiereTipo ? `Tipo: ${tipoNuevo}` : null,
+      ].filter(Boolean).join(' | '),
     });
   }
 
