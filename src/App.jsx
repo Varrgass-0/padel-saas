@@ -28164,10 +28164,10 @@ function TarjetaReta({
   // `onEliminarVisual`), que SÍ se ofrece siempre, tenga o no inscritos.
   const puedeEliminarse = inscritos.length === 0;
   const [confirmarEliminar, setConfirmarEliminar] = useState(false);
-  // Borrado Lógico (Soft Delete) — "Eliminar Reta": oculta la tarjeta de la
-  // interfaz (`deleted_at`) sin tocar inscripciones/pagos/asistencia, para
-  // que Analytics y reportes históricos sigan viéndolos. Confirmación propia
-  // e independiente de `confirmarEliminar` (Eliminación Definitiva).
+  // "Eliminar Reta": borrado definitivo de la Reta + liberación de sus
+  // bloqueos en la Parrilla (ver `eliminarRetaVisualmente` en
+  // `ModuloTorneosRetas`); inscripciones/pagos se conservan. Confirmación
+  // propia e independiente de `confirmarEliminar` (solo Retas sin inscritos).
   const [confirmarEliminarVisual, setConfirmarEliminarVisual] = useState(false);
 
   // Nombre Personalizado de Retas: editable en cualquier momento desde la
@@ -28351,7 +28351,7 @@ function TarjetaReta({
 
       {confirmarEliminarVisual ? (
         <ConfirmarEliminacionVisual
-          mensaje={`¿Eliminar "${reta.nombre}" de la interfaz? Sus inscripciones, pagos y asistencia se conservan intactos para reportes/Analytics — solo deja de verse aquí.`}
+          mensaje={`¿Eliminar "${reta.nombre}" definitivamente? Se borrará la Reta y se liberará su horario en la Parrilla. Las inscripciones y pagos ya registrados se conservan para reportes.`}
           eliminando={eliminandoVisual}
           onCancelar={() => setConfirmarEliminarVisual(false)}
           onConfirmar={(motivo) => onEliminarVisual?.(reta, motivo)}
@@ -28398,15 +28398,15 @@ function TarjetaReta({
             )}
             {archivado ? 'Restaurar' : 'Archivar'}
           </button>
-          {/* Borrado Lógico (Soft Delete) — "Eliminar Reta": a diferencia de
-              "Eliminar Definitivamente" (abajo), NO exige que esté archivada
-              ni que tenga cero inscritos — solo oculta la tarjeta
-              (`deleted_at`), los datos históricos siguen intactos. */}
+          {/* "Eliminar Reta": borra la Reta y libera la cancha en la Parrilla.
+              A diferencia de "Eliminar Definitivamente" (abajo), NO exige que
+              esté archivada ni que tenga cero inscritos — las inscripciones y
+              pagos ya registrados se conservan para reportes. */}
           <button
             type="button"
             onClick={() => setConfirmarEliminarVisual(true)}
             disabled={eliminandoVisual}
-            title="Quita la Reta de la interfaz sin borrar sus inscripciones/pagos — se conservan para reportes"
+            title="Elimina la Reta definitivamente y libera su cancha/horario en la Parrilla — las inscripciones y pagos se conservan para reportes"
             className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <EyeOff size={12} /> Eliminar Reta
@@ -31488,6 +31488,8 @@ function ModuloTorneosRetas({
   reservas,
   upsertReserva,
   marcarReservaCancelada,
+  quitarReserva,
+  onRefrescarParrilla,
   retas,
   setRetas,
   loadingRetas,
@@ -32129,50 +32131,84 @@ function ModuloTorneosRetas({
     });
   }
 
-  // Borrado Lógico (Soft Delete) — "Eliminar Reta": a diferencia de
-  // `archivarReta` (que solo mueve la reta al tab Archivadas) y de
-  // `eliminarRetaDefinitivo` (que la borra físicamente), esto la quita de
-  // AMBOS tabs escribiendo `deleted_at` — mismo criterio de tolerancia total
-  // que `archivado` (columna nueva y opcional, ver migracion_v49: si
-  // todavía no existe en tu Supabase, el ocultamiento queda aplicado solo
-  // en esta sesión, nunca bloquea al operador). Los bloqueos de Parrilla NO
-  // se cancelan aquí a propósito — la Reta sigue "viva" para efectos de
-  // horario/cobro, solo deja de listarse en esta pantalla; usa "Archivar" o
-  // "Eliminar Definitivamente" si además quieres liberar la cancha.
-  const [eliminandoVisualRetaId, setEliminandoVisualRetaId] = useState(null);
+  // "Eliminar Reta" — ELIMINACIÓN DEFINITIVA (borrado físico) y liberación
+  // inmediata de la cancha. Antes era un Borrado Lógico (`deleted_at`) que
+  // dejaba vivos los bloqueos "RETA ABIERTA" en `reservas`, por lo que el
+  // horario seguía ocupado en la Parrilla/Cronograma. Ahora:
+  //   1) `DELETE` real de la fila en `retas`.
+  //   2) `DELETE` explícito de TODOS sus bloqueos en `reservas`
+  //      (`reserva_bloqueo_id` + `reserva_bloqueo_ids`, vía `idsBloqueosDeReta`,
+  //      o sea todas las canchas de la Multiselección). Si el borrado físico
+  //      de `reservas` fuera rechazado (p. ej. por RLS), se cae a cancelarlas
+  //      (`estado = 'Cancelada'`) — la Parrilla ignora las canceladas, así que
+  //      la cancha queda libre igual — y se avisa al operador.
+  //   3) Se actualiza el estado local (lista de Retas + `reservas` de la
+  //      Parrilla) y se pide un refresco global en segundo plano, sin recargar
+  //      la página.
+  // Las inscripciones y pagos (`reta_inscripciones`, `ventas`) NO se tocan: así
+  // un cobro pendiente o un pago ya hecho no se pierde de los reportes.
   // `motivo` (obligatorio, capturado en `ConfirmarEliminacionVisual`) se
-  // guarda en `motivo_eliminacion` — columna nueva y opcional (ver
-  // migracion_v51), junto a `deleted_at`, para que quede registro de POR
-  // QUÉ se ocultó la reta en log/Analytics, sin depender de que el
-  // operador lo recuerde después. `actualizarConColumnasOpcionales` (en vez
-  // del `.update()` directo que usaba antes) reintenta sin la columna que
-  // falte — si el proyecto todavía no corrió la migración de alguna de las
-  // dos, la que sí exista se guarda igual, en vez de fallar el update
-  // completo por la que falta.
+  // conserva en el aviso y en consola, ya que la fila de la reta deja de
+  // existir.
+  const [eliminandoVisualRetaId, setEliminandoVisualRetaId] = useState(null);
   async function eliminarRetaVisualmente(reta, motivo) {
-    const ahoraISO = new Date().toISOString();
     const motivoLimpio = (motivo || '').trim();
+    const idsBloqueos = idsBloqueosDeReta(reta);
     setEliminandoVisualRetaId(reta.id);
-    setRetas((prev) => prev.map((r) => (r.id === reta.id ? { ...r, deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio } : r)));
+
+    // 1) Borrado físico de la Reta.
     if (reta._local) {
-      guardarRegistroLocal(LS_KEY_RETAS_LOCAL, { ...reta, deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio });
+      quitarRegistroLocal(LS_KEY_RETAS_LOCAL, reta.id);
     } else {
       try {
-        const { error } = await actualizarConColumnasOpcionales(
-          'retas',
-          reta.id,
-          { deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio },
-          ['deleted_at', 'motivo_eliminacion']
-        );
+        const { error } = await supabase.from('retas').delete().eq('id', reta.id);
         if (error) throw error;
       } catch (err) {
-        console.warn('[Torneos & Retas] No se pudo guardar "deleted_at"/"motivo_eliminacion" en Supabase — se aplica solo en esta sesión.', err);
+        setEliminandoVisualRetaId(null);
+        mostrarToast({ titulo: 'No se pudo eliminar la Reta', detalle: err.message, tono: 'error' });
+        return;
       }
     }
+
+    // 2) Borrado físico de los bloqueos de cancha asociados.
+    let bloqueosSoloCancelados = false;
+    let errorBloqueos = null;
+    if (idsBloqueos.length > 0) {
+      try {
+        const { error } = await supabase.from('reservas').delete().in('id', idsBloqueos);
+        if (error) throw error;
+      } catch (errDelete) {
+        try {
+          const { error: errCancelar } = await supabase.from('reservas').update({ estado: 'Cancelada' }).in('id', idsBloqueos);
+          if (errCancelar) throw errCancelar;
+          bloqueosSoloCancelados = true;
+        } catch (errCancelar) {
+          errorBloqueos = errCancelar || errDelete;
+        }
+      }
+    }
+
+    // 3) Estado local + refresco inmediato de la Parrilla (sin recargar).
+    setRetas((prev) => prev.filter((r) => r.id !== reta.id));
+    if (idsBloqueos.length > 0 && !errorBloqueos) {
+      if (bloqueosSoloCancelados) idsBloqueos.forEach((id) => marcarReservaCancelada?.(id));
+      else quitarReserva?.(idsBloqueos);
+    }
+    onRefrescarParrilla?.();
     setEliminandoVisualRetaId(null);
+    if (motivoLimpio) console.info(`[Torneos & Retas] Reta "${reta.nombre}" eliminada. Motivo: ${motivoLimpio}`);
+
+    if (errorBloqueos) {
+      mostrarToast({
+        titulo: 'Reta eliminada, pero la cancha sigue ocupada',
+        detalle: `No se pudieron liberar los bloqueos de la Parrilla (${errorBloqueos.message}). Cancélalos manualmente desde el Cronograma.`,
+        tono: 'aviso',
+      });
+      return;
+    }
     mostrarToast({
       titulo: 'Reta eliminada',
-      detalle: `${reta.nombre} ya no aparece en la interfaz — sus inscripciones y pagos se conservan para reportes.`,
+      detalle: `${reta.nombre} se eliminó definitivamente y ${idsBloqueos.length > 1 ? 'las canchas quedaron libres' : 'la cancha quedó libre'} en la Parrilla.`,
     });
   }
 
@@ -58575,6 +58611,16 @@ function AppInterno({ clubInicial } = {}) {
     setReservas((prev) => prev.map((r) => (r.id === id ? { ...r, estado: 'Cancelada' } : r)));
   }
 
+  // Eliminación Definitiva de reservas (p. ej. los bloqueos "RETA ABIERTA" al
+  // eliminar una Reta): quita la(s) fila(s) del estado en memoria de
+  // inmediato, así la Parrilla/Cronograma libera el horario sin esperar al
+  // Realtime ni a recargar la página. Acepta un id o un arreglo de ids.
+  function quitarReserva(idOIds) {
+    const ids = new Set((Array.isArray(idOIds) ? idOIds : [idOIds]).filter(Boolean).map(String));
+    if (ids.size === 0) return;
+    setReservas((prev) => prev.filter((r) => !ids.has(String(r.id))));
+  }
+
   // "Reservar y Cobrar en POS": arma el concepto de la comanda a partir de la
   // reserva recién creada y cambia la vista activa a Smart POS de inmediato.
   function enviarReservaAPOS(reserva, cancha) {
@@ -59122,6 +59168,8 @@ function AppInterno({ clubInicial } = {}) {
                 reservas={reservas}
                 upsertReserva={upsertReserva}
                 marcarReservaCancelada={marcarReservaCancelada}
+                quitarReserva={quitarReserva}
+                onRefrescarParrilla={refrescarDatosGlobalBeta}
                 retas={retas}
                 setRetas={setRetas}
                 loadingRetas={loadingRetas}
