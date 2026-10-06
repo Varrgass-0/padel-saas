@@ -983,6 +983,67 @@ function BotonTemaClubOS({ tema, onAlternar }) {
   );
 }
 
+/* ============================================================================
+ * SEGURIDAD (OWASP) — helpers defensivos del cliente
+ * ==========================================================================*/
+// 1) CLAVE DE SUPABASE EN EL NAVEGADOR — el cliente SOLO debe llevar la clave
+//    pública (`VITE_SUPABASE_ANON_KEY`, rol `anon`). Una clave `service_role`
+//    (o `sb_secret_...`) salta TODO Row Level Security: si por error termina en
+//    el bundle del navegador, cualquiera podría leer/escribir los datos de TODOS
+//    los clubes. Esta guardia decodifica el JWT (solo lectura, sin verificar
+//    firma) y DETIENE la app con un error claro si detecta una clave privada.
+//    Con una clave `anon`/`sb_publishable_...` correcta es 100% inerte.
+function claveSupabaseEsPrivada(clave) {
+  const k = String(clave || '').trim();
+  if (!k) return false;
+  if (k.startsWith('sb_secret_')) return true;
+  const partes = k.split('.');
+  if (partes.length !== 3) return false;
+  try {
+    const base64 = partes[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = JSON.parse(typeof atob === 'function' ? atob(base64) : '{}');
+    return json?.role === 'service_role';
+  } catch (_e) {
+    return false;
+  }
+}
+(function guardiaClaveSupabaseCliente() {
+  let privada = false;
+  try {
+    privada = claveSupabaseEsPrivada(supabase?.supabaseKey);
+  } catch (_e) {
+    privada = false;
+  }
+  if (privada) {
+    throw new Error(
+      '[Seguridad] Se detectó una clave PRIVADA de Supabase (service_role / sb_secret_) en el cliente. ' +
+        'Usa únicamente VITE_SUPABASE_ANON_KEY en el navegador y rota de inmediato la clave expuesta en Supabase → Settings → API.'
+    );
+  }
+})();
+
+// 2) URLs DINÁMICAS (logos, fotos de canchas/productos, galerías) — solo se
+//    aceptan http(s), rutas relativas, `blob:` y `data:image/...`. Cualquier
+//    otro esquema (`javascript:`, `vbscript:`, `data:text/html`…) se descarta
+//    (devuelve '') y el componente cae a su imagen de respaldo.
+function urlSegura(url) {
+  const u = String(url ?? '').trim();
+  if (!u) return '';
+  if (/^https?:\/\//i.test(u)) return u;
+  if (/^\/(?!\/)/.test(u)) return u;
+  if (/^blob:/i.test(u)) return u;
+  if (/^data:image\/(png|jpe?g|gif|webp|avif|bmp|svg\+xml);base64,/i.test(u)) return u;
+  return '';
+}
+
+// 3) FILTROS `LIKE`/`ILIKE` — escapa los comodines (`%`, `_`) y el escape (`\`)
+//    del texto que escribe el usuario para que se busque LITERALMENTE (sin
+//    inyección de patrones). El SDK de Supabase ya parametriza el valor
+//    (no hay inyección SQL); esto evita además coincidencias "comodín".
+function escaparPatronLike(texto) {
+  return String(texto ?? '').replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 // Hoja de Modo Oscuro (Diseño Legacy Original) — retrofit vía overrides de
 // CSS puro sobre las clases de Tailwind YA usadas en toda la app, en vez de
 // reescribir cada `className` una por una (inviable en un archivo de este
@@ -4488,7 +4549,7 @@ function ModalConfigClub({ operador, configActual, onClose, onGuardar, guardando
           <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
             {logoPreview ? (
               <img
-                src={logoPreview}
+                src={urlSegura(logoPreview) || undefined}
                 alt="Vista previa del logo"
                 className="h-full w-full object-cover"
                 onError={(e) => {
@@ -4639,7 +4700,7 @@ function Sidebar({
           <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-orange-400 font-black text-slate-950">
             {configClubActual.logoUrl ? (
               <img
-                src={configClubActual.logoUrl}
+                src={urlSegura(configClubActual.logoUrl) || undefined}
                 alt={configClubActual.nombre}
                 className="h-full w-full object-cover"
                 onError={(e) => {
@@ -5438,7 +5499,7 @@ function CanchaCard({
           si estuviera en la tarjeta, recortaría el menú "Cambiar Estatus" que flota por encima. */}
       <div className="relative h-36 w-full overflow-hidden rounded-t-2xl bg-slate-100">
         <img
-          src={cancha.imagen_url || fallbackImagen(cancha.id)}
+          src={urlSegura(cancha.imagen_url) || fallbackImagen(cancha.id)}
           onError={(e) => {
             e.currentTarget.onerror = null;
             e.currentTarget.src = fallbackImagen(cancha.id);
@@ -7050,7 +7111,7 @@ function ModalCambiarFoto({ cancha, onClose, onActualizada }) {
       <div className="space-y-4">
         <div className="h-40 overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
           <img
-            src={url.trim() || fallbackImagen(cancha.id)}
+            src={urlSegura(url) || fallbackImagen(cancha.id)}
             onError={(e) => {
               e.currentTarget.onerror = null;
               e.currentTarget.src = fallbackImagen(cancha.id);
@@ -7184,7 +7245,7 @@ async function resolverJugadorId(nombre, opts = {}) {
     // Sin teléfono capturado: respaldo legacy por nombre.
     if (!nombreLimpio) return null;
     const { data: existente, error: buscarError } = await conClubId(supabase.from('jugadores').select('id, telefono'))
-      .ilike('nombre', nombreLimpio)
+      .ilike('nombre', escaparPatronLike(nombreLimpio))
       .limit(1)
       .maybeSingle();
     if (!buscarError && existente?.id) return existente.id;
@@ -9224,7 +9285,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
       >
         <div className="relative h-24 w-full overflow-hidden rounded-t-2xl bg-slate-100 sm:h-28">
           <img
-            src={producto.imagen_url || fallbackImagenProducto(producto)}
+            src={urlSegura(producto.imagen_url) || fallbackImagenProducto(producto)}
             onError={(e) => {
               e.currentTarget.onerror = null;
               e.currentTarget.src = fallbackImagenProducto(producto);
@@ -11620,7 +11681,7 @@ function ModalNuevoProducto({
               {imagenes.map((url, idx) => (
                 <div key={`${url}-${idx}`} className="group relative h-20 overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
                   <img
-                    src={url}
+                    src={urlSegura(url) || undefined}
                     alt={`Imagen ${idx + 1}`}
                     className="h-full w-full object-cover"
                     onError={(e) => {
@@ -19350,7 +19411,7 @@ function FilaProductoInventario({
       <td className="px-3 py-2.5">
         <div className="flex items-center gap-2.5">
           <img
-            src={producto.imagen_url || fallbackImagenProducto(producto)}
+            src={urlSegura(producto.imagen_url) || fallbackImagenProducto(producto)}
             onError={(e) => {
               e.currentTarget.onerror = null;
               e.currentTarget.src = fallbackImagenProducto(producto);
@@ -20999,7 +21060,7 @@ function TopProductosTabla({ filas, cargando }) {
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2.5">
                         <img
-                          src={f.producto ? f.producto.imagen_url || fallbackImagenProducto(f.producto) : fallbackImagenProducto({})}
+                          src={f.producto ? urlSegura(f.producto.imagen_url) || fallbackImagenProducto(f.producto) : fallbackImagenProducto({})}
                           alt=""
                           className="h-8 w-8 shrink-0 rounded-lg object-cover"
                         />
@@ -41323,7 +41384,7 @@ function ModalPerfilJugadorCRM({
                   <a
                     href={construirEnlaceWhatsApp({ telefono: perfil.telefono, mensaje })}
                     target="_blank"
-                    rel="noreferrer"
+                    rel="noopener noreferrer"
                     className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white/95 px-3 py-1.5 text-xs font-black text-fuchsia-600 shadow-sm transition hover:bg-white"
                   >
                     <Gift size={13} /> Felicitar por WhatsApp
@@ -41658,7 +41719,7 @@ function ModalPerfilJugadorCRM({
             <a
               href={perfil.telefono ? linkWhatsApp : undefined}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               onClick={(e) => {
                 if (!perfil.telefono) e.preventDefault();
               }}
@@ -47014,7 +47075,7 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
                 <input type="checkbox" checked={marcado} onChange={() => alternar(p.id)} className="h-4 w-4 shrink-0 accent-orange-500" />
                 <div className="h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-slate-100">
                   <img
-                    src={p.imagen_url || fallbackImagenProducto(p)}
+                    src={urlSegura(p.imagen_url) || fallbackImagenProducto(p)}
                     onError={(e) => {
                       e.currentTarget.onerror = null;
                       e.currentTarget.src = fallbackImagenProducto(p);
@@ -48975,7 +49036,12 @@ function PortalPublicoJugadores({ clubSlug }) {
     const q = (texto || '').trim();
     if (q.length < 2) return [];
     try {
-      const { data, error } = await supabase.from('jugadores').select('id, nombre, telefono').ilike('nombre', `%${q}%`).limit(8);
+      // Aislamiento por tenant (`club_id`) + comodines escapados: antes esta
+      // búsqueda del Portal no filtraba por club y devolvía jugadores (con
+      // teléfono) de CUALQUIER club.
+      const { data, error } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono'))
+        .ilike('nombre', `%${escaparPatronLike(q)}%`)
+        .limit(8);
       if (error) throw error;
       return data || [];
     } catch (err) {
@@ -51024,7 +51090,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           <div className="mx-auto grid max-w-3xl grid-cols-[1fr_auto_1fr] items-center gap-2">
             <div className="flex min-w-0 items-center gap-2.5 justify-self-start">
               {club.logo_url ? (
-                <img src={club.logo_url} alt={club.nombre} className="h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-slate-200" />
+                <img src={urlSegura(club.logo_url) || undefined} alt={club.nombre} className="h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-slate-200" />
               ) : (
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-400/10 text-orange-400 ring-1 ring-orange-400/20">
                   <Trophy size={17} />
@@ -51179,7 +51245,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                       >
                         <div className="relative h-28 w-full bg-slate-100">
                           <img
-                            src={c.imagen_url || fallbackImagen(c.id)}
+                            src={urlSegura(c.imagen_url) || fallbackImagen(c.id)}
                             onError={(e) => {
                               e.currentTarget.onerror = null;
                               e.currentTarget.src = fallbackImagen(c.id);
@@ -51229,7 +51295,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                         >
                           <div className="h-20 w-full bg-slate-100">
                             <img
-                              src={p.imagen_url || fallbackImagenProducto(p)}
+                              src={urlSegura(p.imagen_url) || fallbackImagenProducto(p)}
                               onError={(e) => {
                                 e.currentTarget.onerror = null;
                                 e.currentTarget.src = fallbackImagenProducto(p);
@@ -54136,7 +54202,7 @@ function ModalGaleriaProducto({ producto, variantes, onClose, onAgregar }) {
       <div className="space-y-4">
         <div className="relative overflow-hidden rounded-2xl bg-slate-100">
           <img
-            src={galeria[indice]}
+            src={urlSegura(galeria[indice]) || undefined}
             onError={(e) => {
               e.currentTarget.onerror = null;
               e.currentTarget.src = fallbackImagenProducto(producto);
