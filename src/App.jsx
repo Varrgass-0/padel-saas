@@ -37383,9 +37383,9 @@ function AnalyticsAcademia({
             />
             <MetricCard
               icon={TrendingDown}
-              etiqueta="Tasa de Churn Mensual"
+              etiqueta="Cancelaciones del Mes"
               valor={kpisMembresias.churnPct === null ? 'Sin datos' : `${kpisMembresias.churnPct}%`}
-              sub={`${kpisMembresias.bajasEsteMes} baja${kpisMembresias.bajasEsteMes === 1 ? '' : 's'} este mes`}
+              sub={`Bajas registradas en el mes: ${kpisMembresias.bajasEsteMes}`}
               tono="rose"
             />
           </div>
@@ -38914,9 +38914,6 @@ function ModuloAcademiaClinicas({
                       >
                         <GraduationCap size={12} /> Crear Clase
                       </BotonPrimario>
-                      <BotonSecundario onClick={() => actualizarEstadoSolicitud(s, 'atendida')} className="px-2.5 py-1.5 text-[11px]">
-                        <CheckCircle2 size={12} /> Marcar atendida
-                      </BotonSecundario>
                       <button
                         onClick={() => actualizarEstadoSolicitud(s, 'descartada')}
                         className="rounded-md px-2.5 py-1.5 text-[11px] font-bold text-slate-500 hover:text-rose-400"
