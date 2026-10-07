@@ -27639,6 +27639,23 @@ const TIPOS_EVENTO_AUDITORIA = {
     bg: 'bg-sky-400/10',
     detalleTexto: (d) => `${d?.nombre || 'Empleado'} — ${d?.cambios || 'datos actualizados'}.`,
   },
+  // Cambio de PIN / contraseña de un colaborador (Kiosko o modal "Editar
+  // Empleado"). NUNCA se guarda el PIN en el detalle — solo qué pasó.
+  cambio_pin: {
+    label: 'Cambio de PIN / contraseña',
+    icon: KeyRound,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    detalleTexto: (d) =>
+      `${d?.nombre || 'Empleado'} — PIN ${d?.accion || 'actualizado'}${d?.origen ? ` (${d.origen})` : ''}.`,
+  },
+  empleado_eliminado: {
+    label: 'Baja de operador',
+    icon: UserX,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    detalleTexto: (d) => `${d?.nombre || 'Operador'} — rol ${ROLES_POR_VALOR[d?.rol]?.label || d?.rol || ''} eliminado del directorio.`,
+  },
   // Cancelación / Anulación de Compras (Devoluciones de Proveedor,
   // Contabilidad & Compras) — ver `cancelarCompra` en
   // `ModuloContabilidadCompras`. `d.nota_inventario` ya trae el resumen de
@@ -27657,6 +27674,139 @@ const TIPOS_EVENTO_AUDITORIA = {
 
 function etiquetaTipoEvento(tipo) {
   return TIPOS_EVENTO_AUDITORIA[tipo]?.label || tipo || 'Evento';
+}
+
+// Valor literal que Postgres rechazó en un 22P02 ('invalid input syntax for
+// type bigint: "69ca3512-…"' → '69ca3512-…'). Sirve para saber QUÉ campo del
+// payload causó el error de tipo (a diferencia de `valorUUIDInvalidoDelError`,
+// que solo reconoce el formato `type uuid`).
+function literalInvalidoDelError(error) {
+  const match = /invalid input syntax for type [a-z0-9 ]+:\s*"([^"]*)"/i.exec(error?.message || '');
+  return match ? match[1] : null;
+}
+
+// INSERT del Log de Actividad tolerante a desajustes de esquema/tipos.
+// Causa raíz del 22P02 reportado: `log_actividad.empleado_id` se creó como
+// `bigint` (o `uuid`) en algunos proyectos, pero `empleados.id` es un UUID
+// (o un id local "local-…" en modo local) — así que Postgres rechazaba el
+// INSERT COMPLETO ("invalid input syntax for type bigint: <uuid>") y cada
+// evento de auditoría caía a modo local, jamás llegaba a Supabase.
+// Estrategia (la migración v91 deja `empleado_id` en `text` y es la solución
+// de fondo; esto es la red de seguridad mientras no se corra):
+//   1) `empleado_id` SIEMPRE viaja como TEXTO (String) o null.
+//   2) Si aun así Postgres lo rechaza por tipo (22P02 cuyo valor literal ES
+//      el `empleado_id`), el id se mueve a `detalle.empleado_id` y la
+//      columna va en null — el evento SÍ se guarda con nombre/rol/detalle.
+//   3) Si Supabase reporta una columna opcional inexistente (`accion`,
+//      `empleado_rol`, `empleado_nombre`, `empleado_id`), se reintenta sin
+//      ella (el id, de nuevo, queda dentro de `detalle`).
+// `club_id` NO se descarta nunca (rompería el aislamiento multi-tenant): si
+// ESE es el campo con tipo incorrecto, se devuelve el error tal cual.
+async function insertarEventoLogActividad(payloadCompleto) {
+  let payload = { ...payloadCompleto };
+  if (payload.empleado_id != null) payload.empleado_id = String(payload.empleado_id);
+  const COLUMNAS_PRESCINDIBLES = ['accion', 'empleado_rol', 'empleado_nombre', 'empleado_id'];
+  let degradado = false;
+  for (let intento = 0; intento < 6; intento++) {
+    const { data, error } = await supabase.from('log_actividad').insert(withClubId(payload)).select().single();
+    if (!error) return { data, error: null, degradado };
+    const literal = literalInvalidoDelError(error);
+    if (error.code === '22P02' || literal !== null) {
+      if (literal !== null && payload.empleado_id != null && String(payload.empleado_id) === literal) {
+        payload = { ...payload, empleado_id: null, detalle: { ...(payload.detalle || {}), empleado_id: String(payload.empleado_id) } };
+        degradado = true;
+        continue;
+      }
+      return { data: null, error, degradado };
+    }
+    if (esErrorColumnaInexistente(error)) {
+      const faltante = columnaFaltanteDeError(error);
+      if (faltante && COLUMNAS_PRESCINDIBLES.includes(faltante) && faltante in payload) {
+        const { [faltante]: valorQuitado, ...resto } = payload;
+        payload = faltante === 'empleado_id' && valorQuitado != null ? { ...resto, detalle: { ...(resto.detalle || {}), empleado_id: String(valorQuitado) } } : resto;
+        degradado = true;
+        continue;
+      }
+    }
+    return { data: null, error, degradado };
+  }
+  return { data: null, error: new Error('No se pudo guardar el evento de auditoría.'), degradado };
+}
+
+// ---------------------------------------------------------------------------
+// Filtro de FECHAS del Log de Actividad (día / mes) — helpers puros, todos en
+// hora LOCAL del navegador (un evento guardado a las 23:30 del día 5 en CDMX
+// es "día 5", aunque su `created_at` UTC ya sea el día 6).
+// ---------------------------------------------------------------------------
+const RE_DIA_ISO = /^\d{4}-\d{2}-\d{2}$/;
+const RE_MES_ISO = /^\d{4}-\d{2}$/;
+
+// Rango [desde, hasta) en milisegundos para el filtro elegido, o `null`
+// ("todas las fechas" / valor incompleto o inválido → sin filtro).
+function rangoFechaLog(modo, valor) {
+  if (modo === 'dia' && RE_DIA_ISO.test(valor || '')) {
+    const [y, m, d] = valor.split('-').map(Number);
+    const desde = new Date(y, m - 1, d, 0, 0, 0, 0);
+    const hasta = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
+    if (Number.isNaN(desde.getTime())) return null;
+    return { desde: desde.getTime(), hasta: hasta.getTime() };
+  }
+  if (modo === 'mes' && RE_MES_ISO.test(valor || '')) {
+    const [y, m] = valor.split('-').map(Number);
+    if (m < 1 || m > 12) return null;
+    return { desde: new Date(y, m - 1, 1, 0, 0, 0, 0).getTime(), hasta: new Date(y, m, 1, 0, 0, 0, 0).getTime() };
+  }
+  return null;
+}
+
+function eventoEnRangoLog(creadoEn, rango) {
+  if (!rango) return true;
+  const t = new Date(creadoEn).getTime();
+  return !Number.isNaN(t) && t >= rango.desde && t < rango.hasta;
+}
+
+// Mueve el día ("YYYY-MM-DD") o el mes ("YYYY-MM") `delta` unidades.
+function desplazarFechaLog(modo, valor, delta) {
+  if (modo === 'dia' && RE_DIA_ISO.test(valor || '')) {
+    const [y, m, d] = valor.split('-').map(Number);
+    const f = new Date(y, m - 1, d + delta);
+    return `${f.getFullYear()}-${pad2(f.getMonth() + 1)}-${pad2(f.getDate())}`;
+  }
+  if (modo === 'mes' && RE_MES_ISO.test(valor || '')) {
+    const [y, m] = valor.split('-').map(Number);
+    const f = new Date(y, m - 1 + delta, 1);
+    return `${f.getFullYear()}-${pad2(f.getMonth() + 1)}`;
+  }
+  return valor;
+}
+
+function etiquetaRangoLog(modo, valor) {
+  if (modo === 'dia' && RE_DIA_ISO.test(valor || '')) return formatoFechaLarga(valor);
+  if (modo === 'mes' && RE_MES_ISO.test(valor || '')) {
+    const [y, m] = valor.split('-').map(Number);
+    const txt = new Date(y, m - 1, 1).toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
+    return txt.charAt(0).toUpperCase() + txt.slice(1);
+  }
+  return 'Todas las fechas';
+}
+
+// Normaliza texto para comparar/buscar sin importar mayúsculas ni acentos.
+function normalizarBusquedaLog(texto) {
+  return String(texto ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+// ¿El evento pertenece al empleado elegido en el autocompletado? Compara por
+// id (cuando el evento lo trae — puede ir en `empleado_id` o, en modo
+// degradado, dentro de `detalle.empleado_id`) y, como respaldo, por nombre.
+function eventoDeEmpleadoLog(evento, empleado) {
+  if (!empleado) return true;
+  const idEvento = evento.empleado_id ?? evento.detalle?.empleado_id;
+  if (empleado.id != null && idEvento != null && String(idEvento) === String(empleado.id)) return true;
+  return normalizarBusquedaLog(evento.empleado_nombre) === normalizarBusquedaLog(empleado.nombre);
 }
 
 // Selector de Nivel reutilizado por Retas y Torneos — mismo control en los
@@ -42004,16 +42154,23 @@ function ModuloJugadores({
 // activo/inactivo). El rol es la pieza que de verdad importa aquí: es lo
 // único que decide los permisos efectivos la próxima vez que alguien fiche
 // como este empleado (ver `ModalOperador`).
-function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
+function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar, onEliminar, operadorActivoId }) {
   const editando = Boolean(empleado);
   const [nombre, setNombre] = useState(empleado?.nombre || '');
   const [rol, setRol] = useState(empleado?.rol || 'recepcion');
-  const [telefono, setTelefono] = useState(empleado?.telefono || '');
   const [email, setEmail] = useState(empleado?.email || '');
   const [pin, setPin] = useState(empleado?.pin || '');
   const [activo, setActivo] = useState(empleado?.activo !== false);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
+  // Eliminar Operador: confirmación previa dentro del propio modal.
+  const [confirmandoEliminar, setConfirmandoEliminar] = useState(false);
+  const [eliminando, setEliminando] = useState(false);
+
+  const esPropietario = empleado?.rol === 'owner';
+  const esSesionActiva = editando && operadorActivoId != null && String(operadorActivoId) === String(empleado?.id);
+  const puedeEliminar = editando && Boolean(onEliminar) && !esPropietario && !esSesionActiva;
+  const saldoWallet = Number(empleado?.saldo_wallet) || 0;
 
   async function guardar() {
     if (!nombre.trim()) {
@@ -42027,19 +42184,35 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
     setGuardando(true);
     setError('');
     if (editando) {
-      await onActualizar(empleado.id, {
-        nombre: nombre.trim(),
-        rol,
-        telefono: telefono.trim() || null,
-        email: email.trim() || null,
-        pin: pin.trim() || null,
-        activo,
-      });
+      // Solo se mandan las columnas que existen en `empleados` (nombre, rol,
+      // email, pin, activo) y ÚNICAMENTE las que de verdad cambiaron — nunca
+      // `telefono` (esa columna no existe en el esquema de Supabase y
+      // provocaba el error PGRST204 al guardar).
+      const cambios = {};
+      if (nombre.trim() !== (empleado.nombre || '')) cambios.nombre = nombre.trim();
+      if (rol !== empleado.rol) cambios.rol = rol;
+      if ((email.trim() || '') !== (empleado.email || '')) cambios.email = email.trim() || null;
+      if ((pin.trim() || '') !== String(empleado.pin ?? '')) cambios.pin = pin.trim() || null;
+      if (activo !== (empleado.activo !== false)) cambios.activo = activo;
+      if (Object.keys(cambios).length > 0) await onActualizar(empleado.id, cambios);
     } else {
-      await onCrear({ nombre: nombre.trim(), rol, telefono, email, pin });
+      await onCrear({ nombre: nombre.trim(), rol, email, pin });
     }
     setGuardando(false);
     onClose();
+  }
+
+  async function eliminar() {
+    setEliminando(true);
+    setError('');
+    const resultado = await onEliminar(empleado.id);
+    setEliminando(false);
+    if (resultado?.ok) {
+      onClose();
+      return;
+    }
+    setConfirmandoEliminar(false);
+    setError(resultado?.error || 'No se pudo eliminar al operador.');
   }
 
   return (
@@ -42074,20 +42247,15 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
             })}
           </div>
         </Campo>
-        <div className="grid grid-cols-2 gap-4">
-          <Campo label="Teléfono (opcional)">
-            <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="55..." />
-          </Campo>
-          <Campo label="Correo (opcional)">
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className={inputClase}
-              placeholder="nombre@club.com"
-            />
-          </Campo>
-        </div>
+        <Campo label="Correo (opcional)">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className={inputClase}
+            placeholder="nombre@club.com"
+          />
+        </Campo>
         <Campo
           label="PIN de acceso (opcional)"
           hint={
@@ -42117,13 +42285,70 @@ function ModalGestionEmpleados({ empleado, onClose, onCrear, onActualizar }) {
           </label>
         )}
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
-        <div className="flex justify-end gap-2 pt-2">
-          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar} disabled={guardando || !nombre.trim()}>
-            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            {editando ? 'Guardar cambios' : 'Crear empleado'}
-          </BotonPrimario>
-        </div>
+
+        {confirmandoEliminar ? (
+          <div className="space-y-3 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3.5" role="alertdialog" aria-label="Confirmar eliminación del operador">
+            <p className="flex items-start gap-2 text-xs font-semibold leading-relaxed text-rose-400">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>
+                ¿Eliminar a {empleado?.nombre} definitivamente? Esta acción borra al operador del directorio y no se puede deshacer. Su historial en el
+                Log de Actividad se conserva.
+                {saldoWallet > 0 && ` Ojo: tiene ${formatoMoneda(saldoWallet)} de saldo en su Wallet.`}
+              </span>
+            </p>
+            <div className="flex justify-end gap-2">
+              <BotonSecundario onClick={() => setConfirmandoEliminar(false)} disabled={eliminando}>
+                Cancelar
+              </BotonSecundario>
+              <button
+                type="button"
+                onClick={eliminar}
+                disabled={eliminando}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-rose-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {eliminando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+                Sí, eliminar operador
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+            <div>
+              {editando && onEliminar && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError('');
+                    setConfirmandoEliminar(true);
+                  }}
+                  disabled={!puedeEliminar || guardando}
+                  title={
+                    esPropietario
+                      ? 'El Propietario del club no se puede eliminar.'
+                      : esSesionActiva
+                      ? 'No puedes eliminar al operador con la sesión activa en esta terminal.'
+                      : 'Eliminar este operador del directorio'
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-500/50 bg-rose-500/10 px-3.5 py-2.5 text-sm font-bold text-rose-400 transition hover:bg-rose-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-rose-500/10 disabled:hover:text-rose-400"
+                >
+                  <Trash2 size={15} /> Eliminar Operador
+                </button>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+              <BotonPrimario onClick={guardar} disabled={guardando || !nombre.trim()}>
+                {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                {editando ? 'Guardar cambios' : 'Crear empleado'}
+              </BotonPrimario>
+            </div>
+          </div>
+        )}
+        {editando && onEliminar && !confirmandoEliminar && (esPropietario || esSesionActiva) && (
+          <p className="text-[11px] text-slate-500">
+            {esPropietario ? 'El Propietario del club no se puede eliminar.' : 'No puedes eliminar al operador con la sesión activa en esta terminal.'}
+          </p>
+        )}
       </div>
     </ModalShell>
   );
@@ -42255,6 +42480,300 @@ function FilaCierreCaja({ cierre, puedeAprobar, onAprobar }) {
   );
 }
 
+// Selector de MES con apertura a 1 clic (mismo patrón que `SelectorFechaClick`
+// pero con `<input type="month">`). En navegadores sin soporte nativo de
+// `month` (Safari de escritorio) el input cae a texto "AAAA-MM", que también
+// se valida con `RE_MES_ISO` en `rangoFechaLog`.
+function SelectorMesClick({ value, onChange, className = '' }) {
+  const inputRef = useRef(null);
+  function abrir() {
+    try {
+      inputRef.current?.showPicker?.();
+    } catch (err) {
+      // Sin showPicker(): el input sigue siendo editable a mano.
+    }
+  }
+  return (
+    <div
+      onClick={abrir}
+      className={`flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 transition hover:border-orange-400/60 ${className}`}
+    >
+      <CalendarDays size={14} className="shrink-0 text-slate-500" />
+      <input
+        ref={inputRef}
+        type="month"
+        value={value}
+        placeholder="AAAA-MM"
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full cursor-pointer bg-transparent text-sm text-slate-900 outline-none"
+      />
+    </div>
+  );
+}
+
+// Filtro por fecha del Log de Actividad: [Todas] [Día] [Mes] + selector de
+// calendario + flechas ‹ › para ir al día/mes anterior o siguiente.
+function FiltroFechaLog({ filtro, onChange }) {
+  const { modo, valor } = filtro;
+  function cambiarModo(nuevo) {
+    if (nuevo === modo) return;
+    if (nuevo === 'dia') onChange({ modo: 'dia', valor: RE_DIA_ISO.test(valor) ? valor : RE_MES_ISO.test(valor) ? `${valor}-01` : hoyISO() });
+    else if (nuevo === 'mes') onChange({ modo: 'mes', valor: RE_MES_ISO.test(valor) ? valor : RE_DIA_ISO.test(valor) ? valor.slice(0, 7) : hoyISO().slice(0, 7) });
+    else onChange({ modo: 'todas', valor: '' });
+  }
+  const MODOS = [
+    { value: 'todas', label: 'Todas' },
+    { value: 'dia', label: 'Día' },
+    { value: 'mes', label: 'Mes' },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div role="group" aria-label="Filtrar por fecha" className="flex rounded-lg border border-slate-300 bg-slate-100 p-0.5">
+        {MODOS.map((m) => (
+          <button
+            key={m.value}
+            type="button"
+            aria-pressed={modo === m.value}
+            onClick={() => cambiarModo(m.value)}
+            className={`rounded-md px-3 py-1.5 text-xs font-bold transition ${
+              modo === m.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {modo !== 'todas' && (
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            aria-label={modo === 'dia' ? 'Día anterior' : 'Mes anterior'}
+            onClick={() => onChange({ modo, valor: desplazarFechaLog(modo, valor, -1) })}
+            className="rounded-lg border border-slate-300 bg-slate-100 p-2 text-slate-600 transition hover:border-orange-400/40 hover:text-orange-400"
+          >
+            <ChevronLeft size={14} />
+          </button>
+          {modo === 'dia' ? (
+            <SelectorFechaClick value={valor} onChange={(v) => onChange({ modo, valor: v })} className="w-44" />
+          ) : (
+            <SelectorMesClick value={valor} onChange={(v) => onChange({ modo, valor: v })} className="w-44" />
+          )}
+          <button
+            type="button"
+            aria-label={modo === 'dia' ? 'Día siguiente' : 'Mes siguiente'}
+            onClick={() => onChange({ modo, valor: desplazarFechaLog(modo, valor, 1) })}
+            className="rounded-lg border border-slate-300 bg-slate-100 p-2 text-slate-600 transition hover:border-orange-400/40 hover:text-orange-400"
+          >
+            <ChevronRight size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange({ modo, valor: modo === 'dia' ? hoyISO() : hoyISO().slice(0, 7) })}
+            className="rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-2 text-[11px] font-bold text-slate-600 transition hover:border-orange-400/40 hover:text-orange-400"
+          >
+            {modo === 'dia' ? 'Hoy' : 'Este mes'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Buscador del Log con AUTOCOMPLETADO de empleados: al enfocar o hacer clic
+// se despliega la lista del directorio (más quienes aparecen en el Log pero
+// ya no están en el directorio, p. ej. operadores dados de baja) para
+// elegirlos directo; el empleado elegido queda como "chip" y filtra su
+// historial. El texto libre sigue buscando por empleado/evento/detalle.
+// El menú se pinta con `createPortal` + `position: fixed` (mismo criterio que
+// `ComboBoxTexto`) para que ningún `overflow` lo recorte y funcione en iPad.
+function BuscadorEmpleadoLog({ empleados, nombresEnLog, seleccionado, onSeleccionar, texto, onTexto }) {
+  const [abierto, setAbierto] = useState(false);
+  const [indiceActivo, setIndiceActivo] = useState(-1);
+  const [posicion, setPosicion] = useState(null);
+  const contenedorRef = useRef(null);
+  const inputRef = useRef(null);
+  const listaRef = useRef(null);
+
+  const opciones = useMemo(() => {
+    const porNombre = new Map();
+    (empleados || []).forEach((e) => {
+      const k = normalizarBusquedaLog(e.nombre);
+      if (k) porNombre.set(k, { id: e.id, nombre: e.nombre, rol: e.rol, inactivo: e.activo === false, baja: false });
+    });
+    (nombresEnLog || []).forEach(({ nombre, rol }) => {
+      const k = normalizarBusquedaLog(nombre);
+      if (k && !porNombre.has(k)) porNombre.set(k, { id: null, nombre, rol, inactivo: false, baja: true });
+    });
+    const q = normalizarBusquedaLog(texto);
+    return [...porNombre.values()]
+      .filter((o) => !q || normalizarBusquedaLog(o.nombre).includes(q))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }, [empleados, nombresEnLog, texto]);
+
+  const actualizarPosicion = useCallback(() => {
+    const el = contenedorRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPosicion({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 240) });
+  }, []);
+
+  function abrir() {
+    actualizarPosicion();
+    setAbierto(true);
+  }
+
+  useEffect(() => {
+    if (!abierto) return undefined;
+    actualizarPosicion();
+    const reposicionar = () => actualizarPosicion();
+    const onPuntero = (e) => {
+      if (contenedorRef.current?.contains(e.target)) return;
+      if (listaRef.current?.contains(e.target)) return;
+      setAbierto(false);
+    };
+    window.addEventListener('scroll', reposicionar, true);
+    window.addEventListener('resize', reposicionar);
+    document.addEventListener('mousedown', onPuntero);
+    document.addEventListener('touchstart', onPuntero);
+    return () => {
+      window.removeEventListener('scroll', reposicionar, true);
+      window.removeEventListener('resize', reposicionar);
+      document.removeEventListener('mousedown', onPuntero);
+      document.removeEventListener('touchstart', onPuntero);
+    };
+  }, [abierto, actualizarPosicion]);
+
+  function elegir(op) {
+    onSeleccionar({ id: op.id, nombre: op.nombre, rol: op.rol });
+    onTexto('');
+    setAbierto(false);
+    setIndiceActivo(-1);
+  }
+
+  function alTeclear(e) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!abierto) abrir();
+      setIndiceActivo((i) => Math.min(opciones.length - 1, i + 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setIndiceActivo((i) => Math.max(0, i - 1));
+    } else if (e.key === 'Enter' && abierto && indiceActivo >= 0 && opciones[indiceActivo]) {
+      e.preventDefault();
+      elegir(opciones[indiceActivo]);
+    } else if (e.key === 'Escape') {
+      setAbierto(false);
+    } else if (e.key === 'Backspace' && !texto && seleccionado) {
+      onSeleccionar(null);
+    }
+  }
+
+  return (
+    <>
+      <div
+        ref={contenedorRef}
+        className="flex min-h-[38px] w-full items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1 transition focus-within:border-orange-400 focus-within:ring-1 focus-within:ring-orange-400 sm:w-72"
+      >
+        <Search size={13} className="shrink-0 text-slate-500" />
+        {seleccionado && (
+          <span className="inline-flex max-w-[9rem] shrink-0 items-center gap-1 rounded-full bg-orange-400/15 py-0.5 pl-2 pr-1 text-[11px] font-bold text-orange-400">
+            <span className="truncate">{seleccionado.nombre}</span>
+            <button
+              type="button"
+              aria-label={`Quitar filtro de ${seleccionado.nombre}`}
+              onClick={() => onSeleccionar(null)}
+              className="rounded-full p-0.5 hover:bg-orange-400/25"
+            >
+              <X size={11} />
+            </button>
+          </span>
+        )}
+        <input
+          ref={inputRef}
+          value={texto}
+          onChange={(e) => {
+            onTexto(e.target.value);
+            setIndiceActivo(-1);
+            if (!abierto) abrir();
+          }}
+          onFocus={abrir}
+          onClick={abrir}
+          onKeyDown={alTeclear}
+          role="combobox"
+          aria-expanded={abierto}
+          aria-autocomplete="list"
+          autoComplete="off"
+          placeholder={seleccionado ? 'Filtrar por evento...' : 'Buscar por empleado o evento...'}
+          className="min-w-0 flex-1 bg-transparent text-sm text-slate-900 placeholder-slate-400 outline-none"
+        />
+      </div>
+      {abierto &&
+        posicion &&
+        createPortal(
+          <div
+            ref={listaRef}
+            role="listbox"
+            style={{ position: 'fixed', top: posicion.top, left: posicion.left, width: posicion.width }}
+            className="z-[200] max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-2xl"
+          >
+            {seleccionado && (
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onSeleccionar(null);
+                  setAbierto(false);
+                }}
+                className="flex w-full items-center gap-2 border-b border-slate-100 px-3 py-2 text-left text-xs font-bold text-slate-600 hover:bg-orange-50"
+              >
+                <Users size={13} /> Todos los empleados
+              </button>
+            )}
+            <p className="px-3 pb-1 pt-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Empleados</p>
+            {opciones.length === 0 ? (
+              <p className="px-3 py-3 text-xs text-slate-500">Ningún empleado coincide.</p>
+            ) : (
+              opciones.map((op, i) => {
+                const meta = ROLES_POR_VALOR[op.rol];
+                const RolIcono = meta?.icon || Users;
+                return (
+                  <button
+                    key={`${op.id ?? 'log'}-${op.nombre}`}
+                    type="button"
+                    role="option"
+                    aria-selected={seleccionado ? normalizarBusquedaLog(seleccionado.nombre) === normalizarBusquedaLog(op.nombre) : false}
+                    // `onMouseDown` + `preventDefault`: no pierde el foco el input
+                    // antes de registrar el clic (iOS) — mismo patrón que `ComboBoxTexto`.
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      elegir(op);
+                    }}
+                    onMouseEnter={() => setIndiceActivo(i)}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-orange-50 active:bg-orange-100 ${
+                      i === indiceActivo ? 'bg-orange-50' : ''
+                    }`}
+                  >
+                    <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${meta?.bg || 'bg-slate-100'}`}>
+                      <RolIcono size={13} className={meta?.color || 'text-slate-500'} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-slate-800">{op.nombre}</span>
+                      <span className="block truncate text-[11px] text-slate-500">
+                        {meta?.label || op.rol || 'Operador'}
+                        {op.baja ? ' · ya no está en el directorio' : op.inactivo ? ' · inactivo' : ''}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
 // Fila del Log de Actividad: un renglón por evento, usando el catálogo
 // `TIPOS_EVENTO_AUDITORIA` (icono/color/texto) para no repetir esa lógica.
 function FilaLogActividad({ evento }) {
@@ -42291,6 +42810,7 @@ function ModuloControlSeguridad({
   cargarEmpleados,
   crearEmpleado,
   actualizarEmpleado,
+  eliminarEmpleado,
   cierresCaja,
   loadingCierresCaja,
   errorCierresCaja,
@@ -42300,11 +42820,72 @@ function ModuloControlSeguridad({
   loadingLogActividad,
   errorLogActividad,
   cargarLogActividad,
+  consultarLogActividadRango,
 }) {
   const [subvista, setSubvista] = useState('empleados'); // 'empleados' | 'cortes' | 'log'
   const [modalEmpleado, setModalEmpleado] = useState(null); // null = cerrado, {} = alta, {...} = edición
   const [filtroTipoLog, setFiltroTipoLog] = useState('todos');
   const [busquedaLog, setBusquedaLog] = useState('');
+  // Filtros nuevos del Log: empleado elegido en el autocompletado y rango de
+  // fechas (todas / un día / un mes). Con un rango activo el Log se consulta
+  // en el servidor (`consultarLogActividadRango`) porque la carga normal solo
+  // trae los últimos 500 eventos y un día/mes viejo quedaría fuera.
+  const [empleadoLog, setEmpleadoLog] = useState(null); // { id, nombre, rol } | null
+  const [filtroFechaLog, setFiltroFechaLog] = useState({ modo: 'todas', valor: '' });
+  const [logRango, setLogRango] = useState(null);
+  const [cargandoRango, setCargandoRango] = useState(false);
+  const [errorRango, setErrorRango] = useState('');
+  const [reintentoRango, setReintentoRango] = useState(0);
+
+  const rangoLog = useMemo(
+    () => rangoFechaLog(filtroFechaLog.modo, filtroFechaLog.valor),
+    [filtroFechaLog.modo, filtroFechaLog.valor]
+  );
+
+  useEffect(() => {
+    if (!rangoLog || !consultarLogActividadRango) {
+      setLogRango(null);
+      setErrorRango('');
+      setCargandoRango(false);
+      return undefined;
+    }
+    let cancelado = false;
+    setCargandoRango(true);
+    setErrorRango('');
+    (async () => {
+      const { data, error } = await consultarLogActividadRango(rangoLog);
+      if (cancelado) return;
+      if (error) setErrorRango(error.message || 'No se pudo consultar el Log de ese periodo.');
+      setLogRango(data || []);
+      setCargandoRango(false);
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [rangoLog, consultarLogActividadRango, reintentoRango]);
+
+  // Base del Log: sin rango = los eventos ya cargados; con rango = lo que
+  // devolvió el servidor + los eventos recién registrados en esta sesión que
+  // caigan dentro del rango (sin duplicar por `id`).
+  const baseLog = useMemo(() => {
+    if (!rangoLog) return logActividad;
+    const mapa = new Map();
+    [...(logRango || []), ...logActividad.filter((ev) => eventoEnRangoLog(ev.created_at, rangoLog))].forEach((ev) =>
+      mapa.set(String(ev.id), ev)
+    );
+    return [...mapa.values()].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+  }, [rangoLog, logRango, logActividad]);
+
+  // Nombres que aparecen en el Log (incluye operadores ya dados de baja) para
+  // el autocompletado del buscador.
+  const nombresEnLog = useMemo(() => {
+    const mapa = new Map();
+    [...logActividad, ...(logRango || [])].forEach((ev) => {
+      const k = normalizarBusquedaLog(ev.empleado_nombre);
+      if (k && !mapa.has(k)) mapa.set(k, { nombre: ev.empleado_nombre, rol: ev.empleado_rol });
+    });
+    return [...mapa.values()];
+  }, [logActividad, logRango]);
 
   const empleadosOrdenados = useMemo(
     () => [...empleados].sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '')),
@@ -42318,17 +42899,31 @@ function ModuloControlSeguridad({
   const cortesPendientesAprobar = cierresOrdenados.filter((c) => !c.aprobado).length;
 
   const logFiltrado = useMemo(() => {
-    return logActividad.filter((ev) => {
+    const q = normalizarBusquedaLog(busquedaLog);
+    return baseLog.filter((ev) => {
       if (filtroTipoLog !== 'todos' && ev.tipo !== filtroTipoLog) return false;
-      if (busquedaLog.trim()) {
-        const q = busquedaLog.trim().toLowerCase();
-        if (!(ev.empleado_nombre || '').toLowerCase().includes(q) && !etiquetaTipoEvento(ev.tipo).toLowerCase().includes(q)) {
-          return false;
+      if (!eventoDeEmpleadoLog(ev, empleadoLog)) return false;
+      if (q) {
+        let detalle = '';
+        try {
+          detalle = TIPOS_EVENTO_AUDITORIA[ev.tipo]?.detalleTexto?.(ev.detalle) || '';
+        } catch (err) {
+          detalle = '';
         }
+        const pajar = normalizarBusquedaLog(`${ev.empleado_nombre || ''} ${etiquetaTipoEvento(ev.tipo)} ${detalle}`);
+        if (!pajar.includes(q)) return false;
       }
       return true;
     });
-  }, [logActividad, filtroTipoLog, busquedaLog]);
+  }, [baseLog, filtroTipoLog, busquedaLog, empleadoLog]);
+
+  const hayFiltrosLog = filtroTipoLog !== 'todos' || Boolean(busquedaLog.trim()) || Boolean(empleadoLog) || Boolean(rangoLog);
+  function limpiarFiltrosLog() {
+    setFiltroTipoLog('todos');
+    setBusquedaLog('');
+    setEmpleadoLog(null);
+    setFiltroFechaLog({ modo: 'todas', valor: '' });
+  }
 
   // Beta: la pestaña "Cortes de Caja" se oculta junto con Arqueos/Cierres de
   // turno en Smart POS (misma bandera `SHOW_BETA_POS_CIERRE_ARQUEO`) — se
@@ -42447,18 +43042,20 @@ function ModuloControlSeguridad({
 
       {subvista === 'log' && (
         <div className="space-y-3">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               Log de Actividad / Historial Auditable
             </p>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                value={busquedaLog}
-                onChange={(e) => setBusquedaLog(e.target.value)}
-                className={`${inputClase} sm:w-56`}
-                placeholder="Buscar por empleado o evento..."
+            <div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
+              <BuscadorEmpleadoLog
+                empleados={empleados}
+                nombresEnLog={nombresEnLog}
+                seleccionado={empleadoLog}
+                onSeleccionar={setEmpleadoLog}
+                texto={busquedaLog}
+                onTexto={setBusquedaLog}
               />
-              <select value={filtroTipoLog} onChange={(e) => setFiltroTipoLog(e.target.value)} className={`${inputClase} sm:w-56`}>
+              <select value={filtroTipoLog} onChange={(e) => setFiltroTipoLog(e.target.value)} className={`${inputClase} lg:w-56`}>
                 <option value="todos">Todos los eventos</option>
                 {Object.entries(TIPOS_EVENTO_AUDITORIA).map(([key, meta]) => (
                   <option key={key} value={key}>
@@ -42466,14 +43063,30 @@ function ModuloControlSeguridad({
                   </option>
                 ))}
               </select>
+              <FiltroFechaLog filtro={filtroFechaLog} onChange={setFiltroFechaLog} />
             </div>
+            {hayFiltrosLog && (
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                <span>
+                  {logFiltrado.length} {logFiltrado.length === 1 ? 'evento' : 'eventos'}
+                  {rangoLog ? ` · ${etiquetaRangoLog(filtroFechaLog.modo, filtroFechaLog.valor)}` : ''}
+                  {empleadoLog ? ` · ${empleadoLog.nombre}` : ''}
+                </span>
+                <button type="button" onClick={limpiarFiltrosLog} className="font-bold text-orange-400 hover:underline">
+                  Limpiar filtros
+                </button>
+              </div>
+            )}
           </div>
+          {errorRango && <ErrorBanner mensaje={errorRango} onReintentar={() => setReintentoRango((n) => n + 1)} />}
           {errorLogActividad && <ErrorBanner mensaje={errorLogActividad} onReintentar={() => cargarLogActividad()} />}
-          {loadingLogActividad ? (
+          {loadingLogActividad || cargandoRango ? (
             <SkeletonGrid />
           ) : logFiltrado.length === 0 ? (
             <p className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500">
-              Sin eventos que coincidan. Cancelaciones, descuentos, ediciones de precio y cambios de horario/cancha aparecen aquí automáticamente.
+              {hayFiltrosLog
+                ? 'Sin eventos que coincidan con los filtros elegidos.'
+                : 'Sin eventos que coincidan. Cancelaciones, descuentos, ediciones de precio y cambios de horario/cancha aparecen aquí automáticamente.'}
             </p>
           ) : (
             <div className="space-y-2">
@@ -42492,6 +43105,8 @@ function ModuloControlSeguridad({
           onClose={() => setModalEmpleado(null)}
           onCrear={crearEmpleado}
           onActualizar={actualizarEmpleado}
+          onEliminar={eliminarEmpleado}
+          operadorActivoId={operador?.id}
         />
       )}
     </>
@@ -55225,7 +55840,7 @@ function AppInterno({ clubInicial } = {}) {
   // `actualizarEmpleado` (y al `empleados`) más reciente — igual que
   // `crearEmpleado`/`actualizarEmpleado` mismas, que siguen el mismo patrón.
   async function crearPinColaborador(emp, pin) {
-    await actualizarEmpleado(emp.id, { pin });
+    await actualizarEmpleado(emp.id, { pin }, { actor: { id: emp.id, nombre: emp.nombre, rol: emp.rol } });
     setOperadorRaw({ id: emp.id, nombre: emp.nombre, rol: emp.rol, turno: 'automatico' });
     mostrarToast({ titulo: 'PIN creado', detalle: `Turno iniciado como ${emp.nombre}.` });
   }
@@ -55365,6 +55980,28 @@ function AppInterno({ clubInicial } = {}) {
     cargarLogActividad();
   }, [cargarLogActividad]);
 
+  // Consulta del Log por RANGO de fechas (filtro Día/Mes de Control y
+  // Seguridad): la carga normal solo trae los últimos 500 eventos, así que un
+  // día o mes viejo se pide aparte al servidor. `rango` = { desde, hasta } en
+  // milisegundos (hora local, ver `rangoFechaLog`); se convierte a ISO UTC
+  // para comparar contra `created_at`. También mezcla los eventos que
+  // quedaron en modo local dentro de ese rango. Función estable (sin deps).
+  const consultarLogActividadRango = useCallback(async (rango) => {
+    if (!rango) return { data: [], error: null };
+    const { data, error } = await conClubId(supabase.from('log_actividad').select('*'))
+      .gte('created_at', new Date(rango.desde).toISOString())
+      .lt('created_at', new Date(rango.hasta).toISOString())
+      .order('created_at', { ascending: false })
+      .limit(2000);
+    const locales = fusionarConRegistrosLocales([], LS_KEY_LOG_ACTIVIDAD_LOCAL).filter((ev) => eventoEnRangoLog(ev.created_at, rango));
+    if (error) {
+      if (esErrorTablaInexistente(error)) return { data: locales, error: null };
+      return { data: locales, error };
+    }
+    const ids = new Set((data || []).map((ev) => String(ev.id)));
+    return { data: [...(data || []), ...locales.filter((ev) => !ids.has(String(ev.id)))], error: null };
+  }, []);
+
   useEffect(() => {
     const canal = supabase
       .channel('log-actividad')
@@ -55413,12 +56050,26 @@ function AppInterno({ clubInicial } = {}) {
   // Tolerancia total: si `log_actividad` no existe o el insert falla por
   // cualquier razón, el evento igual queda visible en el Log (estado local +
   // `localStorage`) — nunca se pierde ni bloquea la acción que lo disparó.
+  // `actor` (opcional): quién realizó la acción cuando NO es el operador de la
+  // sesión actual — p. ej. un colaborador que crea su propio PIN justo antes
+  // de ficharse (la sesión todavía es la anterior). Sin `actor` se usa
+  // `operador`.
+  //
+  // FIX 22P02: `empleado_id` viaja SIEMPRE como texto y el insert se hace con
+  // `insertarEventoLogActividad`, que tolera una columna `empleado_id` creada
+  // como bigint/uuid (el id del empleado es un UUID o "local-…"): en ese caso
+  // el evento SÍ se guarda (id dentro de `detalle`) en vez de caer a modo
+  // local. La migración v91 deja la columna en `text` y es la solución de fondo.
+  const mostrarToastRef = useRef(mostrarToast);
+  mostrarToastRef.current = mostrarToast;
+  const avisoLogDegradadoRef = useRef(false);
   const registrarEventoAuditoria = useCallback(
-    async (tipo, detalle) => {
+    async (tipo, detalle, actor) => {
+      const quien = actor || operador;
       const payloadCompleto = {
-        empleado_id: operador.id || null,
-        empleado_nombre: operador.nombre || 'Operador',
-        empleado_rol: operador.rol || null,
+        empleado_id: quien?.id != null ? String(quien.id) : null,
+        empleado_nombre: quien?.nombre || 'Operador',
+        empleado_rol: quien?.rol || null,
         tipo,
         // `accion` — mismo valor que `tipo` (la tabla ya tiene ambas
         // columnas tras la migración de columnas estándar; se manda
@@ -55429,15 +56080,18 @@ function AppInterno({ clubInicial } = {}) {
       };
       let eventoCreado = null;
       try {
-        // FIX (Supabase confirmó columnas estándar agregadas a
-        // `log_actividad` — `tipo`, `detalle`, `empleado_id`,
-        // `empleado_nombre`, `empleado_rol`, `accion`, etc. — y recargó la
-        // caché del esquema): insert directo y limpio, SIN el reintento por
-        // arreglos dinámicos (`insertarConColumnasOpcionales`) que se usaba
-        // mientras el esquema real era incierto.
-        const { data, error } = await supabase.from('log_actividad').insert(withClubId(payloadCompleto)).select().single();
+        const { data, error, degradado } = await insertarEventoLogActividad(payloadCompleto);
         if (error) throw error;
         eventoCreado = data;
+        if (degradado && !avisoLogDegradadoRef.current) {
+          avisoLogDegradadoRef.current = true;
+          mostrarToastRef.current?.({
+            titulo: 'Auditoría guardada con formato reducido',
+            detalle:
+              'La tabla log_actividad tiene un tipo de columna distinto al esperado. Corre migracion_v91_log_actividad_ids_text_y_empleados.sql en Supabase para guardar el id del empleado completo.',
+            tono: 'error',
+          });
+        }
       } catch (err) {
         console.warn('[Auditoría] No se pudo guardar el evento en Supabase — se usa modo local.', err);
         eventoCreado = { ...withClubId(payloadCompleto), id: idLocal('evento'), created_at: new Date().toISOString(), _local: true };
@@ -55446,7 +56100,7 @@ function AppInterno({ clubInicial } = {}) {
       setLogActividad((prev) => [eventoCreado, ...prev]);
       return eventoCreado;
     },
-    [operador.id, operador.nombre, operador.rol]
+    [operador]
   );
 
   // Columnas opcionales de `empleados` (Arquitectura Flexible — ver
@@ -55464,13 +56118,14 @@ function AppInterno({ clubInicial } = {}) {
   // vez de caer directo a modo local — y si de verdad no se pudo guardar
   // nada en Supabase, ahora SIEMPRE se avisa con un toast visible (antes
   // solo pasaba para el caso específico de `club_id` con tipo incompatible).
-  const COLUMNAS_OPCIONALES_EMPLEADO = ['telefono', 'email', 'pin'];
+  const COLUMNAS_OPCIONALES_EMPLEADO = ['email', 'pin'];
 
-  async function crearEmpleado({ nombre, rol, telefono, email, pin }) {
+  async function crearEmpleado({ nombre, rol, email, pin }) {
+    // `telefono` ya NO se manda: esa columna no existe en `empleados` y
+    // provocaba el error PGRST204 al guardar.
     const payloadCompleto = {
       nombre: nombre.trim(),
       rol,
-      telefono: telefono?.trim() || null,
       email: email?.trim() || null,
       pin: pin?.trim() || null,
       activo: true,
@@ -55507,8 +56162,21 @@ function AppInterno({ clubInicial } = {}) {
     return empleadoCreado;
   }
 
-  async function actualizarEmpleado(id, cambios) {
+  // `cambios` solo debe traer columnas que existen en `empleados` (nombre,
+  // rol, email, pin, activo) — `telefono` se descarta por seguridad aunque
+  // algún llamador viejo lo mande (PGRST204). `opciones.actor` = quién hace el
+  // cambio cuando no es el operador de la sesión (ver `crearPinColaborador`).
+  async function actualizarEmpleado(id, cambiosCrudos, opciones = {}) {
+    const { telefono: _telefonoDescartado, ...cambiosLimpios } = cambiosCrudos || {};
     const anterior = empleados.find((e) => e.id === id);
+    // Solo lo que de verdad cambió (evita updates y eventos de auditoría vacíos).
+    const cambios = {};
+    Object.entries(cambiosLimpios).forEach(([k, v]) => {
+      const previo = anterior ? anterior[k] : undefined;
+      const igual = k === 'activo' ? (previo !== false) === (v !== false) : String(previo ?? '') === String(v ?? '');
+      if (!anterior || !igual) cambios[k] = v;
+    });
+    if (Object.keys(cambios).length === 0) return;
     setEmpleados((prev) => prev.map((e) => (e.id === id ? { ...e, ...cambios } : e)));
     if (!String(id).startsWith('local-')) {
       try {
@@ -55533,10 +56201,61 @@ function AppInterno({ clubInicial } = {}) {
     } else {
       guardarRegistroLocal(LS_KEY_EMPLEADOS_LOCAL, { ...anterior, ...cambios });
     }
-    const etiquetaCambios = Object.keys(cambios || {})
-      .map((k) => (k === 'rol' ? `rol → ${ROLES_POR_VALOR[cambios.rol]?.label || cambios.rol}` : k === 'activo' ? (cambios.activo ? 'reactivado' : 'desactivado') : k === 'pin' ? 'PIN' : k))
-      .join(', ');
-    registrarEventoAuditoria('empleado_editado', { nombre: anterior?.nombre, cambios: etiquetaCambios });
+    // Auditoría: el cambio de PIN va como evento propio y NUNCA guarda el
+    // valor del PIN (ni el anterior ni el nuevo) — solo que cambió.
+    const { pin: pinCambiado, ...otrosCambios } = cambios;
+    const actor = opciones.actor;
+    if ('pin' in cambios) {
+      const eraNuevo = !anterior || anterior.pin == null || String(anterior.pin).trim() === '';
+      registrarEventoAuditoria(
+        'cambio_pin',
+        {
+          nombre: anterior?.nombre,
+          empleado_id: String(id),
+          accion: pinCambiado ? (eraNuevo ? 'creó su PIN' : 'cambió el PIN') : 'eliminó el PIN',
+          origen: actor && String(actor.id) === String(id) ? 'el propio colaborador' : 'administración',
+        },
+        actor
+      );
+    }
+    if (Object.keys(otrosCambios).length > 0) {
+      const etiquetaCambios = Object.keys(otrosCambios)
+        .map((k) => (k === 'rol' ? `rol → ${ROLES_POR_VALOR[otrosCambios.rol]?.label || otrosCambios.rol}` : k === 'activo' ? (otrosCambios.activo ? 'reactivado' : 'desactivado') : k))
+        .join(', ');
+      registrarEventoAuditoria('empleado_editado', { nombre: anterior?.nombre, cambios: etiquetaCambios }, actor);
+    }
+  }
+
+  // Eliminar Operador (botón rojo del modal de edición, ya confirmado por el
+  // operador): DELETE real en Supabase. Devuelve `{ ok }` o `{ ok:false, error }`
+  // para que el modal muestre el motivo. Reglas: no se elimina al propietario
+  // ni al operador con sesión activa. Un DELETE que RLS filtra devuelve 0
+  // filas SIN error — se detecta con `.select('id')` para no fingir éxito.
+  async function eliminarEmpleado(id) {
+    const emp = empleados.find((e) => e.id === id);
+    if (!emp) return { ok: false, error: 'El operador ya no existe en el directorio.' };
+    if (emp.rol === 'owner') return { ok: false, error: 'No se puede eliminar al Propietario.' };
+    if (operador?.id != null && String(operador.id) === String(id)) {
+      return { ok: false, error: 'No puedes eliminar al operador con la sesión activa. Cambia de operador primero.' };
+    }
+    if (!String(id).startsWith('local-')) {
+      const { data, error } = await conClubId(supabase.from('empleados').delete().eq('id', id)).select('id');
+      if (error) {
+        console.warn('[Empleados] No se pudo eliminar en Supabase.', error);
+        return { ok: false, error: detalleErrorSupabase(error) || error.message || 'Supabase no permitió eliminar al operador.' };
+      }
+      if (!data || data.length === 0) {
+        return {
+          ok: false,
+          error: 'Supabase no eliminó ninguna fila (revisa las políticas RLS de la tabla empleados o si el operador ya fue eliminado).',
+        };
+      }
+    }
+    quitarRegistroLocal(LS_KEY_EMPLEADOS_LOCAL, id);
+    setEmpleados((prev) => prev.filter((e) => e.id !== id));
+    registrarEventoAuditoria('empleado_eliminado', { nombre: emp.nombre, rol: emp.rol, empleado_id: String(id) });
+    mostrarToast({ titulo: 'Operador eliminado', detalle: `${emp.nombre} ya no está en el directorio.` });
+    return { ok: true };
   }
 
   // Guarda el Arqueo Ciego de Caja (ver `ModalArqueo`, que ya calculó
@@ -59264,6 +59983,7 @@ function AppInterno({ clubInicial } = {}) {
                 cargarEmpleados={cargarEmpleados}
                 crearEmpleado={crearEmpleado}
                 actualizarEmpleado={actualizarEmpleado}
+                eliminarEmpleado={eliminarEmpleado}
                 cierresCaja={cierresCaja}
                 loadingCierresCaja={loadingCierresCaja}
                 errorCierresCaja={errorCierresCaja}
@@ -59273,6 +59993,7 @@ function AppInterno({ clubInicial } = {}) {
                 loadingLogActividad={loadingLogActividad}
                 errorLogActividad={errorLogActividad}
                 cargarLogActividad={cargarLogActividad}
+                consultarLogActividadRango={consultarLogActividadRango}
               />
             ) : moduloActivo === 'configuracion' && operador?.rol === 'owner' ? (
               // Segundo candado (defensa de respaldo, mismo criterio que
