@@ -44816,24 +44816,31 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
                 </div>
               </motion.div>
             ))}
-            {!limiteAlcanzado && (
-              <motion.button
-                key="agregar-cancha"
-                layout
-                type="button"
-                onClick={() => setModal({ modo: 'nueva' })}
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.15 } }}
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                transition={{ type: 'spring', stiffness: 320, damping: 22 }}
-                className="flex min-h-[140px] flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/60 p-4 text-slate-500 transition-colors hover:border-orange-400 hover:bg-orange-50/50 hover:text-orange-600"
-              >
-                <Plus size={24} />
-                <span className="text-sm font-bold">+ Agregar Cancha</span>
-              </motion.button>
-            )}
+            <motion.button
+              key="agregar-cancha"
+              layout
+              type="button"
+              onClick={() => {
+                if (!limiteAlcanzado) setModal({ modo: 'nueva' });
+              }}
+              disabled={limiteAlcanzado}
+              aria-disabled={limiteAlcanzado}
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: limiteAlcanzado ? 0.55 : 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.15 } }}
+              whileHover={limiteAlcanzado ? undefined : { scale: 1.03 }}
+              whileTap={limiteAlcanzado ? undefined : { scale: 0.97 }}
+              transition={{ type: 'spring', stiffness: 320, damping: 22 }}
+              className={`flex min-h-[140px] flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-4 transition-colors ${
+                limiteAlcanzado
+                  ? 'cursor-not-allowed border-slate-200 bg-slate-100/70 text-slate-400'
+                  : 'border-slate-300 bg-slate-50/60 text-slate-500 hover:border-orange-400 hover:bg-orange-50/50 hover:text-orange-600'
+              }`}
+            >
+              <Plus size={24} />
+              <span className="text-sm font-bold">+ Agregar Cancha</span>
+              {limiteAlcanzado && <span className="text-[11px] font-semibold">Límite del plan alcanzado</span>}
+            </motion.button>
           </AnimatePresence>
         </div>
 
@@ -44850,6 +44857,12 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
             </motion.p>
           )}
         </AnimatePresence>
+
+        {maximoPlan !== null && !limiteAlcanzado && borrador.length > 0 && (
+          <p className="mt-5 text-center text-xs font-medium text-slate-400">
+            No necesitas completar las {maximoPlan} canchas de tu plan: puedes continuar con las que llevas y agregar el resto después en el módulo de Canchas.
+          </p>
+        )}
 
         {error && <p className="mt-4 text-center text-xs font-semibold text-rose-500">{error}</p>}
 
@@ -58125,6 +58138,10 @@ function AppInterno({ clubInicial } = {}) {
           const { data, error: errInsertar } = await insertarMuchosConColumnasOpcionales(
             'canchas',
             nuevas.map((b) => ({
+              // `club_id` EXPLÍCITO en cada fila: la política RLS de `canchas`
+              // (migracion_v92) solo deja insertar filas del club del que el
+              // usuario autenticado es propietario.
+              club_id: CLUB_ACTIVO_ID,
               nombre: b.nombre,
               tipo: b.tipo,
               precio_por_hora: Number(b.precio),
@@ -58143,7 +58160,15 @@ function AppInterno({ clubInicial } = {}) {
         return true;
       } catch (err) {
         console.warn('[Onboarding Canvas] No se pudieron guardar las canchas.', err);
-        mostrarToast({ titulo: 'No se pudieron guardar las canchas', detalle: err?.message || 'Intenta de nuevo en unos segundos.', tono: 'error' });
+        // 42501 = RLS de Supabase rechazó el INSERT/UPDATE/DELETE en `canchas`.
+        const errorRLS = err?.code === '42501' || /row-level security/i.test(err?.message || '');
+        mostrarToast({
+          titulo: 'No se pudieron guardar las canchas',
+          detalle: errorRLS
+            ? 'Supabase bloqueó el guardado por seguridad (RLS) en la tabla canchas. Corre migracion_v92_rls_canchas_propietario.sql en el SQL Editor y vuelve a intentar.'
+            : err?.message || 'Intenta de nuevo en unos segundos.',
+          tono: 'error',
+        });
         return false;
       } finally {
         setGuardandoCanchasOnboarding(false);
