@@ -763,7 +763,7 @@ import { supabase } from './supabaseClient';
 import { LifeBuoy as IconoNavSoporte, Headphones as IconoNavAdminSoporte } from 'lucide-react';
 import Soporte from './soporte/Soporte';
 import AdminSoporte from './soporte/AdminSoporte';
-import { consultarEsStaffQlubos } from './soporte/soporteApi';
+import { consultarEsStaffQlubos, obtenerStaffPlataforma } from './soporte/soporteApi';
 import {
   LayoutGrid,
   CalendarDays,
@@ -60760,6 +60760,93 @@ async function crearOVincularClub({ usuarioId, nombreClub, vincularExistente }) 
   }
 }
 
+/* ============================================================================
+ * PANEL DE PLATAFORMA (SuperAdmin / staff QLUBOS) — fuera de cualquier club
+ * ==========================================================================*/
+// Ruta propia del staff de QLUBOS. Se monta DIRECTO desde `ClubAuthGate`
+// cuando la sesión pertenece a `plataforma_staff` — nunca pasa por
+// `AppInterno`, así que no depende de `configuracion_club`, `empleados`,
+// `CLUB_ACTIVO_ID`, el kiosko de PIN ni el Onboarding de clubes.
+const RUTA_PANEL_SUPERADMIN = '/admin/soporte';
+
+function PanelPlataformaQlubos({ sesion, staff }) {
+  const [tema, alternarTema] = useTemaClubOS();
+  const [toasts, setToasts] = useState([]);
+  const [cerrando, setCerrando] = useState(false);
+
+  // Redirección directa: el staff siempre opera en /admin/soporte.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.location.pathname.replace(/\/+$/, '') !== RUTA_PANEL_SUPERADMIN) {
+      window.history.replaceState(window.history.state, '', RUTA_PANEL_SUPERADMIN);
+    }
+  }, []);
+
+  const mostrarToast = useCallback(({ titulo, detalle, tono = 'ok' }) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    setToasts((prev) => [...prev, { id, titulo, detalle, tono }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4500);
+  }, []);
+
+  async function cerrarSesion() {
+    setCerrando(true);
+    await supabase.auth.signOut();
+  }
+
+  const etiquetaRol = staff?.rol === 'staff_qlubos' ? 'Staff QLUBOS' : 'SuperAdmin';
+  return (
+    <div className="min-h-screen min-h-dvh bg-slate-50 text-slate-900">
+      <header className="sticky top-0 z-30 border-b border-slate-200 bg-slate-50/80 px-4 py-3 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <LogoQlubOS className="h-5 w-auto sm:h-6" />
+            <span className="hidden rounded-full bg-orange-400/15 px-2.5 py-0.5 text-[11px] font-black text-orange-500 ring-1 ring-orange-400/30 sm:inline">
+              {etiquetaRol}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="hidden max-w-[14rem] truncate text-xs font-semibold text-slate-500 md:inline">
+              {staff?.nombre || sesion?.user?.email || ''}
+            </span>
+            <BotonTemaClubOS tema={tema} onAlternar={alternarTema} />
+            <button
+              type="button"
+              onClick={cerrarSesion}
+              disabled={cerrando}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 transition hover:border-rose-400/50 hover:text-rose-500 disabled:opacity-60"
+            >
+              {cerrando ? <Loader2 size={14} className="animate-spin" /> : <LogOut size={14} />} Cerrar sesión
+            </button>
+          </div>
+        </div>
+      </header>
+      <main className="mx-auto max-w-6xl px-4 py-6">
+        <div className="mb-5">
+          <h1 className="text-xl font-black text-slate-900">Panel de Control Global</h1>
+          <p className="text-xs text-slate-500">Soporte & Acompañamiento de todos los clubes QLUBOS</p>
+        </div>
+        {/* AdminSoporte vuelve a validar el rol contra Supabase y todas sus
+            consultas pasan por funciones que exigen fn_soporte_es_staff(). */}
+        <AdminSoporte onToast={mostrarToast} />
+      </main>
+      <div className="pointer-events-none fixed bottom-4 right-4 z-[200] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            role="status"
+            className={`pointer-events-auto rounded-xl border bg-slate-900 px-4 py-3 text-white shadow-2xl ${
+              t.tono === 'error' ? 'border-rose-500/60' : 'border-slate-700'
+            }`}
+          >
+            <p className="text-sm font-bold">{t.titulo}</p>
+            {t.detalle && <p className="mt-0.5 text-xs text-slate-300">{t.detalle}</p>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Puerta de entrada del panel interno: resuelve la sesión de Supabase Auth
 // y el club que le pertenece ANTES de montar `AppInterno` — mientras no haya
 // ambos, se muestra `ClubAuthScreen` (sin sesión) o una pantalla de carga
@@ -60771,8 +60858,10 @@ async function crearOVincularClub({ usuarioId, nombreClub, vincularExistente }) 
 // aquí mismo se detecta el cambio a `session: null` para volver a mostrar el
 // login.
 function ClubAuthGate() {
-  const [estado, setEstado] = useState('cargando'); // 'cargando' | 'sin_sesion' | 'sin_club' | 'club_eliminado' | 'listo'
+  const [estado, setEstado] = useState('cargando'); // 'cargando' | 'sin_sesion' | 'superadmin' | 'error_verificacion' | 'sin_club' | 'club_eliminado' | 'listo'
   const [club, setClub] = useState(null);
+  // Staff de la plataforma (SuperAdmin) — se resuelve ANTES que el club.
+  const [staffPlataforma, setStaffPlataforma] = useState(null);
   const [sesion, setSesion] = useState(null);
   const [errorClub, setErrorClub] = useState('');
   // Refactor Onboarding (v67) — "Completar Registro" eliminado: el alta
@@ -60787,9 +60876,50 @@ function ClubAuthGate() {
     if (!session) {
       establecerClubActivo(null);
       setClub(null);
+      setStaffPlataforma(null);
       setEstado('sin_sesion');
       return;
     }
+
+    // 1) Verificación TEMPRANA de SuperAdmin (`plataforma_staff`, por
+    //    `user_id` y `activo = true`), antes de buscar club o empleado. Si es
+    //    staff se omite TODO el flujo de clubes: ni consulta a
+    //    `configuracion_club`, ni auto-provisión de club, ni Onboarding, ni
+    //    `empleados`. Si la verificación falla (red/reloj) NO se asume que
+    //    sea dueño de club: se muestra un error con Reintentar, para no
+    //    crearle un club a una cuenta corporativa por accidente.
+    let verificacion;
+    try {
+      verificacion = await conToleranciaDeReloj(async () => {
+        const r = await obtenerStaffPlataforma(session.user.id);
+        return r.ok ? { data: r.staff, error: null } : { data: null, error: r.error };
+      });
+    } catch (err) {
+      verificacion = { data: null, error: err };
+    }
+    if (verificacion?.error) {
+      console.error('[ClubOS] No se pudo verificar si la cuenta es staff de QLUBOS.', verificacion.error);
+      establecerClubActivo(null);
+      setClub(null);
+      setStaffPlataforma(null);
+      setErrorClub(
+        esErrorRelojDesfasado(verificacion.error)
+          ? MENSAJE_ERROR_RELOJ_DESFASADO
+          : verificacion.error?.message || 'No se pudo verificar tu cuenta. Revisa tu conexión e intenta de nuevo.'
+      );
+      setEstado('error_verificacion');
+      return;
+    }
+    if (verificacion?.data) {
+      establecerClubActivo(null);
+      setClub(null);
+      setStaffPlataforma(verificacion.data);
+      setEstado('superadmin');
+      return;
+    }
+    setStaffPlataforma(null);
+
+    // 2) Usuario de club (flujo de siempre, sin cambios).
     try {
       // `conToleranciaDeReloj`: esta consulta viaja con el JWT de la sesión
       // en el header — si el dispositivo tiene un desfase menor de reloj,
@@ -60881,7 +61011,7 @@ function ClubAuthGate() {
   // Interactive Onboarding Canvas de inmediato — nunca una pantalla
   // intermedia.
   const provisionarClubAutomatico = useCallback(async () => {
-    if (!sesion?.user?.id || intentoProvisionEnCursoRef.current) return;
+    if (!sesion?.user?.id || intentoProvisionEnCursoRef.current || staffPlataforma) return;
     intentoProvisionEnCursoRef.current = true;
     setErrorProvisionClub('');
     const nombrePendiente = leerNombreClubPendiente();
@@ -60898,7 +61028,7 @@ function ClubAuthGate() {
     limpiarNombreClubPendiente();
     registrarAceptacionLegal('configuracion_club', resultado.club?.id, 'club');
     manejarAutenticado(sesion, resultado.club);
-  }, [sesion]);
+  }, [sesion, staffPlataforma]);
 
   useEffect(() => {
     if (estado === 'sin_club') provisionarClubAutomatico();
@@ -60928,6 +61058,31 @@ function ClubAuthGate() {
     );
   } else if (estado === 'sin_sesion') {
     contenido = <ClubAuthScreen onAutenticado={manejarAutenticado} />;
+  } else if (estado === 'superadmin' && staffPlataforma) {
+    contenido = <PanelPlataformaQlubos sesion={sesion} staff={staffPlataforma} />;
+  } else if (estado === 'error_verificacion') {
+    contenido = (
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center bg-[#f8fafc] px-4">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-2xl">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-400/10 text-amber-500 ring-1 ring-amber-400/30">
+            <AlertTriangle size={22} />
+          </div>
+          <h2 className="text-base font-bold text-slate-900">No pudimos verificar tu cuenta</h2>
+          <p className="mt-2 text-xs text-slate-500">{errorClub}</p>
+          <BotonPrimario className="mt-4 w-full" onClick={() => resolverClubDeSesion(sesion)}>
+            <RefreshCw size={16} /> Reintentar
+          </BotonPrimario>
+          <BotonSecundario
+            className="mt-2 w-full"
+            onClick={async () => {
+              await supabase.auth.signOut();
+            }}
+          >
+            Cerrar sesión
+          </BotonSecundario>
+        </div>
+      </div>
+    );
   } else if (estado === 'sin_club') {
     contenido = (
       <div className="relative flex min-h-screen min-h-dvh items-center justify-center bg-[#f8fafc] px-4">
