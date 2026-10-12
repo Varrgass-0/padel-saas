@@ -1,5 +1,5 @@
 // =============================================================================
-// Soporte & Acompañamiento — modales
+// Soporte — modales
 //   • ModalSoporte (base)            • ModalComprarHorasExtra (Stripe)
 //   • ModalAgendarVideollamada (Cal.com + Google Calendar/Meet)
 //   • ModalRegistrarAtencion (SuperAdmin: atención realizada o ajuste/bonificación)
@@ -24,7 +24,6 @@ import {
 import {
   PRECIO_HORA_EXTRA_MXN,
   HORAS_EXTRA_OPCIONES,
-  CANALES_SOPORTE,
   ESTADOS_TICKET,
   formatoMXN,
   formatoMinutos,
@@ -32,7 +31,7 @@ import {
   formatoMinutosConSigno,
   urlCalcom,
 } from './soporteReglas';
-import { iniciarCompraHorasExtra, registrarAtencionAdmin, ajustarBolsaAdmin, listarTickets, mensajeError } from './soporteApi';
+import { iniciarCompraHorasExtra, registrarAtencionAdmin, ajustarBolsaAdmin, mensajeError } from './soporteApi';
 
 const claseInput =
   'w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-orange-400 focus:ring-1 focus:ring-orange-400';
@@ -127,7 +126,7 @@ export function ModalComprarHorasExtra({ clubId, nombreClub, onClose }) {
         </div>
         <p className="mt-2 flex items-start gap-1.5">
           <Info size={13} className="mt-0.5 shrink-0" />
-          Se suman {formatoMinutos(horas * 60)} a tu bolsa en cuanto Stripe confirma el pago. Las horas extra no vencen: se usan después de las horas de tu plan.
+          Se suman {formatoMinutos(horas * 60)} a tus horas de soporte en cuanto Stripe confirma el pago. Las horas extra no vencen: se usan después de las horas de tu plan.
         </p>
       </div>
 
@@ -180,7 +179,7 @@ export function ModalAgendarVideollamada({ config, clubId, contacto, resumen, on
     <ModalSoporte titulo="Agendar videollamada / capacitación" subtitulo="Horarios en vivo de nuestro calendario · Google Meet" onClose={onClose} ancho="max-w-3xl">
       {opciones.length === 0 ? (
         <p className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-3 text-sm text-amber-600">
-          La agenda en línea aún no está configurada (faltan VITE_CALCOM_URL_30 / VITE_CALCOM_URL_60). Escríbenos por WhatsApp para agendar.
+          La agenda en línea aún no está configurada (faltan VITE_CALCOM_URL_30 / VITE_CALCOM_URL_60).
         </p>
       ) : (
         <>
@@ -235,10 +234,10 @@ export function ModalAgendarVideollamada({ config, clubId, contacto, resumen, on
 
 // -----------------------------------------------------------------------------
 // SuperAdmin: modal de dos modos
-//   a) "Registrar Atención Realizada": sesión real (videollamada, WhatsApp,
-//      llamada o presencial) — descuenta los minutos reales. También ajusta
-//      una cita existente (ej. agendada de 30 min que duró 20).
-//   b) "Ajuste / Bonificación de Bolsa": abona (+) o corrige (−) minutos sin
+//   a) "Reunión realizada": videollamada (canal único) — descuenta los
+//      minutos reales. Abierto desde una cita existente registra su
+//      resultado (ej. agendada de 30 min que duró 20).
+//   b) "Ajuste / Bonificación": abona (+) o corrige (−) minutos sin
 //      simular una sesión. El club ve el ajuste y su motivo.
 // En ambos: notas/diagnóstico interno (solo visible para el staff).
 // -----------------------------------------------------------------------------
@@ -281,16 +280,20 @@ function MensajeError({ texto }) {
   );
 }
 
-export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, ticketInicial, modoInicial = 'atencion', onClose, onGuardado }) {
+const CANAL_UNICO = 'videollamada';
+
+// `ticketsDelClub` se acepta por compatibilidad pero ya no se usa (sin selector de atención).
+export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketInicial, modoInicial = 'atencion', onClose, onGuardado }) {
   const clubBloqueado = Boolean(ticketInicial);
   const [modo, setModo] = useState(ticketInicial ? 'atencion' : modoInicial);
   const [clubId, setClubId] = useState(String(clubIdInicial ?? ticketInicial?.club_id ?? ''));
-  const [tickets, setTickets] = useState(ticketsDelClub || []);
-  const [ticketId, setTicketId] = useState(ticketInicial?.id ?? '');
-  const ticket = tickets.find((t) => t.id === ticketId) || (ticketInicial?.id === ticketId ? ticketInicial : null);
+  // Canal único: videollamada (Google Meet / Cal.com). Si se abrió desde una
+  // cita existente ("Ajustar" / "Registrar resultado"), se registra el
+  // resultado de ESA cita; si no, se crea una reunión nueva.
+  const ticket = ticketInicial || null;
+  const ticketId = ticket?.id || '';
 
-  // --- Modo atención ---
-  const [canal, setCanal] = useState(ticket?.canal || 'videollamada');
+  // --- Modo reunión ---
   const [concepto, setConcepto] = useState(ticket?.concepto || '');
   const [minutos, setMinutos] = useState(ticket ? String(ticket.minutos_reservados || ticket.minutos_consumidos || 30) : '30');
   const [estado, setEstado] = useState(ticket && ticket.estado !== 'agendada' ? ticket.estado : 'completada');
@@ -308,51 +311,6 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
 
   const club = (clubes || []).find((c) => String(c.club_id) === String(clubId)) || null;
   const saldoActual = Number(club?.minutos_disponibles_mes) || 0;
-
-  // Atenciones del club elegido (para "ajustar una existente").
-  useEffect(() => {
-    let vivo = true;
-    if (!clubId) {
-      setTickets([]);
-      return undefined;
-    }
-    const precargados = (ticketsDelClub || []).filter((t) => String(t.club_id) === String(clubId));
-    if (precargados.length) setTickets(precargados);
-    listarTickets(clubId, 60).then(({ data, error: err }) => {
-      if (vivo && !err) setTickets(data);
-    });
-    return () => {
-      vivo = false;
-    };
-  }, [clubId, ticketsDelClub]);
-
-  function elegirTicket(id) {
-    setTicketId(id);
-    const t = tickets.find((x) => x.id === id);
-    if (t) {
-      setCanal(t.canal || 'videollamada');
-      setConcepto(t.concepto || '');
-      setMinutos(String(t.minutos_reservados || t.minutos_consumidos || 30));
-      setEstado(t.estado !== 'agendada' ? t.estado : 'completada');
-      setInicio(aInputLocal(t.inicio));
-      setMeetUrl(t.meet_url || '');
-    } else {
-      setConcepto('');
-      setMinutos('30');
-      setEstado('completada');
-      setInicio(aInputLocal(null));
-      setMeetUrl('');
-    }
-  }
-
-  // Agendadas primero (las que hay que cerrar), luego el resto.
-  const ticketsOrdenados = useMemo(
-    () =>
-      [...tickets]
-        .sort((a, b) => (a.estado === 'agendada' ? 0 : 1) - (b.estado === 'agendada' ? 0 : 1) || new Date(b.inicio || 0).getTime() - new Date(a.inicio || 0).getTime())
-        .slice(0, 60),
-    [tickets]
-  );
 
   const minAjusteNum = Math.round(Number(minutosAjuste) || 0);
   const ajusteFirmado = signoAjuste * minAjusteNum;
@@ -384,7 +342,7 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
     }
     if (!ticketId && !concepto.trim()) {
       setGuardando(false);
-      return setError('Describe brevemente el concepto de la atención.');
+      return setError('Describe brevemente el concepto de la reunión.');
     }
     if (meetUrl && !/^https:\/\//i.test(meetUrl)) {
       setGuardando(false);
@@ -394,29 +352,29 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
     const { data, error: err } = await registrarAtencionAdmin({
       clubId,
       ticketId: ticketId || null,
-      canal,
+      canal: CANAL_UNICO,
       concepto: concepto.trim() || null,
       minutos: estado === 'cancelada' ? 0 : min,
       estado,
       inicio: fecha && !Number.isNaN(fecha.getTime()) ? fecha.toISOString() : null,
-      meetUrl: canal === 'videollamada' ? meetUrl.trim() || null : null,
+      meetUrl: meetUrl.trim() || null,
       notas,
     });
     setGuardando(false);
-    if (err) return setError(mensajeError(err, 'No se pudo guardar la atención.'));
+    if (err) return setError(mensajeError(err, 'No se pudo guardar la reunión.'));
     onGuardado?.({ modo: 'atencion', clubId, ticket: data });
     onClose?.();
   }
 
   const MODOS = [
-    { id: 'atencion', label: 'Registrar Atención Realizada', icon: ClipboardCheck },
-    { id: 'ajuste', label: 'Ajuste / Bonificación de Bolsa', icon: SlidersHorizontal },
+    { id: 'atencion', label: 'Reunión realizada', icon: ClipboardCheck },
+    { id: 'ajuste', label: 'Ajuste / Bonificación', icon: SlidersHorizontal },
   ];
 
   return (
     <ModalSoporte
-      titulo={modo === 'ajuste' ? 'Ajuste de bolsa' : ticketId ? 'Ajustar atención' : 'Registrar atención'}
-      subtitulo={club ? `${club.nombre} · saldo actual ${formatoMinutos(saldoActual)}` : 'Elige el club'}
+      titulo="Registrar reunión"
+      subtitulo={club ? `${club.nombre} · disponible ${formatoMinutos(saldoActual)}` : 'Elige el club'}
       onClose={guardando ? undefined : onClose}
     >
       {!clubBloqueado && (
@@ -450,11 +408,7 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
           <span className="text-xs font-bold text-slate-600">Club</span>
           <select
             value={clubId}
-            onChange={(e) => {
-              setClubId(e.target.value);
-              setTicketId('');
-              elegirTicket('');
-            }}
+            onChange={(e) => setClubId(e.target.value)}
             className={`${claseInput} mt-1`}
             disabled={clubBloqueado}
           >
@@ -469,36 +423,21 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
 
         {modo === 'atencion' ? (
           <>
-            <label className="block">
-              <span className="text-xs font-bold text-slate-600">Atención</span>
-              <select value={ticketId} onChange={(e) => elegirTicket(e.target.value)} className={`${claseInput} mt-1`} disabled={!clubId || clubBloqueado}>
-                <option value="">+ Nueva atención</option>
-                {ticketsOrdenados.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {formatoFechaHora(t.inicio)} · {CANALES_SOPORTE[t.canal]?.label || t.canal} · {ESTADOS_TICKET[t.estado]?.label || t.estado} · {formatoMinutos(t.minutos_reservados)}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <div>
-              <span className="text-xs font-bold text-slate-600">Canal</span>
-              <div className="mt-1 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                {Object.entries(CANALES_SOPORTE).map(([v, m]) => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => setCanal(v)}
-                    aria-pressed={canal === v}
-                    className={`rounded-lg border px-2 py-2 text-xs font-bold transition ${
-                      canal === v ? 'border-orange-400 bg-orange-400/10 text-orange-500' : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-orange-300'
-                    }`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
+            {ticket ? (
+              <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+                <Video size={16} className="mt-0.5 shrink-0 text-orange-500" />
+                <div className="min-w-0 text-xs">
+                  <p className="font-bold text-slate-900">Resultado de la videollamada agendada</p>
+                  <p className="truncate text-slate-500">
+                    {formatoFechaHora(ticket.inicio)} · {formatoMinutos(ticket.minutos_reservados)} · {ESTADOS_TICKET[ticket.estado]?.label || ticket.estado}
+                  </p>
+                </div>
               </div>
-            </div>
+            ) : (
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+                <Video size={13} className="text-orange-500" /> Videollamada (Google Meet)
+              </p>
+            )}
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="block">
@@ -565,12 +504,10 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
               )}
             </div>
 
-            {canal === 'videollamada' && (
-              <label className="block">
-                <span className="text-xs font-bold text-slate-600">Enlace de Meet (opcional)</span>
-                <input value={meetUrl} onChange={(e) => setMeetUrl(e.target.value)} placeholder="https://meet.google.com/…" className={`${claseInput} mt-1`} />
-              </label>
-            )}
+            <label className="block">
+              <span className="text-xs font-bold text-slate-600">Enlace de Meet (opcional)</span>
+              <input value={meetUrl} onChange={(e) => setMeetUrl(e.target.value)} placeholder="https://meet.google.com/…" className={`${claseInput} mt-1`} />
+            </label>
           </>
         ) : (
           <>
@@ -621,7 +558,7 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
 
             {club && minAjusteNum > 0 && (
               <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs">
-                <span className="text-slate-500">Saldo del club</span>
+                <span className="text-slate-500">Horas de soporte del club</span>
                 <span className="font-bold text-slate-900">
                   {formatoMinutos(saldoActual)} <span className="text-slate-400">→</span>{' '}
                   <span className={ajusteFirmado > 0 ? 'text-emerald-600' : 'text-rose-500'}>
@@ -638,7 +575,7 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
                 value={motivoAjuste}
                 onChange={(e) => setMotivoAjuste(e.target.value)}
                 maxLength={300}
-                placeholder={signoAjuste === 1 ? 'Ej. Compensación por falla del sistema' : 'Ej. Corrección de atención registrada dos veces'}
+                placeholder={signoAjuste === 1 ? 'Ej. Compensación por falla del sistema' : 'Ej. Corrección de reunión registrada dos veces'}
                 className={`${claseInput} mt-1`}
               />
             </label>
@@ -663,7 +600,7 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
           className="inline-flex items-center gap-2 rounded-lg bg-orange-400 px-4 py-2 text-sm font-black text-slate-950 transition hover:bg-orange-300 disabled:opacity-60"
         >
           {guardando ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-          {modo === 'ajuste' ? `Aplicar ajuste ${minAjusteNum > 0 ? formatoMinutosConSigno(ajusteFirmado) : ''}` : 'Guardar y recalcular bolsa'}
+          {modo === 'ajuste' ? `Aplicar ajuste ${minAjusteNum > 0 ? formatoMinutosConSigno(ajusteFirmado) : ''}` : 'Guardar reunión'}
         </button>
       </div>
     </ModalSoporte>

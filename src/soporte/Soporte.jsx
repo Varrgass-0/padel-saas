@@ -1,32 +1,28 @@
 // =============================================================================
-// Soporte & Acompañamiento — Vista del CLUB (/soporte)
-// Visible para Owner / Admin del club. Bolsa mensual de horas, canales de
-// atención (WhatsApp y videollamada en Cal.com + Google Calendar), próximas
-// citas y el historial de atenciones.
+// Soporte — Vista del CLUB (/soporte)
+// Visible para Owner / Admin del club. Horas de soporte del mes, videollamada
+// (Cal.com + Google Calendar/Meet, canal único), próximas citas e historial.
+// Sin botón "Actualizar": todo se refresca solo con Supabase Realtime.
 // =============================================================================
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LifeBuoy,
-  MessageCircle,
   Video,
   CalendarClock,
   Clock,
   CreditCard,
   ExternalLink,
   AlertTriangle,
-  RefreshCw,
   Loader2,
   Info,
   Lock,
 } from 'lucide-react';
 import {
-  CANALES_SOPORTE,
   ESTADOS_TICKET,
   PRECIO_HORA_EXTRA_MXN,
   TOLERANCIA_MINUTOS,
   ANTICIPACION_CANCELACION_HORAS,
   configSoporte,
-  enlaceWhatsAppSoporte,
   enlacesGestionCalcom,
   estadoSalaCita,
   evaluarCancelacion,
@@ -62,7 +58,7 @@ export function WidgetBolsaHoras({ bolsa, onComprar, compacto = false }) {
     <div className="rounded-2xl border border-slate-200 bg-white p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Bolsa de horas de soporte</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Horas de soporte</p>
           <p className="mt-1 text-3xl font-black text-slate-900">
             {formatoMinutos(r.disponibles)}
             <span className="ml-2 text-sm font-semibold text-slate-500">disponibles de {formatoMinutos(r.total)}</span>
@@ -133,11 +129,10 @@ export function TablaHistorialSoporte({ tickets, onAjustar }) {
   }
   return (
     <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-      <table className="w-full min-w-[720px] text-left text-sm">
+      <table className="w-full min-w-[620px] text-left text-sm">
         <thead className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
           <tr>
             <th className="px-4 py-2.5 font-semibold">Fecha</th>
-            <th className="px-4 py-2.5 font-semibold">Canal</th>
             <th className="px-4 py-2.5 font-semibold">Concepto</th>
             <th className="px-4 py-2.5 text-right font-semibold">Minutos</th>
             <th className="px-4 py-2.5 font-semibold">Estatus</th>
@@ -151,7 +146,6 @@ export function TablaHistorialSoporte({ tickets, onAjustar }) {
             return (
               <tr key={t.id} className="text-slate-700">
                 <td className="whitespace-nowrap px-4 py-2.5 text-xs">{formatoFechaHora(t.inicio || t.creado_en)}</td>
-                <td className="px-4 py-2.5 text-xs font-semibold">{CANALES_SOPORTE[t.canal]?.label || t.canal}</td>
                 <td className="max-w-[260px] truncate px-4 py-2.5 text-xs" title={t.concepto || ''}>
                   {t.concepto || '—'}
                 </td>
@@ -219,7 +213,7 @@ function TarjetaProximaCita({ cita, ahora, calcomBase, onUnirme, uniendose }) {
             disabled={uniendose}
             className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-black text-white transition hover:bg-emerald-400 disabled:opacity-60"
           >
-            {uniendose ? <Loader2 size={14} className="animate-spin" /> : <Video size={14} />} Unirme a la llamada
+            {uniendose ? <Loader2 size={14} className="animate-spin" /> : <Video size={14} />} Unirme a Google Meet
           </button>
         )}
         {sala === 'pronto' && <span className="text-[11px] font-semibold text-slate-500">La sala abre 15 min antes</span>}
@@ -285,11 +279,28 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
     if (!puedeGestionar) return undefined;
     cargar();
     obtenerUsuarioActual().then((u) => montadoRef.current && setContacto(u));
-    const quitar = suscribirCambiosSoporte(clubId, () => cargar({ silencioso: true }));
+    // Tiempo real: cualquier cambio en horas, citas, compras o ajustes del
+    // club recarga en silencio (agrupando ráfagas de eventos).
+    let temporizador = null;
+    const quitar = suscribirCambiosSoporte(clubId, () => {
+      clearTimeout(temporizador);
+      temporizador = setTimeout(() => cargar({ silencioso: true }), 400);
+    });
+    // Respaldo silencioso: refleja No-Shows/cierres que dependen de la hora
+    // aunque Realtime se haya desconectado. No es un botón.
+    const respaldo = setInterval(() => cargar({ silencioso: true }), 120_000);
     const reloj = setInterval(() => setAhora(new Date()), 30_000);
+    // Al volver a la pestaña, ponerse al día de inmediato.
+    const alVolver = () => {
+      if (document.visibilityState === 'visible') cargar({ silencioso: true });
+    };
+    document.addEventListener('visibilitychange', alVolver);
     return () => {
       quitar();
+      clearTimeout(temporizador);
+      clearInterval(respaldo);
       clearInterval(reloj);
+      document.removeEventListener('visibilitychange', alVolver);
     };
   }, [cargar, clubId, puedeGestionar]);
 
@@ -322,12 +333,6 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
         .sort((a, b) => new Date(a.inicio).getTime() - new Date(b.inicio).getTime()),
     [tickets, ahora]
   );
-  const linkWhatsApp = enlaceWhatsAppSoporte({
-    numero: config.whatsappNumero,
-    nombreClub,
-    clubId,
-    nombreUsuario: nombreUsuario || contacto?.nombre,
-  });
   const hayAgenda = Boolean(config.calcomUrl30 || config.calcomUrl60);
 
   async function unirme(cita) {
@@ -357,7 +362,7 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
   if (clubId == null) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-        No hay un club activo en esta sesión. Vuelve a iniciar sesión para ver tu bolsa de soporte.
+        No hay un club activo en esta sesión. Vuelve a iniciar sesión para ver tus horas de soporte.
       </div>
     );
   }
@@ -366,7 +371,7 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center">
         <Lock size={22} className="mx-auto text-slate-400" />
-        <p className="mt-2 text-sm font-bold text-slate-900">Soporte & Acompañamiento</p>
+        <p className="mt-2 text-sm font-bold text-slate-900">Soporte</p>
         <p className="mt-1 text-xs text-slate-500">Esta sección es exclusiva del Owner / Administrador del club.</p>
       </div>
     );
@@ -374,18 +379,9 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          <LifeBuoy size={14} /> Soporte & Acompañamiento
-        </p>
-        <button
-          type="button"
-          onClick={() => cargar()}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:border-orange-300 hover:text-orange-500"
-        >
-          <RefreshCw size={13} className={cargando ? 'animate-spin' : ''} /> Actualizar
-        </button>
-      </div>
+      <h1 className="flex items-center gap-2 text-xl font-black text-slate-900">
+        <LifeBuoy size={20} className="text-orange-500" /> Soporte
+      </h1>
 
       {error && (
         <div className={`flex items-start gap-2 rounded-xl border px-4 py-3 text-sm font-semibold ${esquemaFaltante ? 'border-amber-400/40 bg-amber-400/10 text-amber-600' : 'border-rose-500/40 bg-rose-500/10 text-rose-500'}`}>
@@ -404,22 +400,8 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Canales de atención</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Videollamada con QLUBOS</p>
           <div className="mt-3 space-y-2">
-            {linkWhatsApp ? (
-              <a
-                href={linkWhatsApp}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-600 transition hover:bg-emerald-500/20"
-              >
-                <MessageCircle size={18} /> WhatsApp directo
-              </a>
-            ) : (
-              <p className="rounded-xl border border-dashed border-slate-300 px-4 py-3 text-xs text-slate-500">
-                WhatsApp de soporte no configurado (VITE_WHATSAPP_SUPPORT_NUMBER).
-              </p>
-            )}
             <button
               type="button"
               onClick={() => setModal('agendar')}
@@ -461,13 +443,13 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
       )}
 
       <div className="space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de atenciones</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de reuniones</p>
         {cargando && tickets.length === 0 ? <div className="h-32 animate-pulse rounded-2xl border border-slate-200 bg-slate-100" /> : <TablaHistorialSoporte tickets={tickets} />}
       </div>
 
       {ajustes.length > 0 && (
         <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ajustes de bolsa del equipo QLUBOS</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ajustes</p>
           <div className="divide-y divide-slate-200 rounded-2xl border border-slate-200 bg-white">
             {ajustes.map((a) => (
               <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-xs">

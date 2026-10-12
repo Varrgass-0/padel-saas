@@ -1,5 +1,5 @@
 // =============================================================================
-// Soporte & Acompañamiento — reglas de negocio y utilidades (funciones puras)
+// Soporte — reglas de negocio y utilidades (funciones puras)
 // =============================================================================
 // La fuente de verdad de la bolsa vive en Supabase (migracion_v93). Este
 // archivo replica las reglas SOLO para mostrarlas en pantalla y para validar
@@ -108,6 +108,8 @@ export function formatoFecha(iso) {
   return d.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
+// Canal único actual: videollamada. Las demás etiquetas se conservan solo
+// para mostrar correctamente registros históricos.
 export const CANALES_SOPORTE = {
   videollamada: { label: 'Videollamada' },
   whatsapp: { label: 'WhatsApp' },
@@ -138,19 +140,9 @@ function leerEnv(nombre) {
 
 export function configSoporte() {
   return {
-    whatsappNumero: leerEnv('VITE_WHATSAPP_SUPPORT_NUMBER').replace(/\D/g, ''),
     calcomUrl30: leerEnv('VITE_CALCOM_URL_30'),
     calcomUrl60: leerEnv('VITE_CALCOM_URL_60'),
   };
-}
-
-export function enlaceWhatsAppSoporte({ numero, nombreClub, clubId, nombreUsuario }) {
-  const limpio = String(numero || '').replace(/\D/g, '');
-  if (!limpio) return null;
-  const texto =
-    `Hola equipo QLUBOS 👋, soy ${nombreUsuario || 'el administrador'} de ${nombreClub || 'mi club'}` +
-    `${clubId ? ` (ID ${clubId})` : ''}. Necesito apoyo con: `;
-  return `https://wa.me/${limpio}?text=${encodeURIComponent(texto)}`;
 }
 
 // URL del widget de Cal.com con el club identificado (metadata[club_id]) y

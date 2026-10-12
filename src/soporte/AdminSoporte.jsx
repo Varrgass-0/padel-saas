@@ -1,11 +1,11 @@
 // =============================================================================
-// Soporte & Acompañamiento — Panel SuperAdmin (/admin/soporte)
+// Soporte — Panel SuperAdmin (/admin/soporte)
 // Exclusivo para staff de QLUBOS (tabla plataforma_staff). El candado real
 // está en Supabase (RLS + funciones que validan fn_soporte_es_staff); esta
 // pantalla además vuelve a consultar el rol antes de mostrar nada.
 //
 // Dos vistas:
-//   • Clubes (Bolsas): métricas que funcionan como filtros rápidos, lista de
+//   • Clubes: métricas que funcionan como filtros rápidos, lista de
 //     clubes y ficha del club (bolsa, diagnóstico interno, ajustes, historial).
 //   • Agenda & Citas: todas las citas de todos los clubes en orden
 //     cronológico (Próximas / Completadas / Canceladas) con acceso directo a
@@ -18,18 +18,16 @@ import {
   Building2,
   CalendarDays,
   ClipboardCheck,
-  Headphones,
+  LifeBuoy,
   Loader2,
   Lock,
   Plus,
-  Radio,
   Search,
   ShieldAlert,
   Video,
   X,
 } from 'lucide-react';
 import {
-  CANALES_SOPORTE,
   duracionCitaMin,
   etiquetaDiaAgenda,
   formatoFecha,
@@ -181,7 +179,6 @@ function TarjetaCita({ cita, nombreClub, ahora, onVerClub, onRegistrar }) {
           {pendienteCerrar && (
             <span className="rounded-full bg-amber-400/10 px-2.5 py-0.5 text-[11px] font-bold text-amber-600 ring-1 ring-amber-400/30">Pendiente de registrar</span>
           )}
-          <span className="text-[11px] text-slate-500">{CANALES_SOPORTE[cita.canal]?.label || cita.canal}</span>
           {cita.estado !== 'agendada' && cita.minutos_consumidos > 0 && (
             <span className="text-[11px] font-semibold text-slate-500">· {formatoMinutos(cita.minutos_consumidos)} descontados</span>
           )}
@@ -304,7 +301,7 @@ function PanelNotasInternas({ notas, ajustes }) {
           <Lock size={12} /> Diagnóstico interno
         </p>
         {notas.length === 0 ? (
-          <p className="mt-2 text-xs text-slate-500">Sin notas todavía. Agrégalas al registrar una atención o un ajuste.</p>
+          <p className="mt-2 text-xs text-slate-500">Sin notas todavía. Agrégalas al registrar una reunión o un ajuste.</p>
         ) : (
           <ul className="mt-2 space-y-2.5">
             {lista.map((n) => (
@@ -325,7 +322,7 @@ function PanelNotasInternas({ notas, ajustes }) {
         )}
       </div>
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ajustes de bolsa</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ajustes</p>
         {ajustes.length === 0 ? (
           <p className="mt-2 text-xs text-slate-500">Sin bonificaciones ni correcciones.</p>
         ) : (
@@ -528,18 +525,21 @@ export default function AdminSoporte({ onToast }) {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          <Headphones size={14} /> Panel SuperAdmin · Soporte
-          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold normal-case tracking-normal ${enVivo ? 'bg-emerald-500/10 text-emerald-600' : 'bg-slate-100 text-slate-500'}`}>
-            <Radio size={11} /> {enVivo ? 'En vivo' : 'Conectando…'}
-          </span>
-        </p>
+        <h1 className="flex items-center gap-2 text-xl font-black text-slate-900">
+          <LifeBuoy size={20} className="text-orange-500" /> Soporte
+          {/* Indicador discreto de actualización en tiempo real (sin texto). */}
+          <span
+            title={enVivo ? 'Actualización en tiempo real activa' : 'Conectando…'}
+            aria-label={enVivo ? 'Actualización en tiempo real activa' : 'Conectando'}
+            className={`h-2 w-2 rounded-full ${enVivo ? 'bg-emerald-500' : 'bg-slate-300'}`}
+          />
+        </h1>
         <button
           type="button"
           onClick={() => setModal({ clubId: clubSelId ?? '' })}
           className="inline-flex items-center gap-1.5 rounded-lg bg-orange-400 px-3.5 py-2 text-xs font-black text-slate-950 shadow-sm hover:bg-orange-300"
         >
-          <Plus size={14} /> Registrar / Ajustar Atención
+          <Plus size={14} /> Registrar reunión
           {clubSel && <span className="hidden max-w-[10rem] truncate font-semibold text-slate-800 sm:inline">· {clubSel.nombre}</span>}
         </button>
       </div>
@@ -578,7 +578,7 @@ export default function AdminSoporte({ onToast }) {
 
       <div role="tablist" aria-label="Vista del panel" className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1 sm:inline-grid sm:w-auto">
         {[
-          { id: 'clubes', label: 'Vista Clubes (Bolsas)', icon: Building2 },
+          { id: 'clubes', label: 'Vista Clubes', icon: Building2 },
           { id: 'agenda', label: 'Vista Agenda & Citas', icon: CalendarDays, badge: proximasCount },
         ].map((t) => {
           const Icono = t.icon;
@@ -676,7 +676,7 @@ export default function AdminSoporte({ onToast }) {
           <div className="space-y-4 lg:col-span-3">
             {!clubSel ? (
               <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">
-                Selecciona un club para ver su bolsa de horas, su diagnóstico y su historial.
+                Selecciona un club para ver sus horas de soporte, su diagnóstico y su historial.
               </div>
             ) : (
               <>
@@ -704,15 +704,14 @@ export default function AdminSoporte({ onToast }) {
         <ModalRegistrarAtencion
           clubes={clubes}
           clubIdInicial={modal.clubId ?? ''}
-          ticketsDelClub={String(modal.clubId) === String(clubSelId) ? ticketsSel : []}
           ticketInicial={modal.ticket || null}
           modoInicial={modal.modo || 'atencion'}
           onClose={() => setModal(null)}
           onGuardado={(r) => {
             if (r?.modo === 'ajuste') {
-              toastRef.current?.({ titulo: 'Ajuste aplicado', detalle: `${formatoMinutosConSigno(r.ajuste?.minutos)} en la bolsa del club.` });
+              toastRef.current?.({ titulo: 'Ajuste aplicado', detalle: `${formatoMinutosConSigno(r.ajuste?.minutos)} en las horas de soporte del club.` });
             } else {
-              toastRef.current?.({ titulo: 'Atención guardada', detalle: `Se descontaron ${formatoMinutos(r?.ticket?.minutos_consumidos)} de la bolsa.` });
+              toastRef.current?.({ titulo: 'Reunión registrada', detalle: `Se descontaron ${formatoMinutos(r?.ticket?.minutos_consumidos)} de las horas de soporte.` });
             }
             cargarClubes({ silencioso: true });
             cargarAgenda({ silencioso: true });

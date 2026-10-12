@@ -1,5 +1,5 @@
 // =============================================================================
-// Soporte & Acompañamiento — acceso a Supabase (RPC, tablas, Realtime, Edge)
+// Soporte — acceso a Supabase (RPC, tablas, Realtime, Edge)
 // =============================================================================
 import { supabase } from '../supabaseClient';
 
