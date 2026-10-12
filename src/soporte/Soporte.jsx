@@ -46,6 +46,31 @@ import {
 } from './soporteApi';
 import { ModalComprarHorasExtra, ModalAgendarVideollamada } from './SoporteModal';
 
+// Lectura de variables de entorno de Vite tolerante (sin `import.meta.env`
+// definido, p. ej. en pruebas, devuelve '').
+function leerEnvSoporte(nombre) {
+  try {
+    // @ts-ignore — import.meta.env lo inyecta Vite.
+    const valor = import.meta.env?.[nombre];
+    return typeof valor === 'string' ? valor.trim() : '';
+  } catch (_e) {
+    return '';
+  }
+}
+
+// URLs de Cal.com con respaldo: además de VITE_CALCOM_URL_30 / _60 acepta
+// una sola VITE_CALCOM_URL (ej. https://cal.com/qlubos) y arma los eventos
+// `soporte-30` / `soporte-60`. Nunca se mezcla una duración con la otra.
+function resolverConfigCalcom() {
+  const base = configSoporte();
+  const raiz = leerEnvSoporte('VITE_CALCOM_URL').replace(/\/+$/, '');
+  return {
+    ...base,
+    calcomUrl30: base.calcomUrl30 || (raiz ? `${raiz}/soporte-30` : ''),
+    calcomUrl60: base.calcomUrl60 || (raiz ? `${raiz}/soporte-60` : ''),
+  };
+}
+
 export function BadgeEstadoTicket({ estado }) {
   const meta = ESTADOS_TICKET[estado] || { label: estado || '—', clase: 'bg-slate-400/10 text-slate-500 ring-slate-400/30' };
   return <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-bold ring-1 ${meta.clase}`}>{meta.label}</span>;
@@ -233,7 +258,7 @@ function TarjetaProximaCita({ cita, ahora, calcomBase, onUnirme, uniendose }) {
 }
 
 export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestionar = true, onToast }) {
-  const config = useMemo(() => configSoporte(), []);
+  const config = useMemo(() => resolverConfigCalcom(), []);
   const [bolsa, setBolsa] = useState(null);
   const [tickets, setTickets] = useState([]);
   const [compras, setCompras] = useState([]);
@@ -334,6 +359,15 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
     [tickets, ahora]
   );
   const hayAgenda = Boolean(config.calcomUrl30 || config.calcomUrl60);
+  // Saldo para el modal de agenda: si la información de horas todavía no
+  // cargó (o no se pudo leer), NO se bloquea la agenda en el frontend — el
+  // servidor (webhook de Cal.com) es quien retiene y cobra los minutos.
+  const saldoConocido = bolsa != null && !esquemaFaltante;
+  const resumenAgenda = saldoConocido ? resumen : { ...resumen, puedeAgendar30: true, puedeAgendar60: true };
+
+  function abrirAgenda() {
+    setModal('agendar');
+  }
 
   async function unirme(cita) {
     const meet = urlSeguraHttp(cita.meet_url);
@@ -402,16 +436,19 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Videollamada con QLUBOS</p>
           <div className="mt-3 space-y-2">
+            {/* Siempre clicable: el modal decide qué duraciones ofrecer según el
+                saldo y explica qué falta si la agenda no está configurada. */}
             <button
               type="button"
-              onClick={() => setModal('agendar')}
-              disabled={!hayAgenda || !resumen.puedeAgendar30 || esquemaFaltante}
-              className="flex w-full items-center gap-3 rounded-xl border border-orange-400/40 bg-orange-400/10 px-4 py-3 text-left text-sm font-bold text-orange-500 transition hover:bg-orange-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={abrirAgenda}
+              className="flex w-full cursor-pointer items-center gap-3 rounded-xl border border-orange-400/40 bg-orange-400/10 px-4 py-3 text-left text-sm font-bold text-orange-500 transition hover:bg-orange-400/20"
             >
               <CalendarClock size={18} /> Agendar videollamada / capacitación
             </button>
-            {hayAgenda && !resumen.puedeAgendar30 && !cargando && (
-              <p className="text-[11px] font-semibold text-rose-500">Necesitas al menos 30 min disponibles para agendar.</p>
+            {saldoConocido && !resumen.puedeAgendar30 && !cargando && (
+              <p className="text-[11px] font-semibold text-amber-600">
+                Tienes {formatoMinutos(resumen.disponibles)} disponibles. Para agendar necesitas al menos 30 min: compra horas extra en el recuadro de tus horas de soporte.
+              </p>
             )}
           </div>
 
@@ -500,7 +537,7 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
           config={config}
           clubId={clubId}
           contacto={{ nombre: nombreUsuario || contacto?.nombre, email: contacto?.email }}
-          resumen={resumen}
+          resumen={resumenAgenda}
           onClose={() => {
             setModal(null);
             cargar({ silencioso: true });
