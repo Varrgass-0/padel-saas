@@ -33,12 +33,17 @@ import {
   urlSeguraHttp,
   conceptoReunion,
   conciliarRetenido,
+  extraerReservaCal,
+  esMensajeReservaCal,
 } from './soporteReglas';
 import {
   obtenerBolsa,
   listarTickets,
   listarComprasExtra,
   listarAjustes,
+  listarCitasProximas,
+  registrarCitaPortal,
+  sincronizarCalcom,
   registrarConexion,
   suscribirCambiosSoporte,
   obtenerUsuarioActual,
@@ -62,7 +67,7 @@ function leerEnvSoporte(nombre) {
 // URLs de Cal.com con respaldo: además de VITE_CALCOM_URL_30 / _60 acepta
 // una sola VITE_CALCOM_URL (ej. https://cal.com/qlubos) y arma los eventos
 // `soporte-30` / `soporte-60`. Nunca se mezcla una duración con la otra.
-function resolverConfigCalcom() {
+export function resolverConfigCalcom() {
   const base = configSoporte();
   const raiz = leerEnvSoporte('VITE_CALCOM_URL').replace(/\/+$/, '');
   return {
@@ -293,6 +298,8 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
   const esperaCitaRef = useRef(null);
   const agendadasPreviasRef = useRef(new Set());
   const reservaConfirmadaRef = useRef(false);
+  const duracionElegidaRef = useRef(30);
+  const uidsRegistradosRef = useRef(new Set());
   const toastRef = useRef(onToast);
   toastRef.current = onToast;
 
@@ -300,7 +307,20 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
     async ({ silencioso = false } = {}) => {
       if (clubId == null) return;
       if (!silencioso) setCargando(true);
-      const [b, t, c, aj] = await Promise.all([obtenerBolsa(clubId), listarTickets(clubId), listarComprasExtra(clubId), listarAjustes(clubId)]);
+      const [b, t, c, aj, px] = await Promise.all([
+        obtenerBolsa(clubId),
+        listarTickets(clubId),
+        listarComprasExtra(clubId),
+        listarAjustes(clubId),
+        listarCitasProximas(clubId),
+      ]);
+      // Las citas próximas (agendadas desde hace 2 h en adelante) se leen
+      // aparte y se mezclan con el historial, para que nunca queden fuera
+      // por el límite de filas del historial.
+      if (!t.error && !px.error && px.data.length) {
+        const ids = new Set(t.data.map((x) => x.id));
+        t.data = [...px.data.filter((x) => !ids.has(x.id)), ...t.data];
+      }
       // Ajustes (v95) son opcionales: si la tabla no existe aún, se ignoran.
       if (!aj.error) setAjustes(aj.data);
       if (!montadoRef.current) return;
@@ -373,12 +393,9 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
         return;
       }
       if (!hostsCal.has(host) && !host.endsWith('.cal.com')) return;
-      const d = evento.data && typeof evento.data === 'object' ? evento.data : {};
-      const tipo = `${d.type || ''} ${d.method || ''} ${d.fullType || ''}`;
-      if (/bookingSuccessful/i.test(tipo)) {
-        reservaConfirmadaRef.current = true;
-        esperarNuevaCita();
-      }
+      if (!esMensajeReservaCal(evento.data)) return;
+      reservaConfirmadaRef.current = true;
+      registrarReservaConfirmada(evento.data);
     }
     window.addEventListener('message', alMensaje);
     return () => window.removeEventListener('message', alMensaje);
@@ -466,6 +483,34 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
     esperaCitaRef.current = setInterval(revisar, 3000);
   }
 
+  // Registro DIRECTO en Supabase de la reserva que Cal.com acaba de confirmar
+  // (no espera al webhook): la cita aparece al instante en "Próximas citas" y
+  // suma a "Retenido en citas". El webhook después actualiza la MISMA fila
+  // (mismo uid de Cal.com), así que nunca se duplica.
+  async function registrarReservaConfirmada(datosCal) {
+    const reserva = extraerReservaCal(datosCal, duracionElegidaRef.current);
+    if (reserva && !uidsRegistradosRef.current.has(reserva.uid)) {
+      uidsRegistradosRef.current.add(reserva.uid);
+      const { data, error: err } = await registrarCitaPortal({ clubId, ...reserva });
+      if (!err && data) {
+        agendadasPreviasRef.current.add(data.id);
+        reservaConfirmadaRef.current = false;
+        await cargar({ silencioso: true });
+        toastRef.current?.({
+          titulo: 'Reunión de soporte agendada',
+          detalle: `${formatoFechaHora(data.inicio)} · ${formatoMinutos(data.minutos_reservados)} retenidos de tus horas.`,
+        });
+        return;
+      }
+      uidsRegistradosRef.current.delete(reserva.uid);
+      console.warn('[Soporte] No se pudo registrar la cita desde el portal; se espera al webhook/sincronización.', err);
+    }
+    // Sin datos suficientes o falló el registro: respaldo con la API de
+    // Cal.com + búsqueda periódica.
+    sincronizarCalcom(clubId);
+    esperarNuevaCita();
+  }
+
   function abrirAgenda() {
     agendadasPreviasRef.current = new Set(ticketsRef.current.filter((t) => t.estado === 'agendada').map((t) => t.id));
     reservaConfirmadaRef.current = false;
@@ -474,8 +519,17 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
 
   function cerrarAgenda() {
     setModal(null);
+    // Respaldo al cerrar: sincroniza con la API de Cal.com (si está
+    // configurada) y busca la cita nueva unos segundos.
+    sincronizarCalcom(clubId).then((r) => {
+      if (r?.registradas > 0) cargar({ silencioso: true });
+    });
     esperarNuevaCita();
   }
+
+  const recordarDuracion = useCallback((min) => {
+    duracionElegidaRef.current = min;
+  }, []);
 
   async function unirme(cita) {
     const meet = urlSeguraHttp(cita.meet_url);
@@ -658,6 +712,7 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
           contacto={{ nombre: nombreUsuario || contacto?.nombre, email: contacto?.email }}
           resumen={resumenAgenda}
           onClose={cerrarAgenda}
+          onCambioDuracion={recordarDuracion}
         />
       )}
     </div>

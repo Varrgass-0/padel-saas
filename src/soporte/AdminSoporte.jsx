@@ -7,9 +7,10 @@
 // Dos vistas:
 //   • Clubes: métricas que funcionan como filtros rápidos, lista de
 //     clubes y ficha del club (bolsa, diagnóstico interno, ajustes, historial).
-//   • Agenda & Citas: todas las citas de todos los clubes en orden
-//     cronológico (Próximas / Completadas / Canceladas) con acceso directo a
-//     Google Meet.
+//   • Agenda & Citas: calendario mensual (estilo Google Calendar) de las
+//     reuniones de todos los clubes, navegable a cualquier mes/año, con
+//     detalle de cada cita (Meet, reagendar, registrar resultado). También
+//     tiene vista de lista del mes.
 // Sin botón "Actualizar": todo se refresca solo con Supabase Realtime.
 // =============================================================================
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -17,7 +18,11 @@ import {
   AlertTriangle,
   Building2,
   CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   ClipboardCheck,
+  ExternalLink,
+  List,
   LifeBuoy,
   Loader2,
   Lock,
@@ -40,6 +45,14 @@ import {
   resumenBolsa,
   reunionDestacada,
   urlSeguraHttp,
+  ESTADOS_TICKET,
+  NOMBRES_MESES,
+  DIAS_SEMANA_CORTOS,
+  diasCuadriculaMes,
+  rangoCuadriculaMes,
+  agruparCitasPorDia,
+  claveDiaLocal,
+  enlacesGestionCalcom,
 } from './soporteReglas';
 import {
   consultarEsStaffQlubos,
@@ -51,12 +64,11 @@ import {
   obtenerBolsa,
   suscribirCambiosSoporte,
   mensajeError,
+  sincronizarCalcom,
 } from './soporteApi';
-import { ModalRegistrarAtencion } from './SoporteModal';
-import { WidgetBolsaHoras, TablaHistorialSoporte, BadgeEstadoTicket } from './Soporte';
+import { ModalRegistrarAtencion, ModalSoporte } from './SoporteModal';
+import { WidgetBolsaHoras, TablaHistorialSoporte, BadgeEstadoTicket, resolverConfigCalcom } from './Soporte';
 
-const DIAS_AGENDA_ATRAS = 30;
-const DIAS_AGENDA_ADELANTE = 60;
 const REFRESCO_SILENCIOSO_MS = 120_000; // respaldo por si Realtime se desconecta
 const SALDO_CRITICO_MIN = 30;
 
@@ -150,7 +162,7 @@ function BannerReunion({ destacada, nombreClub, onVerClub }) {
   );
 }
 
-function TarjetaCita({ cita, nombreClub, ahora, onVerClub, onRegistrar }) {
+function TarjetaCita({ cita, nombreClub, ahora, onVerClub, onRegistrar, onDetalle }) {
   const inicio = cita.inicio ? new Date(cita.inicio).getTime() : 0;
   const fin = inicio + duracionCitaMin(cita) * 60_000;
   const t = ahora.getTime();
@@ -187,6 +199,11 @@ function TarjetaCita({ cita, nombreClub, ahora, onVerClub, onRegistrar }) {
       </div>
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
         {cita.estado === 'agendada' && !pendienteCerrar && <BotonMeet url={cita.meet_url} compacto />}
+        {onDetalle && (
+          <button type="button" onClick={onDetalle} className="rounded-lg px-2.5 py-2 text-xs font-bold text-slate-500 hover:text-orange-500">
+            Detalle
+          </button>
+        )}
         {cita.estado === 'agendada' && (
           <button
             type="button"
@@ -203,25 +220,205 @@ function TarjetaCita({ cita, nombreClub, ahora, onVerClub, onRegistrar }) {
   );
 }
 
-function VistaAgenda({ citas, cargando, clubesPorId, ahora, onVerClub, onRegistrar }) {
-  const [filtro, setFiltro] = useState('proximas');
+// Color de cada cita en el calendario según su estado.
+const COLOR_CITA = {
+  agendada: 'bg-sky-500/15 text-sky-700 ring-sky-500/30 hover:bg-sky-500/25',
+  completada: 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30 hover:bg-emerald-500/25',
+  no_show: 'bg-rose-500/15 text-rose-600 ring-rose-500/30 hover:bg-rose-500/25',
+  cancelada_tardia: 'bg-amber-400/20 text-amber-700 ring-amber-400/40 hover:bg-amber-400/30',
+  cancelada: 'bg-slate-400/15 text-slate-500 line-through ring-slate-400/30 hover:bg-slate-400/25',
+};
+const PUNTO_CITA = {
+  agendada: 'bg-sky-500',
+  completada: 'bg-emerald-500',
+  no_show: 'bg-rose-500',
+  cancelada_tardia: 'bg-amber-400',
+  cancelada: 'bg-slate-400',
+};
+const MAX_CITAS_POR_CELDA = 3;
+
+function EncabezadoMes({ mesVista, onCambiar }) {
+  const hoy = new Date();
+  const { anio, mes } = mesVista;
+  const anios = useMemo(() => {
+    const base = hoy.getFullYear();
+    const desde = Math.min(base - 5, anio);
+    const hasta = Math.max(base + 3, anio);
+    return Array.from({ length: hasta - desde + 1 }, (_, i) => desde + i);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anio]);
+  function mover(delta) {
+    const f = new Date(anio, mes + delta, 1);
+    onCambiar({ anio: f.getFullYear(), mes: f.getMonth() });
+  }
+  const esMesActual = anio === hoy.getFullYear() && mes === hoy.getMonth();
+  const claseSelect = 'rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-bold text-slate-900 outline-none focus:border-orange-400';
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={() => onCambiar({ anio: hoy.getFullYear(), mes: hoy.getMonth() })}
+        disabled={esMesActual}
+        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 transition hover:border-orange-400 hover:text-orange-500 disabled:opacity-50"
+      >
+        Hoy
+      </button>
+      <div className="flex items-center">
+        <button type="button" onClick={() => mover(-1)} aria-label="Mes anterior" className="rounded-lg p-1.5 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900">
+          <ChevronLeft size={18} />
+        </button>
+        <button type="button" onClick={() => mover(1)} aria-label="Mes siguiente" className="rounded-lg p-1.5 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900">
+          <ChevronRight size={18} />
+        </button>
+      </div>
+      <h2 className="mr-1 text-lg font-black text-slate-900">
+        {NOMBRES_MESES[mes]} {anio}
+      </h2>
+      <select aria-label="Mes" value={mes} onChange={(e) => onCambiar({ anio, mes: Number(e.target.value) })} className={claseSelect}>
+        {NOMBRES_MESES.map((m, i) => (
+          <option key={m} value={i}>
+            {m}
+          </option>
+        ))}
+      </select>
+      <select aria-label="Año" value={anio} onChange={(e) => onCambiar({ anio: Number(e.target.value), mes })} className={claseSelect}>
+        {anios.map((a) => (
+          <option key={a} value={a}>
+            {a}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function CalendarioMensual({ mesVista, citas, clubesPorId, diaSel, onElegirDia, onAbrirCita }) {
+  const dias = useMemo(() => diasCuadriculaMes(mesVista.anio, mesVista.mes), [mesVista.anio, mesVista.mes]);
+  const porDia = useMemo(() => agruparCitasPorDia(citas), [citas]);
+  const claveHoy = claveDiaLocal(new Date());
+  return (
+    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50">
+        {DIAS_SEMANA_CORTOS.map((d) => (
+          <div key={d} className="px-1 py-2 text-center text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:text-[11px]">
+            {d}
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7">
+        {dias.map(({ fecha, clave, delMes }, i) => {
+          const lista = porDia.get(clave) || [];
+          const esHoy = clave === claveHoy;
+          const seleccionado = clave === diaSel;
+          const ocultas = lista.length - MAX_CITAS_POR_CELDA;
+          return (
+            <div
+              key={clave}
+              role="button"
+              tabIndex={0}
+              onClick={() => onElegirDia(clave)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onElegirDia(clave);
+                }
+              }}
+              aria-label={`${fecha.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' })}: ${lista.length} reuniones`}
+              className={`min-h-[64px] cursor-pointer border-slate-200 p-1 text-left transition sm:min-h-[112px] sm:p-1.5 ${i % 7 !== 6 ? 'border-r' : ''} ${
+                i < 35 ? 'border-b' : ''
+              } ${delMes ? 'bg-white hover:bg-orange-50/60' : 'bg-slate-50/70 hover:bg-slate-100'} ${seleccionado ? 'ring-2 ring-inset ring-orange-400' : ''}`}
+            >
+              <div className="flex items-center justify-between">
+                <span
+                  className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold sm:text-xs ${
+                    esHoy ? 'bg-orange-400 text-slate-950' : delMes ? 'text-slate-800' : 'text-slate-400'
+                  }`}
+                >
+                  {fecha.getDate()}
+                </span>
+                {lista.length > 0 && <span className="text-[10px] font-bold text-slate-400 sm:hidden">{lista.length}</span>}
+              </div>
+              {/* Móvil: puntos de color. Escritorio: hora + club + estado. */}
+              <div className="mt-1 flex flex-wrap gap-0.5 sm:hidden">
+                {lista.slice(0, 4).map((c) => (
+                  <span key={c.id} className={`h-1.5 w-1.5 rounded-full ${PUNTO_CITA[c.estado] || 'bg-slate-400'}`} />
+                ))}
+              </div>
+              <div className="mt-1 hidden space-y-0.5 sm:block">
+                {lista.slice(0, MAX_CITAS_POR_CELDA).map((c) => {
+                  const club = clubesPorId.get(String(c.club_id));
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAbrirCita(c);
+                      }}
+                      title={`${formatoHora(c.inicio)} · ${club?.nombre || `Club ${c.club_id}`} · ${ESTADOS_TICKET[c.estado]?.label || c.estado}`}
+                      className={`flex w-full items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-left text-[11px] font-semibold ring-1 transition ${COLOR_CITA[c.estado] || COLOR_CITA.cancelada}`}
+                    >
+                      <span className="shrink-0 font-black">{formatoHora(c.inicio)}</span>
+                      <span className="truncate">{club?.nombre || `Club ${c.club_id}`}</span>
+                    </button>
+                  );
+                })}
+                {ocultas > 0 && <p className="px-1 text-[10px] font-bold text-slate-500">+{ocultas} más</p>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LeyendaEstados() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+      {['agendada', 'completada', 'no_show', 'cancelada_tardia', 'cancelada'].map((e) => (
+        <span key={e} className="inline-flex items-center gap-1.5">
+          <span className={`h-2 w-2 rounded-full ${PUNTO_CITA[e]}`} /> {ESTADOS_TICKET[e]?.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function VistaAgenda({ citas, cargando, clubesPorId, ahora, mesVista, onCambiarMes, onVerClub, onAbrirCita, onRegistrar }) {
+  const [modo, setModo] = useState('calendario'); // 'calendario' | 'lista'
+  const [filtro, setFiltro] = useState('todas');
+  const [diaSel, setDiaSel] = useState(() => claveDiaLocal(new Date()));
+
+  // Al cambiar de mes se selecciona el día 1 (o hoy si es el mes actual).
+  function cambiarMes(siguiente) {
+    const hoy = new Date();
+    const esActual = siguiente.anio === hoy.getFullYear() && siguiente.mes === hoy.getMonth();
+    setDiaSel(claveDiaLocal(esActual ? hoy : new Date(siguiente.anio, siguiente.mes, 1)));
+    onCambiarMes(siguiente);
+  }
+
+  const delMes = useMemo(
+    () =>
+      citas.filter((c) => {
+        const d = new Date(c.inicio);
+        return d.getFullYear() === mesVista.anio && d.getMonth() === mesVista.mes;
+      }),
+    [citas, mesVista.anio, mesVista.mes]
+  );
+
   const conteos = useMemo(() => {
-    const c = { proximas: 0, completadas: 0, canceladas: 0, todas: citas.length };
-    citas.forEach((x) => {
+    const c = { proximas: 0, completadas: 0, canceladas: 0, todas: delMes.length };
+    delMes.forEach((x) => {
       c[grupoAgenda(x)] += 1;
     });
     return c;
-  }, [citas]);
+  }, [delMes]);
 
   const visibles = useMemo(() => {
-    const lista = filtro === 'todas' ? [...citas] : citas.filter((x) => grupoAgenda(x) === filtro);
-    // Próximas: de la más cercana a la más lejana. Historial: lo más reciente primero.
-    const asc = filtro === 'proximas';
-    return lista.sort((a, b) => {
-      const d = new Date(a.inicio || 0).getTime() - new Date(b.inicio || 0).getTime();
-      return asc ? d : -d;
-    });
-  }, [citas, filtro]);
+    const lista = filtro === 'todas' ? [...delMes] : delMes.filter((x) => grupoAgenda(x) === filtro);
+    return lista.sort((a, b) => new Date(a.inicio || 0).getTime() - new Date(b.inicio || 0).getTime());
+  }, [delMes, filtro]);
 
   const grupos = useMemo(() => {
     const mapa = new Map();
@@ -233,62 +430,208 @@ function VistaAgenda({ citas, cargando, clubesPorId, ahora, onVerClub, onRegistr
     return [...mapa.entries()];
   }, [visibles, ahora]);
 
+  const citasDiaSel = useMemo(
+    () => citas.filter((c) => c.inicio && claveDiaLocal(c.inicio) === diaSel).sort((a, b) => new Date(a.inicio).getTime() - new Date(b.inicio).getTime()),
+    [citas, diaSel]
+  );
+  const etiquetaDiaSel = useMemo(() => {
+    const [y, m, d] = diaSel.split('-').map(Number);
+    const f = new Date(y, m - 1, d);
+    const t = f.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  }, [diaSel]);
+
   const FILTROS = [
-    { id: 'proximas', label: 'Próximas' },
+    { id: 'todas', label: 'Todas' },
+    { id: 'proximas', label: 'Agendadas' },
     { id: 'completadas', label: 'Completadas' },
     { id: 'canceladas', label: 'Canceladas / No-Show' },
-    { id: 'todas', label: 'Todas' },
   ];
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {FILTROS.map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => setFiltro(f.id)}
-            aria-pressed={filtro === f.id}
-            className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
-              filtro === f.id ? 'bg-orange-400 text-slate-950' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:text-slate-900'
-            }`}
-          >
-            {f.label} <span className={filtro === f.id ? 'text-slate-800' : 'text-slate-400'}>{conteos[f.id]}</span>
-          </button>
-        ))}
-        <span className="ml-auto text-[11px] text-slate-500">
-          Últimos {DIAS_AGENDA_ATRAS} días y próximos {DIAS_AGENDA_ADELANTE} días
-        </span>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <EncabezadoMes mesVista={mesVista} onCambiar={cambiarMes} />
+        <div className="flex items-center gap-2">
+          {cargando && <Loader2 size={15} className="animate-spin text-slate-400" />}
+          <div role="tablist" aria-label="Modo de la agenda" className="flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+            {[
+              { id: 'calendario', label: 'Mes', icon: CalendarDays },
+              { id: 'lista', label: 'Lista', icon: List },
+            ].map((m) => {
+              const Icono = m.icon;
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={modo === m.id}
+                  onClick={() => setModo(m.id)}
+                  className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-bold transition ${
+                    modo === m.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'
+                  }`}
+                >
+                  <Icono size={13} /> {m.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
-      {cargando && citas.length === 0 ? (
-        <div className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-10 text-sm text-slate-500">
-          <Loader2 size={16} className="animate-spin" /> Cargando agenda…
-        </div>
-      ) : grupos.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">
-          {filtro === 'proximas' ? 'No hay citas próximas agendadas.' : 'No hay citas en esta categoría.'}
-        </div>
-      ) : (
-        grupos.map(([dia, lista]) => (
-          <div key={dia} className="space-y-2">
+      {modo === 'calendario' ? (
+        <>
+          <CalendarioMensual mesVista={mesVista} citas={citas} clubesPorId={clubesPorId} diaSel={diaSel} onElegirDia={setDiaSel} onAbrirCita={onAbrirCita} />
+          <LeyendaEstados />
+          <div className="space-y-2">
             <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-500">
-              <CalendarDays size={13} /> {dia} <span className="font-semibold text-slate-400">· {lista.length}</span>
+              <CalendarDays size={13} /> {etiquetaDiaSel}
+              <span className="font-semibold text-slate-400">· {citasDiaSel.length} {citasDiaSel.length === 1 ? 'reunión' : 'reuniones'}</span>
             </p>
-            {lista.map((c) => (
-              <TarjetaCita
-                key={c.id}
-                cita={c}
-                ahora={ahora}
-                nombreClub={clubesPorId.get(String(c.club_id))?.nombre || `Club ${c.club_id}`}
-                onVerClub={() => onVerClub(c.club_id)}
-                onRegistrar={() => onRegistrar(c)}
-              />
+            {citasDiaSel.length === 0 ? (
+              <p className="rounded-2xl border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-500">Sin reuniones este día.</p>
+            ) : (
+              citasDiaSel.map((c) => (
+                <TarjetaCita
+                  key={c.id}
+                  cita={c}
+                  ahora={ahora}
+                  nombreClub={clubesPorId.get(String(c.club_id))?.nombre || `Club ${c.club_id}`}
+                  onVerClub={() => onVerClub(c.club_id)}
+                  onRegistrar={() => onRegistrar(c)}
+                  onDetalle={() => onAbrirCita(c)}
+                />
+              ))
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {FILTROS.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setFiltro(f.id)}
+                aria-pressed={filtro === f.id}
+                className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                  filtro === f.id ? 'bg-orange-400 text-slate-950' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:text-slate-900'
+                }`}
+              >
+                {f.label} <span className={filtro === f.id ? 'text-slate-800' : 'text-slate-400'}>{conteos[f.id]}</span>
+              </button>
             ))}
           </div>
-        ))
+          {grupos.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">
+              No hay reuniones en {NOMBRES_MESES[mesVista.mes].toLowerCase()} de {mesVista.anio}
+              {filtro !== 'todas' ? ' con este filtro' : ''}.
+            </div>
+          ) : (
+            grupos.map(([dia, lista]) => (
+              <div key={dia} className="space-y-2">
+                <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-500">
+                  <CalendarDays size={13} /> {dia} <span className="font-semibold text-slate-400">· {lista.length}</span>
+                </p>
+                {lista.map((c) => (
+                  <TarjetaCita
+                    key={c.id}
+                    cita={c}
+                    ahora={ahora}
+                    nombreClub={clubesPorId.get(String(c.club_id))?.nombre || `Club ${c.club_id}`}
+                    onVerClub={() => onVerClub(c.club_id)}
+                    onRegistrar={() => onRegistrar(c)}
+                    onDetalle={() => onAbrirCita(c)}
+                  />
+                ))}
+              </div>
+            ))
+          )}
+        </>
       )}
     </div>
+  );
+}
+
+// Detalle completo de una cita (al hacer clic en el calendario o en la lista).
+function ModalDetalleCita({ cita, nombreClub, ahora, onClose, onVerClub, onRegistrar }) {
+  const config = useMemo(() => resolverConfigCalcom(), []);
+  const gestion = enlacesGestionCalcom(config.calcomUrl30 || config.calcomUrl60, cita.calcom_uid);
+  const inicio = cita.inicio ? new Date(cita.inicio) : null;
+  const fin = inicio ? new Date(inicio.getTime() + duracionCitaMin(cita) * 60_000) : null;
+  const t = ahora.getTime();
+  const agendada = cita.estado === 'agendada';
+  const futura = inicio && t < inicio.getTime();
+  const enCurso = agendada && inicio && t >= inicio.getTime() && t <= fin.getTime();
+  const fechaLarga = inicio ? inicio.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : '—';
+  const fila = (etiqueta, valor) => (
+    <div className="flex items-start justify-between gap-4 py-2 text-sm">
+      <span className="shrink-0 text-xs font-semibold text-slate-500">{etiqueta}</span>
+      <span className="text-right font-semibold text-slate-900">{valor}</span>
+    </div>
+  );
+  return (
+    <ModalSoporte titulo={conceptoReunion(cita)} subtitulo={`${nombreClub} · ID ${cita.club_id}`} onClose={onClose}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <BadgeEstadoTicket estado={cita.estado} />
+        {enCurso && <span className="rounded-full bg-emerald-500 px-2.5 py-0.5 text-[11px] font-bold text-white">En curso</span>}
+        {cita.conectado_en && <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-slate-600">El club se conectó {formatoHora(cita.conectado_en)}</span>}
+      </div>
+      <div className="mt-3 divide-y divide-slate-200 rounded-xl border border-slate-200 px-3">
+        {fila('Fecha', fechaLarga.charAt(0).toUpperCase() + fechaLarga.slice(1))}
+        {fila('Horario', inicio ? `${formatoHora(cita.inicio)} – ${formatoHora(fin.toISOString())}` : '—')}
+        {fila('Duración', `${duracionCitaMin(cita)} min`)}
+        {cita.estado !== 'agendada' && fila('Minutos descontados', formatoMinutos(cita.minutos_consumidos))}
+        {cita.contacto_email && fila('Contacto', cita.contacto_email)}
+        {cita.origen && fila('Registrada por', { portal: 'Portal del club', calcom_webhook: 'Cal.com', calcom_sync: 'Cal.com (sincronización)', manual: 'SuperAdmin' }[cita.origen] || cita.origen)}
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2">
+        {agendada && <BotonMeet url={cita.meet_url} />}
+        <div className="flex flex-wrap gap-2">
+          {agendada && futura && gestion.reagendar && (
+            <a
+              href={gestion.reagendar}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:border-orange-300 hover:text-orange-500"
+            >
+              <ExternalLink size={13} /> Reagendar en Cal.com
+            </a>
+          )}
+          {agendada && futura && gestion.cancelar && (
+            <a
+              href={gestion.cancelar}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:border-rose-300 hover:text-rose-500"
+            >
+              <ExternalLink size={13} /> Cancelar en Cal.com
+            </a>
+          )}
+          <button type="button" onClick={() => onVerClub(cita.club_id)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:border-orange-300 hover:text-orange-500">
+            Ver club
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 border-t border-slate-200 pt-3">
+        <p className="mb-2 text-xs font-bold text-slate-600">{agendada ? 'Registrar resultado' : 'Corregir registro'}</p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            { estado: 'completada', label: 'Completada', clase: 'border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10' },
+            { estado: 'no_show', label: 'No asistió', clase: 'border-rose-500/40 text-rose-500 hover:bg-rose-500/10' },
+            { estado: 'cancelada_tardia', label: 'Cancel. tardía', clase: 'border-amber-400/50 text-amber-600 hover:bg-amber-400/10' },
+            { estado: 'cancelada', label: 'Cancelada', clase: 'border-slate-300 text-slate-600 hover:bg-slate-100' },
+          ].map((op) => (
+            <button key={op.estado} type="button" onClick={() => onRegistrar(cita, op.estado)} className={`rounded-lg border px-2 py-2 text-xs font-bold transition ${op.clase}`}>
+              {op.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] text-slate-500">Se abre el registro para confirmar los minutos reales antes de descontarlos.</p>
+      </div>
+    </ModalSoporte>
   );
 }
 
@@ -363,8 +706,16 @@ export default function AdminSoporte({ onToast }) {
   const [notasSel, setNotasSel] = useState([]);
   const [ajustesSel, setAjustesSel] = useState([]);
   const [cargandoDetalle, setCargandoDetalle] = useState(false);
-  const [agenda, setAgenda] = useState([]);
+  const [agenda, setAgenda] = useState([]); // citas del mes visible (cuadrícula de 6 semanas)
   const [cargandoAgenda, setCargandoAgenda] = useState(false);
+  const [citasProximas, setCitasProximas] = useState([]); // para el banner y el contador
+  const [mesVista, setMesVista] = useState(() => {
+    const h = new Date();
+    return { anio: h.getFullYear(), mes: h.getMonth() };
+  });
+  const mesVistaRef = useRef(mesVista);
+  mesVistaRef.current = mesVista;
+  const [citaDetalle, setCitaDetalle] = useState(null);
   const [ahora, setAhora] = useState(() => new Date());
   const [modal, setModal] = useState(null); // { clubId?, ticket?, modo? } | null
   const [enVivo, setEnVivo] = useState(false);
@@ -408,20 +759,35 @@ export default function AdminSoporte({ onToast }) {
     setCargandoDetalle(false);
   }, []);
 
-  const cargarAgenda = useCallback(async ({ silencioso = false } = {}) => {
+  // Citas del mes visible (cualquier mes de cualquier año) + citas próximas
+  // (para el banner "Reunión en curso" y el contador de la pestaña).
+  const cargarAgenda = useCallback(async ({ silencioso = false, mes = null } = {}) => {
     if (!silencioso) setCargandoAgenda(true);
+    const objetivo = mes || mesVistaRef.current;
+    const rango = rangoCuadriculaMes(objetivo.anio, objetivo.mes);
     const base = Date.now();
-    const { data, error: err } = await listarAgendaAdmin({
-      desde: new Date(base - DIAS_AGENDA_ATRAS * 86_400_000).toISOString(),
-      hasta: new Date(base + DIAS_AGENDA_ADELANTE * 86_400_000).toISOString(),
-    });
+    const [delMes, proximas] = await Promise.all([
+      listarAgendaAdmin({ desde: rango.desde, hasta: rango.hasta, limite: 1000 }),
+      listarAgendaAdmin({ desde: new Date(base - 2 * 3_600_000).toISOString(), hasta: new Date(base + 366 * 86_400_000).toISOString(), limite: 500 }),
+    ]);
+    // Si mientras tanto se cambió de mes, se descarta esta respuesta.
+    const actual = mesVistaRef.current;
+    if (!mes && (actual.anio !== objetivo.anio || actual.mes !== objetivo.mes)) return;
     setCargandoAgenda(false);
-    if (err) {
-      setError(mensajeError(err, 'No se pudo cargar la agenda.'));
+    if (delMes.error || proximas.error) {
+      setError(mensajeError(delMes.error || proximas.error, 'No se pudo cargar la agenda.'));
       return;
     }
-    setAgenda(data);
+    setAgenda(delMes.data);
+    setCitasProximas(proximas.data.filter((c) => c.estado === 'agendada'));
   }, []);
+
+  function cambiarMesAgenda(siguiente) {
+    setMesVista(siguiente);
+    mesVistaRef.current = siguiente;
+    setAgenda([]);
+    cargarAgenda({ mes: siguiente });
+  }
 
   // Carga inicial + Realtime (con un pequeño "debounce" para agrupar ráfagas
   // de cambios: un registro mueve ticket + bolsa casi al mismo tiempo).
@@ -430,6 +796,16 @@ export default function AdminSoporte({ onToast }) {
     cargarClubes();
     cargarAgenda();
     let temporizador = null;
+    // Respaldo del webhook: trae de la API de Cal.com las reservas que no
+    // hayan llegado (si la Edge Function soporte-calcom-sync está desplegada).
+    const sincronizar = () =>
+      sincronizarCalcom(null).then((r) => {
+        if (r?.registradas > 0) {
+          cargarAgenda({ silencioso: true });
+          cargarClubes({ silencioso: true });
+        }
+      });
+    sincronizar();
     const refrescarTodo = () => {
       cargarClubes({ silencioso: true });
       cargarAgenda({ silencioso: true });
@@ -444,7 +820,10 @@ export default function AdminSoporte({ onToast }) {
     setEnVivo(true);
     // Respaldo silencioso (no es un botón): procesa No-Shows vencidos aunque
     // no esté activo pg_cron y cubre una reconexión de Realtime.
-    const intervalo = setInterval(refrescarTodo, REFRESCO_SILENCIOSO_MS);
+    const intervalo = setInterval(() => {
+      refrescarTodo();
+      sincronizar();
+    }, REFRESCO_SILENCIOSO_MS);
     const reloj = setInterval(() => setAhora(new Date()), 30_000);
     return () => {
       quitar();
@@ -500,8 +879,8 @@ export default function AdminSoporte({ onToast }) {
     return lista;
   }, [clubes, busqueda, filtroClubes]);
 
-  const destacada = useMemo(() => reunionDestacada(agenda, ahora), [agenda, ahora]);
-  const proximasCount = useMemo(() => agenda.filter((c) => c.estado === 'agendada').length, [agenda]);
+  const destacada = useMemo(() => reunionDestacada(citasProximas, ahora), [citasProximas, ahora]);
+  const proximasCount = useMemo(() => citasProximas.filter((c) => new Date(c.inicio).getTime() >= ahora.getTime() - 3_600_000).length, [citasProximas, ahora]);
 
   if (acceso === 'verificando') {
     return (
@@ -608,7 +987,10 @@ export default function AdminSoporte({ onToast }) {
           cargando={cargandoAgenda}
           clubesPorId={clubesPorId}
           ahora={ahora}
+          mesVista={mesVista}
+          onCambiarMes={cambiarMesAgenda}
           onVerClub={verClubDesdeAgenda}
+          onAbrirCita={(c) => setCitaDetalle(c)}
           onRegistrar={(c) => setModal({ clubId: c.club_id, ticket: c })}
         />
       ) : (
@@ -701,12 +1083,30 @@ export default function AdminSoporte({ onToast }) {
         </div>
       )}
 
+      {citaDetalle && (
+        <ModalDetalleCita
+          cita={agenda.find((c) => c.id === citaDetalle.id) || citaDetalle}
+          nombreClub={clubesPorId.get(String(citaDetalle.club_id))?.nombre || `Club ${citaDetalle.club_id}`}
+          ahora={ahora}
+          onClose={() => setCitaDetalle(null)}
+          onVerClub={(clubId) => {
+            setCitaDetalle(null);
+            verClubDesdeAgenda(clubId);
+          }}
+          onRegistrar={(c, estado) => {
+            setCitaDetalle(null);
+            setModal({ clubId: c.club_id, ticket: c, estado });
+          }}
+        />
+      )}
+
       {modal && (
         <ModalRegistrarAtencion
           clubes={clubes}
           clubIdInicial={modal.clubId ?? ''}
           ticketInicial={modal.ticket || null}
           modoInicial={modal.modo || 'atencion'}
+          estadoInicial={modal.estado || null}
           onClose={() => setModal(null)}
           onGuardado={(r) => {
             if (r?.modo === 'ajuste') {

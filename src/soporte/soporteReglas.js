@@ -277,3 +277,82 @@ export function conciliarRetenido(bolsa, tickets) {
     minutos_disponibles_mes: (Number(bolsa.minutos_disponibles_mes) || 0) - (retenidoCitas - retenidoServidor),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Cal.com → datos de la reserva a partir del postMessage del iframe
+// ---------------------------------------------------------------------------
+// Cal.com (iframe con ?embed=true) avisa al portal con mensajes
+// { originator: 'CAL', type/fullType: 'bookingSuccessful' | 'bookingSuccessfulV2', data }.
+// Devuelve { uid, inicio, fin, concepto, meetUrl } o null si el mensaje no es
+// una reserva confirmada o le falta el uid (sin uid no se registra para no
+// duplicar con el webhook).
+export function esMensajeReservaCal(datos) {
+  if (!datos || typeof datos !== 'object') return false;
+  const tipo = `${datos.type || ''} ${datos.method || ''} ${datos.fullType || ''}`;
+  return /bookingSuccessful/i.test(tipo);
+}
+
+export function extraerReservaCal(datos, duracionRespaldoMin = 30) {
+  if (!esMensajeReservaCal(datos)) return null;
+  const d = datos.data && typeof datos.data === 'object' ? datos.data : {};
+  const b = d.booking && typeof d.booking === 'object' ? d.booking : d;
+  const uid = String(b.uid || d.uid || '').trim();
+  const inicioCrudo = b.startTime || b.start || d.startTime || d.start || d.date || null;
+  if (!uid || !inicioCrudo) return null;
+  const inicio = new Date(inicioCrudo);
+  if (Number.isNaN(inicio.getTime())) return null;
+  const finCrudo = b.endTime || b.end || d.endTime || d.end || null;
+  let fin = finCrudo ? new Date(finCrudo) : null;
+  if (!fin || Number.isNaN(fin.getTime()) || fin <= inicio) {
+    const dur = Number(d.duration || b.duration || d.eventType?.length || duracionRespaldoMin) || 30;
+    fin = new Date(inicio.getTime() + dur * 60000);
+  }
+  const candidatosMeet = [b.videoCallUrl, b.meetingUrl, b.metadata?.videoCallUrl, d.videoCallUrl, b.location];
+  const meetUrl = candidatosMeet.find((u) => typeof u === 'string' && /^https:\/\//i.test(u)) || null;
+  const notas = b.responses?.notes;
+  const concepto = String(b.description || (typeof notas === 'string' ? notas : notas?.value) || '').trim() || null;
+  return { uid, inicio: inicio.toISOString(), fin: fin.toISOString(), concepto, meetUrl };
+}
+
+// ---------------------------------------------------------------------------
+// Calendario mensual (SuperAdmin)
+// ---------------------------------------------------------------------------
+export const NOMBRES_MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+export const DIAS_SEMANA_CORTOS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
+export function claveDiaLocal(fecha) {
+  const d = new Date(fecha);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// 6 semanas (42 días) que cubren el mes, empezando en domingo. Hora local.
+export function diasCuadriculaMes(anio, mes) {
+  const primero = new Date(anio, mes, 1);
+  const inicio = new Date(anio, mes, 1 - primero.getDay());
+  return Array.from({ length: 42 }, (_, i) => {
+    const fecha = new Date(inicio.getFullYear(), inicio.getMonth(), inicio.getDate() + i);
+    return { fecha, clave: claveDiaLocal(fecha), delMes: fecha.getMonth() === mes };
+  });
+}
+
+// Rango [desde, hasta) en ISO para consultar las citas de la cuadrícula.
+export function rangoCuadriculaMes(anio, mes) {
+  const dias = diasCuadriculaMes(anio, mes);
+  const desde = dias[0].fecha;
+  const ultimo = dias[dias.length - 1].fecha;
+  const hasta = new Date(ultimo.getFullYear(), ultimo.getMonth(), ultimo.getDate() + 1);
+  return { desde: desde.toISOString(), hasta: hasta.toISOString() };
+}
+
+export function agruparCitasPorDia(citas) {
+  const mapa = new Map();
+  (citas || []).forEach((c) => {
+    if (!c?.inicio) return;
+    const k = claveDiaLocal(c.inicio);
+    if (!mapa.has(k)) mapa.set(k, []);
+    mapa.get(k).push(c);
+  });
+  mapa.forEach((lista) => lista.sort((a, b) => new Date(a.inicio).getTime() - new Date(b.inicio).getTime()));
+  return mapa;
+}

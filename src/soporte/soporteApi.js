@@ -79,6 +79,50 @@ export async function listarTickets(clubId, limite = 200) {
   return { data: data || [], error };
 }
 
+// Citas que retienen minutos: agendadas (o pendientes) con inicio desde
+// hace 2 h en adelante — independiente del límite del historial.
+export async function listarCitasProximas(clubId) {
+  const desde = new Date(Date.now() - 2 * 3600_000).toISOString();
+  const { data, error } = await supabase
+    .from('soporte_tickets')
+    .select('*')
+    .eq('club_id', Number(clubId))
+    .in('estado', ['agendada', 'pendiente'])
+    .gte('inicio', desde)
+    .order('inicio', { ascending: true })
+    .limit(100);
+  return { data: data || [], error };
+}
+
+// Registro DIRECTO de una reserva confirmada en Cal.com (v96). No duplica:
+// el webhook de Cal.com actualiza la misma fila por `calcom_uid`.
+export async function registrarCitaPortal({ clubId, uid, inicio, fin, concepto = null, meetUrl = null }) {
+  const { data, error } = await supabase.rpc('fn_soporte_club_registrar_cita', {
+    p_club_id: Number(clubId),
+    p_calcom_uid: uid,
+    p_inicio: inicio,
+    p_fin: fin,
+    p_concepto: concepto,
+    p_meet_url: meetUrl,
+  });
+  return { data: Array.isArray(data) ? data[0] : data, error };
+}
+
+// Respaldo: pide a la Edge Function que consulte la API de Cal.com y registre
+// lo que falte. `clubId` null = todos los clubes (solo SuperAdmin).
+// Nunca lanza: si la función no está desplegada devuelve { ok: false }.
+export async function sincronizarCalcom(clubId = null) {
+  try {
+    const { data, error } = await supabase.functions.invoke('soporte-calcom-sync', {
+      body: clubId != null ? { club_id: Number(clubId) } : {},
+    });
+    if (error) return { ok: false, error };
+    return data || { ok: false };
+  } catch (err) {
+    return { ok: false, error: err };
+  }
+}
+
 export async function listarComprasExtra(clubId, limite = 50) {
   const { data, error } = await supabase
     .from('soporte_compras_extra')

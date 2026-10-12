@@ -159,13 +159,18 @@ export function ModalComprarHorasExtra({ clubId, nombreClub, onClose }) {
 // Google Calendar: solo muestra horarios libres y bloquea los ya tomados por
 // otros clubes o por la agenda corporativa).
 // -----------------------------------------------------------------------------
-export function ModalAgendarVideollamada({ config, clubId, contacto, resumen, onClose }) {
+export function ModalAgendarVideollamada({ config, clubId, contacto, resumen, onClose, onCambioDuracion }) {
   const opciones = [
     { minutos: 30, url: config?.calcomUrl30, habilitada: resumen?.puedeAgendar30 },
     { minutos: 60, url: config?.calcomUrl60, habilitada: resumen?.puedeAgendar60 },
   ].filter((o) => o.url);
   const primeraHabilitada = opciones.find((o) => o.habilitada) || null;
   const [duracion, setDuracion] = useState(primeraHabilitada?.minutos ?? null);
+  // El portal necesita saber qué duración se eligió por si Cal.com no manda
+  // la hora de fin en su aviso de "reserva confirmada".
+  useEffect(() => {
+    if (duracion) onCambioDuracion?.(duracion);
+  }, [duracion, onCambioDuracion]);
   const elegida = opciones.find((o) => o.minutos === duracion && o.habilitada) || null;
   const tema = typeof document !== 'undefined' && document.documentElement.classList.contains('dark') ? 'dark' : 'light';
 
@@ -283,7 +288,7 @@ function MensajeError({ texto }) {
 const CANAL_UNICO = 'videollamada';
 
 // `ticketsDelClub` se acepta por compatibilidad pero ya no se usa (sin selector de atención).
-export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketInicial, modoInicial = 'atencion', onClose, onGuardado }) {
+export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketInicial, modoInicial = 'atencion', estadoInicial = null, onClose, onGuardado }) {
   const clubBloqueado = Boolean(ticketInicial);
   const [modo, setModo] = useState(ticketInicial ? 'atencion' : modoInicial);
   const [clubId, setClubId] = useState(String(clubIdInicial ?? ticketInicial?.club_id ?? ''));
@@ -296,7 +301,7 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketInicial, m
   // --- Modo reunión ---
   const [concepto, setConcepto] = useState(ticket?.concepto || '');
   const [minutos, setMinutos] = useState(ticket ? String(ticket.minutos_reservados || ticket.minutos_consumidos || 30) : '30');
-  const [estado, setEstado] = useState(ticket && ticket.estado !== 'agendada' ? ticket.estado : 'completada');
+  const [estado, setEstado] = useState(estadoInicial || (ticket && ticket.estado !== 'agendada' ? ticket.estado : 'completada'));
   const [inicio, setInicio] = useState(aInputLocal(ticket?.inicio));
   const [meetUrl, setMeetUrl] = useState(ticket?.meet_url || '');
 
