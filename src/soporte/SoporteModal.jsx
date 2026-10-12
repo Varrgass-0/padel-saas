@@ -176,7 +176,7 @@ export function ModalAgendarVideollamada({ config, clubId, contacto, resumen, on
   const urlNuevaPestana = elegida ? urlCalcom(elegida.url, { clubId, nombre: contacto?.nombre, email: contacto?.email, embed: false }) : null;
 
   return (
-    <ModalSoporte titulo="Agendar videollamada / capacitación" subtitulo="Horarios en vivo de nuestro calendario · Google Meet" onClose={onClose} ancho="max-w-3xl">
+    <ModalSoporte titulo="Agendar reunión de soporte" subtitulo="Horarios en vivo de nuestro calendario · Google Meet" onClose={onClose} ancho="max-w-3xl">
       {opciones.length === 0 ? (
         <p className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-3 text-sm text-amber-600">
           La agenda en línea aún no está configurada (faltan VITE_CALCOM_URL_30 / VITE_CALCOM_URL_60).
@@ -427,7 +427,7 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketInicial, m
               <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
                 <Video size={16} className="mt-0.5 shrink-0 text-orange-500" />
                 <div className="min-w-0 text-xs">
-                  <p className="font-bold text-slate-900">Resultado de la videollamada agendada</p>
+                  <p className="font-bold text-slate-900">Resultado de la reunión de soporte agendada</p>
                   <p className="truncate text-slate-500">
                     {formatoFechaHora(ticket.inicio)} · {formatoMinutos(ticket.minutos_reservados)} · {ESTADOS_TICKET[ticket.estado]?.label || ticket.estado}
                   </p>
@@ -435,7 +435,7 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketInicial, m
               </div>
             ) : (
               <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
-                <Video size={13} className="text-orange-500" /> Videollamada (Google Meet)
+                <Video size={13} className="text-orange-500" /> Reunión de soporte (Google Meet)
               </p>
             )}
 

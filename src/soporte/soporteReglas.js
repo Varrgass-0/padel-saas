@@ -251,3 +251,29 @@ export function formatoMinutosConSigno(min) {
   const n = Math.round(Number(min) || 0);
   return `${n > 0 ? '+' : n < 0 ? '−' : ''}${formatoMinutos(Math.abs(n))}`;
 }
+
+// Concepto visible de una reunión. El webhook de Cal.com guarda
+// "Videollamada de soporte" cuando la reserva no trae notas: se muestra con
+// el nombre estándar "Reunión de soporte".
+export function conceptoReunion(ticket) {
+  const c = String(ticket?.concepto || '').trim();
+  if (!c || /^videollamada de soporte$/i.test(c)) return 'Reunión de soporte';
+  return c;
+}
+
+// Concilia "Retenido en citas" con la lista real de citas agendadas: si la
+// foto de la bolsa del servidor todavía no refleja una cita recién creada
+// (o ya cerrada), se corrige retenido y disponible en pantalla al instante.
+export function conciliarRetenido(bolsa, tickets) {
+  if (!bolsa || !Array.isArray(tickets)) return bolsa;
+  const retenidoCitas = tickets
+    .filter((t) => t?.estado === 'agendada')
+    .reduce((suma, t) => suma + (Number(t.minutos_reservados) || 0), 0);
+  const retenidoServidor = Number(bolsa.minutos_retenidos) || 0;
+  if (retenidoCitas === retenidoServidor) return bolsa;
+  return {
+    ...bolsa,
+    minutos_retenidos: retenidoCitas,
+    minutos_disponibles_mes: (Number(bolsa.minutos_disponibles_mes) || 0) - (retenidoCitas - retenidoServidor),
+  };
+}

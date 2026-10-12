@@ -35,6 +35,7 @@ import {
   formatoHora,
   formatoMinutos,
   formatoMinutosConSigno,
+  conceptoReunion,
   grupoAgenda,
   resumenBolsa,
   reunionDestacada,
@@ -140,7 +141,7 @@ function BannerReunion({ destacada, nombreClub, onVerClub }) {
             {nombreClub} <span className="text-xs font-semibold text-slate-500">· ID {ticket.club_id}</span>
           </button>
           <p className="truncate text-xs text-slate-600">
-            {formatoHora(ticket.inicio)} · {formatoMinutos(duracionCitaMin(ticket))} · {ticket.concepto || 'Videollamada de soporte'}
+            {formatoHora(ticket.inicio)} · {formatoMinutos(duracionCitaMin(ticket))} · {conceptoReunion(ticket)}
           </p>
         </div>
       </div>
@@ -171,7 +172,7 @@ function TarjetaCita({ cita, nombreClub, ahora, onVerClub, onRegistrar }) {
           {nombreClub} <span className="text-xs font-semibold text-slate-500">· ID {cita.club_id}</span>
         </button>
         <p className="truncate text-xs text-slate-600" title={cita.concepto || ''}>
-          {cita.concepto || 'Videollamada de soporte'}
+          {conceptoReunion(cita)}
         </p>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <BadgeEstadoTicket estado={cita.estado} />

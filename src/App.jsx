@@ -4878,7 +4878,7 @@ const MODULOS_META = {
   jugadores: { titulo: 'Jugadores (CRM)', subtitulo: 'Ranking del club y clasificación por categoría' },
   seguridad: { titulo: 'Control & Seguridad', subtitulo: 'Empleados, roles, arqueos y Log de Actividad' },
   configuracion: { titulo: 'Configuración del Club', subtitulo: 'Portal & Tienda Web, y ajustes generales del club' },
-  soporte: { titulo: 'Soporte', subtitulo: 'Horas de soporte y videollamadas con el equipo QLUBOS' },
+  soporte: { titulo: 'Soporte', subtitulo: 'Horas y reuniones de soporte con el equipo QLUBOS' },
   admin_soporte: { titulo: 'Soporte (SuperAdmin)', subtitulo: 'Horas de soporte y reuniones de todos los clubes' },
 };
 

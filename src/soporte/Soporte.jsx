@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import {
   ESTADOS_TICKET,
-  PRECIO_HORA_EXTRA_MXN,
   TOLERANCIA_MINUTOS,
   ANTICIPACION_CANCELACION_HORAS,
   configSoporte,
@@ -32,6 +31,8 @@ import {
   formatoMXN,
   resumenBolsa,
   urlSeguraHttp,
+  conceptoReunion,
+  conciliarRetenido,
 } from './soporteReglas';
 import {
   obtenerBolsa,
@@ -124,11 +125,11 @@ export function WidgetBolsaHoras({ bolsa, onComprar, compacto = false }) {
             onClick={onComprar}
             className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-400 px-4 py-3 text-sm font-black text-slate-950 transition hover:bg-orange-300 sm:w-auto"
           >
-            <CreditCard size={16} /> + Comprar horas extra ({formatoMXN(PRECIO_HORA_EXTRA_MXN)} MXN / hr)
+            <CreditCard size={16} /> + Comprar horas extra
           </button>
         ) : (
           <button type="button" onClick={onComprar} className="mt-4 text-xs font-bold text-orange-500 hover:underline">
-            ¿Necesitas más tiempo? + Comprar horas extra ({formatoMXN(PRECIO_HORA_EXTRA_MXN)} MXN / hr)
+            ¿Necesitas más tiempo? + Comprar horas extra
           </button>
         ))}
     </div>
@@ -171,8 +172,8 @@ export function TablaHistorialSoporte({ tickets, onAjustar }) {
             return (
               <tr key={t.id} className="text-slate-700">
                 <td className="whitespace-nowrap px-4 py-2.5 text-xs">{formatoFechaHora(t.inicio || t.creado_en)}</td>
-                <td className="max-w-[260px] truncate px-4 py-2.5 text-xs" title={t.concepto || ''}>
-                  {t.concepto || '—'}
+                <td className="max-w-[260px] truncate px-4 py-2.5 text-xs" title={conceptoReunion(t)}>
+                  {conceptoReunion(t)}
                 </td>
                 <td className="whitespace-nowrap px-4 py-2.5 text-right text-xs font-bold text-slate-900">
                   {t.estado === 'agendada' ? (
@@ -214,40 +215,54 @@ function TarjetaProximaCita({ cita, ahora, calcomBase, onUnirme, uniendose }) {
   const meet = urlSeguraHttp(cita.meet_url);
   const gestion = enlacesGestionCalcom(calcomBase, cita.calcom_uid);
   const politica = evaluarCancelacion(cita.inicio, cita.minutos_reservados, ahora);
+  const fecha = cita.inicio ? new Date(cita.inicio) : null;
+  const fechaLarga = fecha ? fecha.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' }) : '—';
+  const fechaTexto = fechaLarga.charAt(0).toUpperCase() + fechaLarga.slice(1);
+  const horaTexto = fecha ? fecha.toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' }) : '—';
+  const enRevision = sala === 'vencida';
   return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-400/10 text-orange-500">
-          <Video size={18} />
+    <div className={`flex flex-col gap-3 rounded-2xl border bg-white p-4 sm:flex-row sm:items-center sm:justify-between ${sala === 'abierta' ? 'border-emerald-500/50 ring-1 ring-emerald-500/30' : 'border-slate-200'}`}>
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-xl bg-orange-400/10 text-orange-500">
+          <span className="text-[10px] font-bold uppercase leading-none">{fecha ? fecha.toLocaleDateString('es-MX', { month: 'short' }).replace('.', '') : ''}</span>
+          <span className="text-lg font-black leading-none">{fecha ? fecha.getDate() : '—'}</span>
         </div>
         <div className="min-w-0">
-          <p className="text-sm font-black text-slate-900">{formatoFechaHora(cita.inicio)}</p>
-          <p className="truncate text-xs text-slate-500">
-            {formatoMinutos(cita.minutos_reservados)} · {cita.concepto || 'Videollamada de soporte'}
+          <p className="truncate text-sm font-black text-slate-900" title={conceptoReunion(cita)}>
+            {conceptoReunion(cita)}
           </p>
-          {sala !== 'abierta' && gestion.cancelar && (
-            <p className={`mt-1 text-[11px] font-semibold ${politica.tardia ? 'text-amber-600' : 'text-slate-500'}`}>{politica.mensaje}</p>
+          <p className="mt-0.5 text-xs text-slate-600">
+            <span>{fechaTexto}</span> · <span className="font-bold text-slate-900">{horaTexto}</span> ·{' '}
+            {formatoMinutos(cita.minutos_reservados)}
+          </p>
+          {enRevision ? (
+            <p className="mt-1 text-[11px] font-semibold text-slate-500">Reunión finalizada: soporte está registrando los minutos usados.</p>
+          ) : (
+            sala !== 'abierta' &&
+            gestion.cancelar && <p className={`mt-1 text-[11px] font-semibold ${politica.tardia ? 'text-amber-600' : 'text-slate-500'}`}>{politica.mensaje}</p>
           )}
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        {sala === 'abierta' && meet && (
+      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+        {meet && !enRevision && (
           <button
             type="button"
             onClick={() => onUnirme(cita)}
-            disabled={uniendose}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-black text-white transition hover:bg-emerald-400 disabled:opacity-60"
+            disabled={uniendose || sala !== 'abierta'}
+            title={sala === 'pronto' ? 'Se habilita 15 minutos antes de la reunión' : undefined}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-black text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {uniendose ? <Loader2 size={14} className="animate-spin" /> : <Video size={14} />} Unirme a Google Meet
           </button>
         )}
-        {sala === 'pronto' && <span className="text-[11px] font-semibold text-slate-500">La sala abre 15 min antes</span>}
-        {sala !== 'vencida' && gestion.reagendar && (
+        {sala === 'pronto' && meet && <span className="text-[11px] font-semibold text-slate-500">Se habilita 15 min antes</span>}
+        {sala === 'pronto' && !meet && <span className="text-[11px] font-semibold text-slate-500">El enlace de Meet llega en tu correo de confirmación</span>}
+        {sala === 'pronto' && gestion.reagendar && (
           <a href={gestion.reagendar} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:border-orange-300 hover:text-orange-500">
             Reagendar
           </a>
         )}
-        {sala !== 'vencida' && gestion.cancelar && (
+        {sala === 'pronto' && gestion.cancelar && (
           <a href={gestion.cancelar} target="_blank" rel="noopener noreferrer" className="rounded-lg px-3 py-2 text-xs font-bold text-slate-500 hover:text-rose-500">
             Cancelar
           </a>
@@ -271,6 +286,13 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
   const [ahora, setAhora] = useState(() => new Date());
   const [uniendoseId, setUniendoseId] = useState(null);
   const montadoRef = useRef(true);
+  // Detección de una cita recién agendada en Cal.com (el webhook puede
+  // tardar unos segundos en registrarla en Supabase).
+  const ticketsRef = useRef([]);
+  ticketsRef.current = tickets;
+  const esperaCitaRef = useRef(null);
+  const agendadasPreviasRef = useRef(new Set());
+  const reservaConfirmadaRef = useRef(false);
   const toastRef = useRef(onToast);
   toastRef.current = onToast;
 
@@ -289,6 +311,7 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
       if (!t.error) setTickets(t.data);
       if (!c.error) setCompras(c.data);
       setCargando(false);
+      return t.error ? null : t.data;
     },
     [clubId]
   );
@@ -329,6 +352,41 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
     };
   }, [cargar, clubId, puedeGestionar]);
 
+  // Cal.com (iframe con ?embed=true) avisa por postMessage cuando se confirma
+  // una reserva: en ese momento se empieza a buscar la cita nueva sin
+  // esperar a que el club cierre el modal.
+  useEffect(() => {
+    if (modal !== 'agendar' || typeof window === 'undefined') return undefined;
+    const hostsCal = new Set(['cal.com', 'app.cal.com']);
+    [config.calcomUrl30, config.calcomUrl60].forEach((u) => {
+      try {
+        if (u) hostsCal.add(new URL(u).hostname);
+      } catch (_e) {
+        /* URL inválida: se ignora */
+      }
+    });
+    function alMensaje(evento) {
+      let host = '';
+      try {
+        host = new URL(evento.origin).hostname;
+      } catch (_e) {
+        return;
+      }
+      if (!hostsCal.has(host) && !host.endsWith('.cal.com')) return;
+      const d = evento.data && typeof evento.data === 'object' ? evento.data : {};
+      const tipo = `${d.type || ''} ${d.method || ''} ${d.fullType || ''}`;
+      if (/bookingSuccessful/i.test(tipo)) {
+        reservaConfirmadaRef.current = true;
+        esperarNuevaCita();
+      }
+    }
+    window.addEventListener('message', alMensaje);
+    return () => window.removeEventListener('message', alMensaje);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modal, config.calcomUrl30, config.calcomUrl60]);
+
+  useEffect(() => () => clearInterval(esperaCitaRef.current), []);
+
   // Regreso desde Stripe Checkout: avisa y refresca hasta ver los minutos.
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -350,14 +408,18 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
     return () => clearInterval(id);
   }, [cargar]);
 
-  const resumen = resumenBolsa(bolsa);
+  // "Retenido en citas" siempre cuadra con las citas agendadas que se ven en
+  // pantalla, aunque la foto del servidor llegue un instante después.
+  const bolsaVista = useMemo(() => conciliarRetenido(bolsa, tickets), [bolsa, tickets]);
+  const resumen = resumenBolsa(bolsaVista);
+  // Próximas = todas las citas agendadas (retienen minutos) hasta que se
+  // registren como completadas / No-Show / canceladas; entonces pasan al
+  // historial y su tiempo se mueve de "Retenido" a "Consumido".
   const proximas = useMemo(
-    () =>
-      tickets
-        .filter((t) => t.estado === 'agendada' && estadoSalaCita(t, ahora) !== 'vencida')
-        .sort((a, b) => new Date(a.inicio).getTime() - new Date(b.inicio).getTime()),
-    [tickets, ahora]
+    () => tickets.filter((t) => t.estado === 'agendada').sort((a, b) => new Date(a.inicio).getTime() - new Date(b.inicio).getTime()),
+    [tickets]
   );
+  const historial = useMemo(() => tickets.filter((t) => t.estado !== 'agendada'), [tickets]);
   const hayAgenda = Boolean(config.calcomUrl30 || config.calcomUrl60);
   // Saldo para el modal de agenda: si la información de horas todavía no
   // cargó (o no se pudo leer), NO se bloquea la agenda en el frontend — el
@@ -365,8 +427,54 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
   const saldoConocido = bolsa != null && !esquemaFaltante;
   const resumenAgenda = saldoConocido ? resumen : { ...resumen, puedeAgendar30: true, puedeAgendar60: true };
 
+  function detenerEsperaCita() {
+    clearInterval(esperaCitaRef.current);
+    esperaCitaRef.current = null;
+  }
+
+  // Recarga cada 3 s (hasta ~45 s) hasta que aparezca la cita nueva que creó
+  // el webhook de Cal.com; en cuanto llega, avisa y se detiene.
+  function esperarNuevaCita() {
+    detenerEsperaCita();
+    let intentos = 0;
+    const revisar = async () => {
+      intentos += 1;
+      const lista = await cargar({ silencioso: true });
+      const nueva = (lista || []).find((t) => t.estado === 'agendada' && !agendadasPreviasRef.current.has(t.id));
+      if (nueva) {
+        detenerEsperaCita();
+        reservaConfirmadaRef.current = false;
+        toastRef.current?.({
+          titulo: 'Reunión de soporte agendada',
+          detalle: `${formatoFechaHora(nueva.inicio)} · ${formatoMinutos(nueva.minutos_reservados)} retenidos de tus horas.`,
+        });
+        return;
+      }
+      if (intentos >= 15) {
+        detenerEsperaCita();
+        if (reservaConfirmadaRef.current) {
+          reservaConfirmadaRef.current = false;
+          toastRef.current?.({
+            titulo: 'Tu reunión se está registrando',
+            detalle: 'Cal.com confirmó la cita, pero aún no llega a QLUBOS. Aparecerá aquí en cuanto se registre.',
+            tono: 'error',
+          });
+        }
+      }
+    };
+    revisar();
+    esperaCitaRef.current = setInterval(revisar, 3000);
+  }
+
   function abrirAgenda() {
+    agendadasPreviasRef.current = new Set(ticketsRef.current.filter((t) => t.estado === 'agendada').map((t) => t.id));
+    reservaConfirmadaRef.current = false;
     setModal('agendar');
+  }
+
+  function cerrarAgenda() {
+    setModal(null);
+    esperarNuevaCita();
   }
 
   async function unirme(cita) {
@@ -429,12 +537,12 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
           {cargando && !bolsa ? (
             <div className="h-56 animate-pulse rounded-2xl border border-slate-200 bg-slate-100" />
           ) : (
-            <WidgetBolsaHoras bolsa={bolsa} onComprar={esquemaFaltante ? null : () => setModal('comprar')} />
+            <WidgetBolsaHoras bolsa={bolsaVista} onComprar={esquemaFaltante ? null : () => setModal('comprar')} />
           )}
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Videollamada con QLUBOS</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Reunión de soporte</p>
           <div className="mt-3 space-y-2">
             {/* Siempre clicable: el modal decide qué duraciones ofrecer según el
                 saldo y explica qué falta si la agenda no está configurada. */}
@@ -443,7 +551,7 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
               onClick={abrirAgenda}
               className="flex w-full cursor-pointer items-center gap-3 rounded-xl border border-orange-400/40 bg-orange-400/10 px-4 py-3 text-left text-sm font-bold text-orange-500 transition hover:bg-orange-400/20"
             >
-              <CalendarClock size={18} /> Agendar videollamada / capacitación
+              <CalendarClock size={18} /> Agendar reunión de soporte
             </button>
             {saldoConocido && !resumen.puedeAgendar30 && !cargando && (
               <p className="text-[11px] font-semibold text-amber-600">
@@ -463,10 +571,21 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
         </div>
       </div>
 
-      {proximas.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Próximas citas</p>
-          {proximas.map((c) => (
+      <div className="space-y-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Próximas citas{proximas.length > 0 ? ` · ${proximas.length}` : ''}
+        </p>
+        {cargando && tickets.length === 0 ? (
+          <div className="h-20 animate-pulse rounded-2xl border border-slate-200 bg-slate-100" />
+        ) : proximas.length === 0 ? (
+          <div className="flex flex-col items-start justify-between gap-3 rounded-2xl border border-dashed border-slate-300 px-4 py-4 sm:flex-row sm:items-center">
+            <p className="text-sm text-slate-500">No tienes reuniones de soporte agendadas.</p>
+            <button type="button" onClick={abrirAgenda} className="text-xs font-bold text-orange-500 hover:underline">
+              Agendar reunión de soporte
+            </button>
+          </div>
+        ) : (
+          proximas.map((c) => (
             <TarjetaProximaCita
               key={c.id}
               cita={c}
@@ -475,13 +594,13 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
               onUnirme={unirme}
               uniendose={uniendoseId === c.id}
             />
-          ))}
-        </div>
-      )}
+          ))
+        )}
+      </div>
 
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de reuniones</p>
-        {cargando && tickets.length === 0 ? <div className="h-32 animate-pulse rounded-2xl border border-slate-200 bg-slate-100" /> : <TablaHistorialSoporte tickets={tickets} />}
+        {cargando && tickets.length === 0 ? <div className="h-32 animate-pulse rounded-2xl border border-slate-200 bg-slate-100" /> : <TablaHistorialSoporte tickets={historial} />}
       </div>
 
       {ajustes.length > 0 && (
@@ -538,10 +657,7 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
           clubId={clubId}
           contacto={{ nombre: nombreUsuario || contacto?.nombre, email: contacto?.email }}
           resumen={resumenAgenda}
-          onClose={() => {
-            setModal(null);
-            cargar({ silencioso: true });
-          }}
+          onClose={cerrarAgenda}
         />
       )}
     </div>
