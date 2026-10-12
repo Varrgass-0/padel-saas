@@ -2,11 +2,25 @@
 // Soporte & Acompañamiento — modales
 //   • ModalSoporte (base)            • ModalComprarHorasExtra (Stripe)
 //   • ModalAgendarVideollamada (Cal.com + Google Calendar/Meet)
-//   • ModalRegistrarAtencion (SuperAdmin: registrar / ajustar minutos reales)
+//   • ModalRegistrarAtencion (SuperAdmin: atención realizada o ajuste/bonificación)
 // =============================================================================
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Loader2, CreditCard, Video, ExternalLink, AlertTriangle, Check, Info } from 'lucide-react';
+import {
+  X,
+  Loader2,
+  CreditCard,
+  Video,
+  ExternalLink,
+  AlertTriangle,
+  Check,
+  Info,
+  Lock,
+  ClipboardCheck,
+  SlidersHorizontal,
+  PlusCircle,
+  MinusCircle,
+} from 'lucide-react';
 import {
   PRECIO_HORA_EXTRA_MXN,
   HORAS_EXTRA_OPCIONES,
@@ -15,9 +29,10 @@ import {
   formatoMXN,
   formatoMinutos,
   formatoFechaHora,
+  formatoMinutosConSigno,
   urlCalcom,
 } from './soporteReglas';
-import { iniciarCompraHorasExtra, registrarAtencionAdmin, mensajeError } from './soporteApi';
+import { iniciarCompraHorasExtra, registrarAtencionAdmin, ajustarBolsaAdmin, listarTickets, mensajeError } from './soporteApi';
 
 const claseInput =
   'w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-orange-400 focus:ring-1 focus:ring-orange-400';
@@ -219,11 +234,17 @@ export function ModalAgendarVideollamada({ config, clubId, contacto, resumen, on
 }
 
 // -----------------------------------------------------------------------------
-// SuperAdmin: registrar una atención nueva o ajustar una existente con los
-// minutos REALES (ej. cita de 30 min que duró 20).
+// SuperAdmin: modal de dos modos
+//   a) "Registrar Atención Realizada": sesión real (videollamada, WhatsApp,
+//      llamada o presencial) — descuenta los minutos reales. También ajusta
+//      una cita existente (ej. agendada de 30 min que duró 20).
+//   b) "Ajuste / Bonificación de Bolsa": abona (+) o corrige (−) minutos sin
+//      simular una sesión. El club ve el ajuste y su motivo.
+// En ambos: notas/diagnóstico interno (solo visible para el staff).
 // -----------------------------------------------------------------------------
 const ESTADOS_ADMIN = ['completada', 'no_show', 'cancelada_tardia', 'cancelada'];
 const MINUTOS_RAPIDOS = [10, 15, 20, 30, 45, 60];
+const MINUTOS_AJUSTE_RAPIDOS = [15, 30, 60, 120];
 
 function aInputLocal(iso) {
   const d = iso ? new Date(iso) : new Date();
@@ -232,23 +253,82 @@ function aInputLocal(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, ticketInicial, onClose, onGuardado }) {
-  const [clubId, setClubId] = useState(clubIdInicial ?? ticketInicial?.club_id ?? '');
+function CampoNotasInternas({ value, onChange }) {
+  return (
+    <label className="block">
+      <span className="flex items-center gap-1.5 text-xs font-bold text-slate-600">
+        <Lock size={12} /> Notas / diagnóstico interno
+      </span>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={3}
+        maxLength={4000}
+        placeholder="Ej. El club tiene problemas con la red del mostrador; dar seguimiento en 1 semana."
+        className={`${claseInput} mt-1 resize-y`}
+      />
+      <span className="mt-1 block text-[11px] text-slate-500">Solo visible para el staff de QLUBOS. El club no ve estas notas.</span>
+    </label>
+  );
+}
+
+function MensajeError({ texto }) {
+  if (!texto) return null;
+  return (
+    <p className="flex items-start gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-500">
+      <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {texto}
+    </p>
+  );
+}
+
+export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, ticketInicial, modoInicial = 'atencion', onClose, onGuardado }) {
+  const clubBloqueado = Boolean(ticketInicial);
+  const [modo, setModo] = useState(ticketInicial ? 'atencion' : modoInicial);
+  const [clubId, setClubId] = useState(String(clubIdInicial ?? ticketInicial?.club_id ?? ''));
+  const [tickets, setTickets] = useState(ticketsDelClub || []);
   const [ticketId, setTicketId] = useState(ticketInicial?.id ?? '');
-  const ticket = (ticketsDelClub || []).find((t) => t.id === ticketId) || (ticketInicial?.id === ticketId ? ticketInicial : null);
+  const ticket = tickets.find((t) => t.id === ticketId) || (ticketInicial?.id === ticketId ? ticketInicial : null);
+
+  // --- Modo atención ---
   const [canal, setCanal] = useState(ticket?.canal || 'videollamada');
   const [concepto, setConcepto] = useState(ticket?.concepto || '');
   const [minutos, setMinutos] = useState(ticket ? String(ticket.minutos_reservados || ticket.minutos_consumidos || 30) : '30');
   const [estado, setEstado] = useState(ticket && ticket.estado !== 'agendada' ? ticket.estado : 'completada');
   const [inicio, setInicio] = useState(aInputLocal(ticket?.inicio));
   const [meetUrl, setMeetUrl] = useState(ticket?.meet_url || '');
+
+  // --- Modo ajuste ---
+  const [signoAjuste, setSignoAjuste] = useState(1); // 1 = bonificación, -1 = corrección
+  const [minutosAjuste, setMinutosAjuste] = useState('30');
+  const [motivoAjuste, setMotivoAjuste] = useState('');
+
+  const [notas, setNotas] = useState('');
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
-  // Al elegir otra atención existente, precargar sus datos.
+  const club = (clubes || []).find((c) => String(c.club_id) === String(clubId)) || null;
+  const saldoActual = Number(club?.minutos_disponibles_mes) || 0;
+
+  // Atenciones del club elegido (para "ajustar una existente").
+  useEffect(() => {
+    let vivo = true;
+    if (!clubId) {
+      setTickets([]);
+      return undefined;
+    }
+    const precargados = (ticketsDelClub || []).filter((t) => String(t.club_id) === String(clubId));
+    if (precargados.length) setTickets(precargados);
+    listarTickets(clubId, 60).then(({ data, error: err }) => {
+      if (vivo && !err) setTickets(data);
+    });
+    return () => {
+      vivo = false;
+    };
+  }, [clubId, ticketsDelClub]);
+
   function elegirTicket(id) {
     setTicketId(id);
-    const t = (ticketsDelClub || []).find((x) => x.id === id);
+    const t = tickets.find((x) => x.id === id);
     if (t) {
       setCanal(t.canal || 'videollamada');
       setConcepto(t.concepto || '');
@@ -265,16 +345,51 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
     }
   }
 
-  const ticketsAjustables = (ticketsDelClub || []).filter((t) => String(t.club_id) === String(clubId)).slice(0, 50);
+  // Agendadas primero (las que hay que cerrar), luego el resto.
+  const ticketsOrdenados = useMemo(
+    () =>
+      [...tickets]
+        .sort((a, b) => (a.estado === 'agendada' ? 0 : 1) - (b.estado === 'agendada' ? 0 : 1) || new Date(b.inicio || 0).getTime() - new Date(a.inicio || 0).getTime())
+        .slice(0, 60),
+    [tickets]
+  );
+
+  const minAjusteNum = Math.round(Number(minutosAjuste) || 0);
+  const ajusteFirmado = signoAjuste * minAjusteNum;
 
   async function guardar() {
     setError('');
-    const min = Number(minutos);
     if (!clubId) return setError('Elige un club.');
-    if (!Number.isFinite(min) || min < 0 || min > 600) return setError('Los minutos deben estar entre 0 y 600.');
-    if (!ticketId && !concepto.trim()) return setError('Describe brevemente el concepto de la atención.');
-    if (meetUrl && !/^https:\/\//i.test(meetUrl)) return setError('El enlace de Meet debe empezar con https://');
     setGuardando(true);
+    if (modo === 'ajuste') {
+      if (!(minAjusteNum > 0) || minAjusteNum > 6000) {
+        setGuardando(false);
+        return setError('Los minutos del ajuste deben estar entre 1 y 6000.');
+      }
+      if (!motivoAjuste.trim()) {
+        setGuardando(false);
+        return setError('Escribe el motivo del ajuste (el club lo verá en su historial).');
+      }
+      const { data, error: err } = await ajustarBolsaAdmin({ clubId, minutos: ajusteFirmado, motivo: motivoAjuste.trim(), notas });
+      setGuardando(false);
+      if (err) return setError(mensajeError(err, 'No se pudo aplicar el ajuste.'));
+      onGuardado?.({ modo: 'ajuste', clubId, ajuste: data });
+      return onClose?.();
+    }
+
+    const min = Number(minutos);
+    if (!Number.isFinite(min) || min < 0 || min > 600) {
+      setGuardando(false);
+      return setError('Los minutos deben estar entre 0 y 600.');
+    }
+    if (!ticketId && !concepto.trim()) {
+      setGuardando(false);
+      return setError('Describe brevemente el concepto de la atención.');
+    }
+    if (meetUrl && !/^https:\/\//i.test(meetUrl)) {
+      setGuardando(false);
+      return setError('El enlace de Meet debe empezar con https://');
+    }
     const fecha = inicio ? new Date(inicio) : null;
     const { data, error: err } = await registrarAtencionAdmin({
       clubId,
@@ -284,125 +399,257 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
       minutos: estado === 'cancelada' ? 0 : min,
       estado,
       inicio: fecha && !Number.isNaN(fecha.getTime()) ? fecha.toISOString() : null,
-      meetUrl: meetUrl.trim() || null,
+      meetUrl: canal === 'videollamada' ? meetUrl.trim() || null : null,
+      notas,
     });
     setGuardando(false);
     if (err) return setError(mensajeError(err, 'No se pudo guardar la atención.'));
-    onGuardado?.(data);
+    onGuardado?.({ modo: 'atencion', clubId, ticket: data });
     onClose?.();
   }
 
+  const MODOS = [
+    { id: 'atencion', label: 'Registrar Atención Realizada', icon: ClipboardCheck },
+    { id: 'ajuste', label: 'Ajuste / Bonificación de Bolsa', icon: SlidersHorizontal },
+  ];
+
   return (
-    <ModalSoporte titulo={ticketId ? 'Ajustar atención' : 'Registrar atención'} subtitulo="Los minutos reales se descuentan de la bolsa del club al guardar" onClose={guardando ? undefined : onClose}>
+    <ModalSoporte
+      titulo={modo === 'ajuste' ? 'Ajuste de bolsa' : ticketId ? 'Ajustar atención' : 'Registrar atención'}
+      subtitulo={club ? `${club.nombre} · saldo actual ${formatoMinutos(saldoActual)}` : 'Elige el club'}
+      onClose={guardando ? undefined : onClose}
+    >
+      {!clubBloqueado && (
+        <div role="tablist" aria-label="Tipo de registro" className="mb-4 grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1">
+          {MODOS.map((m) => {
+            const Icono = m.icon;
+            const activo = modo === m.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                role="tab"
+                aria-selected={activo}
+                onClick={() => {
+                  setModo(m.id);
+                  setError('');
+                }}
+                className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[11px] font-bold transition sm:text-xs ${
+                  activo ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900'
+                }`}
+              >
+                <Icono size={14} className={activo ? 'text-orange-500' : ''} /> {m.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div className="space-y-3">
         <label className="block">
           <span className="text-xs font-bold text-slate-600">Club</span>
-          <select value={clubId} onChange={(e) => { setClubId(e.target.value); elegirTicket(''); }} className={`${claseInput} mt-1`} disabled={Boolean(ticketInicial)}>
+          <select
+            value={clubId}
+            onChange={(e) => {
+              setClubId(e.target.value);
+              setTicketId('');
+              elegirTicket('');
+            }}
+            className={`${claseInput} mt-1`}
+            disabled={clubBloqueado}
+          >
             <option value="">Selecciona un club…</option>
             {(clubes || []).map((c) => (
-              <option key={c.club_id} value={c.club_id}>
-                {c.nombre} · disp. {formatoMinutos(c.minutos_disponibles_mes)}
+              <option key={c.club_id} value={String(c.club_id)}>
+                {c.nombre} · ID {c.club_id} · disp. {formatoMinutos(c.minutos_disponibles_mes)}
               </option>
             ))}
           </select>
         </label>
 
-        <label className="block">
-          <span className="text-xs font-bold text-slate-600">Atención</span>
-          <select value={ticketId} onChange={(e) => elegirTicket(e.target.value)} className={`${claseInput} mt-1`} disabled={!clubId}>
-            <option value="">+ Nueva atención</option>
-            {ticketsAjustables.map((t) => (
-              <option key={t.id} value={t.id}>
-                {formatoFechaHora(t.inicio)} · {CANALES_SOPORTE[t.canal]?.label || t.canal} · {ESTADOS_TICKET[t.estado]?.label || t.estado} · {formatoMinutos(t.minutos_reservados)}
-              </option>
-            ))}
-          </select>
-        </label>
+        {modo === 'atencion' ? (
+          <>
+            <label className="block">
+              <span className="text-xs font-bold text-slate-600">Atención</span>
+              <select value={ticketId} onChange={(e) => elegirTicket(e.target.value)} className={`${claseInput} mt-1`} disabled={!clubId || clubBloqueado}>
+                <option value="">+ Nueva atención</option>
+                {ticketsOrdenados.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {formatoFechaHora(t.inicio)} · {CANALES_SOPORTE[t.canal]?.label || t.canal} · {ESTADOS_TICKET[t.estado]?.label || t.estado} · {formatoMinutos(t.minutos_reservados)}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label className="block">
-            <span className="text-xs font-bold text-slate-600">Canal</span>
-            <select value={canal} onChange={(e) => setCanal(e.target.value)} className={`${claseInput} mt-1`}>
-              {Object.entries(CANALES_SOPORTE).map(([v, m]) => (
-                <option key={v} value={v}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-xs font-bold text-slate-600">Fecha y hora</span>
-            <input type="datetime-local" value={inicio} onChange={(e) => setInicio(e.target.value)} className={`${claseInput} mt-1`} />
-          </label>
-        </div>
+            <div>
+              <span className="text-xs font-bold text-slate-600">Canal</span>
+              <div className="mt-1 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                {Object.entries(CANALES_SOPORTE).map(([v, m]) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setCanal(v)}
+                    aria-pressed={canal === v}
+                    className={`rounded-lg border px-2 py-2 text-xs font-bold transition ${
+                      canal === v ? 'border-orange-400 bg-orange-400/10 text-orange-500' : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-orange-300'
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        <label className="block">
-          <span className="text-xs font-bold text-slate-600">Concepto</span>
-          <input value={concepto} onChange={(e) => setConcepto(e.target.value)} placeholder="Ej. Capacitación de Smart POS" className={`${claseInput} mt-1`} maxLength={200} />
-        </label>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="block">
+                <span className="text-xs font-bold text-slate-600">Fecha y hora</span>
+                <input type="datetime-local" value={inicio} onChange={(e) => setInicio(e.target.value)} className={`${claseInput} mt-1`} />
+              </label>
+              <label className="block">
+                <span className="text-xs font-bold text-slate-600">Concepto</span>
+                <input value={concepto} onChange={(e) => setConcepto(e.target.value)} placeholder="Ej. Capacitación de Smart POS" className={`${claseInput} mt-1`} maxLength={200} />
+              </label>
+            </div>
 
-        <div>
-          <span className="text-xs font-bold text-slate-600">Estatus</span>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {ESTADOS_ADMIN.map((e) => (
-              <button
-                key={e}
-                type="button"
-                onClick={() => setEstado(e)}
-                aria-pressed={estado === e}
-                className={`rounded-full px-3 py-1 text-[11px] font-bold ring-1 transition ${
-                  estado === e ? ESTADOS_TICKET[e].clase : 'bg-slate-50 text-slate-500 ring-slate-200 hover:text-slate-900'
-                }`}
-              >
-                {estado === e && <Check size={11} className="mr-1 inline" />}
-                {ESTADOS_TICKET[e].label}
-              </button>
-            ))}
-          </div>
-        </div>
+            <div>
+              <span className="text-xs font-bold text-slate-600">Estatus</span>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {ESTADOS_ADMIN.map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    onClick={() => setEstado(e)}
+                    aria-pressed={estado === e}
+                    className={`rounded-full px-3 py-1 text-[11px] font-bold ring-1 transition ${
+                      estado === e ? ESTADOS_TICKET[e].clase : 'bg-slate-50 text-slate-500 ring-slate-200 hover:text-slate-900'
+                    }`}
+                  >
+                    {estado === e && <Check size={11} className="mr-1 inline" />}
+                    {ESTADOS_TICKET[e].label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        <div>
-          <span className="text-xs font-bold text-slate-600">Minutos reales consumidos</span>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <input
-              type="number"
-              min={0}
-              max={600}
-              value={estado === 'cancelada' ? '0' : minutos}
-              disabled={estado === 'cancelada'}
-              onChange={(e) => setMinutos(e.target.value)}
-              className={`${claseInput} w-24`}
-            />
-            {MINUTOS_RAPIDOS.map((m) => (
-              <button
-                key={m}
-                type="button"
-                disabled={estado === 'cancelada'}
-                onClick={() => setMinutos(String(m))}
-                className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600 hover:border-orange-300 disabled:opacity-40"
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-          {ticket && (
-            <p className="mt-1 text-[11px] text-slate-500">
-              Agendada por {formatoMinutos(ticket.minutos_reservados)}
-              {ticket.minutos_consumidos ? ` · cobrado hoy: ${formatoMinutos(ticket.minutos_consumidos)}` : ''}
+            <div>
+              <span className="text-xs font-bold text-slate-600">Minutos reales consumidos</span>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                <input
+                  type="number"
+                  min={0}
+                  max={600}
+                  value={estado === 'cancelada' ? '0' : minutos}
+                  disabled={estado === 'cancelada'}
+                  onChange={(e) => setMinutos(e.target.value)}
+                  className={`${claseInput} w-24`}
+                />
+                {MINUTOS_RAPIDOS.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    disabled={estado === 'cancelada'}
+                    onClick={() => setMinutos(String(m))}
+                    className={`rounded-md border px-2 py-1 text-[11px] font-bold disabled:opacity-40 ${
+                      String(m) === String(minutos) ? 'border-orange-400 text-orange-500' : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-orange-300'
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              {ticket && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Agendada por {formatoMinutos(ticket.minutos_reservados)}
+                  {ticket.minutos_consumidos ? ` · cobrado hoy: ${formatoMinutos(ticket.minutos_consumidos)}` : ''}
+                </p>
+              )}
+            </div>
+
+            {canal === 'videollamada' && (
+              <label className="block">
+                <span className="text-xs font-bold text-slate-600">Enlace de Meet (opcional)</span>
+                <input value={meetUrl} onChange={(e) => setMeetUrl(e.target.value)} placeholder="https://meet.google.com/…" className={`${claseInput} mt-1`} />
+              </label>
+            )}
+          </>
+        ) : (
+          <>
+            <div>
+              <span className="text-xs font-bold text-slate-600">Tipo de ajuste</span>
+              <div className="mt-1 grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSignoAjuste(1)}
+                  aria-pressed={signoAjuste === 1}
+                  className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition ${
+                    signoAjuste === 1 ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-600' : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-emerald-400/50'
+                  }`}
+                >
+                  <PlusCircle size={15} /> Bonificación (+)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSignoAjuste(-1)}
+                  aria-pressed={signoAjuste === -1}
+                  className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition ${
+                    signoAjuste === -1 ? 'border-rose-500/60 bg-rose-500/10 text-rose-500' : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-rose-400/50'
+                  }`}
+                >
+                  <MinusCircle size={15} /> Corrección (−)
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <span className="text-xs font-bold text-slate-600">Minutos</span>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                <input type="number" min={1} max={6000} value={minutosAjuste} onChange={(e) => setMinutosAjuste(e.target.value)} className={`${claseInput} w-24`} />
+                {MINUTOS_AJUSTE_RAPIDOS.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMinutosAjuste(String(m))}
+                    className={`rounded-md border px-2 py-1 text-[11px] font-bold ${
+                      String(m) === String(minutosAjuste) ? 'border-orange-400 text-orange-500' : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-orange-300'
+                    }`}
+                  >
+                    {formatoMinutos(m)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {club && minAjusteNum > 0 && (
+              <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs">
+                <span className="text-slate-500">Saldo del club</span>
+                <span className="font-bold text-slate-900">
+                  {formatoMinutos(saldoActual)} <span className="text-slate-400">→</span>{' '}
+                  <span className={ajusteFirmado > 0 ? 'text-emerald-600' : 'text-rose-500'}>
+                    {saldoActual + ajusteFirmado < 0 ? `−${formatoMinutos(Math.abs(saldoActual + ajusteFirmado))}` : formatoMinutos(saldoActual + ajusteFirmado)}
+                  </span>{' '}
+                  <span className="text-slate-400">({formatoMinutosConSigno(ajusteFirmado)})</span>
+                </span>
+              </div>
+            )}
+
+            <label className="block">
+              <span className="text-xs font-bold text-slate-600">Motivo (visible para el club)</span>
+              <input
+                value={motivoAjuste}
+                onChange={(e) => setMotivoAjuste(e.target.value)}
+                maxLength={300}
+                placeholder={signoAjuste === 1 ? 'Ej. Compensación por falla del sistema' : 'Ej. Corrección de atención registrada dos veces'}
+                className={`${claseInput} mt-1`}
+              />
+            </label>
+            <p className="flex items-start gap-1.5 text-[11px] text-slate-500">
+              <Info size={12} className="mt-0.5 shrink-0" /> Los ajustes no vencen con el ciclo mensual (igual que las horas extra) y no aparecen como sesiones consumidas.
             </p>
-          )}
-        </div>
-
-        <label className="block">
-          <span className="text-xs font-bold text-slate-600">Enlace de Meet (opcional)</span>
-          <input value={meetUrl} onChange={(e) => setMeetUrl(e.target.value)} placeholder="https://meet.google.com/…" className={`${claseInput} mt-1`} />
-        </label>
-
-        {error && (
-          <p className="flex items-start gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-500">
-            <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {error}
-          </p>
+          </>
         )}
+
+        <CampoNotasInternas value={notas} onChange={setNotas} />
+        <MensajeError texto={error} />
       </div>
 
       <div className="mt-5 flex justify-end gap-2">
@@ -416,7 +663,7 @@ export function ModalRegistrarAtencion({ clubes, clubIdInicial, ticketsDelClub, 
           className="inline-flex items-center gap-2 rounded-lg bg-orange-400 px-4 py-2 text-sm font-black text-slate-950 transition hover:bg-orange-300 disabled:opacity-60"
         >
           {guardando ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-          Guardar y recalcular bolsa
+          {modo === 'ajuste' ? `Aplicar ajuste ${minAjusteNum > 0 ? formatoMinutosConSigno(ajusteFirmado) : ''}` : 'Guardar y recalcular bolsa'}
         </button>
       </div>
     </ModalSoporte>

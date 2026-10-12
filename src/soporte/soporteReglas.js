@@ -112,6 +112,7 @@ export const CANALES_SOPORTE = {
   videollamada: { label: 'Videollamada' },
   whatsapp: { label: 'WhatsApp' },
   llamada: { label: 'Llamada' },
+  presencial: { label: 'Presencial' },
 };
 
 export const ESTADOS_TICKET = {
@@ -190,4 +191,71 @@ export function enlacesGestionCalcom(base, uid) {
 
 export function urlSeguraHttp(url) {
   return typeof url === 'string' && /^https:\/\//i.test(url) ? url : null;
+}
+
+// ---------------------------------------------------------------------------
+// Agenda del SuperAdmin
+// ---------------------------------------------------------------------------
+// Grupo de una cita en la agenda: 'proximas' | 'completadas' | 'canceladas'
+// (canceladas incluye cancelación tardía y No-Show).
+export function grupoAgenda(ticket) {
+  if (ticket?.estado === 'agendada') return 'proximas';
+  if (ticket?.estado === 'completada') return 'completadas';
+  return 'canceladas';
+}
+
+export function duracionCitaMin(ticket) {
+  const reservado = Number(ticket?.minutos_reservados) || 0;
+  if (reservado > 0) return reservado;
+  if (ticket?.inicio && ticket?.fin) {
+    const m = Math.round((new Date(ticket.fin).getTime() - new Date(ticket.inicio).getTime()) / 60000);
+    if (m > 0) return m;
+  }
+  return 30;
+}
+
+// Reunión "en curso" o "por empezar" (faltan ≤ 15 min) entre las citas
+// agendadas. Devuelve la más próxima, o null.
+export function reunionDestacada(tickets, ahora = new Date()) {
+  const t = new Date(ahora).getTime();
+  const candidatas = (tickets || [])
+    .filter((x) => x?.estado === 'agendada' && x.inicio)
+    .map((x) => {
+      const inicio = new Date(x.inicio).getTime();
+      const fin = x.fin ? new Date(x.fin).getTime() : inicio + duracionCitaMin(x) * 60000;
+      return { ticket: x, inicio, fin };
+    })
+    .filter(({ inicio, fin }) => t >= inicio - VENTANA_APERTURA_SALA_MIN * 60000 && t <= fin)
+    .sort((a, b) => a.inicio - b.inicio);
+  if (!candidatas.length) return null;
+  const { ticket, inicio } = candidatas[0];
+  const minutosParaInicio = Math.ceil((inicio - t) / 60000);
+  return { ticket, enCurso: t >= inicio, minutosParaInicio: Math.max(0, minutosParaInicio), total: candidatas.length };
+}
+
+// Etiqueta de día para agrupar la agenda ("Hoy", "Mañana", "lunes 14 de octubre").
+export function etiquetaDiaAgenda(iso, ahora = new Date()) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'Sin fecha';
+  const base = new Date(ahora);
+  const clave = (x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+  const manana = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1);
+  const ayer = new Date(base.getFullYear(), base.getMonth(), base.getDate() - 1);
+  if (clave(d) === clave(base)) return 'Hoy';
+  if (clave(d) === clave(manana)) return 'Mañana';
+  if (clave(d) === clave(ayer)) return 'Ayer';
+  const txt = d.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' });
+  return txt.charAt(0).toUpperCase() + txt.slice(1);
+}
+
+export function formatoHora(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' });
+}
+
+export function formatoMinutosConSigno(min) {
+  const n = Math.round(Number(min) || 0);
+  return `${n > 0 ? '+' : n < 0 ? '−' : ''}${formatoMinutos(Math.abs(n))}`;
 }

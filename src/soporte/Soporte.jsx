@@ -41,6 +41,7 @@ import {
   obtenerBolsa,
   listarTickets,
   listarComprasExtra,
+  listarAjustes,
   registrarConexion,
   suscribirCambiosSoporte,
   obtenerUsuarioActual,
@@ -85,7 +86,7 @@ export function WidgetBolsaHoras({ bolsa, onComprar, compacto = false }) {
           <Dato etiqueta="Plan del mes" valor={formatoMinutos(r.plan)} />
           <Dato etiqueta="Consumido del plan" valor={formatoMinutos(r.consumidos)} />
           <Dato etiqueta="Retenido en citas" valor={formatoMinutos(r.retenidos)} />
-          <Dato etiqueta="Horas extra" valor={formatoMinutos(Math.max(0, r.extra))} />
+          <Dato etiqueta="Extra y bonificaciones" valor={formatoMinutos(Math.max(0, r.extra))} />
         </div>
       )}
 
@@ -242,6 +243,7 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
   const [bolsa, setBolsa] = useState(null);
   const [tickets, setTickets] = useState([]);
   const [compras, setCompras] = useState([]);
+  const [ajustes, setAjustes] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [esquemaFaltante, setEsquemaFaltante] = useState(false);
@@ -257,7 +259,9 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
     async ({ silencioso = false } = {}) => {
       if (clubId == null) return;
       if (!silencioso) setCargando(true);
-      const [b, t, c] = await Promise.all([obtenerBolsa(clubId), listarTickets(clubId), listarComprasExtra(clubId)]);
+      const [b, t, c, aj] = await Promise.all([obtenerBolsa(clubId), listarTickets(clubId), listarComprasExtra(clubId), listarAjustes(clubId)]);
+      // Ajustes (v95) son opcionales: si la tabla no existe aún, se ignoran.
+      if (!aj.error) setAjustes(aj.data);
       if (!montadoRef.current) return;
       const primerError = b.error || t.error || c.error;
       setEsquemaFaltante(Boolean(primerError && esErrorEsquemaSoporte(primerError)));
@@ -460,6 +464,26 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de atenciones</p>
         {cargando && tickets.length === 0 ? <div className="h-32 animate-pulse rounded-2xl border border-slate-200 bg-slate-100" /> : <TablaHistorialSoporte tickets={tickets} />}
       </div>
+
+      {ajustes.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ajustes de bolsa del equipo QLUBOS</p>
+          <div className="divide-y divide-slate-200 rounded-2xl border border-slate-200 bg-white">
+            {ajustes.map((a) => (
+              <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-xs">
+                <span className="text-slate-500">{formatoFechaHora(a.creado_en)}</span>
+                <span className="min-w-0 flex-1 truncate px-2 text-slate-700" title={a.motivo}>
+                  {a.motivo}
+                </span>
+                <span className={`font-black ${Number(a.minutos) > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  {Number(a.minutos) > 0 ? '+' : '−'}
+                  {formatoMinutos(Math.abs(Number(a.minutos)))}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {compras.length > 0 && (
         <div className="space-y-2">

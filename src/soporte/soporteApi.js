@@ -2,7 +2,7 @@
 // Soporte & Acompañamiento — acceso a Supabase (RPC, tablas, Realtime, Edge)
 // =============================================================================
 import { supabase } from '../supabaseClient';
- 
+
 // ¿El error viene de que la migración v93 todavía no se corrió?
 export function esErrorEsquemaSoporte(error) {
   const code = error?.code || '';
@@ -12,15 +12,15 @@ export function esErrorEsquemaSoporte(error) {
     /does not exist|Could not find the function|schema cache/i.test(msg)
   );
 }
- 
+
 export function mensajeError(error, respaldo = 'Ocurrió un error inesperado.') {
   if (!error) return respaldo;
   if (esErrorEsquemaSoporte(error)) {
-    return 'El módulo de Soporte aún no está instalado en la base de datos. Corre migracion_v93_soporte_acompanamiento.sql en Supabase.';
+    return 'Falta instalar una parte del módulo de Soporte en la base de datos. Corre en Supabase las migraciones v93, v94 y v95 de Soporte.';
   }
   return error.message || respaldo;
 }
- 
+
 export async function consultarEsStaffQlubos() {
   try {
     const { data, error } = await supabase.rpc('fn_soporte_es_staff');
@@ -30,7 +30,7 @@ export async function consultarEsStaffQlubos() {
     return false;
   }
 }
- 
+
 // Verificación TEMPRANA de staff de la plataforma (se usa en el login, antes
 // de resolver cualquier club). Consulta directa a `plataforma_staff` por el
 // `user_id` de la sesión y `activo = true` (la política RLS de v94 solo deja
@@ -63,12 +63,12 @@ export async function obtenerStaffPlataforma(userId) {
   if (esErrorEsquemaSoporte(directa.error) && esErrorEsquemaSoporte(respaldo.error)) return { ok: true, staff: null };
   return { ok: false, error: respaldo.error || directa.error };
 }
- 
+
 export async function obtenerBolsa(clubId) {
   const { data, error } = await supabase.rpc('fn_soporte_bolsa_actual', { p_club_id: Number(clubId) });
   return { data: Array.isArray(data) ? data[0] : data, error };
 }
- 
+
 export async function listarTickets(clubId, limite = 200) {
   const { data, error } = await supabase
     .from('soporte_tickets')
@@ -78,7 +78,7 @@ export async function listarTickets(clubId, limite = 200) {
     .limit(limite);
   return { data: data || [], error };
 }
- 
+
 export async function listarComprasExtra(clubId, limite = 50) {
   const { data, error } = await supabase
     .from('soporte_compras_extra')
@@ -88,12 +88,12 @@ export async function listarComprasExtra(clubId, limite = 50) {
     .limit(limite);
   return { data: data || [], error };
 }
- 
+
 export async function registrarConexion(ticketId) {
   const { data, error } = await supabase.rpc('fn_soporte_registrar_conexion', { p_ticket_id: ticketId });
   return { data: Array.isArray(data) ? data[0] : data, error };
 }
- 
+
 // Inicia el pago en Stripe Checkout (Edge Function). Devuelve { url }.
 export async function iniciarCompraHorasExtra({ clubId, horas }) {
   try {
@@ -116,15 +116,15 @@ export async function iniciarCompraHorasExtra({ clubId, horas }) {
     return { data: null, error: err instanceof Error ? err : new Error('No se pudo iniciar el pago.') };
   }
 }
- 
+
 // ---------------------------- SuperAdmin ------------------------------------
 export async function listarClubesAdmin(busqueda = '') {
   const { data, error } = await supabase.rpc('fn_soporte_admin_clubes', { p_busqueda: busqueda || null });
   return { data: data || [], error };
 }
- 
-export async function registrarAtencionAdmin({ clubId, ticketId = null, canal, concepto, minutos, estado, inicio = null, meetUrl = null }) {
-  const { data, error } = await supabase.rpc('fn_soporte_admin_registrar_atencion', {
+
+export async function registrarAtencionAdmin({ clubId, ticketId = null, canal, concepto, minutos, estado, inicio = null, meetUrl = null, notas = '' }) {
+  const params = {
     p_club_id: Number(clubId),
     p_ticket_id: ticketId,
     p_canal: canal,
@@ -133,17 +133,67 @@ export async function registrarAtencionAdmin({ clubId, ticketId = null, canal, c
     p_estado: estado,
     p_inicio: inicio,
     p_meet_url: meetUrl || null,
+  };
+  // `p_notas` solo viaja si hay nota (así sigue funcionando sin la v95).
+  if (notas && notas.trim()) params.p_notas = notas.trim();
+  const { data, error } = await supabase.rpc('fn_soporte_admin_registrar_atencion', params);
+  return { data: Array.isArray(data) ? data[0] : data, error };
+}
+
+// Abono (+) o corrección (−) administrativa de minutos (v95).
+export async function ajustarBolsaAdmin({ clubId, minutos, motivo, notas = '' }) {
+  const { data, error } = await supabase.rpc('fn_soporte_admin_ajustar_bolsa', {
+    p_club_id: Number(clubId),
+    p_minutos: Math.round(Number(minutos) || 0),
+    p_motivo: motivo,
+    p_notas: notas && notas.trim() ? notas.trim() : null,
   });
   return { data: Array.isArray(data) ? data[0] : data, error };
 }
- 
+
+// Agenda global (staff): citas de todos los clubes en un rango de fechas.
+export async function listarAgendaAdmin({ desde, hasta, limite = 500 }) {
+  const { data, error } = await supabase
+    .from('soporte_tickets')
+    .select('*')
+    .gte('inicio', desde)
+    .lte('inicio', hasta)
+    .order('inicio', { ascending: true })
+    .limit(limite);
+  return { data: data || [], error };
+}
+
+// Ajustes de bolsa del club (el club también los ve, con su motivo).
+export async function listarAjustes(clubId, limite = 50) {
+  const { data, error } = await supabase
+    .from('soporte_ajustes')
+    .select('*')
+    .eq('club_id', Number(clubId))
+    .order('creado_en', { ascending: false })
+    .limit(limite);
+  return { data: data || [], error };
+}
+
+// Notas / diagnóstico interno del staff sobre el club (el club NO las ve).
+export async function listarNotasInternas(clubId, limite = 50) {
+  const { data, error } = await supabase
+    .from('soporte_notas_internas')
+    .select('*')
+    .eq('club_id', Number(clubId))
+    .order('creado_en', { ascending: false })
+    .limit(limite);
+  return { data: data || [], error };
+}
+
 // ---------------------------- Realtime --------------------------------------
 // Escucha cambios de bolsa/tickets/compras. `clubId` null = todos (SuperAdmin;
 // RLS sigue filtrando lo que cada quien puede ver).
 export function suscribirCambiosSoporte(clubId, alCambiar) {
   const filtro = clubId != null ? { filter: `club_id=eq.${clubId}` } : {};
   const canal = supabase.channel(`soporte-${clubId ?? 'global'}-${Math.random().toString(36).slice(2, 8)}`);
-  ['soporte_bolsa', 'soporte_tickets', 'soporte_compras_extra'].forEach((tabla) => {
+  const tablas = ['soporte_bolsa', 'soporte_tickets', 'soporte_compras_extra', 'soporte_ajustes'];
+  if (clubId == null) tablas.push('soporte_notas_internas');
+  tablas.forEach((tabla) => {
     canal.on('postgres_changes', { event: '*', schema: 'public', table: tabla, ...filtro }, () => alCambiar(tabla));
   });
   canal.subscribe();
@@ -155,7 +205,7 @@ export function suscribirCambiosSoporte(clubId, alCambiar) {
     }
   };
 }
- 
+
 export async function obtenerUsuarioActual() {
   try {
     const { data } = await supabase.auth.getUser();
@@ -166,4 +216,3 @@ export async function obtenerUsuarioActual() {
     return null;
   }
 }
- 
