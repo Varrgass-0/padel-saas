@@ -755,12 +755,12 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
-// Módulo Soporte & Acompañamiento (migracion_v93) — vive en su propia carpeta
+// Módulo Soporte (migracion_v93) — vive en su propia carpeta
 // `src/soporte/` y solo se conecta aquí en 4 puntos: estos imports, las
 // entradas 'soporte'/'admin_soporte' de NAV_MODULOS/MODULOS_META, el estado
 // `esStaffQlubos` de AppInterno (rutas /soporte y /admin/soporte) y su render.
 // Los íconos van con alias para no chocar con el import principal de lucide.
-import { LifeBuoy as IconoNavSoporte, Headphones as IconoNavAdminSoporte } from 'lucide-react';
+import { LifeBuoy as IconoNavSoporte } from 'lucide-react';
 import Soporte from './soporte/Soporte';
 import AdminSoporte from './soporte/AdminSoporte';
 import { consultarEsStaffQlubos, obtenerStaffPlataforma } from './soporte/soporteApi';
@@ -1912,7 +1912,7 @@ ROLES_POR_VALOR.caja = ROLES_POR_VALOR.recepcion;
 // Todos los módulos existen bajo estas mismas claves de `moduloActivo` — ver
 // `NAV_MODULOS`/`MODULOS_META` más abajo, donde se agregó 'seguridad' y,
 // después, 'academia' (Academia & Clínicas).
-// 'soporte' (Soporte & Acompañamiento) va al final: solo lo recibe Owner (y el
+// 'soporte' (Soporte) va al final: solo lo recibe Owner (y el
 // alias legacy 'admin') vía `modulos: 'todos'`; ningún otro rol lo lista.
 // 'admin_soporte' NO va aquí a propósito: no depende del rol del club sino de
 // ser staff de QLUBOS (`esStaffQlubos` en AppInterno).
@@ -3695,10 +3695,10 @@ const NAV_MODULOS = [
   // candado de "visible solo para Admin/Propietario" que ya usa el engrane
   // de "Personalizar Club" (`operador?.rol === 'owner'`, ver `Sidebar`).
   { id: 'configuracion', label: 'Configuración del Club', labelCorto: 'Configuración', icon: Settings2 },
-  // Soporte & Acompañamiento (Owner/Admin del club) y su Panel SuperAdmin
+  // Soporte (Owner/Admin del club) y su Panel SuperAdmin
   // (solo staff QLUBOS, ver `soloStaffQlubos` y `navModulosOrdenados`).
-  { id: 'soporte', label: 'Soporte & Acompañamiento', labelCorto: 'Soporte', icon: IconoNavSoporte },
-  { id: 'admin_soporte', label: 'Admin Soporte', labelCorto: 'Admin Soporte', icon: IconoNavAdminSoporte, soloStaffQlubos: true },
+  { id: 'soporte', label: 'Soporte', labelCorto: 'Soporte', icon: IconoNavSoporte },
+  { id: 'admin_soporte', label: 'Soporte (SuperAdmin)', labelCorto: 'Soporte Admin', icon: IconoNavSoporte, soloStaffQlubos: true },
 ];
 
 // Navegación Reordenable: el ORDEN preferido de las pestañas/módulos
@@ -4878,8 +4878,8 @@ const MODULOS_META = {
   jugadores: { titulo: 'Jugadores (CRM)', subtitulo: 'Ranking del club y clasificación por categoría' },
   seguridad: { titulo: 'Control & Seguridad', subtitulo: 'Empleados, roles, arqueos y Log de Actividad' },
   configuracion: { titulo: 'Configuración del Club', subtitulo: 'Portal & Tienda Web, y ajustes generales del club' },
-  soporte: { titulo: 'Soporte & Acompañamiento', subtitulo: 'Bolsa de horas, videollamadas y WhatsApp con el equipo QLUBOS' },
-  admin_soporte: { titulo: 'Admin Soporte', subtitulo: 'Panel SuperAdmin: bolsas de horas y atenciones de todos los clubes' },
+  soporte: { titulo: 'Soporte', subtitulo: 'Horas de soporte y videollamadas con el equipo QLUBOS' },
+  admin_soporte: { titulo: 'Soporte (SuperAdmin)', subtitulo: 'Horas de soporte y reuniones de todos los clubes' },
 };
 
 // Rediseño de Header (a petición del club, para resolver el problema de
@@ -55814,7 +55814,7 @@ function AppInterno({ clubInicial } = {}) {
   // arrastró/movió (o el orden por defecto de `NAV_MODULOS` si nunca
   // reordenó nada) — fuente única para Sidebar y TopHeader (ver
   // `navOrdenIds`/`reordenarNavModulos` arriba).
-  // Soporte & Acompañamiento: ¿la sesión es staff de QLUBOS? (null = aún no
+  // Soporte: ¿la sesión es staff de QLUBOS? (null = aún no
   // se sabe). Solo habilita el Panel SuperAdmin en el menú; el candado real
   // lo hacen las funciones/RLS de Supabase (migracion_v93).
   const [esStaffQlubos, setEsStaffQlubos] = useState(null);
@@ -60821,10 +60821,6 @@ function PanelPlataformaQlubos({ sesion, staff }) {
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6">
-        <div className="mb-5">
-          <h1 className="text-xl font-black text-slate-900">Panel de Control Global</h1>
-          <p className="text-xs text-slate-500">Soporte & Acompañamiento de todos los clubes QLUBOS</p>
-        </div>
         {/* AdminSoporte vuelve a validar el rol contra Supabase y todas sus
             consultas pasan por funciones que exigen fn_soporte_es_staff(). */}
         <AdminSoporte onToast={mostrarToast} />
