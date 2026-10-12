@@ -755,6 +755,15 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
+// Módulo Soporte & Acompañamiento (migracion_v93) — vive en su propia carpeta
+// `src/soporte/` y solo se conecta aquí en 4 puntos: estos imports, las
+// entradas 'soporte'/'admin_soporte' de NAV_MODULOS/MODULOS_META, el estado
+// `esStaffQlubos` de AppInterno (rutas /soporte y /admin/soporte) y su render.
+// Los íconos van con alias para no chocar con el import principal de lucide.
+import { LifeBuoy as IconoNavSoporte, Headphones as IconoNavAdminSoporte } from 'lucide-react';
+import Soporte from './soporte/Soporte';
+import AdminSoporte from './soporte/AdminSoporte';
+import { consultarEsStaffQlubos } from './soporte/soporteApi';
 import {
   LayoutGrid,
   CalendarDays,
@@ -1903,7 +1912,11 @@ ROLES_POR_VALOR.caja = ROLES_POR_VALOR.recepcion;
 // Todos los módulos existen bajo estas mismas claves de `moduloActivo` — ver
 // `NAV_MODULOS`/`MODULOS_META` más abajo, donde se agregó 'seguridad' y,
 // después, 'academia' (Academia & Clínicas).
-const TODOS_LOS_MODULOS = ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad', 'configuracion'];
+// 'soporte' (Soporte & Acompañamiento) va al final: solo lo recibe Owner (y el
+// alias legacy 'admin') vía `modulos: 'todos'`; ningún otro rol lo lista.
+// 'admin_soporte' NO va aquí a propósito: no depende del rol del club sino de
+// ser staff de QLUBOS (`esStaffQlubos` en AppInterno).
+const TODOS_LOS_MODULOS = ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad', 'configuracion', 'soporte'];
 
 // Matriz de permisos por rol. `modulos: 'todos'` es azúcar para
 // `TODOS_LOS_MODULOS` (Owner) en vez de listarlos a mano.
@@ -3682,6 +3695,10 @@ const NAV_MODULOS = [
   // candado de "visible solo para Admin/Propietario" que ya usa el engrane
   // de "Personalizar Club" (`operador?.rol === 'owner'`, ver `Sidebar`).
   { id: 'configuracion', label: 'Configuración del Club', labelCorto: 'Configuración', icon: Settings2 },
+  // Soporte & Acompañamiento (Owner/Admin del club) y su Panel SuperAdmin
+  // (solo staff QLUBOS, ver `soloStaffQlubos` y `navModulosOrdenados`).
+  { id: 'soporte', label: 'Soporte & Acompañamiento', labelCorto: 'Soporte', icon: IconoNavSoporte },
+  { id: 'admin_soporte', label: 'Admin Soporte', labelCorto: 'Admin Soporte', icon: IconoNavAdminSoporte, soloStaffQlubos: true },
 ];
 
 // Navegación Reordenable: el ORDEN preferido de las pestañas/módulos
@@ -4861,6 +4878,8 @@ const MODULOS_META = {
   jugadores: { titulo: 'Jugadores (CRM)', subtitulo: 'Ranking del club y clasificación por categoría' },
   seguridad: { titulo: 'Control & Seguridad', subtitulo: 'Empleados, roles, arqueos y Log de Actividad' },
   configuracion: { titulo: 'Configuración del Club', subtitulo: 'Portal & Tienda Web, y ajustes generales del club' },
+  soporte: { titulo: 'Soporte & Acompañamiento', subtitulo: 'Bolsa de horas, videollamadas y WhatsApp con el equipo QLUBOS' },
+  admin_soporte: { titulo: 'Admin Soporte', subtitulo: 'Panel SuperAdmin: bolsas de horas y atenciones de todos los clubes' },
 };
 
 // Rediseño de Header (a petición del club, para resolver el problema de
@@ -55795,9 +55814,27 @@ function AppInterno({ clubInicial } = {}) {
   // arrastró/movió (o el orden por defecto de `NAV_MODULOS` si nunca
   // reordenó nada) — fuente única para Sidebar y TopHeader (ver
   // `navOrdenIds`/`reordenarNavModulos` arriba).
+  // Soporte & Acompañamiento: ¿la sesión es staff de QLUBOS? (null = aún no
+  // se sabe). Solo habilita el Panel SuperAdmin en el menú; el candado real
+  // lo hacen las funciones/RLS de Supabase (migracion_v93).
+  const [esStaffQlubos, setEsStaffQlubos] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    consultarEsStaffQlubos().then((ok) => {
+      if (vivo) setEsStaffQlubos(ok);
+    });
+    return () => {
+      vivo = false;
+    };
+  }, []);
+
   const navModulosOrdenados = useMemo(
-    () => ordenarNavModulos(NAV_MODULOS.filter((m) => permisos.modulos.has(m.id)), navOrdenIds),
-    [permisos, navOrdenIds]
+    () =>
+      ordenarNavModulos(
+        NAV_MODULOS.filter((m) => (m.soloStaffQlubos ? esStaffQlubos === true : permisos.modulos.has(m.id))),
+        navOrdenIds
+      ),
+    [permisos, navOrdenIds, esStaffQlubos]
   );
 
   /* ---------------- Gestión de Empleados & Log de Actividad (RBAC / Auditoría) ---------------- */
@@ -59254,9 +59291,41 @@ function AppInterno({ clubInicial } = {}) {
   // deja la pantalla en un módulo al que no tiene acceso.
   useEffect(() => {
     if (permisos.modulos.has(moduloActivo)) return;
+    if (moduloActivo === 'admin_soporte' && esStaffQlubos === true) return;
     const primerPermitido = TODOS_LOS_MODULOS.find((m) => permisos.modulos.has(m));
     if (primerPermitido) setModuloActivo(primerPermitido);
-  }, [permisos, moduloActivo]);
+  }, [permisos, moduloActivo, esStaffQlubos]);
+
+  // Rutas del módulo de Soporte: entrar directo a /soporte o /admin/soporte
+  // (p. ej. al volver de Stripe Checkout) abre ese módulo, y mientras se esté
+  // en él la URL lo refleja. No toca ninguna otra ruta: al salir de Soporte la
+  // URL vuelve a "/" (la misma que usa el resto del Panel).
+  const rutaSoportePendienteRef = useRef(
+    typeof window !== 'undefined' ? window.location.pathname.replace(/\/+$/, '') : ''
+  );
+  useEffect(() => {
+    const ruta = rutaSoportePendienteRef.current;
+    if (ruta === '/soporte') {
+      if (permisos.modulos.has('soporte')) setModuloActivo('soporte');
+      rutaSoportePendienteRef.current = '';
+    } else if (ruta === '/admin/soporte') {
+      if (esStaffQlubos === null) return; // aún verificando
+      if (esStaffQlubos) setModuloActivo('admin_soporte');
+      rutaSoportePendienteRef.current = '';
+    } else {
+      rutaSoportePendienteRef.current = '';
+    }
+  }, [permisos, esStaffQlubos]);
+  useEffect(() => {
+    if (typeof window === 'undefined' || rutaSoportePendienteRef.current) return;
+    const ruta = window.location.pathname.replace(/\/+$/, '');
+    const destino = moduloActivo === 'soporte' ? '/soporte' : moduloActivo === 'admin_soporte' ? '/admin/soporte' : null;
+    if (destino && ruta !== destino) {
+      window.history.replaceState(window.history.state, '', destino);
+    } else if (!destino && (ruta === '/soporte' || ruta === '/admin/soporte')) {
+      window.history.replaceState(window.history.state, '', '/');
+    }
+  }, [moduloActivo, esStaffQlubos]);
 
   /* ---------------- Handlers de mutación local (optimista) — Parrilla ---------------- */
 
@@ -59943,6 +60012,16 @@ function AppInterno({ clubInicial } = {}) {
                 cargarLogActividad={cargarLogActividad}
                 consultarLogActividadRango={consultarLogActividadRango}
               />
+            ) : moduloActivo === 'soporte' && permisos.modulos.has('soporte') ? (
+              <Soporte
+                clubId={CLUB_ACTIVO_ID}
+                nombreClub={configClub?.nombre}
+                nombreUsuario={operador?.nombre}
+                puedeGestionar={permisos.rol === 'owner'}
+                onToast={mostrarToast}
+              />
+            ) : moduloActivo === 'admin_soporte' && esStaffQlubos === true ? (
+              <AdminSoporte onToast={mostrarToast} />
             ) : moduloActivo === 'configuracion' && operador?.rol === 'owner' ? (
               // Segundo candado (defensa de respaldo, mismo criterio que
               // `ModalConfigClub` en `Sidebar`): aunque el Sidebar ya solo le
