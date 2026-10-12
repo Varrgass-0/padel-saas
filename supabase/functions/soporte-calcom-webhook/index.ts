@@ -1,122 +1,126 @@
-// Edge Function: soporte-calcom-webhook
-// Sincroniza las videollamadas agendadas en Cal.com (conectado a Google
-// Calendar + Google Meet) con la bolsa de horas de cada club:
-//   • BOOKING_CREATED      → crea la cita "agendada" y RETIENE sus minutos.
-//   • BOOKING_RESCHEDULED  → mueve la cita (mismos minutos retenidos).
-//   • BOOKING_CANCELLED    → aplica la política: ≥ 2 h antes libera todo,
-//                            < 2 h antes cobra el 50 %.
-// Cal.com ya evita el overbooking: revisa en vivo la disponibilidad de tu
-// Google Calendar corporativo y de todas las citas de todos los clubes.
+// Edge Function: soporte-calcom-sync
+// RESPALDO del webhook de Cal.com: consulta la API de Cal.com y registra en
+// Supabase las reuniones de soporte que todavía no existan (o que hayan
+// cambiado de horario). Nunca duplica: todo pasa por fn_soporte_cita_agendada,
+// que hace upsert por `calcom_uid`.
 //
-// El club se identifica por `metadata[club_id]` (lo agrega el Panel al abrir
-// el widget) y, de respaldo, por el correo del propietario.
+//   • Club (owner): POST { club_id }  → solo reservas de SU club (por
+//     metadata.club_id o por el correo del propietario como asistente).
+//   • SuperAdmin:   POST {}           → todas las reservas próximas.
 //
-// Desplegar SIN verificación de JWT (Cal.com no manda uno):
-//   supabase functions deploy soporte-calcom-webhook --no-verify-jwt
-// En Cal.com → Settings → Developer → Webhooks:
-//   URL: https://<proyecto>.supabase.co/functions/v1/soporte-calcom-webhook
-//   Eventos: Booking Created, Booking Rescheduled, Booking Cancelled
-//   Secret: el mismo valor que CALCOM_WEBHOOK_SECRET.
+// Si no hay CALCOM_API_KEY configurada responde { ok: false, motivo: 'sin_api_key' }
+// (200) y la app simplemente la ignora.
+//
+// Secrets: CALCOM_API_KEY (Settings → Developer → API Keys de Cal.com).
+// Desplegar CON verificación de JWT (la llama el navegador con la sesión):
+//   supabase functions deploy soporte-calcom-sync
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
+import { corsHeaders, respuestaJson } from '../_shared/cors.ts';
 
-const encoder = new TextEncoder();
+const CAL_API = 'https://api.cal.com/v2';
+const CAL_VERSION = '2024-08-13';
 
-async function firmaValida(cuerpo: string, firmaRecibida: string | null, secreto: string): Promise<boolean> {
-  if (!secreto) return false;
-  if (!firmaRecibida) return false;
-  const llave = await crypto.subtle.importKey('raw', encoder.encode(secreto), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const firma = await crypto.subtle.sign('HMAC', llave, encoder.encode(cuerpo));
-  const hex = Array.from(new Uint8Array(firma)).map((b) => b.toString(16).padStart(2, '0')).join('');
-  const recibida = firmaRecibida.trim().toLowerCase();
-  if (hex.length !== recibida.length) return false;
-  let diferencia = 0;
-  for (let i = 0; i < hex.length; i++) diferencia |= hex.charCodeAt(i) ^ recibida.charCodeAt(i);
-  return diferencia === 0;
+type Reserva = Record<string, any>;
+
+function texto(v: unknown): string {
+  return typeof v === 'string' ? v : '';
 }
 
-function urlMeet(p: Record<string, any>): string | null {
-  const candidatos = [p?.metadata?.videoCallUrl, p?.videoCallData?.url, p?.location];
-  for (const c of candidatos) {
-    if (typeof c === 'string' && /^https:\/\//i.test(c)) return c;
-  }
+function inicioDe(b: Reserva): string | null {
+  return texto(b.start) || texto(b.startTime) || null;
+}
+
+function finDe(b: Reserva): string | null {
+  const fin = texto(b.end) || texto(b.endTime);
+  if (fin) return fin;
+  const ini = inicioDe(b);
+  const dur = Number(b.duration);
+  if (ini && dur > 0) return new Date(new Date(ini).getTime() + dur * 60000).toISOString();
   return null;
 }
 
-function clubIdDe(p: Record<string, any>): number | null {
-  const crudo = p?.metadata?.club_id ?? p?.responses?.club_id?.value ?? p?.responses?.club_id;
-  const n = Number(crudo);
-  return Number.isFinite(n) && n > 0 ? n : null;
+function meetDe(b: Reserva): string | null {
+  const candidatos = [b.meetingUrl, b.videoCallUrl, b?.metadata?.videoCallUrl, b.location];
+  for (const c of candidatos) if (typeof c === 'string' && /^https:\/\//i.test(c)) return c;
+  return null;
+}
+
+function correosDe(b: Reserva): string[] {
+  return (Array.isArray(b.attendees) ? b.attendees : []).map((a: any) => String(a?.email || '').toLowerCase()).filter(Boolean);
+}
+
+async function reservasCal(apiKey: string, estado: string): Promise<Reserva[]> {
+  const url = `${CAL_API}/bookings?status=${encodeURIComponent(estado)}&take=100`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}`, 'cal-api-version': CAL_VERSION } });
+  if (!r.ok) throw new Error(`Cal.com respondió ${r.status}`);
+  const cuerpo = await r.json();
+  const datos = cuerpo?.data;
+  if (Array.isArray(datos)) return datos;
+  if (Array.isArray(datos?.bookings)) return datos.bookings;
+  return [];
 }
 
 Deno.serve(async (req) => {
-  if (req.method !== 'POST') return new Response('Método no permitido', { status: 405 });
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (req.method !== 'POST') return respuestaJson({ error: 'Método no permitido' }, 405);
 
-  const cuerpo = await req.text();
-  const ok = await firmaValida(cuerpo, req.headers.get('X-Cal-Signature-256'), Deno.env.get('CALCOM_WEBHOOK_SECRET') ?? '');
-  if (!ok) return new Response('Firma inválida', { status: 401 });
-
-  let evento: Record<string, any>;
-  try {
-    evento = JSON.parse(cuerpo);
-  } catch (_e) {
-    return new Response('JSON inválido', { status: 400 });
-  }
-
-  const tipo = evento?.triggerEvent;
-  const p = evento?.payload ?? {};
-  if (tipo === 'PING') return new Response(JSON.stringify({ pong: true }), { status: 200 });
-
-  const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-  const correo = p?.attendees?.[0]?.email ?? p?.responses?.email?.value ?? null;
+  const apiKey = Deno.env.get('CALCOM_API_KEY') ?? '';
+  if (!apiKey) return respuestaJson({ ok: false, motivo: 'sin_api_key' });
 
   try {
-    if (tipo === 'BOOKING_CREATED') {
-      const { error } = await admin.rpc('fn_soporte_cita_agendada', {
-        p_uid: p.uid,
-        p_club_id: clubIdDe(p),
-        p_email: correo,
-        p_inicio: p.startTime,
-        p_fin: p.endTime,
-        p_concepto: p?.responses?.notes?.value || p?.description || p?.title || 'Videollamada de soporte',
-        p_meet_url: urlMeet(p),
-      });
-      if (error) throw error;
-    } else if (tipo === 'BOOKING_RESCHEDULED') {
-      const uidAnterior = p.rescheduleUid ?? p.fromReschedule ?? p?.metadata?.rescheduleUid ?? null;
-      let movida = null;
-      if (uidAnterior) {
-        const { data, error } = await admin.rpc('fn_soporte_cita_reagendada', {
-          p_uid_anterior: uidAnterior,
-          p_uid: p.uid,
-          p_inicio: p.startTime,
-          p_fin: p.endTime,
-          p_meet_url: urlMeet(p),
-        });
-        if (error) throw error;
-        movida = data?.id ? data : null;
-      }
-      if (!movida) {
-        const { error } = await admin.rpc('fn_soporte_cita_agendada', {
-          p_uid: p.uid,
-          p_club_id: clubIdDe(p),
-          p_email: correo,
-          p_inicio: p.startTime,
-          p_fin: p.endTime,
-          p_concepto: p?.title || 'Videollamada de soporte',
-          p_meet_url: urlMeet(p),
-        });
-        if (error) throw error;
-      }
-    } else if (tipo === 'BOOKING_CANCELLED') {
-      const { error } = await admin.rpc('fn_soporte_cita_cancelada', {
-        p_uid: p.uid,
-        p_cancelado_en: new Date().toISOString(),
-      });
-      if (error) throw error;
+    const supabaseUsuario = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY')!, {
+      global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
+    });
+    const { data: userData } = await supabaseUsuario.auth.getUser();
+    const usuario = userData?.user;
+    if (!usuario) return respuestaJson({ error: 'Sesión inválida.' }, 401);
+
+    const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+    const cuerpo = await req.json().catch(() => ({}));
+    const clubId = cuerpo?.club_id != null ? Number(cuerpo.club_id) : null;
+
+    const { data: staff } = await admin.from('plataforma_staff').select('user_id').eq('user_id', usuario.id).eq('activo', true).maybeSingle();
+    const esStaff = Boolean(staff);
+
+    let correoPropietario = '';
+    if (clubId != null) {
+      const { data: club } = await admin.from('configuracion_club').select('id, propietario_user_id').eq('id', clubId).maybeSingle();
+      if (!club) return respuestaJson({ error: 'Club no encontrado.' }, 404);
+      if (club.propietario_user_id !== usuario.id && !esStaff) return respuestaJson({ error: 'Sin acceso a este club.' }, 403);
+      correoPropietario = String(usuario.email || '').toLowerCase();
+    } else if (!esStaff) {
+      return respuestaJson({ error: 'Falta club_id.' }, 400);
     }
-    return new Response(JSON.stringify({ recibido: true }), { status: 200 });
+
+    const proximas = await reservasCal(apiKey, 'upcoming');
+    let registradas = 0;
+    const errores: string[] = [];
+    for (const b of proximas) {
+      const uid = texto(b.uid);
+      const inicio = inicioDe(b);
+      const fin = finDe(b);
+      if (!uid || !inicio || !fin) continue;
+      const clubMeta = Number(b?.metadata?.club_id);
+      const correos = correosDe(b);
+      if (clubId != null) {
+        const esDelClub = clubMeta === clubId || (!clubMeta && correoPropietario && correos.includes(correoPropietario));
+        if (!esDelClub) continue;
+      }
+      const { error } = await admin.rpc('fn_soporte_cita_agendada', {
+        p_uid: uid,
+        p_club_id: clubId ?? (clubMeta > 0 ? clubMeta : null),
+        p_email: correos[0] ?? null,
+        p_inicio: inicio,
+        p_fin: fin,
+        p_concepto: texto(b.description) || texto(b.title) || null,
+        p_meet_url: meetDe(b),
+      });
+      if (error) errores.push(`${uid}: ${error.message}`);
+      else registradas += 1;
+    }
+    return respuestaJson({ ok: true, revisadas: proximas.length, registradas, errores: errores.slice(0, 10) });
   } catch (err) {
-    console.error('[soporte-calcom-webhook]', tipo, err);
-    return new Response('Error procesando el evento', { status: 500 });
+    console.error('[soporte-calcom-sync]', err);
+    return respuestaJson({ ok: false, error: (err as Error)?.message || 'No se pudo sincronizar con Cal.com.' }, 500);
   }
 });
