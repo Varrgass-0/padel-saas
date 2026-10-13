@@ -44198,7 +44198,11 @@ function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
 }
 
 // ---- Paso 5: Confirmación y Activación (mock, listo para Stripe) --------
-function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar, onAtras }) {
+function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar, onAtras, fechaFinPrueba = null }) {
+  // Club con prueba gratuita activada desde el SuperAdmin (sin paso de plan):
+  // en vez del plan elegido se muestran los días de prueba que quedan.
+  const finPruebaMs = fechaFinPrueba ? new Date(fechaFinPrueba).getTime() : NaN;
+  const diasPrueba = Number.isFinite(finPruebaMs) ? Math.max(0, Math.ceil((finPruebaMs - Date.now()) / 86_400_000)) : null;
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
       {/* La animación de salida hacia la Terminal de Operadores (Kiosko/PIN)
@@ -44225,6 +44229,19 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
           <p className="mt-2 text-sm font-medium text-slate-500">La configuración inicial está completa. Ahora puedes empezar a operar con QLUBOS.</p>
         </div>
 
+        {diasPrueba != null ? (
+          <div className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Prueba gratuita activa</p>
+            <p className="mt-1.5 text-lg font-black text-slate-900">
+              {diasPrueba} {diasPrueba === 1 ? 'día' : 'días'} de QLUBOS sin costo
+            </p>
+            <p className="text-sm font-semibold text-slate-500">
+              Hasta el {new Date(finPruebaMs).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' })}
+              {planSeleccionado?.canchas ? ` · Plan ${planSeleccionado.canchas} canchas` : ''}
+            </p>
+            <p className="mt-2 text-xs font-semibold text-orange-600">Todo QLUBOS incluido. Elegirás tu plan al terminar la prueba.</p>
+          </div>
+        ) : (
         <div className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left">
           <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Plan seleccionado</p>
           <p className="mt-1.5 text-lg font-black text-slate-900">
@@ -44235,6 +44252,7 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
           )}
           <p className="mt-2 text-xs font-semibold text-orange-600">Todo QLUBOS incluido.</p>
         </div>
+        )}
 
         {/* Mock de pasarela de pago — placeholder listo para reemplazarse por
             un Checkout real de Stripe: HOY no se cobra nada, este botón solo
@@ -44261,7 +44279,7 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
           className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-orange-400 px-6 py-3 text-base font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {guardando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
-          Activar mi club
+          {diasPrueba != null ? 'Entrar a mi club' : 'Activar mi club'}
         </motion.button>
       </div>
     </LienzoOnboardingClub>
@@ -44858,8 +44876,15 @@ function OnboardingCanvasClub({
   canchas,
   onGuardarCanchas,
   guardandoCanchas,
+  // Club creado desde el SuperAdmin (CRM → "Convertir a Club Activo") con
+  // prueba gratuita ya activa: se OMITE únicamente la etapa 'plan' (selección
+  // de plan / código / tarjeta). Todo lo demás (Kickoff → Canchas →
+  // Configuración → Confirmación) es idéntico al registro tradicional.
+  omitirPlan = false,
+  fechaFinPrueba = null,
 }) {
   const [etapa, setEtapa] = useState('kickoff'); // 'kickoff' | 'plan' | 'canchas' | 'setup' | 'confirmacion'
+  const etapaPrevia = omitirPlan ? 'kickoff' : 'plan';
   const [direccion, setDireccion] = useState(1); // 1 = avanzar (Siguiente), -1 = retroceder (Atrás)
 
   function irA(nuevaEtapa, direction) {
@@ -44869,8 +44894,8 @@ function OnboardingCanvasClub({
 
   let contenido;
   if (etapa === 'kickoff') {
-    contenido = <PantallaKickoffOnboarding nombreClub={nombreClub} onComenzar={() => irA('plan', 1)} />;
-  } else if (etapa === 'plan') {
+    contenido = <PantallaKickoffOnboarding nombreClub={nombreClub} onComenzar={() => irA(omitirPlan ? 'canchas' : 'plan', 1)} />;
+  } else if (etapa === 'plan' && !omitirPlan) {
     contenido = (
       <PantallaSeleccionPlanOnboarding
         nombreClub={nombreClub}
@@ -44893,7 +44918,7 @@ function OnboardingCanvasClub({
         activandoPrueba={activandoPruebaGratuita}
       />
     );
-  } else if (etapa === 'canchas') {
+  } else if (etapa === 'canchas' || (etapa === 'plan' && omitirPlan)) {
     // Configuración de Canchas (inmediatamente después del Plan y antes de la
     // Configuración General del Club): "Continuar" guarda el borrador completo
     // en Supabase y SOLO avanza a 'setup' si el guardado salió bien.
@@ -44903,7 +44928,7 @@ function OnboardingCanvasClub({
         planSeleccionado={planSeleccionado}
         canchas={canchas}
         guardando={guardandoCanchas}
-        onAtras={() => irA('plan', -1)}
+        onAtras={() => irA(etapaPrevia, -1)}
         onContinuar={async (borrador) => {
           const ok = await onGuardarCanchas?.(borrador);
           if (ok !== false) irA('setup', 1);
@@ -44917,6 +44942,7 @@ function OnboardingCanvasClub({
         guardando={guardandoActivacion}
         onConfirmar={onConfirmarActivacion}
         onAtras={() => irA('setup', -1)}
+        fechaFinPrueba={omitirPlan ? fechaFinPrueba : null}
       />
     );
   } else {
@@ -59628,6 +59654,8 @@ function AppInterno({ clubInicial } = {}) {
           canchas={canchas}
           onGuardarCanchas={guardarCanchasOnboarding}
           guardandoCanchas={guardandoCanchasOnboarding}
+          omitirPlan={codigoPromoUsadoClub === CODIGO_PRUEBA_CRM_LEAD && estadoSuscripcionClub === 'prueba'}
+          fechaFinPrueba={fechaFinPruebaClub}
         />
         <ToastHost toasts={toasts} />
       </ToastContext.Provider>
@@ -60875,6 +60903,238 @@ function PanelPlataformaQlubos({ sesion, staff }) {
 // `AppInterno` (ver `TopHeader`), que dispara `supabase.auth.signOut()` y
 // aquí mismo se detecta el cambio a `session: null` para volver a mostrar el
 // login.
+/* ============================================================================
+ * ENLACES DE INVITACIÓN / RECUPERACIÓN — "Crea la contraseña de tu cuenta"
+ * ==========================================================================*/
+// Un club creado desde el SuperAdmin (CRM → "Convertir a Club Activo",
+// Edge Function `admin-convertir-lead`) recibe un correo de invitación de
+// Supabase Auth: el enlace abre la app con `#access_token=…&type=invite`
+// (o `type=recovery` en "¿Olvidaste tu contraseña?"). supabase-js convierte
+// ese token en sesión por sí solo, pero la cuenta todavía NO tiene
+// contraseña: sin este paso el dueño no podría volver a entrar después.
+// El tipo de enlace se lee aquí, a nivel módulo (antes de que supabase-js
+// limpie el hash de la URL), y se recuerda en sessionStorage por si el
+// dueño recarga la página antes de terminar.
+const LS_PASSWORD_PENDIENTE = 'qlubos_password_pendiente_v1';
+// Código que pone `admin-convertir-lead` en `configuracion_club.codigo_promo_usado`
+// a los clubes creados desde el CRM con prueba activa (ver Onboarding).
+const CODIGO_PRUEBA_CRM_LEAD = 'CRM-LEAD';
+
+function leerParametrosEnlaceAuth() {
+  if (typeof window === 'undefined') return { tipo: null, error: null };
+  try {
+    const hash = new URLSearchParams(String(window.location.hash || '').replace(/^#/, ''));
+    const query = new URLSearchParams(window.location.search || '');
+    const tipo = hash.get('type') || query.get('type');
+    const error = hash.get('error_description') || query.get('error_description') || hash.get('error') || null;
+    return { tipo: tipo === 'invite' || tipo === 'recovery' ? tipo : null, error: error ? error.replace(/\+/g, ' ') : null };
+  } catch (_e) {
+    return { tipo: null, error: null };
+  }
+}
+
+const ENLACE_AUTH_INICIAL = leerParametrosEnlaceAuth();
+
+function marcarPasswordPendiente(tipo) {
+  try {
+    window.sessionStorage.setItem(LS_PASSWORD_PENDIENTE, tipo || 'invite');
+  } catch (_e) {
+    /* sin almacenamiento: el chequeo por AMR del token sigue cubriendo el caso */
+  }
+}
+function leerPasswordPendiente() {
+  try {
+    return window.sessionStorage.getItem(LS_PASSWORD_PENDIENTE);
+  } catch (_e) {
+    return null;
+  }
+}
+function limpiarPasswordPendiente() {
+  try {
+    window.sessionStorage.removeItem(LS_PASSWORD_PENDIENTE);
+  } catch (_e) {
+    /* nada que limpiar */
+  }
+}
+if (ENLACE_AUTH_INICIAL.tipo) marcarPasswordPendiente(ENLACE_AUTH_INICIAL.tipo);
+
+// Método de autenticación más reciente de la sesión (claim `amr` del JWT de
+// Supabase: 'password', 'invite', 'recovery', 'otp', 'magiclink'…). Solo se
+// lee el payload — la firma la valida Supabase en cada request.
+function metodoAuthReciente(accessToken) {
+  try {
+    const payload = String(accessToken || '').split('.')[1];
+    if (!payload) return null;
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '=');
+    const amr = JSON.parse(atob(base64))?.amr;
+    if (!Array.isArray(amr) || amr.length === 0) return null;
+    return amr.reduce((a, b) => (Number(b?.timestamp) > Number(a?.timestamp) ? b : a));
+  } catch (_e) {
+    return null;
+  }
+}
+
+// ¿Esta sesión entró por un enlace de invitación/recuperación y todavía no
+// eligió contraseña? `qlubos_password_actualizada_en` (user_metadata) se
+// escribe al guardar la contraseña, así que recargar después ya no vuelve a
+// pedirla, y un login normal (amr 'password') nunca la pide.
+function sesionRequierePassword(session) {
+  if (!session?.user) return null;
+  const pendiente = leerPasswordPendiente();
+  const amr = metodoAuthReciente(session.access_token);
+  const definidaEn = Date.parse(session.user.user_metadata?.qlubos_password_actualizada_en || '') || 0;
+  if (!amr) return pendiente ? pendiente : null;
+  const entroEn = Number(amr.timestamp) * 1000 || Date.now();
+  if (amr.method === 'invite' || amr.method === 'recovery') return entroEn > definidaEn ? amr.method : null;
+  if (pendiente && amr.method !== 'password') return entroEn > definidaEn ? pendiente : null;
+  return null;
+}
+
+function PantallaCrearPasswordQlubos({ sesion, tipo, onListo }) {
+  const esInvitacion = tipo !== 'recovery';
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [mostrarPassword, setMostrarPassword] = useState(false);
+  const [aceptaLegal, setAceptaLegal] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  async function guardar(e) {
+    e.preventDefault();
+    if (password.length < 6) return setError('La contraseña debe tener al menos 6 caracteres.');
+    if (password !== confirmPassword) return setError('Las contraseñas no coinciden.');
+    if (esInvitacion && !aceptaLegal) return setError('Debes aceptar los Términos y Condiciones para Clubes y la Política de Privacidad.');
+    setGuardando(true);
+    setError('');
+    try {
+      const { error: errAuth } = await conToleranciaDeReloj(() =>
+        supabase.auth.updateUser({ password, data: { qlubos_password_actualizada_en: new Date().toISOString() } })
+      );
+      if (errAuth) throw errAuth;
+      limpiarPasswordPendiente();
+      // Marco Legal (migracion_v61) — mismo registro que el alta tradicional
+      // (`manejarRegistro`), best-effort: nunca bloquea la entrada.
+      if (esInvitacion && sesion?.user?.id) {
+        try {
+          const { data: clubPropio } = await supabase
+            .from('configuracion_club')
+            .select('id')
+            .eq('propietario_user_id', sesion.user.id)
+            .maybeSingle();
+          if (clubPropio?.id) registrarAceptacionLegal('configuracion_club', clubPropio.id, 'club');
+        } catch (_e) {
+          /* best-effort */
+        }
+      }
+      onListo?.();
+    } catch (err) {
+      const msg = err?.message || '';
+      setError(
+        esErrorRelojDesfasado(err)
+          ? MENSAJE_ERROR_RELOJ_DESFASADO
+          : /different from the old|same as the old/i.test(msg)
+            ? 'La nueva contraseña debe ser distinta a la anterior.'
+            : /weak|at least/i.test(msg)
+              ? 'Esa contraseña es muy débil: usa al menos 6 caracteres combinando letras y números.'
+              : msg || 'No se pudo guardar la contraseña. Intenta de nuevo.'
+      );
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return (
+    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-[#f8fafc] p-4">
+      <FondoGlowQlubOS />
+      <div role="dialog" aria-modal="true" aria-labelledby="titulo-crear-password" className="relative z-10 w-full max-w-md rounded-3xl border border-slate-200/70 bg-white/95 p-7 shadow-2xl shadow-slate-900/10 backdrop-blur-xl sm:p-8">
+        <div className="flex justify-center">
+          <LogoQlubOS className="h-7 w-auto" />
+        </div>
+        <div className="mt-5 flex flex-col items-center text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-orange-400/15 text-orange-500 ring-1 ring-orange-400/30">
+            <KeyRound size={22} />
+          </div>
+          <h1 id="titulo-crear-password" className="mt-3 text-xl font-black text-slate-900">
+            {esInvitacion ? 'Crea la contraseña para tu cuenta de QLUBOS' : 'Elige una nueva contraseña para tu cuenta de QLUBOS'}
+          </h1>
+          <p className="mt-1 text-xs text-slate-500">
+            {esInvitacion ? 'La usarás para entrar a tu club desde cualquier dispositivo.' : 'Con ella entrarás a tu club a partir de ahora.'}
+            {sesion?.user?.email ? (
+              <>
+                {' '}Cuenta: <b className="text-slate-700">{sesion.user.email}</b>
+              </>
+            ) : null}
+          </p>
+        </div>
+        <form onSubmit={guardar} className="mt-5 space-y-4">
+          <Campo label="Contraseña" hint="Mínimo 6 caracteres.">
+            <div className="relative">
+              <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type={mostrarPassword ? 'text' : 'password'}
+                autoComplete="new-password"
+                autoFocus
+                className={`${inputClaseWizard} px-9`}
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => setMostrarPassword((v) => !v)}
+                aria-label={mostrarPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                {mostrarPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+          </Campo>
+          <Campo label="Confirmar contraseña">
+            <input
+              type={mostrarPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              className={inputClaseWizard}
+              placeholder="••••••••"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+            />
+          </Campo>
+          {esInvitacion && (
+            <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
+              <input type="checkbox" checked={aceptaLegal} onChange={(e) => setAceptaLegal(e.target.checked)} className="mt-0.5 h-3.5 w-3.5 accent-orange-400" />
+              <span>
+                Acepto los{' '}
+                <a href="/legales" target="_blank" rel="noopener noreferrer" className="font-semibold text-slate-500 underline hover:text-[#FF6B35]">
+                  Términos y Condiciones para Clubes y la Política de Privacidad
+                </a>
+                .
+              </span>
+            </label>
+          )}
+          {error && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-500">{error}</p>}
+          <BotonPrimarioWizard type="submit" disabled={guardando || (esInvitacion && !aceptaLegal)} className="w-full">
+            {guardando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
+            {esInvitacion ? 'Guardar y configurar mi club' : 'Guardar contraseña'}
+          </BotonPrimarioWizard>
+          <p className="text-center text-[11px] text-slate-400">
+            ¿No es tu cuenta?{' '}
+            <button
+              type="button"
+              onClick={async () => {
+                limpiarPasswordPendiente();
+                await supabase.auth.signOut();
+              }}
+              className="font-semibold text-slate-500 hover:text-[#FF6B35]"
+            >
+              Cerrar sesión
+            </button>
+          </p>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ClubAuthGate() {
   const [estado, setEstado] = useState('cargando'); // 'cargando' | 'sin_sesion' | 'superadmin' | 'error_verificacion' | 'sin_club' | 'club_eliminado' | 'listo'
   const [club, setClub] = useState(null);
@@ -60888,6 +61148,16 @@ function ClubAuthGate() {
   // club" de "no se pudo, aquí está el porqué + Reintentar".
   const [errorProvisionClub, setErrorProvisionClub] = useState('');
   const intentoProvisionEnCursoRef = useRef(false);
+  // Enlace de invitación/recuperación: contraseña pendiente de definir
+  // (ver `sesionRequierePassword`) y aviso de enlace vencido/usado.
+  const [passwordListaLocal, setPasswordListaLocal] = useState(false);
+  const [versionPasswordPendiente, setVersionPasswordPendiente] = useState(0);
+  const [errorEnlaceAuth, setErrorEnlaceAuth] = useState(() => ENLACE_AUTH_INICIAL.error);
+  const tipoPasswordPendiente = useMemo(
+    () => (passwordListaLocal ? null : sesionRequierePassword(sesion)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sesion, passwordListaLocal, versionPasswordPendiente]
+  );
 
   const resolverClubDeSesion = useCallback(async (session) => {
     setSesion(session || null);
@@ -60992,8 +61262,18 @@ function ClubAuthGate() {
     let activo = true;
     supabase.auth.getSession().then(({ data }) => {
       if (activo) resolverClubDeSesion(data?.session || null);
+      // Quita los tokens del enlace de la barra de direcciones (por si
+      // supabase-js no lo hizo ya): no deben quedar en el historial.
+      if (typeof window !== 'undefined' && /access_token=|error_description=|[#&]error=/.test(window.location.hash || '')) {
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+      }
     });
     const { data: suscripcion } = supabase.auth.onAuthStateChange((_evento, session) => {
+      if (_evento === 'PASSWORD_RECOVERY') {
+        marcarPasswordPendiente('recovery');
+        setPasswordListaLocal(false);
+        setVersionPasswordPendiente((n) => n + 1);
+      }
       resolverClubDeSesion(session);
     });
     return () => {
@@ -61075,7 +61355,28 @@ function ClubAuthGate() {
       </div>
     );
   } else if (estado === 'sin_sesion') {
-    contenido = <ClubAuthScreen onAutenticado={manejarAutenticado} />;
+    contenido = (
+      <>
+        {errorEnlaceAuth && (
+          <div role="alert" className="fixed inset-x-0 top-3 z-[120] mx-auto flex w-[min(28rem,calc(100vw-2rem))] items-start gap-2 rounded-xl border border-amber-400/50 bg-white px-4 py-3 text-xs text-slate-700 shadow-2xl">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-500" />
+            <p className="flex-1">
+              <b className="block text-slate-900">El enlace ya expiró o ya se usó.</b>
+              Pide a QLUBOS una nueva invitación, o usa "¿Olvidaste tu contraseña?" con tu correo para elegir una.
+            </p>
+            <button type="button" onClick={() => setErrorEnlaceAuth(null)} aria-label="Cerrar aviso" className="shrink-0 text-slate-400 hover:text-slate-700">
+              <X size={14} />
+            </button>
+          </div>
+        )}
+        <ClubAuthScreen onAutenticado={manejarAutenticado} />
+      </>
+    );
+  } else if (sesion && tipoPasswordPendiente) {
+    // Paso obligatorio antes de cualquier otra pantalla (Onboarding, Panel o
+    // SuperAdmin): la cuenta entró por un enlace de invitación/recuperación
+    // y todavía no tiene contraseña propia.
+    contenido = <PantallaCrearPasswordQlubos sesion={sesion} tipo={tipoPasswordPendiente} onListo={() => setPasswordListaLocal(true)} />;
   } else if (estado === 'superadmin' && staffPlataforma) {
     contenido = <PanelPlataformaQlubos sesion={sesion} staff={staffPlataforma} />;
   } else if (estado === 'error_verificacion') {
@@ -61187,7 +61488,15 @@ function ClubAuthGate() {
 
   return (
     <AnimatePresence mode="wait" custom={1} initial={false}>
-      <motion.div key={estado} custom={1} variants={VARIANTES_PASO_WIZARD} initial="enter" animate="center" exit="exit" transition={{ duration: 0.3, ease: 'easeInOut' }}>
+      <motion.div
+        key={estado !== 'cargando' && estado !== 'sin_sesion' && sesion && tipoPasswordPendiente ? 'crear_password' : estado}
+        custom={1}
+        variants={VARIANTES_PASO_WIZARD}
+        initial="enter"
+        animate="center"
+        exit="exit"
+        transition={{ duration: 0.3, ease: 'easeInOut' }}
+      >
         {contenido}
       </motion.div>
     </AnimatePresence>
