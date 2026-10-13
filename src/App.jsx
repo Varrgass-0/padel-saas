@@ -764,6 +764,10 @@ import { LifeBuoy as IconoNavSoporte } from 'lucide-react';
 import Soporte from './soporte/Soporte';
 import AdminSoporte from './soporte/AdminSoporte';
 import { consultarEsStaffQlubos, obtenerStaffPlataforma } from './soporte/soporteApi';
+// Torre de control SuperAdmin (/admin/<seccion>) y banners de anuncios de
+// QLUBOS en el panel de los clubes (migracion_v97). Módulos en src/admin/.
+import PanelAdminQlubos from './admin/PanelAdminQlubos';
+import BannerAnunciosPlataforma from './admin/BannerAnunciosPlataforma';
 import {
   LayoutGrid,
   CalendarDays,
@@ -58573,7 +58577,9 @@ function AppInterno({ clubInicial } = {}) {
             ? '🎁 Cortesía de Fidelidad Lista'
             : tipo === 'cumpleanos'
               ? '🎂 Cumpleaños de un jugador'
-              : 'Nueva actividad del Portal Web',
+              : tipo === 'anuncio_qlubos'
+                ? '📣 Aviso de QLUBOS'
+                : 'Nueva actividad del Portal Web',
         detalle: titulo,
       });
     },
@@ -59199,6 +59205,13 @@ function AppInterno({ clubInicial } = {}) {
       const moduloValido = NAV_MODULOS.some((m) => m.id === meta.modulo_destino) ? meta.modulo_destino : null;
       const moduloDefecto = tipo && TIPO_MODULO_DEFECTO[tipo] ? TIPO_MODULO_DEFECTO[tipo] : null;
 
+      // Aviso masivo del equipo QLUBOS (fn_admin_notificar_clubes): no
+      // apunta a ningún jugador ni transacción — solo muestra el mensaje.
+      if (tipo === 'anuncio_qlubos') {
+        mostrarToast({ titulo: alerta?.titulo || '📣 Aviso de QLUBOS', detalle: meta.mensaje || undefined });
+        return;
+      }
+
       // 0) Cortesía/Fidelidad — el único tipo con permiso de ir al jugador.
       // (`cumpleanos` comparte este destino: abre la ficha del jugador para
       // gestionar su cortesía/detalle.)
@@ -59322,7 +59335,7 @@ function AppInterno({ clubInicial } = {}) {
     const destino = moduloActivo === 'soporte' ? '/soporte' : moduloActivo === 'admin_soporte' ? '/admin/soporte' : null;
     if (destino && ruta !== destino) {
       window.history.replaceState(window.history.state, '', destino);
-    } else if (!destino && (ruta === '/soporte' || ruta === '/admin/soporte')) {
+    } else if (!destino && (ruta === '/soporte' || /^\/admin(\/|$)/.test(ruta))) {
       window.history.replaceState(window.history.state, '', '/');
     }
   }, [moduloActivo, esStaffQlubos]);
@@ -59704,6 +59717,11 @@ function AppInterno({ clubInicial } = {}) {
 
           <main className="min-w-0 flex-1 space-y-5 px-4 py-5 sm:px-6">
             {error && <ErrorBanner mensaje={error} onReintentar={() => cargarDatos()} />}
+
+            {/* Avisos de QLUBOS (anuncios_plataforma, solo los vigentes por
+                RLS). Si no hay ninguno o la migración v97 no está, no
+                renderiza nada y el layout queda idéntico. */}
+            <BannerAnunciosPlataforma />
 
             {moduloActivo === 'parrilla' ? (
               <ModuloParrillaOperativa
@@ -60774,10 +60792,12 @@ function PanelPlataformaQlubos({ sesion, staff }) {
   const [toasts, setToasts] = useState([]);
   const [cerrando, setCerrando] = useState(false);
 
-  // Redirección directa: el staff siempre opera en /admin/soporte.
+  // Redirección directa: el staff siempre opera bajo /admin. Las secciones
+  // (/admin/leads, /admin/clubes…) las resuelve `PanelAdminQlubos`; cualquier
+  // otra ruta (/, /login…) cae en /admin/soporte como antes.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (window.location.pathname.replace(/\/+$/, '') !== RUTA_PANEL_SUPERADMIN) {
+    if (!/^\/admin(\/|$)/.test(window.location.pathname)) {
       window.history.replaceState(window.history.state, '', RUTA_PANEL_SUPERADMIN);
     }
   }, []);
@@ -60797,7 +60817,7 @@ function PanelPlataformaQlubos({ sesion, staff }) {
   return (
     <div className="min-h-screen min-h-dvh bg-slate-50 text-slate-900">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-slate-50/80 px-4 py-3 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <LogoQlubOS className="h-5 w-auto sm:h-6" />
             <span className="hidden rounded-full bg-orange-400/15 px-2.5 py-0.5 text-[11px] font-black text-orange-500 ring-1 ring-orange-400/30 sm:inline">
@@ -60820,10 +60840,12 @@ function PanelPlataformaQlubos({ sesion, staff }) {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-6">
-        {/* AdminSoporte vuelve a validar el rol contra Supabase y todas sus
-            consultas pasan por funciones que exigen fn_soporte_es_staff(). */}
-        <AdminSoporte onToast={mostrarToast} />
+      <main className="mx-auto max-w-7xl px-4 py-6">
+        {/* Torre de control: Soporte (AdminSoporte), CRM Leads, Códigos,
+            Clubes, Logs, Anuncios y Pagos. Cada sección vuelve a validar el
+            rol en Supabase: todas sus consultas pasan por funciones o
+            políticas que exigen fn_soporte_es_staff(). */}
+        <PanelAdminQlubos onToast={mostrarToast} />
       </main>
       <div className="pointer-events-none fixed bottom-4 right-4 z-[200] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2">
         {toasts.map((t) => (
