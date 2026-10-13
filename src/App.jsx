@@ -45528,6 +45528,12 @@ function SeccionCuentaSuscripcion({
   // con `rol: 'owner'` (`email`, capturado en la Auto-provisión del
   // Propietario — ver `AppInterno` — o al editarlo desde `ModalGestionEmpleados`).
   const ownerEmpleado = useMemo(() => (empleados || []).find((e) => e.rol === 'owner'), [empleados]);
+  const mostrarToast = useToast();
+  // "Plan configurado" = el dueño ya eligió un plan de suscripción (nombre o
+  // precio guardados en `configuracion_club.plan_*`). Un club creado desde el
+  // CRM (CRM-LEAD, en prueba) solo trae `plan_canchas` como referencia del
+  // tamaño del club — eso NO cuenta como plan contratado.
+  const tienePlanConfigurado = planTieneSuscripcionConfigurada(planClubSeleccionado);
   const [modalCambiarPlan, setModalCambiarPlan] = useState(false);
   const [modalCancelarSuscripcion, setModalCancelarSuscripcion] = useState(false);
   // Mock de Cancelación (preparado para Stripe Webhooks): sin backend de
@@ -45580,7 +45586,7 @@ function SeccionCuentaSuscripcion({
         <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-black text-slate-900">
-              {planClubSeleccionado?.nombre ? `Plan ${planClubSeleccionado.nombre}` : 'Sin plan configurado'}
+              {tienePlanConfigurado && planClubSeleccionado?.nombre ? `Plan ${planClubSeleccionado.nombre}` : 'Sin plan configurado'}
               {planClubSeleccionado?.precioMensual != null && (
                 <span className="font-semibold text-slate-500">
                   {' '}
@@ -45588,6 +45594,7 @@ function SeccionCuentaSuscripcion({
                 </span>
               )}
             </p>
+            {tienePlanConfigurado ? (
             <span
               className={`mt-1.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${
                 suscripcionCancelada
@@ -45598,12 +45605,24 @@ function SeccionCuentaSuscripcion({
               <span className={`h-1.5 w-1.5 rounded-full ${suscripcionCancelada ? 'bg-amber-500' : 'bg-emerald-500'}`} />
               {suscripcionCancelada ? 'Cancelación Programada' : 'Suscripción Activa'}
             </span>
+            ) : (
+              <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-600 ring-1 ring-sky-400/30">
+                <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
+                Elige tu plan para continuar después de la prueba
+              </span>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <BotonSecundario onClick={() => setModalCambiarPlan(true)}>
-              <RefreshCw size={14} /> Cambiar Plan
-            </BotonSecundario>
-            {!suscripcionCancelada && (
+            {tienePlanConfigurado ? (
+              <BotonSecundario onClick={() => setModalCambiarPlan(true)}>
+                <RefreshCw size={14} /> Cambiar Plan
+              </BotonSecundario>
+            ) : (
+              <BotonPrimario onClick={() => setModalCambiarPlan(true)}>
+                <CheckCircle2 size={14} /> Elegir Plan
+              </BotonPrimario>
+            )}
+            {tienePlanConfigurado && !suscripcionCancelada && (
               <button
                 type="button"
                 onClick={() => setModalCancelarSuscripcion(true)}
@@ -45624,7 +45643,15 @@ function SeccionCuentaSuscripcion({
           planActual={planClubSeleccionado}
           onClose={() => setModalCambiarPlan(false)}
           onConfirmar={async (plan) => {
-            await onGuardarPlanSeleccionado?.(plan);
+            const ok = await onGuardarPlanSeleccionado?.(plan);
+            if (ok === false) {
+              mostrarToast({ titulo: 'No se pudo guardar el plan', detalle: 'Revisa tu conexión e intenta de nuevo.', tono: 'error' });
+              return;
+            }
+            mostrarToast({
+              titulo: tienePlanConfigurado ? 'Plan actualizado' : 'Plan elegido',
+              detalle: `${plan?.nombre || 'Plan'} — quedó listo para tu facturación.`,
+            });
             setModalCambiarPlan(false);
           }}
         />
@@ -45649,7 +45676,20 @@ function SeccionCuentaSuscripcion({
 // en `AppInterno`) que ya escribe `plan_canchas`/`plan_nombre`/
 // `plan_precio_mensual` en `configuracion_club` — ningún estado ni columna
 // nueva, solo un segundo punto de entrada a la misma lógica.
-function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo = 'Cambiar Plan', mensajeLimite, soloPlanesSuperioresA }) {
+// ¿El club ya tiene un plan de suscripción elegido? (nombre o precio en
+// `configuracion_club.plan_*`). `plan_canchas` sola — como la deja la
+// conversión de un lead del CRM — es solo el tamaño del club, no un plan.
+function planTieneSuscripcionConfigurada(plan) {
+  return Boolean(plan && (plan.nombre || plan.precioMensual != null));
+}
+
+function ModalCambiarPlan({ planActual: planActualProp, onClose, onConfirmar, titulo: tituloProp, mensajeLimite, soloPlanesSuperioresA }) {
+  // Sin plan configurado: ninguna tarjeta es "Plan actual" ni queda
+  // bloqueada; la que coincide con el tamaño del club solo se sugiere.
+  const sinPlanConfigurado = !planTieneSuscripcionConfigurada(planActualProp);
+  const planActual = sinPlanConfigurado ? null : planActualProp;
+  const canchasRecomendadas = sinPlanConfigurado ? planActualProp?.canchas || null : null;
+  const titulo = tituloProp || (sinPlanConfigurado && soloPlanesSuperioresA == null ? 'Elegir Plan' : 'Cambiar Plan');
   // Modo Upselling (tope de canchas alcanzado desde la Parrilla): solo se
   // ofrecen los planes cuyo límite de canchas supera al actual
   // (`soloPlanesSuperioresA` = límite actual), y se preselecciona el
@@ -45673,7 +45713,9 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo = 'Cambiar 
   // la pestaña que se está viendo (un club en Mensual no tiene "plan actual"
   // en la pestaña Anual, y viceversa).
   const frecuenciaContratada = planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual';
-  const cambioReal = planElegido && (planElegido.canchas !== planActual?.canchas || frecuencia !== frecuenciaContratada);
+  const cambioReal = sinPlanConfigurado
+    ? Boolean(planElegido)
+    : planElegido && (planElegido.canchas !== planActual?.canchas || frecuencia !== frecuenciaContratada);
 
   async function confirmar() {
     if (!planElegido || !cambioReal) return;
@@ -45686,7 +45728,11 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo = 'Cambiar 
     <ModalShell
       titulo={titulo}
       subtitulo={
-        mensajeLimite ? undefined : 'Upgrade — el nuevo precio aplica desde tu siguiente ciclo de facturación.'
+        mensajeLimite
+          ? undefined
+          : sinPlanConfigurado
+            ? 'Elige el plan con el que continuarás en QLUBOS. Se guarda en tu cuenta, listo para la facturación.'
+            : 'Upgrade — el nuevo precio aplica desde tu siguiente ciclo de facturación.'
       }
       onClose={onClose}
       ancho="max-w-2xl"
@@ -45725,6 +45771,11 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo = 'Cambiar 
                   Plan actual
                 </span>
               )}
+              {!esPlanActual && canchasRecomendadas === plan.canchas && (
+                <span className="rounded-full bg-orange-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-orange-600 ring-1 ring-orange-400/30">
+                  Recomendado
+                </span>
+              )}
               <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
               <PrecioPlanRegular plan={plan} frecuencia={frecuencia} tamano="text-xl" />
               <p className="text-[11px] leading-snug text-slate-500">{plan.descripcion}</p>
@@ -45743,8 +45794,8 @@ function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo = 'Cambiar 
           Cancelar
         </BotonSecundario>
         <BotonPrimario onClick={confirmar} disabled={!cambioReal || guardando}>
-          {guardando ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
-          Confirmar Cambio de Plan
+          {guardando ? <Loader2 size={15} className="animate-spin" /> : sinPlanConfigurado ? <CheckCircle2 size={15} /> : <RefreshCw size={15} />}
+          {sinPlanConfigurado ? 'Confirmar Plan' : 'Confirmar Cambio de Plan'}
         </BotonPrimario>
       </div>
     </ModalShell>
@@ -57952,7 +58003,7 @@ function AppInterno({ clubInicial } = {}) {
   // hace falta.
   const guardarPlanSeleccionadoClub = useCallback(async (plan) => {
     setPlanClubSeleccionado(plan);
-    if (!CLUB_ACTIVO_ID || !plan) return;
+    if (!CLUB_ACTIVO_ID || !plan) return true;
     try {
       const { error } = await actualizarConColumnasOpcionales(
         'configuracion_club',
@@ -57965,11 +58016,14 @@ function AppInterno({ clubInicial } = {}) {
         ['plan_canchas', 'plan_nombre', 'plan_precio_mensual']
       );
       if (error) throw error;
+      return true;
     } catch (err) {
       // No se interrumpe el wizard — el plan ya quedó elegido en pantalla;
       // si Supabase no lo aceptó (columnas sin migrar, red), el paso final
       // de "Confirmar y Activar Club" vuelve a intentar guardarlo todo.
+      // Devuelve `false` para que "Mi Cuenta & Suscripción" sí pueda avisar.
       console.warn('[Onboarding Canvas] No se pudo guardar el plan elegido en Supabase todavía.', err);
+      return false;
     }
   }, []);
 
@@ -61361,8 +61415,8 @@ function ClubAuthGate() {
           <div role="alert" className="fixed inset-x-0 top-3 z-[120] mx-auto flex w-[min(28rem,calc(100vw-2rem))] items-start gap-2 rounded-xl border border-amber-400/50 bg-white px-4 py-3 text-xs text-slate-700 shadow-2xl">
             <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-500" />
             <p className="flex-1">
-              <b className="block text-slate-900">El enlace ya expiró o ya se usó.</b>
-              Pide a QLUBOS una nueva invitación, o usa "¿Olvidaste tu contraseña?" con tu correo para elegir una.
+              <b className="block text-slate-900">El enlace de invitación ya expiró o ya fue usado.</b>
+              Por favor, solicita una nueva invitación para continuar.
             </p>
             <button type="button" onClick={() => setErrorEnlaceAuth(null)} aria-label="Cerrar aviso" className="shrink-0 text-slate-400 hover:text-slate-700">
               <X size={14} />
