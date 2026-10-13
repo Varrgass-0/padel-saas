@@ -1,11 +1,13 @@
 // =============================================================================
 // SuperAdmin — CRM de Leads (public.leads_landing + crm_leads_seguimiento)
 // Embudo: Nuevo → Contactado → Demo agendada → En prueba → Convertido / Perdido.
+// Leads de la landing + registro manual (visita presencial / venta directa,
+// fn_admin_crear_lead de migracion_v98).
 // =============================================================================
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Users2, Search, MessageCircle, Mail, Rocket, Loader2, MapPin, LayoutGrid } from 'lucide-react';
+import { Users2, Search, MessageCircle, Mail, Rocket, Loader2, MapPin, LayoutGrid, UserPlus, AlertTriangle } from 'lucide-react';
 import { ModalSoporte } from '../soporte/SoporteModal';
-import { listarLeads, cambiarEstadoLead, convertirLead, suscribirTablas, mensajeErrorAdmin } from './adminApi';
+import { listarLeads, cambiarEstadoLead, convertirLead, crearLeadManual, ORIGENES_LEAD_MANUAL, suscribirTablas, mensajeErrorAdmin } from './adminApi';
 import {
   AvisoError,
   Cargando,
@@ -39,6 +41,20 @@ const TAMANOS = [
   { id: 'sin_dato', label: 'Sin dato' },
 ];
 
+// Mismas opciones que el formulario de la landing (OPCIONES_CANCHAS), para
+// que los filtros por tamaño traten igual a los leads manuales.
+const OPCIONES_CANCHAS = ['1 – 3 canchas', '4 – 7 canchas', '8 – 12 canchas', 'Más de 12 / varias sedes'];
+// En Prueba / Convertido se alcanzan con "Convertir a Club Activo" (crea el club).
+const ETAPAS_INICIALES = ['nuevo', 'contactado', 'demo_agendada', 'perdido'];
+
+function esLeadManual(lead) {
+  return ORIGENES_LEAD_MANUAL.includes(lead?.origen);
+}
+
+function digitos(t) {
+  return String(t || '').replace(/\D/g, '').slice(-10);
+}
+
 function normalizar(t) {
   return String(t ?? '')
     .normalize('NFD')
@@ -46,15 +62,16 @@ function normalizar(t) {
     .toLowerCase();
 }
 
-function enlaceWhatsApp(numero, nombre) {
+function enlaceWhatsApp(numero, nombre, manual = false) {
   const limpio = String(numero || '').replace(/\D/g, '');
   if (!limpio) return null;
   const conLada = limpio.length === 10 ? `52${limpio}` : limpio;
-  return `https://wa.me/${conLada}?text=${encodeURIComponent(`Hola ${nombre || ''}, te escribimos de QLUBOS por tu solicitud de demo. `)}`;
+  const saludo = manual ? `Hola ${nombre || ''}, te escribimos de QLUBOS. ` : `Hola ${nombre || ''}, te escribimos de QLUBOS por tu solicitud de demo. `;
+  return `https://wa.me/${conLada}?text=${encodeURIComponent(saludo)}`;
 }
 
 function TarjetaLead({ lead, onAbrir, onMover }) {
-  const wa = enlaceWhatsApp(lead.whatsapp, lead.nombre);
+  const wa = enlaceWhatsApp(lead.whatsapp, lead.nombre, esLeadManual(lead));
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
       <button type="button" onClick={() => onAbrir(lead)} className="block w-full text-left">
@@ -68,6 +85,7 @@ function TarjetaLead({ lead, onAbrir, onMover }) {
             </span>
           )}
           {lead.plan_interes && <span className="rounded-full bg-orange-400/10 px-2 py-0.5 text-orange-600">{lead.plan_interes}</span>}
+          {esLeadManual(lead) && <span className="rounded-full bg-violet-400/10 px-2 py-0.5 text-violet-600">{lead.origen}</span>}
         </div>
         <p className="mt-1.5 text-[10px] text-slate-400">Llegó {haceCuanto(lead.created_at)}</p>
       </button>
@@ -96,6 +114,169 @@ function TarjetaLead({ lead, onAbrir, onMover }) {
         </select>
       </div>
     </div>
+  );
+}
+
+const FORM_VACIO = {
+  nombre: '',
+  club: '',
+  whatsapp: '',
+  correo: '',
+  canchas: '',
+  ciudad: '',
+  estado: 'nuevo',
+  notas: '',
+  origen: ORIGENES_LEAD_MANUAL[0],
+};
+
+// Mismas reglas que valida fn_admin_crear_lead (y la política de la landing).
+function validarLead(f) {
+  const e = {};
+  const largo = (v) => v.trim().length;
+  if (largo(f.nombre) < 2 || largo(f.nombre) > 120) e.nombre = 'Escribe el nombre completo (2 a 120 caracteres).';
+  if (largo(f.club) < 2 || largo(f.club) > 120) e.club = 'Escribe el nombre del club (2 a 120 caracteres).';
+  if (largo(f.whatsapp) < 8 || largo(f.whatsapp) > 20 || digitos(f.whatsapp).length < 8) e.whatsapp = 'WhatsApp a 10 dígitos (puede incluir lada).';
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.correo.trim()) || largo(f.correo) > 160) e.correo = 'Correo electrónico inválido.';
+  if (largo(f.ciudad) > 120) e.ciudad = 'Máximo 120 caracteres.';
+  return e;
+}
+
+function ModalNuevoLead({ leadsExistentes, onClose, onCreado }) {
+  const [f, setF] = useState(FORM_VACIO);
+  const [errores, setErrores] = useState({});
+  const [error, setError] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [duplicadoAceptado, setDuplicadoAceptado] = useState(false);
+  const set = (campo) => (e) => {
+    setF((prev) => ({ ...prev, [campo]: e.target.value }));
+    setErrores((prev) => ({ ...prev, [campo]: undefined }));
+    if (campo === 'whatsapp' || campo === 'correo') setDuplicadoAceptado(false);
+  };
+
+  // Aviso (no bloqueo) si ya hay un lead con el mismo WhatsApp o correo.
+  const duplicado = useMemo(() => {
+    const tel = digitos(f.whatsapp);
+    const correo = f.correo.trim().toLowerCase();
+    return (
+      leadsExistentes.find(
+        (l) => (tel.length >= 8 && digitos(l.whatsapp) === tel) || (correo.includes('@') && String(l.correo || '').trim().toLowerCase() === correo)
+      ) || null
+    );
+  }, [leadsExistentes, f.whatsapp, f.correo]);
+
+  async function guardar() {
+    const e = validarLead(f);
+    setErrores(e);
+    if (Object.keys(e).length) return;
+    if (duplicado && !duplicadoAceptado) return setDuplicadoAceptado(true);
+    setGuardando(true);
+    setError('');
+    const { data, error: err } = await crearLeadManual({
+      nombre: f.nombre.trim(),
+      club: f.club.trim(),
+      whatsapp: f.whatsapp.trim(),
+      correo: f.correo.trim(),
+      canchas: f.canchas,
+      ciudad: f.ciudad.trim(),
+      estado: f.estado,
+      notas: f.notas.trim(),
+      origen: f.origen,
+    });
+    setGuardando(false);
+    if (err) return setError(mensajeErrorAdmin(err, 'No se pudo registrar el lead.'));
+    onCreado(data);
+  }
+
+  const campo = (clave, etiqueta, props = {}) => (
+    <label className="block">
+      <span className="text-xs font-bold text-slate-600">{etiqueta}</span>
+      <input value={f[clave]} onChange={set(clave)} className={`${claseInput} mt-1 ${errores[clave] ? 'border-rose-400' : ''}`} {...props} />
+      {errores[clave] && <span className="mt-1 block text-[11px] font-semibold text-rose-500">{errores[clave]}</span>}
+    </label>
+  );
+
+  return (
+    <ModalSoporte titulo="Nuevo lead" subtitulo="Prospecto de una visita presencial o venta directa" onClose={guardando ? undefined : onClose} ancho="max-w-2xl">
+      <div className="space-y-3">
+        <div>
+          <span className="text-xs font-bold text-slate-600">Origen</span>
+          <div role="radiogroup" aria-label="Origen del lead" className="mt-1 grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1">
+            {ORIGENES_LEAD_MANUAL.map((o) => (
+              <button
+                key={o}
+                type="button"
+                role="radio"
+                aria-checked={f.origen === o}
+                onClick={() => setF((prev) => ({ ...prev, origen: o }))}
+                className={`rounded-lg px-3 py-2 text-xs font-bold transition ${
+                  f.origen === o ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900'
+                }`}
+              >
+                {o}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {campo('nombre', 'Nombre completo *', { maxLength: 120, autoComplete: 'off', placeholder: 'Ej. Mariana López' })}
+          {campo('club', 'Nombre del club *', { maxLength: 120, autoComplete: 'off', placeholder: 'Ej. Pádel Cumbres' })}
+          {campo('whatsapp', 'WhatsApp *', { maxLength: 20, inputMode: 'tel', autoComplete: 'off', placeholder: '55 1234 5678' })}
+          {campo('correo', 'Correo electrónico *', { maxLength: 160, type: 'email', autoComplete: 'off', placeholder: 'dueno@club.mx' })}
+          <label className="block">
+            <span className="text-xs font-bold text-slate-600">Número de canchas</span>
+            <select value={f.canchas} onChange={set('canchas')} className={`${claseInput} mt-1`}>
+              <option value="">Sin dato</option>
+              {OPCIONES_CANCHAS.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          </label>
+          {campo('ciudad', 'Ciudad', { maxLength: 120, placeholder: 'Ej. Monterrey' })}
+          <label className="block sm:col-span-2">
+            <span className="text-xs font-bold text-slate-600">Estado inicial</span>
+            <select value={f.estado} onChange={set('estado')} className={`${claseInput} mt-1`}>
+              {ETAPAS_INICIALES.map((id) => (
+                <option key={id} value={id}>
+                  {ETIQUETA_ETAPA[id]}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-[11px] text-slate-500">"En Prueba Gratis" se activa con Convertir a Club Activo, que crea el club.</span>
+          </label>
+        </div>
+        <label className="block">
+          <span className="text-xs font-bold text-slate-600">Notas internas</span>
+          <textarea
+            value={f.notas}
+            onChange={set('notas')}
+            rows={3}
+            maxLength={2000}
+            placeholder="Ej. Visitado el martes; usa Excel, interesado en Smart POS."
+            className={`${claseInput} mt-1 resize-y`}
+          />
+        </label>
+        {duplicado && (
+          <p className="flex items-start gap-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-700">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>
+              Ya existe un lead con este {digitos(duplicado.whatsapp) === digitos(f.whatsapp) ? 'WhatsApp' : 'correo'}: <b>{duplicado.club}</b> ({ETIQUETA_ETAPA[duplicado.estado] || duplicado.estado}).
+              {duplicadoAceptado ? ' Vuelve a pulsar Guardar para registrarlo de todos modos.' : ''}
+            </span>
+          </p>
+        )}
+        <AvisoError texto={error} />
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <button type="button" className={claseBotonSecundario} onClick={onClose} disabled={guardando}>
+          Cancelar
+        </button>
+        <button type="button" className={claseBotonPrimario} onClick={guardar} disabled={guardando}>
+          {guardando ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />} {duplicado && duplicadoAceptado ? 'Guardar de todos modos' : 'Guardar lead'}
+        </button>
+      </div>
+    </ModalSoporte>
   );
 }
 
@@ -191,6 +372,7 @@ export default function AdminLeads({ onToast }) {
   const [tamano, setTamano] = useState('todos');
   const [busqueda, setBusqueda] = useState('');
   const [abierto, setAbierto] = useState(null);
+  const [creando, setCreando] = useState(false);
 
   const cargar = useCallback(async ({ silencioso = false } = {}) => {
     if (!silencioso) setCargando(true);
@@ -253,7 +435,16 @@ export default function AdminLeads({ onToast }) {
 
   return (
     <div className="space-y-4">
-      <EncabezadoModulo icono={Users2} titulo="CRM de Leads" descripcion="Solicitudes de demo desde la landing de QLUBOS." />
+      <EncabezadoModulo
+        icono={Users2}
+        titulo="CRM de Leads"
+        descripcion="Solicitudes de la landing, visitas presenciales y venta directa."
+        acciones={
+          <button type="button" className={claseBotonPrimario} onClick={() => setCreando(true)}>
+            <UserPlus size={14} /> Nuevo Lead
+          </button>
+        }
+      />
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
         <Metrica etiqueta="Leads totales" valor={leads.length} />
         <Metrica etiqueta="Nuevos (7 días)" valor={nuevosSemana} tono="sky" />
@@ -297,6 +488,22 @@ export default function AdminLeads({ onToast }) {
       <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
         <LayoutGrid size={12} /> Desliza horizontalmente en pantallas pequeñas para ver todas las etapas.
       </p>
+
+      {creando && (
+        <ModalNuevoLead
+          leadsExistentes={leads}
+          onClose={() => setCreando(false)}
+          onCreado={(lead) => {
+            setCreando(false);
+            // Aparece de inmediato en su columna; el realtime/recarga lo confirma.
+            if (lead?.id) setLeads((prev) => [lead, ...prev.filter((l) => l.id !== lead.id)]);
+            setTamano('todos');
+            setBusqueda('');
+            onToast?.({ titulo: 'Lead registrado', detalle: `${lead?.club || 'Nuevo lead'} · ${ETIQUETA_ETAPA[lead?.estado] || 'Nuevo Lead'}` });
+            cargar({ silencioso: true });
+          }}
+        />
+      )}
 
       {abierto && (
         <ModalDetalleLead

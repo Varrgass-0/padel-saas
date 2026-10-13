@@ -32,6 +32,29 @@ export async function cambiarEstadoLead(leadId, estado, notas = null) {
   return rpc('fn_admin_lead_estado', { p_lead_id: leadId, p_estado: estado, p_notas: notas });
 }
 
+// Registro manual (visita presencial / venta directa) — migracion_v98.
+// Inserta en leads_landing + estado inicial en crm_leads_seguimiento y
+// devuelve el lead con la misma forma que fn_admin_leads().
+export const ORIGENES_LEAD_MANUAL = ['Visita Presencial', 'Venta Directa'];
+
+export async function crearLeadManual({ nombre, club, whatsapp, correo, canchas, ciudad, estado, notas, origen }) {
+  const { data, error } = await rpc('fn_admin_crear_lead', {
+    p_nombre: nombre,
+    p_club: club,
+    p_whatsapp: whatsapp,
+    p_correo: correo,
+    p_canchas: canchas || null,
+    p_ciudad: ciudad || null,
+    p_estado: estado || 'nuevo',
+    p_notas: notas || null,
+    p_origen: origen,
+  });
+  if (error && esErrorEsquemaAdmin(error)) {
+    return { data: null, error: { message: 'Falta instalar el registro manual de leads: corre migracion_v98_crm_lead_manual.sql en Supabase.' } };
+  }
+  return { data, error };
+}
+
 export async function convertirLead(leadId, diasPrueba) {
   try {
     const { data, error } = await supabase.functions.invoke('admin-convertir-lead', {
