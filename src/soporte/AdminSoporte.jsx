@@ -227,6 +227,7 @@ const COLOR_CITA = {
   no_show: 'bg-rose-500/15 text-rose-600 ring-rose-500/30 hover:bg-rose-500/25',
   cancelada_tardia: 'bg-amber-400/20 text-amber-700 ring-amber-400/40 hover:bg-amber-400/30',
   cancelada: 'bg-slate-400/15 text-slate-500 line-through ring-slate-400/30 hover:bg-slate-400/25',
+  reagendada: 'bg-violet-400/15 text-violet-600 line-through ring-violet-400/30 hover:bg-violet-400/25',
 };
 const PUNTO_CITA = {
   agendada: 'bg-sky-500',
@@ -234,6 +235,7 @@ const PUNTO_CITA = {
   no_show: 'bg-rose-500',
   cancelada_tardia: 'bg-amber-400',
   cancelada: 'bg-slate-400',
+  reagendada: 'bg-violet-400',
 };
 const MAX_CITAS_POR_CELDA = 3;
 
@@ -376,7 +378,7 @@ function CalendarioMensual({ mesVista, citas, clubesPorId, diaSel, onElegirDia, 
 function LeyendaEstados() {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
-      {['agendada', 'completada', 'no_show', 'cancelada_tardia', 'cancelada'].map((e) => (
+      {['agendada', 'completada', 'no_show', 'cancelada_tardia', 'cancelada', 'reagendada'].map((e) => (
         <span key={e} className="inline-flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${PUNTO_CITA[e]}`} /> {ESTADOS_TICKET[e]?.label}
         </span>

@@ -2,7 +2,7 @@
 // Soporte — acceso a Supabase (RPC, tablas, Realtime, Edge)
 // =============================================================================
 import { supabase } from '../supabaseClient';
-
+ 
 // ¿El error viene de que la migración v93 todavía no se corrió?
 export function esErrorEsquemaSoporte(error) {
   const code = error?.code || '';
@@ -12,7 +12,7 @@ export function esErrorEsquemaSoporte(error) {
     /does not exist|Could not find the function|schema cache/i.test(msg)
   );
 }
-
+ 
 export function mensajeError(error, respaldo = 'Ocurrió un error inesperado.') {
   if (!error) return respaldo;
   if (esErrorEsquemaSoporte(error)) {
@@ -20,7 +20,7 @@ export function mensajeError(error, respaldo = 'Ocurrió un error inesperado.') 
   }
   return error.message || respaldo;
 }
-
+ 
 export async function consultarEsStaffQlubos() {
   try {
     const { data, error } = await supabase.rpc('fn_soporte_es_staff');
@@ -30,7 +30,7 @@ export async function consultarEsStaffQlubos() {
     return false;
   }
 }
-
+ 
 // Verificación TEMPRANA de staff de la plataforma (se usa en el login, antes
 // de resolver cualquier club). Consulta directa a `plataforma_staff` por el
 // `user_id` de la sesión y `activo = true` (la política RLS de v94 solo deja
@@ -63,12 +63,12 @@ export async function obtenerStaffPlataforma(userId) {
   if (esErrorEsquemaSoporte(directa.error) && esErrorEsquemaSoporte(respaldo.error)) return { ok: true, staff: null };
   return { ok: false, error: respaldo.error || directa.error };
 }
-
+ 
 export async function obtenerBolsa(clubId) {
   const { data, error } = await supabase.rpc('fn_soporte_bolsa_actual', { p_club_id: Number(clubId) });
   return { data: Array.isArray(data) ? data[0] : data, error };
 }
-
+ 
 export async function listarTickets(clubId, limite = 200) {
   const { data, error } = await supabase
     .from('soporte_tickets')
@@ -78,7 +78,7 @@ export async function listarTickets(clubId, limite = 200) {
     .limit(limite);
   return { data: data || [], error };
 }
-
+ 
 // Citas que retienen minutos: agendadas (o pendientes) con inicio desde
 // hace 2 h en adelante — independiente del límite del historial.
 export async function listarCitasProximas(clubId) {
@@ -93,7 +93,7 @@ export async function listarCitasProximas(clubId) {
     .limit(100);
   return { data: data || [], error };
 }
-
+ 
 // Registro DIRECTO de una reserva confirmada en Cal.com (v96). No duplica:
 // el webhook de Cal.com actualiza la misma fila por `calcom_uid`.
 export async function registrarCitaPortal({ clubId, uid, inicio, fin, concepto = null, meetUrl = null }) {
@@ -107,7 +107,7 @@ export async function registrarCitaPortal({ clubId, uid, inicio, fin, concepto =
   });
   return { data: Array.isArray(data) ? data[0] : data, error };
 }
-
+ 
 // Respaldo: pide a la Edge Function que consulte la API de Cal.com y registre
 // lo que falte. `clubId` null = todos los clubes (solo SuperAdmin).
 // Nunca lanza: si la función no está desplegada devuelve { ok: false }.
@@ -122,7 +122,23 @@ export async function sincronizarCalcom(clubId = null) {
     return { ok: false, error: err };
   }
 }
-
+ 
+// Retorno desde Cal.com (v101): consulta el estado real de las citas en la
+// API de Cal.com y lo aplica en Supabase (cancelada / reagendada). Si la
+// Edge Function no está desplegada o no hay API key, regresa `{ ok: false }`
+// y la pantalla queda esperando al webhook (Realtime).
+export async function verificarCitasCalcom(clubId, uids) {
+  const lista = [...new Set((uids || []).filter(Boolean).map(String))].slice(0, 10);
+  if (clubId == null || lista.length === 0) return { ok: true, resultados: [] };
+  try {
+    const { data, error } = await supabase.functions.invoke('soporte-calcom-estado', { body: { club_id: Number(clubId), uids: lista } });
+    if (error) return { ok: false, motivo: 'no_disponible', error };
+    return data || { ok: false, motivo: 'sin_respuesta' };
+  } catch (err) {
+    return { ok: false, motivo: 'no_disponible', error: err };
+  }
+}
+ 
 export async function listarComprasExtra(clubId, limite = 50) {
   const { data, error } = await supabase
     .from('soporte_compras_extra')
@@ -132,12 +148,12 @@ export async function listarComprasExtra(clubId, limite = 50) {
     .limit(limite);
   return { data: data || [], error };
 }
-
+ 
 export async function registrarConexion(ticketId) {
   const { data, error } = await supabase.rpc('fn_soporte_registrar_conexion', { p_ticket_id: ticketId });
   return { data: Array.isArray(data) ? data[0] : data, error };
 }
-
+ 
 // Inicia el pago en Stripe Checkout (Edge Function). Devuelve { url }.
 export async function iniciarCompraHorasExtra({ clubId, horas }) {
   try {
@@ -160,13 +176,13 @@ export async function iniciarCompraHorasExtra({ clubId, horas }) {
     return { data: null, error: err instanceof Error ? err : new Error('No se pudo iniciar el pago.') };
   }
 }
-
+ 
 // ---------------------------- SuperAdmin ------------------------------------
 export async function listarClubesAdmin(busqueda = '') {
   const { data, error } = await supabase.rpc('fn_soporte_admin_clubes', { p_busqueda: busqueda || null });
   return { data: data || [], error };
 }
-
+ 
 export async function registrarAtencionAdmin({ clubId, ticketId = null, canal, concepto, minutos, estado, inicio = null, meetUrl = null, notas = '' }) {
   const params = {
     p_club_id: Number(clubId),
@@ -183,7 +199,7 @@ export async function registrarAtencionAdmin({ clubId, ticketId = null, canal, c
   const { data, error } = await supabase.rpc('fn_soporte_admin_registrar_atencion', params);
   return { data: Array.isArray(data) ? data[0] : data, error };
 }
-
+ 
 // Abono (+) o corrección (−) administrativa de minutos (v95).
 export async function ajustarBolsaAdmin({ clubId, minutos, motivo, notas = '' }) {
   const { data, error } = await supabase.rpc('fn_soporte_admin_ajustar_bolsa', {
@@ -194,7 +210,7 @@ export async function ajustarBolsaAdmin({ clubId, minutos, motivo, notas = '' })
   });
   return { data: Array.isArray(data) ? data[0] : data, error };
 }
-
+ 
 // Agenda global (staff): citas de todos los clubes en un rango de fechas.
 export async function listarAgendaAdmin({ desde, hasta, limite = 500 }) {
   const { data, error } = await supabase
@@ -206,7 +222,7 @@ export async function listarAgendaAdmin({ desde, hasta, limite = 500 }) {
     .limit(limite);
   return { data: data || [], error };
 }
-
+ 
 // Ajustes de bolsa del club (el club también los ve, con su motivo).
 export async function listarAjustes(clubId, limite = 50) {
   const { data, error } = await supabase
@@ -217,7 +233,7 @@ export async function listarAjustes(clubId, limite = 50) {
     .limit(limite);
   return { data: data || [], error };
 }
-
+ 
 // Notas / diagnóstico interno del staff sobre el club (el club NO las ve).
 export async function listarNotasInternas(clubId, limite = 50) {
   const { data, error } = await supabase
@@ -228,7 +244,7 @@ export async function listarNotasInternas(clubId, limite = 50) {
     .limit(limite);
   return { data: data || [], error };
 }
-
+ 
 // ---------------------------- Realtime --------------------------------------
 // Escucha cambios de bolsa/tickets/compras. `clubId` null = todos (SuperAdmin;
 // RLS sigue filtrando lo que cada quien puede ver).
@@ -249,7 +265,7 @@ export function suscribirCambiosSoporte(clubId, alCambiar) {
     }
   };
 }
-
+ 
 export async function obtenerUsuarioActual() {
   try {
     const { data } = await supabase.auth.getUser();
