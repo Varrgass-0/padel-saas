@@ -768,6 +768,10 @@ import { consultarEsStaffQlubos, obtenerStaffPlataforma } from './soporte/soport
 // QLUBOS en el panel de los clubes (migracion_v97). Módulos en src/admin/.
 import PanelAdminQlubos from './admin/PanelAdminQlubos';
 import BannerAnunciosPlataforma from './admin/BannerAnunciosPlataforma';
+// Ticket Digital (QR) — `npm install qrcode.react` (ver migracion_v99).
+import { QRCodeSVG } from 'qrcode.react';
+// Íconos nuevos con alias para no chocar con el import principal de lucide.
+import { QrCode as IconoQrTicket, Printer as IconoImprimirTicket, ScrollText as IconoHistorialTickets } from 'lucide-react';
 import {
   LayoutGrid,
   CalendarDays,
@@ -7241,6 +7245,80 @@ async function insertarVentaConReintentos(payloadInicial) {
   return { data, error };
 }
 
+/* ============================================================================
+ * FOLIOS CONSECUTIVOS POR CLUB + TICKET DIGITAL (migracion_v99)
+ * ==========================================================================*/
+// El folio lo asigna la base de datos (trigger `fn_ventas_asignar_folio`, en
+// la misma transacción del cobro, con candado por club) en la tabla nueva
+// `ventas_folios` — `ventas` no cambia. Aquí solo se LEE: si la migración
+// todavía no corre (o la venta quedó con id local por RLS), no hay folio y
+// la app sigue mostrando el identificador corto de siempre.
+async function cargarFoliosDeVentas(ids) {
+  const mapa = new Map();
+  const lista = [...new Set((ids || []).filter((id) => id != null && id !== '').map(String))];
+  if (lista.length === 0 || !CLUB_ACTIVO_ID) return mapa;
+  try {
+    for (let i = 0; i < lista.length; i += 200) {
+      const { data, error } = await supabase
+        .from('ventas_folios')
+        .select('venta_id, folio, token')
+        .eq('club_id', String(CLUB_ACTIVO_ID))
+        .in('venta_id', lista.slice(i, i + 200));
+      if (error) break;
+      (data || []).forEach((f) => mapa.set(String(f.venta_id), { folio: f.folio, token: f.token }));
+    }
+  } catch (_e) {
+    /* sin folios: se usa el identificador corto */
+  }
+  return mapa;
+}
+
+// Folio para mostrar: el consecutivo del club si existe, si no el respaldo.
+function textoFolioVenta(infoFolio, respaldo) {
+  return infoFolio?.folio != null ? String(infoFolio.folio) : respaldo || 'S/F';
+}
+
+function urlTicketDigital(ventaId, token) {
+  if (ventaId == null || !token || typeof window === 'undefined') return null;
+  return `${window.location.origin}/ticket/${encodeURIComponent(String(ventaId))}?k=${encodeURIComponent(String(token))}`;
+}
+
+// Hook: folios de un grupo de ventas (se re-consulta una vez después de un
+// instante por si el cobro se acaba de confirmar y el trigger aún no termina).
+function useFoliosDeVentas(ids) {
+  const clave = (ids || []).filter((id) => id != null).map(String).join('|');
+  const [mapa, setMapa] = useState(() => new Map());
+  const [cargando, setCargando] = useState(Boolean(clave));
+  useEffect(() => {
+    let vivo = true;
+    if (!clave) {
+      setMapa(new Map());
+      setCargando(false);
+      return undefined;
+    }
+    const lista = clave.split('|');
+    setCargando(true);
+    let reintento = null;
+    cargarFoliosDeVentas(lista).then((m) => {
+      if (!vivo) return;
+      setMapa(m);
+      setCargando(false);
+      if (m.size < lista.length) {
+        reintento = setTimeout(() => {
+          cargarFoliosDeVentas(lista).then((m2) => {
+            if (vivo && m2.size > m.size) setMapa(m2);
+          });
+        }, 1500);
+      }
+    });
+    return () => {
+      vivo = false;
+      clearTimeout(reintento);
+    };
+  }, [clave]);
+  return { mapa, cargando };
+}
+
 // Modal SOLO de agenda: nada de estado/método de pago aquí — la reserva
 // siempre nace `estado_pago: 'pendiente'` y se cobra del otro lado, en Smart
 // POS (ver `onCreada`, que además de guardar en Supabase entrega la reserva
@@ -11756,12 +11834,21 @@ function ModalTicket({ venta, onClose, nombreClub }) {
   // cada jugador es: elegirlo en el selector de pestañas y presionar
   // imprimir, uno a la vez — sin salir del modal.
   const [ticketActivo, setTicketActivo] = useState(null);
+  // Ticket Digital (QR): conmuta la vista interna entre el ticket en texto y
+  // el código QR que abre `/ticket/<venta_id>` (ver `VistaTicketDigital`).
+  const [vistaQR, setVistaQR] = useState(false);
+  const individualesHook = venta?.ticketsIndividuales || [];
+  const { mapa: foliosClub, cargando: cargandoFolios } = useFoliosDeVentas([
+    venta?.ventaId,
+    ...individualesHook.map((t) => t?.ventaId),
+  ]);
   if (!venta) return null;
 
   const individuales = venta.ticketsIndividuales || [];
   const parteActiva = ticketActivo != null ? individuales[ticketActivo] : null;
   const vista = parteActiva
     ? {
+        ventaId: parteActiva.ventaId ?? null,
         folio: parteActiva.folio,
         items: parteActiva.items,
         total: parteActiva.total,
@@ -11771,6 +11858,7 @@ function ModalTicket({ venta, onClose, nombreClub }) {
         jugadorNombre: parteActiva.jugadorNombre,
       }
     : {
+        ventaId: venta.ventaId ?? null,
         folio: venta.folio,
         items: venta.items,
         total: venta.total,
@@ -11779,9 +11867,13 @@ function ModalTicket({ venta, onClose, nombreClub }) {
         mixto: venta.mixto,
         jugadorNombre: null,
       };
+  // Folio consecutivo del club (migracion_v99) con respaldo al id corto.
+  const infoFolio = vista.ventaId != null ? foliosClub.get(String(vista.ventaId)) : null;
+  const folioVisible = textoFolioVenta(infoFolio, vista.folio);
+  const urlDigital = urlTicketDigital(vista.ventaId, infoFolio?.token);
 
   return (
-    <ModalShell titulo="Ticket de Venta" subtitulo={`Folio ${vista.folio}`} onClose={onClose} icon={Receipt} ancho="max-w-sm">
+    <ModalShell titulo="Ticket de Venta" subtitulo={`Folio ${folioVisible}`} onClose={onClose} icon={Receipt} ancho="max-w-sm">
       <style>{`
         @media print {
           body * { visibility: hidden; }
@@ -11816,7 +11908,38 @@ function ModalTicket({ venta, onClose, nombreClub }) {
         </div>
       )}
 
-      <div id="ticket-imprimible" className="space-y-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 font-mono text-xs text-slate-800">
+      {vistaQR && (
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-slate-200 bg-white p-5 text-center print:hidden">
+          {urlDigital ? (
+            <>
+              <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
+                <QRCodeSVG value={urlDigital} size={196} level="M" bgColor="#ffffff" fgColor="#0f172a" />
+              </div>
+              <div>
+                <p className="text-sm font-black text-slate-900">Ticket digital · Folio {folioVisible}</p>
+                <p className="mt-0.5 text-[11px] text-slate-500">Escanea el código con la cámara del celular para ver el ticket.</p>
+              </div>
+              <a href={urlDigital} target="_blank" rel="noopener noreferrer" className="text-[11px] font-bold text-orange-500 hover:underline">
+                Abrir ticket digital
+              </a>
+            </>
+          ) : cargandoFolios ? (
+            <p className="flex items-center gap-1.5 py-10 text-xs text-slate-500">
+              <Loader2 size={13} className="animate-spin" /> Generando ticket digital…
+            </p>
+          ) : (
+            <p className="py-8 text-xs text-slate-500">
+              El ticket digital de esta venta todavía no está disponible. Revisa tu conexión o pide a QLUBOS activar los folios por club
+              (migracion_v99).
+            </p>
+          )}
+        </div>
+      )}
+
+      <div
+        id="ticket-imprimible"
+        className={`space-y-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 font-mono text-xs text-slate-800 ${vistaQR ? 'hidden print:block' : ''}`}
+      >
         <div className="text-center">
           {/* Nombre del club en el ticket — antes decía "SMASH PÁDEL CLUB" fijo
               (roto para cualquier OTRO club que use ClubOS); ahora lee
@@ -11829,7 +11952,7 @@ function ModalTicket({ venta, onClose, nombreClub }) {
           <p className="text-slate-500">
             {formatoFechaLarga(venta.fecha)} · {venta.horaEmision}
           </p>
-          <p className="text-slate-500">Folio: {vista.folio}</p>
+          <p className="text-slate-500">Folio: {folioVisible}</p>
           <p className="text-slate-500">
             Operador: {venta.operadorNombre} ({venta.turnoLabel})
           </p>
@@ -11894,10 +12017,15 @@ function ModalTicket({ venta, onClose, nombreClub }) {
         <p className="border-t border-dashed border-slate-300 pt-3 text-center text-[10px] text-slate-400">¡Gracias por tu visita!</p>
       </div>
 
-      <div className="mt-4 flex justify-end gap-2 print:hidden">
-        <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
-        <BotonPrimario onClick={() => window.print()}>
-          <Receipt size={15} /> Imprimir / Guardar Ticket
+      <div className="mt-4 grid grid-cols-3 gap-2 print:hidden">
+        <BotonSecundario onClick={onClose} className="px-2 text-xs">
+          Cerrar
+        </BotonSecundario>
+        <BotonSecundario onClick={() => setVistaQR((v) => !v)} aria-pressed={vistaQR} className="gap-1.5 whitespace-nowrap px-2 text-xs">
+          {vistaQR ? <Receipt size={14} /> : <IconoQrTicket size={14} />} {vistaQR ? 'Ver Ticket' : 'Ticket QR'}
+        </BotonSecundario>
+        <BotonPrimario onClick={() => window.print()} className="gap-1.5 whitespace-nowrap px-2 text-xs">
+          <IconoImprimirTicket size={14} /> Imprimir
         </BotonPrimario>
       </div>
     </ModalShell>
@@ -14420,6 +14548,7 @@ function ModuloSmartPOS({
     });
     setVentaFinalizada({
       folio: (data?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      ventaId: data?.id ?? null,
       fecha: hoyISO(),
       horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
       operadorNombre: operador?.nombre || 'Operador',
@@ -15004,6 +15133,7 @@ function ModuloSmartPOS({
       // cambio) para que se vea IGUAL que un cobro de Venta Directa.
       ticketData = {
         folio: (ventaPrincipal?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        ventaId: ventaPrincipal?.id ?? null,
         fecha: hoyISO(),
         horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
         operadorNombre: operador?.nombre || 'Operador',
@@ -15138,6 +15268,7 @@ function ModuloSmartPOS({
       // ningún cobro ligado): mismo formato que la otra rama de arriba.
       ticketData = {
         folio: (dataInsertada?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        ventaId: dataInsertada?.id ?? null,
         fecha: hoyISO(),
         horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
         operadorNombre: operador?.nombre || 'Operador',
@@ -15468,6 +15599,7 @@ function ModuloSmartPOS({
       algunaGuardada = true;
       ticketsIndividuales.push({
         folio: (dataParticipante?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        ventaId: dataParticipante?.id ?? null,
         jugadorNombre: (p.jugadorNombre || '').trim() || `Jugador ${i + 1}`,
         jugadorId: jugadorIdParticipante,
         items: itemsParticipante,
@@ -15538,6 +15670,7 @@ function ModuloSmartPOS({
       const cambioTotal = pagosDivididos.reduce((acc, p) => acc + (p.cambio || 0), 0);
       setVentaFinalizada({
         folio: ticketsIndividuales[0].folio,
+        ventaId: ticketsIndividuales[0].ventaId ?? null,
         fecha: hoyISO(),
         horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
         operadorNombre: operador?.nombre || 'Operador',
@@ -16002,6 +16135,7 @@ function ModuloSmartPOS({
     if (ventaData) {
       setVentaFinalizada({
         folio: (ventaData?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        ventaId: ventaData?.id ?? null,
         fecha: hoyISO(),
         horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
         operadorNombre: operador?.nombre || 'Operador',
@@ -16685,6 +16819,7 @@ function ModuloSmartPOS({
         if (!data) data = resultadoParticipante.data; // primera fila exitosa = referencia principal (folio del ticket general)
         ticketsIndividuales.push({
           folio: (resultadoParticipante.data?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+          ventaId: resultadoParticipante.data?.id ?? null,
           jugadorNombre: (p.jugadorNombre || '').trim() || `Jugador ${i + 1}`,
           jugadorId: jugadorIdParticipante,
           items: itemsParticipante,
@@ -16987,6 +17122,7 @@ function ModuloSmartPOS({
       estadoPago === 'pagado'
         ? {
             folio: (data?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+            ventaId: data?.id ?? null,
             fecha: hoyISO(),
             horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
             operadorNombre: operador?.nombre || 'Operador',
@@ -21581,6 +21717,315 @@ function ModalDesglosePnl({ titulo, subtitulo, filas, onClose }) {
   );
 }
 
+/* ============================================================================
+ * HISTORIAL DE TICKETS (Contabilidad & Compras) — solo Owner y Manager
+ * ==========================================================================*/
+// Lista las ventas COBRADAS del club activo (`ventas`, siempre filtrado por
+// `club_id` — si no hay club activo no consulta nada) con su folio
+// consecutivo del club (`ventas_folios`, migracion_v99). "Ver Ticket" abre
+// el mismo `ModalTicket` del Smart POS: reimpresión y Ticket QR incluidos.
+// Solo lectura: no modifica ventas, productos, kárdex ni modificadores.
+const ROLES_HISTORIAL_TICKETS = new Set(['owner', 'manager']);
+
+function puedeVerHistorialTickets(permisos, operador) {
+  const rol = permisos?.rol || ROL_LEGACY_A_CANONICO[operador?.rol] || operador?.rol;
+  return ROLES_HISTORIAL_TICKETS.has(rol);
+}
+
+function etiquetaMetodoPagoVenta(metodo) {
+  if (metodo === 'wallet_mixto') return 'Wallet + complemento';
+  return etiquetaMetodoPagoInscripcion(metodo) || METODOS_PAGO_POS.find((m) => m.value === metodo)?.label || metodo || '—';
+}
+
+// Texto legible de un artículo: nombre (que ya trae "Producto — Variante" y
+// "(Extra: …)" desde Smart POS) + variante/modificadores si no venían ya.
+function textoArticuloVenta(item) {
+  const nombre = String(item?.nombre || 'Artículo');
+  const extras = [];
+  const variante = item?.varianteNombre || item?.variante_nombre;
+  if (variante && !nombre.toLowerCase().includes(String(variante).toLowerCase())) extras.push(variante);
+  (Array.isArray(item?.modificadores) ? item.modificadores : [])
+    .map((m) => (typeof m === 'string' ? m : m?.nombre))
+    .filter(Boolean)
+    .forEach((m) => {
+      if (!nombre.toLowerCase().includes(String(m).toLowerCase())) extras.push(m);
+    });
+  return { nombre, extras };
+}
+
+function clienteDeVenta(venta) {
+  const d = venta?.detalles || {};
+  return d.jugador_nombre || d.cliente_operador_nombre || d.cliente_nombre || d.wallet_persona_nombre || venta?.jugador_nombre || null;
+}
+
+function fechaHoraVenta(venta) {
+  const ts = obtenerTimestampVenta(venta);
+  if (!ts) return { fechaISO: null, fecha: '—', hora: '' };
+  return {
+    fechaISO: `${ts.getFullYear()}-${pad2(ts.getMonth() + 1)}-${pad2(ts.getDate())}`,
+    fecha: ts.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }),
+    hora: ts.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+  };
+}
+
+// Convierte una fila de `ventas` al formato que ya entiende `ModalTicket`.
+function ventaAFormatoTicket(venta) {
+  const d = venta?.detalles || {};
+  const { fechaISO, hora } = fechaHoraVenta(venta);
+  const items = (Array.isArray(d.items) ? d.items : []).map((it) => {
+    const cantidad = Number(it?.cantidad) || 1;
+    const subtotal = Number(it?.subtotal);
+    return {
+      ...it,
+      cantidad,
+      nombre: (() => {
+        const { nombre, extras } = textoArticuloVenta(it);
+        return extras.length ? `${nombre} (${extras.join(', ')})` : nombre;
+      })(),
+      subtotal: Number.isFinite(subtotal) ? subtotal : (Number(it?.precio) || 0) * cantidad,
+    };
+  });
+  return {
+    ventaId: venta?.id ?? null,
+    folio: (venta?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+    fecha: fechaISO || hoyISO(),
+    horaEmision: hora,
+    operadorNombre: venta?.operador || d.cerrado_por_operador_nombre || 'Operador',
+    turnoLabel: TURNOS.find((t) => t.value === venta?.turno)?.label || '',
+    items,
+    total: Number(venta?.total) || items.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0),
+    metodoPago: venta?.metodo_pago || null,
+    pagosDivididos: Array.isArray(d.pagos_divididos) && d.pagos_divididos.length > 0 ? d.pagos_divididos : null,
+    cambio: Number(d.cambio) || 0,
+    mixto: d.mixto || null,
+  };
+}
+
+const RANGOS_HISTORIAL_TICKETS = [
+  { id: 'hoy', label: 'Hoy', dias: 1 },
+  { id: '7', label: '7 días', dias: 7 },
+  { id: '30', label: '30 días', dias: 30 },
+  { id: '90', label: '90 días', dias: 90 },
+];
+
+function HistorialTicketsVentas({ nombreClub }) {
+  const [rango, setRango] = useState('7');
+  const [ventas, setVentas] = useState([]);
+  const [folios, setFolios] = useState(() => new Map());
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+  const [busqueda, setBusqueda] = useState('');
+  const [ticketAbierto, setTicketAbierto] = useState(null);
+
+  const cargar = useCallback(
+    async ({ silencioso = false } = {}) => {
+      if (!CLUB_ACTIVO_ID) {
+        setVentas([]);
+        setCargando(false);
+        setError('No hay un club activo en esta sesión.');
+        return;
+      }
+      if (!silencioso) setCargando(true);
+      const dias = RANGOS_HISTORIAL_TICKETS.find((r) => r.id === rango)?.dias || 7;
+      const fin = new Date();
+      fin.setHours(24, 0, 0, 0);
+      const inicio = new Date(fin.getTime() - dias * 86_400_000);
+      const { data, error: err } = await consultarVentasEnRango(inicio, fin);
+      if (err) {
+        setError(err.message || 'No se pudieron cargar los tickets.');
+        setCargando(false);
+        return;
+      }
+      // Doble candado de tenant (además de `conClubId` y RLS) + solo ventas cobradas.
+      const delClub = (data || []).filter(
+        (v) => String(v.club_id ?? CLUB_ACTIVO_ID) === String(CLUB_ACTIVO_ID) && v.estado_pago !== 'pendiente'
+      );
+      delClub.sort((a, b) => (obtenerTimestampVenta(b)?.getTime() || 0) - (obtenerTimestampVenta(a)?.getTime() || 0));
+      const mapa = await cargarFoliosDeVentas(delClub.map((v) => v.id));
+      setError('');
+      setVentas(delClub);
+      setFolios(mapa);
+      setCargando(false);
+    },
+    [rango]
+  );
+
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
+
+  useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return undefined;
+    let t = null;
+    const canal = supabase
+      .channel(`historial-tickets-${CLUB_ACTIVO_ID}`)
+      .on('postgres_changes', canalClubFiltro('ventas'), () => {
+        clearTimeout(t);
+        t = setTimeout(() => cargar({ silencioso: true }), 1200);
+      })
+      .subscribe();
+    return () => {
+      clearTimeout(t);
+      supabase.removeChannel(canal);
+    };
+  }, [cargar]);
+
+  const filas = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+    return ventas
+      .map((v) => {
+        const info = folios.get(String(v.id));
+        const folio = textoFolioVenta(info, (v.id || '').toString().slice(0, 8).toUpperCase());
+        const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
+        return { v, folio, tieneFolioClub: info?.folio != null, items, cliente: clienteDeVenta(v), ...fechaHoraVenta(v) };
+      })
+      .filter((f) => {
+        if (!q) return true;
+        const texto = [f.folio, f.v.operador, f.cliente, f.v.metodo_pago, ...f.items.map((it) => it?.nombre)].filter(Boolean).join(' ').toLowerCase();
+        return texto.includes(q);
+      });
+  }, [ventas, folios, busqueda]);
+
+  const totalPeriodo = filas.reduce((acc, f) => acc + (Number(f.v.total) || 0), 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+            <IconoHistorialTickets size={16} className="text-orange-400" /> Historial de Tickets
+          </h3>
+          <p className="mt-0.5 text-xs text-slate-500">Ventas cobradas del club con su folio consecutivo. Visible solo para Owner y Manager.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
+            {RANGOS_HISTORIAL_TICKETS.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => setRango(r.id)}
+                className={`rounded-md px-3 py-1.5 text-xs font-bold transition ${
+                  rango === r.id ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+          <div className="relative">
+            <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Folio, cliente, producto…"
+              className="w-56 rounded-lg border border-slate-300 bg-white py-2 pl-8 pr-3 text-xs text-slate-900 outline-none focus:border-orange-400"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:w-fit sm:grid-cols-2">
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-2.5">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Tickets</p>
+          <p className="text-xl font-black text-slate-900">{filas.length}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-2.5">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Total del periodo</p>
+          <p className="text-xl font-black text-emerald-500">{formatoMoneda(totalPeriodo)}</p>
+        </div>
+      </div>
+
+      {error && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-500">{error}</p>}
+
+      {cargando ? (
+        <p className="flex items-center justify-center gap-1.5 rounded-2xl border border-slate-200 bg-white py-12 text-xs text-slate-500">
+          <Loader2 size={14} className="animate-spin" /> Cargando tickets…
+        </p>
+      ) : filas.length === 0 ? (
+        <p className="rounded-2xl border border-dashed border-slate-300 bg-white py-12 text-center text-xs text-slate-500">
+          {busqueda ? 'Ningún ticket coincide con la búsqueda.' : 'Sin ventas cobradas en este periodo.'}
+        </p>
+      ) : (
+        <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+          <table className="w-full min-w-[980px] text-left text-xs">
+            <thead className="border-b border-slate-200 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-3 py-2.5 font-bold">Folio</th>
+                <th className="px-3 py-2.5 font-bold">Fecha / Hora</th>
+                <th className="px-3 py-2.5 font-bold">Operador</th>
+                <th className="px-3 py-2.5 font-bold">Cliente / Jugador</th>
+                <th className="px-3 py-2.5 font-bold">Artículos vendidos</th>
+                <th className="px-3 py-2.5 font-bold">Método de pago</th>
+                <th className="px-3 py-2.5 text-right font-bold">Total MXN</th>
+                <th className="px-3 py-2.5 text-right font-bold">Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f) => (
+                <tr key={String(f.v.id)} className="border-b border-slate-200/70 align-top last:border-0">
+                  <td className="whitespace-nowrap px-3 py-2.5 font-black text-slate-900">
+                    {f.tieneFolioClub ? `#${f.folio}` : <span className="font-mono text-[11px] font-semibold text-slate-400">{f.folio}</span>}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-slate-700">
+                    {f.fecha}
+                    <span className="block text-[11px] text-slate-400">{f.hora}</span>
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-700">{f.v.operador || f.v?.detalles?.cerrado_por_operador_nombre || '—'}</td>
+                  <td className="px-3 py-2.5 text-slate-700">{f.cliente || <span className="text-slate-400">Público general</span>}</td>
+                  <td className="max-w-[320px] px-3 py-2.5 text-slate-700">
+                    {f.items.length === 0 ? (
+                      <span className="text-slate-400">Sin desglose</span>
+                    ) : (
+                      <ul className="space-y-0.5">
+                        {f.items.slice(0, 6).map((it, i) => {
+                          const { nombre, extras } = textoArticuloVenta(it);
+                          return (
+                            <li key={i} className="leading-snug">
+                              <span className="font-semibold">{Number(it?.cantidad) || 1}×</span> {nombre}
+                              {extras.length > 0 && <span className="text-[11px] text-slate-500"> · {extras.join(', ')}</span>}
+                            </li>
+                          );
+                        })}
+                        {f.items.length > 6 && <li className="text-[11px] text-slate-400">+{f.items.length - 6} artículos más</li>}
+                      </ul>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-700">
+                    {etiquetaMetodoPagoVenta(f.v.metodo_pago)}
+                    {f.v?.detalles?.mixto && (f.v.metodo_pago === 'mixto' || f.v.metodo_pago === 'wallet_mixto') && (
+                      <span className="block text-[11px] text-slate-400">
+                        {[
+                          Number(f.v.detalles.mixto.efectivo) > 0 ? `Efvo ${formatoMoneda(f.v.detalles.mixto.efectivo)}` : null,
+                          Number(f.v.detalles.mixto.tarjeta) > 0 ? `Tarjeta ${formatoMoneda(f.v.detalles.mixto.tarjeta)}` : null,
+                          Number(f.v.detalles.mixto.wallet) > 0 ? `Wallet ${formatoMoneda(f.v.detalles.mixto.wallet)}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-right text-sm font-black text-slate-900">{formatoMoneda(Number(f.v.total) || 0)}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    <button
+                      type="button"
+                      onClick={() => setTicketAbierto(ventaAFormatoTicket(f.v))}
+                      className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-slate-200 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 transition hover:border-orange-300 hover:text-orange-500"
+                    >
+                      <Receipt size={12} /> Ver Ticket
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {ticketAbierto && <ModalTicket venta={ticketAbierto} onClose={() => setTicketAbierto(null)} nombreClub={nombreClub} />}
+    </div>
+  );
+}
+
 function ModuloContabilidadCompras({
   reservas,
   operador,
@@ -21593,8 +22038,12 @@ function ModuloContabilidadCompras({
   upsertProducto,
   quitarProductoLocal,
   onRegistrarAuditoria,
+  permisos,
 }) {
   const mostrarToast = useToast();
+  // Historial de Tickets: exclusivo Owner/Manager (el Contador, que también
+  // entra a este módulo, no lo ve).
+  const verHistorialTickets = puedeVerHistorialTickets(permisos, operador);
   // Nombre real del club activo para los encabezados de los reportes
   // exportados (antes decían "Smash Pádel Club" fijo — roto para cualquier
   // OTRO club que use ClubOS). Fallback a "ClubOS" (no a "Smash Pádel Club")
@@ -23713,6 +24162,16 @@ function ModuloContabilidadCompras({
         >
           <Landmark size={14} /> P&L / Estado de Resultados
         </button>
+        {verHistorialTickets && (
+          <button
+            onClick={() => setVista('tickets')}
+            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
+              vista === 'tickets' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <IconoHistorialTickets size={14} /> Historial de Tickets
+          </button>
+        )}
       </div>
 
       <TransicionPestana activeKey={vista}>
@@ -24855,6 +25314,7 @@ function ModuloContabilidadCompras({
           </div>
         </div>
       )}
+      {vista === 'tickets' && verHistorialTickets && <HistorialTicketsVentas nombreClub={nombreClubExport} />}
       </TransicionPestana>
     </div>
   );
@@ -48593,7 +49053,9 @@ function ModalTicketMovimientoWallet({ movimiento, onClose }) {
     };
   }, [movimiento?.referencia_id]);
 
-  const folio = folioTicketDeMovimientoWallet(movimiento);
+  // Folio consecutivo del club (migracion_v99) cuando existe; si no, el id corto.
+  const { mapa: foliosClub } = useFoliosDeVentas(esMovimientoTicketPOS(movimiento) ? [movimiento?.referencia_id] : []);
+  const folio = textoFolioVenta(foliosClub.get(String(movimiento?.referencia_id)), folioTicketDeMovimientoWallet(movimiento));
   const items = Array.isArray(venta?.detalles?.items) ? venta.detalles.items : [];
   const fechaRaw = venta?.fecha || venta?.created_at || movimiento?.created_at;
   const fechaObj = fechaRaw ? new Date(fechaRaw) : null;
@@ -59924,6 +60386,7 @@ function AppInterno({ clubInicial } = {}) {
                 upsertProducto={upsertProducto}
                 quitarProductoLocal={quitarProductoLocal}
                 onRegistrarAuditoria={registrarEventoAuditoria}
+                permisos={permisos}
               />
             ) : moduloActivo === 'analytics' ? (
               <ModuloAnalyticsBI
@@ -61898,6 +62361,116 @@ function navegarA(path) {
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
+// Ticket Digital público (`/ticket/<venta_id>?k=<token>`, el destino del
+// QR de `ModalTicket`). Sin sesión: lee UNA venta por `fn_ticket_digital`
+// (migracion_v99), que exige el token aleatorio del ticket y no devuelve
+// datos personales del jugador ni del operador.
+const PATRON_RUTA_TICKET = /^\/ticket\/([^/]+)\/?$/i;
+
+function VistaTicketDigital({ ventaId }) {
+  const token = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('k') : null;
+  const [ticket, setTicket] = useState(null);
+  const [estado, setEstado] = useState('cargando'); // 'cargando' | 'listo' | 'no_encontrado'
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      if (!ventaId || !token || !/^[0-9a-f-]{36}$/i.test(token)) {
+        setEstado('no_encontrado');
+        return;
+      }
+      try {
+        const { data, error } = await supabase.rpc('fn_ticket_digital', { p_venta_id: ventaId, p_token: token });
+        if (!vivo) return;
+        if (error || !data) setEstado('no_encontrado');
+        else {
+          setTicket(data);
+          setEstado('listo');
+        }
+      } catch (_e) {
+        if (vivo) setEstado('no_encontrado');
+      }
+    })();
+    return () => {
+      vivo = false;
+    };
+  }, [ventaId, token]);
+
+  const fecha = ticket?.fecha ? new Date(ticket.fecha) : null;
+  const fechaValida = fecha && !Number.isNaN(fecha.getTime());
+  const items = Array.isArray(ticket?.items) ? ticket.items : [];
+
+  return (
+    <div className="relative flex min-h-screen min-h-dvh items-start justify-center bg-[#f8fafc] px-4 py-10">
+      <div className="w-full max-w-sm">
+        <div className="mb-5 flex justify-center">
+          <LogoQlubOS className="h-6 w-auto" />
+        </div>
+        {estado === 'cargando' ? (
+          <p className="flex items-center justify-center gap-1.5 py-16 text-xs text-slate-500">
+            <Loader2 size={14} className="animate-spin" /> Cargando ticket…
+          </p>
+        ) : estado === 'no_encontrado' ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+            <p className="text-sm font-black text-slate-900">Ticket no disponible</p>
+            <p className="mt-1 text-xs text-slate-500">El enlace no es válido o el ticket ya no existe. Pide en recepción que te lo vuelvan a compartir.</p>
+          </div>
+        ) : (
+          <div className="space-y-3 rounded-2xl border border-dashed border-slate-300 bg-white p-5 font-mono text-xs text-slate-800 shadow-sm">
+            <div className="text-center">
+              <p className="text-sm font-black uppercase tracking-wide text-slate-900">{ticket.club_nombre || 'QLUBOS'}</p>
+              <p className="text-slate-500">
+                {fechaValida
+                  ? `${fecha.toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' })} · ${fecha.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}`
+                  : ''}
+              </p>
+              <p className="font-bold text-slate-700">Folio: {ticket.folio}</p>
+            </div>
+            <div className="space-y-1 border-t border-dashed border-slate-300 pt-3">
+              {items.length === 0 ? (
+                <p className="text-center text-slate-500">Sin desglose de artículos.</p>
+              ) : (
+                items.map((it, i) => {
+                  const cantidad = Number(it.cantidad) || 1;
+                  const subtotal = Number(it.subtotal);
+                  const extras = (Array.isArray(it.modificadores) ? it.modificadores : []).filter(
+                    (m) => m && !String(it.nombre || '').toLowerCase().includes(String(m).toLowerCase())
+                  );
+                  return (
+                    <div key={i}>
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="min-w-0 flex-1">
+                          {cantidad}× {it.nombre}
+                        </span>
+                        <span className="shrink-0 font-bold">{formatoMoneda(Number.isFinite(subtotal) ? subtotal : (Number(it.precio) || 0) * cantidad)}</span>
+                      </div>
+                      {extras.length > 0 && <p className="text-[10px] text-slate-500">{extras.join(', ')}</p>}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-2 text-sm font-black text-slate-900">
+              <span>TOTAL</span>
+              <span>{formatoMoneda(Number(ticket.total) || 0)}</span>
+            </div>
+            {ticket.metodo_pago && (
+              <div className="flex items-center justify-between text-slate-500">
+                <span>Método</span>
+                <span className="font-bold">
+                  {ticket.metodo_pago === 'wallet_mixto'
+                    ? 'Wallet + complemento'
+                    : etiquetaMetodoPagoInscripcion(ticket.metodo_pago) || ticket.metodo_pago}
+                </span>
+              </div>
+            )}
+            <p className="border-t border-dashed border-slate-300 pt-3 text-center text-[10px] text-slate-400">¡Gracias por tu visita!</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const PATRON_RUTA_PORTAL = /^\/canchas\/([a-z0-9-]+)\/?$/i;
 
 export default function App() {
@@ -61907,6 +62480,7 @@ export default function App() {
   // club (ver `VistaLegales`), accesible desde el footer del Portal y desde
   // la pantalla de Login/Registro de Clubes.
   const esRutaLegales = ruta === '/legales' || ruta === '/legales/';
+  const matchTicket = ruta.match(PATRON_RUTA_TICKET);
   return (
     <>
       {/* Fondo global de html/body/#root — mismo gris súper tenue que usa
@@ -61929,6 +62503,8 @@ export default function App() {
 ${CSS_MODO_OSCURO_CLUBOS}`}</style>
       {esRutaLegales ? (
         <VistaLegales />
+      ) : matchTicket ? (
+        <VistaTicketDigital ventaId={decodeURIComponent(matchTicket[1])} />
       ) : matchPortal ? (
         <PortalPublicoJugadores clubSlug={matchPortal[1]} />
       ) : (
