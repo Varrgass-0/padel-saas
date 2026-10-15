@@ -7319,6 +7319,341 @@ function useFoliosDeVentas(ids) {
   return { mapa, cargando };
 }
 
+/* ============================================================================
+ * DATOS FISCALES Y DE CONTACTO DEL CLUB (migracion_v100) — tickets de venta
+ * ==========================================================================*/
+// Tabla NUEVA `club_datos_fiscales` (1 fila por club, llave `club_id`): no
+// toca `configuracion_club`. RLS: cada club solo lee/escribe su propia fila;
+// aquí además TODA consulta filtra por `CLUB_ACTIVO_ID`. En la UI solo Owner
+// y Manager pueden editarla (ver `SeccionDatosFiscalesClub`).
+const CAMPOS_DATOS_FISCALES = [
+  'razon_social',
+  'nombre_comercial',
+  'rfc',
+  'calle',
+  'numero',
+  'colonia',
+  'ciudad',
+  'estado',
+  'codigo_postal',
+  'telefono',
+  'correo_facturacion',
+  'leyenda_factura',
+];
+const ROLES_EDITAN_DATOS_FISCALES = new Set(['owner', 'manager']);
+const EVENTO_DATOS_FISCALES = 'qlubos:datos-fiscales-actualizados';
+const cacheDatosFiscales = new Map(); // club_id -> { datos, ts }
+
+function puedeEditarDatosFiscales(permisos, operador) {
+  const rol = permisos?.rol || ROL_LEGACY_A_CANONICO[operador?.rol] || operador?.rol;
+  return ROLES_EDITAN_DATOS_FISCALES.has(rol);
+}
+
+function limpiarDatosFiscales(fila) {
+  const datos = {};
+  CAMPOS_DATOS_FISCALES.forEach((c) => {
+    const v = fila?.[c];
+    datos[c] = v == null ? '' : String(v);
+  });
+  return datos;
+}
+
+async function cargarDatosFiscalesClub({ forzar = false } = {}) {
+  if (!CLUB_ACTIVO_ID) return { datos: null, error: null, tablaExiste: true };
+  const clave = String(CLUB_ACTIVO_ID);
+  const enCache = cacheDatosFiscales.get(clave);
+  if (!forzar && enCache && Date.now() - enCache.ts < 5 * 60_000) return { datos: enCache.datos, error: null, tablaExiste: true };
+  try {
+    const { data, error } = await supabase.from('club_datos_fiscales').select('*').eq('club_id', clave).maybeSingle();
+    if (error) return { datos: null, error, tablaExiste: !esErrorTablaInexistente(error) };
+    const datos = data ? limpiarDatosFiscales(data) : null;
+    cacheDatosFiscales.set(clave, { datos, ts: Date.now() });
+    return { datos, error: null, tablaExiste: true };
+  } catch (err) {
+    return { datos: null, error: err, tablaExiste: true };
+  }
+}
+
+async function guardarDatosFiscalesClub(valores) {
+  if (!CLUB_ACTIVO_ID) return { error: new Error('No hay un club activo en esta sesión.') };
+  const clave = String(CLUB_ACTIVO_ID);
+  const fila = { club_id: clave };
+  CAMPOS_DATOS_FISCALES.forEach((c) => {
+    const v = String(valores?.[c] ?? '').trim();
+    fila[c] = v === '' ? null : c === 'rfc' ? v.toUpperCase() : c === 'correo_facturacion' ? v.toLowerCase() : v;
+  });
+  const { data, error } = await supabase.from('club_datos_fiscales').upsert(fila, { onConflict: 'club_id' }).select().maybeSingle();
+  if (error) return { error };
+  const datos = limpiarDatosFiscales(data || fila);
+  cacheDatosFiscales.set(clave, { datos, ts: Date.now() });
+  try {
+    window.dispatchEvent(new CustomEvent(EVENTO_DATOS_FISCALES, { detail: { clubId: clave } }));
+  } catch (_e) {
+    /* sin eventos: el resto de vistas se actualiza al recargar */
+  }
+  return { error: null, datos };
+}
+
+// Hook para los tickets del panel: datos fiscales del club activo (o null).
+function useDatosFiscalesClub() {
+  const [datos, setDatos] = useState(() => (CLUB_ACTIVO_ID ? cacheDatosFiscales.get(String(CLUB_ACTIVO_ID))?.datos || null : null));
+  useEffect(() => {
+    let vivo = true;
+    const cargar = (forzar) =>
+      cargarDatosFiscalesClub({ forzar }).then(({ datos: d }) => {
+        if (vivo) setDatos(d);
+      });
+    cargar(false);
+    const alActualizar = () => cargar(false);
+    window.addEventListener(EVENTO_DATOS_FISCALES, alActualizar);
+    return () => {
+      vivo = false;
+      window.removeEventListener(EVENTO_DATOS_FISCALES, alActualizar);
+    };
+  }, []);
+  return datos;
+}
+
+function direccionFiscalTexto(f) {
+  if (!f) return '';
+  const linea1 = [f.calle, f.numero ? `#${String(f.numero).replace(/^#/, '')}` : ''].filter(Boolean).join(' ');
+  const linea2 = [f.colonia ? `Col. ${f.colonia}` : '', f.codigo_postal ? `C.P. ${f.codigo_postal}` : ''].filter(Boolean).join(', ');
+  const linea3 = [f.ciudad, f.estado].filter(Boolean).join(', ');
+  return [linea1, linea2, linea3].filter(Boolean).join(', ');
+}
+
+// Leyenda de facturación: la personalizada del club (admite {folio} y
+// {correo}) o la estándar.
+function leyendaFacturaTexto(f, folio) {
+  if (!f?.correo_facturacion && !f?.leyenda_factura) return '';
+  const base =
+    String(f?.leyenda_factura || '').trim() ||
+    'Para solicitar tu factura, envía tus datos fiscales y tu folio {folio} al correo {correo}.';
+  return base
+    .replace(/\{folio\}/gi, folio != null && folio !== '' ? String(folio) : '')
+    .replace(/\{correo\}/gi, f?.correo_facturacion || 'del club')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// Encabezado fiscal del ticket (debajo del nombre del club).
+function EncabezadoFiscalTicket({ fiscal, nombreClub }) {
+  if (!fiscal) return null;
+  const nombreFiscal = fiscal.nombre_comercial && fiscal.nombre_comercial !== nombreClub ? fiscal.nombre_comercial : null;
+  const direccion = direccionFiscalTexto(fiscal);
+  if (!nombreFiscal && !fiscal.razon_social && !fiscal.rfc && !direccion) return null;
+  return (
+    <div className="mt-0.5 space-y-0.5 text-[10px] leading-snug text-slate-500">
+      {nombreFiscal && <p className="font-bold text-slate-600">{nombreFiscal}</p>}
+      {fiscal.razon_social && <p>{fiscal.razon_social}</p>}
+      {fiscal.rfc && <p>RFC: {fiscal.rfc}</p>}
+      {direccion && <p>{direccion}</p>}
+    </div>
+  );
+}
+
+// Pie del ticket: contacto + leyenda de facturación del club emisor.
+function PieFiscalTicket({ fiscal, folio }) {
+  if (!fiscal) return null;
+  const leyenda = leyendaFacturaTexto(fiscal, folio);
+  if (!fiscal.telefono && !fiscal.correo_facturacion && !leyenda) return null;
+  return (
+    <div className="space-y-1 border-t border-dashed border-slate-300 pt-3 text-center text-[10px] leading-snug text-slate-500">
+      {(fiscal.telefono || fiscal.correo_facturacion) && (
+        <p>
+          {fiscal.telefono ? `Tel. ${fiscal.telefono}` : ''}
+          {fiscal.telefono && fiscal.correo_facturacion ? ' · ' : ''}
+          {fiscal.correo_facturacion || ''}
+        </p>
+      )}
+      {leyenda && <p className="font-semibold text-slate-600">{leyenda}</p>}
+    </div>
+  );
+}
+
+const DATOS_FISCALES_VACIOS = limpiarDatosFiscales({});
+
+function validarDatosFiscales(v) {
+  const e = {};
+  const t = (c) => String(v[c] || '').trim();
+  if (t('rfc') && !/^[A-ZÑ&]{3,4}\d{6}[A-Z\d]{3}$/i.test(t('rfc')) && !/^[A-Z0-9&Ñ-]{3,20}$/i.test(t('rfc'))) e.rfc = 'Captura un RFC o identificación fiscal válida.';
+  if (t('codigo_postal') && !/^[0-9A-Za-z -]{4,10}$/.test(t('codigo_postal'))) e.codigo_postal = 'Código postal inválido.';
+  if (t('telefono') && (t('telefono').replace(/\D/g, '').length < 7 || t('telefono').length > 25)) e.telefono = 'Teléfono inválido.';
+  if (t('correo_facturacion') && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t('correo_facturacion'))) e.correo_facturacion = 'Correo inválido.';
+  if (t('leyenda_factura').length > 300) e.leyenda_factura = 'Máximo 300 caracteres.';
+  return e;
+}
+
+function SeccionDatosFiscalesClub({ permisos, operador, nombreClub, telefonoContactoClub }) {
+  const mostrarToast = useToast();
+  const puedeEditar = puedeEditarDatosFiscales(permisos, operador);
+  const [valores, setValores] = useState(DATOS_FISCALES_VACIOS);
+  const [original, setOriginal] = useState(DATOS_FISCALES_VACIOS);
+  const [errores, setErrores] = useState({});
+  const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [tablaExiste, setTablaExiste] = useState(true);
+  const [errorCarga, setErrorCarga] = useState('');
+
+  useEffect(() => {
+    let vivo = true;
+    cargarDatosFiscalesClub({ forzar: true }).then(({ datos, error, tablaExiste: existe }) => {
+      if (!vivo) return;
+      setTablaExiste(existe);
+      setErrorCarga(error && existe ? error.message || 'No se pudieron cargar los datos fiscales.' : '');
+      const base = datos || { ...DATOS_FISCALES_VACIOS, telefono: telefonoContactoClub || '' };
+      setValores(base);
+      setOriginal(datos || DATOS_FISCALES_VACIOS);
+      setCargando(false);
+    });
+    return () => {
+      vivo = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!puedeEditar) return null;
+
+  const set = (campo) => (e) => {
+    setValores((prev) => ({ ...prev, [campo]: e.target.value }));
+    setErrores((prev) => ({ ...prev, [campo]: undefined }));
+  };
+  const hayCambios = CAMPOS_DATOS_FISCALES.some((c) => String(valores[c] || '').trim() !== String(original[c] || '').trim());
+
+  async function guardar() {
+    const e = validarDatosFiscales(valores);
+    setErrores(e);
+    if (Object.keys(e).length) return;
+    setGuardando(true);
+    const { error, datos } = await guardarDatosFiscalesClub(valores);
+    setGuardando(false);
+    if (error) {
+      mostrarToast({
+        titulo: 'No se pudieron guardar los datos fiscales',
+        detalle: esErrorTablaInexistente(error) ? 'Corre migracion_v100_datos_fiscales_club.sql en Supabase.' : error.message,
+        tono: 'error',
+      });
+      return;
+    }
+    setValores(datos);
+    setOriginal(datos);
+    mostrarToast({ titulo: 'Datos fiscales guardados', detalle: 'Ya aparecen en los tickets de venta del club.' });
+  }
+
+  const campo = (clave, etiqueta, props = {}, clase = '') => (
+    <div className={clase}>
+      <Campo label={etiqueta}>
+        <input
+          value={valores[clave] || ''}
+          onChange={set(clave)}
+          disabled={guardando}
+          className={`${inputClase} ${errores[clave] ? 'border-rose-400' : ''}`}
+          {...props}
+        />
+      </Campo>
+      {errores[clave] && <p className="mt-1 text-[11px] font-semibold text-rose-500">{errores[clave]}</p>}
+    </div>
+  );
+
+  const vistaPrevia = { ...valores };
+  const folioEjemplo = '128';
+
+  return (
+    <div className="space-y-4">
+      {!tablaExiste && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>
+            Para guardar los datos fiscales corre <span className="font-mono">migracion_v100_datos_fiscales_club.sql</span> en Supabase.
+          </span>
+        </div>
+      )}
+      {errorCarga && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-500">{errorCarga}</p>}
+      <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+        <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
+          <div>
+            <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+              <Landmark size={16} className="text-orange-400" /> Datos fiscales y de contacto
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Se imprimen en los tickets del club (Smart POS, Historial de Tickets y ticket digital). Solo Owner y Manager pueden editarlos.
+            </p>
+          </div>
+          {cargando ? (
+            <p className="flex items-center gap-1.5 py-8 text-xs text-slate-500">
+              <Loader2 size={14} className="animate-spin" /> Cargando…
+            </p>
+          ) : (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {campo('razon_social', 'Razón social', { maxLength: 160, placeholder: 'Ej. Pádel Cumbres S.A. de C.V.' })}
+                {campo('nombre_comercial', 'Nombre comercial', { maxLength: 160, placeholder: nombreClub || 'Ej. Pádel Cumbres' })}
+                {campo('rfc', 'RFC / Identificación fiscal', { maxLength: 20, placeholder: 'Ej. PCU201010AB1', className: `${inputClase} uppercase ${errores.rfc ? 'border-rose-400' : ''}` })}
+              </div>
+              <p className="pt-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">Dirección fiscal</p>
+              <div className="grid gap-3 sm:grid-cols-6">
+                {campo('calle', 'Calle', { maxLength: 160, placeholder: 'Ej. Av. Constitución' }, 'sm:col-span-4')}
+                {campo('numero', 'Número', { maxLength: 30, placeholder: 'Ej. 1200 Int. 3' }, 'sm:col-span-2')}
+                {campo('colonia', 'Colonia', { maxLength: 120 }, 'sm:col-span-3')}
+                {campo('codigo_postal', 'C.P.', { maxLength: 10, inputMode: 'numeric', placeholder: 'Ej. 64000' }, 'sm:col-span-3')}
+                {campo('ciudad', 'Ciudad', { maxLength: 120, placeholder: 'Ej. Monterrey' }, 'sm:col-span-3')}
+                {campo('estado', 'Estado', { maxLength: 80, placeholder: 'Ej. Nuevo León' }, 'sm:col-span-3')}
+              </div>
+              <p className="pt-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">Contacto y facturación</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {campo('telefono', 'Teléfono de contacto', { maxLength: 25, inputMode: 'tel', placeholder: 'Ej. 81 1234 5678' })}
+                {campo('correo_facturacion', 'Correo para solicitar factura', { maxLength: 160, type: 'email', placeholder: 'facturas@tuclub.mx' })}
+              </div>
+              <div>
+                <Campo
+                  label="Leyenda de facturación (opcional)"
+                  hint="Si la dejas vacía se usa la leyenda estándar. Puedes usar {folio} y {correo}, se reemplazan en cada ticket."
+                >
+                  <textarea
+                    value={valores.leyenda_factura || ''}
+                    onChange={set('leyenda_factura')}
+                    rows={2}
+                    maxLength={300}
+                    disabled={guardando}
+                    placeholder="Para solicitar tu factura, envía tus datos fiscales y tu folio {folio} al correo {correo}."
+                    className={`${inputClase} resize-y`}
+                  />
+                </Campo>
+                {errores.leyenda_factura && <p className="mt-1 text-[11px] font-semibold text-rose-500">{errores.leyenda_factura}</p>}
+              </div>
+              <div className="flex justify-end gap-2">
+                <BotonSecundario onClick={() => setValores(original)} disabled={!hayCambios || guardando}>
+                  Descartar
+                </BotonSecundario>
+                <BotonPrimario onClick={guardar} disabled={!hayCambios || guardando || !tablaExiste}>
+                  {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />} Guardar datos fiscales
+                </BotonPrimario>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="h-fit space-y-2">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Vista previa del ticket</p>
+          <div className="space-y-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 font-mono text-xs text-slate-800">
+            <div className="text-center">
+              <p className="text-sm font-black uppercase tracking-wide text-slate-900">{nombreClub || 'ClubOS'}</p>
+              <EncabezadoFiscalTicket fiscal={vistaPrevia} nombreClub={nombreClub} />
+              <p className="mt-1 text-slate-500">Folio: {folioEjemplo}</p>
+            </div>
+            <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-3 text-sm font-black text-slate-900">
+              <span>TOTAL</span>
+              <span>{formatoMoneda(250)}</span>
+            </div>
+            <PieFiscalTicket fiscal={vistaPrevia} folio={folioEjemplo} />
+            <p className="border-t border-dashed border-slate-300 pt-3 text-center text-[10px] text-slate-400">¡Gracias por tu visita!</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Modal SOLO de agenda: nada de estado/método de pago aquí — la reserva
 // siempre nace `estado_pago: 'pendiente'` y se cobra del otro lado, en Smart
 // POS (ver `onCreada`, que además de guardar en Supabase entrega la reserva
@@ -11842,6 +12177,8 @@ function ModalTicket({ venta, onClose, nombreClub }) {
     venta?.ventaId,
     ...individualesHook.map((t) => t?.ventaId),
   ]);
+  // Datos fiscales del club emisor (solo el club activo, migracion_v100).
+  const datosFiscales = useDatosFiscalesClub();
   if (!venta) return null;
 
   const individuales = venta.ticketsIndividuales || [];
@@ -11949,7 +12286,8 @@ function ModalTicket({ venta, onClose, nombreClub }) {
               mayúsculas a mano, para que se vea igual sin importar cómo el
               club haya escrito su nombre. */}
           <p className="text-sm font-black uppercase tracking-wide text-slate-900">{nombreClub || 'ClubOS'}</p>
-          <p className="text-slate-500">
+          <EncabezadoFiscalTicket fiscal={datosFiscales} nombreClub={nombreClub} />
+          <p className="mt-1 text-slate-500">
             {formatoFechaLarga(venta.fecha)} · {venta.horaEmision}
           </p>
           <p className="text-slate-500">Folio: {folioVisible}</p>
@@ -12013,6 +12351,8 @@ function ModalTicket({ venta, onClose, nombreClub }) {
             <span className="font-bold">{formatoMoneda(vista.cambio)}</span>
           </div>
         )}
+
+        <PieFiscalTicket fiscal={datosFiscales} folio={folioVisible} />
 
         <p className="border-t border-dashed border-slate-300 pt-3 text-center text-[10px] text-slate-400">¡Gracias por tu visita!</p>
       </div>
@@ -22044,6 +22384,9 @@ function ModuloContabilidadCompras({
   // Historial de Tickets: exclusivo Owner/Manager (el Contador, que también
   // entra a este módulo, no lo ve).
   const verHistorialTickets = puedeVerHistorialTickets(permisos, operador);
+  // Datos Fiscales del ticket (migracion_v100): mismo acceso Owner/Manager —
+  // el Manager no entra a "Configuración del Club", así que también vive aquí.
+  const verDatosFiscales = puedeEditarDatosFiscales(permisos, operador);
   // Nombre real del club activo para los encabezados de los reportes
   // exportados (antes decían "Smash Pádel Club" fijo — roto para cualquier
   // OTRO club que use ClubOS). Fallback a "ClubOS" (no a "Smash Pádel Club")
@@ -24172,6 +24515,16 @@ function ModuloContabilidadCompras({
             <IconoHistorialTickets size={14} /> Historial de Tickets
           </button>
         )}
+        {verDatosFiscales && (
+          <button
+            onClick={() => setVista('fiscal')}
+            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition lg:flex-none ${
+              vista === 'fiscal' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Landmark size={14} /> Datos Fiscales
+          </button>
+        )}
       </div>
 
       <TransicionPestana activeKey={vista}>
@@ -25315,6 +25668,14 @@ function ModuloContabilidadCompras({
         </div>
       )}
       {vista === 'tickets' && verHistorialTickets && <HistorialTicketsVentas nombreClub={nombreClubExport} />}
+      {vista === 'fiscal' && verDatosFiscales && (
+        <SeccionDatosFiscalesClub
+          permisos={permisos}
+          operador={operador}
+          nombreClub={configClub?.nombre}
+          telefonoContactoClub={configClub?.telefonoContacto}
+        />
+      )}
       </TransicionPestana>
     </div>
   );
@@ -43713,6 +44074,9 @@ const TABS_CONFIGURACION_CLUB = [
   // aunque de alguna forma llegara a montar este módulo (mismo candado de
   // defensa en profundidad que el resto del archivo).
   { value: 'cuenta', label: 'Mi Cuenta & Suscripción', icon: CreditCard },
+  // Datos Fiscales del ticket (migracion_v100) — Owner y Manager; fuera del
+  // Onboarding (ver `tabsVisibles`).
+  { value: 'fiscal', label: 'Datos Fiscales', icon: Landmark },
 ];
 
 // Centralización de Ajustes (refactor): `ModuloConfiguracionClub` pasa a ser
@@ -43814,9 +44178,11 @@ function ModuloConfiguracionClub({
   // dos lugares. "Wallet" es al revés: solo se oculta DURANTE el Onboarding
   // (fuera de alcance del wizard, ver comentario original de `modoOnboarding`).
   const tabsVisibles = (modoOnboarding
-    ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet' && t.value !== 'cuenta')
+    ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet' && t.value !== 'cuenta' && t.value !== 'fiscal')
     : TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'staff')
-  ).filter((t) => t.value !== 'cuenta' || esOwner);
+  )
+    .filter((t) => t.value !== 'cuenta' || esOwner)
+    .filter((t) => t.value !== 'fiscal' || puedeEditarDatosFiscales(permisos, operador));
   const tabActual = tabsVisibles.find((t) => t.value === tab) || tabsVisibles[0];
   const indiceTabActual = tabsVisibles.findIndex((t) => t.value === tabActual.value);
   const esUltimoModuloOnboarding = modoOnboarding && indiceTabActual === tabsVisibles.length - 1;
@@ -43965,6 +44331,13 @@ function ModuloConfiguracionClub({
         />
       ) : tab === 'wallet' ? (
         <SeccionWallet jugadoresPorId={jugadoresPorId} empleados={empleados} operador={operador} permisos={permisos} />
+      ) : tab === 'fiscal' && !modoOnboarding && puedeEditarDatosFiscales(permisos, operador) ? (
+        <SeccionDatosFiscalesClub
+          permisos={permisos}
+          operador={operador}
+          nombreClub={nombreClub || configClub?.nombre}
+          telefonoContactoClub={configClub?.telefonoContacto}
+        />
       ) : tab === 'cuenta' && esOwner ? (
         <SeccionCuentaSuscripcion
           configClub={configClub}
@@ -62418,7 +62791,8 @@ function VistaTicketDigital({ ventaId }) {
           <div className="space-y-3 rounded-2xl border border-dashed border-slate-300 bg-white p-5 font-mono text-xs text-slate-800 shadow-sm">
             <div className="text-center">
               <p className="text-sm font-black uppercase tracking-wide text-slate-900">{ticket.club_nombre || 'QLUBOS'}</p>
-              <p className="text-slate-500">
+              <EncabezadoFiscalTicket fiscal={ticket.fiscal || null} nombreClub={ticket.club_nombre} />
+              <p className="mt-1 text-slate-500">
                 {fechaValida
                   ? `${fecha.toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' })} · ${fecha.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}`
                   : ''}
@@ -62463,6 +62837,7 @@ function VistaTicketDigital({ ventaId }) {
                 </span>
               </div>
             )}
+            <PieFiscalTicket fiscal={ticket.fiscal || null} folio={ticket.folio} />
             <p className="border-t border-dashed border-slate-300 pt-3 text-center text-[10px] text-slate-400">¡Gracias por tu visita!</p>
           </div>
         )}
