@@ -28003,6 +28003,63 @@ async function conAuthDelPortal(construirLlamada) {
   }
 }
 
+// PERFIL DEL JUGADOR TRAS AUTENTICARSE (fix "no encontramos tu perfil
+// todavía", migracion_v104): la fila de `jugadores` que crea el trigger de
+// v78 solo la puede LEER su dueño (RLS `auth.uid() = auth_user_id`), así que
+// buscarla con el cliente anónimo compartido regresaba vacío aunque sí
+// existiera. Esta función corre con `cliente` = el cliente del Portal CON la
+// sesión recién creada (dentro de `conAuthDelPortal`, antes del signOut):
+//   1) RPC `fn_portal_asegurar_perfil_jugador` — devuelve el perfil y, si aún
+//      no existe, lo crea (claim por teléfono igual que el trigger).
+//   2) Sin esa función (v104 sin correr): reintenta la lectura con espera
+//      breve (el trigger corre en la misma transacción del alta, pero se da
+//      margen a la propagación), y si sigue sin aparecer lo inserta directo.
+//   3) Último respaldo: lectura con el cliente compartido.
+// Devuelve `{ perfil, error }`; nunca lanza.
+const ESPERAS_PERFIL_JUGADOR_MS = [0, 300, 700, 1500];
+const esperarMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function asegurarPerfilJugadorPortal(cliente, { usuarioId, clubId, nombre, telefono, correo }) {
+  const columnas = 'id, nombre, telefono';
+  try {
+    const { data, error } = await cliente.rpc('fn_portal_asegurar_perfil_jugador', {
+      p_club_id: Number(clubId),
+      p_nombre: nombre || null,
+      p_telefono: telefono || null,
+    });
+    if (!error && data?.id != null) return { perfil: { id: data.id, nombre: data.nombre, telefono: data.telefono }, error: null };
+    // Conflicto real (teléfono de otra cuenta): no tiene caso reintentar.
+    if (error && esErrorTelefonoYaVinculadoPorTrigger(error)) return { perfil: null, error };
+    if (error) console.warn('[Portal] fn_portal_asegurar_perfil_jugador no disponible o falló; se usa el respaldo.', error);
+  } catch (err) {
+    console.warn('[Portal] fn_portal_asegurar_perfil_jugador lanzó un error; se usa el respaldo.', err);
+  }
+  if (usuarioId) {
+    for (const espera of ESPERAS_PERFIL_JUGADOR_MS) {
+      if (espera) await esperarMs(espera);
+      const { data } = await cliente.from('jugadores').select(columnas).eq('club_id', clubId).eq('auth_user_id', usuarioId).maybeSingle();
+      if (data) return { perfil: data, error: null };
+    }
+    try {
+      const { data, error } = await cliente
+        .from('jugadores')
+        .insert({ club_id: clubId, nombre: nombre || null, telefono: telefono || null, correo: correo || null, auth_user_id: usuarioId, saldo_a_favor: 0 })
+        .select(columnas)
+        .single();
+      if (!error && data) return { perfil: data, error: null };
+    } catch (_e) {
+      /* RLS sin INSERT para el jugador: se sigue con el respaldo */
+    }
+    const { data: compartido } = await supabase.from('jugadores').select(columnas).eq('club_id', clubId).eq('auth_user_id', usuarioId).maybeSingle();
+    if (compartido) return { perfil: compartido, error: null };
+  }
+  if (correo) {
+    const { data: porCorreo } = await supabase.from('jugadores').select(columnas).eq('club_id', clubId).eq('correo', correo).maybeSingle();
+    if (porCorreo) return { perfil: porCorreo, error: null };
+  }
+  return { perfil: null, error: null };
+}
+
 // Como `conAuthDelPortal`, pero para operaciones que necesitan una sesión
 // YA AUTENTICADA de por medio (ej. "Cambiar Contraseña": `auth.updateUser`
 // exige sesión activa, y el Portal nunca deja una sesión persistente
@@ -50809,8 +50866,13 @@ function PortalPublicoJugadores({ clubSlug }) {
       return false;
     }
     try {
-      const { data, error } = await conAuthDelPortal((cliente) =>
-        cliente.auth.signUp({
+      // El perfil se asegura DENTRO de la misma sesión que acaba de crear
+      // `signUp()` (antes de que `conAuthDelPortal` cierre la sesión): con
+      // esa sesión el jugador sí puede leer —o crear— su fila de `jugadores`.
+      let perfilAsegurado = null;
+      let errorPerfil = null;
+      const { data, error } = await conAuthDelPortal(async (cliente) => {
+        const r = await cliente.auth.signUp({
           email: correoLimpio,
           password,
           options: {
@@ -50828,8 +50890,20 @@ function PortalPublicoJugadores({ clubSlug }) {
               club_id: club.id,
             },
           },
-        })
-      );
+        });
+        if (!r.error && r.data?.session && r.data?.user) {
+          const asegurado = await asegurarPerfilJugadorPortal(cliente, {
+            usuarioId: r.data.user.id,
+            clubId: club.id,
+            nombre: nombreLimpio,
+            telefono: telefonoLimpio,
+            correo: correoLimpio,
+          });
+          perfilAsegurado = asegurado.perfil;
+          errorPerfil = asegurado.error;
+        }
+        return r;
+      });
       if (error) throw error;
       const usuario = data?.user;
       if (!usuario) throw new Error('No se pudo crear tu cuenta.');
@@ -50852,17 +50926,20 @@ function PortalPublicoJugadores({ clubSlug }) {
       }
 
       // Con `data.session` (proyecto con "Confirm Email" DESACTIVADO): el
-      // trigger ya insertó/vinculó la fila — se busca por `auth_user_id`
-      // (recién escrito por el trigger) para traer el `id`/`nombre` reales
-      // y continuar con sesión activa de inmediato, sin pedirle nada más
-      // al jugador.
-      const { data: filaJugador, error: errLookup } = await conClubId(
-        supabase.from('jugadores').select('id, nombre, telefono')
-      )
-        .eq('auth_user_id', usuario.id)
-        .maybeSingle();
-      if (errLookup || !filaJugador) {
-        throw new Error('Tu cuenta se creó, pero no encontramos tu perfil todavía — intenta iniciar sesión en un momento.');
+      // perfil ya se aseguró arriba con la sesión del propio jugador (lo
+      // creó el trigger, o `fn_portal_asegurar_perfil_jugador` / el insert
+      // de respaldo si aún no existía) — se continúa con sesión activa.
+      if (errorPerfil) throw errorPerfil;
+      const filaJugador = perfilAsegurado;
+      if (!filaJugador) {
+        // La cuenta SÍ quedó creada: no se muestra como error. Se lleva al
+        // jugador a "Iniciar Sesión" con su correo ya capturado.
+        mostrarToast({
+          titulo: '¡Tu cuenta quedó creada!',
+          detalle: 'Inicia sesión con tu correo y contraseña para continuar.',
+          tono: 'ok',
+        });
+        return 'iniciar_sesion';
       }
 
       const nuevoJugador = { id: filaJugador.id, nombre: filaJugador.nombre || nombreLimpio, telefono: filaJugador.telefono || telefonoLimpio };
@@ -50898,13 +50975,46 @@ function PortalPublicoJugadores({ clubSlug }) {
       return false;
     }
     try {
-      const { data, error } = await conAuthDelPortal((cliente) => cliente.auth.signInWithPassword({ email: correoLimpio, password }));
+      // Perfil leído con la sesión del propio jugador (RLS de v78). Si la
+      // cuenta se registró en ESTE club pero su perfil nunca llegó a
+      // crearse, se crea ahora (metadatos del alta) en vez de fallar.
+      let fila = null;
+      let errorPerfil = null;
+      const { data, error } = await conAuthDelPortal(async (cliente) => {
+        const r = await cliente.auth.signInWithPassword({ email: correoLimpio, password });
+        if (!r.error && r.data?.user && club?.id) {
+          const meta = r.data.user.user_metadata || {};
+          const registradoAqui = String(meta.club_id ?? '') === String(club.id);
+          const asegurado = registradoAqui
+            ? await asegurarPerfilJugadorPortal(cliente, {
+                usuarioId: r.data.user.id,
+                clubId: club.id,
+                nombre: meta.nombre,
+                telefono: meta.telefono,
+                correo: correoLimpio,
+              })
+            : await (async () => {
+                const { data: propio } = await cliente
+                  .from('jugadores')
+                  .select('id, nombre, telefono')
+                  .eq('club_id', club.id)
+                  .eq('auth_user_id', r.data.user.id)
+                  .maybeSingle();
+                return { perfil: propio || null, error: null };
+              })();
+          fila = asegurado.perfil;
+          errorPerfil = asegurado.error;
+        }
+        return r;
+      });
       if (error) throw error;
       const usuario = data?.user;
       if (!usuario) throw new Error('No se pudo iniciar sesión.');
-
-      const { data: porAuthId } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono')).eq('auth_user_id', usuario.id).maybeSingle();
-      let fila = porAuthId || null;
+      if (errorPerfil) throw errorPerfil;
+      if (!fila) {
+        const { data: porAuthId } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono')).eq('auth_user_id', usuario.id).maybeSingle();
+        fila = porAuthId || null;
+      }
       if (!fila) {
         const { data: porCorreo } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono')).eq('correo', correoLimpio).maybeSingle();
         fila = porCorreo || null;
@@ -50952,7 +51062,9 @@ function PortalPublicoJugadores({ clubSlug }) {
   // ya muestra su propio mensaje de error inline (ver su `enviarLogin`/
   // `enviarCrearCuenta`) para ese caso.
   function manejarPostAutenticacionPortal(ok) {
-    if (!ok) return;
+    // 'iniciar_sesion': la cuenta se creó, pero el perfil no se pudo leer
+    // todavía — el modal se queda abierto en "Iniciar Sesión".
+    if (!ok || ok === 'iniciar_sesion') return;
     // Registro Exitoso con Confirmación de Correo Pendiente (Solución
     // Definitiva de Registro — Flujo Dual "Confirm Email" ON/OFF):
     // `crearCuentaJugador` regresa el string `'pendiente'` (en vez de
@@ -54207,6 +54319,7 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
   const [tab, setTab] = useState('login'); // 'login' | 'crear'
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
+  const [aviso, setAviso] = useState('');
 
   // Pestaña "Iniciar Sesión"
   const [correoLogin, setCorreoLogin] = useState('');
@@ -54222,6 +54335,7 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
   function cambiarTab(nuevaTab) {
     setTab(nuevaTab);
     setError('');
+    setAviso('');
   }
 
   async function enviarLogin() {
@@ -54243,6 +54357,15 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
     setError('');
     const ok = await onCrearCuenta({ nombre, telefono, correo: correoCrear, password: passwordCrear });
     setEnviando(false);
+    if (ok === 'iniciar_sesion') {
+      // La cuenta SÍ se creó: se pasa a "Iniciar Sesión" con el correo listo.
+      setCorreoLogin(correoCrear.trim());
+      setPasswordLogin(passwordCrear);
+      setTab('login');
+      setError('');
+      setAviso('¡Tu cuenta quedó creada! Presiona "Iniciar Sesión" para entrar.');
+      return;
+    }
     if (!ok) setError('No pudimos crear tu cuenta. Revisa tus datos e intenta de nuevo.');
   }
 
@@ -54350,6 +54473,12 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
           <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-900">
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
             <span>{error}</span>
+          </div>
+        )}
+        {aviso && !error && (
+          <div className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-900">
+            <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+            <span>{aviso}</span>
           </div>
         )}
         <div className="flex justify-end gap-2 pt-2">
