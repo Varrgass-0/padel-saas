@@ -59,7 +59,9 @@ const ETIQUETA_ETAPA = Object.fromEntries(ETAPAS_LEAD.map((e) => [e.id, e.label]
 // Orden del embudo (Perdido queda fuera: se reporta aparte).
 const ETAPAS_EMBUDO = ['nuevo', 'contactado', 'demo_agendada', 'en_prueba', 'convertido'];
 const INDICE_EMBUDO = Object.fromEntries(ETAPAS_EMBUDO.map((id, i) => [id, i]));
-const ESTADOS_CONVERTIDOS = ['en_prueba', 'convertido'];
+// "Convertido" = cliente final. Los leads En Prueba Gratis NO cuentan como
+// convertidos (ni en la gráfica, ni en el KPI, ni en el embudo).
+const esConvertido = (lead) => String(lead?.estado ?? '').trim().toLowerCase() === 'convertido';
 
 const TAMANOS = [
   { id: 'todos', label: 'Todos' },
@@ -117,10 +119,16 @@ function msDe(iso) {
   return Number.isFinite(t) ? t : null;
 }
 
-// Fecha en que el lead llegó a prueba/cliente: la del último cambio de estatus
-// (crm_leads_seguimiento.actualizado_en), con respaldo a su alta.
+// Fecha de alta del lead (fn_admin_leads la expone como created_at; se
+// acepta creado_en por compatibilidad).
+function msAlta(lead) {
+  return msDe(lead.created_at) ?? msDe(lead.creado_en);
+}
+
+// Fecha en que el lead pasó a su estatus actual: la del último cambio de
+// estatus (crm_leads_seguimiento.actualizado_en), con respaldo a su alta.
 function msConversion(lead) {
-  return msDe(lead.actualizado_en) ?? msDe(lead.created_at);
+  return msDe(lead.actualizado_en) ?? msAlta(lead);
 }
 
 function formatoPorcentaje(v, decimales = 1) {
@@ -1003,9 +1011,11 @@ function construirCubetas(leads, dias, ahora) {
   });
   const indice = (ms) => (ms == null || ms < inicio || ms >= fin ? -1 : Math.floor((ms - inicio) / (tamanoCubeta * DIA_MS)));
   leads.forEach((l) => {
-    const iN = indice(msDe(l.created_at));
+    // Naranja: solo por fecha de alta, sin importar el estatus.
+    const iN = indice(msAlta(l));
     if (iN >= 0) cubetas[iN].nuevos += 1;
-    if (ESTADOS_CONVERTIDOS.includes(l.estado)) {
+    // Verde: solo leads en estatus Convertido (cliente final).
+    if (esConvertido(l)) {
       const iC = indice(msConversion(l));
       if (iC >= 0) cubetas[iC].convertidos += 1;
     }
@@ -1092,16 +1102,16 @@ export default function AdminLeads({ onToast }) {
     const enVentana = (ms, a, b) => ms != null && ms >= a && ms < b;
 
     const total = filtrados.length;
-    const totalAntes = filtrados.filter((l) => (msDe(l.created_at) ?? 0) < iniActual).length;
-    const nuevos = filtrados.filter((l) => enVentana(msDe(l.created_at), iniActual, ahora + 1));
-    const nuevosPrev = filtrados.filter((l) => enVentana(msDe(l.created_at), iniPrevio, iniActual));
+    const totalAntes = filtrados.filter((l) => (msAlta(l) ?? 0) < iniActual).length;
+    const nuevos = filtrados.filter((l) => enVentana(msAlta(l), iniActual, ahora + 1));
+    const nuevosPrev = filtrados.filter((l) => enVentana(msAlta(l), iniPrevio, iniActual));
     const enPrueba = filtrados.filter((l) => l.estado === 'en_prueba').length;
     const entradasPrueba = filtrados.filter((l) => l.estado === 'en_prueba' && enVentana(msConversion(l), iniActual, ahora + 1)).length;
     const entradasPruebaPrev = filtrados.filter((l) => l.estado === 'en_prueba' && enVentana(msConversion(l), iniPrevio, iniActual)).length;
-    const convertidos = filtrados.filter((l) => ESTADOS_CONVERTIDOS.includes(l.estado)).length;
+    const convertidos = filtrados.filter(esConvertido).length;
     const conversion = total ? (convertidos / total) * 100 : 0;
     // Conversión por cohorte: de los leads que llegaron en cada ventana, ¿qué % ya avanzó?
-    const tasa = (lista) => (lista.length ? (lista.filter((l) => ESTADOS_CONVERTIDOS.includes(l.estado)).length / lista.length) * 100 : null);
+    const tasa = (lista) => (lista.length ? (lista.filter(esConvertido).length / lista.length) * 100 : null);
     const cohorteActual = tasa(nuevos);
     const cohortePrev = tasa(nuevosPrev);
 
@@ -1202,7 +1212,7 @@ export default function AdminLeads({ onToast }) {
               delta={metricas.deltaPrueba}
               ayuda={`${metricas.entradasPrueba} entraron en los últimos ${periodo} días`}
             />
-            <TarjetaKPI etiqueta="Conversión" valor={formatoPorcentaje(metricas.conversion)} delta={metricas.deltaConversion} ayuda="En prueba + convertidos · variación por cohorte" />
+            <TarjetaKPI etiqueta="Conversión" valor={formatoPorcentaje(metricas.conversion)} delta={metricas.deltaConversion} ayuda="Solo estatus Convertido · por cohorte" />
           </div>
 
           {/* Gráficas */}
@@ -1210,7 +1220,7 @@ export default function AdminLeads({ onToast }) {
             <div className="min-w-0 lg:col-span-3">
               <TarjetaGrafica
                 titulo="Tendencia de leads"
-                descripcion={`Nuevos ingresados vs convertidos (a prueba o cliente) por ${periodo > 31 ? 'semana' : 'día'}`}
+                descripcion={`Leads nuevos (por fecha de alta) vs convertidos a cliente por ${periodo > 31 ? 'semana' : 'día'}`}
                 vistaTabla={tablaTendencia}
                 onAlternarTabla={() => setTablaTendencia((v) => !v)}
                 leyenda={
