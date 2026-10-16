@@ -29009,11 +29009,21 @@ function SelectorJugadorRegistrado({
               ) : (
                 <Users size={12} className="shrink-0 text-orange-400" />
               )}
-              <span className="min-w-0 flex-1 truncate">{j.nombre}</span>
-              {j._tipoSelector === 'operador' && (
+              {/* "Nombre · Teléfono · Categoría" — identificación rápida
+                  (Ficha Deportiva: `jugadores.categoria`). */}
+              <span className="min-w-0 flex-1 truncate">
+                <span className="font-semibold">{j.nombre}</span>
+                {j.telefono && <span className="text-slate-500"> · {j.telefono}</span>}
+              </span>
+              {j._tipoSelector === 'operador' ? (
                 <span className="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[9px] font-bold text-sky-700">Operador</span>
+              ) : j.categoria ? (
+                <span className="shrink-0 rounded-full bg-violet-400/10 px-1.5 py-0.5 text-[10px] font-bold text-violet-600 ring-1 ring-violet-400/30">
+                  {j.categoria}
+                </span>
+              ) : (
+                <span className="shrink-0 text-[10px] text-slate-400">Sin categoría</span>
               )}
-              {j.telefono && <span className="shrink-0 text-[10px] text-slate-500">{j.telefono}</span>}
             </button>
           ))}
         </div>
@@ -30626,6 +30636,8 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
             onSeleccionarJugador={(j) => {
               setJugadorSeleccionadoId(j?.id || null);
               if (j) setTelefono(j.telefono || '');
+              // Ficha Deportiva: su categoría guardada precarga el nivel.
+              if (j?.categoria && NIVELES_FUERZA.includes(j.categoria)) setNivelJugador(j.categoria);
             }}
             placeholder="Nombre completo"
           />
@@ -31844,6 +31856,8 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
             onSeleccionarJugador={(j) => {
               setJugadorSeleccionadoId(j?.id || null);
               if (j) setTelefono(j.telefono || '');
+              // Ficha Deportiva: su categoría guardada precarga el nivel.
+              if (j?.categoria && NIVELES_FUERZA.includes(j.categoria)) setNivel(j.categoria);
             }}
             placeholder="Nombre completo"
           />
@@ -35987,7 +36001,7 @@ function ModalMiPerfilDeportivo({ jugador, evaluaciones, loadingEvaluaciones, on
 // alguien sin ese permiso abre el mismo modal en modo 100% solo-lectura —
 // ve la gráfica (de la última evaluación guardada) y el historial, pero
 // nunca el control deslizante ni el botón de guardar.
-function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuardarEvaluacion, onClose }) {
+function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuardarEvaluacion, onClose, fichaJugador = null }) {
   const toast = useToast();
   const historial = useMemo(
     () =>
@@ -36005,7 +36019,12 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
     });
     return base;
   });
-  const [nivelAsignado, setNivelAsignado] = useState(ultima?.nivel_asignado || NIVELES_ACADEMIA[0]);
+  const [nivelAsignado, setNivelAsignado] = useState(ultima?.nivel_asignado || fichaJugador?.nivel_juego || NIVELES_ACADEMIA[0]);
+  // Categoría (Torneos & Retas) — el coach también la asigna aquí; se guarda
+  // en `jugadores.categoria` junto con el Nivel Oficial (`nivel_juego`) al
+  // "Guardar Evaluación" (ver `guardarEvaluacionJugador` + trigger de v105).
+  const categoriaActual = fichaJugador?.categoria || ultima?.categoria_asignada || '';
+  const [categoriaAsignada, setCategoriaAsignada] = useState(NIVELES_FUERZA.includes(categoriaActual) ? categoriaActual : '');
   const [comentarios, setComentarios] = useState('');
   const [guardando, setGuardando] = useState(false);
 
@@ -36019,11 +36038,15 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
       jugadorNombre: alumno.nombre,
       ejes: valoresEjes,
       nivelAsignado,
+      categoriaAsignada: categoriaAsignada || null,
       comentarios: comentarios.trim(),
     });
     setGuardando(false);
     if (resultado?.ok) {
-      toast({ titulo: 'Evaluación guardada', detalle: `${alumno.nombre} · Nivel ${nivelAsignado}` });
+      toast({
+        titulo: 'Evaluación guardada',
+        detalle: `${alumno.nombre} · Nivel ${nivelAsignado}${categoriaAsignada ? ` · ${categoriaAsignada}` : ''}`,
+      });
       setComentarios('');
     } else {
       toast({ titulo: 'No se pudo guardar la evaluación', detalle: resultado?.error?.message || 'Revisa la consola para el detalle.', tono: 'error' });
@@ -36039,6 +36062,18 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
       ancho="max-w-lg"
     >
       <div className="space-y-5">
+        {/* Ficha actual del jugador: los dos atributos independientes. */}
+        <div className="grid grid-cols-2 gap-2">
+          <div className="rounded-xl border border-teal-400/20 bg-teal-400/5 px-3 py-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Nivel · Academia</p>
+            <p className="text-sm font-black text-teal-600">{fichaJugador?.nivel_juego || ultima?.nivel_asignado || 'Sin nivel'}</p>
+          </div>
+          <div className="rounded-xl border border-violet-400/20 bg-violet-400/5 px-3 py-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Categoría · Torneos & Retas</p>
+            <p className="text-sm font-black text-violet-600">{categoriaActual || 'Sin categoría'}</p>
+          </div>
+        </div>
+
         <div>
           <p className="mb-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
             Skill Radar Chart {ultima && !puedeEvaluar ? '(última evaluación)' : ''}
@@ -36091,6 +36126,29 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
               </div>
             </Campo>
 
+            <Campo label="Categoría (Torneos & Retas)" hint="Se guarda en su ficha junto con el Nivel Oficial — la ven el CRM y los inscriptores de Retas/Torneos.">
+              <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-7">
+                {NIVELES_FUERZA.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setCategoriaAsignada((actual) => (actual === n ? '' : n))}
+                    aria-pressed={categoriaAsignada === n}
+                    className={`rounded-lg border px-1.5 py-2 text-[11px] font-bold transition ${
+                      categoriaAsignada === n
+                        ? 'border-violet-400 bg-violet-400/10 text-violet-600'
+                        : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {n.replace(' Fuerza', '')}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">
+                {categoriaAsignada ? `Seleccionada: ${categoriaAsignada}` : 'Sin categoría (toca una para asignarla)'}
+              </p>
+            </Campo>
+
             <Campo label="Observaciones del Coach (opcional)">
               <textarea
                 value={comentarios}
@@ -36135,6 +36193,11 @@ function ModalExpedienteDeportivo({ alumno, evaluaciones, puedeEvaluar, onGuarda
                         }`}
                       >
                         {ev.nivel_asignado}
+                      </span>
+                    )}
+                    {ev.categoria_asignada && (
+                      <span className="ml-1 mt-1 inline-flex items-center rounded-full bg-violet-400/10 px-2 py-0.5 text-[10px] font-bold text-violet-600">
+                        {ev.categoria_asignada}
                       </span>
                     )}
                     {ev.comentarios && <p className="mt-1.5 text-xs text-slate-500">{ev.comentarios}</p>}
@@ -40572,6 +40635,12 @@ function ModuloAcademiaClinicas({
                       <div>
                         <p className="text-sm font-bold text-slate-900">{alumno.nombre}</p>
                         {alumno.claseNombre && <p className="text-[11px] text-slate-500">{alumno.claseNombre}</p>}
+                        {/* Categoría de Torneos & Retas (Ficha Deportiva). */}
+                        {jugadoresPorId?.[alumno.jugadorId]?.categoria && (
+                          <span className="mt-1 inline-flex rounded-full bg-violet-400/10 px-2 py-0.5 text-[10px] font-bold text-violet-600">
+                            {jugadoresPorId[alumno.jugadorId].categoria}
+                          </span>
+                        )}
                       </div>
                       {nivelActual ? (
                         <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-black ${meta.bg} ${meta.color}`}>
@@ -40676,6 +40745,7 @@ function ModuloAcademiaClinicas({
       {alumnoExpedienteSeleccionado && (
         <ModalExpedienteDeportivo
           alumno={alumnoExpedienteSeleccionado}
+          fichaJugador={jugadoresPorId?.[alumnoExpedienteSeleccionado.jugadorId] || null}
           evaluaciones={evaluacionesJugador}
           puedeEvaluar={!!permisos?.puedeEvaluarJugadores}
           onGuardarEvaluacion={onGuardarEvaluacionJugador}
@@ -40712,6 +40782,9 @@ function DirectorioJugadoresCRM({
   jugadoresPorId,
   onActualizarTelefonoJugador,
   onActualizarFechaNacimientoJugador,
+  // Ficha Deportiva editable desde la Vista 360°: Categoría (Torneos/Retas)
+  // y Nivel (Academia), independientes — ver `actualizarFichaDeportivaJugador`.
+  onActualizarFichaDeportivaJugador,
   onRefrescarDirectorio,
   retas,
   inscripciones,
@@ -41617,6 +41690,10 @@ function DirectorioJugadoresCRM({
           nivelJuego: nivelJuegoJ,
           nivelJuegoEsDeAcademia: nivelJuegoEsDeAcademiaJ,
           categoria: categoriaJ || categoriaRespaldoJ,
+          // Valores GUARDADOS en `jugadores` (sin respaldo derivado) — los
+          // que edita el bloque "Ficha Deportiva" de la Vista 360°.
+          categoriaGuardada: categoriaJ,
+          nivelJuegoGuardado: j.nivel_juego || null,
           saldoAFavor: Number(j.saldo_a_favor) || 0,
           gastoCanchas,
           gastoBar,
@@ -41989,6 +42066,7 @@ function DirectorioJugadoresCRM({
           onClose={() => setJugadorSeleccionadoId(null)}
           onActualizarTelefono={onActualizarTelefonoJugador}
           onActualizarFechaNacimiento={onActualizarFechaNacimientoJugador}
+          onActualizarFichaDeportiva={onActualizarFichaDeportivaJugador}
           permisos={permisos}
           nombreClub={configClub?.nombre}
           productos={productos}
@@ -42939,12 +43017,150 @@ function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPo
   );
 }
 
+// Ficha Deportiva en la Vista 360° del CRM — los DOS atributos del jugador,
+// independientes y editables por el club cuando asciende:
+//   • Categoría (Torneos & Retas) → `jugadores.categoria` (NIVELES_FUERZA).
+//   • Nivel (Academia)           → `jugadores.nivel_juego` (NIVELES_ACADEMIA).
+// Si la categoría todavía no está guardada pero se puede deducir de su
+// última inscripción, se muestra con la nota "según última inscripción".
+function FichaDeportivaCRM({ perfil, onGuardar }) {
+  const mostrarToast = useToast();
+  const [editando, setEditando] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const inicial = useCallback(
+    () => ({
+      categoria: perfil.categoriaGuardada || (NIVELES_FUERZA.includes(perfil.categoria) ? perfil.categoria : ''),
+      nivel_juego: perfil.nivelJuegoGuardado || (NIVELES_ACADEMIA.includes(perfil.nivelJuego) ? perfil.nivelJuego : ''),
+    }),
+    [perfil.categoriaGuardada, perfil.categoria, perfil.nivelJuegoGuardado, perfil.nivelJuego]
+  );
+  const [draft, setDraft] = useState(inicial);
+  useEffect(() => {
+    if (!editando) setDraft(inicial());
+  }, [inicial, editando]);
+
+  const categoriaDerivada = !perfil.categoriaGuardada && perfil.categoria;
+  const nivelDerivado = !perfil.nivelJuegoGuardado && perfil.nivelJuego;
+
+  async function guardar() {
+    if (!onGuardar) return;
+    setGuardando(true);
+    const resultado = await onGuardar(perfil.id, { categoria: draft.categoria || null, nivel_juego: draft.nivel_juego || null });
+    setGuardando(false);
+    if (resultado && resultado.ok === false) {
+      mostrarToast({
+        titulo: 'No se pudo guardar la ficha deportiva',
+        detalle: detalleErrorSupabase(resultado.error) || '¿Ya corriste migracion_v105_ficha_deportiva_sincronizada.sql?',
+        tono: 'error',
+      });
+      return;
+    }
+    mostrarToast({
+      titulo: 'Ficha deportiva actualizada',
+      detalle: `${perfil.nombre} · ${draft.categoria || 'Sin categoría'} · ${draft.nivel_juego || 'Sin nivel'}`,
+    });
+    setEditando(false);
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Ficha Deportiva</p>
+        {!editando && onGuardar && (
+          <button
+            type="button"
+            onClick={() => setEditando(true)}
+            className="inline-flex items-center gap-1 text-xs font-bold text-orange-400 hover:text-orange-300"
+          >
+            <Pencil size={12} /> Editar
+          </button>
+        )}
+      </div>
+      {editando ? (
+        <div className="space-y-2.5">
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            <Campo label="Categoría (Torneos & Retas)">
+              <select
+                aria-label="Categoría (Torneos & Retas)"
+                value={draft.categoria}
+                onChange={(e) => setDraft((d) => ({ ...d, categoria: e.target.value }))}
+                className={`${inputClase} py-1.5`}
+              >
+                <option value="">Sin categoría</option>
+                {NIVELES_FUERZA.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </Campo>
+            <Campo label="Nivel (Academia)">
+              <select
+                aria-label="Nivel (Academia)"
+                value={draft.nivel_juego}
+                onChange={(e) => setDraft((d) => ({ ...d, nivel_juego: e.target.value }))}
+                className={`${inputClase} py-1.5`}
+              >
+                <option value="">Sin nivel</option>
+                {NIVELES_ACADEMIA.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </Campo>
+          </div>
+          <div className="flex justify-end gap-2">
+            <BotonSecundario
+              onClick={() => {
+                setEditando(false);
+                setDraft(inicial());
+              }}
+              className="px-3 py-1.5 text-xs"
+            >
+              Cancelar
+            </BotonSecundario>
+            <BotonPrimario onClick={guardar} disabled={guardando} className="px-3 py-1.5 text-xs">
+              {guardando ? <Loader2 size={13} className="animate-spin" /> : 'Guardar'}
+            </BotonPrimario>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="flex items-center gap-2 rounded-lg bg-white px-2.5 py-2 ring-1 ring-violet-400/20">
+            <Trophy size={14} className="shrink-0 text-violet-400" />
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold text-slate-500">Categoría · Torneos & Retas</p>
+              <p className={`truncate text-sm font-black ${perfil.categoria ? 'text-violet-500' : 'text-slate-400'}`}>
+                {perfil.categoria || 'Sin categoría'}
+              </p>
+              {categoriaDerivada && <p className="text-[10px] text-slate-400">Según su última inscripción</p>}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 rounded-lg bg-white px-2.5 py-2 ring-1 ring-teal-400/20">
+            <GraduationCap size={14} className="shrink-0 text-teal-400" />
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold text-slate-500">Nivel · Academia</p>
+              <p className={`truncate text-sm font-black ${perfil.nivelJuego ? 'text-teal-500' : 'text-slate-400'}`}>
+                {perfil.nivelJuego || 'Sin nivel'}
+                {perfil.nivelJuego && perfil.nivelJuegoEsDeAcademia ? ' (Evaluado por coach)' : ''}
+              </p>
+              {nivelDerivado && <p className="text-[10px] text-slate-400">Según su clase más reciente</p>}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModalPerfilJugadorCRM({
   perfil,
   diaHoy,
   onClose,
   onActualizarTelefono,
   onActualizarFechaNacimiento,
+  onActualizarFichaDeportiva,
   permisos,
   nombreClub,
   productos,
@@ -43272,6 +43488,10 @@ function ModalPerfilJugadorCRM({
           )}
         </div>
 
+        {/* Ficha Deportiva — Categoría (Torneos & Retas) + Nivel (Academia),
+            ambos visibles y editables aquí mismo. */}
+        <FichaDeportivaCRM perfil={perfil} onGuardar={onActualizarFichaDeportiva} />
+
         <div className="flex flex-wrap items-center gap-2">
           {(() => {
             const meta = SEGMENTO_META[perfil.segmento];
@@ -43284,25 +43504,6 @@ function ModalPerfilJugadorCRM({
               </span>
             );
           })()}
-          {/* Nivel (Academia) y Categoría (Torneos/Retas) — Ficha Deportiva,
-              migracion_v63: dos indicadores INDEPENDIENTES, sin duplicar
-              texto entre sí (ver `perfilBase.nivelJuego`/`.categoria` en el
-              reductor de arriba, fuente única de verdad con respaldo al
-              valor derivado de siempre para jugadores sin ficha poblada
-              todavía). "Nivel" lleva "(Academia)" solo cuando de verdad
-              coincide con la evaluación más reciente del Coach — si el
-              jugador lo cambió a mano después, ya no lleva la etiqueta. */}
-          {perfil.nivelJuego && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-teal-400/10 px-2.5 py-1 text-xs font-bold text-teal-400 ring-1 ring-teal-400/30">
-              <GraduationCap size={13} /> Nivel: {perfil.nivelJuego}
-              {perfil.nivelJuegoEsDeAcademia ? ' (Academia)' : ''}
-            </span>
-          )}
-          {perfil.categoria && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-violet-400/10 px-2.5 py-1 text-xs font-bold text-violet-400 ring-1 ring-violet-400/30">
-              <Trophy size={13} /> Categoría: {perfil.categoria}
-            </span>
-          )}
           {perfil.chs.enRiesgo && (
             <span className="inline-flex items-center gap-1 rounded-full bg-rose-400/10 px-2.5 py-1 text-xs font-bold text-rose-400 ring-1 ring-rose-400/30">
               <ShieldAlert size={13} /> En Riesgo de Abandono
@@ -43598,6 +43799,9 @@ function ModuloJugadores({
   jugadoresPorId,
   onActualizarTelefonoJugador,
   onActualizarFechaNacimientoJugador,
+  // Ficha Deportiva editable desde la Vista 360°: Categoría (Torneos/Retas)
+  // y Nivel (Academia), independientes — ver `actualizarFichaDeportivaJugador`.
+  onActualizarFichaDeportivaJugador,
   onRefrescarDirectorio,
   retas,
   inscripciones,
@@ -43685,6 +43889,7 @@ function ModuloJugadores({
           jugadoresPorId={jugadoresPorId}
           onActualizarTelefonoJugador={onActualizarTelefonoJugador}
           onActualizarFechaNacimientoJugador={onActualizarFechaNacimientoJugador}
+          onActualizarFichaDeportivaJugador={onActualizarFichaDeportivaJugador}
           onRefrescarDirectorio={onRefrescarDirectorio}
           retas={retas}
           inscripciones={inscripciones}
@@ -58606,6 +58811,34 @@ function AppInterno({ clubInicial } = {}) {
     }
   }, []);
 
+  // Ficha Deportiva (migracion_v63/v105) — Categoría (Torneos/Retas) y Nivel
+  // (Academia) son DOS columnas independientes de `jugadores`
+  // (`categoria`/`nivel_juego`). Se editan desde la Vista 360° del CRM;
+  // el Expediente Deportivo del Coach escribe las mismas columnas (ver
+  // `guardarEvaluacionJugador`). Solo se mandan los campos presentes en
+  // `cambios`, así editar uno nunca borra el otro.
+  const actualizarFichaDeportivaJugador = useCallback(async (jugadorId, cambios = {}) => {
+    const payload = {};
+    if ('categoria' in cambios) payload.categoria = cambios.categoria || null;
+    if ('nivel_juego' in cambios) payload.nivel_juego = cambios.nivel_juego || null;
+    if (jugadorId == null || Object.keys(payload).length === 0) return { ok: true };
+    let anterior = null;
+    setJugadoresPorId((prev) => {
+      anterior = prev[jugadorId] || null;
+      return { ...prev, [jugadorId]: { ...(prev[jugadorId] || { id: jugadorId }), ...payload } };
+    });
+    try {
+      const { error: errUpdate } = await supabase.from('jugadores').update(payload).eq('id', jugadorId);
+      if (errUpdate) throw errUpdate;
+      return { ok: true };
+    } catch (err) {
+      console.error('[CRM] Error detallado Supabase (actualizar categoría/nivel del jugador):', err);
+      // Se revierte en pantalla: el valor que se ve debe ser el guardado.
+      if (anterior) setJugadoresPorId((prev) => ({ ...prev, [jugadorId]: anterior }));
+      return { ok: false, error: err };
+    }
+  }, []);
+
   /* ---------------- Carga de datos (Torneos & Retas, compartida) ----------------
    * Igual criterio que canchas/reservas/productos arriba: se levanta aquí, no
    * dentro de `ModuloTorneosRetas`, para que (a) el estado NUNCA se resetee
@@ -60247,7 +60480,7 @@ function AppInterno({ clubInicial } = {}) {
   // Único punto de escritura — SIEMPRE un INSERT nuevo (nunca UPDATE, ver
   // nota de la migración/`ModalExpedienteDeportivo`): así el historial de
   // progreso de cada jugador queda completo, evaluación por evaluación.
-  async function guardarEvaluacionJugador({ jugadorId, jugadorNombre, ejes, nivelAsignado, comentarios }) {
+  async function guardarEvaluacionJugador({ jugadorId, jugadorNombre, ejes, nivelAsignado, categoriaAsignada = null, comentarios }) {
     const promedio = calcularPromedioEjes(ejes);
     const payloadCompleto = {
       jugador_id: String(jugadorId),
@@ -60264,6 +60497,9 @@ function AppInterno({ clubInicial } = {}) {
       fisico: ejes.fisico ?? null,
       promedio,
       nivel_asignado: nivelAsignado || null,
+      // Categoría (Torneos & Retas) asignada por el coach en esta evaluación
+      // (migracion_v105, columna opcional).
+      categoria_asignada: categoriaAsignada || null,
       comentarios: comentarios || null,
       fecha: new Date().toISOString(),
     };
@@ -60284,6 +60520,7 @@ function AppInterno({ clubInicial } = {}) {
       'reves',
       'saque',
       'resto',
+      'categoria_asignada',
     ]);
     if (error) {
       console.warn('[Evaluaciones] No se pudo guardar la evaluación en Supabase.', error);
@@ -60297,11 +60534,22 @@ function AppInterno({ clubInicial } = {}) {
     // best-effort, nunca bloquea el guardado real de la evaluación si
     // falla (`actualizarConColumnasOpcionales` ya tolera columnas
     // faltantes; el `catch` de abajo tolera cualquier otro error, ej. red).
-    if (nivelAsignado && jugadorId) {
+    // Categoría (v105): misma sincronización para `jugadores.categoria` —
+    // Nivel y Categoría quedan guardados juntos en la ficha del jugador. Con
+    // v105 corrida, además lo garantiza el trigger
+    // `trg_evaluacion_sincroniza_ficha` del lado de Supabase (aunque el rol
+    // del coach no tenga UPDATE directo sobre `jugadores`).
+    const fichaNueva = {};
+    if (nivelAsignado) fichaNueva.nivel_juego = nivelAsignado;
+    if (categoriaAsignada) fichaNueva.categoria = categoriaAsignada;
+    if (jugadorId && Object.keys(fichaNueva).length > 0) {
+      setJugadoresPorId((prev) =>
+        prev[jugadorId] ? { ...prev, [jugadorId]: { ...prev[jugadorId], ...fichaNueva } } : prev
+      );
       try {
-        await actualizarConColumnasOpcionales('jugadores', jugadorId, { nivel_juego: nivelAsignado }, ['nivel_juego']);
+        await actualizarConColumnasOpcionales('jugadores', jugadorId, fichaNueva, ['nivel_juego', 'categoria']);
       } catch (err) {
-        console.error('[Evaluaciones] No se pudo sincronizar jugadores.nivel_juego tras la evaluación.', err);
+        console.error('[Evaluaciones] No se pudo sincronizar jugadores.nivel_juego/categoria tras la evaluación.', err);
       }
     }
     return { ok: true, registro: data };
@@ -61704,6 +61952,7 @@ function AppInterno({ clubInicial } = {}) {
                 jugadoresPorId={jugadoresPorId}
                 onActualizarTelefonoJugador={actualizarTelefonoJugador}
                 onActualizarFechaNacimientoJugador={actualizarFechaNacimientoJugador}
+                onActualizarFichaDeportivaJugador={actualizarFichaDeportivaJugador}
                 onRefrescarDirectorio={() => cargarDatos({ silencioso: true })}
                 retas={retas}
                 inscripciones={inscripciones}
