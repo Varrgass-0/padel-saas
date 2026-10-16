@@ -21690,7 +21690,11 @@ function HeatmapOcupacion({ modo, filas, celdas }) {
 
 /* ---------------- Rentabilidad por Categoría ---------------- */
 
-function RentabilidadPorCategoria({ filas, cargando }) {
+// "Costo Total" ya no se muestra: en servicios (Canchas, Retas & Torneos,
+// Academia) siempre era $0 y solo llenaba la tabla de ceros. El costo de
+// producto sigue reflejado en el Margen Bruto de Pro-Shop y Cafetería/Bar
+// (Ingreso − Costo), y el CSV exportable conserva la columna completa.
+function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando }) {
   if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
 
   return (
@@ -21700,12 +21704,11 @@ function RentabilidadPorCategoria({ filas, cargando }) {
       </h3>
 
       <div className="overflow-x-auto rounded-xl border border-slate-200">
-        <table className="w-full min-w-[480px] text-left text-xs">
+        <table className="w-full min-w-[420px] text-left text-xs">
           <thead>
             <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
               <th className="px-3 py-2.5">Categoría</th>
               <th className="px-3 py-2.5 text-right">Ingreso Bruto</th>
-              <th className="px-3 py-2.5 text-right">Costo Total</th>
               <th className="px-3 py-2.5 text-right">Margen Bruto / Contribución</th>
               <th className="px-3 py-2.5 text-right">Margen %</th>
             </tr>
@@ -21713,21 +21716,21 @@ function RentabilidadPorCategoria({ filas, cargando }) {
           <tbody>
             {filas.map((f) => {
               const meta = CATEGORIAS_BI.find((c) => c.key === f.categoria);
-              // Rigor de terminología: "Canchas" no tiene costo variable
-              // directo asignado (Costo Total $0), así que su fila es Margen
-              // de Contribución. Pro-Shop y Cafetería/Bar son producto físico
-              // (costo directo real) → Margen Bruto. Ninguna fila usa
-              // "Utilidad Operativa" ni "Utilidad Neta" — ese cálculo real
-              // (con egresos operativos) vive en Contabilidad & Compras.
+              // Servicios (sin costo variable directo) → Margen de
+              // Contribución; producto físico → Margen Bruto.
               const tipoMargen = ['Canchas', 'Retas & Torneos', 'Academia'].includes(f.categoria) ? 'Margen de Contribución' : 'Margen Bruto';
+              const desglose =
+                f.categoria === 'Academia' && academiaDesglose && f.ingreso > 0
+                  ? `Mensualidades ${formatoMoneda(academiaDesglose.mensualidades)} · Grupales ${formatoMoneda(academiaDesglose.grupales)} · Privadas ${formatoMoneda(academiaDesglose.privadas)}`
+                  : null;
               return (
                 <tr key={f.categoria} className="border-b border-slate-200/70 last:border-0">
                   <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-800'}`}>
                     {etiquetaCategoriaProducto(f.categoria)}
                     <span className="ml-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">({tipoMargen})</span>
+                    {desglose && <p className="mt-0.5 text-[10px] font-medium normal-case text-slate-500">{desglose}</p>}
                   </td>
                   <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingreso)}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-500">{formatoMoneda(f.costo)}</td>
                   <td className={`px-3 py-2.5 text-right font-bold ${f.utilidad >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {formatoMoneda(f.utilidad)}
                   </td>
@@ -21871,15 +21874,18 @@ function TopModificadoresTabla({ filas, cargando }) {
 // por cancha con sus horas ocupadas (incluye reservas pendientes), su
 // ocupación y su ingreso REAL cobrado — renta de cancha + Retas/Torneos
 // jugados en ella. Solo dinero con estatus 'pagado' (regla de oro).
-function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = 0 }) {
+function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, academia: 0 } }) {
+  const sinEventos = Number(sinAsignar?.eventos) || 0;
+  const sinAcademia = Number(sinAsignar?.academia) || 0;
   const total = filas.reduce(
     (acc, f) => ({
       horas: acc.horas + f.horas,
       reservas: acc.reservas + f.ingresoReservas,
       eventos: acc.eventos + f.ingresoEventos,
+      academia: acc.academia + f.ingresoAcademia,
       ingresos: acc.ingresos + f.ingresos,
     }),
-    { horas: 0, reservas: 0, eventos: 0, ingresos: 0 }
+    { horas: 0, reservas: 0, eventos: 0, academia: 0, ingresos: 0 }
   );
   const maxIngreso = Math.max(1, ...filas.map((f) => f.ingresos));
   return (
@@ -21888,7 +21894,8 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = 0 }) {
         <MapPin size={16} className="text-sky-400" /> Ingresos y Ocupación por Cancha
       </h3>
       <p className="mb-3 text-[11px] text-slate-500">
-        Ingreso real cobrado: renta de cancha + Retas y Torneos jugados en ella. La ocupación incluye reservas pendientes de pago.
+        Ingreso real cobrado: renta de cancha + Retas y Torneos jugados en ella + Academia (mensualidades y clases grupales/privadas
+        asignadas a esa cancha). La ocupación incluye reservas pendientes de pago.
       </p>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
@@ -21896,7 +21903,7 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = 0 }) {
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200">
-          <table className="w-full min-w-[640px] text-left text-xs">
+          <table className="w-full min-w-[760px] text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 <th className="px-3 py-2.5">Cancha</th>
@@ -21904,6 +21911,7 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = 0 }) {
                 <th className="px-3 py-2.5 text-right">Ocupación</th>
                 <th className="px-3 py-2.5 text-right">Reservas cobradas</th>
                 <th className="px-3 py-2.5 text-right">Retas & Torneos</th>
+                <th className="px-3 py-2.5 text-right">Academia / Clases</th>
                 <th className="px-3 py-2.5 text-right">Ingreso real</th>
               </tr>
             </thead>
@@ -21919,6 +21927,7 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = 0 }) {
                   </td>
                   <td className="px-3 py-2.5 text-right text-slate-600">{formatoMoneda(f.ingresoReservas)}</td>
                   <td className="px-3 py-2.5 text-right text-slate-600">{formatoMoneda(f.ingresoEventos)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{formatoMoneda(f.ingresoAcademia)}</td>
                   <td className="px-3 py-2.5 text-right">
                     <div className="flex items-center justify-end gap-2">
                       <div className="hidden h-1.5 w-20 overflow-hidden rounded-full bg-slate-100 sm:block">
@@ -21929,14 +21938,15 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = 0 }) {
                   </td>
                 </tr>
               ))}
-              {sinAsignar > 0 && (
+              {sinEventos + sinAcademia > 0 && (
                 <tr className="border-b border-slate-200/70 text-slate-500">
-                  <td className="px-3 py-2.5 italic">Torneos/Retas sin cancha asignada</td>
+                  <td className="px-3 py-2.5 italic">Sin cancha asignada</td>
                   <td className="px-3 py-2.5" />
                   <td className="px-3 py-2.5" />
                   <td className="px-3 py-2.5" />
-                  <td className="px-3 py-2.5 text-right">{formatoMoneda(sinAsignar)}</td>
-                  <td className="px-3 py-2.5 text-right font-bold">{formatoMoneda(sinAsignar)}</td>
+                  <td className="px-3 py-2.5 text-right">{formatoMoneda(sinEventos)}</td>
+                  <td className="px-3 py-2.5 text-right">{formatoMoneda(sinAcademia)}</td>
+                  <td className="px-3 py-2.5 text-right font-bold">{formatoMoneda(sinEventos + sinAcademia)}</td>
                 </tr>
               )}
               <tr className="bg-slate-50 font-black text-slate-900">
@@ -21944,8 +21954,9 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = 0 }) {
                 <td className="px-3 py-2.5 text-right">{total.horas.toFixed(1)} h</td>
                 <td className="px-3 py-2.5" />
                 <td className="px-3 py-2.5 text-right">{formatoMoneda(total.reservas)}</td>
-                <td className="px-3 py-2.5 text-right">{formatoMoneda(total.eventos + sinAsignar)}</td>
-                <td className="px-3 py-2.5 text-right">{formatoMoneda(total.ingresos + sinAsignar)}</td>
+                <td className="px-3 py-2.5 text-right">{formatoMoneda(total.eventos + sinEventos)}</td>
+                <td className="px-3 py-2.5 text-right">{formatoMoneda(total.academia + sinAcademia)}</td>
+                <td className="px-3 py-2.5 text-right">{formatoMoneda(total.ingresos + sinEventos + sinAcademia)}</td>
               </tr>
             </tbody>
           </table>
@@ -21992,7 +22003,7 @@ function generarCSVReporte({
   rendimientoPorCancha,
   heatmap,
   productos,
-  ingresosCanchaSinAsignar = 0,
+  ingresosCanchaSinAsignar = { eventos: 0, academia: 0 },
   picoValle,
   revPACP,
   ocupacionCanchasPct,
@@ -22018,6 +22029,9 @@ function generarCSVReporte({
   filas.push(['  · Retas (inscripciones pagadas)', analisis.ingresoRetas.toFixed(2)]);
   filas.push(['  · Torneos (inscripciones pagadas)', analisis.ingresoTorneos.toFixed(2)]);
   filas.push(['  · Academia (mensualidades/clases pagadas)', analisis.ingresoAcademia.toFixed(2)]);
+  filas.push(['      – Mensualidades', (analisis.academiaDesglose?.mensualidades || 0).toFixed(2)]);
+  filas.push(['      – Clases Grupales', (analisis.academiaDesglose?.grupales || 0).toFixed(2)]);
+  filas.push(['      – Clases Privadas', (analisis.academiaDesglose?.privadas || 0).toFixed(2)]);
   filas.push(['Costo Total de lo Vendido (COGS)', analisis.cogsTotal.toFixed(2)]);
   filas.push(['Ocupación de Canchas (%) — incluye reservas pendientes', `${ocupacionCanchasPct.toFixed(1)}%`]);
   filas.push(['Ticket Promedio por Venta (Ingreso cobrado ÷ cobros efectivos)', analisis.ticketPromedio !== null ? analisis.ticketPromedio.toFixed(2) : '']);
@@ -22041,26 +22055,36 @@ function generarCSVReporte({
   filas.push([]);
 
   filas.push(['Ingresos y Ocupación por Cancha']);
-  filas.push(['Cancha', 'Horas Ocupadas', 'Ocupación %', 'Reservas Cobradas', 'Retas & Torneos', 'Ingreso Real']);
-  let totalHorasCanchas = 0;
-  let totalReservasCanchas = 0;
-  let totalEventosCanchas = 0;
+  filas.push(['Cancha', 'Horas Ocupadas', 'Ocupación %', 'Reservas Cobradas', 'Retas & Torneos', 'Academia / Clases', 'Ingreso Real']);
+  const sinEventosCsv = Number(ingresosCanchaSinAsignar?.eventos) || 0;
+  const sinAcademiaCsv = Number(ingresosCanchaSinAsignar?.academia) || 0;
+  const tot = { horas: 0, reservas: 0, eventos: 0, academia: 0 };
   rendimientoPorCancha.forEach((f) => {
-    totalHorasCanchas += f.horas;
-    totalReservasCanchas += f.ingresoReservas;
-    totalEventosCanchas += f.ingresoEventos;
-    filas.push([f.cancha.nombre, f.horas.toFixed(1), f.ocupacion.toFixed(0), f.ingresoReservas.toFixed(2), f.ingresoEventos.toFixed(2), f.ingresos.toFixed(2)]);
+    tot.horas += f.horas;
+    tot.reservas += f.ingresoReservas;
+    tot.eventos += f.ingresoEventos;
+    tot.academia += f.ingresoAcademia;
+    filas.push([
+      f.cancha.nombre,
+      f.horas.toFixed(1),
+      f.ocupacion.toFixed(1),
+      f.ingresoReservas.toFixed(2),
+      f.ingresoEventos.toFixed(2),
+      f.ingresoAcademia.toFixed(2),
+      f.ingresos.toFixed(2),
+    ]);
   });
-  if (ingresosCanchaSinAsignar > 0) {
-    filas.push(['Torneos/Retas sin cancha asignada', '', '', '', ingresosCanchaSinAsignar.toFixed(2), ingresosCanchaSinAsignar.toFixed(2)]);
+  if (sinEventosCsv + sinAcademiaCsv > 0) {
+    filas.push(['Sin cancha asignada', '', '', '', sinEventosCsv.toFixed(2), sinAcademiaCsv.toFixed(2), (sinEventosCsv + sinAcademiaCsv).toFixed(2)]);
   }
   filas.push([
     'TOTAL',
-    totalHorasCanchas.toFixed(1),
+    tot.horas.toFixed(1),
     '',
-    totalReservasCanchas.toFixed(2),
-    (totalEventosCanchas + ingresosCanchaSinAsignar).toFixed(2),
-    (totalReservasCanchas + totalEventosCanchas + ingresosCanchaSinAsignar).toFixed(2),
+    tot.reservas.toFixed(2),
+    (tot.eventos + sinEventosCsv).toFixed(2),
+    (tot.academia + sinAcademiaCsv).toFixed(2),
+    (tot.reservas + tot.eventos + tot.academia + sinEventosCsv + sinAcademiaCsv).toFixed(2),
   ]);
   filas.push([]);
 
@@ -25975,8 +25999,10 @@ function ModuloAnalyticsBI({
   torneos,
   participantesTorneo,
   partidosTorneo,
-  // Academia & Clínicas: mensualidades/clases cobradas (regla de oro).
+  // Academia & Clínicas: mensualidades/clases cobradas (regla de oro) y
+  // el catálogo de clases (cancha asignada + tipo grupal/privada).
   academiaAlumnos = [],
+  academiaClases = [],
   configClub,
 }) {
   const mostrarToast = useToast();
@@ -26182,6 +26208,12 @@ function ModuloAnalyticsBI({
       porTorneo.set(clave, acc);
     });
 
+    // Academia: TODO cobro pagado de `academia_alumnos` — Mensualidades,
+    // Clases Grupales (clase suelta) y Clases Privadas — con su desglose y
+    // la cancha de su clase (para "Ingresos y Ocupación por Cancha").
+    const clasesPorId = new Map((academiaClases || []).map((c) => [String(c.id), c]));
+    const academiaCobros = []; // { clase, monto }
+    const academiaDesglose = { mensualidades: 0, grupales: 0, privadas: 0 };
     let totalAcademia = 0;
     let transaccionesAcademia = 0;
     (academiaAlumnos || []).forEach((a) => {
@@ -26189,12 +26221,28 @@ function ModuloAnalyticsBI({
       if (!dentroDeRangoPorCreatedAt(a, rango)) return;
       const monto = Number(a.monto) || 0;
       if (monto <= 0) return; // pagado con créditos de membresía: sin dinero nuevo
+      const clase = clasesPorId.get(String(a.clase_id)) || null;
+      if (a.tipo_pago === 'mensualidad') academiaDesglose.mensualidades += monto;
+      else if (clase?.tipo_clase === 'privada') academiaDesglose.privadas += monto;
+      else academiaDesglose.grupales += monto;
+      academiaCobros.push({ clase, monto });
       totalAcademia += monto;
       transaccionesAcademia += 1;
     });
 
-    return { porReta, porTorneo, totalRetas, totalTorneos, totalAcademia, transaccionesRetas, transaccionesTorneos, transaccionesAcademia };
-  }, [retas, inscripciones, torneos, participantesTorneo, academiaAlumnos, rango]);
+    return {
+      porReta,
+      porTorneo,
+      totalRetas,
+      totalTorneos,
+      totalAcademia,
+      academiaCobros,
+      academiaDesglose,
+      transaccionesRetas,
+      transaccionesTorneos,
+      transaccionesAcademia,
+    };
+  }, [retas, inscripciones, torneos, participantesTorneo, academiaAlumnos, academiaClases, rango]);
 
   const productosPorId = useMemo(() => {
     const mapa = {};
@@ -26266,15 +26314,17 @@ function ModuloAnalyticsBI({
    * jugadas en ella (si una reta usa varias canchas se reparte en partes
    * iguales) + lo cobrado en Torneos, repartido según las horas de partido
    * programadas en cada cancha. Un torneo sin partidos asignados a cancha
-   * queda en `sinAsignar`. Academia se reporta en su categoría (una
-   * mensualidad no pertenece a una cancha).
+   * queda en `sinAsignar`. Academia / Clases: cada cobro pagado (mensualidad,
+   * grupal o privada) se suma a la cancha asignada a SU clase, con el mismo
+   * criterio de fecha que la categoría Academia (fecha de cobro) — así la
+   * columna cuadra con "Rentabilidad por Categoría".
    * ---------------------------------------------------------------------- */
   const ingresosPorCancha = useMemo(() => {
     const horasDisponiblesPorCancha = (rango.dias * (HORA_FIN_MIN - HORA_INICIO_MIN)) / 60;
     const filasPorId = new Map();
     const fila = (cancha) => {
       const clave = String(cancha.id);
-      if (!filasPorId.has(clave)) filasPorId.set(clave, { cancha, horas: 0, ingresoReservas: 0, ingresoEventos: 0 });
+      if (!filasPorId.has(clave)) filasPorId.set(clave, { cancha, horas: 0, ingresoReservas: 0, ingresoEventos: 0, ingresoAcademia: 0 });
       return filasPorId.get(clave);
     };
     canchas.filter((c) => c.activa !== false).forEach((c) => fila(c));
@@ -26294,6 +26344,12 @@ function ModuloAnalyticsBI({
     });
 
     let sinAsignar = 0;
+    let sinAsignarAcademia = 0;
+    ingresosEventos.academiaCobros.forEach(({ clase, monto }) => {
+      const c = clase ? canchaDe(clase.cancha_id) : null;
+      if (c) fila(c).ingresoAcademia += monto;
+      else sinAsignarAcademia += monto;
+    });
     ingresosEventos.porReta.forEach(({ reta, monto }) => {
       const lista = reta ? canchasDeReta(reta, canchas) : [];
       if (lista.length === 0) {
@@ -26324,14 +26380,14 @@ function ModuloAnalyticsBI({
     });
 
     const filas = Array.from(filasPorId.values())
-      .filter((f) => f.cancha.activa !== false || f.horas > 0 || f.ingresoReservas + f.ingresoEventos > 0)
+      .filter((f) => f.cancha.activa !== false || f.horas > 0 || f.ingresoReservas + f.ingresoEventos + f.ingresoAcademia > 0)
       .map((f) => ({
         ...f,
-        ingresos: f.ingresoReservas + f.ingresoEventos,
+        ingresos: f.ingresoReservas + f.ingresoEventos + f.ingresoAcademia,
         ocupacion: horasDisponiblesPorCancha > 0 ? Math.min(100, (f.horas / horasDisponiblesPorCancha) * 100) : 0,
       }))
       .sort((a, b) => b.ingresos - a.ingresos || String(a.cancha.nombre).localeCompare(String(b.cancha.nombre)));
-    return { filas, sinAsignar };
+    return { filas, sinAsignar: { eventos: sinAsignar, academia: sinAsignarAcademia } };
   }, [canchas, reservasOcupacion, reservasCobradas, ingresosEventos, partidosTorneo, rango]);
   const rendimientoPorCancha = ingresosPorCancha.filas;
 
@@ -26582,6 +26638,7 @@ function ModuloAnalyticsBI({
       ingresoRetas: ingresosEventos.totalRetas,
       ingresoTorneos: ingresosEventos.totalTorneos,
       ingresoAcademia: ingresosEventos.totalAcademia,
+      academiaDesglose: ingresosEventos.academiaDesglose,
       rentabilidadPorCategoria,
       categoriaEstrella,
       topProductos,
@@ -26750,7 +26807,7 @@ function ModuloAnalyticsBI({
 
       <HeatmapOcupacion modo={modoFiltro} filas={heatmap.filas} celdas={heatmap.celdas} />
 
-      <RentabilidadPorCategoria filas={analisis.rentabilidadPorCategoria} cargando={cargandoFinanciero} />
+      <RentabilidadPorCategoria filas={analisis.rentabilidadPorCategoria} academiaDesglose={analisis.academiaDesglose} cargando={cargandoFinanciero} />
 
       {/* Reemplaza a "Ingresos Cruzados por Cancha y Bloque Horario":
           resumen limpio por cancha (horas, ocupación e ingreso real). */}
@@ -62093,6 +62150,7 @@ function AppInterno({ clubInicial } = {}) {
                 participantesTorneo={participantesTorneo}
                 partidosTorneo={partidosTorneo}
                 academiaAlumnos={academiaAlumnos}
+                academiaClases={academiaClases}
                 permisos={permisos}
                 configClub={configClub}
               />
