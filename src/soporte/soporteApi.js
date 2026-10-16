@@ -139,6 +139,17 @@ export async function verificarCitasCalcom(clubId, uids) {
   }
 }
  
+// Confirmación desde el portal (v102): el club marca SU cita como cancelada o
+// reagendada al cerrar la ventana de Cal.com. Aplica la regla de 2 h en el
+// servidor (≥ 2 h: libera 100 %; < 2 h: cobra 50 %). Idempotente.
+export async function cancelarCitaDesdePortal(ticketId, accion = 'cancelar') {
+  const { data, error } = await supabase.rpc('fn_soporte_club_cancelar_cita', {
+    p_ticket_id: ticketId,
+    p_accion: accion === 'reagendar' ? 'reagendar' : 'cancelar',
+  });
+  return { data, error };
+}
+ 
 export async function listarComprasExtra(clubId, limite = 50) {
   const { data, error } = await supabase
     .from('soporte_compras_extra')

@@ -35,6 +35,13 @@ import {
   conciliarRetenido,
   extraerReservaCal,
   esMensajeReservaCal,
+  leerAccionesCalcomPendientes,
+  registrarAccionCalcomPendiente,
+  quitarAccionCalcomPendiente,
+  leerRetornoCalcom,
+  tipoMensajeGestionCal,
+  minutosLiberadosCita,
+  urlEmbebidaCal,
 } from './soporteReglas';
 import {
   obtenerBolsa,
@@ -49,8 +56,10 @@ import {
   obtenerUsuarioActual,
   mensajeError,
   esErrorEsquemaSoporte,
+  verificarCitasCalcom,
+  cancelarCitaDesdePortal,
 } from './soporteApi';
-import { ModalComprarHorasExtra, ModalAgendarVideollamada } from './SoporteModal';
+import { ModalComprarHorasExtra, ModalAgendarVideollamada, ModalSoporte } from './SoporteModal';
 
 // Lectura de variables de entorno de Vite tolerante (sin `import.meta.env`
 // definido, p. ej. en pruebas, devuelve '').
@@ -215,7 +224,7 @@ export function TablaHistorialSoporte({ tickets, onAjustar }) {
   );
 }
 
-function TarjetaProximaCita({ cita, ahora, calcomBase, onUnirme, uniendose }) {
+function TarjetaProximaCita({ cita, ahora, calcomBase, onUnirme, uniendose, pendiente, onGestionar, onVerificar, onDescartar, verificando }) {
   const sala = estadoSalaCita(cita, ahora);
   const meet = urlSeguraHttp(cita.meet_url);
   const gestion = enlacesGestionCalcom(calcomBase, cita.calcom_uid);
@@ -240,7 +249,18 @@ function TarjetaProximaCita({ cita, ahora, calcomBase, onUnirme, uniendose }) {
             <span>{fechaTexto}</span> · <span className="font-bold text-slate-900">{horaTexto}</span> ·{' '}
             {formatoMinutos(cita.minutos_reservados)}
           </p>
-          {enRevision ? (
+          {pendiente ? (
+            <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold text-violet-600">
+              <Loader2 size={11} className="animate-spin" />
+              {pendiente.accion === 'reagendar' ? 'Reagendando en Cal.com…' : 'Cancelando en Cal.com…'} se actualizará al confirmarse.
+              <button type="button" onClick={() => onVerificar?.(cita)} disabled={verificando} className="font-bold text-orange-500 hover:underline disabled:opacity-50">
+                {verificando ? 'Verificando…' : 'Ya lo hice, verificar'}
+              </button>
+              <button type="button" onClick={() => onDescartar?.(cita)} className="font-semibold text-slate-400 hover:text-slate-600">
+                Descartar
+              </button>
+            </p>
+          ) : enRevision ? (
             <p className="mt-1 text-[11px] font-semibold text-slate-500">Reunión finalizada: soporte está registrando los minutos usados.</p>
           ) : (
             sala !== 'abierta' &&
@@ -263,17 +283,96 @@ function TarjetaProximaCita({ cita, ahora, calcomBase, onUnirme, uniendose }) {
         {sala === 'pronto' && meet && <span className="text-[11px] font-semibold text-slate-500">Se habilita 15 min antes</span>}
         {sala === 'pronto' && !meet && <span className="text-[11px] font-semibold text-slate-500">El enlace de Meet llega en tu correo de confirmación</span>}
         {sala === 'pronto' && gestion.reagendar && (
-          <a href={gestion.reagendar} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:border-orange-300 hover:text-orange-500">
+          <button
+            type="button"
+            onClick={() => onGestionar?.(cita, 'reagendar', gestion.reagendar)}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:border-orange-300 hover:text-orange-500"
+          >
             Reagendar
-          </a>
+          </button>
         )}
         {sala === 'pronto' && gestion.cancelar && (
-          <a href={gestion.cancelar} target="_blank" rel="noopener noreferrer" className="rounded-lg px-3 py-2 text-xs font-bold text-slate-500 hover:text-rose-500">
+          <button
+            type="button"
+            onClick={() => onGestionar?.(cita, 'cancelar', gestion.cancelar)}
+            className="rounded-lg px-3 py-2 text-xs font-bold text-slate-500 hover:text-rose-500"
+          >
             Cancelar
-          </a>
+          </button>
         )}
       </div>
     </div>
+  );
+}
+
+// Cancelar / Reagendar se hace en Cal.com, pero DENTRO de QLUBOS (ventana
+// embebida): al cerrar esta ventana — o cuando Cal.com avisa que reagendó —
+// el portal verifica el cambio y actualiza cita, historial y horas.
+function ModalGestionCita({ gestion, ahora, onClose, onConfirmar, confirmando, errorConfirmacion, permitirForzar }) {
+  const { cita, accion, url } = gestion;
+  const politica = evaluarCancelacion(cita.inicio, cita.minutos_reservados, ahora);
+  const urlEmbebida = urlEmbebidaCal(url);
+  return (
+    <ModalSoporte
+      titulo={accion === 'reagendar' ? 'Reagendar reunión de soporte' : 'Cancelar reunión de soporte'}
+      subtitulo={`${conceptoReunion(cita)} · ${formatoFechaHora(cita.inicio)}`}
+      onClose={confirmando ? undefined : onClose}
+      ancho="max-w-3xl"
+    >
+      <p
+        className={`mb-3 flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
+          politica.tardia ? 'bg-amber-400/10 text-amber-700' : 'bg-emerald-500/10 text-emerald-700'
+        }`}
+      >
+        <Info size={13} className="mt-0.5 shrink-0" />
+        {accion === 'reagendar'
+          ? politica.tardia
+            ? `Faltan menos de ${ANTICIPACION_CANCELACION_HORAS} h: al reagendar se descontarán ${politica.minutosCobrados} min (50 %) de la reunión original.`
+            : 'Reagendar con anticipación no tiene costo: los minutos se mueven a la nueva fecha.'
+          : politica.mensaje}
+      </p>
+      {urlEmbebida ? (
+        <iframe title="Gestionar reunión en Cal.com" src={urlEmbebida} className="h-[60vh] min-h-[420px] w-full rounded-xl border border-slate-200 bg-white" />
+      ) : null}
+      {errorConfirmacion && (
+        <div className="mt-3 flex flex-wrap items-start gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-700">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1">{errorConfirmacion}</span>
+          {permitirForzar && (
+            <button type="button" onClick={() => onConfirmar(true)} disabled={confirmando} className="font-black text-orange-600 hover:underline disabled:opacity-50">
+              {accion === 'reagendar' ? 'Ya la reagendé, actualizar de todos modos' : 'Ya la cancelé, actualizar de todos modos'}
+            </button>
+          )}
+        </div>
+      )}
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-[11px] text-slate-500">
+          Cuando Cal.com te confirme el cambio, presiona el botón: tu cita pasa al historial y tus horas se actualizan.{' '}
+          <a href={url} target="_blank" rel="noopener noreferrer" className="font-bold text-orange-500 hover:underline">
+            ¿No carga? Ábrelo en otra pestaña
+          </a>
+        </p>
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={confirmando}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:border-slate-300 hover:text-slate-900 disabled:opacity-50"
+          >
+            Cerrar sin cambios
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirmar(false)}
+            disabled={confirmando}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-orange-400 px-4 py-2 text-xs font-black text-slate-950 hover:bg-orange-300 disabled:opacity-60"
+          >
+            {confirmando && <Loader2 size={13} className="animate-spin" />}
+            {accion === 'reagendar' ? 'Cerrar y confirmar reagenda' : 'Cerrar y confirmar cancelación'}
+          </button>
+        </div>
+      </div>
+    </ModalSoporte>
   );
 }
 
@@ -302,6 +401,20 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
   const uidsRegistradosRef = useRef(new Set());
   const toastRef = useRef(onToast);
   toastRef.current = onToast;
+  // Cancelar / Reagendar en Cal.com (v101): acciones en espera de confirmar,
+  // ventana de gestión abierta y verificación en curso.
+  const [acciones, setAcciones] = useState(() => (typeof window === 'undefined' ? {} : leerAccionesCalcomPendientes()));
+  const accionesRef = useRef(acciones);
+  accionesRef.current = acciones;
+  const [gestion, setGestion] = useState(null); // { cita, accion, url } | null
+  const [verificandoUid, setVerificandoUid] = useState(null);
+  const esperaResolucionRef = useRef(null);
+  const verificarRetornoRef = useRef(null);
+  const [confirmandoGestion, setConfirmandoGestion] = useState(false);
+  const [errorGestion, setErrorGestion] = useState('');
+  const [intentosGestion, setIntentosGestion] = useState(0);
+  // Datos de la reserva NUEVA que Cal.com informa al reagendar en la ventana.
+  const reservaReagendadaRef = useRef(null);
 
   const cargar = useCallback(
     async ({ silencioso = false } = {}) => {
@@ -345,7 +458,26 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
 
   useEffect(() => {
     if (!puedeGestionar) return undefined;
-    cargar();
+    // Al entrar (o recargar): después de leer Supabase, se revisan las citas
+    // activas contra Cal.com para limpiar las que se cancelaron o
+    // reagendaron fuera de QLUBOS. Silencioso: si la verificación no está
+    // disponible, no hace nada (el webhook es el respaldo).
+    cargar().then((lista) => {
+      const uids = (lista || []).filter((t) => t.estado === 'agendada' && t.calcom_uid).map((t) => t.calcom_uid);
+      if (!uids.length) return;
+      verificarCitasCalcom(clubId, uids).then((r) => {
+        const cambios = (r?.ok ? r.resultados || [] : []).filter((x) => ['cancelada', 'reagendada', 'actualizada'].includes(x.resultado));
+        if (!cambios.length || !montadoRef.current) return;
+        cargar({ silencioso: true });
+        const noPendientes = cambios.filter((x) => !accionesRef.current[x.uid]);
+        if (noPendientes.length) {
+          toastRef.current?.({
+            titulo: 'Reuniones actualizadas desde Cal.com',
+            detalle: `${noPendientes.length} ${noPendientes.length === 1 ? 'reunión cambió' : 'reuniones cambiaron'} en Cal.com: tu historial y tus horas ya están al día.`,
+          });
+        }
+      });
+    });
     obtenerUsuarioActual().then((u) => montadoRef.current && setContacto(u));
     // Tiempo real: cualquier cambio en horas, citas, compras o ajustes del
     // club recarga en silencio (agrupando ráfagas de eventos).
@@ -360,7 +492,11 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
     const reloj = setInterval(() => setAhora(new Date()), 30_000);
     // Al volver a la pestaña, ponerse al día de inmediato.
     const alVolver = () => {
-      if (document.visibilityState === 'visible') cargar({ silencioso: true });
+      if (document.visibilityState !== 'visible') return;
+      const pendientes = Object.keys(leerAccionesCalcomPendientes());
+      // Regreso de Cal.com en otra pestaña: se verifica la acción al instante.
+      if (pendientes.length) verificarRetornoRef.current?.(pendientes);
+      else cargar({ silencioso: true });
     };
     document.addEventListener('visibilitychange', alVolver);
     return () => {
@@ -371,6 +507,231 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
       document.removeEventListener('visibilitychange', alVolver);
     };
   }, [cargar, clubId, puedeGestionar]);
+
+  // ---------------- Cancelar / Reagendar: retorno desde Cal.com ----------------
+  // 1) Verifica con la API de Cal.com (Edge Function soporte-calcom-estado) y
+  //    aplica el cambio en Supabase al instante. 2) Si la verificación no está
+  //    disponible, el webhook de Cal.com hace el cambio y Realtime lo trae;
+  //    mientras tanto se recarga en silencio cada pocos segundos.
+  const verificarRetorno = useCallback(
+    async (uids, { manual = false, alCerrar = false } = {}) => {
+      const lista = [...new Set((uids || []).filter(Boolean))];
+      if (clubId == null || lista.length === 0) return;
+      if (manual) setVerificandoUid(lista[0]);
+      const r = await verificarCitasCalcom(clubId, lista);
+      if (manual) setVerificandoUid(null);
+      await cargar({ silencioso: true });
+      if (!r?.ok) {
+        // Sin verificación directa: se espera al webhook (máx. ~1 min).
+        clearInterval(esperaResolucionRef.current);
+        let intentos = 0;
+        esperaResolucionRef.current = setInterval(() => {
+          intentos += 1;
+          cargar({ silencioso: true });
+          if (intentos >= 15 || Object.keys(accionesRef.current).length === 0) clearInterval(esperaResolucionRef.current);
+        }, 4000);
+        return;
+      }
+      // Cerró la ventana sin cancelar ni reagendar: deja de esperar.
+      if (alCerrar) {
+        (r.resultados || [])
+          .filter((x) => x.resultado === 'sin_cambios')
+          .forEach((x) => setAcciones(quitarAccionCalcomPendiente(x.uid)));
+      }
+      if (manual) {
+        const sinCambios = (r.resultados || []).every((x) => x.resultado === 'sin_cambios' || x.resultado === 'pendiente');
+        if (sinCambios) {
+          toastRef.current?.({
+            titulo: 'Cal.com aún no registra el cambio',
+            detalle: 'Si ya confirmaste en Cal.com, en unos segundos se actualizará aquí.',
+            tono: 'error',
+          });
+        }
+      }
+    },
+    [cargar, clubId]
+  );
+  verificarRetornoRef.current = verificarRetorno;
+
+  function abrirGestion(cita, accion, url) {
+    setAcciones(registrarAccionCalcomPendiente(cita.calcom_uid, accion, cita.id));
+    reservaReagendadaRef.current = null;
+    setErrorGestion('');
+    setIntentosGestion(0);
+    setGestion({ cita, accion, url });
+  }
+
+  // "Cerrar y confirmar": la base de datos se actualiza SIEMPRE antes de
+  // cerrar. 1) Si la verificación con Cal.com está disponible, se usa su
+  // estado real (y no se marca nada si Cal.com dice que sigue activa).
+  // 2) Si no está disponible (sin API key / función no desplegada), el club
+  // confirma directamente (fn_soporte_club_cancelar_cita, regla de 2 h en el
+  // servidor). Después se recargan tarjetas, Próximas e Historial.
+  async function confirmarGestion(forzar = false) {
+    if (!gestion) return;
+    const { cita, accion } = gestion;
+    setConfirmandoGestion(true);
+    setErrorGestion('');
+    let aplicado = false;
+    if (!forzar) {
+      const r = await verificarCitasCalcom(clubId, [cita.calcom_uid]);
+      const res = r?.ok ? (r.resultados || []).find((x) => x.uid === cita.calcom_uid) : null;
+      if (res && ['cancelada', 'cancelada_tardia', 'reagendada', 'completada', 'no_show'].includes(res.resultado)) {
+        aplicado = true;
+      } else if (res && (res.resultado === 'sin_cambios' || res.resultado === 'actualizada')) {
+        // Cal.com confirma que la reunión sigue activa: no se libera nada.
+        const intentos = intentosGestion + 1;
+        setIntentosGestion(intentos);
+        setErrorGestion(
+          accion === 'reagendar'
+            ? 'Cal.com todavía muestra tu reunión en su horario original. Termina de reagendar en la ventana y vuelve a confirmar.'
+            : 'Cal.com todavía muestra tu reunión como activa. Termina la cancelación en la ventana y vuelve a confirmar.'
+        );
+        setConfirmandoGestion(false);
+        await cargar({ silencioso: true });
+        return;
+      }
+    }
+    if (!aplicado) {
+      const { error: err } = await cancelarCitaDesdePortal(cita.id, accion);
+      if (err) {
+        setErrorGestion(mensajeError(err, 'No se pudo actualizar la reunión.'));
+        setConfirmandoGestion(false);
+        return;
+      }
+      // Reagenda: si Cal.com informó la nueva reserva en la ventana, se
+      // registra de inmediato (el webhook después completa la misma fila).
+      if (accion === 'reagendar' && reservaReagendadaRef.current) {
+        await registrarCitaPortal({ clubId, ...reservaReagendadaRef.current });
+      } else if (accion === 'reagendar') {
+        sincronizarCalcom(clubId);
+      }
+    }
+    setConfirmandoGestion(false);
+    setGestion(null);
+    await cargar({ silencioso: true });
+  }
+
+  function cerrarGestion() {
+    const uid = gestion?.cita?.calcom_uid;
+    setGestion(null);
+    if (uid) verificarRetorno([uid], { alCerrar: true });
+  }
+
+  function descartarAccion(uid) {
+    setAcciones(quitarAccionCalcomPendiente(uid));
+  }
+
+  // Cuando una cita en espera deja de estar "agendada" (por el retorno, el
+  // webhook o la sincronización), sale de Próximas, entra al Historial y se
+  // avisa cuántos minutos volvieron a las horas disponibles.
+  useEffect(() => {
+    const uids = Object.keys(acciones);
+    if (uids.length === 0) return;
+    let restantes = acciones;
+    uids.forEach((uid) => {
+      const t = tickets.find((x) => x.calcom_uid === uid);
+      if (!t || t.estado === 'agendada') return;
+      restantes = quitarAccionCalcomPendiente(uid);
+      const { liberados, cobrados } = minutosLiberadosCita(t);
+      if (t.estado === 'reagendada') {
+        const nueva = t.reagendado_a_uid ? tickets.find((x) => x.calcom_uid === t.reagendado_a_uid) : null;
+        toastRef.current?.({
+          titulo: 'Reunión reagendada',
+          detalle: `${nueva?.inicio ? `Nueva fecha: ${formatoFechaHora(nueva.inicio)} · ` : ''}${
+            cobrados > 0 ? `Se descontaron ${formatoMinutos(cobrados)} (50 %) por reagendar con menos de ${ANTICIPACION_CANCELACION_HORAS} h.` : 'Sin cargo por el cambio.'
+          }`,
+        });
+      } else if (t.estado === 'cancelada' || t.estado === 'cancelada_tardia') {
+        toastRef.current?.({
+          titulo: t.estado === 'cancelada_tardia' ? 'Reunión cancelada (tardía)' : 'Reunión cancelada',
+          detalle:
+            cobrados > 0
+              ? `Se descontaron ${formatoMinutos(cobrados)} (50 %) y volvieron ${formatoMinutos(liberados)} a tus horas disponibles.`
+              : `Volvieron ${formatoMinutos(liberados)} a tus horas disponibles.`,
+        });
+      }
+    });
+    if (restantes !== acciones) setAcciones(restantes);
+  }, [tickets, acciones]);
+
+  // Mientras haya una acción en espera, se verifica periódicamente (por si el
+  // club canceló en otra pestaña y no ha vuelto) — máximo 30 min por acción.
+  useEffect(() => {
+    if (!puedeGestionar || Object.keys(acciones).length === 0) return undefined;
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') verificarRetorno(Object.keys(accionesRef.current));
+    }, 20_000);
+    return () => clearInterval(id);
+  }, [acciones, puedeGestionar, verificarRetorno]);
+
+  useEffect(() => () => clearInterval(esperaResolucionRef.current), []);
+
+  // URL de retorno desde Cal.com: /soporte?calcom=retorno[&uid=…]. Si llega
+  // dentro de la ventana embebida, se avisa a la ventana principal.
+  useEffect(() => {
+    if (typeof window === 'undefined' || clubId == null) return;
+    const retorno = leerRetornoCalcom(window.location.search);
+    if (!retorno) return;
+    const params = new URLSearchParams(window.location.search);
+    retorno.claves.forEach((k) => params.delete(k));
+    const resto = params.toString();
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${resto ? `?${resto}` : ''}`);
+    const uids = [...new Set([...retorno.uids, ...Object.keys(leerAccionesCalcomPendientes())])];
+    if (window.top && window.top !== window.self) {
+      try {
+        window.top.postMessage({ tipo: 'qlubos:calcom-retorno', uids }, window.location.origin);
+      } catch (_e) {
+        /* ventana principal en otro origen */
+      }
+      return;
+    }
+    if (uids.length) {
+      toastRef.current?.({ titulo: 'Confirmando con Cal.com…', detalle: 'Actualizando tu reunión y tus horas de soporte.' });
+      verificarRetorno(uids);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clubId]);
+
+  // Mensajes de la ventana de gestión: Cal.com avisa al reagendar (y en
+  // versiones recientes al cancelar); QLUBOS avisa si su URL de retorno se
+  // abrió dentro de la ventana embebida.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    function alMensaje(evento) {
+      const d = evento?.data;
+      if (evento.origin === window.location.origin && d && d.tipo === 'qlubos:calcom-retorno') {
+        setGestion(null);
+        verificarRetorno([...(Array.isArray(d.uids) ? d.uids : []), ...Object.keys(accionesRef.current)]);
+        return;
+      }
+      if (!gestion) return;
+      let host = '';
+      try {
+        host = new URL(evento.origin).hostname;
+      } catch (_e) {
+        return;
+      }
+      if (host !== 'cal.com' && !host.endsWith('.cal.com')) {
+        try {
+          if (host !== new URL(gestion.url).hostname) return;
+        } catch (_e) {
+          return;
+        }
+      }
+      if (tipoMensajeGestionCal(d)) {
+        const uid = gestion.cita.calcom_uid;
+        if (tipoMensajeGestionCal(d) === 'reagendada') {
+          const nueva = extraerReservaCal(d, Number(gestion.cita.minutos_reservados) || 30);
+          if (nueva && nueva.uid !== uid) reservaReagendadaRef.current = nueva;
+        }
+        // Pequeña espera: Cal.com termina de guardar antes de responder su API.
+        setTimeout(() => verificarRetorno([uid]), 1500);
+      }
+    }
+    window.addEventListener('message', alMensaje);
+    return () => window.removeEventListener('message', alMensaje);
+  }, [gestion, verificarRetorno]);
 
   // Cal.com (iframe con ?embed=true) avisa por postMessage cuando se confirma
   // una reserva: en ese momento se empieza a buscar la cita nueva sin
@@ -647,6 +1008,11 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
               calcomBase={config.calcomUrl30 || config.calcomUrl60}
               onUnirme={unirme}
               uniendose={uniendoseId === c.id}
+              pendiente={c.calcom_uid ? acciones[c.calcom_uid] : null}
+              onGestionar={abrirGestion}
+              onVerificar={(cita) => verificarRetorno([cita.calcom_uid], { manual: true })}
+              onDescartar={(cita) => descartarAccion(cita.calcom_uid)}
+              verificando={verificandoUid === c.calcom_uid}
             />
           ))
         )}
@@ -704,6 +1070,17 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
         </div>
       )}
 
+      {gestion && (
+        <ModalGestionCita
+          gestion={gestion}
+          ahora={ahora}
+          onClose={cerrarGestion}
+          onConfirmar={confirmarGestion}
+          confirmando={confirmandoGestion}
+          errorConfirmacion={errorGestion}
+          permitirForzar={intentosGestion >= 1}
+        />
+      )}
       {modal === 'comprar' && <ModalComprarHorasExtra clubId={clubId} nombreClub={nombreClub} onClose={() => setModal(null)} />}
       {modal === 'agendar' && (
         <ModalAgendarVideollamada
