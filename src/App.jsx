@@ -28289,6 +28289,25 @@ async function asegurarPerfilJugadorPortal(cliente, { usuarioId, clubId, nombre,
   return { perfil: null, error: null };
 }
 
+// Sesión segura del Portal (migracion_v106): con la sesión REAL del jugador
+// (dentro de `conAuthDelPortal`, justo después de iniciar sesión / crear la
+// cuenta) se pide un token con el que "Mi Perfil" lee y guarda su ficha vía
+// `fn_portal_mi_ficha`/`fn_portal_guardar_ficha` — la RLS de `jugadores` no
+// deja hacerlo con el cliente anónimo. `null` si la migración no está.
+async function emitirSesionPortalJugador(cliente, clubId) {
+  try {
+    const { data, error } = await cliente.rpc('fn_portal_emitir_sesion', { p_club_id: Number(clubId) });
+    if (error) {
+      console.warn('[Portal] No se pudo emitir la sesión de Mi Perfil (¿falta migracion_v106?).', error);
+      return null;
+    }
+    return data?.token ? data : null;
+  } catch (err) {
+    console.warn('[Portal] fn_portal_emitir_sesion lanzó un error.', err);
+    return null;
+  }
+}
+
 // Como `conAuthDelPortal`, pero para operaciones que necesitan una sesión
 // YA AUTENTICADA de por medio (ej. "Cambiar Contraseña": `auth.updateUser`
 // exige sesión activa, y el Portal nunca deja una sesión persistente
@@ -35567,7 +35586,7 @@ function ModalConfirmarEliminarCuentaPortal({ onClose, onConfirmar, eliminando }
 // inventar un segundo catálogo paralelo.
 const OPCIONES_MANO_HABIL = [
   { value: 'derecha', label: 'Derecha' },
-  { value: 'zurdo', label: 'Zurdo' },
+  { value: 'zurdo', label: 'Zurda' },
 ];
 const OPCIONES_POSICION_PREFERIDA = [
   { value: 'drive', label: 'Drive' },
@@ -35591,6 +35610,10 @@ function ModalMiPerfilJugador({
   jugador,
   ficha,
   cargandoFicha,
+  // Sin sesión válida para leer/guardar la ficha (ver `fn_portal_mi_ficha`,
+  // migracion_v106): se pide confirmar correo + contraseña una vez.
+  fichaBloqueada = false,
+  onDesbloquear,
   onClose,
   onGuardar,
   onCambiarPassword,
@@ -35600,40 +35623,62 @@ function ModalMiPerfilJugador({
   const [draft, setDraft] = useState(null);
   const [guardando, setGuardando] = useState(false);
 
-  // El fetch de `ficha` en `PortalPublicoJugadores` es asíncrono (llega
-  // después del primer render de este modal) — el draft se inicializa/
-  // resincroniza cada vez que `ficha` cambia (primera carga, o tras un
-  // guardado exitoso que regresa la fila actualizada).
+  // El draft se arma con la ficha completa en cuanto llega; mientras no se
+  // pueda leer (ficha bloqueada), con lo que ya trae la sesión — así la
+  // sección SIEMPRE se ve (antes, sin ficha, se quedaba en blanco).
   useEffect(() => {
-    if (!ficha) return;
+    const base = ficha || (!cargandoFicha && jugador ? { nombre: jugador.nombre, telefono: jugador.telefono } : null);
+    if (!base) return;
     setDraft({
-      nombre: ficha.nombre || '',
-      apodo: ficha.apodo || '',
-      telefono: ficha.telefono || '',
-      correo: ficha.correo || '',
-      mano_habil: ficha.mano_habil || '',
-      posicion_preferida: ficha.posicion_preferida || '',
-      categoria: ficha.categoria || '',
-      nivel_juego: ficha.nivel_juego || '',
+      nombre: base.nombre || '',
+      apodo: base.apodo || '',
+      telefono: base.telefono || '',
+      correo: base.correo || '',
+      mano_habil: base.mano_habil || '',
+      posicion_preferida: base.posicion_preferida || '',
+      fecha_nacimiento: base.fecha_nacimiento ? String(base.fecha_nacimiento).slice(0, 10) : '',
+      categoria: base.categoria || '',
+      nivel_juego: base.nivel_juego || '',
     });
-  }, [ficha]);
+  }, [ficha, cargandoFicha, jugador]);
 
   async function guardar() {
-    if (!draft) return;
+    if (!draft || fichaBloqueada) return;
     if (!draft.nombre.trim()) return mostrarToastLocal('Escribe tu nombre.');
     if (!claveTelefono(draft.telefono)) return mostrarToastLocal('Escribe tu teléfono a 10 dígitos.');
+    if (draft.fecha_nacimiento && draft.fecha_nacimiento > hoyISO()) return mostrarToastLocal('Tu fecha de nacimiento no puede ser futura.');
+    setError('');
     setGuardando(true);
+    // Solo los campos que el jugador puede editar: `nivel_juego` lo asigna
+    // su coach y `correo` es su usuario de acceso (ambos solo se muestran).
     await onGuardar({
       nombre: draft.nombre.trim(),
       apodo: draft.apodo.trim() || null,
       telefono: draft.telefono.trim(),
-      correo: draft.correo.trim() || null,
       mano_habil: draft.mano_habil || null,
       posicion_preferida: draft.posicion_preferida || null,
+      fecha_nacimiento: draft.fecha_nacimiento || null,
       categoria: draft.categoria || null,
-      nivel_juego: draft.nivel_juego || null,
     });
     setGuardando(false);
+  }
+
+  // Confirmar acceso (solo cuando la ficha está bloqueada).
+  const [correoAcceso, setCorreoAcceso] = useState('');
+  const [passwordAcceso, setPasswordAcceso] = useState('');
+  const [desbloqueando, setDesbloqueando] = useState(false);
+  const [errorAcceso, setErrorAcceso] = useState('');
+  async function desbloquear() {
+    if (!correoAcceso.trim() || !passwordAcceso) return setErrorAcceso('Captura tu correo y tu contraseña.');
+    setErrorAcceso('');
+    setDesbloqueando(true);
+    const ok = await onDesbloquear?.(correoAcceso.trim().toLowerCase(), passwordAcceso);
+    setDesbloqueando(false);
+    if (ok) {
+      setPasswordAcceso('');
+    } else {
+      setErrorAcceso('No pudimos confirmar tu acceso. Revisa tu correo y contraseña.');
+    }
   }
 
   // Validación ligera propia del formulario (sin `mostrarToast` — este
@@ -35685,91 +35730,132 @@ function ModalMiPerfilJugador({
             </div>
           ) : draft ? (
             <div className="space-y-5">
-              <div>
-                <p className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Datos Personales</p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <Campo label="Nombre completo">
-                    <input value={draft.nombre} onChange={(e) => setDraft({ ...draft, nombre: e.target.value })} className={inputClase} />
-                  </Campo>
-                  <Campo label="Apodo / Nickname">
-                    <input value={draft.apodo} onChange={(e) => setDraft({ ...draft, apodo: e.target.value })} className={inputClase} placeholder="Opcional" />
-                  </Campo>
-                  <Campo label="Teléfono (10 dígitos)">
-                    <input
-                      value={draft.telefono}
-                      onChange={(e) => setDraft({ ...draft, telefono: e.target.value })}
-                      className={inputClase}
-                      inputMode="tel"
-                    />
-                  </Campo>
-                  <Campo label="Correo electrónico">
+              {fichaBloqueada && (
+                <div className="space-y-3 rounded-xl border border-amber-300 bg-amber-50 p-4">
+                  <div className="flex items-start gap-2">
+                    <Lock size={15} className="mt-0.5 shrink-0 text-amber-600" />
+                    <div>
+                      <p className="text-sm font-bold text-amber-900">Confirma tu acceso para editar tu perfil</p>
+                      <p className="text-xs text-amber-800">Por tu seguridad, escribe el correo y la contraseña de tu cuenta una sola vez.</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <input
                       type="email"
-                      value={draft.correo}
-                      onChange={(e) => setDraft({ ...draft, correo: e.target.value })}
+                      autoComplete="email"
+                      value={correoAcceso}
+                      onChange={(e) => setCorreoAcceso(e.target.value)}
+                      placeholder="Correo"
+                      aria-label="Correo de acceso"
                       className={inputClase}
                     />
-                  </Campo>
-                </div>
-              </div>
-
-              <div>
-                <p className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Ficha Informativa</p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <Campo label="Mano hábil">
-                    <select value={draft.mano_habil} onChange={(e) => setDraft({ ...draft, mano_habil: e.target.value })} className={inputClase}>
-                      <option value="">Sin especificar</option>
-                      {OPCIONES_MANO_HABIL.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Campo>
-                  <Campo label="Posición preferida">
-                    <select
-                      value={draft.posicion_preferida}
-                      onChange={(e) => setDraft({ ...draft, posicion_preferida: e.target.value })}
+                    <input
+                      type="password"
+                      autoComplete="current-password"
+                      value={passwordAcceso}
+                      onChange={(e) => setPasswordAcceso(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && desbloquear()}
+                      placeholder="Contraseña"
+                      aria-label="Contraseña de acceso"
                       className={inputClase}
-                    >
-                      <option value="">Sin especificar</option>
-                      {OPCIONES_POSICION_PREFERIDA.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Campo>
-                  <Campo label="Categoría Competitiva" hint="Torneos y Retas — se actualiza sola con tu última inscripción.">
-                    <select value={draft.categoria} onChange={(e) => setDraft({ ...draft, categoria: e.target.value })} className={inputClase}>
-                      <option value="">Sin especificar</option>
-                      {NIVELES_FUERZA.map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
-                      ))}
-                    </select>
-                  </Campo>
-                  <Campo label="Nivel de Juego" hint="Academia y Clases — se actualiza solo con la evaluación de tu coach.">
-                    <select value={draft.nivel_juego} onChange={(e) => setDraft({ ...draft, nivel_juego: e.target.value })} className={inputClase}>
-                      <option value="">Sin especificar</option>
-                      {NIVELES_ACADEMIA.map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
-                      ))}
-                    </select>
-                  </Campo>
+                    />
+                  </div>
+                  {errorAcceso && <p className="text-xs font-semibold text-rose-500">{errorAcceso}</p>}
+                  <div className="flex justify-end">
+                    <BotonPrimario onClick={desbloquear} disabled={desbloqueando} className="px-3 py-2 text-xs">
+                      {desbloqueando ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                      Confirmar acceso
+                    </BotonPrimario>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
-              <div className="flex justify-end">
-                <BotonPrimario onClick={guardar} disabled={guardando} className="px-4 py-2 text-xs">
-                  {guardando ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                  Guardar cambios
-                </BotonPrimario>
-              </div>
+              <fieldset disabled={fichaBloqueada} className={`space-y-5 ${fichaBloqueada ? 'opacity-60' : ''}`}>
+                <div>
+                  <p className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Datos Personales</p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <Campo label="Nombre completo">
+                      <input value={draft.nombre} onChange={(e) => setDraft({ ...draft, nombre: e.target.value })} className={inputClase} />
+                    </Campo>
+                    <Campo label="Apodo / Nickname">
+                      <input
+                        value={draft.apodo}
+                        onChange={(e) => setDraft({ ...draft, apodo: e.target.value })}
+                        className={inputClase}
+                        placeholder="Opcional"
+                        maxLength={40}
+                      />
+                    </Campo>
+                    <Campo label="Teléfono (10 dígitos)">
+                      <input
+                        value={draft.telefono}
+                        onChange={(e) => setDraft({ ...draft, telefono: e.target.value })}
+                        className={inputClase}
+                        inputMode="tel"
+                      />
+                    </Campo>
+                    <Campo label="Fecha de nacimiento">
+                      <SelectorFechaClick value={draft.fecha_nacimiento} onChange={(v) => setDraft({ ...draft, fecha_nacimiento: v })} />
+                    </Campo>
+                    <Campo label="Correo electrónico" hint="Es tu usuario para iniciar sesión.">
+                      <p className="truncate rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-600">{draft.correo || '—'}</p>
+                    </Campo>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">Ficha Deportiva</p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <Campo label="Mano hábil">
+                      <select value={draft.mano_habil} onChange={(e) => setDraft({ ...draft, mano_habil: e.target.value })} className={inputClase}>
+                        <option value="">Sin especificar</option>
+                        {OPCIONES_MANO_HABIL.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Campo>
+                    <Campo label="Posición preferida">
+                      <select
+                        value={draft.posicion_preferida}
+                        onChange={(e) => setDraft({ ...draft, posicion_preferida: e.target.value })}
+                        className={inputClase}
+                      >
+                        <option value="">Sin especificar</option>
+                        {OPCIONES_POSICION_PREFERIDA.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Campo>
+                    <Campo label="Categoría" hint="Torneos y Retas — también se actualiza con tu última inscripción.">
+                      <select value={draft.categoria} onChange={(e) => setDraft({ ...draft, categoria: e.target.value })} className={inputClase}>
+                        <option value="">Sin especificar</option>
+                        {NIVELES_FUERZA.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                    </Campo>
+                    <Campo label="Nivel de Academia" hint="Lo asigna tu coach en tu evaluación.">
+                      <p className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">
+                        {draft.nivel_juego || 'Sin evaluar'}
+                      </p>
+                    </Campo>
+                  </div>
+                </div>
+
+                {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+                <div className="flex justify-end">
+                  <BotonPrimario onClick={guardar} disabled={guardando || fichaBloqueada} className="px-4 py-2 text-xs">
+                    {guardando ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                    Guardar cambios
+                  </BotonPrimario>
+                </div>
+              </fieldset>
             </div>
           ) : null}
         </div>
@@ -42596,11 +42682,31 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos, diaHoy }) {
             <Phone size={10} /> {perfil.telefono || 'Sin teléfono'}
           </p>
         </div>
-        <span
-          className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${metaSeg.bg} ${metaSeg.color} ${metaSeg.ring}`}
-        >
-          <SegIcon size={11} /> {perfil.segmento}
-        </span>
+        {/* Segmento + debajo, si existen, Categoría (Torneos & Retas) y
+            Nivel de Academia — identificación de un vistazo. */}
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${metaSeg.bg} ${metaSeg.color} ${metaSeg.ring}`}
+          >
+            <SegIcon size={11} /> {perfil.segmento}
+          </span>
+          {perfil.categoria && (
+            <span
+              title="Categoría · Torneos & Retas"
+              className="inline-flex items-center gap-1 rounded-full bg-violet-400/10 px-2 py-0.5 text-[10px] font-bold text-violet-600 ring-1 ring-violet-400/30"
+            >
+              <Trophy size={10} /> {perfil.categoria}
+            </span>
+          )}
+          {perfil.nivelJuego && (
+            <span
+              title="Nivel · Academia"
+              className="inline-flex items-center gap-1 rounded-full bg-teal-400/10 px-2 py-0.5 text-[10px] font-bold text-teal-600 ring-1 ring-teal-400/30"
+            >
+              <GraduationCap size={10} /> {perfil.nivelJuego}
+            </span>
+          )}
+        </div>
       </div>
 
       {perfil.chs.enRiesgo && (
@@ -50897,24 +51003,67 @@ function PortalPublicoJugadores({ clubSlug }) {
   // (mismo criterio bajo-demanda que `evaluacionesJugadorPortal` arriba).
   const [fichaJugador, setFichaJugador] = useState(null);
   const [cargandoFicha, setCargandoFicha] = useState(false);
+  // FIX "Mi Perfil sin sección editable": la ficha se leía con el cliente
+  // anónimo y la RLS de `jugadores` (v78) la regresaba vacía — la sección
+  // no se pintaba. Ahora se lee con el token de sesión del Portal
+  // (`fn_portal_mi_ficha`, migracion_v106); si no hay token válido se marca
+  // `fichaBloqueada` y el modal pide confirmar correo + contraseña.
+  const [fichaBloqueada, setFichaBloqueada] = useState(false);
   useEffect(() => {
     if (!mostrarMiPerfil || jugador?.id == null) return;
     let cancelado = false;
     (async () => {
       setCargandoFicha(true);
-      const { data, error } = await supabase.from('jugadores').select('*').eq('id', jugador.id).maybeSingle();
+      let fila = null;
+      if (jugador.portalToken && club?.id) {
+        const { data, error } = await supabase.rpc('fn_portal_mi_ficha', { p_token: jugador.portalToken, p_club_id: Number(club.id) });
+        if (!error && data) fila = data;
+        else if (error) console.warn('[Portal] No se pudo leer la ficha con la sesión del Portal.', error);
+      }
+      if (!fila) {
+        // Respaldo: proyectos con una RLS que sí deja leer la fila.
+        const { data, error } = await supabase.from('jugadores').select('*').eq('id', jugador.id).maybeSingle();
+        if (error) console.warn('[Portal] Error detallado Supabase (cargar ficha de Mi Perfil):', error);
+        if (data) fila = data;
+      }
       if (cancelado) return;
-      if (error) {
-        console.error('[Portal] Error detallado Supabase (cargar ficha de Mi Perfil):', error);
-      } else if (data) {
-        setFichaJugador(data);
+      if (fila) {
+        setFichaJugador(fila);
+        setFichaBloqueada(false);
+      } else {
+        setFichaBloqueada(true);
       }
       setCargandoFicha(false);
     })();
     return () => {
       cancelado = true;
     };
-  }, [mostrarMiPerfil, jugador?.id]);
+  }, [mostrarMiPerfil, jugador?.id, jugador?.portalToken, club?.id]);
+
+  // "Confirmar acceso" de Mi Perfil: inicia sesión un instante (cliente
+  // aislado del Portal), emite el token de sesión y la cierra. Con el token
+  // nuevo en `jugador`, el efecto de arriba vuelve a leer la ficha.
+  async function desbloquearFichaJugador(correo, password) {
+    if (!club?.id) return false;
+    const { data, error } = await conSesionTemporalDelPortal(correo, password, async (cliente) => {
+      const sesion = await emitirSesionPortalJugador(cliente, club.id);
+      return sesion ? { data: sesion, error: null } : { data: null, error: new Error('No se pudo abrir tu sesión del Portal (¿falta migracion_v106?).') };
+    });
+    if (error || !data?.token) {
+      console.error('[Portal] Error detallado Supabase (confirmar acceso de Mi Perfil):', error);
+      return false;
+    }
+    const jugadorActualizado = {
+      ...jugador,
+      id: data.jugador_id ?? jugador?.id,
+      nombre: data.nombre || jugador?.nombre || '',
+      telefono: data.telefono || jugador?.telefono || '',
+      portalToken: data.token,
+    };
+    setJugador(jugadorActualizado);
+    guardarSesionPortalLocal(club.id, jugadorActualizado);
+    return true;
+  }
 
   // NOTIFICACIONES DEL JUGADOR (item 3, Clases Privadas/Personalizadas) —
   // espejo de "Mi Perfil Deportivo" arriba: solo LECTURA + marcar como
@@ -51416,6 +51565,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       // esa sesión el jugador sí puede leer —o crear— su fila de `jugadores`.
       let perfilAsegurado = null;
       let errorPerfil = null;
+      let sesionPortal = null;
       const { data, error } = await conAuthDelPortal(async (cliente) => {
         const r = await cliente.auth.signUp({
           email: correoLimpio,
@@ -51446,6 +51596,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           });
           perfilAsegurado = asegurado.perfil;
           errorPerfil = asegurado.error;
+          if (perfilAsegurado) sesionPortal = await emitirSesionPortalJugador(cliente, club.id);
         }
         return r;
       });
@@ -51487,7 +51638,12 @@ function PortalPublicoJugadores({ clubSlug }) {
         return 'iniciar_sesion';
       }
 
-      const nuevoJugador = { id: filaJugador.id, nombre: filaJugador.nombre || nombreLimpio, telefono: filaJugador.telefono || telefonoLimpio };
+      const nuevoJugador = {
+        id: filaJugador.id,
+        nombre: filaJugador.nombre || nombreLimpio,
+        telefono: filaJugador.telefono || telefonoLimpio,
+        portalToken: sesionPortal?.token || null,
+      };
       setJugador(nuevoJugador);
       guardarSesionPortalLocal(club?.id, nuevoJugador);
       mostrarToast({ titulo: `¡Bienvenido, ${nuevoJugador.nombre}!`, detalle: 'Tu cuenta quedó creada — ya puedes inscribirte a Retas y Torneos abiertos.' });
@@ -51525,6 +51681,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       // crearse, se crea ahora (metadatos del alta) en vez de fallar.
       let fila = null;
       let errorPerfil = null;
+      let sesionPortal = null;
       const { data, error } = await conAuthDelPortal(async (cliente) => {
         const r = await cliente.auth.signInWithPassword({ email: correoLimpio, password });
         if (!r.error && r.data?.user && club?.id) {
@@ -51549,12 +51706,16 @@ function PortalPublicoJugadores({ clubSlug }) {
               })();
           fila = asegurado.perfil;
           errorPerfil = asegurado.error;
+          if (!errorPerfil) sesionPortal = await emitirSesionPortalJugador(cliente, club.id);
         }
         return r;
       });
       if (error) throw error;
       const usuario = data?.user;
       if (!usuario) throw new Error('No se pudo iniciar sesión.');
+      if (!fila && sesionPortal?.jugador_id != null) {
+        fila = { id: sesionPortal.jugador_id, nombre: sesionPortal.nombre, telefono: sesionPortal.telefono };
+      }
       if (errorPerfil) throw errorPerfil;
       if (!fila) {
         const { data: porAuthId } = await conClubId(supabase.from('jugadores').select('id, nombre, telefono')).eq('auth_user_id', usuario.id).maybeSingle();
@@ -51566,7 +51727,13 @@ function PortalPublicoJugadores({ clubSlug }) {
       }
       if (!fila) throw new Error('No encontramos tu cuenta en este club — si es tu primera vez, usa "Crear Cuenta".');
 
-      const jugadorSesion = { id: fila.id, nombre: fila.nombre || '', telefono: fila.telefono || '' };
+      const jugadorSesion = {
+        id: fila.id,
+        nombre: fila.nombre || '',
+        telefono: fila.telefono || '',
+        // Solo si el token es de ESTE mismo perfil.
+        portalToken: sesionPortal && String(sesionPortal.jugador_id) === String(fila.id) ? sesionPortal.token : null,
+      };
       setJugador(jugadorSesion);
       guardarSesionPortalLocal(club?.id, jugadorSesion);
       mostrarToast({ titulo: `¡Hola de nuevo${jugadorSesion.nombre ? ', ' + jugadorSesion.nombre.split(' ')[0] : ''}!` });
@@ -51671,6 +51838,12 @@ function PortalPublicoJugadores({ clubSlug }) {
   }
 
   function cerrarSesionPortal() {
+    // Revoca el token de "Mi Perfil" (best-effort, migracion_v106).
+    if (jugador?.portalToken) {
+      supabase
+        .rpc('fn_portal_cerrar_sesion', { p_token: jugador.portalToken })
+        .then(({ error }) => error && console.warn('[Portal] No se pudo revocar la sesión de Mi Perfil.', error));
+    }
     setJugador(null);
     borrarSesionPortalLocal(club?.id);
   }
@@ -51727,16 +51900,35 @@ function PortalPublicoJugadores({ clubSlug }) {
   async function guardarFichaJugador(cambios) {
     if (!jugador?.id) return false;
     try {
-      const { data, error } = await actualizarConColumnasOpcionales('jugadores', jugador.id, cambios, [
-        'apodo',
-        'correo',
-        'mano_habil',
-        'posicion_preferida',
-        'categoria',
-        'nivel_juego',
-      ]);
-      if (error) throw error;
-      const filaActualizada = data || { ...fichaJugador, ...cambios };
+      let filaActualizada = null;
+      if (jugador.portalToken && club?.id) {
+        // Vía segura (migracion_v106): solo la fila del dueño del token.
+        const { data, error } = await supabase.rpc('fn_portal_guardar_ficha', {
+          p_token: jugador.portalToken,
+          p_club_id: Number(club.id),
+          p_cambios: cambios,
+        });
+        if (error) {
+          if (error.code === '42501') setFichaBloqueada(true);
+          throw error;
+        }
+        filaActualizada = data;
+      } else {
+        // Respaldo sin token: `.select()` para detectar un UPDATE que la RLS
+        // dejó en 0 filas (antes se reportaba "Perfil actualizado" en falso).
+        const { data, error } = await conColumnasOpcionales(
+          cambios,
+          ['apodo', 'mano_habil', 'posicion_preferida', 'categoria', 'fecha_nacimiento'],
+          (payload) => supabase.from('jugadores').update(payload).eq('id', jugador.id).select('*')
+        );
+        if (error) throw error;
+        if (!Array.isArray(data) || data.length === 0) {
+          setFichaBloqueada(true);
+          throw new Error('Confirma tu acceso (correo y contraseña) para guardar tus cambios.');
+        }
+        filaActualizada = data[0];
+      }
+      if (!filaActualizada) filaActualizada = { ...fichaJugador, ...cambios };
       setFichaJugador(filaActualizada);
       // El nombre/teléfono del header y de la sesión local
       // (`guardarSesionPortalLocal`) se mantienen sincronizados si la ficha
@@ -51752,7 +51944,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       return true;
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (guardar ficha de Mi Perfil):', err);
-      mostrarToast({ titulo: 'No se pudo guardar tu perfil', detalle: 'Intenta de nuevo en un momento.', tono: 'error' });
+      mostrarToast({ titulo: 'No se pudo guardar tu perfil', detalle: err?.message || 'Intenta de nuevo en un momento.', tono: 'error' });
       return false;
     }
   }
@@ -54670,6 +54862,8 @@ function PortalPublicoJugadores({ clubSlug }) {
             jugador={jugador}
             ficha={fichaJugador}
             cargandoFicha={cargandoFicha}
+            fichaBloqueada={fichaBloqueada}
+            onDesbloquear={desbloquearFichaJugador}
             onClose={() => setMostrarMiPerfil(false)}
             onGuardar={guardarFichaJugador}
             onCambiarPassword={cambiarPasswordJugador}
