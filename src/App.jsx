@@ -29055,6 +29055,9 @@ function TarjetaReta({
   eliminandoVisual,
   onCargarMarcador,
   ahoraMs,
+  // Generación Masiva (lote): { indice, total, clase } cuando la reta forma
+  // parte de una sesión creada en lote (`lote_id`, migracion_v103).
+  lote,
 }) {
   const confirmados = inscritos.filter(inscripcionOcupaLugar);
   const lugaresDisponibles = Math.max(0, CUPOS_RETA - confirmados.length);
@@ -29193,6 +29196,14 @@ function TarjetaReta({
       </div>
 
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+        {lote && (
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-bold ring-1 ${lote.clase}`}
+            title={`Creada en lote: ${lote.total} retas independientes de la misma sesión`}
+          >
+            <Layers size={10} /> Sesión · {lote.indice}/{lote.total}
+          </span>
+        )}
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-bold text-slate-600">
           <Award size={10} /> {nivelDeReta(reta) || 'Nivel libre'}
         </span>
@@ -29346,15 +29357,234 @@ function TarjetaReta({
   );
 }
 
+/* ---------------- Generación Masiva de Retas Independientes ---------------- */
+// "Abrir Reta" con varias canchas y/o un horario largo: el rango se parte en
+// bloques consecutivos de "Duración de cada reta" (ej. 13:00–17:00 en bloques
+// de 60 min → 13–14, 14–15, 15–16, 16–17) POR CADA cancha marcada. Cada
+// bloque activo de la matriz de previsualización se guarda como una RETA
+// INDEPENDIENTE (su propio id, sus 4 lugares, su marcador y su control de
+// jugadores) con su propio bloqueo 'Reta' en `reservas` — exactamente igual
+// que una reta individual, así que Parrilla, Cronograma, Mapa de Calor y
+// Analytics la leen sin ningún cambio. Todas las del lote comparten nombre
+// base, fecha y `lote_id` (columna opcional, migracion_v103: si no existe,
+// se omite sola y las retas se crean igual).
+const DURACIONES_RETA = [
+  { value: 30, label: '30 min' },
+  { value: 45, label: '45 min' },
+  { value: 60, label: '1 hora' },
+  { value: 90, label: '1 h 30 min' },
+  { value: 120, label: '2 horas' },
+  { value: 0, label: 'Sin dividir (una reta en todo el horario)' },
+];
+const DURACION_RETA_DEFAULT = 60;
+const CONCURRENCIA_LOTE_RETAS = 3;
+
+function generarBloquesReta(horaInicio, horaFin, duracionMin) {
+  const ini = parseHoraAMinutos(horaInicio);
+  const fin = parseHoraAMinutos(horaFin);
+  if (ini === null || fin === null || fin <= ini) return { bloques: [], sobrante: 0 };
+  if (!duracionMin) return { bloques: [{ inicio: horaInicio, fin: horaFin }], sobrante: 0 };
+  const bloques = [];
+  for (let t = ini; t + duracionMin <= fin; t += duracionMin) bloques.push({ inicio: minutosAHora(t), fin: minutosAHora(t + duracionMin) });
+  return { bloques, sobrante: fin - (ini + bloques.length * duracionMin) };
+}
+
+function claveCeldaReta(canchaId, inicio) {
+  return `${canchaId}|${inicio}`;
+}
+
+function nuevoIdLoteRetas() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  } catch (_e) {
+    /* respaldo abajo */
+  }
+  return `lote-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Mismo payload (con todos los alias de columna) que ya usaba "Abrir Reta".
+function payloadNuevaReta({ nombre, canchaIds, fecha, horaInicio, horaFin, nivel, rama, precio, loteId = null }) {
+  const monto = Number(precio) || 0;
+  const payload = {
+    nombre,
+    cancha_id: canchaIds[0],
+    cancha_ids: canchaIds,
+    fecha,
+    hora_inicio: horaInicio,
+    hora_fin: horaFin,
+    categoria: nivel || null,
+    nivel: nivel || null,
+    rama,
+    precio_inscripcion: monto,
+    costo_inscripcion: monto,
+    precio_persona: monto,
+    precio_individual: monto,
+    precio: monto,
+    costo: monto,
+    estado: 'abierta',
+  };
+  if (loteId) payload.lote_id = loteId;
+  return withClubId(payload);
+}
+
+const COLUMNAS_OPCIONALES_RETA = ['categoria', 'nivel', 'precio_inscripcion', 'costo_inscripcion', 'precio_persona', 'precio_individual', 'precio', 'costo', 'cancha_ids', 'lote_id'];
+
+// INSERT de una reta en Supabase + su(s) bloqueo(s) en la Parrilla — misma
+// secuencia que la reta individual de siempre. Devuelve `{ reta, bloqueos,
+// error }`; nunca lanza.
+async function crearRetaConBloqueos({ payloadReta, canchaIds, fecha, horaInicio, horaFin, etiqueta }) {
+  const { data, error } = await insertarConColumnasOpcionales('retas', payloadReta, COLUMNAS_OPCIONALES_RETA);
+  if (error || !data) return { reta: null, bloqueos: [], error: error || new Error('No se pudo crear la reta.') };
+  const reta = { ...data };
+  const resultados = await Promise.all(
+    canchaIds.map((id) => crearBloqueoParrilla({ canchaId: id, fecha, horaInicio, horaFin, estado: 'Reta', etiqueta: reta.nombre || etiqueta }))
+  );
+  const bloqueos = resultados.filter((r) => !r.error && r.data).map((r) => r.data);
+  const ids = bloqueos.map((b) => b.id);
+  if (ids.length > 0) {
+    await actualizarConColumnasOpcionales('retas', reta.id, { reserva_bloqueo_id: ids[0], reserva_bloqueo_ids: ids }, ['reserva_bloqueo_ids']);
+    reta.reserva_bloqueo_id = ids[0];
+    reta.reserva_bloqueo_ids = ids;
+  }
+  if (ids.length < canchaIds.length) {
+    console.warn('[Torneos & Retas] Reta creada, pero no se pudo bloquear el horario en todas sus canchas.', resultados);
+  }
+  return { reta, bloqueos, error: null };
+}
+
+// Color estable por lote (identificador visual común de las retas de una sesión).
+const COLORES_LOTE_RETA = [
+  'bg-fuchsia-400/10 text-fuchsia-600 ring-fuchsia-400/30',
+  'bg-sky-400/10 text-sky-600 ring-sky-400/30',
+  'bg-emerald-400/10 text-emerald-600 ring-emerald-400/30',
+  'bg-amber-400/10 text-amber-600 ring-amber-400/30',
+  'bg-violet-400/10 text-violet-600 ring-violet-400/30',
+  'bg-rose-400/10 text-rose-600 ring-rose-400/30',
+];
+function claseColorLoteReta(loteId) {
+  const texto = String(loteId || '');
+  let h = 0;
+  for (let i = 0; i < texto.length; i += 1) h = (h * 31 + texto.charCodeAt(i)) >>> 0;
+  return COLORES_LOTE_RETA[h % COLORES_LOTE_RETA.length];
+}
+
+// Matriz de previsualización: filas = bloques horarios, columnas = canchas.
+// Clic en una celda la enciende/apaga; el lápiz edita Nivel/Rama/Precio solo
+// de esa reta. Las celdas con una reserva u otro bloqueo ya existente quedan
+// "Ocupada" y no se pueden activar.
+function MatrizPrevisualizacionRetas({ bloques, canchasLote, celdas, onToggle, onToggleFila, onToggleColumna, onEditar, editando }) {
+  return (
+    <div className="overflow-x-auto rounded-xl border border-slate-200">
+      <table className="w-full min-w-[420px] border-collapse text-xs">
+        <thead>
+          <tr className="bg-slate-50">
+            <th className="sticky left-0 z-10 border-b border-slate-200 bg-slate-50 px-2.5 py-2 text-left text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              Horario
+            </th>
+            {canchasLote.map((c) => (
+              <th key={c.id} className="border-b border-l border-slate-200 px-2 py-2 text-center">
+                <button
+                  type="button"
+                  onClick={() => onToggleColumna(c.id)}
+                  className="text-[11px] font-black text-slate-700 hover:text-fuchsia-500"
+                  title="Activar / desactivar toda la columna"
+                >
+                  {c.nombre}
+                </button>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {bloques.map((b) => (
+            <tr key={b.inicio}>
+              <th className="sticky left-0 z-10 whitespace-nowrap border-b border-slate-200 bg-white px-2.5 py-1.5 text-left">
+                <button
+                  type="button"
+                  onClick={() => onToggleFila(b.inicio)}
+                  className="text-[11px] font-bold text-slate-600 hover:text-fuchsia-500"
+                  title="Activar / desactivar toda la fila"
+                >
+                  {formatoHora12(b.inicio)}–{formatoHora12(b.fin)}
+                </button>
+              </th>
+              {canchasLote.map((c) => {
+                const clave = claveCeldaReta(c.id, b.inicio);
+                const celda = celdas[clave];
+                if (!celda) return <td key={c.id} className="border-b border-l border-slate-200" />;
+                if (celda.ocupada) {
+                  return (
+                    <td key={c.id} className="border-b border-l border-slate-200 p-1">
+                      <div
+                        className="rounded-lg bg-[repeating-linear-gradient(45deg,#f1f5f9,#f1f5f9_6px,#e2e8f0_6px,#e2e8f0_12px)] px-2 py-2 text-center text-[10px] font-bold text-slate-500"
+                        title={celda.ocupadaPor ? `Ocupada por: ${celda.ocupadaPor}` : 'Ya hay una reserva u otro bloqueo'}
+                      >
+                        <Lock size={10} className="mx-auto mb-0.5" /> Ocupada
+                      </div>
+                    </td>
+                  );
+                }
+                const seleccionada = editando === clave;
+                return (
+                  <td key={c.id} className="border-b border-l border-slate-200 p-1">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={celda.activa}
+                      onClick={() => onToggle(clave)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          onToggle(clave);
+                        }
+                      }}
+                      className={`relative cursor-pointer rounded-lg px-2 py-1.5 text-center transition ${
+                        celda.activa
+                          ? `bg-fuchsia-400/10 text-fuchsia-700 ring-1 ${seleccionada ? 'ring-2 ring-orange-400' : 'ring-fuchsia-400/40'} hover:bg-fuchsia-400/20`
+                          : 'border border-dashed border-slate-300 text-slate-400 hover:border-slate-400 hover:text-slate-600'
+                      }`}
+                    >
+                      {celda.activa ? (
+                        <>
+                          <p className="truncate text-[10px] font-black">{celda.nivel || 'Nivel libre'}</p>
+                          <p className="truncate text-[10px] font-semibold">
+                            {celda.rama} · ${Number(celda.precio) || 0}
+                          </p>
+                          {celda.editada && <span className="absolute left-1 top-1 h-1.5 w-1.5 rounded-full bg-orange-400" title="Valores propios" />}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onEditar(clave);
+                            }}
+                            className="absolute right-0.5 top-0.5 rounded p-0.5 text-fuchsia-500 hover:bg-white"
+                            title="Editar nivel, rama o precio de esta reta"
+                          >
+                            <Pencil size={10} />
+                          </button>
+                        </>
+                      ) : (
+                        <p className="py-1 text-[10px] font-bold">Sin reta</p>
+                      )}
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   // Multiselección de Canchas al Abrir Reta: el operador puede marcar una,
-  // varias o TODAS las canchas activas — cada una recibe su propio bloqueo
-  // "RETA ABIERTA" en la Parrilla (ver `guardar()` más abajo y
-  // `crearBloqueoParrilla`/`idsBloqueosDeReta`). Arranca con la primera
-  // cancha activa ya marcada para no forzar al operador a tocar nada si
-  // solo quiere abrir en una sola cancha, como antes.
+  // varias o TODAS las canchas activas. Arranca con la primera cancha activa
+  // ya marcada para no forzar al operador a tocar nada si solo quiere abrir
+  // una reta en una sola cancha, como antes.
   const [canchaIdsSeleccionadas, setCanchaIdsSeleccionadas] = useState(() => (canchasActivas[0] ? [canchasActivas[0].id] : []));
   function toggleCancha(id) {
     setCanchaIdsSeleccionadas((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -29364,31 +29594,22 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
   }
   const [fecha, setFecha] = useState(hoyISO());
   const [horaInicio, setHoraInicio] = useState('19:00');
-  const [horaFin, setHoraFin] = useState('20:30');
+  const [horaFin, setHoraFin] = useState('20:00');
+  // Generación Masiva: duración de cada reta independiente (0 = una sola
+  // reta para todo el horario y todas las canchas, el comportamiento previo).
+  const [duracion, setDuracion] = useState(DURACION_RETA_DEFAULT);
   const [nivel, setNivel] = useState('');
   const [rama, setRama] = useState(RAMAS_JUEGO[0]);
   const [precio, setPrecio] = useState('150');
-  // La Tolerancia de Cancelación de Retas YA NO se captura aquí por reta
-  // individual — ahora vive centralizada en Configuración del Club →
-  // "Reservas & Academia" → "Políticas y Tolerancia de Cancelación" (ver
-  // `SeccionReservasAcademia`). `cancelarInscripcionReta` en
-  // `ModuloTorneosRetas` es quien lee esas horas en el momento de cancelar,
-  // no un valor guardado por reta.
+  // La Tolerancia de Cancelación de Retas vive centralizada en Configuración
+  // del Club → "Reservas & Academia" (ver `SeccionReservasAcademia`).
   const config = configClub || CONFIG_CLUB_DEFAULT;
-  // Auditoría de Jerarquía en Cascada (Motor Unificado): antes este
-  // componente duplicaba a mano el chequeo Switch Master + sub-switch de
-  // Retas en vez de leerlo de `politicaCancelacionModulo` — misma regla,
-  // pero un segundo lugar que mantener sincronizado si la jerarquía cambia.
   const { activa: toleranciaActiva, horas: toleranciaHorasActiva } = politicaCancelacionModulo(config, 'retas');
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
-  // Nombre Personalizado de Retas: sigue autogenerándose a partir de
-  // rama/nivel (ej. "Reta Varonil · 4ª Fuerza") SOLO mientras el operador no
-  // lo edite a mano — igual criterio que el monto automático de "Nueva
-  // Reserva" (`nombreTocado`, ver `ModalNuevaReserva`), para que un nombre
-  // personalizado ("Reta de Adrián", "Reta de los Lunes") nunca se pise solo
-  // al cambiar rama/nivel después.
+  // Nombre Personalizado de Retas: se autogenera con rama/nivel SOLO
+  // mientras el operador no lo edite a mano.
   const nombreAutomatico = `Reta ${rama}${nivel ? ` · ${nivel}` : ''}`;
   const [nombre, setNombre] = useState(nombreAutomatico);
   const [nombreTocado, setNombreTocado] = useState(false);
@@ -29398,172 +29619,341 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nombreAutomatico, nombreTocado]);
 
-  async function guardar() {
-    if (canchaIdsSeleccionadas.length === 0) return setError('Selecciona al menos una cancha.');
-    if (!fecha || !horaInicio || !horaFin) return setError('Completa fecha y horario.');
+  // ---- Generación Masiva: bloques × canchas ----
+  const canchasOrdenadas = useMemo(
+    () => canchasActivas.filter((c) => canchaIdsSeleccionadas.includes(c.id)),
+    [canchasActivas, canchaIdsSeleccionadas]
+  );
+  const { bloques, sobrante } = useMemo(() => generarBloquesReta(horaInicio, horaFin, duracion), [horaInicio, horaFin, duracion]);
+  const esLoteMultiple = duracion > 0 && bloques.length * canchasOrdenadas.length > 1;
+  const [paso, setPaso] = useState('formulario'); // 'formulario' | 'matriz'
+  const [celdas, setCeldas] = useState({});
+  const [celdaEditando, setCeldaEditando] = useState(null);
+  const [progreso, setProgreso] = useState(null); // { hechas, total } | null
+
+  function validarBase() {
+    if (canchaIdsSeleccionadas.length === 0) return 'Selecciona al menos una cancha.';
+    if (!fecha || !horaInicio || !horaFin) return 'Completa fecha y horario.';
     const ini = parseHoraAMinutos(horaInicio);
     const fin = parseHoraAMinutos(horaFin);
-    if (ini === null || fin === null || fin <= ini) return setError('La hora de fin debe ser posterior a la de inicio.');
-    // Multiselección de Canchas: se revisa el choque de horario EN CADA
-    // cancha marcada por separado (una reta de 3 canchas puede tener libres
-    // 2 y ocupada 1) — si cualquiera choca, se avisa con el nombre de la(s)
-    // cancha(s) en conflicto y no se guarda nada, para no dejar la reta a
-    // medias (bloqueada en unas canchas sí y en otras no).
+    if (ini === null || fin === null || fin <= ini) return 'La hora de fin debe ser posterior a la de inicio.';
+    if (duracion > 0 && bloques.length === 0) return `El horario es más corto que la duración de cada reta (${DURACIONES_RETA.find((d) => d.value === duracion)?.label}).`;
+    return '';
+  }
+
+  // Paso 2: arma la matriz con los valores generales; las celdas que chocan
+  // con una reserva/bloqueo existente nacen "Ocupada" (apagadas).
+  function irAMatriz() {
+    const msg = validarBase();
+    if (msg) return setError(msg);
+    setError('');
+    const nuevas = {};
+    canchasOrdenadas.forEach((c) => {
+      bloques.forEach((b) => {
+        const clave = claveCeldaReta(c.id, b.inicio);
+        const choque = buscarSolapeEnCancha(reservas, c.id, fecha, b.inicio, b.fin);
+        const previa = celdas[clave];
+        nuevas[clave] = {
+          canchaId: c.id,
+          inicio: b.inicio,
+          fin: b.fin,
+          ocupada: Boolean(choque),
+          ocupadaPor: choque?.jugador_nombre || null,
+          activa: !choque && (previa ? previa.activa : true),
+          nivel: previa?.editada ? previa.nivel : nivel,
+          rama: previa?.editada ? previa.rama : rama,
+          precio: previa?.editada ? previa.precio : precio,
+          editada: Boolean(previa?.editada),
+        };
+      });
+    });
+    setCeldas(nuevas);
+    setCeldaEditando(null);
+    setPaso('matriz');
+  }
+
+  function toggleCelda(clave) {
+    setCeldas((prev) => (prev[clave] && !prev[clave].ocupada ? { ...prev, [clave]: { ...prev[clave], activa: !prev[clave].activa } } : prev));
+  }
+  function toggleGrupo(filtro) {
+    setCeldas((prev) => {
+      const claves = Object.keys(prev).filter((k) => filtro(prev[k]) && !prev[k].ocupada);
+      const encender = claves.some((k) => !prev[k].activa);
+      const sig = { ...prev };
+      claves.forEach((k) => {
+        sig[k] = { ...sig[k], activa: encender };
+      });
+      return sig;
+    });
+  }
+  function editarCelda(clave, cambios) {
+    setCeldas((prev) => ({ ...prev, [clave]: { ...prev[clave], ...cambios, editada: true } }));
+  }
+  function restablecerCelda(clave) {
+    setCeldas((prev) => ({ ...prev, [clave]: { ...prev[clave], nivel, rama, precio, editada: false } }));
+  }
+
+  const celdasActivas = useMemo(() => Object.values(celdas).filter((c) => c.activa && !c.ocupada), [celdas]);
+  const celdasOcupadas = useMemo(() => Object.values(celdas).filter((c) => c.ocupada).length, [celdas]);
+
+  // ---- Reta única (comportamiento previo: una reta, todas las canchas) ----
+  async function guardarRetaUnica() {
+    const msg = validarBase();
+    if (msg) return setError(msg);
+    const tramo = duracion > 0 && bloques.length === 1 ? bloques[0] : { inicio: horaInicio, fin: horaFin };
     const canchasEnConflicto = canchaIdsSeleccionadas
-      .filter((id) => haySolapeEnCancha(reservas, id, fecha, horaInicio, horaFin))
+      .filter((id) => haySolapeEnCancha(reservas, id, fecha, tramo.inicio, tramo.fin))
       .map((id) => canchasActivas.find((c) => c.id === id)?.nombre || `Cancha ${id}`);
     if (canchasEnConflicto.length > 0) {
       return setError(`${canchasEnConflicto.join(', ')} ya tiene${canchasEnConflicto.length > 1 ? 'n' : ''} una reserva u otro bloqueo en ese horario.`);
     }
     setGuardando(true);
     setError('');
-    const canchaId = canchaIdsSeleccionadas[0];
-
-    // Mapeo defensivo de columnas: distintos proyectos de Supabase pueden
-    // tener este módulo migrado con nombres de columna distintos (`nivel`
-    // vs `categoria`, `precio_inscripcion` vs `costo_inscripcion`/
-    // `precio_individual`/`precio_persona`/`precio`/`costo`) — se mandan
-    // TODOS los alias a la vez para maximizar compatibilidad (ver el lado
-    // lector de este mismo mapeo en `precioDeReta`/`nivelDeReta`/
-    // `ramaDeReta`). `precio_inscripcion` sigue siendo el nombre "oficial"
-    // de este proyecto (ver el comentario de cabecera del Módulo 5), pero
-    // `costo_inscripcion` y `precio_persona` se mandan EXPLÍCITAMENTE
-    // también, tal cual se pidió, por si tu Supabase usa alguno de esos dos
-    // nombres en su lugar. Si de todos modos falta alguna columna,
-    // `insertarConColumnasOpcionales` la va quitando una por una y
-    // reintenta en vez de bloquear al operador — y desde el fix del regex
-    // de `columnaFaltanteDeError` (ver su comentario), ese reintento SOLO
-    // quita la columna puntual que en verdad no exista, nunca todas de
-    // golpe, así que las demás (incluyendo el precio) sí se guardan.
-    const payloadReta = withClubId({
-      nombre: nombre.trim() || nombreAutomatico,
-      cancha_id: canchaId,
-      // `cancha_ids` (columna nueva y opcional, ver migracion_v49): guarda
-      // el arreglo COMPLETO de canchas seleccionadas. `cancha_id` (columna
-      // vieja) sigue siendo solo la PRIMERA, para no romper nada de lo que
-      // ya lee `cancha_id` como un id suelto (Analytics BI, `TarjetaReta`).
-      cancha_ids: canchaIdsSeleccionadas,
+    const nombreFinal = nombre.trim() || nombreAutomatico;
+    const payloadReta = payloadNuevaReta({
+      nombre: nombreFinal,
+      canchaIds: canchaIdsSeleccionadas,
       fecha,
-      hora_inicio: horaInicio,
-      hora_fin: horaFin,
-      categoria: nivel || null,
-      nivel: nivel || null,
+      horaInicio: tramo.inicio,
+      horaFin: tramo.fin,
+      nivel,
       rama,
-      precio_inscripcion: Number(precio) || 0,
-      costo_inscripcion: Number(precio) || 0,
-      precio_persona: Number(precio) || 0,
-      precio_individual: Number(precio) || 0,
-      precio: Number(precio) || 0,
-      costo: Number(precio) || 0,
-      estado: 'abierta',
+      precio,
     });
-
-    let retaCreada = null;
-    let modoLocal = false;
-
-    // INSERT EXPLÍCITO E INMEDIATO en la tabla `retas` de Supabase — ya NO
-    // depende de guardarse solo en el estado local: se manda el payload
-    // completo (con los alias de columna de arriba) y, si tu esquema real
-    // no reconoce alguna de esas columnas, `insertarConColumnasOpcionales`
-    // las va quitando una por una y reintenta — así el INSERT nunca falla
-    // solo por un desfase de nombre de columna.
-    const { data, error: errReta } = await insertarConColumnasOpcionales('retas', payloadReta, [
-      'categoria',
-      'nivel',
-      'precio_inscripcion',
-      'costo_inscripcion',
-      'precio_persona',
-      'precio_individual',
-      'precio',
-      'costo',
-      'cancha_ids',
-    ]);
-
-    if (!errReta && data) {
-      retaCreada = data;
-    } else {
-      // FALLA REAL del INSERT — política RLS ("new row violates
-      // row-level security policy"), columna o tabla ausente que no se
-      // pudo resolver ni quitando las opcionales, error de red, o
-      // cualquier otra causa. YA NO se absorbe en silencio: se avisa con
-      // un toast de ERROR explícito e inmediato, siempre (antes solo se
-      // avisaba para el caso puntual de RLS). La Reta se conserva en
-      // memoria para no perder lo ya capturado en el formulario, pero el
-      // operador debe saber DE INMEDIATO que esta Reta NO quedó guardada
-      // en Supabase y por lo tanto NO va a aparecer en el Portal de
-      // Jugadores hasta corregir la causa de fondo.
-      console.error('[Torneos & Retas] No se pudo guardar la Reta en Supabase.', errReta);
-      modoLocal = true;
+    const r = await crearRetaConBloqueos({
+      payloadReta,
+      canchaIds: canchaIdsSeleccionadas,
+      fecha,
+      horaInicio: tramo.inicio,
+      horaFin: tramo.fin,
+      etiqueta: nombreFinal,
+    });
+    let retaCreada = r.reta;
+    let bloqueos = r.bloqueos;
+    if (!retaCreada) {
+      // FALLA REAL del INSERT (RLS, esquema, red…): se avisa con un toast de
+      // ERROR explícito y la Reta se conserva SOLO en este navegador, con su
+      // bloqueo en la Parrilla — mismo comportamiento de siempre.
+      console.error('[Torneos & Retas] No se pudo guardar la Reta en Supabase.', r.error);
       retaCreada = { ...payloadReta, id: idLocal('reta'), _local: true };
       toast({
         titulo: 'No se pudo guardar la Reta en Supabase',
-        detalle: esErrorPermisoRLS(errReta)
+        detalle: esErrorPermisoRLS(r.error)
           ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase — esta Reta solo existe en este navegador y NO aparecerá en el Portal de Jugadores.'
-          : `${errReta?.message || 'Error desconocido.'} — esta Reta solo existe en este navegador y NO aparecerá en el Portal de Jugadores.`,
+          : `${r.error?.message || 'Error desconocido.'} — esta Reta solo existe en este navegador y NO aparecerá en el Portal de Jugadores.`,
         tono: 'error',
       });
-    }
-
-    // Nombre Personalizado desde la creación: la Parrilla y el Cronograma
-    // leen `reservas.jugador_nombre` directo (ver `TarjetaReta`/vista
-    // Cronograma), así que el bloqueo debe nacer YA con el mismo nombre que
-    // se guardó en `retas.nombre` — antes se mandaba el literal fijo
-    // 'RETA ABIERTA' y solo se corregía si el operador la renombraba después
-    // (ver `renombrarReta`), dejando el nombre genérico en toda reta recién
-    // creada.
-    // Multiselección de Canchas: se crea UN bloqueo por cada cancha
-    // marcada, todos en paralelo — así "RETA ABIERTA" ocupa el horario en
-    // TODAS las canchas seleccionadas, no solo la primera.
-    const resultadosBloqueo = await Promise.all(
-      canchaIdsSeleccionadas.map((id) =>
-        crearBloqueoParrilla({
-          canchaId: id,
-          fecha,
-          horaInicio,
-          horaFin,
-          estado: 'Reta',
-          etiqueta: retaCreada.nombre || nombre.trim() || nombreAutomatico,
-        })
-      )
-    );
-    const bloqueosCreados = resultadosBloqueo.filter((r) => !r.error && r.data).map((r) => r.data);
-    const idsBloqueosCreados = bloqueosCreados.map((b) => b.id);
-
-    if (idsBloqueosCreados.length > 0) {
-      if (!modoLocal) {
-        // `actualizarConColumnasOpcionales` (Arquitectura Flexible): si el
-        // proyecto todavía no corrió migracion_v49 y `reserva_bloqueo_ids`
-        // no existe como columna, el UPDATE reintenta sin ella — nunca se
-        // pierde `reserva_bloqueo_id` (la columna vieja, siempre presente)
-        // por culpa de la nueva.
-        await actualizarConColumnasOpcionales(
-          'retas',
-          retaCreada.id,
-          { reserva_bloqueo_id: idsBloqueosCreados[0], reserva_bloqueo_ids: idsBloqueosCreados },
-          ['reserva_bloqueo_ids']
-        );
+      const resultados = await Promise.all(
+        canchaIdsSeleccionadas.map((id) =>
+          crearBloqueoParrilla({ canchaId: id, fecha, horaInicio: tramo.inicio, horaFin: tramo.fin, estado: 'Reta', etiqueta: nombreFinal })
+        )
+      );
+      bloqueos = resultados.filter((x) => !x.error && x.data).map((x) => x.data);
+      if (bloqueos.length) {
+        retaCreada.reserva_bloqueo_id = bloqueos[0].id;
+        retaCreada.reserva_bloqueo_ids = bloqueos.map((b) => b.id);
       }
-      retaCreada.reserva_bloqueo_id = idsBloqueosCreados[0];
-      retaCreada.reserva_bloqueo_ids = idsBloqueosCreados;
-    }
-    if (idsBloqueosCreados.length < canchaIdsSeleccionadas.length) {
-      // Sincronización Silenciosa: la reta ya quedó creada — solo se
-      // registra en consola para diagnóstico si alguna(s) cancha(s) no se
-      // pudieron bloquear en la Parrilla.
-      console.warn('[Torneos & Retas] Reta creada, pero no se pudo bloquear el horario en todas las canchas seleccionadas.', resultadosBloqueo);
-    }
-
-    setGuardando(false);
-    // El toast de éxito solo se muestra si de verdad quedó en Supabase —
-    // en modo local ya se avisó arriba con un toast de ERROR explícito, y
-    // mostrar además "Reta Abierta creada" encima confundiría al operador
-    // haciéndole creer que todo salió bien.
-    if (!modoLocal) {
+    } else {
       const sufijoCanchas = canchaIdsSeleccionadas.length > 1 ? ` · ${canchaIdsSeleccionadas.length} canchas` : '';
-      toast({ titulo: 'Reta Abierta creada', detalle: `${formatoFechaLarga(fecha)} · ${formatoHora12(horaInicio)}${sufijoCanchas}` });
+      toast({ titulo: 'Reta Abierta creada', detalle: `${formatoFechaLarga(fecha)} · ${formatoHora12(tramo.inicio)}${sufijoCanchas}` });
     }
-    onCreada(retaCreada, bloqueosCreados);
+    setGuardando(false);
+    onCreada(retaCreada, bloqueos);
     onClose();
+  }
+
+  // ---- Lote: una reta independiente por celda activa ----
+  async function guardarLote() {
+    if (celdasActivas.length === 0) return setError('Activa al menos un bloque en la matriz.');
+    // Revalidación contra la Parrilla al momento de guardar (pudo cambiar).
+    const conflictos = celdasActivas.filter((c) => haySolapeEnCancha(reservas, c.canchaId, fecha, c.inicio, c.fin));
+    if (conflictos.length > 0) {
+      setCeldas((prev) => {
+        const sig = { ...prev };
+        conflictos.forEach((c) => {
+          sig[claveCeldaReta(c.canchaId, c.inicio)] = { ...c, activa: false, ocupada: true };
+        });
+        return sig;
+      });
+      return setError(`${conflictos.length} bloque(s) se ocuparon mientras configurabas el lote; se marcaron como "Ocupada". Revisa la matriz y vuelve a crear.`);
+    }
+    setGuardando(true);
+    setError('');
+    const loteId = nuevoIdLoteRetas();
+    const nombreBase = nombre.trim() || nombreAutomatico;
+    const tareas = [...celdasActivas].sort((a, b) => a.inicio.localeCompare(b.inicio) || String(a.canchaId).localeCompare(String(b.canchaId)));
+    const creadas = [];
+    const fallidas = [];
+    setProgreso({ hechas: 0, total: tareas.length });
+    let siguiente = 0;
+    async function trabajador() {
+      while (siguiente < tareas.length) {
+        const c = tareas[siguiente];
+        siguiente += 1;
+        const r = await crearRetaConBloqueos({
+          payloadReta: payloadNuevaReta({
+            nombre: nombreBase,
+            canchaIds: [c.canchaId],
+            fecha,
+            horaInicio: c.inicio,
+            horaFin: c.fin,
+            nivel: c.nivel,
+            rama: c.rama,
+            precio: c.precio,
+            loteId,
+          }),
+          canchaIds: [c.canchaId],
+          fecha,
+          horaInicio: c.inicio,
+          horaFin: c.fin,
+          etiqueta: nombreBase,
+        });
+        if (r.reta) creadas.push(r);
+        else fallidas.push({ celda: c, error: r.error });
+        setProgreso((p) => (p ? { ...p, hechas: p.hechas + 1 } : p));
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCIA_LOTE_RETAS, tareas.length) }, trabajador));
+    setGuardando(false);
+    setProgreso(null);
+
+    creadas
+      .sort((a, b) => String(a.reta.hora_inicio).localeCompare(String(b.reta.hora_inicio)))
+      .forEach((r) => onCreada(r.reta, r.bloqueos));
+
+    if (creadas.length > 0) {
+      toast({
+        titulo: `Se crearon ${creadas.length} ${creadas.length === 1 ? 'reta' : 'retas'} independientes`,
+        detalle: `${nombreBase} · ${formatoFechaLarga(fecha)} · ${creadas.length * CUPOS_RETA} lugares de inscripción`,
+      });
+    }
+    if (fallidas.length > 0) {
+      const primerError = fallidas[0].error;
+      toast({
+        titulo: `${fallidas.length} ${fallidas.length === 1 ? 'reta no se pudo' : 'retas no se pudieron'} crear`,
+        detalle: esErrorPermisoRLS(primerError)
+          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
+          : primerError?.message || 'Revisa tu conexión e inténtalo de nuevo.',
+        tono: 'error',
+      });
+      if (creadas.length === 0) {
+        setError('No se creó ninguna reta. Revisa el aviso e inténtalo de nuevo.');
+        return;
+      }
+      // Deja en la matriz solo las que faltaron, para reintentar.
+      const pendientes = new Set(fallidas.map((f) => claveCeldaReta(f.celda.canchaId, f.celda.inicio)));
+      setCeldas((prev) => {
+        const sig = {};
+        Object.entries(prev).forEach(([k, v]) => {
+          sig[k] = { ...v, activa: pendientes.has(k) };
+        });
+        return sig;
+      });
+      setError('Las retas que aparecen activas no se crearon: presiona "Crear" para reintentarlas.');
+      return;
+    }
+    onClose();
+  }
+
+  const celdaEnEdicion = celdaEditando ? celdas[celdaEditando] : null;
+  const nombreCanchaEdicion = celdaEnEdicion ? canchasActivas.find((c) => c.id === celdaEnEdicion.canchaId)?.nombre : '';
+
+  if (paso === 'matriz') {
+    return (
+      <ModalShell
+        titulo="Previsualizar retas"
+        subtitulo={`${nombre.trim() || nombreAutomatico} · ${formatoFechaLarga(fecha)}`}
+        onClose={guardando ? () => {} : onClose}
+        icon={Swords}
+        ancho="max-w-4xl"
+      >
+        <div className="space-y-3">
+          <p className="flex items-start gap-1.5 rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 ring-1 ring-slate-200">
+            <LayoutGrid size={13} className="mt-0.5 shrink-0" />
+            Cada celda activa será una reta independiente (4 lugares, marcador y jugadores propios). Clic para activar/desactivar; el lápiz edita nivel,
+            rama o precio de esa reta. Clic en una cancha u horario para cambiar toda la columna o fila.
+          </p>
+
+          <MatrizPrevisualizacionRetas
+            bloques={bloques}
+            canchasLote={canchasOrdenadas}
+            celdas={celdas}
+            onToggle={toggleCelda}
+            onToggleFila={(inicio) => toggleGrupo((c) => c.inicio === inicio)}
+            onToggleColumna={(canchaId) => toggleGrupo((c) => c.canchaId === canchaId)}
+            onEditar={(clave) => setCeldaEditando((prev) => (prev === clave ? null : clave))}
+            editando={celdaEditando}
+          />
+
+          {celdaEnEdicion && (
+            <div className="space-y-2 rounded-xl border border-orange-300 bg-orange-50/60 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-black text-slate-800">
+                  {nombreCanchaEdicion} · {formatoHora12(celdaEnEdicion.inicio)}–{formatoHora12(celdaEnEdicion.fin)}
+                </p>
+                <div className="flex items-center gap-2">
+                  {celdaEnEdicion.editada && (
+                    <button type="button" onClick={() => restablecerCelda(celdaEditando)} className="text-[11px] font-bold text-slate-500 hover:text-slate-800">
+                      Usar valores generales
+                    </button>
+                  )}
+                  <button type="button" onClick={() => setCeldaEditando(null)} className="text-[11px] font-bold text-orange-600 hover:underline">
+                    Listo
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <Campo label="Nivel">
+                  <SelectorNivel value={celdaEnEdicion.nivel} onChange={(v) => editarCelda(celdaEditando, { nivel: v })} />
+                </Campo>
+                <Campo label="Rama">
+                  <select value={celdaEnEdicion.rama} onChange={(e) => editarCelda(celdaEditando, { rama: e.target.value })} className={inputClase}>
+                    {RAMAS_JUEGO.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </Campo>
+                <Campo label="Precio por lugar (MXN)">
+                  <input
+                    type="number"
+                    min="0"
+                    value={celdaEnEdicion.precio}
+                    onChange={(e) => editarCelda(celdaEditando, { precio: e.target.value })}
+                    className={inputClase}
+                  />
+                </Campo>
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-fuchsia-400/10 px-3 py-2 text-xs font-semibold text-fuchsia-700 ring-1 ring-fuchsia-400/20">
+            <span>
+              <b>{celdasActivas.length}</b> {celdasActivas.length === 1 ? 'reta' : 'retas'} · {celdasActivas.length * CUPOS_RETA} lugares
+            </span>
+            <span>
+              Ingreso potencial: <b>{formatoMoneda(celdasActivas.reduce((s, c) => s + (Number(c.precio) || 0) * CUPOS_RETA, 0))}</b>
+            </span>
+            {celdasOcupadas > 0 && <span className="text-slate-500">{celdasOcupadas} bloque(s) ocupados en la Parrilla</span>}
+          </div>
+
+          {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
+
+          <div className="flex flex-wrap justify-between gap-2 pt-1">
+            <BotonSecundario onClick={() => setPaso('formulario')} disabled={guardando}>
+              <ChevronLeft size={15} /> Atrás
+            </BotonSecundario>
+            <BotonPrimario onClick={guardarLote} disabled={guardando || celdasActivas.length === 0}>
+              {guardando ? <Loader2 size={15} className="animate-spin" /> : <Swords size={15} />}
+              {guardando && progreso
+                ? `Creando ${progreso.hechas}/${progreso.total}…`
+                : `Crear ${celdasActivas.length} ${celdasActivas.length === 1 ? 'reta' : 'retas'}`}
+            </BotonPrimario>
+          </div>
+        </div>
+      </ModalShell>
+    );
   }
 
   return (
@@ -29580,7 +29970,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
             placeholder={nombreAutomatico}
           />
         </Campo>
-        <Campo label="Canchas" hint="Marca una, varias o todas — la Reta bloquea el horario en cada cancha que selecciones.">
+        <Campo label="Canchas" hint="Marca una, varias o todas — con varias canchas se crea una reta independiente por cancha y horario.">
           {canchasActivas.length === 0 ? (
             <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">Sin canchas activas</p>
           ) : (
@@ -29614,11 +30004,20 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
           <Campo label="Fecha">
             <SelectorFechaClick value={fecha} onChange={setFecha} />
           </Campo>
-          <Campo label="Hora inicio">
-            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+          <Campo label="Duración de cada reta" hint="El horario se divide en bloques de esta duración.">
+            <select value={duracion} onChange={(e) => setDuracion(Number(e.target.value))} className={inputClase}>
+              {DURACIONES_RETA.map((d) => (
+                <option key={d.value} value={d.value}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
           </Campo>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Campo label="Hora inicio">
+            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+          </Campo>
           <Campo label="Hora fin">
             <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
           </Campo>
@@ -29641,6 +30040,21 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
           <input type="number" min="0" value={precio} onChange={(e) => setPrecio(e.target.value)} className={inputClase} />
         </Campo>
 
+        {esLoteMultiple && (
+          <p className="flex items-start gap-1.5 rounded-lg bg-sky-400/10 px-3 py-2 text-xs font-semibold text-sky-700 ring-1 ring-sky-400/20">
+            <Layers size={13} className="mt-0.5 shrink-0" />
+            Se generarán {bloques.length * canchasOrdenadas.length} retas independientes ({bloques.length}{' '}
+            {bloques.length === 1 ? 'bloque' : 'bloques'} × {canchasOrdenadas.length} {canchasOrdenadas.length === 1 ? 'cancha' : 'canchas'}). En el
+            siguiente paso puedes apagar bloques o ajustar cada una.
+            {sobrante > 0 ? ` Los últimos ${sobrante} min del horario no alcanzan para otro bloque y quedan libres.` : ''}
+          </p>
+        )}
+        {!esLoteMultiple && duracion > 0 && sobrante > 0 && bloques.length === 1 && (
+          <p className="text-[11px] font-semibold text-amber-600">
+            La reta durará {formatoHora12(bloques[0].inicio)}–{formatoHora12(bloques[0].fin)}; los últimos {sobrante} min del horario quedan libres.
+          </p>
+        )}
+
         <p className="flex items-start gap-1.5 rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-500 ring-1 ring-slate-200">
           <ShieldAlert size={13} className="mt-0.5 shrink-0" />
           {toleranciaActiva
@@ -29649,7 +30063,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
         </p>
 
         <p className="flex items-start gap-1.5 rounded-lg bg-fuchsia-400/10 px-3 py-2 text-xs font-semibold text-fuchsia-300 ring-1 ring-fuchsia-400/20">
-          <Lock size={13} className="mt-0.5 shrink-0" /> Al guardar, el horario se bloquea automáticamente en la Parrilla Operativa como "RETA
+          <Lock size={13} className="mt-0.5 shrink-0" /> Al guardar, cada horario se bloquea automáticamente en la Parrilla Operativa como "RETA
           ABIERTA" en {canchaIdsSeleccionadas.length > 1 ? `las ${canchaIdsSeleccionadas.length} canchas seleccionadas` : 'esa cancha'} — nadie
           más podrá reservarla{canchaIdsSeleccionadas.length > 1 ? 'n' : ''} en ese bloque.
         </p>
@@ -29658,10 +30072,16 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
 
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar} disabled={guardando || canchasActivas.length === 0 || canchaIdsSeleccionadas.length === 0}>
-            {guardando ? <Loader2 size={15} className="animate-spin" /> : <Swords size={15} />}
-            Abrir Reta
-          </BotonPrimario>
+          {esLoteMultiple ? (
+            <BotonPrimario onClick={irAMatriz} disabled={canchasActivas.length === 0 || canchaIdsSeleccionadas.length === 0}>
+              <LayoutGrid size={15} /> Previsualizar {bloques.length * canchasOrdenadas.length} retas
+            </BotonPrimario>
+          ) : (
+            <BotonPrimario onClick={guardarRetaUnica} disabled={guardando || canchasActivas.length === 0 || canchaIdsSeleccionadas.length === 0}>
+              {guardando ? <Loader2 size={15} className="animate-spin" /> : <Swords size={15} />}
+              Abrir Reta
+            </BotonPrimario>
+          )}
         </div>
       </div>
     </ModalShell>
@@ -32504,6 +32924,26 @@ function ModuloTorneosRetas({
     () => retas.filter((r) => !r.deleted_at && (filtroReta === 'archivadas' ? retaConcluida(r) : !retaConcluida(r))),
     [retas, filtroReta, retaConcluida]
   );
+  // Generación Masiva: posición de cada reta dentro de su lote (sesión del
+  // día) para el identificador visual común en `TarjetaReta`.
+  const lotesRetas = useMemo(() => {
+    const grupos = {};
+    retas.forEach((r) => {
+      if (!r.lote_id || r.deleted_at) return;
+      (grupos[r.lote_id] = grupos[r.lote_id] || []).push(r);
+    });
+    const info = {};
+    Object.entries(grupos).forEach(([loteId, lista]) => {
+      if (lista.length < 2) return;
+      const clase = claseColorLoteReta(loteId);
+      [...lista]
+        .sort((a, b) => String(a.hora_inicio).localeCompare(String(b.hora_inicio)) || String(a.cancha_id).localeCompare(String(b.cancha_id)))
+        .forEach((r, i) => {
+          info[r.id] = { indice: i + 1, total: lista.length, clase };
+        });
+    });
+    return info;
+  }, [retas]);
 
   // Política de Cancelación y Retención: cancelar dentro de la ventana de
   // tolerancia (por defecto 6h antes del juego) NO reembolsa — la
@@ -34010,6 +34450,7 @@ function ModuloTorneosRetas({
                   eliminandoVisual={eliminandoVisualRetaId === reta.id}
                   onCargarMarcador={setRetaMarcador}
                   ahoraMs={ahoraMsRetas}
+                  lote={lotesRetas[reta.id]}
                 />
               ))}
             </div>
