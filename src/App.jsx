@@ -2940,7 +2940,53 @@ function estadoPagoInscripcion(fila) {
 }
 
 function inscripcionEstaPagada(fila) {
-  return estadoPagoInscripcion(fila) === 'pagado';
+  return esCobroConfirmado(fila);
+}
+
+// =============================================================================
+// REGLA DE ORO FINANCIERA (integridad contable, todo el sistema)
+// -----------------------------------------------------------------------------
+// Un concepto SOLO es ingreso cuando su estatus de pago es estrictamente
+// 'pagado' (efectivo, tarjeta TPV, transferencia o Wallet). Todo lo demás —
+// 'pendiente' (Cobro en Recepción), 'pago_en_club', cuenta abierta,
+// 'reembolsado', penalizaciones pendientes — NO suma a Ingresos Totales,
+// Ingreso Bruto, Rentabilidad por Categoría ni Estado de Resultados. Lo
+// pendiente SÍ cuenta para ocupación/cupos (eso es operación, no dinero).
+// Se normaliza mayúsculas/espacios y el alias `estatus_pago`.
+// =============================================================================
+function estatusCobroNormalizado(fila) {
+  return String(fila?.estado_pago ?? fila?.estatus_pago ?? '')
+    .trim()
+    .toLowerCase();
+}
+
+function esCobroConfirmado(fila) {
+  return estatusCobroNormalizado(fila) === 'pagado';
+}
+
+// Bloqueos de cancha creados por Retas/Torneos/Academia: ocupan horario pero
+// su dinero vive en inscripciones/mensualidades (nunca en la reserva).
+function esBloqueoDeEvento(reserva) {
+  return reserva?.estado === 'Reta' || reserva?.estado === 'Torneo' || reserva?.estado === 'Clase';
+}
+
+// Monto real cobrado por una inscripción (reta/torneo): su `monto`; si una
+// fila vieja no lo guardó, el precio vigente del evento como respaldo.
+function montoInscripcionCobrada(fila, precioRespaldo = 0) {
+  const monto = Number(fila?.monto);
+  if (Number.isFinite(monto) && monto > 0) return monto;
+  return Number(precioRespaldo) || 0;
+}
+
+// Monto de un ticket de `ventas` SIN los renglones de cobro de inscripciones
+// (`tipo: 'inscripcion_evento'`, que genera Smart POS al cobrar una Reta/
+// Torneo/Clase pendiente): ese dinero ya se cuenta desde la inscripción
+// misma — sumarlo también aquí lo duplicaba en el Estado de Resultados.
+function montoVentaSinInscripciones(venta) {
+  const total = Number(venta?.total) || 0;
+  const items = Array.isArray(venta?.detalles?.items) ? venta.detalles.items : [];
+  const inscripciones = items.filter((it) => it?.tipo === 'inscripcion_evento').reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0);
+  return Math.max(0, total - inscripciones);
 }
 
 // Ocupa un lugar/slot del roster de una Reta (Mesa de Control): TRUE salvo
@@ -13890,7 +13936,7 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
       if (cancelado) return;
       const acumulado = {};
       (data || [])
-        .filter((v) => v.estado_pago === 'pagado')
+        .filter((v) => esCobroConfirmado(v))
         .forEach((v) => {
           const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
           items.forEach((item) => {
@@ -18498,7 +18544,7 @@ async function montoVentasProductos(inicio, fin) {
   const { data, error } = await consultarVentasEnRango(inicio, fin);
   if (error) return 0;
   return data
-    .filter((v) => v.estado_pago === 'pagado')
+    .filter((v) => esCobroConfirmado(v))
     .reduce((acc, v) => {
       const items = v?.detalles?.items;
       if (!Array.isArray(items)) return acc;
@@ -21423,22 +21469,15 @@ const HEATMAP_HORAS = Array.from({ length: 16 }, (_, i) => 7 + i);
 // categoría, nunca su ranking, igual que en el resto del tablero). Los
 // productos con categoría 'Rentas' (equipo — no la cancha en sí) se agrupan
 // dentro de "Canchas" para no fragmentar la comparativa en más de 3 barras.
+// Regla de oro financiera: cada categoría suma SOLO lo cobrado ('pagado').
+// "Retas & Torneos" y "Academia" suman el dinero real de inscripciones y
+// mensualidades (antes los eventos se imputaban a tarifa de renta de cancha).
 const CATEGORIAS_BI = [
   { key: 'Canchas', barra: 'bg-sky-400', texto: 'text-sky-400' },
+  { key: 'Retas & Torneos', barra: 'bg-fuchsia-400', texto: 'text-fuchsia-500' },
+  { key: 'Academia', barra: 'bg-teal-400', texto: 'text-teal-500' },
   { key: 'Pro-Shop', barra: 'bg-violet-400', texto: 'text-violet-400' },
   { key: 'Cafetería/Bar', barra: 'bg-amber-400', texto: 'text-amber-400' },
-];
-
-// Bloques horarios de "Ingresos Cruzados por Cancha y Bloque" — los 3
-// bloques oficiales del día, sin huecos entre ellos (antes había un hueco
-// 12:00–18:00 sin franja propia): Mañana (07:00–12:00), Tarde (12:00–17:00)
-// y Noche (17:00–23:00). Una reserva se atribuye al bloque en el que arranca
-// (`hora_inicio`); una venta de mostrador se atribuye al bloque de su propia
-// hora de cobro.
-const BLOQUES_CRUCE = [
-  { key: 'manana', label: 'Mañana', rango: '07:00–12:00', inicio: 7 * 60, fin: 12 * 60 },
-  { key: 'tarde', label: 'Tarde', rango: '12:00–17:00', inicio: 12 * 60, fin: 17 * 60 },
-  { key: 'noche', label: 'Noche', rango: '17:00–23:00', inicio: 17 * 60, fin: 23 * 60 },
 ];
 
 // Bloques de Ocupación Pico vs. Valle: Valle 07:00–17:00, Pico 17:00–23:00.
@@ -21680,7 +21719,7 @@ function RentabilidadPorCategoria({ filas, cargando }) {
               // (costo directo real) → Margen Bruto. Ninguna fila usa
               // "Utilidad Operativa" ni "Utilidad Neta" — ese cálculo real
               // (con egresos operativos) vive en Contabilidad & Compras.
-              const tipoMargen = f.categoria === 'Canchas' ? 'Margen de Contribución' : 'Margen Bruto';
+              const tipoMargen = ['Canchas', 'Retas & Torneos', 'Academia'].includes(f.categoria) ? 'Margen de Contribución' : 'Margen Bruto';
               return (
                 <tr key={f.categoria} className="border-b border-slate-200/70 last:border-0">
                   <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-800'}`}>
@@ -21827,100 +21866,45 @@ function TopModificadoresTabla({ filas, cargando }) {
 
 /* ---------------- Ingresos Cruzados por Bloque Horario ---------------- */
 
-function IngresosCruzadosTabla({ filas, cargando }) {
-  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
-
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-black text-slate-900">
-        <Clock size={16} className="text-orange-400" /> Ingresos Cruzados por Cancha y Bloque Horario
-      </h3>
-      {filas.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
-          No hay canchas activas para mostrar.
-        </div>
-      ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200">
-          <table className="w-full min-w-[760px] text-left text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                <th className="px-3 py-2.5">Cancha</th>
-                <th className="px-3 py-2.5">Bloque</th>
-                <th className="px-3 py-2.5 text-right">Ingreso Cancha</th>
-                <th className="px-3 py-2.5 text-right">Ingreso Cafetería</th>
-                <th className="px-3 py-2.5 text-right">Ingreso Pro-Shop</th>
-                <th className="px-3 py-2.5">Productos Vendidos (desglose)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filas.map((f) => (
-                <tr key={`${f.cancha.id}-${f.bloque.key}`} className="border-b border-slate-200/70 last:border-0 align-top">
-                  <td className="px-3 py-2.5 font-bold text-slate-900">{f.cancha.nombre}</td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-slate-600">
-                    {f.bloque.label} <span className="text-slate-500">({f.bloque.rango})</span>
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingresoCancha)}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingresoCafeteria)}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingresoProShop)}</td>
-                  <td className="px-3 py-2.5 text-slate-600">
-                    {/* DESGLOSE COMPLETO: ya no se colapsa a un solo "más
-                        vendido" — cada producto/variante del bloque aparece
-                        con sus propias unidades e ingreso, para que un
-                        ticket de "Pelotas + Overgrip" muestre ambos. */}
-                    {f.productosVendidos && f.productosVendidos.length > 0 ? (
-                      <ul className="space-y-0.5">
-                        {f.productosVendidos.map((p, idx) => (
-                          <li key={idx} className="flex items-center justify-between gap-3">
-                            <span className="truncate">
-                              {p.nombre} <span className="text-slate-500">× {p.unidades}</span>
-                            </span>
-                            <span className="shrink-0 text-slate-500">{formatoMoneda(p.ingreso)}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <span className="text-slate-400">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+// "Ingresos y Ocupación por Cancha" (reemplaza a la vieja tabla cruzada
+// Cancha × Bloque Horario × Cafetería/Pro-Shop, llena de ceros): una fila
+// por cancha con sus horas ocupadas (incluye reservas pendientes), su
+// ocupación y su ingreso REAL cobrado — renta de cancha + Retas/Torneos
+// jugados en ella. Solo dinero con estatus 'pagado' (regla de oro).
+function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = 0 }) {
+  const total = filas.reduce(
+    (acc, f) => ({
+      horas: acc.horas + f.horas,
+      reservas: acc.reservas + f.ingresoReservas,
+      eventos: acc.eventos + f.ingresoEventos,
+      ingresos: acc.ingresos + f.ingresos,
+    }),
+    { horas: 0, reservas: 0, eventos: 0, ingresos: 0 }
   );
-}
-
-/* ---------------- Rendimiento por Cancha ---------------- */
-
-function RendimientoPorCanchaTabla({ filas }) {
+  const maxIngreso = Math.max(1, ...filas.map((f) => f.ingresos));
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      {/* Rentabilidad por Cancha Unificada: `f.ingresos` (desde
-          `rendimientoPorCancha`, en `ModuloAnalyticsBI`) ya suma Reservas
-          normales + Clases de Academia + Torneos + Retas — estas 3 últimas
-          por tarifa oficial de renta de la cancha (ver
-          `imputacionEventosCancha`), nunca por el dinero de inscripciones/
-          mensualidad. El subtítulo deja explícito en la UI qué cubre la
-          cifra. */}
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-900">
-        <MapPin size={16} className="text-sky-400" /> Rendimiento por Cancha
+        <MapPin size={16} className="text-sky-400" /> Ingresos y Ocupación por Cancha
       </h3>
-      <p className="mb-3 text-[11px] text-slate-500">Ingresos unificados: Reservas + Clases + Torneos + Retas.</p>
+      <p className="mb-3 text-[11px] text-slate-500">
+        Ingreso real cobrado: renta de cancha + Retas y Torneos jugados en ella. La ocupación incluye reservas pendientes de pago.
+      </p>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
           No hay canchas activas para mostrar.
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200">
-          <table className="w-full min-w-[820px] text-left text-xs">
+          <table className="w-full min-w-[640px] text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 <th className="px-3 py-2.5">Cancha</th>
-                <th className="px-3 py-2.5 text-right">Horas Reservadas</th>
+                <th className="px-3 py-2.5 text-right">Horas ocupadas</th>
                 <th className="px-3 py-2.5 text-right">Ocupación</th>
-                <th className="px-3 py-2.5 text-right">Ingresos</th>
+                <th className="px-3 py-2.5 text-right">Reservas cobradas</th>
+                <th className="px-3 py-2.5 text-right">Retas & Torneos</th>
+                <th className="px-3 py-2.5 text-right">Ingreso real</th>
               </tr>
             </thead>
             <tbody>
@@ -21929,17 +21913,40 @@ function RendimientoPorCanchaTabla({ filas }) {
                   <td className="px-3 py-2.5 font-bold text-slate-900">{f.cancha.nombre}</td>
                   <td className="px-3 py-2.5 text-right text-slate-800">{f.horas.toFixed(1)} h</td>
                   <td className="px-3 py-2.5 text-right">
-                    <span
-                      className={`font-bold ${
-                        f.ocupacion >= 67 ? 'text-rose-400' : f.ocupacion >= 34 ? 'text-amber-400' : 'text-emerald-400'
-                      }`}
-                    >
-                      {f.ocupacion.toFixed(0)}%
+                    <span className={`font-bold ${f.ocupacion >= 67 ? 'text-emerald-500' : f.ocupacion >= 34 ? 'text-amber-500' : 'text-rose-400'}`}>
+                      {f.ocupacion < 10 ? f.ocupacion.toFixed(1) : f.ocupacion.toFixed(0)}%
                     </span>
                   </td>
-                  <td className="px-3 py-2.5 text-right font-bold text-slate-800">{formatoMoneda(f.ingresos)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{formatoMoneda(f.ingresoReservas)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{formatoMoneda(f.ingresoEventos)}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <div className="hidden h-1.5 w-20 overflow-hidden rounded-full bg-slate-100 sm:block">
+                        <div className="h-full rounded-full bg-sky-400" style={{ width: `${(f.ingresos / maxIngreso) * 100}%` }} />
+                      </div>
+                      <span className="font-black text-slate-900">{formatoMoneda(f.ingresos)}</span>
+                    </div>
+                  </td>
                 </tr>
               ))}
+              {sinAsignar > 0 && (
+                <tr className="border-b border-slate-200/70 text-slate-500">
+                  <td className="px-3 py-2.5 italic">Torneos/Retas sin cancha asignada</td>
+                  <td className="px-3 py-2.5" />
+                  <td className="px-3 py-2.5" />
+                  <td className="px-3 py-2.5" />
+                  <td className="px-3 py-2.5 text-right">{formatoMoneda(sinAsignar)}</td>
+                  <td className="px-3 py-2.5 text-right font-bold">{formatoMoneda(sinAsignar)}</td>
+                </tr>
+              )}
+              <tr className="bg-slate-50 font-black text-slate-900">
+                <td className="px-3 py-2.5">Total</td>
+                <td className="px-3 py-2.5 text-right">{total.horas.toFixed(1)} h</td>
+                <td className="px-3 py-2.5" />
+                <td className="px-3 py-2.5 text-right">{formatoMoneda(total.reservas)}</td>
+                <td className="px-3 py-2.5 text-right">{formatoMoneda(total.eventos + sinAsignar)}</td>
+                <td className="px-3 py-2.5 text-right">{formatoMoneda(total.ingresos + sinAsignar)}</td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -21985,7 +21992,7 @@ function generarCSVReporte({
   rendimientoPorCancha,
   heatmap,
   productos,
-  ingresosCruzados,
+  ingresosCanchaSinAsignar = 0,
   picoValle,
   revPACP,
   ocupacionCanchasPct,
@@ -22005,41 +22012,25 @@ function generarCSVReporte({
 
   filas.push(['Métricas Ejecutivas y de Eficiencia de BI']);
   filas.push(['Métrica', 'Valor']);
-  filas.push(['Ingresos Totales (Canchas a tarifa oficial + Pro-Shop + Cafetería)', analisis.ingresosTotales.toFixed(2)]);
+  filas.push(['Regla de oro: solo cobros con estatus Pagado — sin pendientes, cobros en recepción ni cuentas abiertas']);
+  filas.push(['Ingresos Totales Cobrados (Canchas + Retas & Torneos + Academia + Pro-Shop + Cafetería)', analisis.ingresosTotales.toFixed(2)]);
+  filas.push(['  · Renta de Canchas cobrada', analisis.ingresoCanchas.toFixed(2)]);
+  filas.push(['  · Retas (inscripciones pagadas)', analisis.ingresoRetas.toFixed(2)]);
+  filas.push(['  · Torneos (inscripciones pagadas)', analisis.ingresoTorneos.toFixed(2)]);
+  filas.push(['  · Academia (mensualidades/clases pagadas)', analisis.ingresoAcademia.toFixed(2)]);
   filas.push(['Costo Total de lo Vendido (COGS)', analisis.cogsTotal.toFixed(2)]);
-  filas.push(['Ingresos Brutos por Torneos/Retas (Inscripciones recaudadas)', analisis.ingresosBrutosTorneosRetas.toFixed(2)]);
-  filas.push(['Ocupación de Canchas (%)', `${ocupacionCanchasPct.toFixed(1)}%`]);
-  filas.push(['Ticket Promedio por Venta', analisis.ticketPromedio !== null ? analisis.ticketPromedio.toFixed(2) : '']);
-  filas.push(['Transacciones Totales', analisis.totalTransacciones]);
-  filas.push(['  · Reservas de Cancha (por fecha de juego)', analisis.transaccionesCanchas]);
-  filas.push(['  · Tickets de Mostrador (por fecha de cobro)', analisis.transaccionesConProducto]);
+  filas.push(['Ocupación de Canchas (%) — incluye reservas pendientes', `${ocupacionCanchasPct.toFixed(1)}%`]);
+  filas.push(['Ticket Promedio por Venta (Ingreso cobrado ÷ cobros efectivos)', analisis.ticketPromedio !== null ? analisis.ticketPromedio.toFixed(2) : '']);
+  filas.push(['Cobros Efectivos', analisis.totalTransacciones]);
+  filas.push(['  · Reservas de Cancha cobradas (por fecha de juego)', analisis.transaccionesCanchas]);
+  filas.push(['  · Inscripciones y clases cobradas', analisis.transaccionesEventos]);
+  filas.push(['  · Tickets de Mostrador con producto cobrado', analisis.transaccionesConProducto]);
   filas.push(['Categoría Estrella', analisis.categoriaEstrella?.ingreso > 0 ? analisis.categoriaEstrella.categoria : '']);
   filas.push(['Hora Pico de Ocupación (Heatmap)', heatmap.horaPicoLabel]);
   filas.push(['RevPACP — Ingreso por Hora de Cancha Disponible', revPACP !== null ? revPACP.toFixed(2) : '']);
   filas.push(['Ratio de Gasto Secundario (% Cross-Selling)', `${analisis.ratioCrossSelling.toFixed(1)}%`]);
   filas.push(['Ocupación Horas Valle (07:00–17:00)', `${picoValle.valle.toFixed(1)}%`]);
   filas.push(['Ocupación Horas Pico (17:00–23:00)', `${picoValle.pico.toFixed(1)}%`]);
-  filas.push([]);
-
-  filas.push(['Ingresos Cruzados por Cancha y Bloque Horario']);
-  filas.push(['Cancha', 'Bloque', 'Ingreso Cancha', 'Ingreso Cafetería', 'Ingreso Pro-Shop', 'Productos Vendidos (desglose completo)']);
-  ingresosCruzados.forEach((f) => {
-    // DESGLOSE COMPLETO, no solo el más vendido — cada producto/variante
-    // del bloque en su propio "Nombre (unidades u., $ingreso)", separados
-    // por " · ", para que el CSV refleje el mismo detalle que la tabla.
-    const desglose =
-      f.productosVendidos && f.productosVendidos.length > 0
-        ? f.productosVendidos.map((p) => `${p.nombre} (${p.unidades} u., $${p.ingreso.toFixed(2)})`).join(' · ')
-        : 'Sin ventas de producto';
-    filas.push([
-      f.cancha.nombre,
-      `${f.bloque.label} (${f.bloque.rango})`,
-      f.ingresoCancha.toFixed(2),
-      f.ingresoCafeteria.toFixed(2),
-      f.ingresoProShop.toFixed(2),
-      desglose,
-    ]);
-  });
   filas.push([]);
 
   filas.push(['Rentabilidad por Categoría']);
@@ -22049,16 +22040,28 @@ function generarCSVReporte({
   });
   filas.push([]);
 
-  filas.push(['Rendimiento por Cancha']);
-  filas.push(['Cancha', 'Horas Reservadas', 'Ocupación %', 'Ingresos']);
+  filas.push(['Ingresos y Ocupación por Cancha']);
+  filas.push(['Cancha', 'Horas Ocupadas', 'Ocupación %', 'Reservas Cobradas', 'Retas & Torneos', 'Ingreso Real']);
   let totalHorasCanchas = 0;
-  let totalIngresosCanchas = 0;
+  let totalReservasCanchas = 0;
+  let totalEventosCanchas = 0;
   rendimientoPorCancha.forEach((f) => {
     totalHorasCanchas += f.horas;
-    totalIngresosCanchas += f.ingresos;
-    filas.push([f.cancha.nombre, f.horas.toFixed(1), f.ocupacion.toFixed(0), f.ingresos.toFixed(2)]);
+    totalReservasCanchas += f.ingresoReservas;
+    totalEventosCanchas += f.ingresoEventos;
+    filas.push([f.cancha.nombre, f.horas.toFixed(1), f.ocupacion.toFixed(0), f.ingresoReservas.toFixed(2), f.ingresoEventos.toFixed(2), f.ingresos.toFixed(2)]);
   });
-  filas.push(['TOTAL (Canchas)', totalHorasCanchas.toFixed(1), '', totalIngresosCanchas.toFixed(2)]);
+  if (ingresosCanchaSinAsignar > 0) {
+    filas.push(['Torneos/Retas sin cancha asignada', '', '', '', ingresosCanchaSinAsignar.toFixed(2), ingresosCanchaSinAsignar.toFixed(2)]);
+  }
+  filas.push([
+    'TOTAL',
+    totalHorasCanchas.toFixed(1),
+    '',
+    totalReservasCanchas.toFixed(2),
+    (totalEventosCanchas + ingresosCanchaSinAsignar).toFixed(2),
+    (totalReservasCanchas + totalEventosCanchas + ingresosCanchaSinAsignar).toFixed(2),
+  ]);
   filas.push([]);
 
   filas.push(['Top Productos Más Vendidos']);
@@ -22631,6 +22634,9 @@ function ModuloContabilidadCompras({
   reservas,
   operador,
   canchas,
+  // Precio por lugar de cada reta: respaldo del monto de inscripciones
+  // viejas que no lo guardaron (`montoInscripcionCobrada`).
+  retas = [],
   inscripciones,
   participantesTorneo,
   academiaAlumnos,
@@ -22845,22 +22851,28 @@ function ModuloContabilidadCompras({
   //      criterio que el inciso (d). Incluye filas pagadas con Créditos de
   //      una Membresía (monto $0 — es una transacción real, solo sin dinero
   //      nuevo asociado).
+  //
+  // REGLA DE ORO FINANCIERA (`esCobroConfirmado`): cada inciso suma SOLO lo
+  // que tiene estatus 'pagado'. Pendientes, cobros en recepción y cuentas
+  // abiertas nunca entran. Los tickets de Smart POS que cobran una
+  // inscripción pendiente (renglón `inscripcion_evento`) ya NO se suman a
+  // "Ventas Mostrador": ese dinero se cuenta una sola vez, en el inciso de
+  // su inscripción (d/e) — antes se duplicaba (`montoVentaSinInscripciones`).
   const pnl = useMemo(() => {
     const ventasNoLigadasAReserva = ventasRangoPnl.filter(
-      (v) => v.estado_pago === 'pagado' && !v.reserva_id && v.es_reserva !== true
+      (v) => esCobroConfirmado(v) && !v.reserva_id && v.es_reserva !== true && montoVentaSinInscripciones(v) > 0
     );
     const filasVentasMostrador = ventasNoLigadasAReserva.filter((v) => !esOrigenPortalWeb(v.origen));
     const filasVentasWeb = ventasNoLigadasAReserva.filter((v) => esOrigenPortalWeb(v.origen));
-    const ventasMostrador = filasVentasMostrador.reduce((acc, v) => acc + (Number(v.total) || 0), 0);
-    const ventasWebTienda = filasVentasWeb.reduce((acc, v) => acc + (Number(v.total) || 0), 0);
+    const ventasMostrador = filasVentasMostrador.reduce((acc, v) => acc + montoVentaSinInscripciones(v), 0);
+    const ventasWebTienda = filasVentasWeb.reduce((acc, v) => acc + montoVentaSinInscripciones(v), 0);
 
     const filasReservas = (reservas || []).filter(
       (r) =>
         r.fecha >= rangoPnl.inicioFechaISO &&
         r.fecha < rangoPnl.finFechaISO &&
-        r.estado !== 'Torneo' &&
-        r.estado !== 'Reta' &&
-        r.estado_pago === 'pagado'
+        !esBloqueoDeEvento(r) &&
+        esCobroConfirmado(r)
     );
     // Renta PURA de cancha (sin add-ons) — ver el comentario del inciso (c)
     // arriba.
@@ -22880,11 +22892,17 @@ function ModuloContabilidadCompras({
     const filasInscripcionesRetas = (inscripciones || []).filter(
       (i) => inscripcionEstaPagada(i) && i.estado !== 'cancelado' && dentroDeRangoPorCreatedAt(i, rangoPnl)
     );
+    // Soft-cancel de torneos (v83): una inscripción 'cancelado' ya no suma,
+    // mismo criterio que Retas.
     const filasInscripcionesTorneos = (participantesTorneo || []).filter(
-      (p) => inscripcionEstaPagada(p) && dentroDeRangoPorCreatedAt(p, rangoPnl)
+      (p) => inscripcionEstaPagada(p) && p.estado !== 'cancelado' && dentroDeRangoPorCreatedAt(p, rangoPnl)
     );
+    // Retas: N lugares pagados × precio por lugar (monto real de cada
+    // inscripción; respaldo al precio de la reta si una fila vieja no lo trae).
+    const precioRetaPorId = new Map((retas || []).map((r) => [String(r.id), precioDeReta(r)]));
+    const montoInscripcionReta = (i) => montoInscripcionCobrada(i, precioRetaPorId.get(String(i.reta_id)) || 0);
     const torneosRetas =
-      filasInscripcionesRetas.reduce((acc, i) => acc + (Number(i.monto) || 0), 0) +
+      filasInscripcionesRetas.reduce((acc, i) => acc + montoInscripcionReta(i), 0) +
       filasInscripcionesTorneos.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
 
     // Clases y Clínicas (item 4 de la reestructuración de Academia & Clínicas):
@@ -22948,8 +22966,9 @@ function ModuloContabilidadCompras({
       // `_filasInscripcionesAcademia`).
       _filasInscripcionesRetas: filasInscripcionesRetas,
       _filasInscripcionesTorneos: filasInscripcionesTorneos,
+      _montoInscripcionReta: montoInscripcionReta,
     };
-  }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, rangoPnl]);
+  }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, retas, rangoPnl]);
 
   // Desglose para las tarjetas interactivas (ver Modal de Desglose más
   // abajo): ID de transacción, hora, concepto, canal, método de pago y
@@ -22981,7 +23000,7 @@ function ModuloContabilidadCompras({
         concepto: conceptoVenta(v),
         canal,
         metodoPago: v.metodo_pago || '—',
-        monto: Number(v.total) || 0,
+        monto: montoVentaSinInscripciones(v),
       }));
     const canchasPorId = {};
     (canchas || []).forEach((c) => {
@@ -23072,7 +23091,7 @@ function ModuloContabilidadCompras({
         concepto: `${i.nombre || 'Jugador'} · Reta`,
         canal: esCanalPortalWeb(i.canal_origen) ? 'Portal Web' : 'Torneos & Retas',
         metodoPago: etiquetaMetodoPagoInscripcion(i.metodo_pago) || '—',
-        monto: Number(i.monto) || 0,
+        monto: pnl._montoInscripcionReta(i),
       })),
       ...pnl._filasInscripcionesTorneos.map((p) => ({
         id: p.id,
@@ -23091,7 +23110,9 @@ function ModuloContabilidadCompras({
       egresos: filasEgresosDesglose,
       clasesClinicas: clasesClinicasDesglose,
       torneosRetas: torneosRetasDesglose,
-      ingresosTotales: [...ventasMostradorDesglose, ...ventasWebDesglose, ...filasReservasDesglose],
+      // Desglose completo de Ingresos Totales Consolidados: los 5 incisos
+      // (antes faltaban Torneos/Retas y Clases, así que no cuadraba con el KPI).
+      ingresosTotales: [...ventasMostradorDesglose, ...ventasWebDesglose, ...filasReservasDesglose, ...torneosRetasDesglose, ...clasesClinicasDesglose],
     };
   }, [pnl, canchas]);
 
@@ -25954,6 +25975,8 @@ function ModuloAnalyticsBI({
   torneos,
   participantesTorneo,
   partidosTorneo,
+  // Academia & Clínicas: mensualidades/clases cobradas (regla de oro).
+  academiaAlumnos = [],
   configClub,
 }) {
   const mostrarToast = useToast();
@@ -26080,68 +26103,25 @@ function ModuloAnalyticsBI({
   // (la ocupación física real de cada partido).
   const idsMaestroTorneo = useMemo(() => idsBloqueosMaestroTorneo(torneos), [torneos]);
 
-  /* ---- Reservas del rango: ya están en memoria vía props, sin query nueva ---- */
-  const reservasActivasPagadas = useMemo(() => {
-    return reservas.filter(
-      (r) =>
-        r.fecha >= rango.inicioFechaISO &&
-        r.fecha < rango.finFechaISO &&
-        r.estado !== 'Cancelada' &&
-        r.estado_pago === 'pagado' &&
-        !idsMaestroTorneo.has(r.id)
-    );
-  }, [reservas, rango, idsMaestroTorneo]);
-
-  // Sincronización de Ingresos Cruzados por Fecha de Reserva (item 3 de esta
-  // corrección): `ventasRango` (arriba) solo trae las ventas cuya PROPIA
-  // fecha de cobro/registro (`created_at`/`fecha`) cae dentro del rango
-  // activo — así que un add-on (Pro-Shop/Cafetería) vendido junto con una
-  // reserva, pero COBRADO otro día (ej. reserva jugada el 12, ticket
-  // liquidado/cobrado el 11 en "Cuentas Pendientes"), quedaba fuera de
-  // `ventasRango` cuando el BI está filtrado al día 12 — la tabla de
-  // Ingresos Cruzados mostraba entonces la cancha SIN sus consumos ese día,
-  // y los consumos SIN cancha el día 11. Se trae aparte, por
-  // `reserva_id` (no por fecha de cobro), TODA venta ligada a alguna de las
-  // reservas ya confirmadas como jugadas en este rango (`reservasActivasPagadas`)
-  // — sin importar cuándo se haya cobrado — y `ingresosCruzados` (abajo) las
-  // consolida bajo la fecha/bloque horario REAL de la reserva (mismo
-  // criterio que ya usaba para el bloque horario, ver `reservasPorIdBI`).
-  // Esta unión es EXCLUSIVA de la tabla de Ingresos Cruzados — el resto de
-  // las tarjetas de Analytics (Ingresos Totales, Ticket Promedio, Top
-  // Productos) siguen leyendo `ventasRango` tal cual, sin tocar su criterio
-  // de fecha de cobro, que es el correcto para esas otras vistas.
-  const [ventasPorReservaCruce, setVentasPorReservaCruce] = useState([]);
-  const idsReservasActivasPagadas = useMemo(() => reservasActivasPagadas.map((r) => r.id), [reservasActivasPagadas]);
-  const cargarVentasPorReservaCruce = useCallback(async () => {
-    if (idsReservasActivasPagadas.length === 0) {
-      setVentasPorReservaCruce([]);
-      return;
-    }
-    try {
-      const { data, error } = await conClubId(supabase.from('ventas').select('*')).in('reserva_id', idsReservasActivasPagadas);
-      if (error) {
-        console.warn('[Analytics BI] No se pudieron cargar las ventas ligadas a reservas del rango (Ingresos Cruzados).', error);
-        setVentasPorReservaCruce([]);
-        return;
-      }
-      setVentasPorReservaCruce(data || []);
-    } catch (e) {
-      console.warn('[Analytics BI] Excepción cargando ventas ligadas a reservas del rango (Ingresos Cruzados).', e);
-      setVentasPorReservaCruce([]);
-    }
-  }, [idsReservasActivasPagadas]);
-  useEffect(() => {
-    cargarVentasPorReservaCruce();
-  }, [cargarVentasPorReservaCruce]);
-  useEffect(() => {
-    const canal = supabase
-      .channel('analytics-ventas-cruce-reserva')
-      .on('postgres_changes', canalClubFiltro('ventas'), () => cargarVentasPorReservaCruce())
-      .subscribe();
-    return () => {
-      supabase.removeChannel(canal);
-    };
-  }, [cargarVentasPorReservaCruce]);
+  /* ---- Reservas del rango ----------------------------------------------
+   * REGLA DE ORO FINANCIERA (`esCobroConfirmado`): dos conjuntos distintos.
+   *  • `reservasOcupacion`: TODO lo que ocupa cancha en el rango (pagado o
+   *    pendiente, reservas y bloqueos de Reta/Torneo/Clase) — alimenta
+   *    Ocupación %, Heatmap, Pico/Valle y Horas. Lo pendiente sí ocupa.
+   *  • `reservasCobradas`: SOLO renta de cancha cobrada ('pagado', monto > 0,
+   *    sin bloqueos de eventos) — es lo único de `reservas` que suma dinero.
+   * Los Bloqueos Maestro de Torneo (apartado general, ver
+   * `idsBloqueosMaestroTorneo`) quedan fuera de ambos: no son ocupación real.
+   * ---------------------------------------------------------------------- */
+  const reservasEnRango = useMemo(
+    () => reservas.filter((r) => r.fecha >= rango.inicioFechaISO && r.fecha < rango.finFechaISO && !idsMaestroTorneo.has(r.id)),
+    [reservas, rango, idsMaestroTorneo]
+  );
+  const reservasOcupacion = useMemo(() => reservasEnRango.filter((r) => r.estado !== 'Cancelada'), [reservasEnRango]);
+  const reservasCobradas = useMemo(
+    () => reservasEnRango.filter((r) => !esBloqueoDeEvento(r) && esCobroConfirmado(r) && (Number(r.monto_total) || 0) > 0),
+    [reservasEnRango]
+  );
 
   const canchasPorId = useMemo(() => {
     const mapa = {};
@@ -26151,108 +26131,70 @@ function ModuloAnalyticsBI({
     return mapa;
   }, [canchas]);
 
-  // Imputación de Ingresos de Torneos/Retas/Clases a Rendimiento por Cancha
-  // — por TARIFA OFICIAL (Devengo de Pista), no por reparto del pozo de
-  // inscripciones ni por la mensualidad cobrada: los bloqueos que ocupan
-  // cancha en `reservas` para Torneos/Retas/Clases SIEMPRE se crean con
-  // `monto_total: 0` (ver `crearBloqueoParrilla`) — el dinero real vive en
-  // `reta_inscripciones`/`torneo_participantes`/`academia_alumnos`, nunca
-  // en la reserva. Pero ese dinero NO es "ingreso de la cancha": una cancha
-  // con tarifa $300/hr que aloja 5h de partidos de un torneo que recaudó
-  // $10,000 en inscripciones NO produjo $2,000/hr — produjo exactamente lo
-  // que su tarifa dice, $300/hr = $1,500. Por eso el Ingreso/Margen de
-  // Contribución de cada reserva de Torneo/Reta/Clase es SIEMPRE `Horas de
-  // Partido/Sesión × Precio de Renta Oficial de la Cancha`
-  // (`precioPorHoraDeCancha`) — nunca una fracción proporcional del pozo ni
-  // la mensualidad del alumno.
-  //
-  // "Ingresos Brutos por Torneos/Retas": suma DIRECTA de lo recaudado en
-  // inscripciones (Retas + Torneos), sin restar el valor de renta de las
-  // canchas consumidas — a diferencia del `ingresoPorReservaId` de arriba
-  // (que SÍ sigue usando la tarifa oficial para no inflar el Rendimiento
-  // por Cancha / Ingresos Cruzados), esta métrica es deliberadamente bruta:
-  // el dinero real que entró por organizar el evento, sin ninguna resta. Ya
-  // no tiene tarjeta de KPI propia en el tablero (se quitó a pedido del
-  // club), pero se conserva aquí porque el Reporte CSV exportable sí sigue
-  // desglosándola.
-  //
-  // Retas: 1 reta = 1 sola reserva de bloqueo, en su propia cancha/horario —
-  // ya vive en la fecha exacta en que se juega (criterio de devengo
-  // automático). Torneos: el Bloqueo Maestro del evento (`torneo.bloqueos`)
-  // queda FUERA de este cálculo a propósito — ya no representa ocupación
-  // real (ver `idsMaestroTorneo`/`reservasActivasPagadas` arriba); solo los
-  // sub-bloqueos de partido (`torneo_partidos`, la ocupación física real)
-  // reciben su tarifa oficial dentro de `ingresoPorReservaId`.
-  //
-  // RENTABILIDAD POR CANCHA UNIFICADA (Reservas + Clases + Torneos +
-  // Retas): las Clases de Academia & Clínicas YA ocupaban horas de cancha
-  // en "Horas Reservadas"/"Ocupación" — sus bloqueos en `reservas` traen
-  // `estado: 'Clase'` (mismo mecanismo que Torneos/Retas, ver
-  // `generarSesionesClase`) y por eso ya pasaban el filtro de
-  // `reservasActivasPagadas` — pero su `monto_total` es siempre $0 y, a
-  // diferencia de Torneos/Retas, no tenían ninguna entrada en
-  // `ingresoPorReservaId`, así que aportaban $0 a "Ingresos" aunque sí
-  // sumaban horas/ocupación. Se corrige abajo con el mismo criterio de
-  // tarifa oficial que Torneos/Retas — un bloqueo de Clase cancelado ya no
-  // trae `estado: 'Clase'` (pasa a `'Cancelada'`, ver la cancelación de
-  // sesión en `ModuloAcademiaClinicas`), así que el filtro por `estado`
-  // ya excluye clases canceladas sin necesidad de revisar nada más.
-  const imputacionEventosCancha = useMemo(() => {
-    const ingresoPorReservaId = {};
-    let ingresosBrutosTorneosRetas = 0;
+  /* ---- Ingresos reales de eventos (solo cobrados) ------------------------
+   * Retas: cada inscripción PAGADA suma su monto real (N lugares × precio
+   * por lugar — una reta llena de 4 × $300 suma $1,200, no la tarifa de
+   * renta de la cancha). Se asigna al día en que se JUEGA la reta.
+   * Torneos: inscripciones pagadas, al día de inicio del torneo.
+   * Academia: mensualidades/clases sueltas pagadas (monto > 0), por fecha
+   * de cobro (`created_at`) — una mensualidad no pertenece a un solo día.
+   * Pendientes, canceladas y bajas: nunca suman.
+   * ---------------------------------------------------------------------- */
+  const ingresosEventos = useMemo(() => {
+    const enRangoFecha = (fechaISO) => Boolean(fechaISO) && fechaISO >= rango.inicioFechaISO && fechaISO < rango.finFechaISO;
+    const retasPorId = new Map((retas || []).map((r) => [String(r.id), r]));
+    const torneosPorId = new Map((torneos || []).map((t) => [String(t.id), t]));
 
-    (retas || []).forEach((reta) => {
-      if (!reta.reserva_bloqueo_id) return;
-      const totalReta = (inscripciones || [])
-        .filter((i) => i.reta_id === reta.id && inscripcionEstaPagada(i) && i.estado !== 'cancelado')
-        .reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
-      if (totalReta <= 0) return;
-      const horas = duracionHorasBloque(reta.hora_inicio, reta.hora_fin);
-      const ingresoCancha = horas * precioPorHoraDeCancha(canchasPorId[reta.cancha_id]);
-      ingresoPorReservaId[reta.reserva_bloqueo_id] = (ingresoPorReservaId[reta.reserva_bloqueo_id] || 0) + ingresoCancha;
-      ingresosBrutosTorneosRetas += totalReta;
+    const porReta = new Map(); // retaId -> { reta, monto, lugares }
+    let totalRetas = 0;
+    let transaccionesRetas = 0;
+    (inscripciones || []).forEach((i) => {
+      if (!esCobroConfirmado(i) || i.estado === 'cancelado') return;
+      const reta = retasPorId.get(String(i.reta_id)) || null;
+      const fechaEvento = reta?.fecha || (i.created_at ? String(i.created_at).slice(0, 10) : null);
+      if (!enRangoFecha(fechaEvento)) return;
+      const monto = montoInscripcionCobrada(i, reta ? precioDeReta(reta) : 0);
+      if (monto <= 0) return;
+      totalRetas += monto;
+      transaccionesRetas += 1;
+      const clave = String(i.reta_id);
+      const acc = porReta.get(clave) || { reta, monto: 0, lugares: 0 };
+      acc.monto += monto;
+      acc.lugares += 1;
+      porReta.set(clave, acc);
     });
 
-    (torneos || []).forEach((torneo) => {
-      const totalTorneo = (participantesTorneo || [])
-        .filter((p) => p.torneo_id === torneo.id && inscripcionEstaPagada(p))
-        .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
-      if (totalTorneo <= 0) return;
-
-      // SOLO partidos individuales asignados — nunca el Bloqueo Maestro.
-      (partidosTorneo || []).forEach((p) => {
-        if (p.torneo_id !== torneo.id || !p.reserva_bloqueo_id) return;
-        const horas = duracionHorasBloque(p.hora_inicio, p.hora_fin);
-        if (horas <= 0) return;
-        const ingresoCancha = horas * precioPorHoraDeCancha(canchasPorId[p.cancha_id]);
-        ingresoPorReservaId[p.reserva_bloqueo_id] = (ingresoPorReservaId[p.reserva_bloqueo_id] || 0) + ingresoCancha;
-      });
-
-      ingresosBrutosTorneosRetas += totalTorneo;
+    const porTorneo = new Map(); // torneoId -> { torneo, monto }
+    let totalTorneos = 0;
+    let transaccionesTorneos = 0;
+    (participantesTorneo || []).forEach((p) => {
+      if (!esCobroConfirmado(p) || p.estado === 'cancelado') return;
+      const torneo = torneosPorId.get(String(p.torneo_id)) || null;
+      const fechaEvento = torneo?.fecha_inicio || (p.created_at ? String(p.created_at).slice(0, 10) : null);
+      if (!enRangoFecha(fechaEvento)) return;
+      const monto = Number(p.monto) || 0;
+      if (monto <= 0) return;
+      totalTorneos += monto;
+      transaccionesTorneos += 1;
+      const clave = String(p.torneo_id);
+      const acc = porTorneo.get(clave) || { torneo, monto: 0 };
+      acc.monto += monto;
+      porTorneo.set(clave, acc);
     });
 
-    (reservas || []).forEach((r) => {
-      if (r.estado !== 'Clase') return; // no-Clase, o Clase cancelada (pasa a 'Cancelada')
-      const horas = duracionHorasBloque(r.hora_inicio, r.hora_fin);
-      if (horas <= 0) return;
-      ingresoPorReservaId[r.id] = (ingresoPorReservaId[r.id] || 0) + horas * precioPorHoraDeCancha(canchasPorId[r.cancha_id]);
+    let totalAcademia = 0;
+    let transaccionesAcademia = 0;
+    (academiaAlumnos || []).forEach((a) => {
+      if (!esCobroConfirmado(a) || a.estado === 'baja') return;
+      if (!dentroDeRangoPorCreatedAt(a, rango)) return;
+      const monto = Number(a.monto) || 0;
+      if (monto <= 0) return; // pagado con créditos de membresía: sin dinero nuevo
+      totalAcademia += monto;
+      transaccionesAcademia += 1;
     });
 
-    return { ingresoPorReservaId, ingresosBrutosTorneosRetas };
-  }, [retas, inscripciones, torneos, participantesTorneo, partidosTorneo, reservas, canchasPorId]);
-
-  const ingresoEfectivoPorReservaId = imputacionEventosCancha.ingresoPorReservaId;
-
-  // Monto real de una reserva para efectos de Analytics BI: para una reserva
-  // regular (o ya cobrada de verdad), es su propio `monto_total`; para un
-  // bloqueo de Torneo/Reta con `monto_total: 0`, es su valor de renta a
-  // tarifa oficial vía `ingresoEfectivoPorReservaId` (o $0 si el evento
-  // nunca cobró nada).
-  function montoEfectivoReserva(reserva) {
-    const efectivo = ingresoEfectivoPorReservaId[reserva.id];
-    if (efectivo !== undefined) return efectivo;
-    return Number(reserva.monto_total) || 0;
-  }
+    return { porReta, porTorneo, totalRetas, totalTorneos, totalAcademia, transaccionesRetas, transaccionesTorneos, transaccionesAcademia };
+  }, [retas, inscripciones, torneos, participantesTorneo, academiaAlumnos, rango]);
 
   const productosPorId = useMemo(() => {
     const mapa = {};
@@ -26276,14 +26218,14 @@ function ModuloAnalyticsBI({
     return mapa;
   }, [productos, variantesPorProducto]);
 
-  /* ---- Heatmap de ocupación por horario ---- */
+  /* ---- Heatmap de ocupación por horario (incluye reservas pendientes) ---- */
   const heatmap = useMemo(() => {
     const canchasActivas = canchas.filter((c) => c.activa !== false);
     const numCanchas = canchasActivas.length || 1;
     const numFilas = modoFiltro === 'dia' ? 1 : ORDEN_SEMANA_BI.length;
     const ocupado = Array.from({ length: numFilas }, () => HEATMAP_HORAS.map(() => 0));
 
-    reservasActivasPagadas.forEach((r) => {
+    reservasOcupacion.forEach((r) => {
       const hi = parseHoraAMinutos(r.hora_inicio);
       const hf = parseHoraAMinutos(r.hora_fin);
       if (hi === null || hf === null || hf <= hi) return;
@@ -26316,51 +26258,93 @@ function ModuloAnalyticsBI({
     const horaPicoLabel = hayDatos ? `${pad2(HEATMAP_HORAS[idxPico])}:00 – ${pad2(HEATMAP_HORAS[idxPico] + 1)}:00` : '—';
 
     return { filas: Array.from({ length: numFilas }), celdas, horaPicoLabel };
-  }, [reservasActivasPagadas, canchas, modoFiltro, rango]);
+  }, [reservasOcupacion, canchas, modoFiltro, rango]);
 
-  /* ---- Rendimiento por cancha: horas, ocupación e ingresos del periodo ---- */
-  const rendimientoPorCancha = useMemo(() => {
+  /* ---- Ingresos y Ocupación por Cancha ------------------------------------
+   * Horas/Ocupación: `reservasOcupacion` (incluye pendientes y bloqueos).
+   * Ingreso real: renta cobrada de la cancha + lo cobrado en las Retas
+   * jugadas en ella (si una reta usa varias canchas se reparte en partes
+   * iguales) + lo cobrado en Torneos, repartido según las horas de partido
+   * programadas en cada cancha. Un torneo sin partidos asignados a cancha
+   * queda en `sinAsignar`. Academia se reporta en su categoría (una
+   * mensualidad no pertenece a una cancha).
+   * ---------------------------------------------------------------------- */
+  const ingresosPorCancha = useMemo(() => {
     const horasDisponiblesPorCancha = (rango.dias * (HORA_FIN_MIN - HORA_INICIO_MIN)) / 60;
-    return canchas
-      .filter((c) => c.activa !== false)
-      .map((c) => {
-        const reservasCancha = reservasActivasPagadas.filter((r) => r.cancha_id === c.id);
-        const horas = reservasCancha.reduce((acc, r) => {
-          const hi = parseHoraAMinutos(r.hora_inicio);
-          const hf = parseHoraAMinutos(r.hora_fin);
-          if (hi === null || hf === null || hf <= hi) return acc;
-          return acc + (hf - hi) / 60;
-        }, 0);
-        // `montoEfectivoReserva`: para bloqueos de Torneo/Reta (monto_total
-        // fijo en $0) usa su valor de renta a tarifa oficial (Horas × Precio
-        // de Renta de la Cancha) vía `ingresoEfectivoPorReservaId`, en vez
-        // del $0 de la fila — nunca una fracción proporcional del pozo.
-        const ingresos = reservasCancha.reduce((acc, r) => acc + montoEfectivoReserva(r), 0);
-        const ocupacion = horasDisponiblesPorCancha > 0 ? Math.min(100, (horas / horasDisponiblesPorCancha) * 100) : 0;
-        return { cancha: c, horas, ingresos, ocupacion };
-      })
-      .sort((a, b) => b.ingresos - a.ingresos);
-  }, [canchas, reservasActivasPagadas, rango, ingresoEfectivoPorReservaId]);
+    const filasPorId = new Map();
+    const fila = (cancha) => {
+      const clave = String(cancha.id);
+      if (!filasPorId.has(clave)) filasPorId.set(clave, { cancha, horas: 0, ingresoReservas: 0, ingresoEventos: 0 });
+      return filasPorId.get(clave);
+    };
+    canchas.filter((c) => c.activa !== false).forEach((c) => fila(c));
+    const canchaDe = (id) => canchas.find((c) => mismoId(c.id, id)) || null;
+
+    reservasOcupacion.forEach((r) => {
+      const c = canchaDe(r.cancha_id);
+      if (!c) return;
+      const hi = parseHoraAMinutos(r.hora_inicio);
+      const hf = parseHoraAMinutos(r.hora_fin);
+      if (hi === null || hf === null || hf <= hi) return;
+      fila(c).horas += (hf - hi) / 60;
+    });
+    reservasCobradas.forEach((r) => {
+      const c = canchaDe(r.cancha_id);
+      if (c) fila(c).ingresoReservas += Number(r.monto_total) || 0;
+    });
+
+    let sinAsignar = 0;
+    ingresosEventos.porReta.forEach(({ reta, monto }) => {
+      const lista = reta ? canchasDeReta(reta, canchas) : [];
+      if (lista.length === 0) {
+        sinAsignar += monto;
+        return;
+      }
+      lista.forEach((c) => {
+        fila(c).ingresoEventos += monto / lista.length;
+      });
+    });
+    ingresosEventos.porTorneo.forEach(({ torneo, monto }, torneoId) => {
+      const horasPorCancha = new Map();
+      (partidosTorneo || []).forEach((pt) => {
+        if (String(pt.torneo_id) !== torneoId) return;
+        const c = canchaDe(pt.cancha_id);
+        const horas = duracionHorasBloque(pt.hora_inicio, pt.hora_fin);
+        if (!c || horas <= 0) return;
+        horasPorCancha.set(String(c.id), { c, horas: (horasPorCancha.get(String(c.id))?.horas || 0) + horas });
+      });
+      const totalHoras = Array.from(horasPorCancha.values()).reduce((acc, x) => acc + x.horas, 0);
+      if (!torneo || totalHoras <= 0) {
+        sinAsignar += monto;
+        return;
+      }
+      horasPorCancha.forEach(({ c, horas }) => {
+        fila(c).ingresoEventos += (monto * horas) / totalHoras;
+      });
+    });
+
+    const filas = Array.from(filasPorId.values())
+      .filter((f) => f.cancha.activa !== false || f.horas > 0 || f.ingresoReservas + f.ingresoEventos > 0)
+      .map((f) => ({
+        ...f,
+        ingresos: f.ingresoReservas + f.ingresoEventos,
+        ocupacion: horasDisponiblesPorCancha > 0 ? Math.min(100, (f.horas / horasDisponiblesPorCancha) * 100) : 0,
+      }))
+      .sort((a, b) => b.ingresos - a.ingresos || String(a.cancha.nombre).localeCompare(String(b.cancha.nombre)));
+    return { filas, sinAsignar };
+  }, [canchas, reservasOcupacion, reservasCobradas, ingresosEventos, partidosTorneo, rango]);
+  const rendimientoPorCancha = ingresosPorCancha.filas;
 
   /* ---- Ingresos, COGS, categorías y ranking de productos ---- */
   const analisis = useMemo(() => {
-    const ventasPagadas = ventasRango.filter((v) => v.estado_pago === 'pagado');
+    // REGLA DE ORO: solo tickets cobrados (`esCobroConfirmado`) — nunca
+    // cuentas abiertas ni pendientes.
+    const ventasPagadas = ventasRango.filter((v) => esCobroConfirmado(v));
 
-    // Criterio de Servicio/Juego: el ingreso de Canchas SIEMPRE se asigna por
-    // `reservas.fecha` (el día que se juega), nunca por el día en que se
-    // cobró — una reserva de mañana cobrada hoy pertenece al reporte de
-    // mañana. `reservasActivasPagadas` ya está filtrada así (fecha de juego
-    // dentro del rango + confirmada + pagada), así que basta con sumarla —
-    // usando `montoEfectivoReserva` para que los bloqueos de Torneos/Retas
-    // sumen su ingreso real de inscripciones, no el `monto_total: 0` fijo.
-    const ingresoCanchas = reservasActivasPagadas.reduce((acc, r) => acc + montoEfectivoReserva(r), 0);
-    const transaccionesCanchas = reservasActivasPagadas.length;
+    // Canchas: renta COBRADA, por fecha de juego (`reservas.fecha`).
+    const ingresoCanchas = reservasCobradas.reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
+    const transaccionesCanchas = reservasCobradas.length;
 
-    // Variantes como Productos Completos: se agrupan con una CLAVE COMPUESTA
-    // — `v:<variante_id>` cuando el item trae variante, o `p:<producto_id>`
-    // si no — así "Top Productos Más Vendidos" distingue "Cerveza —
-    // Victoria" de "Cerveza — Corona" en vez de sumarlos indiferenciados bajo
-    // el producto padre.
     const claveVentaItem = (productoId, varianteId) => (varianteId ? `v:${varianteId}` : `p:${productoId}`);
 
     // FIX "Ingreso Total y Margen en $0 aunque las unidades sí se ven bien":
@@ -26419,11 +26403,17 @@ function ModuloAnalyticsBI({
     // estos mismos tickets se IGNORAN aquí a propósito: su ingreso ya se
     // contó arriba desde `reservas`, para no duplicarlo bajo dos criterios de
     // fecha distintos dentro del mismo ticket.
-    const ingresoPorCategoria = { Canchas: ingresoCanchas, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
+    const ingresoPorCategoria = {
+      Canchas: ingresoCanchas,
+      'Retas & Torneos': ingresosEventos.totalRetas + ingresosEventos.totalTorneos,
+      Academia: ingresosEventos.totalAcademia,
+      'Pro-Shop': 0,
+      'Cafetería/Bar': 0,
+    };
     // COGS: Costo Total = unidades × costo_unitario, resuelto item por item
     // con `costoUnitarioParaItem` (ver arriba) — ya NO de un cruce Kardex↔
     // ventas por clave compuesta exacta.
-    const cogsPorCategoria = { Canchas: 0, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
+    const cogsPorCategoria = { Canchas: 0, 'Retas & Torneos': 0, Academia: 0, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
     let cogsTotal = 0;
     let transaccionesConProducto = 0;
     const filasPorClave = {};
@@ -26439,9 +26429,11 @@ function ModuloAnalyticsBI({
       const items = v?.detalles?.items;
       if (!Array.isArray(items)) return;
       let tieneProducto = false;
+      let subtotalProductosTicket = 0;
       items.forEach((item) => {
         if (item.tipo !== 'producto') return; // cancha ya contada desde `reservas`
         tieneProducto = true;
+        subtotalProductosTicket += Number(item.subtotal) || 0;
         const cantidad = Number(item.cantidad) || 0;
         const subtotal = Number(item.subtotal) || 0;
         const varianteId = item.variante_id || null;
@@ -26497,39 +26489,30 @@ function ModuloAnalyticsBI({
         else if (cat === 'Canchas') ingresoPorCategoria.Canchas += subtotal;
         else ingresoPorCategoria['Pro-Shop'] += subtotal;
       });
-      if (tieneProducto) transaccionesConProducto += 1;
+      // Solo tickets con cobro real de producto cuentan como transacción.
+      if (tieneProducto && subtotalProductosTicket > 0) transaccionesConProducto += 1;
     });
 
-    const totalTransacciones = transaccionesCanchas + transaccionesConProducto;
+    // Ticket Promedio = Ingreso Total REAL ÷ transacciones EFECTIVAMENTE
+    // cobradas: reservas pagadas + inscripciones pagadas (Retas/Torneos) +
+    // cobros de Academia + tickets con producto cobrado. Nunca bloques
+    // vacíos, bloqueos de eventos, tickets en $0 ni nada pendiente.
+    const transaccionesEventos =
+      ingresosEventos.transaccionesRetas + ingresosEventos.transaccionesTorneos + ingresosEventos.transaccionesAcademia;
+    const totalTransacciones = transaccionesCanchas + transaccionesEventos + transaccionesConProducto;
 
     const filasProducto = Object.values(filasPorClave).map((f) => ({
       ...f,
       ganancia: f.ingreso - f.costo,
     }));
 
-    // `cogsPorCategoria.Canchas` se queda en $0 salvo que exista un producto
-    // de catálogo literal "Canchas" con `costo_unitario` cargado (caso
-    // raro) — el Costo Operativo Asignado por Hora/Cancha que antes se
-    // sumaba aquí se eliminó por completo del tablero; la contabilidad real
-    // de egresos ahora vive en el módulo Contabilidad & Compras.
-    const ingresosTotales = ingresoPorCategoria.Canchas + ingresoPorCategoria['Pro-Shop'] + ingresoPorCategoria['Cafetería/Bar'];
+    const ingresosTotales = CATEGORIAS_BI.reduce((acc, c) => acc + (ingresoPorCategoria[c.key] || 0), 0);
     const ticketPromedio = totalTransacciones > 0 ? ingresosTotales / totalTransacciones : null;
 
-    // "Ingresos Brutos por Torneos/Retas": suma directa de lo recaudado en
-    // inscripciones (Retas + Torneos), SIN restar el valor de renta oficial
-    // de las canchas consumidas (ver `imputacionEventosCancha`) — dinero
-    // real ya cobrado por el club. Deliberadamente NO se suma a
-    // `ingresosTotales`/`ticketPromedio`/`ratioCrossSelling` (esas métricas
-    // son por transacción de cancha/producto, y un torneo es UN evento con
-    // muchas transacciones de cancha ya contadas). La P&L real (Ingresos
-    // Totales Consolidados − Egresos) vive en el módulo Contabilidad &
-    // Compras → P&L / Estado de Resultados, que también expone su propio
-    // desglose de "Torneos y Retas (Inscripciones)".
-    const ingresosBrutosTorneosRetas = imputacionEventosCancha.ingresosBrutosTorneosRetas;
+    const ingresosBrutosTorneosRetas = ingresosEventos.totalRetas + ingresosEventos.totalTorneos;
 
-    // Ratio de Gasto Secundario (% Cross-Selling): qué porción de los
-    // ingresos totales NO viene de rentar la pista, sino de lo que se
-    // consume alrededor (Pro-Shop + Cafetería/Bar).
+    // Ratio de Gasto Secundario (% Cross-Selling): porción de los ingresos
+    // cobrados que viene de Pro-Shop + Cafetería/Bar.
     const ingresoSecundario = ingresoPorCategoria['Pro-Shop'] + ingresoPorCategoria['Cafetería/Bar'];
     const ratioCrossSelling = ingresosTotales > 0 ? (ingresoSecundario / ingresosTotales) * 100 : 0;
 
@@ -26591,41 +26574,35 @@ function ModuloAnalyticsBI({
       ratioCrossSelling,
       totalTransacciones,
       transaccionesCanchas,
+      transaccionesEventos,
       transaccionesConProducto,
       ticketPromedio,
       cogsTotal,
       ingresosBrutosTorneosRetas,
+      ingresoRetas: ingresosEventos.totalRetas,
+      ingresoTorneos: ingresosEventos.totalTorneos,
+      ingresoAcademia: ingresosEventos.totalAcademia,
       rentabilidadPorCategoria,
       categoriaEstrella,
       topProductos,
       topModificadores,
       auditoriaKardex,
     };
-  }, [
-    ventasRango,
-    kardexRango,
-    productosPorId,
-    variantesPorId,
-    reservasActivasPagadas,
-    ingresoEfectivoPorReservaId,
-    imputacionEventosCancha,
-  ]);
+  }, [ventasRango, kardexRango, productosPorId, variantesPorId, reservasCobradas, ingresosEventos]);
 
   /* ---- Nº de canchas activas (denominador de RevPACP y Pico/Valle) ---- */
   const numCanchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false).length, [canchas]);
 
-  /* ---- RevPACP: Ingreso Canchas ÷ horas-cancha disponibles en el rango ---- */
+  /* ---- RevPACP: ingreso real generado en canchas ÷ horas-cancha disponibles ---- */
   const revPACP = useMemo(() => {
     const horasDisponiblesTotales = rango.dias * ((HORA_FIN_MIN - HORA_INICIO_MIN) / 60) * numCanchasActivas;
     if (horasDisponiblesTotales <= 0) return null;
-    return analisis.ingresoCanchas / horasDisponiblesTotales;
-  }, [analisis, rango, numCanchasActivas]);
+    const ingresoGeneradoEnCanchas = rendimientoPorCancha.reduce((acc, f) => acc + f.ingresos, 0);
+    return ingresoGeneradoEnCanchas / horasDisponiblesTotales;
+  }, [rendimientoPorCancha, rango, numCanchasActivas]);
 
-  // Ocupación de Canchas (%) — reemplaza a "Margen Total del Periodo" (esa
-  // P&L real ahora vive en Contabilidad & Compras): horas reservadas
-  // (`rendimientoPorCancha`, ya excluye Bloqueos Maestro de Torneo) sobre la
-  // capacidad total del club en el periodo — Nº de canchas activas × horas
-  // de operación diarias × días del rango. Mismo denominador que RevPACP.
+  // Ocupación de Canchas (%): horas ocupadas (incluye pendientes) sobre la
+  // capacidad total del club en el periodo.
   const ocupacionCanchasPct = useMemo(() => {
     const horasDisponiblesTotales = rango.dias * ((HORA_FIN_MIN - HORA_INICIO_MIN) / 60) * numCanchasActivas;
     if (horasDisponiblesTotales <= 0) return 0;
@@ -26638,7 +26615,7 @@ function ModuloAnalyticsBI({
     const calcularBloque = (bloque) => {
       const disponibleTotal = rango.dias * numCanchasActivas * (bloque.fin - bloque.inicio);
       if (disponibleTotal <= 0) return 0;
-      const ocupadoTotal = reservasActivasPagadas.reduce((acc, r) => {
+      const ocupadoTotal = reservasOcupacion.reduce((acc, r) => {
         const hi = parseHoraAMinutos(r.hora_inicio);
         const hf = parseHoraAMinutos(r.hora_fin);
         if (hi === null || hf === null || hf <= hi) return acc;
@@ -26647,131 +26624,8 @@ function ModuloAnalyticsBI({
       return Math.min(100, (ocupadoTotal / disponibleTotal) * 100);
     };
     return { valle: calcularBloque(BLOQUE_OCUPACION_VALLE), pico: calcularBloque(BLOQUE_OCUPACION_PICO) };
-  }, [reservasActivasPagadas, rango, numCanchasActivas]);
+  }, [reservasOcupacion, rango, numCanchasActivas]);
 
-  // Mapa de reservas por id — usado abajo por `ingresosCruzados` para
-  // atribuir el ingreso de Add-ons/Pro-Shop/Cafetería de una venta LIGADA a
-  // una reserva (`ventas.reserva_id`) al bloque horario en que en verdad se
-  // JUEGA (`reservas.hora_inicio`), no al momento en que se cobró el
-  // ticket — ver el comentario completo donde se usa, más abajo.
-  const reservasPorIdBI = useMemo(() => {
-    const mapa = {};
-    reservas.forEach((r) => {
-      if (r?.id != null) mapa[r.id] = r;
-    });
-    return mapa;
-  }, [reservas]);
-
-  /* ---- Ingresos Cruzados por Cancha y Bloque Horario ---- */
-  const ingresosCruzados = useMemo(() => {
-    const canchasActivas = canchas.filter((c) => c.activa !== false);
-    // Exclusividad de Add-ons ligados a una reserva (corrección de
-    // seguimiento al item 3): una venta con `reserva_id` se atribuye
-    // EXCLUSIVAMENTE a la fecha/bloque de SU reserva — nunca a su propia
-    // fecha de cobro. Antes se armaba la unión con `ventasRango` (fecha de
-    // cobro) PRIMERO y `ventasPorReservaCruce` (fecha de la reserva)
-    // encima — como ambos conjuntos podían traer el MISMO id de venta (una
-    // venta cobrada el mismo rango que se está viendo), la venta terminaba
-    // contandose en las DOS fechas: el día 11 (cobro, vía `ventasRango`,
-    // sin filtrar `reserva_id`) Y el día 12 (juego, vía
-    // `ventasPorReservaCruce`) — el Overgrip aparecía duplicado en vez de
-    // solo bajo la cancha. Ahora `ventasRango` se usa ÚNICAMENTE para
-    // ventas SIN `reserva_id` (mostrador/Tienda sueltos, que sí se cobran y
-    // consumen el mismo día por definición); toda venta CON `reserva_id`
-    // llega nada más por `ventasPorReservaCruce` — que ya viene acotada a
-    // reservas jugadas dentro del rango activo (`reservasActivasPagadas`),
-    // así que una venta ligada a una reserva FUERA de este rango
-    // simplemente no aparece aquí (aparecerá sola al navegar al rango real
-    // de esa reserva).
-    const ventasPagadasMapa = new Map();
-    ventasRango.forEach((v) => {
-      if (v.estado_pago === 'pagado' && v?.id != null && v.reserva_id == null) ventasPagadasMapa.set(v.id, v);
-    });
-    ventasPorReservaCruce.forEach((v) => {
-      if (v.estado_pago === 'pagado' && v?.id != null) ventasPagadasMapa.set(v.id, v);
-    });
-    const ventasPagadas = Array.from(ventasPagadasMapa.values());
-    const filas = [];
-    canchasActivas.forEach((c) => {
-      BLOQUES_CRUCE.forEach((bloque) => {
-        // Ingreso Cancha: reservas de ESTA cancha cuya hora de inicio cae en
-        // este bloque — criterio de fecha de juego, igual que el resto del
-        // tablero (`reservasActivasPagadas`).
-        const ingresoCancha = reservasActivasPagadas.reduce((acc, r) => {
-          if (r.cancha_id !== c.id) return acc;
-          const hi = parseHoraAMinutos(r.hora_inicio);
-          if (hi === null || hi < bloque.inicio || hi >= bloque.fin) return acc;
-          return acc + montoEfectivoReserva(r);
-        }, 0);
-
-        // Ingreso Cafetería/Pro-Shop: tickets de `ventas` vinculados a ESTA
-        // cancha (cuenta abierta / Renta Exprés / Add-ons "Para ti" del
-        // Portal), atribuidos al bloque de la HORA DE JUEGO cuando el
-        // ticket está ligado a una reserva (`reserva_id`) — un jugador
-        // puede reservar de noche para jugar en la mañana, y lo que importa
-        // aquí es en qué bloque se consumió el producto (junto con la
-        // cancha), no a qué hora se pagó. Sin reserva ligada (venta de
-        // mostrador pura, o Tienda Web sin cancha) se sigue usando la
-        // fecha/hora de cobro, como antes.
-        let ingresoCafeteria = 0;
-        let ingresoProShop = 0;
-        // DESGLOSE INDIVIDUAL DE PRODUCTOS: cada producto/variante del
-        // ticket es SU PROPIA entrada — antes se agregaban todos en un solo
-        // mapa de unidades y al final SOLO se quedaba el de más unidades
-        // (`productoTop`), así que un ticket con "2x Pelotas + 1x Overgrip"
-        // mostraba nada más "Pelotas" y el Overgrip desaparecía por
-        // completo de esta tabla (ni sus unidades ni su ingreso quedaban
-        // visibles en ningún lado). Ahora se construye un desglose completo
-        // — clave por variante cuando la hay, para no fusionar "Cerveza —
-        // Corona" con "Cerveza — Victoria" — con el ingreso EXACTO de cada
-        // renglón ya clasificado en su categoría (Cafetería/Bar vs.
-        // Pro-Shop), y se sigue exponiendo `productoTop` (el de mayor
-        // ingreso) por compatibilidad con quien ya lo lea.
-        const desglosePorProducto = {};
-        ventasPagadas.forEach((v) => {
-          if (v.cancha_id !== c.id) return;
-          const reservaLigada = v.reserva_id != null ? reservasPorIdBI[v.reserva_id] : null;
-          let minutosDia;
-          if (reservaLigada) {
-            const hi = parseHoraAMinutos(reservaLigada.hora_inicio);
-            if (hi === null) return;
-            minutosDia = hi;
-          } else {
-            const ts = obtenerTimestampVenta(v);
-            if (!ts) return;
-            minutosDia = ts.getHours() * 60 + ts.getMinutes();
-          }
-          if (minutosDia < bloque.inicio || minutosDia >= bloque.fin) return;
-          const items = v?.detalles?.items;
-          if (!Array.isArray(items)) return;
-          items.forEach((item) => {
-            if (item.tipo !== 'producto') return;
-            const subtotal = Number(item.subtotal) || 0;
-            const prod = productosPorId[item.producto_id];
-            // Mismo criterio que "Rentabilidad por Categoría": solo
-            // Cafetería/Bar tiene columna propia; Pro-Shop y 'Rentas'
-            // (palas/accesorios) caen en Ingreso Pro-Shop.
-            const categoriaItem = prod?.categoria === 'Cafetería/Bar' ? 'Cafetería/Bar' : 'Pro-Shop';
-            if (categoriaItem === 'Cafetería/Bar') ingresoCafeteria += subtotal;
-            else ingresoProShop += subtotal;
-            const claveDesglose = item.variante_id ? `v:${item.variante_id}` : `p:${item.producto_id || item.nombre}`;
-            const nombreProd = item.nombre || prod?.nombre || 'Producto';
-            if (!desglosePorProducto[claveDesglose]) {
-              desglosePorProducto[claveDesglose] = { nombre: nombreProd, categoria: categoriaItem, unidades: 0, ingreso: 0 };
-            }
-            desglosePorProducto[claveDesglose].unidades += Number(item.cantidad) || 0;
-            desglosePorProducto[claveDesglose].ingreso += subtotal;
-          });
-        });
-
-        const productosVendidos = Object.values(desglosePorProducto).sort((a, b) => b.ingreso - a.ingreso);
-        const productoTop = productosVendidos[0] || null;
-
-        filas.push({ cancha: c, bloque, ingresoCancha, ingresoCafeteria, ingresoProShop, productoTop, productosVendidos });
-      });
-    });
-    return filas;
-  }, [canchas, ventasRango, ventasPorReservaCruce, reservasActivasPagadas, productosPorId, ingresoEfectivoPorReservaId, reservasPorIdBI]);
 
   const cargandoFinanciero = loadingVentas || loadingKardexRango;
   const errorPeriodo = errorVentas || errorKardexRango;
@@ -26794,7 +26648,7 @@ function ModuloAnalyticsBI({
       rendimientoPorCancha,
       heatmap,
       productos,
-      ingresosCruzados,
+      ingresosCanchaSinAsignar: ingresosPorCancha.sinAsignar,
       picoValle,
       revPACP,
       ocupacionCanchasPct,
@@ -26848,19 +26702,27 @@ function ModuloAnalyticsBI({
           el dato (`analisis.ingresosBrutosTorneosRetas`) se conserva
           internamente porque el Reporte CSV exportable sí lo sigue
           desglosando. */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        {/* Regla de oro financiera: solo cobros con estatus 'pagado'. */}
+        <MetricCard
+          icon={Wallet}
+          etiqueta="Ingresos Totales (Cobrados)"
+          valor={formatoMoneda(analisis.ingresosTotales)}
+          sub="Solo pagados · sin pendientes ni cuentas abiertas"
+          tono="emerald"
+        />
         <MetricCard
           icon={Receipt}
           etiqueta="Ticket Promedio por Venta"
           valor={analisis.ticketPromedio !== null ? formatoMoneda(analisis.ticketPromedio) : '—'}
-          sub={`${analisis.transaccionesCanchas} reservas + ${analisis.transaccionesConProducto} tickets de mostrador`}
+          sub={`${analisis.totalTransacciones} cobros efectivos: ${analisis.transaccionesCanchas} reservas · ${analisis.transaccionesEventos} inscripciones/clases · ${analisis.transaccionesConProducto} tickets`}
           tono="sky"
         />
         <MetricCard
           icon={Gauge}
           etiqueta="Ocupación de Canchas (%)"
           valor={`${ocupacionCanchasPct.toFixed(1)}%`}
-          sub="Horas reservadas ÷ capacidad total del periodo"
+          sub="Horas ocupadas (incluye pendientes) ÷ capacidad"
           tono={ocupacionCanchasPct >= 50 ? 'emerald' : ocupacionCanchasPct >= 25 ? 'amber' : 'rose'}
         />
         <MetricCard
@@ -26890,17 +26752,15 @@ function ModuloAnalyticsBI({
 
       <RentabilidadPorCategoria filas={analisis.rentabilidadPorCategoria} cargando={cargandoFinanciero} />
 
-      <IngresosCruzadosTabla filas={ingresosCruzados} cargando={cargandoFinanciero} />
+      {/* Reemplaza a "Ingresos Cruzados por Cancha y Bloque Horario":
+          resumen limpio por cancha (horas, ocupación e ingreso real). */}
+      <IngresosOcupacionPorCanchaTabla filas={rendimientoPorCancha} sinAsignar={ingresosPorCancha.sinAsignar} />
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
         <TopProductosTabla filas={analisis.topProductos} cargando={cargandoFinanciero} />
-        <RendimientoPorCanchaTabla filas={rendimientoPorCancha} />
+        {/* Grupos de Modificadores/Extras (migracion_v64). */}
+        <TopModificadoresTabla filas={analisis.topModificadores} cargando={cargandoFinanciero} />
       </div>
-
-      {/* Grupos de Modificadores/Extras (migracion_v64): widget dedicado,
-          separado del ranking de productos físicos de arriba — ver
-          `TopModificadoresTabla`. */}
-      <TopModificadoresTabla filas={analisis.topModificadores} cargando={cargandoFinanciero} />
       </TransicionPestana>
     </>
   );
@@ -38847,7 +38707,7 @@ function AnalyticsAcademia({
       else clasesGrupal += 1;
 
       const ingresoClase = (alumnosPorClase[c.id] || [])
-        .filter((a) => a.estado_pago === 'pagado')
+        .filter((a) => esCobroConfirmado(a))
         .reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
       ingresoTotal += ingresoClase;
       if (esPrivada) ingresoPrivada += ingresoClase;
@@ -41157,7 +41017,7 @@ function DirectorioJugadoresCRM({
   const ventasPorJugadorId = useMemo(() => {
     const mapa = {};
     (ventasHistoricas || [])
-      .filter((v) => v.estado_pago === 'pagado')
+      .filter((v) => esCobroConfirmado(v))
       .forEach((v) => {
         const jugadorId = resolverJugadorIdVentaCancha(v, { reservasPorId, reservasPorCanchaFecha });
         if (!jugadorId) return;
@@ -41231,7 +41091,7 @@ function DirectorioJugadoresCRM({
         const propiasActivas = propias.filter((r) => r.estado !== 'Cancelada');
         const propiasCanceladas = propias.filter((r) => r.estado === 'Cancelada');
         const gastoCanchas = propiasActivas
-          .filter((r) => r.estado_pago === 'pagado')
+          .filter((r) => esCobroConfirmado(r))
           .reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
 
         /* --- Smart POS / Ventas: herencia automática por cancha — cada venta
@@ -41354,7 +41214,7 @@ function DirectorioJugadoresCRM({
         // asistencias reales (`asistio: true`) en `academia_asistencias` —
         // "tomadas", no "inscritas", para reflejar clases efectivamente
         // recibidas.
-        const gastoAcademia = alumnosDeJ.filter((a) => a.estado_pago === 'pagado').reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
+        const gastoAcademia = alumnosDeJ.filter((a) => esCobroConfirmado(a)).reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
         const clasesAcademiaTomadas = (academiaAsistencias || []).filter((a) => alumnoIdsJ.has(a.alumno_id) && a.asistio === true).length;
 
         // Participación pagada en los últimos 6 meses (indicador CHS #4).
@@ -41759,7 +41619,7 @@ function DirectorioJugadoresCRM({
 
         // 4) Gasto Directo: tickets de renta de cancha ya pagados.
         const ticketsCanchas = propiasActivas
-          .filter((r) => r.estado_pago === 'pagado')
+          .filter((r) => esCobroConfirmado(r))
           .map((r) => ({
             id: r.id,
             fecha: r.fecha,
@@ -62210,6 +62070,7 @@ function AppInterno({ clubInicial } = {}) {
                 reservas={reservas}
                 operador={operador}
                 canchas={canchas}
+                retas={retas}
                 inscripciones={inscripciones}
                 participantesTorneo={participantesTorneo}
                 academiaAlumnos={academiaAlumnos}
@@ -62231,6 +62092,7 @@ function AppInterno({ clubInicial } = {}) {
                 torneos={torneos}
                 participantesTorneo={participantesTorneo}
                 partidosTorneo={partidosTorneo}
+                academiaAlumnos={academiaAlumnos}
                 permisos={permisos}
                 configClub={configClub}
               />
