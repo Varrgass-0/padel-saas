@@ -5723,6 +5723,7 @@ function FilaCronograma({
   bloqueosMaestroTorneoIds,
   horaAperturaMin = HORA_INICIO_MIN,
   horaCierreMin = HORA_FIN_MIN,
+  estadoRetaDeReserva,
 }) {
   const bloqueada = estadoActual === 'mantenimiento';
   const meta = ESTATUS_META[estadoActual];
@@ -5833,10 +5834,13 @@ function FilaCronograma({
             // junto al otro en vez de encimados. Sin solape (caso normal),
             // `totalCarriles` es 1 y se ve exactamente como antes.
             const altoCarril = (60 - 8) / totalCarriles;
+            // Retas: cupos en vivo ("Abierta · 2/4" / "Completada").
+            const estadoReta = reserva.estado === 'Reta' ? estadoRetaDeReserva?.(reserva) || null : null;
             return (
               <button
                 key={reserva.id}
                 onClick={() => onReservaClick(reserva)}
+                title={estadoReta ? `${reserva.jugador_nombre || 'Reta'} · ${estadoReta.completa ? 'Completada' : 'Abierta'} (${estadoReta.ocupados}/${CUPOS_RETA})` : undefined}
                 style={{
                   left: startIdx * SLOT_PX + 2,
                   width: span * SLOT_PX - 4,
@@ -5847,8 +5851,15 @@ function FilaCronograma({
               >
                 <span className="truncate text-[11px] font-black">{reserva.jugador_nombre || 'Jugador'}</span>
                 <span className="flex items-center gap-1 truncate text-[10px] font-semibold opacity-80">
+                  {/* Retas: el estado va PRIMERO para que nunca se corte en
+                      bloques angostos (el horario ya lo indica la posición). */}
+                  {estadoReta && (
+                    <span className="shrink-0 font-black">
+                      {estadoReta.completa ? 'Completada' : `Abierta ${estadoReta.ocupados}/${CUPOS_RETA}`} ·
+                    </span>
+                  )}
                   {formatoHora12(reserva.hora_inicio)}–{formatoHora12(reserva.hora_fin)}
-                  {reserva.estado_pago === 'pendiente' && <AlertTriangle size={9} />}
+                  {!estadoReta && reserva.estado_pago === 'pendiente' && <AlertTriangle size={9} />}
                 </span>
               </button>
             );
@@ -5868,6 +5879,7 @@ function VistaCronograma({
   bloqueosMaestroTorneoIds,
   horaAperturaMin = HORA_INICIO_MIN,
   horaCierreMin = HORA_FIN_MIN,
+  estadoRetaDeReserva,
 }) {
   const reservasDelDia = useMemo(
     () => reservas.filter((r) => r.fecha === fechaSeleccionada),
@@ -5922,6 +5934,7 @@ function VistaCronograma({
                 bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
                 horaAperturaMin={horaAperturaMin}
                 horaCierreMin={horaCierreMin}
+                estadoRetaDeReserva={estadoRetaDeReserva}
               />
             ))}
           </div>
@@ -6289,7 +6302,7 @@ function tipoEventoDeReserva(estado) {
 // Tarjeta de un evento dentro de un bloque de hora de la Agenda: Tipo,
 // Cliente/Jugador, Cancha asignada y Estado (Pagado/Pendiente) — clic abre
 // el detalle/gestión vía `onClick` (lo decide cada módulo que la use).
-function TarjetaEventoAgenda({ reserva, canchasPorId, onClick, continuacion = false }) {
+function TarjetaEventoAgenda({ reserva, canchasPorId, onClick, continuacion = false, estadoReta = null }) {
   const { label, meta } = tipoEventoDeReserva(reserva.estado);
   const cancha = canchasPorId?.[reserva.cancha_id];
   return (
@@ -6321,15 +6334,8 @@ function TarjetaEventoAgenda({ reserva, canchasPorId, onClick, continuacion = fa
           </p>
         </div>
       </div>
-      <span
-        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-          reserva.estado_pago === 'pagado'
-            ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
-            : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
-        }`}
-      >
-        {reserva.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
-      </span>
+      {/* Retas: "Abierta"/"Completada" según cupos (antes "Pagado"). */}
+      <ChipEstadoEventoParrilla reserva={reserva} estadoReta={estadoReta} />
     </button>
   );
 }
@@ -6346,6 +6352,8 @@ function VistaAgendaDia({
   horaAperturaMin = HORA_INICIO_MIN,
   horaCierreMin = HORA_FIN_MIN,
   onReservaClick,
+  // (reserva) => { ocupados, completa, ... } | null — solo bloques de Reta.
+  estadoRetaDeReserva,
 }) {
   const eventosDelDia = useMemo(
     () => (reservas || []).filter((r) => r.fecha === fecha && r.estado !== 'Cancelada'),
@@ -6408,6 +6416,7 @@ function VistaAgendaDia({
                     canchasPorId={canchasPorId}
                     onClick={onReservaClick}
                     continuacion={!esInicio}
+                    estadoReta={estadoRetaDeReserva?.(r) || null}
                   />
                 ))
               )}
@@ -8699,6 +8708,9 @@ function ModalDetalleCancha({
   onReprogramada,
   onRegistrarAuditoria,
   onCancelarClaseDesdeParrilla,
+  // Bloques de Reta: abren el detalle de la Reta (no "Detalle de Reserva").
+  estadoRetaDeReserva,
+  onAbrirReta,
 }) {
   const [reservaActiva, setReservaActiva] = useState(reservaInicial || null);
 
@@ -8755,7 +8767,10 @@ function ModalDetalleCancha({
           {reservasDelDia.map((r) => (
             <button
               key={r.id}
-              onClick={() => setReservaActiva(r)}
+              onClick={() => {
+                if (onAbrirReta?.(r)) return;
+                setReservaActiva(r);
+              }}
               className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-left transition hover:border-orange-400/40"
             >
               <div className="min-w-0">
@@ -8765,7 +8780,11 @@ function ModalDetalleCancha({
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <BadgePago estadoPago={r.estado_pago} />
+                {r.estado === 'Reta' ? (
+                  <ChipEstadoEventoParrilla reserva={r} estadoReta={estadoRetaDeReserva?.(r) || null} />
+                ) : (
+                  <BadgePago estadoPago={r.estado_pago} />
+                )}
                 <ChevronRight size={16} className="text-slate-400" />
               </div>
             </button>
@@ -8779,6 +8798,176 @@ function ModalDetalleCancha({
 /* ============================================================================
  * APP PRINCIPAL
  * ==========================================================================*/
+
+// Detalle de Reta desde la Parrilla (Cronograma / Calendario → Agenda /
+// Tarjetas / Próximas Reservas). Reemplaza al "Detalle de Reserva" genérico
+// cuando el bloque es de una Reta: datos de la reta, canchas por nombre y la
+// lista de los 4 lugares (jugadores inscritos + "Lugar disponible"). Recibe
+// `reta`/`inscripciones` vivos desde `AppInterno` (Realtime de `retas` y
+// `reta_inscripciones`), así que los lugares se llenan solos mientras está
+// abierto — incluidas las inscripciones hechas desde el Portal.
+function ModalDetalleRetaParrilla({
+  reta,
+  canchas,
+  inscripciones,
+  jugadoresPorId,
+  soloLectura = false,
+  onClose,
+  onInscripcionCreada,
+  onIrATorneosRetas,
+}) {
+  const [ahoraMs, setAhoraMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setAhoraMs(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+  const [inscribiendo, setInscribiendo] = useState(false);
+  const jugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
+
+  const { confirmados, ocupados, disponibles, completa } = resumenCuposReta(reta, inscripciones);
+  const nombresCanchas = nombresCanchasDeReta(reta, canchas) || 'Por confirmar';
+  const concluida = reta.archivado === true || eventoYaTermino(reta.fecha, reta.hora_fin, ahoraMs);
+  const iniciada = !concluida && eventoYaInicio(reta.fecha, reta.hora_inicio, ahoraMs);
+  const puedeInscribir = !soloLectura && !completa && !concluida && !iniciada;
+
+  if (inscribiendo) {
+    return (
+      <ModalInscribirJugador
+        reta={reta}
+        lugaresDisponibles={disponibles}
+        jugadores={jugadores}
+        onClose={() => setInscribiendo(false)}
+        onInscrito={(inscripcion) => onInscripcionCreada?.(inscripcion)}
+      />
+    );
+  }
+
+  return (
+    <ModalShell titulo={reta.nombre || `Reta ${ramaDeReta(reta)}`} subtitulo="Detalle de Reta" onClose={onClose} icon={Swords} ancho="max-w-md">
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span
+            className={`rounded-full px-2.5 py-0.5 text-[11px] font-black ${
+              completa ? 'bg-rose-400/10 text-rose-500 ring-1 ring-rose-400/30' : 'bg-emerald-400/10 text-emerald-500 ring-1 ring-emerald-400/30'
+            }`}
+          >
+            {completa ? 'Completada' : 'Abierta'} · {ocupados}/{CUPOS_RETA}
+          </span>
+          {concluida && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <Archive size={10} /> Concluida
+            </span>
+          )}
+          {iniciada && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-500 ring-1 ring-amber-400/30">
+              <Lock size={10} /> En curso
+            </span>
+          )}
+        </div>
+
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+          <div className="col-span-2">
+            <dt className="text-slate-500">Cancha</dt>
+            <dd className="flex items-center gap-1 font-bold text-slate-800">
+              <MapPin size={12} className="shrink-0 text-slate-500" /> {nombresCanchas}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Fecha</dt>
+            <dd className="font-bold text-slate-800">{formatoFechaLarga(reta.fecha)}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Horario</dt>
+            <dd className="font-bold text-slate-800">
+              {formatoHora12(reta.hora_inicio)}–{formatoHora12(reta.hora_fin)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Nivel · Rama</dt>
+            <dd className="font-bold text-slate-800">
+              {nivelDeReta(reta) || 'Nivel libre'} · {ramaDeReta(reta)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Precio por lugar</dt>
+            <dd className="font-bold text-slate-800">{formatoMoneda(precioDeReta(reta))}</dd>
+          </div>
+        </dl>
+
+        <div>
+          <p className="mb-1.5 flex items-center justify-between text-[11px] font-bold uppercase tracking-wide text-slate-500">
+            <span className="flex items-center gap-1.5">
+              <Users size={12} /> Lugares
+            </span>
+            <span className="normal-case tracking-normal">
+              {disponibles > 0 ? `${disponibles} disponible${disponibles === 1 ? '' : 's'}` : 'Reta llena'}
+            </span>
+          </p>
+          <div className="space-y-1.5">
+            {Array.from({ length: CUPOS_RETA }).map((_, idx) => {
+              const jugador = confirmados[idx];
+              if (!jugador) {
+                return puedeInscribir ? (
+                  <button
+                    key={`libre-${idx}`}
+                    type="button"
+                    onClick={() => setInscribiendo(true)}
+                    title="Inscribir a un jugador en este lugar"
+                    className="flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 px-2.5 py-2 text-left text-xs text-slate-400 transition hover:border-orange-400/50 hover:bg-orange-400/5 hover:text-orange-500"
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="w-4 text-center text-[10px] font-black text-slate-300">{idx + 1}</span>
+                      <Users size={12} /> Lugar disponible
+                    </span>
+                    <UserPlus size={12} />
+                  </button>
+                ) : (
+                  <div
+                    key={`libre-${idx}`}
+                    className="flex items-center gap-2 rounded-lg border border-dashed border-slate-300 px-2.5 py-2 text-xs text-slate-400"
+                  >
+                    <span className="w-4 text-center text-[10px] font-black text-slate-300">{idx + 1}</span>
+                    <Users size={12} /> Lugar disponible
+                  </div>
+                );
+              }
+              const pagado = estadoPagoInscripcion(jugador) === 'pagado';
+              return (
+                <div key={jugador.id || idx} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-2 text-xs">
+                  <span className="flex min-w-0 items-center gap-2 font-semibold text-slate-800">
+                    <span className="w-4 text-center text-[10px] font-black text-slate-400">{idx + 1}</span>
+                    <CheckCircle2 size={12} className="shrink-0 text-emerald-500" />
+                    <span className="truncate">{jugador.nombre || 'Jugador'}</span>
+                  </span>
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                      pagado ? 'bg-emerald-400/10 text-emerald-500 ring-1 ring-emerald-400/30' : 'bg-amber-400/10 text-amber-500 ring-1 ring-amber-400/30'
+                    }`}
+                  >
+                    {pagado ? 'Pagado' : 'Pendiente'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-3">
+          {onIrATorneosRetas && (
+            <BotonSecundario onClick={onIrATorneosRetas} className="px-3 py-2 text-xs">
+              Gestionar en Torneos & Retas <ArrowRight size={13} />
+            </BotonSecundario>
+          )}
+          {puedeInscribir && (
+            <BotonPrimario onClick={() => setInscribiendo(true)} className="px-3 py-2 text-xs">
+              <UserPlus size={14} /> Inscribir Jugador
+            </BotonPrimario>
+          )}
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
 
 function ModuloParrillaOperativa({
   canchas,
@@ -8815,6 +9004,13 @@ function ModuloParrillaOperativa({
   // Homologación Parrilla Operativa ↔ Academia (Unificación de Cancelación
   // de Clases) — ver `irACancelarClaseDesdeParrilla` en `AppInterno`.
   onCancelarClaseDesdeParrilla,
+  // Retas en la Parrilla: estado vivo de `retas`/`reta_inscripciones`
+  // (Realtime en `AppInterno`) para que un clic sobre un bloque de Reta abra
+  // su detalle con los 4 lugares, y las etiquetas digan Abierta/Completada.
+  retas = [],
+  inscripcionesRetas = [],
+  onInscripcionRetaCreada,
+  onIrATorneosRetas,
 }) {
   // Horario de Operación del Club (item 4) — el Cronograma y "Nueva Reserva"
   // de este módulo dejan de usar el límite fijo 06:00–24:00 y respetan el
@@ -8868,6 +9064,25 @@ function ModuloParrillaOperativa({
   const [modalCambiarFoto, setModalCambiarFoto] = useState(null); // cancha
   const [modalNuevaReserva, setModalNuevaReserva] = useState(null); // { cancha, hora }
   const [modalDetalle, setModalDetalle] = useState(null); // { cancha, reserva }
+  const [retaDetalleId, setRetaDetalleId] = useState(null);
+  const { retaDeReserva, estadoRetaDeReserva } = useRetasDeParrilla(retas, inscripcionesRetas);
+  // Se lee SIEMPRE del arreglo vivo: si Realtime trae inscripciones nuevas el
+  // modal se actualiza solo; si la reta se elimina, el modal se cierra.
+  const retaDetalle = retaDetalleId != null ? (retas || []).find((r) => mismoId(r.id, retaDetalleId) && !r.deleted_at) || null : null;
+  // Clic sobre cualquier bloque/tarjeta de la Parrilla: si es una Reta con su
+  // registro en `retas`, abre el Detalle de Reta; si no, el detalle de
+  // siempre. Devuelve true cuando lo manejó como Reta.
+  const abrirRetaDeReserva = (reserva) => {
+    const reta = retaDeReserva(reserva);
+    if (!reta) return false;
+    setModalDetalle(null);
+    setRetaDetalleId(reta.id);
+    return true;
+  };
+  const abrirDetalleReserva = (reserva) => {
+    if (abrirRetaDeReserva(reserva)) return;
+    setModalDetalle({ cancha: canchas.find((cc) => mismoId(cc.id, reserva.cancha_id)), reserva });
+  };
   // AJUSTE UX: tarjeta de métrica "Próximas Reservas" clickeable — abre este
   // panel rápido con la lista cronológica completa (antes solo mostraba un
   // contador, sin forma de ver el detalle sin navegar la parrilla entera).
@@ -9050,9 +9265,7 @@ function ModuloParrillaOperativa({
               onVerHorarios={(cancha) => setModalDetalle({ cancha, reserva: null })}
               onCambiarFoto={(cancha) => setModalCambiarFoto(cancha)}
               onCambiarEstatus={actualizarEstatusCancha}
-              onReservaClick={(reserva) =>
-                setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
-              }
+              onReservaClick={abrirDetalleReserva}
               soloLectura={permisos?.soloLecturaParrilla === true}
               puedeRenombrarCancha={permisos?.puedeCambiarEstatusCancha === true}
               puedeEditarPrecio={permisos?.puedeEditarPrecioCancha === true}
@@ -9088,9 +9301,8 @@ function ModuloParrillaOperativa({
             reservas={reservas}
             horaAperturaMin={horaAperturaMin}
             horaCierreMin={horaCierreMin}
-            onReservaClick={(reserva) =>
-              setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
-            }
+            onReservaClick={abrirDetalleReserva}
+            estadoRetaDeReserva={estadoRetaDeReserva}
           />
         </div>
       ) : (
@@ -9104,12 +9316,11 @@ function ModuloParrillaOperativa({
                 ? undefined
                 : (cancha, hora) => setModalNuevaReserva({ cancha, hora, fecha: fechaSeleccionada })
             }
-            onReservaClick={(reserva) =>
-              setModalDetalle({ cancha: canchas.find((cc) => cc.id === reserva.cancha_id), reserva })
-            }
+            onReservaClick={abrirDetalleReserva}
             bloqueosMaestroTorneoIds={bloqueosMaestroTorneoIds}
             horaAperturaMin={horaAperturaMin}
             horaCierreMin={horaCierreMin}
+            estadoRetaDeReserva={estadoRetaDeReserva}
           />
           {/* AJUSTE UX: copia visual e interactiva del Mapa de Calor de
               Ocupación — mismo componente `HeatmapOcupacion` que ya usa
@@ -9187,6 +9398,30 @@ function ModuloParrillaOperativa({
           onReprogramada={(reserva) => upsertReserva(reserva)}
           onRegistrarAuditoria={onRegistrarAuditoria}
           onCancelarClaseDesdeParrilla={onCancelarClaseDesdeParrilla}
+          estadoRetaDeReserva={estadoRetaDeReserva}
+          onAbrirReta={abrirRetaDeReserva}
+        />
+      )}
+
+      {/* Detalle de Reta (clic sobre un bloque de Reta en Tarjetas,
+          Cronograma, Calendario → Agenda o Próximas Reservas). */}
+      {retaDetalle && (
+        <ModalDetalleRetaParrilla
+          reta={retaDetalle}
+          canchas={canchas}
+          inscripciones={inscripcionesRetas}
+          jugadoresPorId={jugadoresPorId}
+          soloLectura={permisos?.soloLecturaParrilla === true}
+          onClose={() => setRetaDetalleId(null)}
+          onInscripcionCreada={onInscripcionRetaCreada}
+          onIrATorneosRetas={
+            onIrATorneosRetas
+              ? () => {
+                  setRetaDetalleId(null);
+                  onIrATorneosRetas();
+                }
+              : null
+          }
         />
       )}
 
@@ -9197,8 +9432,10 @@ function ModuloParrillaOperativa({
           reservas={proximasReservasDetalle}
           canchasPorId={canchasPorId}
           onClose={() => setModalProximasReservas(false)}
+          estadoRetaDeReserva={estadoRetaDeReserva}
           onVerDetalle={(reserva) => {
             setModalProximasReservas(false);
+            if (abrirRetaDeReserva(reserva)) return;
             setModalDetalle({ cancha: canchasPorId[reserva.cancha_id], reserva });
           }}
         />
@@ -9212,7 +9449,7 @@ function ModuloParrillaOperativa({
 // contador en la tarjeta de métrica. Un clic en cualquier fila abre el mismo
 // `ModalDetalleCancha` que se usa desde la parrilla, para no duplicar la
 // ficha de detalle/cobro/cancelación en un segundo componente.
-function ModalProximasReservas({ reservas, canchasPorId, onClose, onVerDetalle }) {
+function ModalProximasReservas({ reservas, canchasPorId, onClose, onVerDetalle, estadoRetaDeReserva }) {
   return (
     <ModalShell titulo="Próximas Reservas" subtitulo={`${reservas.length} de ahora en adelante`} onClose={onClose} icon={Clock} ancho="max-w-lg">
       {reservas.length === 0 ? (
@@ -9237,15 +9474,7 @@ function ModalProximasReservas({ reservas, canchasPorId, onClose, onVerDetalle }
                     {formatoFechaLarga(r.fecha)} · {formatoHora12(r.hora_inicio)}–{formatoHora12(r.hora_fin)}
                   </p>
                 </div>
-                <span
-                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                    r.estado_pago === 'pagado'
-                      ? 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30'
-                      : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
-                  }`}
-                >
-                  {r.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
-                </span>
+                <ChipEstadoEventoParrilla reserva={r} estadoReta={estadoRetaDeReserva?.(r) || null} />
               </button>
             );
           })}
@@ -28855,6 +29084,115 @@ function idsBloqueosDeReta(reta) {
   return Array.from(new Set(ids));
 }
 
+// Comparación de ids TOLERANTE A TIPO: `retas.cancha_id` puede llegar de
+// Supabase como texto ("3") mientras `canchas.id` es número (3) — con `===`
+// la cancha principal nunca se encontraba y la tarjeta mostraba "Cancha +1
+// más". El Portal no tenía el problema porque busca en un objeto
+// (`canchasPorId[...]`, llaves siempre string).
+function mismoId(a, b) {
+  return a != null && b != null && a !== '' && b !== '' && String(a) === String(b);
+}
+
+// Canchas reales de una Reta, en orden (principal primero) y sin duplicados.
+function canchasDeReta(reta, canchas) {
+  const ids = [reta?.cancha_id, ...(Array.isArray(reta?.cancha_ids) ? reta.cancha_ids : [])];
+  const vistos = new Set();
+  const lista = [];
+  ids.forEach((id) => {
+    if (id == null || id === '' || vistos.has(String(id))) return;
+    vistos.add(String(id));
+    const cancha = (canchas || []).find((c) => mismoId(c.id, id));
+    if (cancha) lista.push(cancha);
+  });
+  return lista;
+}
+
+function nombresCanchasDeReta(reta, canchas) {
+  return canchasDeReta(reta, canchas)
+    .map((c) => c.nombre)
+    .filter(Boolean)
+    .join(', ');
+}
+
+// Bloque 'Reta' de la Parrilla → su Reta. Primero por el id del bloqueo
+// (`reserva_bloqueo_id(s)`); si la reta es vieja y no lo guardó, por cancha +
+// fecha + hora de inicio (y nombre, si hubiera dos en el mismo horario).
+function retaDeBloqueoParrilla(reserva, retas) {
+  if (!reserva || reserva.estado !== 'Reta') return null;
+  const vivas = (retas || []).filter((r) => !r.deleted_at);
+  const porBloqueo = vivas.find((r) => idsBloqueosDeReta(r).some((id) => mismoId(id, reserva.id)));
+  if (porBloqueo) return porBloqueo;
+  const hhmm = (h) => String(h || '').slice(0, 5);
+  const candidatas = vivas.filter(
+    (r) =>
+      r.fecha === reserva.fecha &&
+      hhmm(r.hora_inicio) === hhmm(reserva.hora_inicio) &&
+      [r.cancha_id, ...(Array.isArray(r.cancha_ids) ? r.cancha_ids : [])].some((id) => mismoId(id, reserva.cancha_id))
+  );
+  if (candidatas.length <= 1) return candidatas[0] || null;
+  return candidatas.find((r) => (r.nombre || '') === (reserva.jugador_nombre || '')) || candidatas[0];
+}
+
+// Cupos de una Reta con el mismo criterio que `TarjetaReta`
+// (`inscripcionOcupaLugar`: todo lo que no esté cancelado/retenido).
+function resumenCuposReta(reta, inscripciones) {
+  const confirmados = (inscripciones || []).filter((i) => mismoId(i.reta_id, reta?.id) && inscripcionOcupaLugar(i));
+  const ocupados = confirmados.length;
+  return { confirmados, ocupados, disponibles: Math.max(0, CUPOS_RETA - ocupados), completa: ocupados >= CUPOS_RETA };
+}
+
+// Parrilla Operativa: índice memoizado bloque→Reta y bloque→cupos, para que
+// Calendario/Agenda/Cronograma pinten "Abierta"/"Completada" sin recorrer
+// todas las retas en cada tarjeta. Se recalcula solo cuando Realtime trae
+// cambios de `retas` o `reta_inscripciones`.
+function useRetasDeParrilla(retas, inscripciones) {
+  return useMemo(() => {
+    const cache = new Map();
+    const retaDeReserva = (reserva) => {
+      if (!reserva || reserva.estado !== 'Reta') return null;
+      const clave = String(reserva.id);
+      if (!cache.has(clave)) cache.set(clave, retaDeBloqueoParrilla(reserva, retas));
+      return cache.get(clave);
+    };
+    const estadoRetaDeReserva = (reserva) => {
+      const reta = retaDeReserva(reserva);
+      return reta ? resumenCuposReta(reta, inscripciones) : null;
+    };
+    return { retaDeReserva, estadoRetaDeReserva };
+  }, [retas, inscripciones]);
+}
+
+// Etiqueta de estado de un evento de la Parrilla: para bloques de Reta,
+// "Abierta"/"Completada" según cupos (no el `estado_pago` del bloqueo, que
+// siempre se guarda como 'pagado' y no significa nada para una Reta); para
+// todo lo demás, Pagado/Pendiente como siempre.
+function ChipEstadoEventoParrilla({ reserva, estadoReta }) {
+  let texto;
+  let clase;
+  let titulo;
+  if (reserva?.estado === 'Reta') {
+    if (estadoReta?.completa) {
+      texto = 'Completada';
+      clase = 'bg-rose-400/10 text-rose-500 ring-1 ring-rose-400/30';
+    } else {
+      texto = 'Abierta';
+      clase = 'bg-emerald-400/10 text-emerald-500 ring-1 ring-emerald-400/30';
+    }
+    titulo = estadoReta ? `${estadoReta.ocupados}/${CUPOS_RETA} lugares ocupados` : undefined;
+  } else if (reserva?.estado_pago === 'pagado') {
+    texto = 'Pagado';
+    clase = 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30';
+  } else {
+    texto = 'Pendiente';
+    clase = 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30';
+  }
+  return (
+    <span title={titulo} className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${clase}`}>
+      {texto}
+    </span>
+  );
+}
+
 /* ---------------- Retas Abiertas ---------------- */
 
 // Confirmación de Borrado Lógico (Soft Delete) con Motivo obligatorio —
@@ -29209,13 +29547,18 @@ function TarjetaReta({
               </button>
             </p>
           )}
-          <p
-            className="mt-1 flex items-center gap-1.5 text-xs text-slate-500"
-            title={canchasAdicionales?.length > 0 ? [cancha?.nombre, ...canchasAdicionales.map((c) => c.nombre)].filter(Boolean).join(', ') : undefined}
-          >
-            <MapPin size={11} className="shrink-0 text-slate-500" /> {cancha?.nombre || 'Cancha'}
-            {canchasAdicionales?.length > 0 && ` +${canchasAdicionales.length} más`} · {formatoFechaLarga(reta.fecha)} ·{' '}
-            {formatoHora12(reta.hora_inicio)}–{formatoHora12(reta.hora_fin)}
+          {/* Nombre real de la(s) cancha(s), directo y sin hover — igual que
+              el Portal de Jugadores (antes: "Cancha +1 más"). */}
+          <p className="mt-1 text-xs leading-snug text-slate-500">
+            <MapPin size={11} className="mr-1 inline-block align-[-1px] text-slate-500" />
+            <span className="font-bold text-slate-700">
+              {[cancha, ...(canchasAdicionales || [])]
+                .filter(Boolean)
+                .map((c) => c.nombre)
+                .filter(Boolean)
+                .join(', ') || 'Cancha por confirmar'}
+            </span>{' '}
+            · {formatoFechaLarga(reta.fecha)} · {formatoHora12(reta.hora_inicio)}–{formatoHora12(reta.hora_fin)}
           </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
@@ -34489,11 +34832,8 @@ function ModuloTorneosRetas({
                 <TarjetaReta
                   key={reta.id}
                   reta={reta}
-                  cancha={canchas.find((c) => c.id === reta.cancha_id)}
-                  canchasAdicionales={(Array.isArray(reta.cancha_ids) ? reta.cancha_ids : [])
-                    .filter((id) => id !== reta.cancha_id)
-                    .map((id) => canchas.find((c) => c.id === id))
-                    .filter(Boolean)}
+                  cancha={canchasDeReta(reta, canchas)[0]}
+                  canchasAdicionales={canchasDeReta(reta, canchas).slice(1)}
                   inscritos={inscripcionesPorReta[reta.id] || []}
                   onInscribir={setRetaParaInscribir}
                   onGestionarInscripcion={(retaDeInscripcion, jugador) => setInscripcionGestion({ reta: retaDeInscripcion, inscripcion: jugador })}
@@ -61232,6 +61572,13 @@ function AppInterno({ clubInicial } = {}) {
                 planActual={planClubSeleccionado}
                 onCambiarPlan={guardarPlanSeleccionadoClub}
                 onCancelarClaseDesdeParrilla={irACancelarClaseDesdeParrilla}
+                retas={retas}
+                inscripcionesRetas={inscripciones}
+                onInscripcionRetaCreada={(inscripcion) => {
+                  setInscripciones((prev) => [...prev, inscripcion]);
+                  if (inscripcion?._local) guardarRegistroLocal(LS_KEY_RETA_INSCRIPCIONES_LOCAL, inscripcion);
+                }}
+                onIrATorneosRetas={permisos.modulos?.has?.('torneos') ? () => setModuloActivo('torneos') : null}
               />
             ) : moduloActivo === 'pos' ? (
               <ModuloSmartPOS
