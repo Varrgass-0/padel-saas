@@ -1404,8 +1404,39 @@ async function reclamarDatosLegacyDelClub(clubId) {
 // compra/inscripción real que lo disparó — mismo criterio "best effort" que
 // el resto de notificaciones cross-device del proyecto
 // (`insertarMovimientoKardex`, `alertas_reabastecimiento`, etc.).
-async function crearNotificacionClub({ tipo, titulo, jugadorId, jugadorNombre, payload, canalWhatsapp }) {
+//
+// FIX 42501 (migracion_v107): el Portal escribe SIN sesión de staff, así que
+// el INSERT directo chocaba con la RLS de `notificaciones_club`. Ahora se
+// escribe con la RPC `fn_crear_notificacion_club` (SECURITY DEFINER), que
+// valida club, tipo, jugador (el del token de sesión del Portal si viene) y
+// contenido. Si la v107 todavía no está corrida, cae al INSERT directo de
+// siempre (que sí funciona desde el panel del club).
+function esErrorRpcInexistente(error) {
+  if (!error) return false;
+  const msg = (error.message || '').toLowerCase();
+  return error.code === 'PGRST202' || error.code === '42883' || msg.includes('could not find the function');
+}
+
+async function crearNotificacionClub({ tipo, titulo, jugadorId, jugadorNombre, payload, canalWhatsapp, portalToken = null }) {
   try {
+    if (CLUB_ACTIVO_ID) {
+      const { data, error } = await supabase.rpc('fn_crear_notificacion_club', {
+        p_club_id: Number(CLUB_ACTIVO_ID),
+        p_tipo: tipo,
+        p_titulo: String(titulo || '').slice(0, 300),
+        p_jugador_id: jugadorId != null ? String(jugadorId) : null,
+        p_jugador_nombre: jugadorNombre || null,
+        p_payload: payload || {},
+        p_canal_whatsapp: canalWhatsapp || null,
+        p_portal_token: portalToken || null,
+      });
+      if (!error) return { ok: true, data };
+      if (!esErrorRpcInexistente(error)) {
+        // 23505 = aviso ya existente (p. ej. cumpleaños con la misma clave).
+        if (error.code !== '23505') console.warn('[ClubOS] No se pudo crear la notificación del club (fn_crear_notificacion_club).', error);
+        return { ok: false, error };
+      }
+    }
     const fila = {
       tipo,
       titulo,
@@ -1417,8 +1448,8 @@ async function crearNotificacionClub({ tipo, titulo, jugadorId, jugadorNombre, p
     };
     const { data, error } = await insertarConColumnasOpcionales('notificaciones_club', fila, ['jugador_nombre', 'canal_whatsapp']);
     if (error) {
-      if (!esErrorTablaInexistente(error)) {
-        console.warn('[ClubOS] No se pudo guardar la notificación del club (notificaciones_club).', error);
+      if (!esErrorTablaInexistente(error) && error.code !== '23505') {
+        console.warn('[ClubOS] No se pudo guardar la notificación del club (notificaciones_club). ¿Ya corriste migracion_v107?', error);
       }
       return { ok: false, error };
     }
@@ -1478,7 +1509,7 @@ async function crearNotificacionJugador({ jugadorId, titulo, mensaje, tipo, payl
 // función serverless/Edge Function de Supabase (con `service_role`, del
 // lado del servidor) el día que la tengas, sin tener que tocar ningún otro
 // sitio de la app: todo evento de reserva/inscripción ya pasa por aquí.
-async function triggerWhatsAppNotification({ telefono, mensaje, tipo, jugadorId, jugadorNombre, payload }) {
+async function triggerWhatsAppNotification({ telefono, mensaje, tipo, jugadorId, jugadorNombre, payload, portalToken = null }) {
   const payloadWhatsApp = {
     to: telefono || null,
     mensaje,
@@ -1500,6 +1531,7 @@ async function triggerWhatsAppNotification({ telefono, mensaje, tipo, jugadorId,
     jugadorNombre,
     payload: { ...payload, whatsapp: payloadWhatsApp },
     canalWhatsapp: telefono ? 'whatsapp_pendiente' : null,
+    portalToken,
   });
   return payloadWhatsApp;
 }
@@ -52070,6 +52102,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             : `${reta.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
       });
       crearNotificacionClub({
+        portalToken: jugador?.portalToken || null,
         tipo: 'inscripcion_reta',
         titulo: `${jugador.nombre} se inscribió a la Reta "${reta.nombre}"`,
         jugadorId: jugador.id,
@@ -52152,6 +52185,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           detalle: `${clase.nombre} · Gratis — te quedan ${nuevosCreditos} crédito${nuevosCreditos === 1 ? '' : 's'} de tu membresía.`,
         });
         crearNotificacionClub({
+          portalToken: jugador?.portalToken || null,
           tipo: 'inscripcion_clase',
           titulo: `${jugador.nombre} se inscribió a la clase "${clase.nombre}" (con créditos de membresía)`,
           jugadorId: jugador.id,
@@ -52237,6 +52271,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             : `${clase.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
       });
       crearNotificacionClub({
+        portalToken: jugador?.portalToken || null,
         tipo: 'inscripcion_clase',
         titulo: `${jugador.nombre} se inscribió a la clase "${clase.nombre}"`,
         jugadorId: jugador.id,
@@ -52478,6 +52513,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             : `${torneo.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`) + detallePareja,
       });
       crearNotificacionClub({
+        portalToken: jugador?.portalToken || null,
         tipo: 'inscripcion_torneo',
         titulo: `${jugador.nombre} se inscribió al Torneo "${torneo.nombre}"${detallePareja}`,
         jugadorId: jugador.id,
@@ -52630,6 +52666,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             : 'No había saldo pendiente por cubrir.'),
       });
       crearNotificacionClub({
+        portalToken: jugador?.portalToken || null,
         tipo: 'inscripcion_torneo',
         titulo: `${jugador.nombre} se unió como pareja de ${participanteExistente.nombre} en el torneo`,
         jugadorId: jugador.id,
@@ -53001,6 +53038,13 @@ function PortalPublicoJugadores({ clubSlug }) {
       await reembolsarAWalletPortal(monto, `Reembolso por cancelación en tiempo · Clase ${clase?.nombre || ''}`.trim(), 'clase', alumno.id);
     }
     setAcademiaAlumnosPortal((prev) => prev.map((a) => (a.id === alumno.id ? { ...a, ...cambios } : a)));
+    notificarCancelacionAlClub(`su asistencia a la clase "${clase?.nombre || 'Clase'}"`, {
+      subtipo: 'clase',
+      clase_id: clase?.id ?? alumno.clase_id ?? null,
+      alumno_id: alumno.id,
+      reembolso_wallet: huboReembolso,
+      modulo_destino: 'academia',
+    });
     mostrarToast({
       titulo: 'Asistencia cancelada',
       detalle: huboReembolso
@@ -53078,6 +53122,21 @@ function PortalPublicoJugadores({ clubSlug }) {
   // llaman, ya se validó que la cancelación está permitida — por eso
   // reembolsan a Wallet incondicionalmente si había pago: solo se llega
   // aquí cuando la cancelación SÍ está dentro de tolerancia.
+  // Aviso al club de una cancelación hecha por el jugador (migracion_v107,
+  // tipo 'cancelacion' con `modulo_destino` para que el clic de la campana
+  // lleve al módulo correcto). Best-effort: nunca bloquea la cancelación.
+  function notificarCancelacionAlClub(detalle, payload) {
+    if (!jugador?.id) return;
+    crearNotificacionClub({
+      portalToken: jugador?.portalToken || null,
+      tipo: 'cancelacion',
+      titulo: `${jugador.nombre || 'Un jugador'} canceló ${detalle}`,
+      jugadorId: jugador.id,
+      jugadorNombre: jugador.nombre,
+      payload: { ...payload, cancelado_desde: 'portal' },
+    });
+  }
+
   async function cancelarReservaPortal(reserva) {
     const huboReembolso = reserva.estado_pago === 'pagado' && Number(reserva.monto_total) > 0;
     const cambios = huboReembolso ? { estado: 'Cancelada', estado_pago: 'reembolsado' } : { estado: 'Cancelada' };
@@ -53092,6 +53151,13 @@ function PortalPublicoJugadores({ clubSlug }) {
       );
     }
     setReservas((prev) => prev.map((r) => (r.id === reserva.id ? { ...r, ...cambios } : r)));
+    {
+      const canchaCancelada = canchas.find((c) => String(c.id) === String(reserva.cancha_id));
+      notificarCancelacionAlClub(
+        `su reserva de ${canchaCancelada?.nombre || 'cancha'} del ${reserva.fecha || ''} · ${String(reserva.hora_inicio || '').slice(0, 5)}`.trim(),
+        { subtipo: 'reserva', reserva_id: reserva.id, cancha_id: reserva.cancha_id, fecha: reserva.fecha, reembolso_wallet: huboReembolso, modulo_destino: 'parrilla' }
+      );
+    }
     mostrarToast({
       titulo: 'Reserva cancelada',
       detalle: huboReembolso ? `El horario quedó liberado y se reembolsaron ${formatoMoneda(reserva.monto_total)} a tu Wallet.` : 'El horario quedó liberado de inmediato.',
@@ -53127,6 +53193,17 @@ function PortalPublicoJugadores({ clubSlug }) {
       await reembolsarAWalletPortal(monto, `Reembolso por cancelación en tiempo · Torneo`, 'torneo', participante.id);
     }
     setParticipantes((prev) => prev.map((p) => (p.id === participante.id ? { ...p, ...cambios } : p)));
+    {
+      const torneoCancelado = torneos.find((t) => String(t.id) === String(participante.torneo_id));
+      notificarCancelacionAlClub(`su inscripción al Torneo "${torneoCancelado?.nombre || 'Torneo'}"`, {
+        subtipo: 'torneo',
+        torneo_id: participante.torneo_id,
+        inscripcion_id: participante.id,
+        tabla: 'torneo_participantes',
+        reembolso_wallet: huboReembolso,
+        modulo_destino: 'torneos',
+      });
+    }
     mostrarToast({
       titulo: 'Inscripción cancelada',
       detalle: huboReembolso ? `Tu lugar quedó liberado y se reembolsaron ${formatoMoneda(monto)} a tu Wallet.` : 'Tu lugar en el torneo quedó liberado.',
@@ -53160,6 +53237,17 @@ function PortalPublicoJugadores({ clubSlug }) {
       await reembolsarAWalletPortal(monto, `Reembolso por cancelación en tiempo · Reta`, 'reta', inscripcion.id);
     }
     setInscripciones((prev) => prev.map((i) => (i.id === inscripcion.id ? { ...i, ...cambios } : i)));
+    {
+      const retaCancelada = retas.find((r) => String(r.id) === String(inscripcion.reta_id));
+      notificarCancelacionAlClub(`su lugar en la Reta "${retaCancelada?.nombre || 'Reta'}"`, {
+        subtipo: 'reta',
+        reta_id: inscripcion.reta_id,
+        inscripcion_id: inscripcion.id,
+        tabla: 'reta_inscripciones',
+        reembolso_wallet: huboReembolso,
+        modulo_destino: 'torneos',
+      });
+    }
     mostrarToast({
       titulo: 'Inscripción cancelada',
       detalle: huboReembolso ? `Tu lugar quedó liberado y se reembolsaron ${formatoMoneda(monto)} a tu Wallet.` : 'Tu lugar en la reta quedó liberado.',
@@ -53229,6 +53317,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       mostrarToast({ titulo: '¡Solicitud enviada!', detalle: 'El club la revisará y te contactará para confirmar horario y costo.' });
       setModalSolicitudClase(false);
       crearNotificacionClub({
+        portalToken: jugador?.portalToken || null,
         tipo: 'solicitud_clase',
         titulo:
           datos.tipo === 'privada'
@@ -53616,6 +53705,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         detalle: montoRestante > 0 ? `Paga ${formatoMoneda(montoRestante)} en recepción al recoger.` : 'Recoge tu pedido en recepción.',
       });
       crearNotificacionClub({
+        portalToken: jugador?.portalToken || null,
         tipo: 'compra_tienda',
         titulo: `${jugador.nombre} compró en la Tienda (${items.length} artículo${items.length === 1 ? '' : 's'}) · ${formatoMoneda(totalCarritoTienda)}`,
         jugadorId: jugador.id,
@@ -53728,7 +53818,17 @@ function PortalPublicoJugadores({ clubSlug }) {
         tipo: 'reserva',
         jugadorId: jugadorActivo.id,
         jugadorNombre: jugadorActivo.nombre,
-        payload: { cancha_id: cancha.id, fecha, hora_inicio: horaInicio, hora_fin: horaFin, costo_cancha: costoCancha, addons_total: addonsSubtotal, metodo },
+        portalToken: jugadorActivo.portalToken || null,
+        payload: {
+          cancha_id: cancha.id,
+          reserva_id: reservaCreada?.id ?? null,
+          fecha,
+          hora_inicio: horaInicio,
+          hora_fin: horaFin,
+          costo_cancha: costoCancha,
+          addons_total: addonsSubtotal,
+          metodo,
+        },
       });
 
       // NO CREAR TICKET EN `ventas` ANTICIPADO cuando la reserva queda con
