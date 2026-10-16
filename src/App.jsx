@@ -21894,8 +21894,9 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, aca
         <MapPin size={16} className="text-sky-400" /> Ingresos y Ocupación por Cancha
       </h3>
       <p className="mb-3 text-[11px] text-slate-500">
-        Ingreso real cobrado: renta de cancha + Retas y Torneos jugados en ella + Academia (mensualidades y clases grupales/privadas
-        asignadas a esa cancha). La ocupación incluye reservas pendientes de pago.
+        Ingreso real cobrado (mismo criterio de fecha que Rentabilidad por Categoría y el Estado de Resultados): renta de cancha +
+        Retas y Torneos de esa cancha + Academia (mensualidades y clases grupales/privadas asignadas a ella). La ocupación incluye
+        reservas pendientes de pago.
       </p>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
@@ -26158,16 +26159,14 @@ function ModuloAnalyticsBI({
   }, [canchas]);
 
   /* ---- Ingresos reales de eventos (solo cobrados) ------------------------
-   * Retas: cada inscripción PAGADA suma su monto real (N lugares × precio
-   * por lugar — una reta llena de 4 × $300 suma $1,200, no la tarifa de
-   * renta de la cancha). Se asigna al día en que se JUEGA la reta.
-   * Torneos: inscripciones pagadas, al día de inicio del torneo.
-   * Academia: mensualidades/clases sueltas pagadas (monto > 0), por fecha
-   * de cobro (`created_at`) — una mensualidad no pertenece a un solo día.
-   * Pendientes, canceladas y bajas: nunca suman.
+   * CRITERIO DE FECHA DE COBRO (idéntico al Estado de Resultados / Caja del
+   * Día de Contabilidad & Compras, para que ambos cuadren al centavo):
+   * Retas y Torneos por la fecha de registro del cobro de la inscripción
+   * (`created_at`, `dentroDeRangoPorCreatedAt`) y Academia igual. Retas:
+   * cada inscripción PAGADA suma su monto real (N lugares × precio por
+   * lugar — 4 × $300 = $1,200). Pendientes, canceladas y bajas: nunca suman.
    * ---------------------------------------------------------------------- */
   const ingresosEventos = useMemo(() => {
-    const enRangoFecha = (fechaISO) => Boolean(fechaISO) && fechaISO >= rango.inicioFechaISO && fechaISO < rango.finFechaISO;
     const retasPorId = new Map((retas || []).map((r) => [String(r.id), r]));
     const torneosPorId = new Map((torneos || []).map((t) => [String(t.id), t]));
 
@@ -26176,9 +26175,8 @@ function ModuloAnalyticsBI({
     let transaccionesRetas = 0;
     (inscripciones || []).forEach((i) => {
       if (!esCobroConfirmado(i) || i.estado === 'cancelado') return;
+      if (!dentroDeRangoPorCreatedAt(i, rango)) return;
       const reta = retasPorId.get(String(i.reta_id)) || null;
-      const fechaEvento = reta?.fecha || (i.created_at ? String(i.created_at).slice(0, 10) : null);
-      if (!enRangoFecha(fechaEvento)) return;
       const monto = montoInscripcionCobrada(i, reta ? precioDeReta(reta) : 0);
       if (monto <= 0) return;
       totalRetas += monto;
@@ -26195,9 +26193,8 @@ function ModuloAnalyticsBI({
     let transaccionesTorneos = 0;
     (participantesTorneo || []).forEach((p) => {
       if (!esCobroConfirmado(p) || p.estado === 'cancelado') return;
+      if (!dentroDeRangoPorCreatedAt(p, rango)) return;
       const torneo = torneosPorId.get(String(p.torneo_id)) || null;
-      const fechaEvento = torneo?.fecha_inicio || (p.created_at ? String(p.created_at).slice(0, 10) : null);
-      if (!enRangoFecha(fechaEvento)) return;
       const monto = Number(p.monto) || 0;
       if (monto <= 0) return;
       totalTorneos += monto;
@@ -28205,7 +28202,11 @@ async function asegurarPerfilJugadorPortal(cliente, { usuarioId, clubId, nombre,
       p_nombre: nombre || null,
       p_telefono: telefono || null,
     });
-    if (!error && data?.id != null) return { perfil: { id: data.id, nombre: data.nombre, telefono: data.telefono }, error: null };
+    if (!error && data?.id != null) {
+      // `creadoEn` permite saber si se VINCULÓ un expediente previo del club
+      // (alta de recepción/barra) en vez de crear uno nuevo — Smart Linking.
+      return { perfil: { id: data.id, nombre: data.nombre, telefono: data.telefono, creadoEn: data.created_at || null }, error: null };
+    }
     // Conflicto real (teléfono de otra cuenta): no tiene caso reintentar.
     if (error && esErrorTelefonoYaVinculadoPorTrigger(error)) return { perfil: null, error };
     if (error) console.warn('[Portal] fn_portal_asegurar_perfil_jugador no disponible o falló; se usa el respaldo.', error);
@@ -50804,6 +50805,10 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   const [vista, setVista] = useState('canchas');
   const [modalIdentificacion, setModalIdentificacion] = useState(false);
+  // Registro/Login obligatorio: texto del porqué se pide la cuenta y la
+  // acción a retomar al iniciar sesión ({ canchaReservar } | { abrirCarrito }).
+  const [motivoAutenticacion, setMotivoAutenticacion] = useState('');
+  const [accionPendientePortal, setAccionPendientePortal] = useState(null);
   const [eventoParaInscribir, setEventoParaInscribir] = useState(null); // { tipo: 'reta'|'torneo', evento }
 
   // Reloj vivo del Portal — Bloqueo por Hora (retas/clases que ya
@@ -51008,6 +51013,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       nombre: data.nombre || jugador?.nombre || '',
       telefono: data.telefono || jugador?.telefono || '',
       portalToken: data.token,
+      autenticado: true,
     };
     setJugador(jugadorActualizado);
     guardarSesionPortalLocal(club.id, jugadorActualizado);
@@ -51075,7 +51081,16 @@ function PortalPublicoJugadores({ clubSlug }) {
       const clubResuelto = await resolverClubDelPortal(clubSlug);
       if (cancelado) return;
       setClub(clubResuelto);
-      setJugador(leerSesionPortalLocal(clubResuelto?.id));
+      // Registro/Login obligatorio: solo se restaura una sesión de CUENTA
+      // (correo + contraseña). Las identificaciones anónimas viejas (solo
+      // nombre + teléfono) se descartan.
+      const sesionGuardada = leerSesionPortalLocal(clubResuelto?.id);
+      if (sesionGuardada?.autenticado === true) {
+        setJugador(sesionGuardada);
+      } else {
+        if (sesionGuardada) borrarSesionPortalLocal(clubResuelto?.id);
+        setJugador(null);
+      }
       setCargandoClub(false);
     })();
     return () => {
@@ -51425,24 +51440,10 @@ function PortalPublicoJugadores({ clubSlug }) {
   // por sí sola salvo que se le pase `aceptaLegal` explícito (hoy nadie se
   // lo pasa) — ese checkbox vive exclusivamente en la pestaña "Crear
   // Cuenta" del nuevo modal, nunca en este atajo.
-  async function identificarse(nombre, telefono, aceptaLegal) {
-    const claveTel = claveTelefono(telefono);
-    if (!claveTel) {
-      mostrarToast({ titulo: 'Teléfono inválido', detalle: 'Captura tu teléfono a 10 dígitos.', tono: 'aviso' });
-      return false;
-    }
-    const id = await resolverJugadorId(nombre, { telefono, directorio: [] });
-    if (!id) {
-      mostrarToast({ titulo: 'No se pudo identificar', detalle: 'Intenta de nuevo en un momento.', tono: 'error' });
-      return false;
-    }
-    const nuevoJugador = { id, nombre: nombre.trim(), telefono: telefono.trim() };
-    setJugador(nuevoJugador);
-    guardarSesionPortalLocal(club?.id, nuevoJugador);
-    if (aceptaLegal) registrarAceptacionLegal('jugadores', id, 'jugador');
-    mostrarToast({ titulo: `¡Hola, ${nombre.trim()}!`, detalle: 'Ya puedes inscribirte a Retas y Torneos abiertos.' });
-    return true;
-  }
+  // Registro/Login OBLIGATORIO: se eliminó `identificarse` (identificación
+  // anónima con solo nombre + teléfono). Toda acción del Portal — reservar,
+  // inscribirse a Reta/Torneo/Clase, solicitar clase o comprar en la Tienda
+  // — exige una cuenta de jugador (`requerirCuentaPortal`, más abajo).
 
   // -----------------------------------------------------------------------
   // AUTENTICACIÓN DEL PORTAL (Correo + Contraseña) — `ModalAutenticacionPortal`
@@ -51592,10 +51593,23 @@ function PortalPublicoJugadores({ clubSlug }) {
         nombre: filaJugador.nombre || nombreLimpio,
         telefono: filaJugador.telefono || telefonoLimpio,
         portalToken: sesionPortal?.token || null,
+        autenticado: true,
       };
       setJugador(nuevoJugador);
       guardarSesionPortalLocal(club?.id, nuevoJugador);
-      mostrarToast({ titulo: `¡Bienvenido, ${nuevoJugador.nombre}!`, detalle: 'Tu cuenta quedó creada — ya puedes inscribirte a Retas y Torneos abiertos.' });
+      // Smart Linking: si el perfil ya existía (alta previa en recepción/barra
+      // con el mismo teléfono), se vinculó — no se duplicó — y conserva su
+      // historial, Wallet y categoría.
+      const creadoEnMs = filaJugador.creadoEn ? new Date(filaJugador.creadoEn).getTime() : NaN;
+      const perfilVinculado = Number.isFinite(creadoEnMs) && Date.now() - creadoEnMs > 10 * 60 * 1000;
+      mostrarToast(
+        perfilVinculado
+          ? {
+              titulo: `¡Bienvenido de vuelta, ${nuevoJugador.nombre}!`,
+              detalle: 'Encontramos tu perfil en el club y lo vinculamos a tu cuenta: conservas tu historial, saldo y categoría.',
+            }
+          : { titulo: `¡Bienvenido, ${nuevoJugador.nombre}!`, detalle: 'Tu cuenta quedó creada — ya puedes reservar e inscribirte.' }
+      );
       return true;
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (crear cuenta del jugador):', err);
@@ -51605,7 +51619,12 @@ function PortalPublicoJugadores({ clubSlug }) {
           ? 'Ese correo ya tiene una cuenta — mejor inicia sesión.'
           : esErrorTelefonoYaVinculadoPorTrigger(err)
           ? 'Ese teléfono ya tiene una cuenta en este club — mejor inicia sesión con el correo que usaste para crearla.'
-          : err?.message || 'Intenta de nuevo en un momento.',
+          : // Supabase Auth oculta el mensaje del trigger de Smart Linking
+            // (migracion_v108) detrás de "Database error saving new user":
+            // los únicos rechazos posibles son teléfono/correo ya usados.
+            /database error saving new user/i.test(err?.message || '')
+            ? 'Ese teléfono o correo ya está registrado en el club con otra cuenta. Inicia sesión, o pide en recepción que actualicen tus datos.'
+            : err?.message || 'Intenta de nuevo en un momento.',
         tono: 'error',
       });
       return false;
@@ -51682,6 +51701,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         telefono: fila.telefono || '',
         // Solo si el token es de ESTE mismo perfil.
         portalToken: sesionPortal && String(sesionPortal.jugador_id) === String(fila.id) ? sesionPortal.token : null,
+        autenticado: true,
       };
       setJugador(jugadorSesion);
       guardarSesionPortalLocal(club?.id, jugadorSesion);
@@ -51739,8 +51759,13 @@ function PortalPublicoJugadores({ clubSlug }) {
     // solo hasta que el jugador confirme su correo e inicie sesión.
     if (ok === 'pendiente') {
       setModalIdentificacion(false);
+      setAccionPendientePortal(null);
       return;
     }
+    // Retoma la acción que pidió la cuenta (reservar cancha / pagar carrito).
+    if (accionPendientePortal?.canchaReservar) setCanchaParaReservar(accionPendientePortal.canchaReservar);
+    if (accionPendientePortal?.abrirCarrito) setModalCarritoAbierto(true);
+    setAccionPendientePortal(null);
     if (eventoParaInscribir) {
       if (eventoParaInscribir.tipo === 'reta') {
         setFlujoPago({ tipo: 'reta', evento: eventoParaInscribir.evento, categoria: null, monto: precioDeReta(eventoParaInscribir.evento) });
@@ -51761,6 +51786,7 @@ function PortalPublicoJugadores({ clubSlug }) {
     }
     setModalIdentificacion(false);
     setEventoParaInscribir(null);
+    setMotivoAutenticacion('');
   }
 
   // Búsqueda de jugadores YA registrados en el sistema — usada por
@@ -53185,6 +53211,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   // proyecto todavía no corrió esas migraciones — la solicitud igual queda
   // visible en Modo Local en vez de tronar el formulario.
   async function enviarSolicitudClase(datos) {
+    if (!requerirCuentaPortal('solicitar una clase')) return false;
     const payload = withClubId({
       jugador_id: jugador?.id || null,
       nombre: jugador?.nombre || datos.nombre || '',
@@ -53267,8 +53294,26 @@ function PortalPublicoJugadores({ clubSlug }) {
   // primero si hace falta, luego pide categoría (solo Torneo con
   // categorías), y siempre termina abriendo `ModalElegirPago` antes de
   // insertar nada — así el jugador puede usar su Wallet.
+  // Registro/Login OBLIGATORIO — punto único: si no hay cuenta iniciada,
+  // abre "Tu cuenta" (Iniciar Sesión / Crear Cuenta) con el motivo, guarda
+  // la acción pendiente (cancha o carrito) y regresa `false`. Al iniciar
+  // sesión, `manejarPostAutenticacionPortal` retoma la acción.
+  function requerirCuentaPortal(accion, pendiente = null) {
+    if (jugador) return true;
+    setMotivoAutenticacion(accion ? `Para ${accion} necesitas tu cuenta de jugador.` : '');
+    if (pendiente) setAccionPendientePortal(pendiente);
+    setModalIdentificacion(true);
+    return false;
+  }
+
+  function abrirReservaCancha(cancha) {
+    if (!requerirCuentaPortal('reservar una cancha', { canchaReservar: cancha })) return;
+    setCanchaParaReservar(cancha);
+  }
+
   function alIntentarInscribir(tipo, evento) {
     if (!jugador) {
+      setMotivoAutenticacion(`Para inscribirte ${tipo === 'reta' ? 'a la Reta' : 'al Torneo'} necesitas tu cuenta de jugador.`);
       setEventoParaInscribir({ tipo, evento });
       setModalIdentificacion(true);
       return;
@@ -53292,6 +53337,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   // hasta el paso de identificación/pago.
   function alIntentarInscribirClase(clase, tipoPago) {
     if (!jugador) {
+      setMotivoAutenticacion('Para inscribirte a la clase necesitas tu cuenta de jugador.');
       setEventoParaInscribir({ tipo: 'academia', evento: clase, tipoPago });
       setModalIdentificacion(true);
       return;
@@ -53541,7 +53587,8 @@ function PortalPublicoJugadores({ clubSlug }) {
   // eligió esa opción.
   async function confirmarCheckoutTienda(metodo) {
     if (!jugador) {
-      setModalIdentificacion(true);
+      requerirCuentaPortal('comprar en la tienda', { abrirCarrito: true });
+      setModalCarritoAbierto(false);
       return;
     }
     if (carritoTienda.length === 0) return;
@@ -53646,11 +53693,10 @@ function PortalPublicoJugadores({ clubSlug }) {
   // patrón que "Reservar y Cobrar en POS" — para que cancha + consumos
   // queden en un solo ticket, con su stock y kardex reales.
   async function confirmarReservaConAddons({ cancha, fecha, horaInicio, horaFin, costoCancha, addons, metodo, nombre, telefono }) {
-    let jugadorActivo = jugador;
+    const jugadorActivo = jugador;
     if (!jugadorActivo) {
-      const ok = await identificarse(nombre, telefono);
-      if (!ok) return { ok: false };
-      jugadorActivo = { id: await resolverJugadorId(nombre, { telefono, directorio: [] }), nombre: nombre.trim(), telefono: telefono.trim() };
+      requerirCuentaPortal('reservar una cancha', { canchaReservar: cancha });
+      return { ok: false };
     }
     const addonsSubtotal = Math.round(addons.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100;
     const totalReserva = Math.round((costoCancha + addonsSubtotal) * 100) / 100;
@@ -53966,7 +54012,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                 </motion.button>
               ) : (
                 <BotonPrimario onClick={() => setModalIdentificacion(true)} className="px-3 py-1.5 text-xs">
-                  <User size={13} /> Identificarme
+                  <User size={13} /> Iniciar sesión
                 </BotonPrimario>
               )}
             </div>
@@ -54069,7 +54115,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                       <button
                         key={c.id}
                         type="button"
-                        onClick={() => setCanchaParaReservar(c)}
+                        onClick={() => abrirReservaCancha(c)}
                         className="group overflow-hidden rounded-2xl border border-slate-200 bg-white/50 text-left backdrop-blur-sm transition hover:border-orange-400/30 hover:bg-white/70"
                       >
                         <div className="relative h-28 w-full bg-slate-100">
@@ -54746,9 +54792,12 @@ function PortalPublicoJugadores({ clubSlug }) {
         <AnimatePresence>
           {modalIdentificacion && (
             <ModalAutenticacionPortal
+              motivo={motivoAutenticacion}
               onClose={() => {
                 setModalIdentificacion(false);
                 setEventoParaInscribir(null);
+                setAccionPendientePortal(null);
+                setMotivoAutenticacion('');
               }}
               onIniciarSesion={async (correo, password) => {
                 const ok = await iniciarSesionJugador(correo, password);
@@ -55071,7 +55120,7 @@ function PortalPublicoJugadores({ clubSlug }) {
 // componente es 100% de presentación/validación de formulario, deja el
 // error inline visible (no se cierra solo) si `onIniciarSesion`/
 // `onCrearCuenta` regresan `false`.
-function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
+function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta, motivo = '' }) {
   const [tab, setTab] = useState('login'); // 'login' | 'crear'
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
@@ -55133,6 +55182,12 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta }) {
   return (
     <ModalShell titulo="Tu cuenta" subtitulo="Inicia sesión o crea tu cuenta en segundos" onClose={onClose} icon={User} ancho="max-w-sm">
       <div className="space-y-4">
+        {motivo && (
+          <div className="flex items-start gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-semibold text-orange-800">
+            <Lock size={13} className="mt-0.5 shrink-0" />
+            <span>{motivo} Si ya te registraron en recepción, crea tu cuenta con el mismo teléfono y conservarás tu historial.</span>
+          </div>
+        )}
         <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
           <button type="button" onClick={() => cambiarTab('login')} className={claseTab(tab === 'login')}>
             Iniciar Sesión
@@ -57531,10 +57586,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
     // colarse hasta aquí — última barrera antes de mandar la reserva.
     if (fecha < hoyISO()) return setError('No puedes reservar en una fecha anterior a hoy.');
     if (!horaInicio) return setError('No hay horarios disponibles para esa fecha/duración — elige otra.');
-    if (!jugador) {
-      if (!nombre.trim()) return setError('Escribe tu nombre.');
-      if (!claveTelefono(telefono)) return setError('Escribe tu teléfono a 10 dígitos.');
-    }
+    if (!jugador) return setError('Inicia sesión para reservar.');
     if (!puedeConfirmarPago) return setError('Completa los datos de la tarjeta para continuar.');
     const duracionMin = Math.round(duracionHoras * 60);
     const horaFin = minutosAHora((parseHoraAMinutos(horaInicio) || 0) + duracionMin);
@@ -57766,17 +57818,6 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 ))}
               </div>
             )}
-          </div>
-        )}
-
-        {!jugador && (
-          <div className="grid grid-cols-2 gap-3">
-            <Campo label="Nombre">
-              <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Tu nombre" />
-            </Campo>
-            <Campo label="Teléfono">
-              <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="55 1234 5678" inputMode="tel" />
-            </Campo>
           </div>
         )}
 
