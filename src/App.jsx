@@ -1091,6 +1091,12 @@ function escaparPatronLike(texto) {
 //     el nuevo fondo oscuro (justo lo que pide el punto 2 del requerimiento).
 const CSS_MODO_OSCURO_CLUBOS = `
 html.dark, html.dark body, html.dark #root { background-color: #0b1329; }
+html.dark .qb-reprog { background-color: rgba(99, 102, 241, 0.14); border-color: rgba(129, 140, 248, 0.45); }
+html.dark .qb-reprog-titulo { color: #e0e7ff; }
+html.dark .qb-reprog-texto { color: #c7d2fe; }
+html.dark .qb-aviso-reprog { background-color: rgba(99, 102, 241, 0.16); border-color: rgba(129, 140, 248, 0.5); color: #e0e7ff; }
+html.dark .qb-aviso-reprog-sub { color: #c7d2fe; }
+html.dark .qb-reprog-nuevo { color: #a5b4fc; }
 
 html.dark [class~="bg-slate-50"] { background-color: #0b1329; }
 /* Lienzo de pantalla completa de Login/Registro/Onboarding (y su fondo de
@@ -8353,10 +8359,22 @@ function DetalleReserva({
       return;
     }
     setProcesandoReprogramar(true);
-    const { error: errReserva } = await supabase
-      .from('reservas')
-      .update({ hora_inicio: nuevaHoraInicio, hora_fin: nuevaHoraFin })
-      .eq('id', reserva.id);
+    // Aviso al jugador (migracion_v109): además del horario nuevo se guarda
+    // CUÁNDO se reprogramó y el horario anterior, para que el Portal muestre
+    // la insignia "Horario reprogramado" en "Tus Próximas Reservas". Son
+    // columnas opcionales: sin la migración, el update se reintenta solo con
+    // el horario (comportamiento de siempre).
+    const marcaReprogramacion = {
+      reprogramada_en: new Date().toISOString(),
+      hora_inicio_anterior: reserva.hora_inicio || null,
+      hora_fin_anterior: reserva.hora_fin || null,
+    };
+    const { error: errReserva } = await actualizarConColumnasOpcionales(
+      'reservas',
+      reserva.id,
+      { hora_inicio: nuevaHoraInicio, hora_fin: nuevaHoraFin, ...marcaReprogramacion },
+      ['reprogramada_en', 'hora_inicio_anterior', 'hora_fin_anterior']
+    );
     setProcesandoReprogramar(false);
     if (errReserva) {
       setErrorReprogramar(errReserva.message || 'No se pudo reprogramar la reserva.');
@@ -8371,7 +8389,7 @@ function DetalleReserva({
       canchaDespues: cancha?.nombre,
       horaDespues: `${formatoHora12(nuevaHoraInicio)}–${formatoHora12(nuevaHoraFin)}`,
     });
-    onReprogramada?.({ ...reserva, hora_inicio: nuevaHoraInicio, hora_fin: nuevaHoraFin });
+    onReprogramada?.({ ...reserva, hora_inicio: nuevaHoraInicio, hora_fin: nuevaHoraFin, ...marcaReprogramacion });
     onClose();
   }
 
@@ -8691,10 +8709,18 @@ function DetalleReserva({
           </div>
         </div>
       ) : mostrarReprogramar ? (
-        <div className="space-y-3 rounded-xl border border-violet-500/30 bg-violet-950/20 p-4">
-          <p className="text-sm font-bold text-violet-200">Reprogramar horario</p>
-          <p className="text-xs text-violet-300/80">
-            {cancha?.nombre || 'Cancha'} · {formatoFechaLarga(reserva.fecha)}
+        // Contraste (fix): antes era fondo violeta muy oscuro translúcido con
+        // texto violeta claro — sobre el modal claro casi no se leía. Ahora
+        // tarjeta índigo clara con texto índigo profundo (#1E1B4B); en Modo
+        // Oscuro las clases `qb-reprog*` (ver `CSS_MODO_OSCURO_CLUBOS`) la
+        // pasan a un fondo índigo translúcido con texto claro.
+        <div className="qb-reprog space-y-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+          <p className="qb-reprog-titulo flex items-center gap-1.5 text-sm font-black text-[#1E1B4B]">
+            <CalendarRange size={15} /> Reprogramar horario
+          </p>
+          <p className="qb-reprog-texto text-xs font-semibold text-[#312E81]">
+            {cancha?.nombre || 'Cancha'} · {formatoFechaLarga(reserva.fecha)} · Actual: {formatoHora12(reserva.hora_inicio)} –{' '}
+            {formatoHora12(reserva.hora_fin)}
           </p>
           <div className="grid grid-cols-2 gap-2">
             <Campo label="Nueva hora de inicio">
@@ -8717,7 +8743,7 @@ function DetalleReserva({
             <button
               onClick={reprogramar}
               disabled={procesandoReprogramar}
-              className="inline-flex items-center gap-2 rounded-lg bg-violet-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-violet-400 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-indigo-500 disabled:opacity-50"
             >
               {procesandoReprogramar ? <Loader2 size={15} className="animate-spin" /> : <CalendarRange size={15} />}
               Confirmar Reprogramación
@@ -54108,6 +54134,14 @@ function PortalPublicoJugadores({ clubSlug }) {
           modulo: 'reservas',
           fechaEventoMs: timestampEvento(r.fecha, r.hora_inicio),
           activo: r.estado !== 'Cancelada',
+          // Reprogramada desde la recepción (migracion_v109) — insignia en
+          // "Tus Próximas Reservas".
+          reprogramadaEn: r.reprogramada_en || null,
+          horarioAnterior:
+            r.reprogramada_en && r.hora_inicio_anterior
+              ? `${formatoHora12(r.hora_inicio_anterior)}${r.hora_fin_anterior ? ` – ${formatoHora12(r.hora_fin_anterior)}` : ''}`
+              : null,
+          horarioActual: r.hora_inicio ? `${formatoHora12(r.hora_inicio)}${r.hora_fin ? ` – ${formatoHora12(r.hora_fin)}` : ''}` : null,
           // Historial Informativo (Parte 4) — dos badges independientes.
           // Motor de Gestión de Penalizaciones Pendientes, conexión con la
           // Parrilla Operativa: `estado_pago === 'penalizacion_pendiente'`
@@ -55466,28 +55500,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                         (h) => h.tipo === 'reserva' && h.activo && h.fechaEventoMs && h.fechaEventoMs > Date.now()
                       );
                       if (misReservasProximas.length === 0) return null;
-                      return (
-                        <div className="space-y-2">
-                          <p className="text-xs font-bold uppercase tracking-wide text-orange-400">Tus Próximas Reservas</p>
-                          {misReservasProximas.map((h) => (
-                            <div
-                              key={h.id}
-                              onClick={() => setHistorialDetalle(h)}
-                              className="cursor-pointer rounded-2xl border border-orange-400/20 bg-orange-400/[0.04] p-4 backdrop-blur-sm transition hover:border-orange-400/40 hover:bg-orange-400/[0.08]"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <div>
-                                  <p className="font-black text-slate-900">{h.titulo}</p>
-                                  <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
-                                    <CalendarClock size={12} /> {h.detalle}
-                                  </p>
-                                </div>
-                                <BadgeEstadoActividad estado={h.estadoActividad} />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      );
+                      return <ProximasReservasPortal items={misReservasProximas} onAbrir={setHistorialDetalle} />;
                     })()}
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -58758,6 +58771,111 @@ function indicadorDisponibilidadSlots(franjas) {
     total === 0 ? etiqueta : `${etiqueta} • ${pct}% ocupado · ${libres} ${libres === 1 ? 'libre' : 'libres'}`;
   const detalle = `${ocupados} de ${total} horarios vigentes ocupados (no cuenta los que ya pasaron).`;
   return { etiqueta, clases, pct, libres, total, texto, detalle };
+}
+
+// "Tus Próximas Reservas" del Portal de Jugadores, con aviso de
+// REPROGRAMACIÓN: cuando la recepción cambia el horario de una reserva
+// (`DetalleReserva.reprogramar`, migracion_v109 → `reprogramada_en` +
+// horario anterior), la tarjeta muestra la insignia "Horario reprogramado"
+// con el horario anterior tachado y el nuevo, y un aviso arriba de la lista
+// mientras el jugador no la haya abierto. "Vista" se recuerda por
+// dispositivo (localStorage, por reserva + momento de la reprogramación):
+// si la vuelven a reprogramar, el aviso reaparece.
+function claveVistaReprogramacion(h) {
+  return `qlubos_reprog_vista__${h.id}`;
+}
+function reprogramacionVista(h) {
+  if (!h?.reprogramadaEn) return true;
+  try {
+    return localStorage.getItem(claveVistaReprogramacion(h)) === String(h.reprogramadaEn);
+  } catch (_e) {
+    return false;
+  }
+}
+function marcarReprogramacionVista(h) {
+  if (!h?.reprogramadaEn) return;
+  try {
+    localStorage.setItem(claveVistaReprogramacion(h), String(h.reprogramadaEn));
+  } catch (_e) {
+    /* sin localStorage: el aviso simplemente se sigue mostrando */
+  }
+}
+
+function ProximasReservasPortal({ items, onAbrir }) {
+  const [, setVersion] = useState(0);
+  const sinVer = items.filter((h) => h.reprogramadaEn && !reprogramacionVista(h));
+  const abrir = (h) => {
+    if (h.reprogramadaEn && !reprogramacionVista(h)) {
+      marcarReprogramacionVista(h);
+      setVersion((v) => v + 1);
+    }
+    onAbrir(h);
+  };
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-bold uppercase tracking-wide text-orange-400">Tus Próximas Reservas</p>
+      {sinVer.length > 0 && (
+        <div className="qb-aviso-reprog flex items-start gap-2.5 rounded-2xl border border-indigo-300 bg-indigo-50 px-4 py-3 text-[#1E1B4B]" role="status">
+          <span className="relative mt-0.5 flex h-2.5 w-2.5 shrink-0">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-500 opacity-60" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-indigo-600" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-black">
+              {sinVer.length === 1 ? 'El club cambió el horario de una de tus reservas' : `El club cambió el horario de ${sinVer.length} de tus reservas`}
+            </p>
+            <p className="qb-aviso-reprog-sub mt-0.5 text-xs font-semibold text-[#312E81]">Revisa el nuevo horario marcado abajo.</p>
+          </div>
+        </div>
+      )}
+      {items.map((h) => {
+        const reprogramada = !!h.reprogramadaEn;
+        const nueva = reprogramada && !reprogramacionVista(h);
+        return (
+          <div
+            key={h.id}
+            onClick={() => abrir(h)}
+            className={`relative cursor-pointer rounded-2xl border p-4 backdrop-blur-sm transition ${
+              reprogramada
+                ? 'border-indigo-400/60 bg-indigo-400/[0.06] ring-1 ring-indigo-400/30 hover:border-indigo-500 hover:bg-indigo-400/[0.1]'
+                : 'border-orange-400/20 bg-orange-400/[0.04] hover:border-orange-400/40 hover:bg-orange-400/[0.08]'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                {reprogramada && (
+                  <span className="mb-1.5 inline-flex items-center gap-1 rounded-full bg-indigo-600 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">
+                    <Clock size={11} /> Horario reprogramado
+                    {nueva && <span className="ml-1 rounded-full bg-white/25 px-1.5 text-[9px]">Nuevo</span>}
+                  </span>
+                )}
+                <p className="font-black text-slate-900">{h.titulo}</p>
+                <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
+                  <CalendarClock size={12} /> {h.detalle}
+                </p>
+                {reprogramada && h.horarioAnterior && (
+                  <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-semibold">
+                    <span className="text-slate-400 line-through">{h.horarioAnterior}</span>
+                    <ArrowRight size={12} className="text-indigo-500" />
+                    <span className="qb-reprog-nuevo font-black text-indigo-600">{h.horarioActual}</span>
+                  </p>
+                )}
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-1.5">
+                <BadgeEstadoActividad estado={h.estadoActividad} />
+                {nueva && (
+                  <span className="relative flex h-2.5 w-2.5" title="Cambio de horario sin revisar">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-500 opacity-60" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-indigo-600" />
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 // OPTIMIZACIÓN DE HORARIOS: en vez de una sola cuadrícula larga con las ~34
