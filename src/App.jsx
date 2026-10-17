@@ -7862,13 +7862,8 @@ function ModalNuevaReserva({
   }, [franjasLibres]);
 
   // Indicador de demanda (mismo cálculo que el Portal).
-  const ocupacionPct = franjas.length > 0 ? Math.round((franjas.filter((f) => f.ocupado).length / franjas.length) * 100) : 0;
-  const demanda =
-    ocupacionPct >= 80
-      ? { etiqueta: 'Alta Demanda', clases: 'bg-rose-400/10 text-rose-400 ring-1 ring-rose-400/30' }
-      : ocupacionPct >= 40
-      ? { etiqueta: 'Demanda Media', clases: 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30' }
-      : { etiqueta: 'Alta Disponibilidad', clases: 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30' };
+  // Solo bloques VIGENTES (sin los "Pasado") — ver `indicadorDisponibilidadSlots`.
+  const demanda = indicadorDisponibilidadSlots(franjas);
 
   // Si el bloque elegido deja de estar libre (cambio de cancha/fecha/
   // duración, o una reserva nueva que llega por Realtime), se limpia la
@@ -8019,7 +8014,7 @@ function ModalNuevaReserva({
   );
 
   return (
-    <ModalShell titulo="Nueva Reserva" subtitulo="Mostrador / Teléfono — elige un horario libre y cobra en Smart POS" onClose={onClose} icon={Plus} ancho="max-w-2xl">
+    <ModalShell titulo="Nueva Reserva" onClose={onClose} icon={Plus} ancho="max-w-2xl">
       <div className="space-y-5">
         {/* 1) Cancha */}
         <section>
@@ -8102,8 +8097,8 @@ function ModalNuevaReserva({
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             {etiquetaPaso(3, 'Horario')}
             {franjas.length > 0 && (
-              <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${demanda.clases}`}>
-                {demanda.etiqueta} • {ocupacionPct}% ocupado
+              <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${demanda.clases}`} title={demanda.detalle}>
+                {demanda.texto}
               </span>
             )}
           </div>
@@ -58721,6 +58716,50 @@ function ModalCarritoTienda({
   );
 }
 
+// INDICADOR DE DISPONIBILIDAD de la parrilla de horarios — compartido por
+// "Nueva Reserva" (club) y "Reservar Cancha" (Portal de Jugadores).
+// La muestra son SOLO los bloques vigentes del día elegido: los que ya
+// pasaron ("Pasado") no cuentan ni como ocupados ni como libres — antes, a
+// media tarde un día casi lleno seguía diciendo "Alta Disponibilidad"
+// porque la mañana (ya pasada y vacía) inflaba el total.
+// Tono por % ocupado de lo vigente Y por escasez real de horarios libres:
+//   • 0 libres → rojo "Sin Disponibilidad".
+//   • ≥ 80% ocupado o ≤ 2 libres → rojo "Baja Disponibilidad".
+//   • ≥ 40% ocupado o ≤ 4 libres → amarillo "Disponibilidad Media".
+//   • lo demás → verde "Alta Disponibilidad".
+function indicadorDisponibilidadSlots(franjas) {
+  const vigentes = (franjas || []).filter((f) => !f.pasado);
+  const total = vigentes.length;
+  const ocupados = vigentes.filter((f) => f.ocupado).length;
+  const libres = total - ocupados;
+  const pct = total > 0 ? Math.round((ocupados / total) * 100) : 100;
+  const rojo = 'bg-rose-400/10 text-rose-500 ring-1 ring-rose-400/30';
+  const amarillo = 'bg-amber-400/10 text-amber-500 ring-1 ring-amber-400/30';
+  const verde = 'bg-emerald-400/10 text-emerald-500 ring-1 ring-emerald-400/30';
+  let etiqueta;
+  let clases;
+  if (total === 0) {
+    etiqueta = 'Sin horarios vigentes';
+    clases = 'bg-slate-100 text-slate-500 ring-1 ring-slate-300';
+  } else if (libres === 0) {
+    etiqueta = 'Sin Disponibilidad';
+    clases = rojo;
+  } else if (pct >= 80 || libres <= 2) {
+    etiqueta = 'Baja Disponibilidad';
+    clases = rojo;
+  } else if (pct >= 40 || libres <= 4) {
+    etiqueta = 'Disponibilidad Media';
+    clases = amarillo;
+  } else {
+    etiqueta = 'Alta Disponibilidad';
+    clases = verde;
+  }
+  const texto =
+    total === 0 ? etiqueta : `${etiqueta} • ${pct}% ocupado · ${libres} ${libres === 1 ? 'libre' : 'libres'}`;
+  const detalle = `${ocupados} de ${total} horarios vigentes ocupados (no cuenta los que ya pasaron).`;
+  return { etiqueta, clases, pct, libres, total, texto, detalle };
+}
+
 // OPTIMIZACIÓN DE HORARIOS: en vez de una sola cuadrícula larga con las ~34
 // franjas del día, se agrupan por turno — el jugador filtra a un vistazo en
 // vez de tener que hacer scroll por todo el día. Los rangos son en minutos
@@ -58849,19 +58888,11 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   }, [franjas, turnoFiltro]);
   const franjasLibres = useMemo(() => franjas.filter((f) => !f.ocupado && !f.pasado), [franjas]);
 
-  // INDICADOR DE DEMANDA/OCUPACIÓN — Ocupación diaria de ESTA cancha, para
-  // ESTA fecha y duración configuradas: Slots Reservados / Slots Totales del
-  // Día * 100 (usa `franjas`, el mismo cálculo por bloques de
-  // `duracionReservaMinutos` que ya pinta la cuadrícula de horarios de
-  // abajo, así que el % siempre coincide con lo que el jugador ve marcado
-  // como "Reservado"/"Pasado").
-  const ocupacionPct = franjas.length > 0 ? Math.round((franjas.filter((f) => f.ocupado).length / franjas.length) * 100) : 0;
-  const demanda =
-    ocupacionPct >= 80
-      ? { etiqueta: 'Alta Demanda', clases: 'bg-rose-400/10 text-rose-400 ring-1 ring-rose-400/30' }
-      : ocupacionPct >= 40
-      ? { etiqueta: 'Demanda Media', clases: 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30' }
-      : { etiqueta: 'Alta Disponibilidad', clases: 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30' };
+  // INDICADOR DE DISPONIBILIDAD — de ESTA cancha, fecha y duración, sobre
+  // los bloques que TODAVÍA se pueden jugar (los "Pasado" ya no cuentan en
+  // la muestra). Mismo helper que "Nueva Reserva" del club.
+  // Solo bloques VIGENTES (sin los "Pasado") — ver `indicadorDisponibilidadSlots`.
+  const demanda = indicadorDisponibilidadSlots(franjas);
 
   useEffect(() => {
     if (!franjasLibres.some((f) => f.horaInicio === horaInicio)) {
@@ -59071,14 +59102,13 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
         </div>
 
         <Campo label="Hora" hint="Blanco = disponible, gris = no disponible (reservado, clase o torneo/reta), borde naranja = tu horario elegido.">
-          {/* INDICADOR DE DEMANDA/OCUPACIÓN — % de horarios de ESTA cancha,
-              ESTA fecha y duración ya reservados hoy (Slots Reservados /
-              Slots Totales del Día * 100). Insignia roja/amarilla/verde
-              según el % de ocupación, calculada a partir de las mismas
-              `franjas` que pintan la cuadrícula de abajo. */}
+          {/* INDICADOR DE DISPONIBILIDAD — solo bloques vigentes del día
+              elegido (los "Pasado" no cuentan); verde/amarillo/rojo según
+              el % ocupado Y los horarios libres que quedan
+              (`indicadorDisponibilidadSlots`). */}
           <div className="mb-2 flex justify-end">
-            <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${demanda.clases}`}>
-              {demanda.etiqueta} • {ocupacionPct}% Ocupado
+            <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${demanda.clases}`} title={demanda.detalle}>
+              {demanda.texto}
             </span>
           </div>
           {/* OPTIMIZACIÓN DE HORARIOS: pestañas por turno en vez de las ~34
