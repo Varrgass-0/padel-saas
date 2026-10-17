@@ -22057,9 +22057,10 @@ function useAnchoBI(ref) {
 function formatoMonedaCortaBI(valor) {
   const n = Number(valor) || 0;
   const abs = Math.abs(n);
-  if (abs >= 1e6) return `$${(n / 1e6).toFixed(abs >= 1e7 ? 0 : 1).replace(/\.0$/, '')}M`;
-  if (abs >= 1e3) return `$${(n / 1e3).toFixed(abs >= 1e4 ? 0 : 1).replace(/\.0$/, '')}k`;
-  return `$${Math.round(n)}`;
+  const signo = n < 0 ? '-' : '';
+  if (abs >= 1e6) return `${signo}$${(abs / 1e6).toFixed(abs >= 1e7 ? 0 : 1).replace(/\.0$/, '')}M`;
+  if (abs >= 1e3) return `${signo}$${(abs / 1e3).toFixed(abs >= 1e4 ? 0 : 1).replace(/\.0$/, '')}k`;
+  return `${signo}$${Math.round(abs)}`;
 }
 
 // Tope "redondo" del eje Y (1, 2, 2.5, 5 × 10^k) para que las marcas
@@ -22067,7 +22068,7 @@ function formatoMonedaCortaBI(valor) {
 function topeRedondoBI(max) {
   if (!(max > 0)) return 1000;
   const exp = Math.pow(10, Math.floor(Math.log10(max)));
-  const pasos = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+  const pasos = [1, 2, 3, 4, 5, 6, 8, 10];
   const paso = pasos.find((p) => p * exp >= max) || 10;
   return paso * exp;
 }
@@ -23293,6 +23294,594 @@ function HistorialTicketsVentas({ nombreClub }) {
       )}
 
       {ticketAbierto && <ModalTicket venta={ticketAbierto} onClose={() => setTicketAbierto(null)} nombreClub={nombreClub} />}
+    </div>
+  );
+}
+
+/* ============== Gráficas del P&L / Estado de Resultados ==================
+ * Capa PURAMENTE VISUAL sobre `pnl` (ModuloContabilidadCompras): leen las
+ * mismas filas ya filtradas por la regla de oro (`pnl._filas…`) y las mismas
+ * fórmulas de monto, así que cada gráfica suma exactamente lo que dicen las
+ * tarjetas y la tabla — no cambia ninguna cifra ni fórmula contable.
+ *  • Tendencia Financiera: Ingresos vs Egresos vs Utilidad Real por hora
+ *    (Día), por día (Mes) o por mes (Año).
+ *  • Composición de Ingresos: anillo con las 5 categorías de la Matriz.
+ *  • Egresos por Categoría: barras verticales sobre la tabla existente.
+ * Paletas validadas (separación para daltonismo y contraste) en modo claro
+ * (#ffffff) y oscuro (#1e293b). Las 5 categorías usan los mismos tonos que
+ * Analytics BI (Canchas = azul, Retas/Torneos = fucsia, Academia = verde
+ * azulado, Pro-Shop/Web = violeta, Bar/Mostrador = ámbar).
+ * ======================================================================== */
+
+const COLOR_PNL_INGRESOS = '#059669';
+const COLOR_PNL_EGRESOS = '#ea580c';
+const COLOR_PNL_UTILIDAD = '#6366f1';
+const CATEGORIAS_INGRESO_PNL = [
+  { key: 'ventasMostrador', label: 'Ventas Mostrador', color: '#d97706' },
+  { key: 'ventasWeb', label: 'Tienda Web', color: '#8b5cf6' },
+  { key: 'reservasCanchas', label: 'Reservas', color: '#0284c7' },
+  { key: 'torneosRetas', label: 'Torneos / Retas', color: '#d946ef' },
+  { key: 'clasesClinicas', label: 'Clases / Clínicas', color: '#0d9488' },
+];
+
+function formatoPctPnl(v) {
+  if (!(v > 0)) return '0%';
+  if (v < 1) return '<1%';
+  return `${v.toFixed(v < 10 ? 1 : 0).replace(/\.0$/, '')}%`;
+}
+
+/* ---- Cubetas de la Tendencia Financiera ----------------------------------
+ * Cada monto sale de la MISMA fila y la MISMA fórmula que `pnl`:
+ *  • Ventas Mostrador / Tienda Web: `montoVentaSinInscripciones`, por la
+ *    fecha del ticket (`obtenerTimestampVenta`).
+ *  • Reservas: `monto_total` (y `monto_addons` → Tienda Web) por fecha de
+ *    juego; en modo Día, por la hora de inicio.
+ *  • Torneos/Retas y Clases: por fecha de cobro (`created_at`).
+ *  • Egresos: por `fecha` del gasto; en modo Día se ubica a la hora de su
+ *    registro (`created_at`) cuando es del mismo día, si no al inicio del día.
+ * Lo que no tenga fecha válida queda en `sinFecha` (sí suma en los totales).
+ * ------------------------------------------------------------------------- */
+function construirTendenciaPnl(modo, rango, pnl) {
+  const ahora = new Date();
+  const base = [];
+  const nueva = (extra) => ({ ingresos: 0, egresos: 0, futuro: false, ...extra });
+  if (modo === 'dia') {
+    for (let h = 0; h < 24; h += 1) {
+      const desde = new Date(rango.inicio.getFullYear(), rango.inicio.getMonth(), rango.inicio.getDate(), h);
+      base.push(nueva({ etiqueta: `${pad2(h)}:00`, etiquetaLarga: `${pad2(h)}:00 – ${pad2(h + 1)}:00`, futuro: desde > ahora }));
+    }
+  } else if (modo === 'anio') {
+    const anio = rango.inicio.getFullYear();
+    for (let mIdx = 0; mIdx < 12; mIdx += 1) {
+      base.push(
+        nueva({
+          etiqueta: MESES_CORTOS_BI[mIdx],
+          etiquetaLarga: `${MESES_OPCIONES[mIdx]?.label || MESES_CORTOS_BI[mIdx]} ${anio}`,
+          futuro: new Date(anio, mIdx, 1) > ahora,
+        })
+      );
+    }
+  } else {
+    for (let d = 0; d < rango.dias; d += 1) {
+      const dia = new Date(rango.inicio.getFullYear(), rango.inicio.getMonth(), rango.inicio.getDate() + d);
+      base.push(
+        nueva({
+          etiqueta: String(dia.getDate()),
+          etiquetaLarga: dia.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' }),
+          futuro: dia > ahora,
+        })
+      );
+    }
+  }
+
+  const indiceFecha = (fecha) => {
+    if (!fecha || Number.isNaN(fecha.getTime()) || fecha < rango.inicio || fecha >= rango.fin) return -1;
+    if (modo === 'dia') return fecha.getHours();
+    if (modo === 'anio') return fecha.getMonth();
+    return Math.round((new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate()) - rango.inicio) / 86400000);
+  };
+  const fechaLocalISO = (iso) => {
+    const [y, m, d] = String(iso || '').slice(0, 10).split('-').map(Number);
+    return y && m && d ? new Date(y, m - 1, d) : null;
+  };
+  // Índice para registros con fecha de calendario (+ hora opcional en modo Día).
+  const indiceCalendario = (fechaISO, minutosDelDia) => {
+    const f = fechaLocalISO(fechaISO);
+    if (!f) return -1;
+    if (modo === 'dia') {
+      if (f < rango.inicio || f >= rango.fin) return -1;
+      return minutosDelDia === null || minutosDelDia === undefined ? -1 : Math.min(23, Math.floor(minutosDelDia / 60));
+    }
+    return indiceFecha(f);
+  };
+
+  const sinFecha = { ingresos: 0, egresos: 0 };
+  let egresosAlInicio = 0;
+  const sumar = (idx, campo, monto) => {
+    const n = Number(monto) || 0;
+    if (n === 0) return;
+    if (base[idx]) base[idx][campo] += n;
+    else sinFecha[campo] += n;
+  };
+
+  (pnl._filasVentasMostrador || []).forEach((v) => sumar(indiceFecha(obtenerTimestampVenta(v)), 'ingresos', montoVentaSinInscripciones(v)));
+  (pnl._filasVentasWeb || []).forEach((v) => sumar(indiceFecha(obtenerTimestampVenta(v)), 'ingresos', montoVentaSinInscripciones(v)));
+  (pnl._filasReservas || []).forEach((r) => {
+    const idx = indiceCalendario(r.fecha, parseHoraAMinutos(r.hora_inicio));
+    sumar(idx, 'ingresos', Number(r.monto_total) || 0);
+    sumar(idx, 'ingresos', Number(r.monto_addons) || 0);
+  });
+  const montoReta = pnl._montoInscripcionReta || (() => 0);
+  (pnl._filasInscripcionesRetas || []).forEach((i) => sumar(indiceFecha(new Date(i.created_at)), 'ingresos', montoReta(i)));
+  (pnl._filasInscripcionesTorneos || []).forEach((p) => sumar(indiceFecha(new Date(p.created_at)), 'ingresos', Number(p.monto) || 0));
+  (pnl._filasInscripcionesAcademia || []).forEach((a) => sumar(indiceFecha(new Date(a.created_at)), 'ingresos', Number(a.monto) || 0));
+
+  (pnl._egresosEnRango || []).forEach((g) => {
+    const monto = Number(g.monto) || 0;
+    if (modo === 'dia') {
+      const creado = g.created_at ? new Date(g.created_at) : null;
+      const mismoDia = creado && !Number.isNaN(creado.getTime()) && creado >= rango.inicio && creado < rango.fin;
+      if (mismoDia) {
+        sumar(creado.getHours(), 'egresos', monto);
+      } else if (fechaLocalISO(g.fecha)) {
+        // Gasto del día sin hora de registro: se ubica al inicio del horario visible.
+        egresosAlInicio += monto;
+      } else {
+        sinFecha.egresos += monto;
+      }
+      return;
+    }
+    sumar(indiceCalendario(g.fecha, null), 'egresos', monto);
+  });
+
+  let cubetas = base;
+  if (modo === 'dia') {
+    const conDatos = base.map((c, i) => (c.ingresos !== 0 || c.egresos !== 0 ? i : null)).filter((i) => i !== null);
+    const desde = Math.min(7, ...conDatos);
+    const hasta = Math.max(22, ...conDatos);
+    cubetas = base.slice(desde, hasta + 1);
+    if (egresosAlInicio !== 0) cubetas[0].egresos += egresosAlInicio;
+  }
+  cubetas = cubetas.map((c) => ({ ...c, utilidad: c.ingresos - c.egresos }));
+
+  let ultimoConDatos = -1;
+  cubetas.forEach((c, i) => {
+    if (c.ingresos !== 0 || c.egresos !== 0) ultimoConDatos = i;
+  });
+  const transcurridas = Math.max(cubetas.filter((c) => !c.futuro).length, ultimoConDatos + 1);
+  return { cubetas, transcurridas, sinFecha, egresosAlInicio };
+}
+
+const SERIES_TENDENCIA_PNL = [
+  { key: 'ingresos', label: 'Ingresos', color: COLOR_PNL_INGRESOS },
+  { key: 'egresos', label: 'Egresos', color: COLOR_PNL_EGRESOS },
+  { key: 'utilidad', label: 'Utilidad Real', color: COLOR_PNL_UTILIDAD },
+];
+
+function GraficaTendenciaPnl({ cubetas, transcurridas, oscuro }) {
+  const contRef = useRef(null);
+  const ancho = useAnchoBI(contRef);
+  const [activo, setActivo] = useState(null);
+  const idGradiente = useMemo(() => `pnl-ingresos-${Math.random().toString(36).slice(2, 8)}`, []);
+  const superficie = oscuro ? '#1e293b' : '#ffffff';
+
+  const alto = 230;
+  const m = { izq: 48, der: 16, arr: 12, aba: 24 };
+  const W = Math.max(ancho, 280);
+  const anchoPlot = W - m.izq - m.der;
+  const altoPlot = alto - m.arr - m.aba;
+  const n = cubetas.length;
+  const ultimo = Math.max(0, Math.min(n, transcurridas) - 1);
+  const visibles = cubetas.slice(0, ultimo + 1);
+  const maxDato = Math.max(0, ...visibles.flatMap((c) => [c.ingresos, c.egresos, c.utilidad]));
+  const minDato = Math.min(0, ...visibles.map((c) => c.utilidad));
+  const maxY = topeRedondoBI(maxDato);
+  const minY = minDato < 0 ? -topeRedondoBI(-minDato) : 0;
+  const ticks = minY < 0 ? [minY, 0, maxY] : [0, maxY / 2, maxY];
+  const x = (i) => m.izq + (n <= 1 ? anchoPlot / 2 : (i * anchoPlot) / (n - 1));
+  const y = (v) => m.arr + altoPlot - ((v - minY) / (maxY - minY || 1)) * altoPlot;
+
+  const puntos = (clave) => visibles.map((c, i) => [x(i), y(c[clave])]);
+  const linea = (pts) => pts.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`).join(' ');
+  const ptsIngresos = puntos('ingresos');
+  const areaIngresos =
+    ptsIngresos.length > 1
+      ? `${linea(ptsIngresos)} L${ptsIngresos[ptsIngresos.length - 1][0].toFixed(1)},${y(0).toFixed(1)} L${ptsIngresos[0][0].toFixed(1)},${y(0).toFixed(1)} Z`
+      : '';
+
+  const paso = Math.max(1, Math.ceil(n / 6));
+  const indicesEje = Array.from(new Set([...cubetas.map((_, i) => i).filter((i) => i % paso === 0), n - 1]));
+
+  function indiceDesdeEvento(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    if (n <= 1) return 0;
+    return Math.min(n - 1, Math.max(0, Math.round(((px - m.izq) / anchoPlot) * (n - 1))));
+  }
+
+  const c = activo != null ? cubetas[activo] : null;
+  const anchoTooltip = 190;
+  const tooltipIzq =
+    activo != null ? (x(activo) + 14 + anchoTooltip <= W ? x(activo) + 14 : Math.max(0, x(activo) - 14 - anchoTooltip)) : 0;
+  const activoVisible = activo != null && activo <= ultimo;
+
+  return (
+    <div ref={contRef} className="relative w-full">
+      <svg
+        width="100%"
+        height={alto}
+        viewBox={`0 0 ${W} ${alto}`}
+        role="img"
+        aria-label="Tendencia financiera: ingresos, egresos y utilidad real del periodo. Usa las flechas para recorrer los puntos."
+        tabIndex={0}
+        className="block touch-none outline-none focus-visible:ring-2 focus-visible:ring-orange-400"
+        onPointerMove={(e) => setActivo(indiceDesdeEvento(e))}
+        onPointerLeave={() => setActivo(null)}
+        onFocus={() => setActivo((a) => (a == null ? ultimo : a))}
+        onBlur={() => setActivo(null)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowLeft') setActivo((a) => Math.max(0, (a ?? ultimo) - 1));
+          if (e.key === 'ArrowRight') setActivo((a) => Math.min(n - 1, (a ?? 0) + 1));
+        }}
+      >
+        <defs>
+          <linearGradient id={idGradiente} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={COLOR_PNL_INGRESOS} stopOpacity={oscuro ? 0.24 : 0.14} />
+            <stop offset="100%" stopColor={COLOR_PNL_INGRESOS} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {ticks.map((t) => (
+          <g key={t} className="text-slate-300">
+            <line x1={m.izq} x2={W - m.der} y1={y(t)} y2={y(t)} stroke="currentColor" strokeOpacity={t === 0 ? 0.9 : 0.4} strokeWidth="1" />
+            <text x={m.izq - 8} y={y(t)} dy="0.32em" textAnchor="end" fontSize="10" fill="currentColor" className="text-slate-400" style={{ fontVariantNumeric: 'tabular-nums' }}>
+              {formatoMonedaCortaBI(t)}
+            </text>
+          </g>
+        ))}
+        {indicesEje.map((i) => (
+          <text
+            key={i}
+            x={x(i)}
+            y={alto - 6}
+            textAnchor={n > 1 && i === 0 ? 'start' : n > 1 && i === n - 1 ? 'end' : 'middle'}
+            fontSize="10"
+            fill="currentColor"
+            className="text-slate-400"
+          >
+            {cubetas[i]?.etiqueta}
+          </text>
+        ))}
+
+        {areaIngresos && <path d={areaIngresos} fill={`url(#${idGradiente})`} />}
+        {SERIES_TENDENCIA_PNL.map((s) => {
+          const pts = puntos(s.key);
+          if (pts.length === 0) return null;
+          const [ux, uy] = pts[pts.length - 1];
+          return (
+            <g key={s.key}>
+              {pts.length > 1 && <path d={linea(pts)} fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />}
+              <circle cx={ux} cy={uy} r="4" fill={s.color} stroke={superficie} strokeWidth="2" />
+            </g>
+          );
+        })}
+
+        {activo != null && (
+          <g pointerEvents="none">
+            <line x1={x(activo)} x2={x(activo)} y1={m.arr} y2={m.arr + altoPlot} className="text-slate-400" stroke="currentColor" strokeWidth="1" />
+            {activoVisible &&
+              SERIES_TENDENCIA_PNL.map((s) => (
+                <circle key={s.key} cx={x(activo)} cy={y(c[s.key])} r="4.5" fill={s.color} stroke={superficie} strokeWidth="2" />
+              ))}
+          </g>
+        )}
+      </svg>
+
+      {c && (
+        <div
+          className="pointer-events-none absolute top-0 z-10 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-lg"
+          style={{ left: tooltipIzq, width: anchoTooltip }}
+          role="status"
+        >
+          <p className="text-[10px] font-semibold text-slate-500">{c.etiquetaLarga}</p>
+          {activoVisible ? (
+            <div className="mt-1 space-y-0.5">
+              {SERIES_TENDENCIA_PNL.map((s) => (
+                <p key={s.key} className={`flex items-center justify-between gap-2 text-xs ${s.key === 'utilidad' ? 'mt-1 border-t border-slate-200 pt-1' : ''}`}>
+                  <span className="flex items-center gap-1.5 text-slate-500">
+                    <span className="inline-block h-0.5 w-3 rounded-full" style={{ backgroundColor: s.color }} /> {s.label}
+                  </span>
+                  <span className={`font-black ${s.key === 'utilidad' && c.utilidad < 0 ? 'text-rose-500' : 'text-slate-900'}`}>{formatoMoneda(c[s.key])}</span>
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-0.5 text-xs font-bold text-slate-500">Aún no transcurre</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TablaTendenciaPnl({ cubetas, transcurridas }) {
+  return (
+    <div className="max-h-[230px] overflow-y-auto rounded-xl border border-slate-200">
+      <table className="w-full text-left text-xs">
+        <thead className="sticky top-0 bg-white">
+          <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            <th className="px-3 py-2">Periodo</th>
+            <th className="px-3 py-2 text-right">Ingresos</th>
+            <th className="px-3 py-2 text-right">Egresos</th>
+            <th className="px-3 py-2 text-right">Utilidad Real</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cubetas.map((c, i) => {
+            const pendiente = i >= transcurridas;
+            return (
+              <tr key={i} className="border-b border-slate-200/70 last:border-0">
+                <td className="px-3 py-1.5 text-slate-600">{c.etiquetaLarga}</td>
+                <td className="px-3 py-1.5 text-right text-slate-800">{pendiente ? '—' : formatoMoneda(c.ingresos)}</td>
+                <td className="px-3 py-1.5 text-right text-slate-800">{pendiente ? '—' : formatoMoneda(c.egresos)}</td>
+                <td className={`px-3 py-1.5 text-right font-bold ${c.utilidad < 0 ? 'text-rose-500' : 'text-slate-900'}`}>
+                  {pendiente ? '—' : formatoMoneda(c.utilidad)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TendenciaFinancieraPnl({ modo, rango, pnl, cargando }) {
+  const oscuro = useOscuroBI();
+  const [vistaTabla, setVistaTabla] = useState(false);
+  const tendencia = useMemo(() => construirTendenciaPnl(modo, rango, pnl), [modo, rango, pnl]);
+  if (cargando) return <div className="h-[310px] animate-pulse rounded-2xl bg-white" />;
+
+  const unidad = modo === 'dia' ? 'hora' : modo === 'anio' ? 'mes' : 'día';
+  const { cubetas, transcurridas, sinFecha, egresosAlInicio } = tendencia;
+  const vacio = pnl.ingresosTotalesConsolidados === 0 && pnl.egresosTotales === 0;
+
+  return (
+    <TarjetaGraficaBI
+      icono={TrendingUp}
+      colorIcono="text-emerald-500"
+      titulo="Tendencia Financiera"
+      descripcion={`Ingresos vs Egresos vs Utilidad Real por ${unidad} · mismas cifras que las tarjetas de arriba`}
+      vistaTabla={vistaTabla}
+      onAlternarTabla={() => setVistaTabla((v) => !v)}
+      extra={
+        <div className="flex flex-wrap items-center gap-3">
+          {SERIES_TENDENCIA_PNL.map((s) => (
+            <span key={s.key} className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
+              <span className="inline-block h-0.5 w-3.5 rounded-full" style={{ backgroundColor: s.color }} /> {s.label}
+            </span>
+          ))}
+        </div>
+      }
+    >
+      {vacio ? (
+        <div className="flex h-[230px] items-center justify-center rounded-xl border border-dashed border-slate-200 text-xs text-slate-500">
+          Sin ingresos ni egresos en este periodo.
+        </div>
+      ) : vistaTabla ? (
+        <TablaTendenciaPnl cubetas={cubetas} transcurridas={transcurridas} />
+      ) : (
+        <GraficaTendenciaPnl cubetas={cubetas} transcurridas={transcurridas} oscuro={oscuro} />
+      )}
+      {(sinFecha.ingresos !== 0 || sinFecha.egresos !== 0 || egresosAlInicio !== 0) && (
+        <p className="mt-2 text-[10px] text-slate-500">
+          {sinFecha.ingresos !== 0 && `${formatoMoneda(sinFecha.ingresos)} de ingresos sin ${modo === 'dia' ? 'hora' : 'fecha'} registrada. `}
+          {sinFecha.egresos !== 0 && `${formatoMoneda(sinFecha.egresos)} de egresos sin fecha registrada. `}
+          {egresosAlInicio !== 0 && `${formatoMoneda(egresosAlInicio)} de egresos del día sin hora de registro se muestran al inicio del día. `}
+          Todo suma igual en los totales.
+        </p>
+      )}
+    </TarjetaGraficaBI>
+  );
+}
+
+/* ---- Composición de Ingresos: anillo + leyenda lateral ---- */
+function DonutIngresosPnl({ pnl, cargando }) {
+  const [activo, setActivo] = useState(null);
+  const oscuro = useOscuroBI();
+  if (cargando) return <div className="h-[310px] animate-pulse rounded-2xl bg-white" />;
+
+  const superficie = oscuro ? '#1e293b' : '#ffffff';
+  const datos = CATEGORIAS_INGRESO_PNL.map((c) => ({ ...c, monto: Math.max(0, Number(pnl[c.key]) || 0) }));
+  const total = Number(pnl.ingresosTotalesConsolidados) || 0;
+  const suma = datos.reduce((acc, d) => acc + d.monto, 0);
+  const pct = (v) => (suma > 0 ? (v / suma) * 100 : 0);
+
+  const tam = 176;
+  const cx = tam / 2;
+  const cy = tam / 2;
+  const rExt = 84;
+  const rInt = 58;
+  const conMonto = datos.filter((d) => d.monto > 0);
+  // Separación de 2px (color de superficie) entre rebanadas, en ángulo.
+  const hueco = conMonto.length > 1 ? 2 / rExt : 0;
+  let angulo = -Math.PI / 2;
+  const punto = (r, a) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  const arcos = conMonto.map((d) => {
+    const barrido = (d.monto / suma) * Math.PI * 2;
+    const ini = angulo + hueco / 2;
+    const fin = angulo + barrido - hueco / 2;
+    angulo += barrido;
+    const grande = fin - ini > Math.PI ? 1 : 0;
+    if (conMonto.length === 1) return { ...d, completo: true };
+    const [x1, y1] = punto(rExt, ini);
+    const [x2, y2] = punto(rExt, fin);
+    const [x3, y3] = punto(rInt, fin);
+    const [x4, y4] = punto(rInt, ini);
+    return {
+      ...d,
+      d: `M${x1},${y1} A${rExt},${rExt} 0 ${grande} 1 ${x2},${y2} L${x3},${y3} A${rInt},${rInt} 0 ${grande} 0 ${x4},${y4} Z`,
+      medio: (ini + fin) / 2,
+    };
+  });
+
+  const sel = activo ? datos.find((d) => d.key === activo) : null;
+
+  return (
+    <TarjetaGraficaBI icono={Percent} colorIcono="text-emerald-500" titulo="Composición de Ingresos" descripcion="Peso de cada categoría sobre los Ingresos Totales Consolidados">
+      {suma === 0 ? (
+        <div className="flex h-[230px] items-center justify-center rounded-xl border border-dashed border-slate-200 text-xs text-slate-500">
+          Sin ingresos cobrados en este periodo.
+        </div>
+      ) : (
+        <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-center">
+          <div className="relative shrink-0" style={{ width: tam, height: tam }}>
+            <svg width={tam} height={tam} viewBox={`0 0 ${tam} ${tam}`} role="img" aria-label="Composición de ingresos por categoría">
+              {arcos.map((a) =>
+                a.completo ? (
+                  <circle
+                    key={a.key}
+                    cx={cx}
+                    cy={cy}
+                    r={(rExt + rInt) / 2}
+                    fill="none"
+                    stroke={a.color}
+                    strokeWidth={rExt - rInt}
+                    onMouseEnter={() => setActivo(a.key)}
+                    onMouseLeave={() => setActivo(null)}
+                  />
+                ) : (
+                  <path
+                    key={a.key}
+                    d={a.d}
+                    fill={a.color}
+                    stroke={superficie}
+                    strokeWidth="0"
+                    className="cursor-pointer transition-[opacity,transform] duration-150"
+                    style={{
+                      opacity: activo && activo !== a.key ? 0.3 : 1,
+                      transformOrigin: `${cx}px ${cy}px`,
+                      transform: activo === a.key ? `translate(${Math.cos(a.medio) * 3}px, ${Math.sin(a.medio) * 3}px)` : undefined,
+                    }}
+                    onMouseEnter={() => setActivo(a.key)}
+                    onMouseLeave={() => setActivo(null)}
+                  />
+                )
+              )}
+            </svg>
+            {/* Centro: total, o la categoría bajo el cursor (tooltip integrado). */}
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-8 text-center" role="status">
+              <p className="max-w-full truncate text-[10px] font-bold uppercase tracking-wide text-slate-500">{sel ? sel.label : 'Total'}</p>
+              <p className="text-lg font-black leading-tight text-slate-900">{formatoMonedaCortaBI(sel ? sel.monto : total)}</p>
+              <p className="text-[11px] font-semibold text-slate-500">{sel ? formatoPctPnl(pct(sel.monto)) : formatoMoneda(total)}</p>
+            </div>
+          </div>
+
+          <ul className="w-full min-w-0 flex-1 space-y-0.5">
+            {datos.map((d) => (
+              <li key={d.key}>
+                <button
+                  type="button"
+                  onMouseEnter={() => setActivo(d.key)}
+                  onMouseLeave={() => setActivo(null)}
+                  onFocus={() => setActivo(d.key)}
+                  onBlur={() => setActivo(null)}
+                  title={`${d.label}: ${formatoMoneda(d.monto)} · ${formatoPctPnl(pct(d.monto))}`}
+                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                    activo === d.key ? 'bg-slate-100' : 'hover:bg-slate-50'
+                  } ${activo && activo !== d.key ? 'opacity-50' : ''}`}
+                >
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: d.color }} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-semibold text-slate-700">{d.label}</span>
+                    <span className="block text-[11px] text-slate-500" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {formatoMoneda(d.monto)}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-sm font-black text-slate-900" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {formatoPctPnl(pct(d.monto))}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </TarjetaGraficaBI>
+  );
+}
+
+/* ---- Egresos por Categoría: barras verticales (una sola serie) ---- */
+function BarrasEgresosPnl({ egresosPorCategoria, egresosTotales }) {
+  const [activo, setActivo] = useState(null);
+  const ordenadas = Object.entries(egresosPorCategoria || {})
+    .map(([categoria, monto]) => ({ categoria, monto: Number(monto) || 0 }))
+    .sort((a, b) => b.monto - a.monto);
+  // Más de 8 categorías: las menores se agrupan en "Otras" solo en la
+  // gráfica (la tabla de abajo conserva todas).
+  const barras =
+    ordenadas.length > 8
+      ? [
+          ...ordenadas.slice(0, 7),
+          { categoria: `Otras (${ordenadas.length - 7})`, monto: ordenadas.slice(7).reduce((acc, f) => acc + f.monto, 0) },
+        ]
+      : ordenadas;
+  const max = topeRedondoBI(Math.max(0, ...barras.map((b) => b.monto)));
+  const altoPlot = 150;
+  const pct = (v) => (egresosTotales > 0 ? (v / egresosTotales) * 100 : 0);
+
+  return (
+    <div className="mb-4 flex gap-2">
+      {/* Eje Y mínimo */}
+      <div className="relative w-10 shrink-0" style={{ height: altoPlot }}>
+        {[max, max / 2, 0].map((t) => (
+          <span
+            key={t}
+            className="absolute right-0 -translate-y-1/2 text-[10px] text-slate-400"
+            style={{ top: altoPlot - (t / max) * altoPlot, fontVariantNumeric: 'tabular-nums' }}
+          >
+            {formatoMonedaCortaBI(t)}
+          </span>
+        ))}
+      </div>
+      <div className="relative min-w-0 flex-1">
+        {[max, max / 2, 0].map((t) => (
+          <div
+            key={t}
+            className={`pointer-events-none absolute inset-x-0 border-t ${t === 0 ? 'border-slate-300' : 'border-slate-200/70'}`}
+            style={{ top: altoPlot - (t / max) * altoPlot }}
+          />
+        ))}
+        <div className="relative flex justify-around gap-2 px-1" role="img" aria-label="Egresos por categoría">
+          {barras.map((b) => {
+            const alto = max > 0 && b.monto > 0 ? Math.max(2, (b.monto / max) * altoPlot) : 0;
+            const tenue = activo && activo !== b.categoria;
+            return (
+              <div
+                key={b.categoria}
+                className="min-w-0 max-w-[88px] flex-1"
+                onMouseEnter={() => setActivo(b.categoria)}
+                onMouseLeave={() => setActivo(null)}
+                title={`${b.categoria}: ${formatoMoneda(b.monto)} · ${formatoPctPnl(pct(b.monto))} del total`}
+              >
+                <div className="flex flex-col items-center justify-end" style={{ height: altoPlot }}>
+                  <span
+                    className={`mb-1 whitespace-nowrap text-[10px] font-black transition ${activo === b.categoria ? 'text-slate-900' : 'text-slate-500'}`}
+                    style={{ fontVariantNumeric: 'tabular-nums' }}
+                  >
+                    {formatoMonedaCortaBI(b.monto)}
+                  </span>
+                  <div
+                    className="w-full max-w-[40px] rounded-t transition-[opacity,height] duration-300"
+                    style={{ height: alto, backgroundColor: COLOR_PNL_EGRESOS, opacity: tenue ? 0.35 : 1 }}
+                  />
+                </div>
+                <p className={`mt-1.5 truncate text-center text-[10px] font-semibold transition ${tenue ? 'text-slate-400' : 'text-slate-600'}`}>{b.categoria}</p>
+                <p className="text-center text-[10px] text-slate-400">{formatoPctPnl(pct(b.monto))}</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -26572,6 +27161,16 @@ function ModuloContabilidadCompras({
             />
           </div>
 
+          {/* Gráficas (solo visuales): mismas cifras que las tarjetas de arriba. */}
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-5">
+            <div className="min-w-0 xl:col-span-3">
+              <TendenciaFinancieraPnl modo={modoFiltroPnl} rango={rangoPnl} pnl={pnl} cargando={loadingVentasPnl || loadingEgresos} />
+            </div>
+            <div className="min-w-0 xl:col-span-2">
+              <DonutIngresosPnl pnl={pnl} cargando={loadingVentasPnl} />
+            </div>
+          </div>
+
           {modalDesglose && (
             <ModalDesglosePnl
               titulo={modalDesglose.titulo}
@@ -26588,6 +27187,9 @@ function ModuloContabilidadCompras({
             {Object.keys(pnl.egresosPorCategoria).length === 0 ? (
               <p className="py-6 text-center text-xs text-slate-500">Sin egresos registrados en este periodo.</p>
             ) : (
+              <>
+              {/* Peso visual de cada gasto operativo; la tabla de abajo no cambia. */}
+              <BarrasEgresosPnl egresosPorCategoria={pnl.egresosPorCategoria} egresosTotales={pnl.egresosTotales} />
               <div className="overflow-x-auto rounded-xl border border-slate-200">
                 <table className="w-full min-w-[380px] text-left text-xs">
                   <thead>
@@ -26612,6 +27214,7 @@ function ModuloContabilidadCompras({
                   </tbody>
                 </table>
               </div>
+              </>
             )}
           </div>
         </div>
