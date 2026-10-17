@@ -21703,6 +21703,9 @@ function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando }) 
         <Percent size={16} className="text-orange-400" /> Rentabilidad por Categoría
       </h3>
 
+      {/* Complemento visual: peso de cada categoría sobre el ingreso total. */}
+      <DistribucionIngresosCategoriaBI filas={filas} />
+
       <div className="overflow-x-auto rounded-xl border border-slate-200">
         <table className="w-full min-w-[420px] text-left text-xs">
           <thead>
@@ -21888,11 +21891,37 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, aca
     { horas: 0, reservas: 0, eventos: 0, academia: 0, ingresos: 0 }
   );
   const maxIngreso = Math.max(1, ...filas.map((f) => f.ingresos));
+  // Pestaña alterna (complemento visual): la tabla sigue siendo la vista
+  // por defecto y no cambia; "Comparativa" muestra las mismas cifras en barras.
+  const [vista, setVista] = useState('tabla');
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-900">
-        <MapPin size={16} className="text-sky-400" /> Ingresos y Ocupación por Cancha
-      </h3>
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+          <MapPin size={16} className="text-sky-400" /> Ingresos y Ocupación por Cancha
+        </h3>
+        {filas.length > 0 && (
+          <div role="tablist" aria-label="Vista de canchas" className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+            {[
+              { id: 'tabla', label: 'Tabla' },
+              { id: 'grafica', label: 'Comparativa' },
+            ].map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                role="tab"
+                aria-selected={vista === o.id}
+                onClick={() => setVista(o.id)}
+                className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition ${
+                  vista === o.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <p className="mb-3 text-[11px] text-slate-500">
         Ingreso real cobrado (mismo criterio de fecha que Rentabilidad por Categoría y el Estado de Resultados): renta de cancha +
         Retas y Torneos de esa cancha + Academia (mensualidades y clases grupales/privadas asignadas a ella). La ocupación incluye
@@ -21902,6 +21931,8 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, aca
         <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
           No hay canchas activas para mostrar.
         </div>
+      ) : vista === 'grafica' ? (
+        <ComparativaCanchasBI filas={filas} sinAsignar={sinAsignar} />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200">
           <table className="w-full min-w-[760px] text-left text-xs">
@@ -21962,6 +21993,617 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, aca
             </tbody>
           </table>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= Gráficas de rendimiento (Analytics BI) =================
+ * Complemento VISUAL del tablero: no reemplazan ni cambian ninguna tabla,
+ * tarjeta ni cifra existente — leen exactamente los mismos datos ya
+ * calculados en `ModuloAnalyticsBI` (regla de oro: solo lo cobrado) y los
+ * dibujan en SVG propio, sin dependencias nuevas.
+ *  • Tendencia de Ingresos: por hora (Día), por día (Mes) o por mes (Año).
+ *  • Distribución por Categoría: barra 100% sobre "Rentabilidad por Categoría".
+ *  • Comparativa por Cancha: pestaña alterna de "Ingresos y Ocupación por Cancha".
+ * Paleta validada (separación para daltonismo y contraste) en modo claro
+ * (#ffffff) y oscuro (#1e293b): naranja #ea580c (ingresos/horas) y
+ * esmeralda #059669 (ingreso real). Las categorías conservan su familia de
+ * color de siempre (sky, fuchsia, teal, violet, amber) en el tono validado.
+ * ======================================================================== */
+
+const COLOR_INGRESOS_BI = '#ea580c';
+const COLOR_HORAS_BI = '#ea580c';
+const COLOR_INGRESO_REAL_BI = '#059669';
+const COLOR_CATEGORIA_GRAFICA_BI = {
+  Canchas: '#0284c7',
+  'Retas & Torneos': '#d946ef',
+  Academia: '#0d9488',
+  'Pro-Shop': '#8b5cf6',
+  'Cafetería/Bar': '#d97706',
+};
+const MESES_CORTOS_BI = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+// Tema activo (`html.dark`): las gráficas necesitan el color de superficie
+// para el anillo de los puntos y el degradado.
+function useOscuroBI() {
+  const leer = () => typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+  const [oscuro, setOscuro] = useState(leer);
+  useEffect(() => {
+    if (typeof MutationObserver === 'undefined') return undefined;
+    const obs = new MutationObserver(() => setOscuro(leer()));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => obs.disconnect();
+  }, []);
+  return oscuro;
+}
+
+function useAnchoBI(ref) {
+  const [ancho, setAncho] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const medir = () => setAncho(el.clientWidth || 0);
+    medir();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(medir);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return ancho;
+}
+
+// Eje Y compacto: $850 · $12k · $1.2M.
+function formatoMonedaCortaBI(valor) {
+  const n = Number(valor) || 0;
+  const abs = Math.abs(n);
+  if (abs >= 1e6) return `$${(n / 1e6).toFixed(abs >= 1e7 ? 0 : 1).replace(/\.0$/, '')}M`;
+  if (abs >= 1e3) return `$${(n / 1e3).toFixed(abs >= 1e4 ? 0 : 1).replace(/\.0$/, '')}k`;
+  return `$${Math.round(n)}`;
+}
+
+// Tope "redondo" del eje Y (1, 2, 2.5, 5 × 10^k) para que las marcas
+// 0 · mitad · tope sean cifras limpias.
+function topeRedondoBI(max) {
+  if (!(max > 0)) return 1000;
+  const exp = Math.pow(10, Math.floor(Math.log10(max)));
+  const pasos = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+  const paso = pasos.find((p) => p * exp >= max) || 10;
+  return paso * exp;
+}
+
+/* ---- Cubetas de la Tendencia de Ingresos ----------------------------------
+ * Mismo dinero y mismo criterio de fecha que "Ingresos Totales (Cobrados)":
+ *  • Canchas (renta cobrada): por FECHA DE JUEGO (`reservas.fecha`) y, en
+ *    modo Día, por la hora de inicio de la reserva.
+ *  • Retas & Torneos y Academia: por fecha de cobro de la inscripción
+ *    (`created_at`, ver `ingresosEventos.cobrosFechados`).
+ *  • Pro-Shop / Cafetería-Bar (y artículos 'Canchas' del catálogo): por la
+ *    fecha del ticket cobrado en Smart POS (`obtenerTimestampVenta`).
+ * La suma de todas las cubetas (+ `sinHora`, si hubiera registros sin hora)
+ * es idéntica a `analisis.ingresosTotales`.
+ * ------------------------------------------------------------------------- */
+function construirTendenciaIngresosBI({ modo, rango, reservasCobradas, cobrosFechados, ventasRango, productosPorId, variantesPorId }) {
+  const ahora = new Date();
+  let total = 0;
+  let sinHora = 0;
+  const base = [];
+  const nuevaCubeta = (extra) => ({ total: 0, porCategoria: {}, futuro: false, ...extra });
+
+  if (modo === 'dia') {
+    for (let h = 0; h < 24; h += 1) {
+      const desde = new Date(rango.inicio.getFullYear(), rango.inicio.getMonth(), rango.inicio.getDate(), h);
+      base.push(
+        nuevaCubeta({
+          etiqueta: `${pad2(h)}:00`,
+          etiquetaLarga: `${pad2(h)}:00 – ${pad2(h + 1)}:00`,
+          futuro: desde > ahora,
+        })
+      );
+    }
+  } else if (modo === 'anio') {
+    const anio = rango.inicio.getFullYear();
+    for (let mIdx = 0; mIdx < 12; mIdx += 1) {
+      base.push(
+        nuevaCubeta({
+          etiqueta: MESES_CORTOS_BI[mIdx],
+          etiquetaLarga: `${MESES_OPCIONES[mIdx]?.label || MESES_CORTOS_BI[mIdx]} ${anio}`,
+          futuro: new Date(anio, mIdx, 1) > ahora,
+        })
+      );
+    }
+  } else {
+    for (let d = 0; d < rango.dias; d += 1) {
+      const dia = new Date(rango.inicio.getFullYear(), rango.inicio.getMonth(), rango.inicio.getDate() + d);
+      base.push(
+        nuevaCubeta({
+          etiqueta: String(dia.getDate()),
+          etiquetaLarga: dia.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' }),
+          futuro: dia > ahora,
+        })
+      );
+    }
+  }
+
+  // Índice de cubeta desde un Date local (o null si cae fuera).
+  const indiceDesdeFecha = (fecha) => {
+    if (!fecha || Number.isNaN(fecha.getTime())) return -1;
+    if (fecha < rango.inicio || fecha >= rango.fin) return -1;
+    if (modo === 'dia') return fecha.getHours();
+    if (modo === 'anio') return fecha.getMonth();
+    return Math.round((new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate()) - rango.inicio) / 86400000);
+  };
+
+  const sumar = (idx, monto, categoria) => {
+    if (!(monto > 0)) return;
+    total += monto;
+    const c = base[idx];
+    if (!c) {
+      sinHora += monto;
+      return;
+    }
+    c.total += monto;
+    c.porCategoria[categoria] = (c.porCategoria[categoria] || 0) + monto;
+  };
+
+  // Canchas: fecha de juego (+ hora de inicio en modo Día).
+  (reservasCobradas || []).forEach((r) => {
+    const monto = Number(r.monto_total) || 0;
+    const [y, m, d] = String(r.fecha || '').split('-').map(Number);
+    if (!y || !m || !d) {
+      sumar(-1, monto, 'Canchas');
+      return;
+    }
+    let idx;
+    if (modo === 'dia') {
+      const min = parseHoraAMinutos(r.hora_inicio);
+      idx = min === null ? -1 : Math.min(23, Math.floor(min / 60));
+    } else {
+      idx = indiceDesdeFecha(new Date(y, m - 1, d));
+    }
+    sumar(idx, monto, 'Canchas');
+  });
+
+  // Retas & Torneos / Academia: fecha de cobro.
+  (cobrosFechados || []).forEach((c) => sumar(indiceDesdeFecha(c.fecha), c.monto, c.categoria));
+
+  // Smart POS / Tienda en Línea: solo tickets cobrados y solo artículos de
+  // producto (la cancha del ticket ya se contó desde `reservas`), con el
+  // mismo reparto de categoría que "Rentabilidad por Categoría".
+  (ventasRango || []).forEach((v) => {
+    if (!esCobroConfirmado(v)) return;
+    const items = v?.detalles?.items;
+    if (!Array.isArray(items)) return;
+    const idx = indiceDesdeFecha(obtenerTimestampVenta(v));
+    items.forEach((item) => {
+      if (item.tipo !== 'producto') return;
+      const subtotal = Number(item.subtotal) || 0;
+      const variante = item.variante_id ? variantesPorId[item.variante_id] : null;
+      const cat = (variante?._productoPadre || productosPorId[item.producto_id] || null)?.categoria;
+      const bucket = cat === 'Cafetería/Bar' ? 'Cafetería/Bar' : cat === 'Canchas' ? 'Canchas' : 'Pro-Shop';
+      // `sumar` ignora montos ≤ 0; un subtotal negativo (ajuste) debe restar
+      // igual que en `analisis`, así que se aplica directo.
+      if (subtotal < 0) {
+        total += subtotal;
+        if (base[idx]) {
+          base[idx].total += subtotal;
+          base[idx].porCategoria[bucket] = (base[idx].porCategoria[bucket] || 0) + subtotal;
+        } else sinHora += subtotal;
+        return;
+      }
+      sumar(idx, subtotal, bucket);
+    });
+  });
+
+  // Modo Día: solo el horario con actividad (mínimo 07:00–23:00).
+  let cubetas = base;
+  if (modo === 'dia') {
+    const conDatos = base.map((c, i) => (c.total !== 0 ? i : null)).filter((i) => i !== null);
+    const desde = Math.min(7, ...conDatos);
+    const hasta = Math.max(22, ...conDatos);
+    cubetas = base.slice(desde, hasta + 1);
+  }
+
+  let pico = null;
+  cubetas.forEach((c) => {
+    if (c.total > 0 && (!pico || c.total > pico.total)) pico = c;
+  });
+  // Periodos que se dibujan: los ya transcurridos y, si hay cobros
+  // anticipados (p. ej. una reserva ya pagada para más tarde hoy o para
+  // otro día del mes), hasta el último periodo con dinero.
+  let ultimoConDatos = -1;
+  cubetas.forEach((c, i) => {
+    if (c.total !== 0) ultimoConDatos = i;
+  });
+  const transcurridas = Math.max(cubetas.filter((c) => !c.futuro).length, ultimoConDatos + 1);
+  return { cubetas, total, sinHora, pico, transcurridas };
+}
+
+/* ---- Tarjeta contenedora con alternador "Ver tabla" ---- */
+function TarjetaGraficaBI({ icono: Icono, colorIcono = 'text-orange-400', titulo, descripcion, extra, vistaTabla, onAlternarTabla, children }) {
+  return (
+    <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+            {Icono && <Icono size={16} className={colorIcono} />} {titulo}
+          </h3>
+          {descripcion && <p className="mt-0.5 text-[11px] text-slate-500">{descripcion}</p>}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {extra}
+          {onAlternarTabla && (
+            <button
+              type="button"
+              onClick={onAlternarTabla}
+              className="rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-500 transition hover:border-orange-300 hover:text-orange-500"
+            >
+              {vistaTabla ? 'Ver gráfica' : 'Ver tabla'}
+            </button>
+          )}
+        </div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/* ---- 1) Tendencia de Ingresos (área con degradado sutil) ---- */
+function GraficaTendenciaIngresosBI({ cubetas, transcurridas, oscuro }) {
+  const contRef = useRef(null);
+  const ancho = useAnchoBI(contRef);
+  const [activo, setActivo] = useState(null);
+  const idGradiente = useMemo(() => `bi-ingresos-${Math.random().toString(36).slice(2, 8)}`, []);
+  const superficie = oscuro ? '#1e293b' : '#ffffff';
+
+  const alto = 210;
+  const m = { izq: 44, der: 16, arr: 12, aba: 24 };
+  const W = Math.max(ancho, 280);
+  const anchoPlot = W - m.izq - m.der;
+  const altoPlot = alto - m.arr - m.aba;
+  const n = cubetas.length;
+  const maxY = topeRedondoBI(Math.max(0, ...cubetas.map((c) => c.total)));
+  const ticks = [0, maxY / 2, maxY];
+  const x = (i) => m.izq + (n <= 1 ? anchoPlot / 2 : (i * anchoPlot) / (n - 1));
+  const y = (v) => m.arr + altoPlot - (Math.max(0, v) / maxY) * altoPlot;
+
+  // La línea llega solo hasta el último periodo transcurrido: los días/
+  // horas/meses que todavía no ocurren no se dibujan como "$0".
+  const ultimo = Math.max(0, Math.min(n, transcurridas) - 1);
+  const pts = cubetas.slice(0, ultimo + 1).map((c, i) => [x(i), y(c.total)]);
+  const linea = pts.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`).join(' ');
+  const area = pts.length > 1 ? `${linea} L${pts[pts.length - 1][0].toFixed(1)},${y(0).toFixed(1)} L${pts[0][0].toFixed(1)},${y(0).toFixed(1)} Z` : '';
+
+  // Etiquetas del eje X sin saturar: ~6 marcas repartidas.
+  const paso = Math.max(1, Math.ceil(n / 6));
+  const indicesEje = Array.from(new Set([...cubetas.map((_, i) => i).filter((i) => i % paso === 0), n - 1]));
+
+  function indiceDesdeEvento(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    if (n <= 1) return 0;
+    return Math.min(n - 1, Math.max(0, Math.round(((px - m.izq) / anchoPlot) * (n - 1))));
+  }
+
+  const c = activo != null ? cubetas[activo] : null;
+  const anchoTooltip = 188;
+  const tooltipIzq =
+    activo != null ? (x(activo) + 14 + anchoTooltip <= W ? x(activo) + 14 : Math.max(0, x(activo) - 14 - anchoTooltip)) : 0;
+  const desglose = c
+    ? CATEGORIAS_BI.map((cat) => ({ key: cat.key, monto: c.porCategoria[cat.key] || 0 })).filter((d) => d.monto !== 0)
+    : [];
+
+  return (
+    <div ref={contRef} className="relative w-full">
+      <svg
+        width="100%"
+        height={alto}
+        viewBox={`0 0 ${W} ${alto}`}
+        role="img"
+        aria-label="Tendencia de ingresos cobrados del periodo. Usa las flechas para recorrer los puntos."
+        tabIndex={0}
+        className="block touch-none outline-none focus-visible:ring-2 focus-visible:ring-orange-400"
+        onPointerMove={(e) => setActivo(indiceDesdeEvento(e))}
+        onPointerLeave={() => setActivo(null)}
+        onFocus={() => setActivo((a) => (a == null ? ultimo : a))}
+        onBlur={() => setActivo(null)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowLeft') setActivo((a) => Math.max(0, (a ?? ultimo) - 1));
+          if (e.key === 'ArrowRight') setActivo((a) => Math.min(n - 1, (a ?? 0) + 1));
+        }}
+      >
+        <defs>
+          <linearGradient id={idGradiente} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={COLOR_INGRESOS_BI} stopOpacity={oscuro ? 0.28 : 0.18} />
+            <stop offset="100%" stopColor={COLOR_INGRESOS_BI} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+
+        {ticks.map((t) => (
+          <g key={t} className="text-slate-300">
+            <line x1={m.izq} x2={W - m.der} y1={y(t)} y2={y(t)} stroke="currentColor" strokeOpacity={t === 0 ? 0.9 : 0.4} strokeWidth="1" />
+            <text x={m.izq - 8} y={y(t)} dy="0.32em" textAnchor="end" fontSize="10" fill="currentColor" className="text-slate-400" style={{ fontVariantNumeric: 'tabular-nums' }}>
+              {formatoMonedaCortaBI(t)}
+            </text>
+          </g>
+        ))}
+        {indicesEje.map((i) => (
+          <text
+            key={i}
+            x={x(i)}
+            y={alto - 6}
+            textAnchor={n > 1 && i === 0 ? 'start' : n > 1 && i === n - 1 ? 'end' : 'middle'}
+            fontSize="10"
+            fill="currentColor"
+            className="text-slate-400"
+          >
+            {cubetas[i]?.etiqueta}
+          </text>
+        ))}
+
+        {area && <path d={area} fill={`url(#${idGradiente})`} />}
+        {pts.length > 1 && <path d={linea} fill="none" stroke={COLOR_INGRESOS_BI} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />}
+        {pts.length > 0 && (
+          <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r="4" fill={COLOR_INGRESOS_BI} stroke={superficie} strokeWidth="2" />
+        )}
+
+        {activo != null && (
+          <g pointerEvents="none">
+            <line x1={x(activo)} x2={x(activo)} y1={m.arr} y2={y(0)} className="text-slate-400" stroke="currentColor" strokeWidth="1" />
+            {(!c.futuro || activo < transcurridas) && <circle cx={x(activo)} cy={y(c.total)} r="4.5" fill={COLOR_INGRESOS_BI} stroke={superficie} strokeWidth="2" />}
+          </g>
+        )}
+      </svg>
+
+      {c && (
+        <div
+          className="pointer-events-none absolute top-0 z-10 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-lg"
+          style={{ left: tooltipIzq, width: anchoTooltip }}
+          role="status"
+        >
+          <p className="text-[10px] font-semibold text-slate-500">{c.etiquetaLarga}</p>
+          <p className="mt-0.5 flex items-center justify-between gap-2 text-xs">
+            <span className="flex items-center gap-1.5 text-slate-500">
+              <span className="inline-block h-0.5 w-3 rounded-full" style={{ backgroundColor: COLOR_INGRESOS_BI }} /> Ingresos
+            </span>
+            <span className="font-black text-slate-900">{c.futuro && !c.total ? 'Aún no transcurre' : formatoMoneda(c.total)}</span>
+          </p>
+          {desglose.length > 0 && (
+            <div className="mt-1.5 space-y-0.5 border-t border-slate-200 pt-1.5">
+              {desglose.map((d) => (
+                <p key={d.key} className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="flex min-w-0 items-center gap-1.5 text-slate-500">
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: COLOR_CATEGORIA_GRAFICA_BI[d.key] }} />
+                    <span className="truncate">{etiquetaCategoriaProducto(d.key)}</span>
+                  </span>
+                  <span className="font-bold text-slate-700">{formatoMoneda(d.monto)}</span>
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TablaTendenciaIngresosBI({ cubetas }) {
+  return (
+    <div className="max-h-[210px] overflow-y-auto rounded-xl border border-slate-200">
+      <table className="w-full text-left text-xs">
+        <thead className="sticky top-0 bg-white">
+          <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            <th className="px-3 py-2">Periodo</th>
+            {CATEGORIAS_BI.map((c) => (
+              <th key={c.key} className="hidden px-3 py-2 text-right md:table-cell">
+                {etiquetaCategoriaProducto(c.key)}
+              </th>
+            ))}
+            <th className="px-3 py-2 text-right">Ingresos</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cubetas.map((c, i) => (
+            <tr key={i} className="border-b border-slate-200/70 last:border-0">
+              <td className="px-3 py-1.5 text-slate-600">{c.etiquetaLarga}</td>
+              {CATEGORIAS_BI.map((cat) => (
+                <td key={cat.key} className="hidden px-3 py-1.5 text-right text-slate-500 md:table-cell">
+                  {c.porCategoria[cat.key] ? formatoMoneda(c.porCategoria[cat.key]) : '—'}
+                </td>
+              ))}
+              <td className="px-3 py-1.5 text-right font-bold text-slate-900">{c.futuro && !c.total ? '—' : formatoMoneda(c.total)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TendenciaIngresosBI({ modo, tendencia, cargando }) {
+  const oscuro = useOscuroBI();
+  const [vistaTabla, setVistaTabla] = useState(false);
+  if (cargando) return <div className="h-[290px] animate-pulse rounded-2xl bg-white" />;
+
+  const unidad = modo === 'dia' ? 'hora' : modo === 'anio' ? 'mes' : 'día';
+  const { cubetas, total, sinHora, pico, transcurridas } = tendencia;
+  // Promedio sobre los periodos ya transcurridos (o con cobros anticipados).
+  const promedio = (total - sinHora) / Math.max(1, transcurridas);
+
+  return (
+    <TarjetaGraficaBI
+      icono={TrendingUp}
+      titulo="Tendencia de Ingresos"
+      descripcion={`Ingreso cobrado por ${unidad} · mismo criterio que Ingresos Totales (solo pagados)`}
+      vistaTabla={vistaTabla}
+      onAlternarTabla={() => setVistaTabla((v) => !v)}
+      extra={
+        <div className="flex items-center gap-4 text-right">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Pico</p>
+            <p className="text-xs font-black text-slate-900">
+              {pico ? `${modo === 'mes' ? pico.etiquetaLarga : pico.etiqueta} · ${formatoMonedaCortaBI(pico.total)}` : '—'}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Promedio / {unidad}</p>
+            <p className="text-xs font-black text-slate-900">{formatoMoneda(promedio)}</p>
+          </div>
+        </div>
+      }
+    >
+      {total === 0 ? (
+        <div className="flex h-[210px] items-center justify-center rounded-xl border border-dashed border-slate-200 text-xs text-slate-500">
+          Sin ingresos cobrados en este rango.
+        </div>
+      ) : vistaTabla ? (
+        <TablaTendenciaIngresosBI cubetas={cubetas} />
+      ) : (
+        <GraficaTendenciaIngresosBI cubetas={cubetas} transcurridas={transcurridas} oscuro={oscuro} />
+      )}
+      {sinHora !== 0 && (
+        <p className="mt-2 text-[10px] text-slate-500">
+          {formatoMoneda(sinHora)} cobrados sin {modo === 'dia' ? 'hora' : 'fecha'} registrada (sí suman en Ingresos Totales).
+        </p>
+      )}
+    </TarjetaGraficaBI>
+  );
+}
+
+/* ---- 2) Distribución de ingresos por categoría (barra 100%) ---- */
+function DistribucionIngresosCategoriaBI({ filas }) {
+  const [resaltada, setResaltada] = useState(null);
+  const datos = CATEGORIAS_BI.map((c) => {
+    const fila = (filas || []).find((f) => f.categoria === c.key);
+    return { key: c.key, ingreso: Math.max(0, Number(fila?.ingreso) || 0) };
+  });
+  const total = datos.reduce((acc, d) => acc + d.ingreso, 0);
+  const pct = (v) => (total > 0 ? (v / total) * 100 : 0);
+  const formatoPct = (v) => (v > 0 && v < 1 ? '<1%' : `${v.toFixed(v < 10 ? 1 : 0).replace(/\.0$/, '')}%`);
+
+  return (
+    <div className="mb-4">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Peso sobre el ingreso total</p>
+        <p className="text-xs font-black text-slate-900">{formatoMoneda(total)}</p>
+      </div>
+      {total === 0 ? (
+        <div className="h-3 w-full rounded-full bg-slate-100" title="Sin ingresos cobrados en este rango" />
+      ) : (
+        <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-full" role="img" aria-label="Distribución del ingreso total por categoría">
+          {datos
+            .filter((d) => d.ingreso > 0)
+            .map((d) => (
+              <div
+                key={d.key}
+                title={`${etiquetaCategoriaProducto(d.key)} · ${formatoPct(pct(d.ingreso))} · ${formatoMoneda(d.ingreso)}`}
+                onMouseEnter={() => setResaltada(d.key)}
+                onMouseLeave={() => setResaltada(null)}
+                className="h-full transition-opacity duration-150"
+                style={{
+                  width: `${pct(d.ingreso)}%`,
+                  minWidth: 3,
+                  backgroundColor: COLOR_CATEGORIA_GRAFICA_BI[d.key],
+                  opacity: resaltada && resaltada !== d.key ? 0.3 : 1,
+                }}
+              />
+            ))}
+        </div>
+      )}
+      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 xl:grid-cols-5">
+        {datos.map((d) => (
+          <div
+            key={d.key}
+            onMouseEnter={() => setResaltada(d.key)}
+            onMouseLeave={() => setResaltada(null)}
+            className={`min-w-0 transition-opacity ${resaltada && resaltada !== d.key ? 'opacity-50' : ''}`}
+          >
+            <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: COLOR_CATEGORIA_GRAFICA_BI[d.key] }} />
+              <span className="truncate">{etiquetaCategoriaProducto(d.key)}</span>
+            </p>
+            <p className="mt-0.5 pl-3.5 text-xs">
+              <span className="font-black text-slate-900">{formatoPct(pct(d.ingreso))}</span>
+              <span className="ml-1.5 text-[11px] text-slate-500">{formatoMoneda(d.ingreso)}</span>
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---- 3) Comparativa por Cancha: horas ocupadas vs ingreso real ----
+ * Dos medidas con unidades distintas → nunca un eje doble: cada una tiene
+ * su propia columna y su propia escala (pequeños múltiplos), con la misma
+ * fila por cancha para comparar de un vistazo. */
+function ComparativaCanchasBI({ filas, sinAsignar = { eventos: 0, academia: 0 } }) {
+  const maxHoras = Math.max(0, ...filas.map((f) => f.horas));
+  const maxIngreso = Math.max(0, ...filas.map((f) => f.ingresos));
+  const sinCancha = (Number(sinAsignar?.eventos) || 0) + (Number(sinAsignar?.academia) || 0);
+  const ancho = (v, max) => (max > 0 && v > 0 ? `max(4px, ${(v / max) * 100}%)` : '0%');
+
+  const Barra = ({ valor, max, color, etiqueta, titulo }) => (
+    <div className="flex min-w-0 items-center gap-2" title={titulo}>
+      <div className="relative h-2.5 min-w-0 flex-1 overflow-hidden rounded-r bg-slate-100">
+        <div className="h-full rounded-r transition-all duration-500" style={{ width: ancho(valor, max), backgroundColor: color }} />
+      </div>
+      <span className="w-[4.75rem] shrink-0 text-right text-xs font-black text-slate-900" style={{ fontVariantNumeric: 'tabular-nums' }}>
+        {etiqueta}
+      </span>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 px-1 sm:grid sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,1fr)] sm:gap-4">
+        <span className="hidden sm:block" />
+        <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+          <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: COLOR_HORAS_BI }} /> Horas ocupadas
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+          <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: COLOR_INGRESO_REAL_BI }} /> Ingreso real
+        </span>
+      </div>
+      <div className="space-y-1">
+        {filas.map((f) => {
+          const porHora = f.horas > 0 ? f.ingresos / f.horas : null;
+          return (
+            <div
+              key={f.cancha.id}
+              className="grid grid-cols-1 gap-1.5 rounded-xl px-1 py-2 transition hover:bg-slate-50 sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,1fr)] sm:items-center sm:gap-4"
+            >
+              <div className="min-w-0">
+                <p className="truncate text-xs font-black text-slate-900">{f.cancha.nombre}</p>
+                <p className="text-[10px] text-slate-500">
+                  {f.ocupacion < 10 ? f.ocupacion.toFixed(1) : f.ocupacion.toFixed(0)}% ocupación
+                  {porHora !== null && ` · ${formatoMonedaCortaBI(porHora)}/h`}
+                </p>
+              </div>
+              <Barra
+                valor={f.horas}
+                max={maxHoras}
+                color={COLOR_HORAS_BI}
+                etiqueta={`${f.horas.toFixed(1)} h`}
+                titulo={`${f.cancha.nombre}: ${f.horas.toFixed(1)} h ocupadas`}
+              />
+              <Barra
+                valor={f.ingresos}
+                max={maxIngreso}
+                color={COLOR_INGRESO_REAL_BI}
+                etiqueta={formatoMonedaCortaBI(f.ingresos)}
+                titulo={`${f.cancha.nombre}: ${formatoMoneda(f.ingresos)} (reservas ${formatoMoneda(f.ingresoReservas)} · retas/torneos ${formatoMoneda(
+                  f.ingresoEventos
+                )} · academia ${formatoMoneda(f.ingresoAcademia)})`}
+              />
+            </div>
+          );
+        })}
+      </div>
+      {sinCancha > 0 && (
+        <p className="mt-2 px-1 text-[10px] text-slate-500">
+          {formatoMoneda(sinCancha)} de Retas/Torneos/Academia sin cancha asignada (ver tabla).
+        </p>
       )}
     </div>
   );
@@ -26171,6 +26813,9 @@ function ModuloAnalyticsBI({
     const torneosPorId = new Map((torneos || []).map((t) => [String(t.id), t]));
 
     const porReta = new Map(); // retaId -> { reta, monto, lugares }
+    // Cada cobro con su fecha de cobro — solo para la gráfica "Tendencia de
+    // Ingresos" (no cambia ningún total).
+    const cobrosFechados = [];
     let totalRetas = 0;
     let transaccionesRetas = 0;
     (inscripciones || []).forEach((i) => {
@@ -26179,6 +26824,7 @@ function ModuloAnalyticsBI({
       const reta = retasPorId.get(String(i.reta_id)) || null;
       const monto = montoInscripcionCobrada(i, reta ? precioDeReta(reta) : 0);
       if (monto <= 0) return;
+      cobrosFechados.push({ fecha: new Date(i.created_at), monto, categoria: 'Retas & Torneos' });
       totalRetas += monto;
       transaccionesRetas += 1;
       const clave = String(i.reta_id);
@@ -26197,6 +26843,7 @@ function ModuloAnalyticsBI({
       const torneo = torneosPorId.get(String(p.torneo_id)) || null;
       const monto = Number(p.monto) || 0;
       if (monto <= 0) return;
+      cobrosFechados.push({ fecha: new Date(p.created_at), monto, categoria: 'Retas & Torneos' });
       totalTorneos += monto;
       transaccionesTorneos += 1;
       const clave = String(p.torneo_id);
@@ -26223,6 +26870,7 @@ function ModuloAnalyticsBI({
       else if (clase?.tipo_clase === 'privada') academiaDesglose.privadas += monto;
       else academiaDesglose.grupales += monto;
       academiaCobros.push({ clase, monto });
+      cobrosFechados.push({ fecha: new Date(a.created_at), monto, categoria: 'Academia' });
       totalAcademia += monto;
       transaccionesAcademia += 1;
     });
@@ -26238,6 +26886,7 @@ function ModuloAnalyticsBI({
       transaccionesRetas,
       transaccionesTorneos,
       transaccionesAcademia,
+      cobrosFechados,
     };
   }, [retas, inscripciones, torneos, participantesTorneo, academiaAlumnos, academiaClases, rango]);
 
@@ -26684,6 +27333,21 @@ function ModuloAnalyticsBI({
   const cargandoFinanciero = loadingVentas || loadingKardexRango;
   const errorPeriodo = errorVentas || errorKardexRango;
 
+  /* ---- Tendencia de Ingresos (gráfica): mismas fuentes que `analisis` ---- */
+  const tendenciaIngresos = useMemo(
+    () =>
+      construirTendenciaIngresosBI({
+        modo: modoFiltro,
+        rango,
+        reservasCobradas,
+        cobrosFechados: ingresosEventos.cobrosFechados,
+        ventasRango,
+        productosPorId,
+        variantesPorId,
+      }),
+    [modoFiltro, rango, reservasCobradas, ingresosEventos, ventasRango, productosPorId, variantesPorId]
+  );
+
   // Exportación de Datos: arma un CSV súper completo (se abre nativamente en
   // Excel/Sheets) con TODO lo que muestra el tablero del rango activo —
   // encabezado del período, métricas ejecutivas, rentabilidad por categoría,
@@ -26801,6 +27465,10 @@ function ModuloAnalyticsBI({
           tono="orange"
         />
       </div>
+
+      {/* Complemento visual de los KPIs: flujo de ingresos cobrados por
+          hora (Día), por día (Mes) o por mes (Año). */}
+      <TendenciaIngresosBI modo={modoFiltro} tendencia={tendenciaIngresos} cargando={cargandoFinanciero} />
 
       <HeatmapOcupacion modo={modoFiltro} filas={heatmap.filas} celdas={heatmap.celdas} />
 
