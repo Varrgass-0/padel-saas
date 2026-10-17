@@ -7745,6 +7745,17 @@ function SeccionDatosFiscalesClub({ permisos, operador, nombreClub, telefonoCont
 // siempre nace `estado_pago: 'pendiente'` y se cobra del otro lado, en Smart
 // POS (ver `onCreada`, que además de guardar en Supabase entrega la reserva
 // y la cancha para que el llamador la mande directo a la comanda del POS).
+//
+// Rediseño (experiencia tipo Portal de Jugadores): ya no hay formulario
+// ciego de Hora Inicio / Hora Fin / Monto. Recepción elige cancha, fecha
+// (con accesos "Hoy"/"Mañana") y un bloque de la PARRILLA VISUAL de
+// horarios — la misma `franjasDelDiaConEstado` + `ESTILO_OCUPACION_SLOT` +
+// `TURNOS_RESERVA_PORTAL` que usa `ModalReservarCancha` del Portal, así que
+// lo que el mostrador ve libre/ocupado es EXACTAMENTE lo que ve el jugador.
+// El monto ya NO se puede editar a mano: lo fija el sistema con la tarifa
+// dinámica del bloque (mismo cálculo que el Portal, `precioDelBloque`).
+// La firma de props es la misma de siempre (drop-in): `onRegistrarAuditoria`
+// se sigue aceptando aunque ya no haya descuentos manuales que auditar.
 function ModalNuevaReserva({
   canchas,
   reservas,
@@ -7753,199 +7764,204 @@ function ModalNuevaReserva({
   fechaInicial,
   onClose,
   onCreada,
+  // eslint-disable-next-line no-unused-vars
   onRegistrarAuditoria,
   jugadoresPorId,
   horaAperturaMin = HORA_INICIO_MIN,
   horaCierreMin = HORA_FIN_MIN,
   // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
-  // Academia", migracion_v42) — antes el default de Hora Fin sumaba 60 min
-  // fijos a Hora Inicio; ahora usa la duración configurada por el club (60
-  // min de respaldo si nunca se configuró, mismo comportamiento de siempre).
+  // Academia", migracion_v42) — 60 min de respaldo si nunca se configuró.
   duracionReservaMinutos = 60,
   // Tarifas Dinámicas por Franja Horaria (Peak & Off-Peak Pricing,
-  // migracion_v43) — lista completa de `tarifas_horarios` del club (sin
-  // filtrar por día todavía, eso pasa más abajo según la `fecha` elegida en
-  // este mismo formulario).
+  // migracion_v43) — lista completa de `tarifas_horarios` del club.
   tarifasHorarios = [],
-  // Switch ON/OFF de "Tarifas y Franjas Horarias" (mejora) — `true` por
-  // defecto (Activado, comportamiento de siempre). En OFF, `tarifasDelDia`
-  // se queda vacía a propósito para que `calcularPrecioReserva` caiga
-  // siempre al precio/hora de la cancha, SIN tocar `tarifasHorarios`.
+  // Switch ON/OFF de "Tarifas y Franjas Horarias" — en OFF el precio cae
+  // siempre al precio/hora de la cancha.
   tarifasHabilitadas = true,
+  // Opcional: clases de Academia (solo para mostrar el coach en los bloques
+  // ocupados por una Clase). Sin esta prop el bloque dice "Clase" igual.
+  academiaClases = [],
 }) {
   const toast = useToast();
   const canchasDisponibles = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
-  // Directorio CRM ya cargado en App() — se usa para el autocompletado del
-  // campo Jugador y para resolver el cruce por teléfono en el cliente sin ida
-  // y vuelta a Supabase (ver `resolverJugadorId`).
+  // Directorio CRM ya cargado en App() — autocompletado del nombre y cruce
+  // por teléfono en el cliente (ver `resolverJugadorId`).
   const directorioJugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
 
-  const [canchaId, setCanchaId] = useState(canchaInicial?.id || canchasDisponibles[0]?.id || '');
+  const [canchaId, setCanchaId] = useState(canchaInicial?.id ?? canchasDisponibles[0]?.id ?? '');
   const [jugador, setJugador] = useState('');
   const [telefono, setTelefono] = useState('');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
-  const [fecha, setFecha] = useState(fechaInicial || hoyISO());
+  // Bloqueo de fechas pasadas (igual que el Portal): si el modal se abre
+  // desde un día anterior de la Parrilla, arranca en hoy.
+  const [fecha, setFecha] = useState(() => {
+    const inicial = fechaInicial || hoyISO();
+    return inicial < hoyISO() ? hoyISO() : inicial;
+  });
+  const [turnoFiltro, setTurnoFiltro] = useState('todos');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+  const [intentoGuardar, setIntentoGuardar] = useState(false);
 
-  // Selector de Duración (1 Hora / 2 Horas, mejora) — antes Hora Fin era
-  // SIEMPRE Hora Inicio + `duracionReservaMinutos` (el bloque fijo del
-  // club), sin ninguna forma de elegir otra duración para ESTA reserva
-  // puntual — si el club tenía configurado 120 min, el operador quedaba
-  // atado a reservas de 2 horas siempre, sin poder ofrecer 1 hora sencilla
-  // (y viceversa). Mismo criterio que el Portal
-  // (`ModalReservarCancha.permiteDosHoras`): cuando el bloque base del club
-  // es de 60 O 120 minutos, el operador puede elegir manualmente entre "1
-  // Hora" y "2 Horas" — para cualquier otra duración base (90 min) se
-  // mantiene el comportamiento de siempre, una sola duración fija sin
-  // selector (ese caso no forma parte de esta mejora).
+  // Selector de Duración (1 Hora / 2 Horas) — mismo criterio que el Portal:
+  // con bloque base de 60 o 120 min se elige entre 1 y 2 horas; con
+  // cualquier otro (90 min) la duración es fija.
   const permiteDosHoras = duracionReservaMinutos === 60 || duracionReservaMinutos === 120;
   const duracionesPermitidas = useMemo(() => {
     if (permiteDosHoras) return DURACIONES_RENTA.filter((d) => d.horas === 1 || d.horas === 2);
     const exactas = DURACIONES_RENTA.filter((d) => Math.round(d.horas * 60) === duracionReservaMinutos);
     return exactas.length > 0 ? exactas : DURACIONES_RENTA;
   }, [duracionReservaMinutos, permiteDosHoras]);
-  const [duracionSeleccionadaHoras, setDuracionSeleccionadaHoras] = useState(duracionReservaMinutos / 60);
+  const [duracionHoras, setDuracionHoras] = useState(duracionReservaMinutos / 60);
   useEffect(() => {
-    setDuracionSeleccionadaHoras((actual) =>
-      duracionesPermitidas.some((d) => d.horas === actual) ? actual : duracionReservaMinutos / 60
-    );
+    setDuracionHoras((actual) => (duracionesPermitidas.some((d) => d.horas === actual) ? actual : duracionReservaMinutos / 60));
   }, [duracionReservaMinutos, duracionesPermitidas]);
-  // Minutos de la duración ELEGIDA (no siempre igual a `duracionReservaMinutos`
-  // — ver arriba): esto es lo que ahora manda para Hora Fin/opciones de Hora
-  // Inicio, en vez del bloque fijo crudo del club.
-  const duracionMinutosElegida = Math.round(duracionSeleccionadaHoras * 60);
+  const duracionMin = Math.round(duracionHoras * 60);
 
-  // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
-  // Academia", migracion_v42, corrección de consistencia): Hora Inicio ya
-  // NO se elige entre franjas genéricas de 30 min (`SLOT_MIN`) — las
-  // opciones del selector ahora son múltiplos exactos de la duración
-  // ELEGIDA (`duracionMinutosElegida`, arriba) a partir de la apertura del
-  // club. `horaInicial` puede venir del Cronograma (celdas cada 30 min,
-  // `SLOT_MIN`) — `alinearABloque` la recorta hacia abajo al múltiplo válido
-  // más cercano para que el valor inicial del `<select>` siempre exista
-  // entre las opciones generadas.
-  const [horaInicio, setHoraInicio] = useState(() => {
-    const deseada = parseHoraAMinutos(horaInicial) ?? Math.max(9 * 60, horaAperturaMin);
-    const bloques = minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionMinutosElegida);
-    if (bloques.length === 0) return minutosAHora(horaAperturaMin);
-    const alineada = alinearABloque(deseada, horaAperturaMin, duracionMinutosElegida);
-    return minutosAHora(Math.min(alineada, bloques[bloques.length - 1]));
-  });
-  // Si el operador cambia la Duración después de abrir el modal, Hora
-  // Inicio se realinea sola al múltiplo válido más cercano de la nueva
-  // duración (nunca se deja un valor fuera de las opciones del `<select>`).
-  useEffect(() => {
-    setHoraInicio((actual) => {
-      const bloques = minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionMinutosElegida);
-      if (bloques.length === 0) return actual;
-      const actualMin = parseHoraAMinutos(actual);
-      if (actualMin !== null && bloques.includes(actualMin)) return actual;
-      const alineada = alinearABloque(actualMin ?? horaAperturaMin, horaAperturaMin, duracionMinutosElegida);
-      return minutosAHora(Math.min(alineada, bloques[bloques.length - 1]));
+  // Bloque elegido (Hora Inicio). Si el modal se abrió desde una celda de la
+  // Parrilla (`horaInicial`), se preselecciona SOLO si ese bloque está libre
+  // (ver el efecto de abajo) — nunca se elige un horario "al azar" por el
+  // operador.
+  const [horaInicio, setHoraInicio] = useState('');
+  const horaInicialPendiente = useRef(horaInicial || null);
+
+  const canchaSeleccionada = canchas.find((c) => mismoId(c.id, canchaId)) || null;
+
+  /* ---- Parrilla de bloques (misma fuente que el Portal) ---- */
+  const pasoGridMin = Math.min(duracionReservaMinutos, duracionMin);
+  const franjasBase = useMemo(
+    () =>
+      canchaSeleccionada
+        ? franjasDelDiaConEstado(canchaSeleccionada.id, fecha, duracionHoras, reservas || [], academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin)
+        : [],
+    [canchaSeleccionada, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin]
+  );
+  const esHoy = fecha === hoyISO();
+  const franjas = useMemo(() => {
+    if (!esHoy) return franjasBase.map((f) => ({ ...f, pasado: false }));
+    const ahoraMin = minutosAhora();
+    return franjasBase.map((f) => ({ ...f, pasado: (parseHoraAMinutos(f.horaInicio) || 0) < ahoraMin }));
+  }, [franjasBase, esHoy]);
+  const franjasDelTurno = useMemo(() => {
+    const turno = TURNOS_RESERVA_PORTAL.find((t) => t.id === turnoFiltro) || TURNOS_RESERVA_PORTAL[0];
+    return franjas.filter((f) => {
+      const min = parseHoraAMinutos(f.horaInicio) || 0;
+      return min >= turno.desde && min < turno.hasta;
     });
+  }, [franjas, turnoFiltro]);
+  const franjasLibres = useMemo(() => franjas.filter((f) => !f.ocupado && !f.pasado), [franjas]);
+  const conteoPorTurno = useMemo(() => {
+    const conteo = {};
+    TURNOS_RESERVA_PORTAL.forEach((t) => {
+      conteo[t.id] = franjasLibres.filter((f) => {
+        const min = parseHoraAMinutos(f.horaInicio) || 0;
+        return min >= t.desde && min < t.hasta;
+      }).length;
+    });
+    return conteo;
+  }, [franjasLibres]);
+
+  // Indicador de demanda (mismo cálculo que el Portal).
+  const ocupacionPct = franjas.length > 0 ? Math.round((franjas.filter((f) => f.ocupado).length / franjas.length) * 100) : 0;
+  const demanda =
+    ocupacionPct >= 80
+      ? { etiqueta: 'Alta Demanda', clases: 'bg-rose-400/10 text-rose-400 ring-1 ring-rose-400/30' }
+      : ocupacionPct >= 40
+      ? { etiqueta: 'Demanda Media', clases: 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30' }
+      : { etiqueta: 'Alta Disponibilidad', clases: 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30' };
+
+  // Si el bloque elegido deja de estar libre (cambio de cancha/fecha/
+  // duración, o una reserva nueva que llega por Realtime), se limpia la
+  // selección. La primera vez, intenta preseleccionar `horaInicial`.
+  useEffect(() => {
+    if (horaInicialPendiente.current) {
+      const deseada = parseHoraAMinutos(horaInicialPendiente.current);
+      const libre = franjasLibres.find((f) => parseHoraAMinutos(f.horaInicio) === deseada);
+      horaInicialPendiente.current = null;
+      if (libre) {
+        setHoraInicio(libre.horaInicio);
+        return;
+      }
+    }
+    if (horaInicio && !franjasLibres.some((f) => f.horaInicio === horaInicio)) setHoraInicio('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [duracionMinutosElegida]);
-  // Opciones de Hora Inicio — múltiplos exactos de la duración ELEGIDA
-  // dentro del Horario de Operación del Club (item 4), nunca los 30 min
-  // genéricos de siempre (`SLOT_MIN`, que solo sigue usando la cuadrícula
-  // visual del Cronograma, no este formulario). Misma fuente
-  // (`minutosBloquesEnRango`) que el valor inicial de arriba, para que el
-  // `<select>` controlado nunca quede en un valor fuera de sus propias
-  // opciones.
-  const opcionesHoraInicio = useMemo(() => {
-    return minutosBloquesEnRango(horaAperturaMin, horaCierreMin, duracionMinutosElegida).map(minutosAHora);
-  }, [horaAperturaMin, horaCierreMin, duracionMinutosElegida]);
-  // Hora Fin — derivada, nunca editable a mano DIRECTAMENTE: Hora Inicio +
-  // duración ELEGIDA (selector de arriba), recortada al cierre del club
-  // como último respaldo defensivo.
-  const horaFin = useMemo(() => {
-    const ini = parseHoraAMinutos(horaInicio);
-    if (ini === null) return '';
-    return minutosAHora(Math.min(ini + duracionMinutosElegida, horaCierreMin));
-  }, [horaInicio, duracionMinutosElegida, horaCierreMin]);
-  const [monto, setMonto] = useState('');
-  const [montoTocado, setMontoTocado] = useState(false);
-  const [guardando, setGuardando] = useState(false);
-  const [error, setError] = useState('');
+  }, [franjasLibres]);
 
-  const canchaSeleccionada = canchas.find((c) => c.id === canchaId);
-  // `precioPorHoraDeCancha` ya resuelve el respaldo (por nombre de cancha, o
-  // el genérico) cuando `precio_por_hora` viene null/undefined/0 desde
-  // Supabase — así el cálculo nunca se queda en $0 por un dato faltante.
-  const precioPorHora = canchaSeleccionada ? precioPorHoraDeCancha(canchaSeleccionada) : 0;
-  // Precio estándar de cualquier horario = EXACTAMENTE el `precio_por_hora`
-  // de la cancha elegida (editable en su tarjeta de la Parrilla). No existe
-  // una "Tarifa Base" global del club: cada cancha define su precio de forma
-  // 100% independiente.
-  const precioBaseEfectivo = precioPorHora;
+  // Al cambiar de fecha, vuelve al filtro "Todos".
+  useEffect(() => {
+    setTurnoFiltro('todos');
+  }, [fecha]);
 
-  // Duración válida en horas (null si la hora de fin todavía no supera a la
-  // de inicio) — misma regla que `validar()`, aquí solo para el cálculo.
-  const duracionHoras = useMemo(() => {
-    const ini = parseHoraAMinutos(horaInicio);
-    const fin = parseHoraAMinutos(horaFin);
-    if (ini === null || fin === null || fin <= ini) return null;
-    return Number(((fin - ini) / 60).toFixed(2));
-  }, [horaInicio, horaFin]);
-
-  // Tarifas Dinámicas por Franja Horaria (Peak & Off-Peak Pricing,
-  // migracion_v43) — solo las franjas activas para el día de la semana de
-  // la `fecha` elegida (`Date.prototype.getDay()`, mismo criterio que
-  // `diaSemanaDeFecha`).
+  /* ---- Tarifa automática (no editable) ---- */
   const tarifasDelDia = useMemo(() => {
     if (!tarifasHabilitadas) return [];
     const dow = fecha ? new Date(`${fecha}T12:00:00`).getDay() : null;
     return dow === null ? [] : tarifasActivasDelDia(tarifasHorarios, dow);
   }, [tarifasHorarios, fecha, tarifasHabilitadas]);
-
-  // Monto = franja de "Tarifas y Franjas Horarias" que cubra por completo el
-  // bloque de Hora Inicio–Hora Fin (si hay una configurada para esa hora y
-  // ese día), o si no, el precio/hora de la cancha
-  // (`calcularPrecioReserva`, ver su comentario para el detalle del
-  // criterio de "cobertura completa").
-  const montoCalculado =
-    duracionHoras !== null
-      ? calcularPrecioReserva(horaInicio, Math.round(duracionHoras * 60), tarifasDelDia, precioBaseEfectivo)
-      : null;
-
-  // Monto automático = duración × precio_por_hora de la cancha elegida. Se
-  // recalcula solo al abrir el modal, al cambiar de cancha, o al mover la
-  // hora de inicio/fin — SIEMPRE que el recepcionista no lo haya editado a
-  // mano (`montoTocado`), para que un ajuste manual (descuento, promoción)
-  // nunca se pise solo.
-  useEffect(() => {
-    if (montoTocado || montoCalculado === null) return;
-    setMonto(String(montoCalculado));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [montoCalculado, montoTocado]);
-
-  function validar() {
-    if (!canchaId) return 'Selecciona una cancha.';
-    if (!fecha) return 'Selecciona una fecha.';
-    if (!horaInicio || !horaFin) return 'Indica la hora de inicio y fin.';
-    const ini = parseHoraAMinutos(horaInicio);
-    const fin = parseHoraAMinutos(horaFin);
-    if (ini === null || fin === null || fin <= ini) return 'La hora de fin debe ser posterior a la hora de inicio.';
-    return '';
+  // Precio estándar = `precio_por_hora` de la cancha elegida (no existe una
+  // "Tarifa Base" global del club).
+  const precioPorHora = canchaSeleccionada ? precioPorHoraDeCancha(canchaSeleccionada) : 0;
+  // Precio TOTAL del bloque — idéntico a `precioDelBloque` del Portal: con 2
+  // horas es la suma de 2 tarifas horarias independientes (cada hora puede
+  // caer en una franja distinta).
+  function precioDelBloque(hora) {
+    if (permiteDosHoras && duracionHoras === 2) {
+      const horaSegunda = minutosAHora((parseHoraAMinutos(hora) || 0) + 60);
+      return (
+        Math.round(
+          (calcularPrecioReserva(hora, 60, tarifasDelDia, precioPorHora) + calcularPrecioReserva(horaSegunda, 60, tarifasDelDia, precioPorHora)) * 100
+        ) / 100
+      );
+    }
+    return calcularPrecioReserva(hora, duracionMin, tarifasDelDia, precioPorHora);
   }
+  const horaFin = horaInicio ? minutosAHora(Math.min((parseHoraAMinutos(horaInicio) || 0) + duracionMin, horaCierreMin)) : '';
+  const montoAutomatico = horaInicio ? precioDelBloque(horaInicio) : null;
+  // ¿El precio del bloque viene de una franja dinámica (pico/valle) o del
+  // precio/hora estándar de la cancha?
+  const esTarifaDinamica = montoAutomatico !== null && Math.abs(montoAutomatico - Math.round(duracionHoras * precioPorHora * 100) / 100) > 0.005;
+
+  /* ---- Cliente / CRM ---- */
+  const digitosTelefono = telefono.replace(/\D/g, '');
+  // Acepta "+52 55 1234 5678" (12 dígitos con lada de país): se usan los
+  // últimos 10, igual que `claveTelefono`.
+  const telefono10 = digitosTelefono.length === 12 && digitosTelefono.startsWith('52') ? digitosTelefono.slice(2) : digitosTelefono;
+  const telefonoValido = telefono10.length === 10;
+  const clienteCRM = useMemo(() => {
+    if (!telefonoValido) return null;
+    return directorioJugadores.find((j) => claveTelefono(j?.telefono) === telefono10) || null;
+  }, [directorioJugadores, telefono10, telefonoValido]);
+  // Teléfono de un cliente ya registrado y nombre vacío → se completa solo.
+  useEffect(() => {
+    if (clienteCRM && !jugador.trim() && clienteCRM.nombre) setJugador(clienteCRM.nombre);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clienteCRM]);
+
+  const faltantes = [];
+  if (!canchaSeleccionada) faltantes.push('cancha');
+  if (!horaInicio) faltantes.push('horario');
+  if (!jugador.trim()) faltantes.push('nombre');
+  if (!telefonoValido) faltantes.push('teléfono');
+  const listo = faltantes.length === 0;
 
   async function guardar() {
-    const problema = validar();
-    if (problema) {
-      setError(problema);
-      return;
-    }
+    setIntentoGuardar(true);
+    if (!canchaSeleccionada) return setError('Selecciona una cancha.');
+    if (!fecha || fecha < hoyISO()) return setError('Elige una fecha de hoy en adelante.');
+    if (!horaInicio || !horaFin) return setError('Elige un horario libre en la parrilla.');
+    if (!jugador.trim()) return setError('Escribe el nombre del jugador.');
+    if (!telefonoValido) return setError('El teléfono debe tener 10 dígitos.');
 
-    // Anti-encimado: ni una reserva normal ni un bloqueo de Torneo/Reta
-    // pueden compartir cancha+fecha+horario con algo que ya esté ahí — se
-    // avisa con un toast además del texto en línea, ya que es un choque de
-    // agenda y no solo un campo mal llenado.
-    const solape = buscarSolapeEnCancha(reservas || [], canchaId, fecha, horaInicio, horaFin);
+    // Anti-encimado (última barrera, por si otra reserva entró por Realtime
+    // entre que se eligió el bloque y se confirmó).
+    const solape = buscarSolapeEnCancha(reservas || [], canchaSeleccionada.id, fecha, horaInicio, horaFin);
     if (solape) {
       const mensaje =
         solape.estado === 'Torneo' || solape.estado === 'Reta'
           ? 'La cancha está ocupada por un Torneo/Reta en ese horario.'
           : 'Esa cancha ya tiene una reserva en ese horario.';
       setError(mensaje);
+      setHoraInicio('');
       toast({ titulo: mensaje, tono: 'aviso' });
       return;
     }
@@ -7953,16 +7969,14 @@ function ModalNuevaReserva({
     setGuardando(true);
     setError('');
 
-    // Si ya viene de una selección del directorio (`SelectorJugadorRegistrado`)
-    // se usa ese id directo — evita una resolución redundante y respeta el
-    // expediente exacto elegido; si no, se resuelve por teléfono (identificador
-    // único del CRM) y, en su defecto, por nombre.
-    const jugadorId = jugadorSeleccionadoId || (await resolverJugadorId(jugador, { telefono, directorio: directorioJugadores }));
-    // Nunca mandar null aquí: `reservas.jugador_nombre` es NOT NULL en el esquema actual.
+    // Vinculación al CRM: expediente elegido del directorio, o cruce por
+    // teléfono (identificador único del cliente) — `resolverJugadorId`
+    // busca/crea el jugador con ese teléfono.
+    const jugadorId = jugadorSeleccionadoId || (await resolverJugadorId(jugador, { telefono: telefono10, directorio: directorioJugadores }));
     const nombreJugador = jugador.trim() || 'Jugador';
 
     const payload = withClubId({
-      cancha_id: canchaId,
+      cancha_id: canchaSeleccionada.id,
       jugador_id: jugadorId,
       jugador_nombre: nombreJugador,
       fecha,
@@ -7971,7 +7985,8 @@ function ModalNuevaReserva({
       estado: 'Reservada',
       estado_pago: 'pendiente',
       metodo_pago: null,
-      monto_total: monto ? Number(monto) : 0,
+      // Tarifa automática del sistema — nunca capturada a mano.
+      monto_total: montoAutomatico ?? 0,
     });
 
     const { data, error: err } = await supabase.from('reservas').insert(payload).select().single();
@@ -7986,156 +8001,245 @@ function ModalNuevaReserva({
     const reservaCreada = { ...data, jugador_nombre: data.jugador_nombre || nombreJugador };
     toast({
       titulo: 'Reserva creada — cóbrala en Smart POS',
-      detalle: `${canchaSeleccionada?.nombre || 'Cancha'} · ${formatoHora12(horaInicio)}`,
+      detalle: `${canchaSeleccionada.nombre || 'Cancha'} · ${formatoHora12(horaInicio)} · ${formatoMoneda(montoAutomatico ?? 0)}`,
     });
-
-    // Control Interno — "Aplicación de descuentos manuales": si el monto
-    // final quedó distinto del automático (duración × precio/hora), se
-    // registra sin importar si subió o bajó — el detalle trae ambos montos
-    // para que el Log de Actividad muestre el contexto completo.
-    if (montoTocado && montoCalculado !== null && Number(monto) !== montoCalculado) {
-      onRegistrarAuditoria?.('descuento_manual', {
-        origen: `Reserva — ${canchaSeleccionada?.nombre || 'Cancha'}`,
-        montoAutomatico: montoCalculado,
-        montoFinal: Number(monto) || 0,
-        diferencia: Math.round(((Number(monto) || 0) - montoCalculado) * 100) / 100,
-      });
-    }
-
     onCreada(reservaCreada, canchaSeleccionada);
     onClose();
   }
 
+  const claseChip = (activo) =>
+    `rounded-full border px-3 py-1 text-[11px] font-bold transition ${
+      activo ? 'border-orange-400/60 bg-orange-400/15 text-orange-500' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
+    }`;
+  const etiquetaPaso = (n, texto) => (
+    <p className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-slate-500">
+      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-400/15 text-[10px] text-orange-500">{n}</span>
+      {texto}
+    </p>
+  );
+
   return (
-    <ModalShell titulo="Nueva Reserva" subtitulo="Mostrador / Teléfono — solo agenda" onClose={onClose} icon={Plus} ancho="max-w-xl">
-      <div className="space-y-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Campo label="Jugador">
-            <SelectorJugadorRegistrado
-              jugadores={directorioJugadores}
-              nombre={jugador}
-              onNombreChange={setJugador}
-              jugadorSeleccionadoId={jugadorSeleccionadoId}
-              onSeleccionarJugador={(j) => {
-                setJugadorSeleccionadoId(j?.id || null);
-                if (j?.telefono) setTelefono(j.telefono);
-              }}
-              placeholder="Nombre del jugador"
-            />
-          </Campo>
-          <Campo label="Cancha">
-            <select value={canchaId} onChange={(e) => setCanchaId(e.target.value)} className={inputClase}>
-              {canchasDisponibles.length === 0 && <option value="">Sin canchas activas</option>}
-              {canchasDisponibles.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.nombre}
-                  {normalizarTipoCancha(c.tipo) ? ` · ${normalizarTipoCancha(c.tipo)}` : ''}
-                </option>
-              ))}
-            </select>
-          </Campo>
-        </div>
-
-        {/* Teléfono: identificador único del CRM (`resolverJugadorId`) — al
-            capturarlo aquí, la reserva se cruza/crea en `jugadores` por
-            teléfono en vez de por nombre, evitando duplicar u fusionar por
-            error a clientes que comparten nombre. */}
-        <Campo label="Teléfono (identificador del cliente en el CRM)">
-          <input
-            value={telefono}
-            onChange={(e) => {
-              setTelefono(e.target.value);
-              if (jugadorSeleccionadoId) setJugadorSeleccionadoId(null);
-            }}
-            className={inputClase}
-            placeholder="10 dígitos — ej. 55 1234 5678"
-            inputMode="tel"
-          />
-        </Campo>
-
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <Campo label="Fecha">
-            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
-          </Campo>
-          {/* Selectores desplegables de Hora Inicio/Duración (item 2, Turno
-              nuevo; corrección de consistencia migracion_v42; Selector de
-              Duración, mejora): Hora Inicio ofrece únicamente múltiplos de
-              la duración ELEGIDA — nunca los 30 min genéricos de antes —
-              dentro del Horario de Operación del Club configurado (item 4).
-              Hora Fin ya NO es un campo fijo/derivado sin edición: el
-              operador elige manualmente "1 Hora" o "2 Horas" (cuando el
-              bloque base del club lo permite, ver `permiteDosHoras` arriba)
-              y Hora Fin/el Monto se recalculan solos. */}
-          <Campo label="Hora inicio">
-            <select value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase}>
-              {opcionesHoraInicio.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
-          </Campo>
-          <Campo label="Hora fin / Duración" hint={horaFin ? `Termina a las ${horaFin}` : undefined}>
-            <select
-              value={duracionSeleccionadaHoras}
-              onChange={(e) => setDuracionSeleccionadaHoras(Number(e.target.value))}
-              disabled={duracionesPermitidas.length <= 1}
-              className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-70`}
-            >
-              {duracionesPermitidas.map((d) => (
-                <option key={d.horas} value={d.horas}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
-          </Campo>
-        </div>
-
-        <Campo label="Monto (MXN)">
-          <input
-            type="number"
-            min="0"
-            value={monto}
-            onChange={(e) => {
-              setMontoTocado(true);
-              setMonto(e.target.value);
-            }}
-            className={inputClase}
-            placeholder="0"
-          />
-          {montoCalculado !== null && (
-            <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-slate-500">
-              <span>
-                Automático: {duracionHoras}h × {formatoMoneda(precioPorHora)}/hr = {formatoMoneda(montoCalculado)}
-              </span>
-              {montoTocado && Number(monto) !== montoCalculado && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMontoTocado(false);
-                    setMonto(String(montoCalculado));
-                  }}
-                  className="font-bold text-orange-400 transition hover:underline"
-                >
-                  Usar este monto
-                </button>
-              )}
-            </p>
+    <ModalShell titulo="Nueva Reserva" subtitulo="Mostrador / Teléfono — elige un horario libre y cobra en Smart POS" onClose={onClose} icon={Plus} ancho="max-w-2xl">
+      <div className="space-y-5">
+        {/* 1) Cancha */}
+        <section>
+          {etiquetaPaso(1, 'Cancha')}
+          {canchasDisponibles.length === 0 ? (
+            <p className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-500">No hay canchas activas.</p>
+          ) : (
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {canchasDisponibles.map((c) => {
+                const activa = mismoId(c.id, canchaId);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setCanchaId(c.id)}
+                    aria-pressed={activa}
+                    className={`shrink-0 rounded-xl border px-3.5 py-2 text-left transition ${
+                      activa ? 'border-2 border-orange-500 bg-white ring-2 ring-orange-500/20' : 'border-slate-200 bg-white hover:border-orange-400/50'
+                    }`}
+                  >
+                    <span className="block text-xs font-black text-slate-900">{c.nombre}</span>
+                    <span className="block text-[10px] font-semibold text-slate-500">
+                      {normalizarTipoCancha(c.tipo) ? `${normalizarTipoCancha(c.tipo)} · ` : ''}
+                      {formatoMoneda(precioPorHoraDeCancha(c))}/h
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           )}
-        </Campo>
+        </section>
 
-        <p className="flex items-start gap-1.5 rounded-lg bg-sky-400/10 px-3 py-2 text-xs font-semibold text-sky-300 ring-1 ring-sky-400/20">
-          <Info size={13} className="mt-0.5 shrink-0" /> Esto solo agenda el espacio. El cobro (Efectivo, Tarjeta, SPEI o Dividir Cuenta) se
-          hace enseguida en Smart POS.
-        </p>
+        {/* 2) Fecha y duración */}
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <div>
+            {etiquetaPaso(2, 'Fecha')}
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="date"
+                min={hoyISO()}
+                value={fecha}
+                onChange={(e) => {
+                  const valor = e.target.value;
+                  setFecha(valor && valor < hoyISO() ? hoyISO() : valor || hoyISO());
+                }}
+                onClick={(e) => e.target.showPicker && e.target.showPicker()}
+                className={`${inputClase} w-auto min-w-[10.5rem] cursor-pointer`}
+              />
+              <button type="button" onClick={() => setFecha(hoyISO())} className={claseChip(fecha === hoyISO())}>
+                Hoy
+              </button>
+              <button type="button" onClick={() => setFecha(sumarDia(hoyISO(), 1))} className={claseChip(fecha === sumarDia(hoyISO(), 1))}>
+                Mañana
+              </button>
+            </div>
+            <p className="mt-1.5 text-[11px] font-semibold capitalize text-slate-500">{formatoFechaLarga(fecha)}</p>
+          </div>
+          <div>
+            <p className="mb-2 text-[11px] font-black uppercase tracking-wide text-slate-500">Duración</p>
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+              {duracionesPermitidas.map((d) => (
+                <button
+                  key={d.horas}
+                  type="button"
+                  onClick={() => setDuracionHoras(d.horas)}
+                  disabled={duracionesPermitidas.length <= 1}
+                  className={`rounded-md px-3 py-1.5 text-xs font-bold transition disabled:cursor-default ${
+                    duracionHoras === d.horas ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {d.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
 
-        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        {/* 3) Parrilla visual de horarios */}
+        <section>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            {etiquetaPaso(3, 'Horario')}
+            {franjas.length > 0 && (
+              <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${demanda.clases}`}>
+                {demanda.etiqueta} • {ocupacionPct}% ocupado
+              </span>
+            )}
+          </div>
+          <div className="mb-2.5 flex gap-1.5 overflow-x-auto pb-0.5">
+            {TURNOS_RESERVA_PORTAL.map((t) => (
+              <button key={t.id} type="button" onClick={() => setTurnoFiltro(t.id)} className={`shrink-0 ${claseChip(turnoFiltro === t.id)}`}>
+                {t.label}
+                <span className="ml-1 font-semibold opacity-70">{conteoPorTurno[t.id] ?? 0}</span>
+              </button>
+            ))}
+          </div>
+          {franjas.length === 0 ? (
+            <p className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-500">
+              No hay horarios para {duracionHoras}h ese día dentro del horario de operación del club.
+            </p>
+          ) : franjasDelTurno.length === 0 ? (
+            <p className="rounded-lg border border-slate-300 bg-slate-100/60 px-3 py-2 text-xs font-semibold text-slate-500">Sin horarios en este turno — prueba otro.</p>
+          ) : (
+            <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
+              {franjasDelTurno.map((f) => {
+                const seleccionado = f.horaInicio === horaInicio;
+                const bloqueado = f.ocupado || f.pasado;
+                const estilo = ESTILO_OCUPACION_SLOT[f.tipo] || ESTILO_OCUPACION_SLOT.disponible;
+                const etiqueta = f.pasado ? 'Pasado' : f.tipo === 'clase' ? `Clase${f.coachNombre ? ` · ${f.coachNombre}` : ''}` : estilo.etiqueta;
+                const precioSlot = bloqueado ? null : precioDelBloque(f.horaInicio);
+                return (
+                  <button
+                    key={f.horaInicio}
+                    type="button"
+                    disabled={bloqueado}
+                    onClick={() => {
+                      setHoraInicio(f.horaInicio);
+                      setError('');
+                    }}
+                    aria-pressed={seleccionado}
+                    title={bloqueado ? `${formatoHora12(f.horaInicio)} · ${etiqueta}` : `${formatoHora12(f.horaInicio)} – ${formatoHora12(f.horaFin)} · ${formatoMoneda(precioSlot)}`}
+                    className={`flex min-w-0 flex-col items-center gap-0.5 rounded-lg border px-1.5 py-2 text-center transition ${
+                      bloqueado
+                        ? 'cursor-not-allowed border-slate-200 bg-slate-200/60 text-slate-400'
+                        : seleccionado
+                        ? 'border-2 border-orange-500 bg-white font-semibold text-slate-900 ring-2 ring-orange-500/30'
+                        : 'border-slate-200 bg-white font-semibold text-slate-900 hover:border-orange-400/60'
+                    }`}
+                  >
+                    <span className={`text-[11px] font-bold ${bloqueado ? 'line-through' : ''}`}>{formatoHora12(f.horaInicio)}</span>
+                    {bloqueado ? (
+                      <span className="max-w-full truncate text-[9px] font-semibold">{etiqueta}</span>
+                    ) : (
+                      <span className={`text-[10px] font-bold ${seleccionado ? 'text-orange-500' : 'text-slate-500'}`}>{formatoMoneda(precioSlot)}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {intentoGuardar && !horaInicio && <p className="mt-1.5 text-[11px] font-semibold text-rose-500">Elige un horario libre.</p>}
+        </section>
 
-        <div className="flex justify-end gap-2 pt-2">
+        {/* 4) Datos del cliente */}
+        <section>
+          {etiquetaPaso(4, 'Datos del cliente')}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Campo label="Nombre del jugador">
+              <SelectorJugadorRegistrado
+                jugadores={directorioJugadores}
+                nombre={jugador}
+                onNombreChange={setJugador}
+                jugadorSeleccionadoId={jugadorSeleccionadoId}
+                onSeleccionarJugador={(j) => {
+                  setJugadorSeleccionadoId(j?.id || null);
+                  if (j?.telefono) setTelefono(j.telefono);
+                }}
+                placeholder="Nombre y apellido"
+              />
+              {intentoGuardar && !jugador.trim() && <p className="mt-1 text-[11px] font-semibold text-rose-500">Escribe el nombre.</p>}
+            </Campo>
+            {/* Teléfono: identificador único del cliente en el CRM
+                (`resolverJugadorId` cruza/crea el expediente por teléfono). */}
+            <Campo label="Teléfono (10 dígitos)">
+              <input
+                value={telefono}
+                onChange={(e) => {
+                  setTelefono(e.target.value.replace(/[^\d\s+()-]/g, '').slice(0, 18));
+                  if (jugadorSeleccionadoId) setJugadorSeleccionadoId(null);
+                }}
+                className={`${inputClase} ${intentoGuardar && !telefonoValido ? 'border-rose-400' : ''}`}
+                placeholder="55 1234 5678"
+                inputMode="tel"
+                autoComplete="off"
+              />
+              {telefono && !telefonoValido ? (
+                <p className="mt-1 text-[11px] font-semibold text-rose-500">{telefono10.length}/10 dígitos</p>
+              ) : telefonoValido ? (
+                <p className={`mt-1 text-[11px] font-semibold ${clienteCRM ? 'text-emerald-500' : 'text-slate-500'}`}>
+                  {clienteCRM ? `Cliente del CRM: ${clienteCRM.nombre || 'sin nombre'}` : 'Cliente nuevo — se registra en el CRM con este teléfono'}
+                </p>
+              ) : (
+                intentoGuardar && <p className="mt-1 text-[11px] font-semibold text-rose-500">El teléfono es obligatorio.</p>
+              )}
+            </Campo>
+          </div>
+        </section>
+
+        {/* Resumen con tarifa automática (solo lectura) */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="min-w-0 text-xs text-slate-600">
+              <p className="font-black text-slate-900">
+                {canchaSeleccionada?.nombre || 'Cancha'}
+                {horaInicio ? ` · ${formatoHora12(horaInicio)} – ${formatoHora12(horaFin)}` : ''}
+              </p>
+              <p className="mt-0.5 capitalize">
+                {formatoFechaLarga(fecha)} · {duracionesPermitidas.find((d) => d.horas === duracionHoras)?.label || `${duracionHoras} h`}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Total {esTarifaDinamica ? '· tarifa por franja' : '· tarifa estándar'}
+              </p>
+              <p className="text-2xl font-black leading-tight text-slate-900">{montoAutomatico !== null ? formatoMoneda(montoAutomatico) : '—'}</p>
+            </div>
+          </div>
+          <p className="mt-2 flex items-start gap-1.5 text-[11px] font-semibold text-slate-500">
+            <Info size={13} className="mt-0.5 shrink-0 text-sky-500" /> Precio fijado por el sistema según la tarifa de la cancha y la franja horaria. El cobro
+            (Efectivo, Tarjeta, SPEI o Dividir Cuenta) se hace enseguida en Smart POS.
+          </p>
+        </div>
+
+        {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
+
+        <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
+          {!listo && <p className="text-[11px] font-semibold text-slate-400 sm:mr-auto">Falta: {faltantes.join(', ')}</p>}
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={guardar} disabled={guardando || canchasDisponibles.length === 0}>
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <DollarSign size={15} />}
-            Reservar y Cobrar en POS
+            Reservar y Cobrar en POS{montoAutomatico !== null ? ` · ${formatoMoneda(montoAutomatico)}` : ''}
           </BotonPrimario>
         </div>
       </div>
