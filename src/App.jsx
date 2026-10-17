@@ -12812,7 +12812,10 @@ function TarjetaCuentaAbierta({ grupo, onLiquidar, liquidando }) {
           </p>
         </div>
         <span className="whitespace-nowrap rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-400 ring-1 ring-amber-400/30">
-          {grupo.ventas.length} {grupo.ventas.length === 1 ? 'ticket' : 'tickets'}
+          {/* `numTickets` solo lo trae "Reservas Pendientes de Pago en
+              Recepción"; Cuentas Abiertas y Tienda Web siguen contando sus
+              `ventas` igual que siempre. */}
+          {grupo.numTickets ?? grupo.ventas.length} {(grupo.numTickets ?? grupo.ventas.length) === 1 ? 'ticket' : 'tickets'}
         </span>
       </div>
 
@@ -15649,13 +15652,22 @@ function ModuloSmartPOS({
           // se recalcula aquí con las otras 2 columnas opcionales, con
           // fallback final a `monto_total` a secas para reservas viejas que
           // se hayan creado antes de este fix y no tengan ninguna.
+          //
+          // FIX "$0 pendiente" (reservas de mostrador, modal "Nueva Reserva"):
+          // esas reservas NO escriben `saldo_pendiente` — la columna existe
+          // (la llena el Portal) y Supabase le pone su default (0), así que
+          // antes el total salía $0 aunque el desglose dijera "Renta Norte
+          // $500". Ahora `saldo_pendiente` solo manda cuando trae un monto
+          // > 0; si viene vacío o en 0 se usa el cálculo de las columnas
+          // (`monto_total` + `monto_addons` − `saldo_wallet_aplicado`) —
+          // mismo monto que cobra `ModalLiquidarCuenta`
+          // (`itemsEditablesDeGrupo`). Una reserva del Portal cubierta 100%
+          // con Wallet sigue dando $0 por las dos vías.
           const montoCancha = Number(r.monto_total) || 0;
           const montoAddons = Number(r.monto_addons) || 0;
           const walletAplicado = Number(r.saldo_wallet_aplicado) || 0;
-          const tieneDesglose = r.monto_addons != null || r.saldo_wallet_aplicado != null || r.saldo_pendiente != null;
-          total = tieneDesglose
-            ? Math.max(0, r.saldo_pendiente != null ? Number(r.saldo_pendiente) || 0 : montoCancha + montoAddons - walletAplicado)
-            : montoCancha;
+          const saldoGuardado = Number(r.saldo_pendiente) || 0;
+          total = saldoGuardado > 0 ? saldoGuardado : Math.max(0, montoCancha + montoAddons - walletAplicado);
           items[`Renta ${cancha?.nombre || 'cancha'}`] = { cantidad: 1, subtotal: montoCancha };
           // DESGLOSE INDIVIDUAL DE ADD-ONS: en vez del renglón genérico
           // "Add-ons (Portal)", una línea por cada artículo real
@@ -15684,6 +15696,10 @@ function ModuloSmartPOS({
           cancha,
           reserva: r,
           ventas: ventasLigadas,
+          // Etiqueta "N tickets" de la tarjeta: una reserva sin ticket en
+          // `ventas` todavía (se crea al liquidar) cuenta como 1 ticket por
+          // cobrar — antes mostraba "0 tickets".
+          numTickets: Math.max(1, ventasLigadas.length),
           total,
           items,
           // Copia cruda de `reservas.addons_detalle` (cuando NO hay ticket
