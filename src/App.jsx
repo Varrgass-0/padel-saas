@@ -21343,8 +21343,17 @@ function ModuloERPInventario({
     // qué falta y cuánto stock queda — sin exponer costo/precio, solo
     // unidades. Alimentos / sin stock rígido: excluidos con
     // `productoIgnoraStockRigido`, nunca entran a este desglose.
+    //
+    // FIX (fuga de alcance por rol): para Restaurante/Bar (`esRolBar`) las
+    // alertas se acotan a la MISMA categoría que ya fuerza su catálogo
+    // (`categoriaEfectiva` = "Cafetería/Bar") — antes la tarjeta y el
+    // desglose contaban el total del club (Paleteros, Pro-Shop, Rentas…).
+    // Gerente/Dueño, Recepción y Contador siguen viendo todas las categorías
+    // (el filtro de categoría de la tabla no afecta este KPI global).
+    const dentroDeAlcanceRol = (p) => (esRolBar ? p.categoria === categoriaEfectiva : true);
     const detalleAlertas = itemsInventario
       .filter((p) => {
+        if (!dentroDeAlcanceRol(p)) return false;
         if (productoIgnoraStockRigido(p)) return false;
         const stock = Number(p.stock);
         const minimo = Number(p.stock_minimo);
@@ -21354,7 +21363,7 @@ function ModuloERPInventario({
       .sort((a, b) => a.stock - b.stock);
 
     return { valorInventario, margenPromedio, alertasReorden: detalleAlertas.length, detalleAlertas };
-  }, [productos, variantesPorProducto]);
+  }, [productos, variantesPorProducto, esRolBar, categoriaEfectiva]);
 
   /* ---------------- Catálogo filtrado ---------------- */
 
