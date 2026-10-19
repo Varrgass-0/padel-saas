@@ -9817,6 +9817,91 @@ async function actualizarConColumnasOpcionales(tabla, id, payloadCompleto, colum
 // `catch` de abajo lo traga: esto NUNCA debe bloquear el registro/
 // identificación real del usuario, solo dejar constancia cuando se puede.
 // -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// POLÍTICA DE CONTRASEÑAS (alineada con Supabase Auth → "Password
+// Requirements"): mínimo 6 caracteres, al menos 1 letra MAYÚSCULA y 1
+// NÚMERO. Se valida en el frontend ANTES de llamar a `signUp`/`updateUser`
+// en TODOS los flujos que fijan una contraseña (registro de Club, registro
+// del Portal de Jugadores, crear contraseña por invitación/recuperación y
+// "Cambiar contraseña" de Mi Perfil) — así el usuario ve exactamente qué le
+// falta en vez del error genérico de Supabase. `A-Z` ASCII a propósito:
+// es el mismo juego de caracteres que revisa Supabase.
+// -----------------------------------------------------------------------------
+const REGEX_PASSWORD_SEGURA = /^(?=.*[A-Z])(?=.*\d).{6,}$/;
+const TEXTO_REQUISITOS_PASSWORD = 'Mínimo 6 caracteres, 1 letra mayúscula y 1 número.';
+const MENSAJE_PASSWORD_INVALIDA = `Tu contraseña no cumple los requisitos: ${TEXTO_REQUISITOS_PASSWORD}`;
+
+function passwordCumplePolitica(password) {
+  return REGEX_PASSWORD_SEGURA.test(String(password || ''));
+}
+
+function requisitosPassword(password) {
+  const pw = String(password || '');
+  return [
+    { id: 'largo', etiqueta: '6+ caracteres', ok: pw.length >= 6 },
+    { id: 'mayuscula', etiqueta: '1 mayúscula', ok: /[A-Z]/.test(pw) },
+    { id: 'numero', etiqueta: '1 número', ok: /\d/.test(pw) },
+  ];
+}
+
+// Respaldo por si Supabase rechaza la contraseña de todos modos (p. ej. si
+// el proyecto además exige minúsculas o la detecta como filtrada): mensaje
+// claro en español en vez del texto técnico de Auth.
+function esErrorPasswordDebil(err) {
+  const msg = `${err?.code || ''} ${err?.message || ''}`;
+  return /weak_password|weak password|password should|should contain|at least/i.test(msg);
+}
+const MENSAJE_PASSWORD_DEBIL_SUPABASE = `Esa contraseña no cumple la política de seguridad: ${TEXTO_REQUISITOS_PASSWORD} Usa también letras minúsculas.`;
+
+// Indicador en vivo de los 3 requisitos (solo aparece cuando ya se escribió algo).
+function IndicadorRequisitosPassword({ password }) {
+  if (!password) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1.5" aria-live="polite">
+      {requisitosPassword(password).map((r) => (
+        <span
+          key={r.id}
+          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
+            r.ok ? 'bg-emerald-400/10 text-emerald-600 ring-emerald-400/30' : 'bg-slate-100 text-slate-500 ring-slate-200'
+          }`}
+        >
+          {r.ok ? <CheckCircle2 size={10} /> : <span className="h-1.5 w-1.5 rounded-full bg-current opacity-60" />}
+          {r.etiqueta}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// Campo de contraseña con botón ojito (mostrar/ocultar) — mismo patrón que
+// `ClubAuthScreen`, reutilizable en el Portal de Jugadores.
+function InputPasswordConOjito({ value, onChange, autoComplete, placeholder = '••••••••', className = inputClase, autoFocus = false, id }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="relative">
+      <input
+        id={id}
+        type={visible ? 'text' : 'password'}
+        autoComplete={autoComplete}
+        value={value}
+        onChange={onChange}
+        className={`${className} pr-10`}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+      />
+      <button
+        type="button"
+        onClick={() => setVisible((v) => !v)}
+        aria-label={visible ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+        title={visible ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 transition hover:text-slate-600"
+      >
+        {visible ? <EyeOff size={15} /> : <Eye size={15} />}
+      </button>
+    </div>
+  );
+}
+
 const VERSION_LEGAL_ACTUAL = '1.0';
 const COLUMNAS_ACEPTACION_LEGAL = ['terminos_aceptados', 'fecha_aceptacion', 'version_legal', 'tipo_usuario'];
 
@@ -37184,7 +37269,7 @@ function ModalMiPerfilJugador({
 
   async function guardarNuevaPassword() {
     if (!passwordActual) return setErrorPassword('Captura tu contraseña actual.');
-    if (!passwordNueva || passwordNueva.length < 6) return setErrorPassword('Tu contraseña nueva debe tener al menos 6 caracteres.');
+    if (!passwordCumplePolitica(passwordNueva)) return setErrorPassword(MENSAJE_PASSWORD_INVALIDA);
     if (passwordNueva !== passwordConfirmar) return setErrorPassword('Las contraseñas no coinciden.');
     setGuardandoPassword(true);
     setErrorPassword('');
@@ -37380,31 +37465,14 @@ function ModalMiPerfilJugador({
                 className="space-y-3 rounded-xl border border-slate-200 bg-white/50 p-4"
               >
                 <Campo label="Contraseña actual">
-                  <input
-                    type="password"
-                    autoComplete="current-password"
-                    value={passwordActual}
-                    onChange={(e) => setPasswordActual(e.target.value)}
-                    className={inputClase}
-                  />
+                  <InputPasswordConOjito autoComplete="current-password" value={passwordActual} onChange={(e) => setPasswordActual(e.target.value)} placeholder="" />
                 </Campo>
-                <Campo label="Contraseña nueva" hint="Mínimo 6 caracteres.">
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    value={passwordNueva}
-                    onChange={(e) => setPasswordNueva(e.target.value)}
-                    className={inputClase}
-                  />
+                <Campo label="Contraseña nueva" hint={TEXTO_REQUISITOS_PASSWORD}>
+                  <InputPasswordConOjito autoComplete="new-password" value={passwordNueva} onChange={(e) => setPasswordNueva(e.target.value)} placeholder="" />
+                  <IndicadorRequisitosPassword password={passwordNueva} />
                 </Campo>
                 <Campo label="Confirmar contraseña nueva">
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    value={passwordConfirmar}
-                    onChange={(e) => setPasswordConfirmar(e.target.value)}
-                    className={inputClase}
-                  />
+                  <InputPasswordConOjito autoComplete="new-password" value={passwordConfirmar} onChange={(e) => setPasswordConfirmar(e.target.value)} placeholder="" />
                 </Campo>
                 {errorPassword && <p className="text-xs font-semibold text-rose-400">{errorPassword}</p>}
                 <div className="flex justify-end gap-2">
@@ -53034,8 +53102,8 @@ function PortalPublicoJugadores({ clubSlug }) {
       mostrarToast({ titulo: 'Falta tu correo', detalle: 'Captura un correo válido.', tono: 'aviso' });
       return false;
     }
-    if (!password || password.length < 6) {
-      mostrarToast({ titulo: 'Contraseña muy corta', detalle: 'Debe tener al menos 6 caracteres.', tono: 'aviso' });
+    if (!passwordCumplePolitica(password)) {
+      mostrarToast({ titulo: 'Contraseña no válida', detalle: TEXTO_REQUISITOS_PASSWORD, tono: 'aviso' });
       return false;
     }
     if (!club?.id) {
@@ -53150,6 +53218,8 @@ function PortalPublicoJugadores({ clubSlug }) {
         titulo: 'No se pudo crear tu cuenta',
         detalle: esErrorCorreoRegistrado(err)
           ? 'Ese correo ya tiene una cuenta — mejor inicia sesión.'
+          : esErrorPasswordDebil(err)
+          ? MENSAJE_PASSWORD_DEBIL_SUPABASE
           : esErrorTelefonoYaVinculadoPorTrigger(err)
           ? 'Ese teléfono ya tiene una cuenta en este club — mejor inicia sesión con el correo que usaste para crearla.'
           : // Supabase Auth oculta el mensaje del trigger de Smart Linking
@@ -53479,7 +53549,12 @@ function PortalPublicoJugadores({ clubSlug }) {
       console.error('[Portal] Error detallado Supabase (cambiar contraseña del jugador):', err);
       mostrarToast({
         titulo: 'No se pudo cambiar tu contraseña',
-        detalle: err?.message === 'Invalid login credentials' ? 'Tu contraseña actual no es correcta.' : err?.message || 'Intenta de nuevo en un momento.',
+        detalle:
+          err?.message === 'Invalid login credentials'
+            ? 'Tu contraseña actual no es correcta.'
+            : esErrorPasswordDebil(err)
+            ? MENSAJE_PASSWORD_DEBIL_SUPABASE
+            : err?.message || 'Intenta de nuevo en un momento.',
         tono: 'error',
       });
       return false;
@@ -56676,7 +56751,7 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta, mot
     if (!nombre.trim()) return setError('Escribe tu nombre.');
     if (!claveTelefono(telefono)) return setError('Escribe tu teléfono a 10 dígitos.');
     if (!correoCrear.trim()) return setError('Escribe tu correo.');
-    if (!passwordCrear || passwordCrear.length < 6) return setError('Tu contraseña debe tener al menos 6 caracteres.');
+    if (!passwordCumplePolitica(passwordCrear)) return setError(MENSAJE_PASSWORD_INVALIDA);
     if (!aceptaLegal) return setError('Debes aceptar los Términos y Condiciones y la Política de Privacidad para continuar.');
     setEnviando(true);
     setError('');
@@ -56731,14 +56806,7 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta, mot
               />
             </Campo>
             <Campo label="Contraseña">
-              <input
-                type="password"
-                autoComplete="current-password"
-                value={passwordLogin}
-                onChange={(e) => setPasswordLogin(e.target.value)}
-                className={inputClase}
-                placeholder="••••••••"
-              />
+              <InputPasswordConOjito autoComplete="current-password" value={passwordLogin} onChange={(e) => setPasswordLogin(e.target.value)} />
             </Campo>
           </>
         ) : (
@@ -56765,15 +56833,9 @@ function ModalAutenticacionPortal({ onClose, onIniciarSesion, onCrearCuenta, mot
                 placeholder="tucorreo@ejemplo.com"
               />
             </Campo>
-            <Campo label="Contraseña" hint="Mínimo 6 caracteres.">
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={passwordCrear}
-                onChange={(e) => setPasswordCrear(e.target.value)}
-                className={inputClase}
-                placeholder="••••••••"
-              />
+            <Campo label="Contraseña" hint={TEXTO_REQUISITOS_PASSWORD}>
+              <InputPasswordConOjito autoComplete="new-password" value={passwordCrear} onChange={(e) => setPasswordCrear(e.target.value)} />
+              <IndicadorRequisitosPassword password={passwordCrear} />
             </Campo>
             {/* Marco Legal (migracion_v61) — checkbox obligatorio SOLO en
                 "Crear Cuenta": la pestaña "Iniciar Sesión" nunca lo muestra
@@ -64312,8 +64374,8 @@ function ClubAuthScreen({ onAutenticado }) {
       setError('Captura tu correo y tu contraseña.');
       return;
     }
-    if (password.length < 6) {
-      setError('La contraseña debe tener al menos 6 caracteres.');
+    if (!passwordCumplePolitica(password)) {
+      setError(MENSAJE_PASSWORD_INVALIDA);
       return;
     }
     if (password !== confirmPassword) {
@@ -64389,7 +64451,13 @@ function ClubAuthScreen({ onAutenticado }) {
       // causaba "enviar a la vista previa sin onboarding").
       onAutenticado(data.session, resultado.club);
     } catch (err) {
-      setError(esErrorRelojDesfasado(err) ? MENSAJE_ERROR_RELOJ_DESFASADO : err?.message || 'No se pudo completar el registro.');
+      setError(
+        esErrorRelojDesfasado(err)
+          ? MENSAJE_ERROR_RELOJ_DESFASADO
+          : esErrorPasswordDebil(err)
+          ? MENSAJE_PASSWORD_DEBIL_SUPABASE
+          : err?.message || 'No se pudo completar el registro.'
+      );
     } finally {
       setCargando(false);
     }
@@ -64573,7 +64641,7 @@ function ClubAuthScreen({ onAutenticado }) {
                   />
                 </div>
               </Campo>
-              <Campo label="Contraseña" hint="Mínimo 6 caracteres.">
+              <Campo label="Contraseña" hint={TEXTO_REQUISITOS_PASSWORD}>
                 <div className="relative">
                   <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
@@ -64587,11 +64655,13 @@ function ClubAuthScreen({ onAutenticado }) {
                   <button
                     type="button"
                     onClick={() => setMostrarPassword((v) => !v)}
+                    aria-label={mostrarPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                   >
                     {mostrarPassword ? <EyeOff size={15} /> : <Eye size={15} />}
                   </button>
                 </div>
+                <IndicadorRequisitosPassword password={password} />
               </Campo>
               <Campo label="Confirmar contraseña">
                 <input
@@ -64974,7 +65044,7 @@ function PantallaCrearPasswordQlubos({ sesion, tipo, onListo }) {
 
   async function guardar(e) {
     e.preventDefault();
-    if (password.length < 6) return setError('La contraseña debe tener al menos 6 caracteres.');
+    if (!passwordCumplePolitica(password)) return setError(MENSAJE_PASSWORD_INVALIDA);
     if (password !== confirmPassword) return setError('Las contraseñas no coinciden.');
     if (esInvitacion && !aceptaLegal) return setError('Debes aceptar los Términos y Condiciones para Clubes y la Política de Privacidad.');
     setGuardando(true);
@@ -65007,8 +65077,8 @@ function PantallaCrearPasswordQlubos({ sesion, tipo, onListo }) {
           ? MENSAJE_ERROR_RELOJ_DESFASADO
           : /different from the old|same as the old/i.test(msg)
             ? 'La nueva contraseña debe ser distinta a la anterior.'
-            : /weak|at least/i.test(msg)
-              ? 'Esa contraseña es muy débil: usa al menos 6 caracteres combinando letras y números.'
+            : esErrorPasswordDebil(err)
+              ? MENSAJE_PASSWORD_DEBIL_SUPABASE
               : msg || 'No se pudo guardar la contraseña. Intenta de nuevo.'
       );
     } finally {
@@ -65040,7 +65110,7 @@ function PantallaCrearPasswordQlubos({ sesion, tipo, onListo }) {
           </p>
         </div>
         <form onSubmit={guardar} className="mt-5 space-y-4">
-          <Campo label="Contraseña" hint="Mínimo 6 caracteres.">
+          <Campo label="Contraseña" hint={TEXTO_REQUISITOS_PASSWORD}>
             <div className="relative">
               <Lock size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
@@ -65061,6 +65131,7 @@ function PantallaCrearPasswordQlubos({ sesion, tipo, onListo }) {
                 {mostrarPassword ? <EyeOff size={15} /> : <Eye size={15} />}
               </button>
             </div>
+            <IndicadorRequisitosPassword password={password} />
           </Campo>
           <Campo label="Confirmar contraseña">
             <input
