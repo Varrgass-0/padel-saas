@@ -14268,7 +14268,8 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
     const nombreOperador = operador?.nombre || 'Recepción/Caja';
     const resumen = aNotificar
       .slice(0, 10)
-      .map((it) => `${it.nombre} (quedan ${it.stock}, pedir ${it.sugerido})`)
+      // Aviso a Gerencia: solo producto + piezas que quedan (sin "pedir X").
+      .map((it) => `${it.nombre} (quedan ${it.stock})`)
       .join(' · ');
     const titulo = `${nombreOperador} pidió reabastecimiento: ${resumen}${aNotificar.length > 10 ? ` y ${aNotificar.length - 10} más` : ''}`.slice(0, 300);
 
@@ -14314,20 +14315,26 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
     );
   }
 
-  const horaAviso = notificado.en ? new Date(notificado.en).toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' }) : null;
+  // Panel limpio: una vez notificado todo lo crítico, la tarjeta desaparece
+  // de Smart POS por el resto del día (el registro de "ya notificado" sigue
+  // guardado — ver `claveReordenNotificado`). Solo reaparece si OTRO
+  // producto baja de su stock mínimo, y entonces lista únicamente los nuevos.
+  if (todoNotificado) return null;
+
+  const itemsVisibles = hayAvisoPrevio ? pendientes : itemsCriticos;
 
   return (
     <div className={`rounded-2xl border p-4 ${todoNotificado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-amber-400/30 bg-amber-400/5'}`}>
       <div className="flex items-center justify-between gap-2">
         <p className={`flex items-center gap-2 text-xs font-black uppercase tracking-wide ${todoNotificado ? 'text-emerald-500' : 'text-amber-500'}`}>
-          {todoNotificado ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />} Reorden Sugerido · {itemsCriticos.length}
+          {todoNotificado ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />} Reorden Sugerido · {itemsVisibles.length}
         </p>
         {todoNotificado && (
           <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-bold text-emerald-600 ring-1 ring-emerald-400/30">Procesado</span>
         )}
       </div>
       <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto pr-1">
-        {itemsCriticos.slice(0, 6).map((it, i) => {
+        {itemsVisibles.slice(0, 6).map((it, i) => {
           const avisado = yaNotificados.has(it.nombre);
           return (
             <li key={i} className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
@@ -14341,7 +14348,7 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
             </li>
           );
         })}
-        {itemsCriticos.length > 6 && <li className="text-[10px] text-slate-500">+{itemsCriticos.length - 6} más...</li>}
+        {itemsVisibles.length > 6 && <li className="text-[10px] text-slate-500">+{itemsVisibles.length - 6} más...</li>}
       </ul>
       <button
         type="button"
@@ -14359,8 +14366,11 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
           ? `Notificar ${pendientes.length} ${pendientes.length === 1 ? 'producto nuevo' : 'productos nuevos'}`
           : 'Notificar Abastecimiento'}
       </button>
-      {hayAvisoPrevio && horaAviso && (
-        <p className="mt-1.5 text-center text-[10px] font-semibold text-slate-500">Gerencia ya fue notificada hoy · {horaAviso}</p>
+      {hayAvisoPrevio && (
+        <p className="mt-1.5 text-center text-[10px] font-semibold text-slate-500">
+          {itemsCriticos.length - pendientes.length} producto{itemsCriticos.length - pendientes.length === 1 ? '' : 's'} ya notificado
+          {itemsCriticos.length - pendientes.length === 1 ? '' : 's'} hoy a Gerencia.
+        </p>
       )}
     </div>
   );
