@@ -14164,15 +14164,47 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
 
 // Tarjeta Interactiva de Reorden — Recepción/Caja: resume productos en/bajo
 // su stock crítico (mismo umbral que la insignia "¡Quedan N!" del grid del
-// POS) y deja mandar, con un clic, una alerta REALMENTE CRUZADA ENTRE
-// DISPOSITIVOS al Gerente/Contador — inserta una fila en
-// `alertas_reabastecimiento` (migracion_v18) que el canal Realtime
-// `centro-alertas-club` recoge en CUALQUIER sesión abierta del club, no solo
-// en la terminal que la generó (a diferencia de llamar a `agregarAlertaClub`
-// directo, que solo actualizaría la campana del propio dispositivo).
+// POS) y deja avisar a Gerencia con un clic.
+//
+// FIX (notificación persistente + un solo envío por turno):
+//  1) El aviso se registra en `notificaciones_club` (`crearNotificacionClub`,
+//     tipo 'reabastecimiento', con la lista de productos en `payload.items`)
+//     — la misma tabla que la campana del club carga al iniciar sesión (no
+//     leídas) y escucha por Realtime. Antes solo se insertaba en
+//     `alertas_reabastecimiento`, que la campana únicamente veía en vivo:
+//     si Gerencia/Dueño no tenía el panel abierto en ese momento, nunca se
+//     enteraba. `alertas_reabastecimiento` queda como respaldo SOLO si
+//     `notificaciones_club` no está disponible (proyecto sin v20/v107), así
+//     la campana no recibe el aviso dos veces.
+//  2) Tras notificar, el botón queda "Notificado" (deshabilitado) por el
+//     resto del día para esos productos — se recuerda en el dispositivo y
+//     además se cruza con los avisos de reabastecimiento que ya existan hoy
+//     en `notificaciones_club` (otra caja del club ya avisó → tampoco se
+//     repite). Si después entra a reorden un producto NUEVO, el botón se
+//     reactiva solo para avisar de los nuevos.
+function claveReordenNotificado() {
+  return `qlubos_reorden_notificado__${CLUB_ACTIVO_ID || 'local'}__${hoyISO()}`;
+}
+function leerReordenNotificado() {
+  try {
+    const crudo = JSON.parse(localStorage.getItem(claveReordenNotificado()) || 'null');
+    return { nombres: Array.isArray(crudo?.nombres) ? crudo.nombres : [], en: crudo?.en || null };
+  } catch (_e) {
+    return { nombres: [], en: null };
+  }
+}
+function guardarReordenNotificado(registro) {
+  try {
+    localStorage.setItem(claveReordenNotificado(), JSON.stringify(registro));
+  } catch (_e) {
+    /* sin localStorage: el estado vive solo en memoria durante la sesión */
+  }
+}
+
 function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mostrarToast }) {
   const [enviando, setEnviando] = useState(false);
-  const [enviado, setEnviado] = useState(false);
+  // Productos ya notificados HOY (nombres) + hora del último aviso.
+  const [notificado, setNotificado] = useState(leerReordenNotificado);
 
   const itemsCriticos = useMemo(() => {
     const lista = [];
@@ -14196,32 +14228,79 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
     return lista.sort((a, b) => a.stock - b.stock).slice(0, 20);
   }, [productos, variantesPorProducto]);
 
+  // Sincroniza con avisos de reabastecimiento que ya existan HOY en el club
+  // (p. ej. enviados desde otra caja) — best effort, nunca bloquea.
+  useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return undefined;
+    let cancelado = false;
+    const inicioHoy = new Date();
+    inicioHoy.setHours(0, 0, 0, 0);
+    (async () => {
+      const { data, error } = await conClubId(supabase.from('notificaciones_club').select('payload, created_at'))
+        .eq('tipo', 'reabastecimiento')
+        .gte('created_at', inicioHoy.toISOString());
+      if (cancelado || error || !Array.isArray(data) || data.length === 0) return;
+      const nombresRemotos = data.flatMap((f) => (Array.isArray(f?.payload?.items) ? f.payload.items.map((it) => it?.nombre).filter(Boolean) : []));
+      const ultima = data.map((f) => f.created_at).filter(Boolean).sort().pop() || null;
+      if (nombresRemotos.length === 0) return;
+      setNotificado((prev) => {
+        const nombres = Array.from(new Set([...prev.nombres, ...nombresRemotos]));
+        const en = [prev.en, ultima].filter(Boolean).sort().pop() || null;
+        const siguiente = { nombres, en };
+        guardarReordenNotificado(siguiente);
+        return siguiente;
+      });
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  const yaNotificados = useMemo(() => new Set(notificado.nombres), [notificado]);
+  const pendientes = itemsCriticos.filter((it) => !yaNotificados.has(it.nombre));
+  const todoNotificado = itemsCriticos.length > 0 && pendientes.length === 0;
+  const hayAvisoPrevio = notificado.nombres.length > 0;
+
   async function notificarAbastecimiento() {
-    if (itemsCriticos.length === 0) return;
+    if (enviando || pendientes.length === 0) return;
     setEnviando(true);
-    const resumen = itemsCriticos
+    const aNotificar = pendientes;
+    const nombreOperador = operador?.nombre || 'Recepción/Caja';
+    const resumen = aNotificar
       .slice(0, 10)
       .map((it) => `${it.nombre} (quedan ${it.stock}, pedir ${it.sugerido})`)
       .join(' · ');
-    const { error } = await insertarConColumnasOpcionales(
-      'alertas_reabastecimiento',
-      {
-        club_id: CLUB_ACTIVO_ID,
-        operador_nombre: operador?.nombre || 'Recepción/Caja',
-        resumen,
-        items: itemsCriticos,
-        atendida: false,
-      },
-      ['club_id', 'items', 'atendida']
-    );
+    const titulo = `${nombreOperador} pidió reabastecimiento: ${resumen}${aNotificar.length > 10 ? ` y ${aNotificar.length - 10} más` : ''}`.slice(0, 300);
+
+    // 1) Registro persistente para Gerencia/Dueño (campana del club).
+    const resultado = await crearNotificacionClub({
+      tipo: 'reabastecimiento',
+      titulo,
+      payload: { modulo_destino: 'erp', items: aNotificar, operador_nombre: nombreOperador, origen: 'smart_pos_reorden' },
+    });
+    // 2) Respaldo: proyecto sin `notificaciones_club` → `alertas_reabastecimiento`
+    //    (la campana lo recibe en vivo por `centro-alertas-club`).
+    let errorFinal = resultado.ok ? null : resultado.error;
+    if (!resultado.ok) {
+      const { error } = await insertarConColumnasOpcionales(
+        'alertas_reabastecimiento',
+        { club_id: CLUB_ACTIVO_ID, operador_nombre: nombreOperador, resumen, items: aNotificar, atendida: false },
+        ['club_id', 'items', 'atendida']
+      );
+      errorFinal = error || null;
+    }
     setEnviando(false);
-    if (error) {
-      mostrarToast?.({ titulo: 'No se pudo enviar la notificación', detalle: error.message, tono: 'error' });
+    if (errorFinal) {
+      mostrarToast?.({ titulo: 'No se pudo enviar la notificación', detalle: errorFinal.message, tono: 'error' });
       return;
     }
-    setEnviado(true);
-    mostrarToast?.({ titulo: 'Notificación enviada', detalle: 'Gerencia/Contador recibirá la alerta de abastecimiento.' });
-    setTimeout(() => setEnviado(false), 4000);
+    const siguiente = {
+      nombres: Array.from(new Set([...notificado.nombres, ...aNotificar.map((it) => it.nombre)])),
+      en: new Date().toISOString(),
+    };
+    guardarReordenNotificado(siguiente);
+    setNotificado(siguiente);
+    mostrarToast?.({ titulo: 'Se notificará a Gerencia.' });
   }
 
   if (itemsCriticos.length === 0) {
@@ -14235,31 +14314,54 @@ function TarjetaReordenSugerido({ productos, variantesPorProducto, operador, mos
     );
   }
 
+  const horaAviso = notificado.en ? new Date(notificado.en).toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' }) : null;
+
   return (
-    <div className="rounded-2xl border border-amber-400/30 bg-amber-400/5 p-4">
-      <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-amber-300">
-        <AlertTriangle size={14} /> Reorden Sugerido · {itemsCriticos.length}
-      </p>
+    <div className={`rounded-2xl border p-4 ${todoNotificado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-amber-400/30 bg-amber-400/5'}`}>
+      <div className="flex items-center justify-between gap-2">
+        <p className={`flex items-center gap-2 text-xs font-black uppercase tracking-wide ${todoNotificado ? 'text-emerald-500' : 'text-amber-500'}`}>
+          {todoNotificado ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />} Reorden Sugerido · {itemsCriticos.length}
+        </p>
+        {todoNotificado && (
+          <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-bold text-emerald-600 ring-1 ring-emerald-400/30">Procesado</span>
+        )}
+      </div>
       <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto pr-1">
-        {itemsCriticos.slice(0, 6).map((it, i) => (
-          <li key={i} className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
-            <span className="truncate">{it.nombre}</span>
-            <span className="shrink-0 font-bold text-amber-300">
-              quedan {it.stock} · pedir {it.sugerido}
-            </span>
-          </li>
-        ))}
+        {itemsCriticos.slice(0, 6).map((it, i) => {
+          const avisado = yaNotificados.has(it.nombre);
+          return (
+            <li key={i} className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
+              <span className="flex min-w-0 items-center gap-1 truncate">
+                {avisado && <CheckCircle2 size={11} className="shrink-0 text-emerald-500" />}
+                <span className="truncate">{it.nombre}</span>
+              </span>
+              <span className={`shrink-0 font-bold ${avisado ? 'text-slate-500' : 'text-amber-500'}`}>
+                quedan {it.stock} · pedir {it.sugerido}
+              </span>
+            </li>
+          );
+        })}
         {itemsCriticos.length > 6 && <li className="text-[10px] text-slate-500">+{itemsCriticos.length - 6} más...</li>}
       </ul>
       <button
         type="button"
         onClick={notificarAbastecimiento}
-        disabled={enviando || enviado}
-        className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-400 px-3 py-2 text-xs font-black text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={enviando || todoNotificado}
+        aria-disabled={enviando || todoNotificado}
+        className={`mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-black transition disabled:cursor-not-allowed ${
+          todoNotificado ? 'bg-emerald-500/15 text-emerald-600 ring-1 ring-emerald-500/30' : 'bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-60'
+        }`}
       >
-        {enviando ? <Loader2 size={14} className="animate-spin" /> : enviado ? <CheckCircle2 size={14} /> : <Bell size={14} />}
-        {enviado ? 'Notificado' : 'Notificar Abastecimiento'}
+        {enviando ? <Loader2 size={14} className="animate-spin" /> : todoNotificado ? <CheckCircle2 size={14} /> : <Bell size={14} />}
+        {todoNotificado
+          ? 'Notificado'
+          : hayAvisoPrevio
+          ? `Notificar ${pendientes.length} ${pendientes.length === 1 ? 'producto nuevo' : 'productos nuevos'}`
+          : 'Notificar Abastecimiento'}
       </button>
+      {hayAvisoPrevio && horaAviso && (
+        <p className="mt-1.5 text-center text-[10px] font-semibold text-slate-500">Gerencia ya fue notificada hoy · {horaAviso}</p>
+      )}
     </div>
   );
 }
@@ -62443,7 +62545,9 @@ function AppInterno({ clubInicial } = {}) {
               ? '🎂 Cumpleaños de un jugador'
               : tipo === 'anuncio_qlubos'
                 ? '📣 Aviso de QLUBOS'
-                : 'Nueva actividad del Portal Web',
+                : tipo === 'reabastecimiento'
+                  ? '📦 Solicitud de reabastecimiento'
+                  : 'Nueva actividad del Portal Web',
         detalle: titulo,
       });
     },
