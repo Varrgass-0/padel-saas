@@ -14172,13 +14172,34 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
             if (!acumulado[clave]) acumulado[clave] = { nombre, categoria, unidades: 0 };
             acumulado[clave].unidades += Number(item.cantidad) || 0;
             // Extras del artículo (mismo criterio que "Top Extras" de BI:
-            // cada extra cuenta tantas unidades como el artículo). Se agrupan
-            // por nombre normalizado para unir el mismo extra de grupos distintos.
+            // cada extra cuenta tantas unidades como el artículo).
+            // Claridad (fix nombres huérfanos): cada extra se asocia a SU
+            // producto padre del ticket — "Cerveza 710ML — Clásica",
+            // "Nachos — C/Arrachera" — y se agrupa por producto + extra, así
+            // "BBQ" de Alitas y "BBQ" de Hot Dog quedan en renglones distintos.
+            // Se usa el producto padre (sin la variante) para que todas las
+            // presentaciones de un mismo producto sumen juntas su extra.
+            const nombreProductoExtra =
+              prod?.nombre || String(nombre || '').split(' — ')[0].trim() || 'Producto';
+            const claveProductoExtra = prod?.id != null ? `p:${prod.id}` : `n:${claveNombre(nombreProductoExtra) || nombreProductoExtra}`;
+            // AISLAMIENTO POR PRODUCTO: los extras salen ÚNICAMENTE del
+            // arreglo `modificadores` de ESTE renglón del ticket (lo que el
+            // cajero eligió para ese producto en `agregarProducto`) — nunca
+            // del nombre del artículo ni de otro renglón/variante. Un
+            // artículo sin extras (ej. Electrolit con solo su sabor) no
+            // aporta nada aquí. Un mismo extra repetido dentro del renglón
+            // cuenta una sola vez.
+            const extrasDelRenglon = new Set();
             (Array.isArray(item.modificadores) ? item.modificadores : []).forEach((mod) => {
-              const nombreExtra = String(mod?.nombre || '').trim();
+              const nombreExtra = String((typeof mod === 'string' ? mod : mod?.nombre) || '').trim();
               if (!nombreExtra) return;
-              const claveExtra = claveNombre(nombreExtra) || nombreExtra;
-              if (!acumuladoExtras[claveExtra]) acumuladoExtras[claveExtra] = { nombre: nombreExtra, unidades: 0 };
+              const claveExtraNombre = claveNombre(nombreExtra) || nombreExtra;
+              if (extrasDelRenglon.has(claveExtraNombre)) return;
+              extrasDelRenglon.add(claveExtraNombre);
+              const claveExtra = `${claveProductoExtra}::${claveExtraNombre}`;
+              if (!acumuladoExtras[claveExtra]) {
+                acumuladoExtras[claveExtra] = { clave: claveExtra, nombre: `${nombreProductoExtra} — ${nombreExtra}`, producto: nombreProductoExtra, extra: nombreExtra, unidades: 0 };
+              }
               acumuladoExtras[claveExtra].unidades += Number(item.cantidad) || 0;
             });
           });
@@ -14275,10 +14296,11 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
                   </thead>
                   <tbody>
                     {extras.map((x, i) => (
-                      <tr key={x.nombre} className="border-b border-slate-200/70 last:border-0">
+                      <tr key={x.clave} className="border-b border-slate-200/70 last:border-0">
                         <td className="px-2.5 py-1.5 font-black text-slate-400">{i + 1}°</td>
-                        <td className="max-w-0 truncate px-2.5 py-1.5 font-semibold text-slate-800" title={x.nombre}>
-                          {x.nombre}
+                        <td className="break-words px-2.5 py-1.5 leading-snug text-slate-800" title={x.nombre}>
+                          <span className="text-slate-500">{x.producto} — </span>
+                          <span className="font-semibold">{x.extra}</span>
                         </td>
                         <td className="px-2.5 py-1.5 text-right font-bold text-slate-900">{x.unidades} u.</td>
                       </tr>
