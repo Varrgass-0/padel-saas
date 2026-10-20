@@ -14132,11 +14132,13 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
   const [filas, setFilas] = useState([]);
 
   const productosPorId = useMemo(() => Object.fromEntries((productos || []).map((p) => [p.id, p])), [productos]);
-  const variantesPorId = useMemo(() => {
+  // Solo para artículos viejos sin `producto_id` (ver
+  // `resolverProductoYVarianteDeItem`): cada variante lleva su padre.
+  const variantesPorIdLegado = useMemo(() => {
     const mapa = {};
-    Object.values(variantesPorProducto || {}).forEach((lista) => (lista || []).forEach((v) => (mapa[v.id] = v)));
+    (productos || []).forEach((p) => (variantesPorProducto?.[p.id] || []).forEach((v) => (mapa[v.id] = { ...v, _productoPadre: p })));
     return mapa;
-  }, [variantesPorProducto]);
+  }, [productos, variantesPorProducto]);
 
   useEffect(() => {
     let cancelado = false;
@@ -14154,14 +14156,14 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
           const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
           items.forEach((item) => {
             if (item.tipo !== 'producto') return;
-            const variante = item.variante_id ? variantesPorId[item.variante_id] : null;
-            const prod = variante?._productoPadre || productosPorId[item.producto_id] || null;
+            // Variante buscada dentro de SU producto (fix nombres cruzados).
+            const { producto: prod, nombre, clave } = resolverProductoYVarianteDeItem(item, {
+              productosPorId,
+              variantesPorProducto,
+              variantesPorIdLegado,
+            });
             const categoria = prod?.categoria || null;
             if (filtroCategoria && categoria !== filtroCategoria) return;
-            const clave = item.variante_id ? `v:${item.variante_id}` : `p:${item.producto_id}`;
-            const nombre = variante
-              ? `${prod?.nombre || 'Producto eliminado'} — ${variante?.nombre || item.nombre || 'Variante'}`
-              : prod?.nombre || item.nombre || 'Producto eliminado';
             if (!acumulado[clave]) acumulado[clave] = { nombre, categoria, unidades: 0 };
             acumulado[clave].unidades += Number(item.cantidad) || 0;
           });
@@ -14172,7 +14174,7 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
     return () => {
       cancelado = true;
     };
-  }, [dias, productosPorId, variantesPorId, filtroCategoria]);
+  }, [dias, productosPorId, variantesPorProducto, variantesPorIdLegado, filtroCategoria]);
 
   // Top 5 completo (verificado en esta mejora): ya toma los 5 primeros de
   // `filas` (que viene ordenado de mayor a menor unidades) — si el periodo
@@ -19229,6 +19231,47 @@ function normalizarVarianteJSONB(v, indice) {
 // Pendiente de Recepción igual que ya pasa con un producto pendiente
 // completo — solo el PUNTO DE VENTA (grid del Smart POS y Tienda/Para-ti
 // del Portal) debe ocultarla.
+// RESOLUCIÓN DE VARIANTE DE UN ARTÍCULO VENDIDO (`ventas.detalles.items`) —
+// FIX "nombres cruzados" (ej. "Cerveza 710ML — Coco", "Overgrip — Fresa"):
+// los ids de variante viven DENTRO del JSONB de cada producto
+// (`idEstableVarianteJSONB`: `id` propio o `var-<nombre>`/`var-<índice>`),
+// así que NO son únicos entre productos — "var-0" o "1" existen en
+// Cerveza, Electrolit y Overgrip a la vez. Los mapas planos por
+// `variante.id` que usaban los Analytics se pisaban entre sí y le
+// asignaban a un artículo la variante (y hasta el producto padre) de OTRO
+// producto. Aquí la variante se busca SIEMPRE dentro de la lista de SU
+// producto (`item.producto_id`); el mapa plano (`variantesPorIdLegado`)
+// queda solo para artículos viejos que no traigan `producto_id`. Si la
+// variante ya no existe en el catálogo, se usa el nombre que quedó
+// guardado en el propio ticket.
+function resolverProductoYVarianteDeItem(item, { productosPorId, variantesPorProducto, variantesPorIdLegado = null }) {
+  const productoId = item?.producto_id ?? item?.productoPadreId ?? null;
+  const varianteId = item?.variante_id ?? item?.varianteId ?? null;
+  let producto = productoId != null ? productosPorId?.[productoId] || null : null;
+  let variante = null;
+  if (varianteId != null) {
+    if (productoId != null) {
+      variante = (variantesPorProducto?.[productoId] || []).find((v) => String(v.id) === String(varianteId)) || null;
+    } else if (variantesPorIdLegado) {
+      variante = variantesPorIdLegado[varianteId] || null;
+      if (!producto && variante?._productoPadre) producto = variante._productoPadre;
+    }
+  }
+  const nombreVarianteTicket = item?.varianteNombre || item?.variante_nombre || null;
+  let nombre;
+  if (varianteId != null) {
+    const nombreVariante = variante?.nombre || nombreVarianteTicket;
+    nombre =
+      producto && nombreVariante
+        ? `${producto.nombre} — ${nombreVariante}`
+        : item?.nombre || (producto ? producto.nombre : 'Producto eliminado');
+  } else {
+    nombre = producto?.nombre || item?.nombre || 'Producto eliminado';
+  }
+  const clave = varianteId != null ? `v:${productoId ?? '?'}:${varianteId}` : `p:${productoId}`;
+  return { producto, variante, productoId, varianteId, nombre, clave };
+}
+
 function variantesDeProductoJSONB(producto) {
   if (!Array.isArray(producto?.variantes)) return [];
   return producto.variantes.map(normalizarVarianteJSONB).filter((v) => v.activo !== false);
@@ -22431,7 +22474,7 @@ function topeRedondoBI(max) {
  * La suma de todas las cubetas (+ `sinHora`, si hubiera registros sin hora)
  * es idéntica a `analisis.ingresosTotales`.
  * ------------------------------------------------------------------------- */
-function construirTendenciaIngresosBI({ modo, rango, reservasCobradas, cobrosFechados, ventasRango, productosPorId, variantesPorId }) {
+function construirTendenciaIngresosBI({ modo, rango, reservasCobradas, cobrosFechados, ventasRango, productosPorId, variantesPorId, variantesPorProducto }) {
   const ahora = new Date();
   let total = 0;
   let sinHora = 0;
@@ -22526,8 +22569,8 @@ function construirTendenciaIngresosBI({ modo, rango, reservasCobradas, cobrosFec
     items.forEach((item) => {
       if (item.tipo !== 'producto') return;
       const subtotal = Number(item.subtotal) || 0;
-      const variante = item.variante_id ? variantesPorId[item.variante_id] : null;
-      const cat = (variante?._productoPadre || productosPorId[item.producto_id] || null)?.categoria;
+      // Producto real del artículo (variante buscada dentro de SU producto).
+      const cat = resolverProductoYVarianteDeItem(item, { productosPorId, variantesPorProducto, variantesPorIdLegado: variantesPorId }).producto?.categoria;
       const bucket = cat === 'Cafetería/Bar' ? 'Cafetería/Bar' : cat === 'Canchas' ? 'Canchas' : 'Pro-Shop';
       // `sumar` ignora montos ≤ 0; un subtotal negativo (ajuste) debe restar
       // igual que en `analisis`, así que se aplica directo.
@@ -27997,7 +28040,10 @@ function ModuloAnalyticsBI({
     const ingresoCanchas = reservasCobradas.reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
     const transaccionesCanchas = reservasCobradas.length;
 
-    const claveVentaItem = (productoId, varianteId) => (varianteId ? `v:${varianteId}` : `p:${productoId}`);
+    // Clave por producto + variante (los ids de variante no son únicos entre
+    // productos — ver `resolverProductoYVarianteDeItem`).
+    const resolverItem = (item) =>
+      resolverProductoYVarianteDeItem(item, { productosPorId, variantesPorProducto, variantesPorIdLegado: variantesPorId });
 
     // FIX "Ingreso Total y Margen en $0 aunque las unidades sí se ven bien":
     // antes, "unidades vendidas" salía de `kardex` (movimientos
@@ -28039,11 +28085,11 @@ function ModuloAnalyticsBI({
         costoPorProductoKardex[mov.producto_id] = acc;
       });
 
-    function costoUnitarioParaItem(productoId, varianteId) {
+    function costoUnitarioParaItem(productoId, resuelto) {
       const kx = costoPorProductoKardex[productoId];
       if (kx && kx.unidades > 0) return kx.total / kx.unidades;
-      const variante = varianteId ? variantesPorId[varianteId] : null;
-      const prod = variante?._productoPadre || productosPorId[productoId] || null;
+      const variante = resuelto?.variante || null;
+      const prod = resuelto?.producto || productosPorId[productoId] || null;
       const crudo = variante?.costo_unitario != null ? variante.costo_unitario : prod?.costo_unitario;
       const n = Number(crudo);
       return Number.isFinite(n) ? n : 0;
@@ -28089,10 +28135,11 @@ function ModuloAnalyticsBI({
         const cantidad = Number(item.cantidad) || 0;
         const subtotal = Number(item.subtotal) || 0;
         const varianteId = item.variante_id || null;
-        const clave = claveVentaItem(item.producto_id, varianteId);
-        const variante = varianteId ? variantesPorId[varianteId] : null;
-        const prod = variante?._productoPadre || productosPorId[item.producto_id] || null;
-        const costoUnitario = costoUnitarioParaItem(item.producto_id, varianteId);
+        const resuelto = resolverItem(item);
+        const clave = resuelto.clave;
+        const variante = resuelto.variante;
+        const prod = resuelto.producto;
+        const costoUnitario = costoUnitarioParaItem(item.producto_id, resuelto);
         const costo = cantidad * costoUnitario;
 
         if (!filasPorClave[clave]) {
@@ -28100,9 +28147,7 @@ function ModuloAnalyticsBI({
             productoId: variante ? prod?.id || item.producto_id || null : item.producto_id || null,
             varianteId,
             producto: prod,
-            nombre: variante
-              ? `${prod?.nombre || 'Producto eliminado'} — ${variante?.nombre || item.nombre || 'Variante'}`
-              : prod?.nombre || item.nombre || 'Producto eliminado',
+            nombre: resuelto.nombre,
             categoria: prod?.categoria || null,
             unidades: 0,
             ingreso: 0,
@@ -28241,7 +28286,7 @@ function ModuloAnalyticsBI({
       topModificadores,
       auditoriaKardex,
     };
-  }, [ventasRango, kardexRango, productosPorId, variantesPorId, reservasCobradas, ingresosEventos]);
+  }, [ventasRango, kardexRango, productosPorId, variantesPorId, variantesPorProducto, reservasCobradas, ingresosEventos]);
 
   /* ---- Nº de canchas activas (denominador de RevPACP y Pico/Valle) ---- */
   const numCanchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false).length, [canchas]);
@@ -28294,8 +28339,9 @@ function ModuloAnalyticsBI({
         ventasRango,
         productosPorId,
         variantesPorId,
+        variantesPorProducto,
       }),
-    [modoFiltro, rango, reservasCobradas, ingresosEventos, ventasRango, productosPorId, variantesPorId]
+    [modoFiltro, rango, reservasCobradas, ingresosEventos, ventasRango, productosPorId, variantesPorId, variantesPorProducto]
   );
 
   // Exportación de Datos: arma un CSV súper completo (se abre nativamente en
