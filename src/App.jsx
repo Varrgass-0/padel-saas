@@ -14126,10 +14126,14 @@ function ModalAbsorberConsumo({ filas, onClose, onConfirmar, procesando }) {
 // 'analytics' a ningún `modulos` de `PERMISOS_POR_ROL`.
 // ============================================================================
 
-function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroCategoria, titulo }) {
+function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroCategoria, titulo, mostrarTopExtras = false }) {
   const [dias, setDias] = useState(7);
   const [cargando, setCargando] = useState(true);
   const [filas, setFilas] = useState([]);
+  // "Top Extras Más Pedidos" (vista operativa de Smart POS): preparados,
+  // salsas y extras (`item.modificadores`, migracion_v64) contados en
+  // UNIDADES — nunca ingreso, a diferencia del widget de Analytics BI.
+  const [extras, setExtras] = useState([]);
 
   const productosPorId = useMemo(() => Object.fromEntries((productos || []).map((p) => [p.id, p])), [productos]);
   // Solo para artículos viejos sin `producto_id` (ver
@@ -14150,6 +14154,7 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
       const { data } = await consultarVentasEnRango(inicio, fin);
       if (cancelado) return;
       const acumulado = {};
+      const acumuladoExtras = {};
       (data || [])
         .filter((v) => esCobroConfirmado(v))
         .forEach((v) => {
@@ -14166,9 +14171,24 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
             if (filtroCategoria && categoria !== filtroCategoria) return;
             if (!acumulado[clave]) acumulado[clave] = { nombre, categoria, unidades: 0 };
             acumulado[clave].unidades += Number(item.cantidad) || 0;
+            // Extras del artículo (mismo criterio que "Top Extras" de BI:
+            // cada extra cuenta tantas unidades como el artículo). Se agrupan
+            // por nombre normalizado para unir el mismo extra de grupos distintos.
+            (Array.isArray(item.modificadores) ? item.modificadores : []).forEach((mod) => {
+              const nombreExtra = String(mod?.nombre || '').trim();
+              if (!nombreExtra) return;
+              const claveExtra = claveNombre(nombreExtra) || nombreExtra;
+              if (!acumuladoExtras[claveExtra]) acumuladoExtras[claveExtra] = { nombre: nombreExtra, unidades: 0 };
+              acumuladoExtras[claveExtra].unidades += Number(item.cantidad) || 0;
+            });
           });
         });
       setFilas(Object.values(acumulado).sort((a, b) => b.unidades - a.unidades));
+      setExtras(
+        Object.values(acumuladoExtras)
+          .sort((a, b) => b.unidades - a.unidades || a.nombre.localeCompare(b.nombre))
+          .slice(0, 5)
+      );
       setCargando(false);
     })();
     return () => {
@@ -14203,7 +14223,11 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
           <option value={30}>Últimos 30 días</option>
         </select>
       </div>
-      <div className={`grid grid-cols-1 gap-3 ${filtroCategoria ? '' : 'sm:grid-cols-2'}`}>
+      <div
+        className={`grid grid-cols-1 gap-3 ${
+          mostrarTopExtras ? (filtroCategoria ? 'sm:grid-cols-2' : 'sm:grid-cols-2 xl:grid-cols-3') : filtroCategoria ? '' : 'sm:grid-cols-2'
+        }`}
+      >
         <div className="rounded-xl border border-slate-200 bg-white p-3">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Top 5 Más Vendidos (unidades)</p>
           {cargando ? (
@@ -14226,6 +14250,45 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
             </ol>
           )}
         </div>
+        {/* Tabla lateral "Top Extras Más Pedidos" — SOLO vista operativa
+            (Smart POS de Recepción/Caja y Restaurante/Bar): columnas #,
+            Modificador / Extra y Unidades, sin ingresos. La versión con
+            "Ingreso Extra" sigue viviendo solo en Analytics BI. */}
+        {mostrarTopExtras && (
+          <div className="rounded-xl border border-slate-200 bg-white p-3">
+            <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <Sliders size={12} className="text-orange-500" /> Top Extras Más Pedidos
+            </p>
+            {cargando ? (
+              <p className="mt-3 text-xs text-slate-500">Cargando...</p>
+            ) : extras.length === 0 ? (
+              <p className="mt-3 text-xs text-slate-500">Sin extras pedidos en el periodo.</p>
+            ) : (
+              <div className="mt-2 overflow-hidden rounded-lg border border-slate-200">
+                <table className="w-full text-left text-[11px]">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      <th className="w-8 px-2.5 py-1.5">#</th>
+                      <th className="px-2.5 py-1.5">Modificador / Extra</th>
+                      <th className="px-2.5 py-1.5 text-right">Unidades</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {extras.map((x, i) => (
+                      <tr key={x.nombre} className="border-b border-slate-200/70 last:border-0">
+                        <td className="px-2.5 py-1.5 font-black text-slate-400">{i + 1}°</td>
+                        <td className="max-w-0 truncate px-2.5 py-1.5 font-semibold text-slate-800" title={x.nombre}>
+                          {x.nombre}
+                        </td>
+                        <td className="px-2.5 py-1.5 text-right font-bold text-slate-900">{x.unidades} u.</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
         {/* Visibilidad de "Categoría Estrella" en el POS: con una pestaña de
             categoría específica activa (`filtroCategoria` viene de
             `categoriaActiva` en Smart POS — ver el caller), el Top 5 de
@@ -14779,6 +14842,7 @@ function TableroKDSRestauranteBar({ productos, canchas, variantesPorProducto, op
         variantesPorProducto={variantesPorProducto}
         filtroCategoria="Cafetería/Bar"
         titulo="Top 5 Más Vendidos (Restaurante/Bar)"
+        mostrarTopExtras
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -18570,6 +18634,7 @@ function ModuloSmartPOS({
                     ? 'Analytics Operativos · Top 5 Productos'
                     : `Top 5 ${CATEGORIAS_PRODUCTO.find((c) => c.value === categoriaActiva)?.label || 'Productos'} (Analytics Operativos)`
                 }
+                mostrarTopExtras
               />
               {permisos?.rol === 'recepcion' && (
                 <TarjetaReordenSugerido
@@ -18902,6 +18967,14 @@ async function montoVentasProductos(inicio, fin) {
 // así, si `variante_id` todavía no existe en un proyecto viejo, la consulta
 // no truena — simplemente viene `undefined` y esos movimientos solo cuentan
 // para `porProducto`, igual que antes de esta actualización.
+// Clave de ventas por VARIANTE: siempre producto + variante — los ids de
+// variante se repiten entre productos (ver `resolverProductoYVarianteDeItem`),
+// así que agrupar solo por `variante_id` mezclaba en "Días de Cobertura" las
+// ventas de, p. ej., "Electrolit — Coco" (id 1) con "Cerveza — Clara" (id 1).
+function claveVentasVariante(productoId, varianteId) {
+  return `${productoId ?? '?'}::${varianteId ?? ''}`;
+}
+
 async function unidadesVendidasPorProductoRango(inicio, fin) {
   const { data, error } = await conClubId(supabase.from('kardex').select('*'))
     .eq('tipo_movimiento', 'salida_venta')
@@ -18913,7 +18986,10 @@ async function unidadesVendidasPorProductoRango(inicio, fin) {
   (data || []).forEach((mov) => {
     const cantidad = Math.abs(Number(mov.cantidad) || 0);
     if (mov.producto_id) porProducto[mov.producto_id] = (porProducto[mov.producto_id] || 0) + cantidad;
-    if (mov.variante_id) porVariante[mov.variante_id] = (porVariante[mov.variante_id] || 0) + cantidad;
+    if (mov.variante_id) {
+      const clave = claveVentasVariante(mov.producto_id, mov.variante_id);
+      porVariante[clave] = (porVariante[clave] || 0) + cantidad;
+    }
   });
   return { porProducto, porVariante };
 }
@@ -19258,15 +19334,19 @@ function resolverProductoYVarianteDeItem(item, { productosPorId, variantesPorPro
     }
   }
   const nombreVarianteTicket = item?.varianteNombre || item?.variante_nombre || null;
+  // El nombre guardado en el ticket puede traer el extra compuesto
+  // ("Cerveza — Victoria (Extra: Michelada)"): los extras se reportan
+  // aparte, aquí solo [Producto] — [Variante].
+  const nombreTicketLimpio = String(item?.nombre || '').replace(/\s*\(Extra:[^)]*\)\s*$/i, '').trim() || null;
   let nombre;
   if (varianteId != null) {
     const nombreVariante = variante?.nombre || nombreVarianteTicket;
     nombre =
       producto && nombreVariante
         ? `${producto.nombre} — ${nombreVariante}`
-        : item?.nombre || (producto ? producto.nombre : 'Producto eliminado');
+        : nombreTicketLimpio || (producto ? producto.nombre : 'Producto eliminado');
   } else {
-    nombre = producto?.nombre || item?.nombre || 'Producto eliminado';
+    nombre = producto?.nombre || nombreTicketLimpio || 'Producto eliminado';
   }
   const clave = varianteId != null ? `v:${productoId ?? '?'}:${varianteId}` : `p:${productoId}`;
   return { producto, variante, productoId, varianteId, nombre, clave };
@@ -20657,7 +20737,7 @@ function FilaProductoInventario({
           key={v.id}
           variante={v}
           productoPadre={producto}
-          unidadesUltimos30Dias={ventasPorVarianteSemana?.[v.id] || 0}
+          unidadesUltimos30Dias={ventasPorVarianteSemana?.[claveVentasVariante(producto.id, v.id)] || 0}
           onGuardarCamposVariante={onGuardarCamposVariante}
           soloLectura={soloLectura}
         />
@@ -23190,7 +23270,7 @@ function generarCSVReporte({
           const vStock = Number(v.stock);
           const vValor = vNormalizada.maneja_stock && Number.isFinite(vStock) && Number.isFinite(vCosto) ? vStock * vCosto : 0;
           valorAlmacenTotal += vValor;
-          const vCobertura = calcularCoberturaStock(vNormalizada, ventasPorVarianteSemana?.[v.id] || 0);
+          const vCobertura = calcularCoberturaStock(vNormalizada, ventasPorVarianteSemana?.[claveVentasVariante(p.id, v.id)] || 0);
           filas.push([
             `↳ ${p.nombre} — ${v.nombre}`,
             etiquetaCategoriaProducto(p.categoria) || '',
