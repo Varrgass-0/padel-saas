@@ -50955,11 +50955,12 @@ function SeccionReservasAcademia({
       <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="config-validacion-minimo">
         <div className="mb-1 flex items-center gap-2">
           <Users size={16} className="text-orange-500" />
-          <h3 className="text-sm font-black text-slate-900">Clases Grupales: Participantes Mínimos</h3>
+          <h3 className="text-sm font-black text-slate-900">Clases Grupales: Tiempo Límite de Validación</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
-          Si a esta hora antes del inicio una clase grupal no juntó su mínimo de alumnos (definido al crearla), se cancela
-          automáticamente, se reembolsa el pago al Wallet de cada inscrito y se libera la cancha.
+          Número de horas previas al inicio de cada clase grupal en que el sistema revisa si se alcanzó el mínimo de alumnos
+          (definido al crear la clase). Si a esa hora no se completó el grupo, la clase se cancela automáticamente, se reembolsa
+          el pago al Wallet de cada inscrito y se libera la cancha.
         </p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Campo label="Tiempo límite para validar participantes mínimos de clases grupales (horas antes)">
@@ -55331,7 +55332,12 @@ function PortalPublicoJugadores({ clubSlug }) {
           tipo: 'clase',
           icon: GraduationCap,
           titulo: `Clase · ${clase?.nombre || 'Clase'}`,
-          detalle: a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta',
+          detalle:
+            a.tipo_pago === 'mensualidad'
+              ? 'Mensualidad'
+              : clase && clase.tipo_clase !== 'privada'
+              ? 'Clase Grupal (Cuota Individual)'
+              : 'Clase suelta',
           estadoPago: a.estado_pago,
           metodoPago: etiquetaMetodoPagoInscripcion(a.metodo_pago) || (a.pagado_con_creditos ? 'Crédito' : null),
           monto: Number(a.monto) || 0,
@@ -57021,9 +57027,9 @@ function PortalPublicoJugadores({ clubSlug }) {
                             <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                               <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50/60 p-3">
                                 <div>
-                                  <p className="text-xs font-black text-slate-900">Clase Suelta</p>
+                                  <p className="text-xs font-black text-slate-900">Clase Grupal</p>
                                   <p className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
-                                    Asiste a una sesión individual sin compromisos periódicos
+                                    Cuota individual por tu lugar en esta sesión grupal, sin compromisos periódicos
                                   </p>
                                   <p className="mt-1.5 text-base font-black text-slate-900">{formatoMoneda(c.precio_clase_suelta)}</p>
                                 </div>
@@ -57032,7 +57038,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                                   disabled={llena || !(Number(c.precio_clase_suelta) > 0)}
                                   className="mt-2.5 w-full justify-center px-3 py-1.5 text-xs"
                                 >
-                                  Reservar Clase Suelta
+                                  Reservar Clase Grupal
                                 </BotonSecundario>
                               </div>
                               <div className="flex flex-col justify-between rounded-xl border border-orange-400/40 bg-orange-400/[0.06] p-3">
@@ -57293,7 +57299,13 @@ function PortalPublicoJugadores({ clubSlug }) {
                 : flujoPago.tipo === 'torneo-union'
                 ? `${flujoPago.evento.nombre} · Unirme a ${flujoPago.participanteExistente?.nombre || 'pareja'}`
                 : flujoPago.tipo === 'academia'
-                ? `${flujoPago.evento.nombre} · ${flujoPago.tipoPago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta'}`
+                ? `${flujoPago.evento.nombre} · ${
+                    flujoPago.tipoPago === 'mensualidad'
+                      ? 'Mensualidad'
+                      : flujoPago.evento?.tipo_clase !== 'privada'
+                      ? 'Clase Grupal (Cuota Individual)'
+                      : 'Clase suelta'
+                  }`
                 : flujoPago.evento.nombre
             }
             politica={politicaCancelacionModulo(
@@ -59046,12 +59058,28 @@ function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancela
             </dt>
             <dd className="font-bold text-slate-800">{clase.coach_nombre || '—'}</dd>
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <dt className="flex items-center gap-1.5 text-slate-500">
-              <DollarSign size={13} /> Tipo de pago
-            </dt>
-            <dd className="text-right font-bold text-slate-800">{alumno.tipo_pago === 'mensualidad' ? 'Mensualidad' : alumno.pagado_con_creditos ? 'Con crédito de membresía' : 'Clase suelta'}</dd>
-          </div>
+          {/* App-95: en una clase GRUPAL pagada por cuota individual se rotula
+              "Tipo de clase: Clase Grupal (Cuota Individual)"; Mensualidad y
+              crédito de membresía conservan "Tipo de pago". */}
+          {(() => {
+            const esCuotaGrupal = clase?.tipo_clase !== 'privada' && alumno.tipo_pago !== 'mensualidad' && !alumno.pagado_con_creditos;
+            return (
+              <div className="flex items-center justify-between gap-2">
+                <dt className="flex items-center gap-1.5 text-slate-500">
+                  <DollarSign size={13} /> {esCuotaGrupal ? 'Tipo de clase' : 'Tipo de pago'}
+                </dt>
+                <dd className="text-right font-bold text-slate-800" data-testid="resumen-tipo-clase">
+                  {alumno.tipo_pago === 'mensualidad'
+                    ? 'Mensualidad'
+                    : alumno.pagado_con_creditos
+                    ? 'Con crédito de membresía'
+                    : esCuotaGrupal
+                    ? 'Clase Grupal (Cuota Individual)'
+                    : 'Clase suelta'}
+                </dd>
+              </div>
+            );
+          })()}
           <div className="flex items-center justify-between gap-2">
             <dt className="text-slate-500">Estado de la actividad</dt>
             <dd>
@@ -59480,7 +59508,8 @@ function ModalPoliticasClaseGrupal({ clase, tipoPago, inscritos = 0, horasValida
           <>
             Si el grupo mínimo no se completa <span className="font-black text-slate-900">{horasTexto} antes</span> del inicio
             {limite ? ` (${formatoFechaLarga(limite.fecha)} a las ${formatoHora12(limite.hora)})` : ''}, la clase se
-            <span className="font-bold text-slate-900"> cancelará automáticamente</span> y te avisaremos aquí en el Portal.
+            <span className="font-bold text-slate-900"> cancelará automáticamente</span>; se te enviará una notificación a través de este
+            Portal y el staff del club te contactará directamente por teléfono.
           </>,
           'politica-limite'
         )}
@@ -59488,9 +59517,13 @@ function ModalPoliticasClaseGrupal({ clase, tipoPago, inscritos = 0, horasValida
           Wallet,
           'Reembolsos únicamente a tu Wallet',
           <>
-            Las devoluciones por cancelación del grupo o dentro de las políticas del club se abonan{' '}
-            <span className="font-black text-slate-900">ÚNICAMENTE a tu Wallet de Jugador en QLUBOS</span>. No hay reembolsos en efectivo
-            ni a tarjetas bancarias.
+            Las devoluciones por cancelación automática de grupo o por cancelación realizada por el jugador{' '}
+            <span className="font-black text-slate-900">DENTRO</span> del tiempo permitido sin penalización se abonarán{' '}
+            <span className="font-black text-slate-900">ÚNICAMENTE a tu Wallet de Jugador en QLUBOS</span>.
+            <span className="mt-1 block">
+              No se realizan reembolsos en efectivo, tarjetas de crédito/débito ni transferencias a cuentas bancarias bajo ninguna
+              circunstancia.
+            </span>
           </>,
           'politica-wallet'
         )}
