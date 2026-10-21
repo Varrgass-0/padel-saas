@@ -1766,24 +1766,23 @@ function SelectorHoraBloques({ value, onChange, opciones, esDeshabilitada, ocult
   );
 }
 
-// GRANULARIDAD DE "HORA INICIO" DE CLASES según la Duración de Bloques/Turnos
+// SECUENCIA DE "HORA INICIO" DE CLASES según la Duración de Bloques/Turnos
 // del club (`duracionClaseMinutos`) — misma regla en "+ Nueva Clase" (panel)
-// y "Solicitar Clase" (Portal):
-//   • 60 min o 120 min (múltiplos de 1 hora) → solo horas en punto
-//     (07:00, 08:00, 09:00…).
-//   • 90 min (o cualquier duración que no sea múltiplo de 60) → cada 30 min
-//     (07:00, 07:30, 08:00…).
-// El inicio se alinea al primer :00 (o :00/:30) a partir de la apertura del
-// club, y solo se ofrecen inicios cuya clase completa termina antes del cierre.
+// y "Solicitar Clase" (Portal): los inicios avanzan en saltos EXACTOS de la
+// duración configurada, partiendo de la hora de apertura del club, para que
+// las clases nunca se empalmen entre sí:
+//   • 60 min  → 07:00, 08:00, 09:00, 10:00…
+//   • 90 min  → 07:00, 08:30, 10:00, 11:30, 13:00…
+//   • 120 min → 07:00, 09:00, 11:00, 13:00…
+// Solo se ofrecen inicios cuya clase completa termina antes del cierre.
 function pasoInicioClaseMin(duracionClaseMin) {
-  const d = Number(duracionClaseMin) || 60;
-  return d % 60 === 0 ? 60 : 30;
+  const d = Number(duracionClaseMin);
+  return Number.isFinite(d) && d > 0 ? d : 60;
 }
 function minutosInicioClase(aperturaMin, cierreMin, duracionClaseMin) {
-  const duracion = Number(duracionClaseMin) || 60;
-  const paso = pasoInicioClaseMin(duracion);
+  const duracion = pasoInicioClaseMin(duracionClaseMin);
   const lista = [];
-  for (let m = Math.ceil(aperturaMin / paso) * paso; m + duracion <= cierreMin; m += paso) lista.push(m);
+  for (let m = aperturaMin; m + duracion <= cierreMin; m += duracion) lista.push(m);
   return lista;
 }
 
