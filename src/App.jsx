@@ -1766,6 +1766,27 @@ function SelectorHoraBloques({ value, onChange, opciones, esDeshabilitada, ocult
   );
 }
 
+// GRANULARIDAD DE "HORA INICIO" DE CLASES según la Duración de Bloques/Turnos
+// del club (`duracionClaseMinutos`) — misma regla en "+ Nueva Clase" (panel)
+// y "Solicitar Clase" (Portal):
+//   • 60 min o 120 min (múltiplos de 1 hora) → solo horas en punto
+//     (07:00, 08:00, 09:00…).
+//   • 90 min (o cualquier duración que no sea múltiplo de 60) → cada 30 min
+//     (07:00, 07:30, 08:00…).
+// El inicio se alinea al primer :00 (o :00/:30) a partir de la apertura del
+// club, y solo se ofrecen inicios cuya clase completa termina antes del cierre.
+function pasoInicioClaseMin(duracionClaseMin) {
+  const d = Number(duracionClaseMin) || 60;
+  return d % 60 === 0 ? 60 : 30;
+}
+function minutosInicioClase(aperturaMin, cierreMin, duracionClaseMin) {
+  const duracion = Number(duracionClaseMin) || 60;
+  const paso = pasoInicioClaseMin(duracion);
+  const lista = [];
+  for (let m = Math.ceil(aperturaMin / paso) * paso; m + duracion <= cierreMin; m += paso) lista.push(m);
+  return lista;
+}
+
 // Opciones de inicio en pasos de `SLOT_MIN` (30 min) dentro del horario de
 // operación, exigiendo que quepa una duración mínima antes del cierre.
 function opcionesHoraInicio(aperturaMin, cierreMin, duracionMin = SLOT_MIN) {
@@ -38405,7 +38426,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     return m !== null && m < minutosAhora();
   };
   const opcionesInicioClase = useMemo(
-    () => opcionesHoraInicio(aperturaClaseMin, cierreClaseMin, duracionClaseMin),
+    () => minutosInicioClase(aperturaClaseMin, cierreClaseMin, duracionClaseMin).map(minutosAHora),
     [aperturaClaseMin, cierreClaseMin, duracionClaseMin]
   );
   const opcionesFinClase = useMemo(() => opcionesHoraFin(horaInicio, cierreClaseMin, duracionClaseMin), [horaInicio, cierreClaseMin, duracionClaseMin]);
@@ -58119,11 +58140,12 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   // de `configuracion_club` (mismo mecanismo que `rangos_horario_clases`).
   // Respaldo a 60 min si el club nunca lo configuró.
   const { claseMin: duracionClaseMinutos } = duracionesBloqueDelClub(club);
-  const horasDelDia = useMemo(() => {
-    const horas = [];
-    for (let m = horaAperturaMin; m + duracionClaseMinutos <= horaCierreMin; m += duracionClaseMinutos) horas.push(m);
-    return horas;
-  }, [horaAperturaMin, horaCierreMin, duracionClaseMinutos]);
+  // Paso entre horarios: horas en punto para 60/120 min, cada 30 min para
+  // 90 min (`minutosInicioClase`, misma regla que "+ Nueva Clase").
+  const horasDelDia = useMemo(
+    () => minutosInicioClase(horaAperturaMin, horaCierreMin, duracionClaseMinutos),
+    [horaAperturaMin, horaCierreMin, duracionClaseMinutos]
+  );
   const esHoy = fecha === hoyISO();
   // CONFIGURACIÓN DE HORARIOS DE CLASE DEL CLUB (item 2): antes de resolver
   // ocupación de cancha, se revisa si la hora siquiera cae dentro de algún
