@@ -4013,6 +4013,12 @@ const CONFIG_CLUB_DEFAULT = {
   academiaPrecioBaseClaseSuelta: 180,
   academiaPrecioBaseMensualidad: 1200,
   academiaClasesIncluidasMensualidad: 4,
+  // Tarifas Grupales por Persona (migracion_v110) — precio POR PERSONA de
+  // una clase grupal de 2/3/4 participantes. `null` = "sin definir": en ese
+  // caso se usa el Precio Base de Clase Suelta (ver `precioGrupalPorPersona`).
+  academiaPrecioGrupal2: null,
+  academiaPrecioGrupal3: null,
+  academiaPrecioGrupal4: null,
 };
 
 // ============================================================================
@@ -4238,7 +4244,43 @@ function tarifasAcademiaDelClub(fuente) {
       Number.isFinite(clasesIncluidasCruda) && clasesIncluidasCruda > 0
         ? clasesIncluidasCruda
         : CONFIG_CLUB_DEFAULT.academiaClasesIncluidasMensualidad,
+    // Tarifas Grupales por Persona (migracion_v110) — `precioGrupal[n]` YA
+    // resuelto con el respaldo a Clase Suelta; `precioGrupalConfigurado[n]`
+    // es el valor crudo (`null` si el club no lo definió).
+    precioGrupal: {
+      2: precioGrupalPorPersona(fuente, 2),
+      3: precioGrupalPorPersona(fuente, 3),
+      4: precioGrupalPorPersona(fuente, 4),
+    },
+    precioGrupalConfigurado: {
+      2: precioGrupalCrudo(fuente, 2),
+      3: precioGrupalCrudo(fuente, 3),
+      4: precioGrupalCrudo(fuente, 4),
+    },
   };
+}
+// Tarifas Grupales por Persona (Configuración del Club → Reservas & Academia
+// → Tarifas y Paquetes de Academia, migracion_v110). Acepta tanto el
+// `configClub` camelCase del Panel como la fila snake_case del Portal.
+// `precioGrupalCrudo` → número >= 0 o `null` (no definido / vacío).
+function normalizarPrecioGrupal(valor) {
+  if (valor === null || valor === undefined || valor === '') return null;
+  const n = Number(valor);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+function precioGrupalCrudo(fuente, personas) {
+  const n = Number(personas);
+  if (![2, 3, 4].includes(n)) return null;
+  return normalizarPrecioGrupal(fuente?.[`academiaPrecioGrupal${n}`] ?? fuente?.[`academia_precio_grupal_${n}`]);
+}
+// Precio por persona para una clase grupal de `personas` participantes. Si el
+// club no definió esa tarifa (o `personas` no es 2/3/4), cae al Precio Base de
+// Clase Suelta — exactamente la regla de respaldo pedida.
+function precioGrupalPorPersona(fuente, personas) {
+  const crudo = precioGrupalCrudo(fuente, personas);
+  if (crudo != null) return crudo;
+  const base = Number(fuente?.academiaPrecioBaseClaseSuelta ?? fuente?.academia_precio_base_clase_suelta);
+  return Number.isFinite(base) && base >= 0 ? base : CONFIG_CLUB_DEFAULT.academiaPrecioBaseClaseSuelta;
 }
 // "Evento"/concepto de una inscripción de Academia pendiente de cobro en
 // Smart POS (`inscripcionesEventoPendientes` → `filasAcademia`) — un solo
@@ -4284,6 +4326,10 @@ function leerConfigClubLocal() {
       toleranciaTorneosHoras: Number(parsed.toleranciaTorneosHoras) > 0 ? Number(parsed.toleranciaTorneosHoras) : CONFIG_CLUB_DEFAULT.toleranciaTorneosHoras,
       toleranciaRetasEnabled: parsed.toleranciaRetasEnabled !== false,
       toleranciaRetasHoras: Number(parsed.toleranciaRetasHoras) > 0 ? Number(parsed.toleranciaRetasHoras) : CONFIG_CLUB_DEFAULT.toleranciaRetasHoras,
+      // Tarifas Grupales por Persona (migracion_v110) — caché local.
+      academiaPrecioGrupal2: normalizarPrecioGrupal(parsed.academiaPrecioGrupal2),
+      academiaPrecioGrupal3: normalizarPrecioGrupal(parsed.academiaPrecioGrupal3),
+      academiaPrecioGrupal4: normalizarPrecioGrupal(parsed.academiaPrecioGrupal4),
     };
   } catch (_e) {
     return { ...CONFIG_CLUB_DEFAULT };
@@ -38482,6 +38528,9 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   // `claveHorarioInicial` recuerda el horario con el que abrió el modal para
   // saber cuándo todavía aplica el precio de la solicitud.
   const claveHorarioInicial = useRef(`${fecha}|${horaInicio}|${horaFin}`);
+  // App-92: el precio de la solicitud también deja de aplicar si el operador
+  // cambia el Tipo de Clase o la Capacidad (cambia la tarifa por persona).
+  const claveGrupoInicial = useRef(`${tipoClase}|${capacidad}`);
   const precioSolicitudClase = Number(solicitudOrigen?.precio_clase_suelta);
   const precioDinamicoClase = useMemo(() => {
     const dow = fecha ? new Date(`${fecha}T12:00:00`).getDay() : null;
@@ -38491,9 +38540,22 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     const duracion = ini !== null && fin !== null && fin > ini ? fin - ini : 60;
     return precioClaseSueltaEnHorario(horaInicio, duracion, franjas, tarifasAcademiaClub.precioBaseClaseSuelta);
   }, [fecha, horaInicio, horaFin, tarifasHorarios, tarifasAcademiaClub.precioBaseClaseSuelta]);
+  // Tarifas Grupales por Persona (App-92, migracion_v110): en una clase
+  // Grupal con capacidad 2/3/4, "Precio Clase Suelta" sugiere la tarifa POR
+  // PERSONA de la matriz del club; si esa tarifa no está definida (o la
+  // capacidad es otra), se mantiene la sugerencia de siempre (Clase Suelta
+  // con su franja horaria).
+  const capacidadGrupoNum = Number(capacidad);
+  const precioGrupalSugerido =
+    tipoClase === 'grupal' && [2, 3, 4].includes(capacidadGrupoNum) ? tarifasAcademiaClub.precioGrupalConfigurado?.[capacidadGrupoNum] ?? null : null;
   const precioClaseSugerido =
-    Number.isFinite(precioSolicitudClase) && precioSolicitudClase > 0 && `${fecha}|${horaInicio}|${horaFin}` === claveHorarioInicial.current
+    Number.isFinite(precioSolicitudClase) &&
+    precioSolicitudClase > 0 &&
+    `${fecha}|${horaInicio}|${horaFin}` === claveHorarioInicial.current &&
+    `${tipoClase}|${capacidad}` === claveGrupoInicial.current
       ? precioSolicitudClase
+      : precioGrupalSugerido != null
+      ? precioGrupalSugerido
       : precioDinamicoClase;
   const [precioMensualidad, setPrecioMensualidad] = useState(String(tarifasAcademiaClub.precioBaseMensualidad));
   const [precioClaseSuelta, setPrecioClaseSuelta] = useState(String(precioClaseSugerido));
@@ -38521,6 +38583,37 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   const [alumnoPrivadoNombre, setAlumnoPrivadoNombre] = useState(solicitudOrigen?.nombre || '');
   const [alumnoPrivadoTelefono, setAlumnoPrivadoTelefono] = useState(solicitudOrigen?.telefono || '');
 
+  // Modo de la Clase Grupal (App-92): "Inscribir Jugadores Ahora" asocia
+  // alumnos a cada cupo al crear la clase; "Clase Abierta (para el Portal)"
+  // la publica sin alumnos (comportamiento de siempre) para que cada jugador
+  // se inscriba de forma individual. Desde una solicitud de grupo arranca en
+  // "Inscribir" con el titular + sus acompañantes ya precargados.
+  const [modoGrupo, setModoGrupo] = useState(
+    solicitudOrigen && solicitudOrigen.tipo_solicitud !== 'privada' ? 'inscribir' : 'abierta'
+  );
+  const [alumnosGrupo, setAlumnosGrupo] = useState(() => {
+    if (!solicitudOrigen || solicitudOrigen.tipo_solicitud === 'privada') return [];
+    const titular = solicitudOrigen.nombre
+      ? [{ jugadorId: solicitudOrigen.jugador_id || null, nombre: solicitudOrigen.nombre || '', telefono: solicitudOrigen.telefono || '' }]
+      : [];
+    const extras = (Array.isArray(solicitudOrigen.acompanantes) ? solicitudOrigen.acompanantes : []).map((a) => {
+      const delDirectorio = a?.jugador_id != null ? jugadoresPorId?.[a.jugador_id] : null;
+      return {
+        jugadorId: a?.jugador_id != null ? a.jugador_id : null,
+        nombre: a?.nombre || delDirectorio?.nombre || '',
+        telefono: a?.telefono || delDirectorio?.telefono || '',
+      };
+    });
+    return [...titular, ...extras];
+  });
+  const actualizarAlumnoGrupo = (indice, cambios) =>
+    setAlumnosGrupo((prev) => {
+      const copia = [...prev];
+      while (copia.length <= indice) copia.push({ jugadorId: null, nombre: '', telefono: '' });
+      copia[indice] = { ...copia[indice], ...cambios };
+      return copia;
+    });
+
   const coachNombre = coachEmpleadoId ? coachesDisponibles.find((c) => c.id === coachEmpleadoId)?.nombre || '' : coachNombreLibre.trim();
   const esPrivada = tipoClase === 'privada';
   const capacidadEfectiva = esPrivada ? '1' : capacidad;
@@ -38529,6 +38622,10 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   // ya no captura un nombre libre para este tipo de clase.
   const nombreClasePrivada = alumnoPrivadoNombre.trim() ? `Clase Privada - ${alumnoPrivadoNombre.trim()}` : '';
   const nombreEfectivo = esPrivada ? nombreClasePrivada : nombre;
+  // Cupos visibles para "Inscribir Jugadores Ahora" (tope visual de 12).
+  const inscribirGrupoAhora = !esPrivada && modoGrupo === 'inscribir';
+  const cuposGrupoVisibles = Math.max(0, Math.min(Number(capacidad) || 0, 12));
+  const alumnosGrupoVisibles = Array.from({ length: cuposGrupoVisibles }, (_, i) => alumnosGrupo[i] || { jugadorId: null, nombre: '', telefono: '' });
 
   async function guardar() {
     if (esPrivada) {
@@ -38554,6 +38651,30 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
       return setError(`La clase no puede durar más de ${duracionClaseMin} minutos (duración configurada por el club).`);
     }
     if (!(Number(capacidadEfectiva) > 0)) return setError('La capacidad máxima debe ser mayor a 0.');
+    // "Inscribir Jugadores Ahora" (App-92): al menos un alumno; los nuevos
+    // (no elegidos del directorio) requieren teléfono a 10 dígitos — es su
+    // identificador único en `jugadores`; sin duplicados.
+    let alumnosAInscribir = [];
+    if (inscribirGrupoAhora) {
+      alumnosAInscribir = alumnosGrupoVisibles
+        .map((a, i) => ({ ...a, cupo: i + 1, nombre: (a.nombre || '').trim(), telefono: (a.telefono || '').trim() }))
+        .filter((a) => a.nombre);
+      if (alumnosAInscribir.length === 0) {
+        return setError('Agrega al menos un alumno o cambia a "Clase Abierta (para el Portal)".');
+      }
+      const vistosId = new Set();
+      const vistosTel = new Set();
+      for (const a of alumnosAInscribir) {
+        const tel = claveTelefono(a.telefono);
+        if (!a.jugadorId && (!tel || a.telefono.replace(/\D/g, '').length !== 10)) {
+          return setError(`Cupo ${a.cupo}: captura el teléfono a 10 dígitos (identifica al jugador en el directorio).`);
+        }
+        if (a.jugadorId && vistosId.has(String(a.jugadorId))) return setError(`Cupo ${a.cupo}: ese jugador ya está inscrito en otro cupo.`);
+        if (tel && vistosTel.has(tel)) return setError(`Cupo ${a.cupo}: ese teléfono ya está en otro cupo.`);
+        if (a.jugadorId) vistosId.add(String(a.jugadorId));
+        if (tel) vistosTel.add(tel);
+      }
+    }
 
     // Igual candado anti-encimado que una reserva/reta normal — clave para
     // el flujo de "clic en celda libre del Cronograma" (item 1): si la
@@ -38681,12 +38802,60 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
       }
     }
 
+    // "Inscribir Jugadores Ahora" (App-92): un `academia_alumnos` por cupo
+    // con la tarifa EXACTA por persona (`precioClaseSuelta`) — mismo payload
+    // que el alta de Clase Privada, así Smart POS (Cuentas por Cobrar) cobra
+    // a cada quien su parte y Analytics BI suma cada `monto` pagado sin
+    // cambios. Cada alumno queda vinculado a su expediente (`jugador_id`,
+    // creado por teléfono si no existía) → aparece en su historial.
+    let inscritosGrupo = 0;
+    if (inscribirGrupoAhora && !modoLocal) {
+      for (const a of alumnosAInscribir) {
+        const jugadorIdAlumno = a.jugadorId || (await resolverJugadorId(a.nombre, { telefono: a.telefono, directorio: directorioJugadores }));
+        const payloadAlumno = withClubId({
+          clase_id: claseCreada.id,
+          jugador_id: jugadorIdAlumno,
+          nombre: a.nombre,
+          telefono: a.telefono || null,
+          tipo_pago: 'clase_suelta',
+          estado_pago: 'pendiente',
+          monto: Number(precioClaseSuelta) || 0,
+          estado: 'activo',
+        });
+        const { data: alumnoCreado, error: errAlumno } = await insertarConColumnasOpcionales('academia_alumnos', payloadAlumno, [
+          'jugador_id',
+          'telefono',
+        ]);
+        if (errAlumno || !alumnoCreado) {
+          console.warn('[Academia & Clínicas] Clase grupal creada, pero no se pudo inscribir a un alumno.', errAlumno);
+          onAlumnoAgregado?.({ ...payloadAlumno, id: idLocal('academia_alumno'), _local: true });
+        } else {
+          inscritosGrupo += 1;
+          onAlumnoAgregado?.(alumnoCreado);
+        }
+        if (jugadorIdAlumno) {
+          const resultadoNotif = await crearNotificacionJugador({
+            jugadorId: jugadorIdAlumno,
+            titulo: '¡Clase Confirmada!',
+            mensaje: `Quedaste inscrito en la clase "${claseCreada.nombre}" con el Coach ${coachNombre} el ${formatoFechaLarga(fecha)} a las ${formatoHora12(horaInicio)}.`,
+            tipo: 'clase_grupal_confirmada',
+            payload: { clase_id: claseCreada.id, fecha, hora_inicio: horaInicio, hora_fin: horaFin, coach_nombre: coachNombre },
+          });
+          if (!resultadoNotif.ok) {
+            console.warn('[Academia & Clínicas] Alumno inscrito, pero no se pudo notificar al jugador.', resultadoNotif.error);
+          }
+        }
+      }
+    }
+
     setGuardando(false);
     if (!modoLocal) {
       toast({
         titulo: 'Clase creada',
         detalle: esPrivada
           ? `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)} · Alumno inscrito y notificado`
+          : inscribirGrupoAhora
+          ? `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)} · ${inscritosGrupo} alumno${inscritosGrupo === 1 ? '' : 's'} inscrito${inscritosGrupo === 1 ? '' : 's'}`
           : `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)}`,
       });
     }
@@ -38855,7 +39024,13 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
           </Campo>
           <Campo
             label="Precio Clase Suelta"
-            hint={!puedeEditarPreciosAcademia ? 'Definido por el Dueño/Admin en Configuración del Club.' : undefined}
+            hint={
+              precioGrupalSugerido != null
+                ? `Tarifa por persona (grupo de ${capacidadGrupoNum}).`
+                : !puedeEditarPreciosAcademia
+                ? 'Definido por el Dueño/Admin en Configuración del Club.'
+                : undefined
+            }
           >
             <input
               type="number"
@@ -38867,6 +39042,70 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
             />
           </Campo>
         </div>
+        {/* Modo de la Clase Grupal (App-92): "Inscribir Jugadores Ahora" vs
+            "Clase Abierta (para el Portal)". */}
+        {!esPrivada && (
+          <div className="space-y-2" data-testid="modo-grupo-nueva-clase">
+            <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1" role="radiogroup" aria-label="Modo de inscripción de la clase">
+              {[
+                { valor: 'inscribir', texto: 'Inscribir Jugadores Ahora', Icono: UserPlus },
+                { valor: 'abierta', texto: 'Clase Abierta (para el Portal)', Icono: Users },
+              ].map(({ valor, texto, Icono }) => (
+                <button
+                  key={valor}
+                  type="button"
+                  role="radio"
+                  aria-checked={modoGrupo === valor}
+                  onClick={() => setModoGrupo(valor)}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-[11px] font-bold transition ${
+                    modoGrupo === valor ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Icono size={13} /> {texto}
+                </button>
+              ))}
+            </div>
+            {inscribirGrupoAhora ? (
+              <div className="space-y-2">
+                <p className="text-[11px] text-slate-500">
+                  Cada alumno queda inscrito con su cuenta pendiente de {formatoMoneda(Number(precioClaseSuelta) || 0)} en Smart POS. Los cupos vacíos quedan
+                  libres para inscribirse desde el Portal.
+                </p>
+                {alumnosGrupoVisibles.map((a, i) => (
+                  <div key={i} className="rounded-lg border border-slate-200 bg-slate-50/60 p-2" data-testid={`cupo-alumno-${i + 1}`}>
+                    <p className="mb-1 text-[10px] font-black uppercase tracking-wide text-slate-500">Cupo {i + 1}</p>
+                    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[1fr_150px]">
+                      <SelectorJugadorRegistrado
+                        jugadores={directorioJugadores}
+                        nombre={a.nombre}
+                        onNombreChange={(v) => actualizarAlumnoGrupo(i, { nombre: v })}
+                        onSeleccionarJugador={(j) =>
+                          actualizarAlumnoGrupo(i, j ? { jugadorId: j.id, telefono: j.telefono || '' } : { jugadorId: null })
+                        }
+                        jugadorSeleccionadoId={a.jugadorId}
+                        placeholder="Nombre del alumno..."
+                      />
+                      <input
+                        value={a.telefono}
+                        onChange={(e) => actualizarAlumnoGrupo(i, { telefono: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                        className={inputClase}
+                        placeholder="Teléfono (10 dígitos)"
+                        inputMode="numeric"
+                        disabled={!!a.jugadorId}
+                        aria-label={`Teléfono cupo ${i + 1}`}
+                      />
+                    </div>
+                  </div>
+                ))}
+                {(Number(capacidad) || 0) > 12 && (
+                  <p className="text-[11px] text-slate-500">Se muestran 12 cupos; el resto queda abierto para el Portal.</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-500">Se publica sin alumnos: cada jugador se inscribe y paga su lugar de forma individual desde el Portal.</p>
+            )}
+          </div>
+        )}
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
         {/* Arquitectura de Fecha Única Específica: ya no existe "repetir
             semanalmente" — cada clase es una sesión de una sola fecha real,
@@ -42521,6 +42760,12 @@ function ModuloAcademiaClinicas({
                         {rangoHora ? ` · ${rangoHora}` : ''}
                       </p>
                       {s.telefono && <p className="mt-0.5 text-xs text-slate-500">Tel. {s.telefono}</p>}
+                      {/* Acompañantes capturados en el Portal (App-92, migracion_v110). */}
+                      {Array.isArray(s.acompanantes) && s.acompanantes.length > 0 && (
+                        <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
+                          <Users size={12} /> Con: {s.acompanantes.map((a) => a?.nombre).filter(Boolean).join(', ')}
+                        </p>
+                      )}
                     </div>
                     <span
                       className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold ${
@@ -47055,6 +47300,11 @@ function normalizarFilaClub(fila, tabla) {
     academia_precio_base_mensualidad: Number(fila.academia_precio_base_mensualidad) >= 0 ? Number(fila.academia_precio_base_mensualidad) : undefined,
     academia_clases_incluidas_mensualidad:
       Number(fila.academia_clases_incluidas_mensualidad) > 0 ? Number(fila.academia_clases_incluidas_mensualidad) : undefined,
+    // Tarifas Grupales por Persona (migracion_v110) — `null` = sin definir
+    // (el Portal cae al Precio Base de Clase Suelta vía `precioGrupalPorPersona`).
+    academia_precio_grupal_2: normalizarPrecioGrupal(fila.academia_precio_grupal_2),
+    academia_precio_grupal_3: normalizarPrecioGrupal(fila.academia_precio_grupal_3),
+    academia_precio_grupal_4: normalizarPrecioGrupal(fila.academia_precio_grupal_4),
     // Políticas y Tolerancia de Cancelación (Unificación del Motor de
     // Confirmación/Cancelación en el Portal) — hasta ahora esta función NO
     // exponía ninguna de estas columnas al Portal (lista blanca), así que el
@@ -50408,6 +50658,18 @@ function SeccionReservasAcademia({
     setClasesIncluidasMensualidad(String(config.academiaClasesIncluidasMensualidad || CONFIG_CLUB_DEFAULT.academiaClasesIncluidasMensualidad));
   }, [config.academiaPrecioBaseClaseSuelta, config.academiaPrecioBaseMensualidad, config.academiaClasesIncluidasMensualidad]);
 
+  // Tarifas Grupales por Persona (migracion_v110) — 3 campos opcionales. Vacío
+  // = sin definir → se usa el Precio Base de Clase Suelta.
+  const [precioGrupal2, setPrecioGrupal2] = useState(config.academiaPrecioGrupal2 != null ? String(config.academiaPrecioGrupal2) : '');
+  const [precioGrupal3, setPrecioGrupal3] = useState(config.academiaPrecioGrupal3 != null ? String(config.academiaPrecioGrupal3) : '');
+  const [precioGrupal4, setPrecioGrupal4] = useState(config.academiaPrecioGrupal4 != null ? String(config.academiaPrecioGrupal4) : '');
+  useEffect(() => {
+    setPrecioGrupal2(config.academiaPrecioGrupal2 != null ? String(config.academiaPrecioGrupal2) : '');
+    setPrecioGrupal3(config.academiaPrecioGrupal3 != null ? String(config.academiaPrecioGrupal3) : '');
+    setPrecioGrupal4(config.academiaPrecioGrupal4 != null ? String(config.academiaPrecioGrupal4) : '');
+  }, [config.academiaPrecioGrupal2, config.academiaPrecioGrupal3, config.academiaPrecioGrupal4]);
+  const precioClaseSueltaVigente = Number(precioBaseClaseSuelta) >= 0 && precioBaseClaseSuelta !== '' ? Number(precioBaseClaseSuelta) : CONFIG_CLUB_DEFAULT.academiaPrecioBaseClaseSuelta;
+
   async function guardarTarifasAcademia() {
     await onGuardarConfigClub?.({
       // Resto de la configuración del club — esta tarjeta no la edita, se
@@ -50433,6 +50695,9 @@ function SeccionReservasAcademia({
       academiaPrecioBaseMensualidad: Number(precioBaseMensualidad) >= 0 ? Number(precioBaseMensualidad) : CONFIG_CLUB_DEFAULT.academiaPrecioBaseMensualidad,
       academiaClasesIncluidasMensualidad:
         Number(clasesIncluidasMensualidad) > 0 ? Number(clasesIncluidasMensualidad) : CONFIG_CLUB_DEFAULT.academiaClasesIncluidasMensualidad,
+      academiaPrecioGrupal2: normalizarPrecioGrupal(precioGrupal2),
+      academiaPrecioGrupal3: normalizarPrecioGrupal(precioGrupal3),
+      academiaPrecioGrupal4: normalizarPrecioGrupal(precioGrupal4),
     });
   }
 
@@ -50471,6 +50736,9 @@ function SeccionReservasAcademia({
       academiaPrecioBaseMensualidad: Number(precioBaseMensualidad) >= 0 ? Number(precioBaseMensualidad) : CONFIG_CLUB_DEFAULT.academiaPrecioBaseMensualidad,
       academiaClasesIncluidasMensualidad:
         Number(clasesIncluidasMensualidad) > 0 ? Number(clasesIncluidasMensualidad) : CONFIG_CLUB_DEFAULT.academiaClasesIncluidasMensualidad,
+      academiaPrecioGrupal2: normalizarPrecioGrupal(precioGrupal2),
+      academiaPrecioGrupal3: normalizarPrecioGrupal(precioGrupal3),
+      academiaPrecioGrupal4: normalizarPrecioGrupal(precioGrupal4),
     });
     return true;
   }
@@ -50533,6 +50801,35 @@ function SeccionReservasAcademia({
               placeholder="4"
             />
           </Campo>
+        </div>
+        {/* Tarifas Grupales por Persona (migracion_v110) — precio POR PERSONA
+            según el número de participantes de una clase grupal. Vacío = se
+            cobra el Precio Base Clase Suelta. Prellenan "+ Nueva Clase"
+            (Grupal) y el "Desde $X / persona" del Portal. */}
+        <div className="mt-4 border-t border-slate-200 pt-3">
+          <p className="mb-2 text-[11px] font-black uppercase tracking-wide text-slate-500">Tarifas Grupales (precio por persona)</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {[
+              { n: 2, valor: precioGrupal2, set: setPrecioGrupal2 },
+              { n: 3, valor: precioGrupal3, set: setPrecioGrupal3 },
+              { n: 4, valor: precioGrupal4, set: setPrecioGrupal4 },
+            ].map(({ n, valor, set }) => (
+              <Campo key={n} label={`Precio Grupal (${n} Personas) ($/pers)`}>
+                <input
+                  type="number"
+                  min="0"
+                  value={valor}
+                  onChange={(e) => set(e.target.value)}
+                  className={inputClase}
+                  placeholder={String(precioClaseSueltaVigente)}
+                  aria-label={`Precio grupal ${n} personas por persona`}
+                />
+              </Campo>
+            ))}
+          </div>
+          <p className="mt-1.5 text-[11px] text-slate-500">
+            Si dejas un campo vacío, ese tamaño de grupo cobra el Precio Base Clase Suelta ({formatoMoneda(precioClaseSueltaVigente)} por persona).
+          </p>
         </div>
         {/* Persistencia Atómica al Avanzar de Módulo: este botón propio solo
             se muestra fuera del Onboarding — dentro del wizard, "Siguiente
@@ -55164,8 +55461,81 @@ function PortalPublicoJugadores({ clubSlug }) {
   // `insertarConColumnasOpcionales` con columnas opcionales por si el
   // proyecto todavía no corrió esas migraciones — la solicitud igual queda
   // visible en Modo Local en vez de tronar el formulario.
+  // Búsqueda de jugadores del club para los acompañantes (App-92) — RPC
+  // `fn_portal_buscar_jugadores_club` (migracion_v110), validada con el
+  // token de sesión del Portal. Sin token (sesión vieja) o sin la migración
+  // regresa `ok: false` y el campo ofrece la captura manual.
+  const buscarJugadoresClubPortal = useCallback(
+    async (q) => {
+      if (!jugador?.portalToken || !club?.id) return { ok: false, data: [] };
+      try {
+        const { data, error } = await supabase.rpc('fn_portal_buscar_jugadores_club', {
+          p_token: jugador.portalToken,
+          p_club_id: Number(club.id),
+          p_q: String(q || '').slice(0, 60),
+        });
+        if (error) throw error;
+        return { ok: true, data: Array.isArray(data) ? data : [] };
+      } catch (err) {
+        console.warn('[Portal] Búsqueda de jugadores del club no disponible.', err?.message || err);
+        return { ok: false, data: [] };
+      }
+    },
+    [jugador?.portalToken, club?.id]
+  );
+
+  // Registro de acompañantes (App-92): teléfono = identificador único; si el
+  // jugador no existe en el club se crea su expediente en `jugadores` (RPC
+  // `fn_portal_registrar_acompanantes`, migracion_v110). Si la RPC no está
+  // disponible, los acompañantes se guardan tal cual en la solicitud y el
+  // Panel los vincula/crea por teléfono al crear la clase (`resolverJugadorId`).
+  async function registrarAcompanantesPortal(lista) {
+    const base = (lista || []).map((a) => ({
+      jugador_id: a.jugadorId || null,
+      nombre: a.nombre || '',
+      telefono: a.telefono || null,
+      origen: a.origen || (a.jugadorId ? 'directorio' : 'manual'),
+    }));
+    if (base.length === 0) return { lista: [], error: null };
+    if (!jugador?.portalToken || !club?.id) return { lista: base, error: null };
+    try {
+      const { data, error } = await supabase.rpc('fn_portal_registrar_acompanantes', {
+        p_token: jugador.portalToken,
+        p_club_id: Number(club.id),
+        p_acompanantes: base.map((a) => ({ jugador_id: a.jugador_id, nombre: a.nombre, telefono: a.telefono })),
+      });
+      if (error) throw error;
+      const filas = Array.isArray(data) ? data : [];
+      return {
+        lista: base.map((a, i) => ({
+          ...a,
+          jugador_id: filas[i]?.jugador_id != null ? String(filas[i].jugador_id) : a.jugador_id,
+          nombre: a.nombre || filas[i]?.nombre || '',
+        })),
+        error: null,
+      };
+    } catch (err) {
+      // Errores de validación de la RPC (teléfono, duplicado, etc.) sí se
+      // muestran; una RPC inexistente (proyecto sin v110) no bloquea.
+      const mensaje = String(err?.message || '');
+      if (/function|schema cache|does not exist|42883|PGRST202/i.test(mensaje + ' ' + (err?.code || ''))) {
+        return { lista: base, error: null };
+      }
+      return { lista: base, error: mensaje || 'No se pudieron registrar los acompañantes.' };
+    }
+  }
+
   async function enviarSolicitudClase(datos) {
     if (!requerirCuentaPortal('solicitar una clase')) return false;
+    // Acompañantes (solo Grupal): se registran ANTES de crear la solicitud
+    // para guardarla ya con los `jugador_id` resueltos.
+    const { lista: acompanantesRegistrados, error: errorAcompanantes } = await registrarAcompanantesPortal(
+      datos.tipo === 'grupal' ? datos.acompanantes : []
+    );
+    if (errorAcompanantes) {
+      mostrarToast({ titulo: 'Revisa a tus acompañantes', detalle: errorAcompanantes, tono: 'error' });
+      return false;
+    }
     const payload = withClubId({
       jugador_id: jugador?.id || null,
       nombre: jugador?.nombre || datos.nombre || '',
@@ -55195,10 +55565,13 @@ function PortalPublicoJugadores({ clubSlug }) {
       precio_clase_suelta: Number.isFinite(Number(datos.precioClaseSuelta)) && datos.precioClaseSuelta !== null && datos.precioClaseSuelta !== undefined
         ? Number(datos.precioClaseSuelta)
         : null,
+      // Acompañantes (migracion_v110) — `null` si no hay (Privada o sin datos).
+      acompanantes: acompanantesRegistrados.length > 0 ? acompanantesRegistrados : null,
       estado: 'pendiente',
     });
     try {
       const { data: solicitudCreada, error } = await insertarConColumnasOpcionales('academia_solicitudes', payload, [
+        'acompanantes',
         'jugador_id',
         'coach_deseado',
         'nivel',
@@ -55230,6 +55603,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           nivel: datos.nivel || null,
           fecha: datos.fecha || null,
           numero_participantes: datos.numeroParticipantes || null,
+          acompanantes: acompanantesRegistrados.map((a) => a.nombre).filter(Boolean),
           solicitud_id: solicitudCreada?.id || null,
           modulo_destino: 'academia',
         },
@@ -56916,6 +57290,8 @@ function PortalPublicoJugadores({ clubSlug }) {
             academiaClases={academiaClasesPortal}
             rangosHorario={club?.rangos_horario_clases}
             club={club}
+            jugadorTitular={jugador}
+            buscarJugadoresClub={buscarJugadoresClubPortal}
           />
           )}
         </AnimatePresence>
@@ -58073,7 +58449,166 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
 // activas a esa hora (`estadoOcupacionAgregado`) — 100% derivado de
 // `reservas`/`academiaClases` que el Portal ya tiene cargadas, sin ninguna
 // consulta ni suscripción nueva (Regla de Oro de Realtime intacta).
-function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club, tarifasHorarios }) {
+// Acompañantes de una solicitud de clase grupal (App-92) — helpers puros.
+function acompananteVacio() {
+  return { modo: 'buscar', jugadorId: null, etiqueta: '', busqueda: '', nombre: '', apellido: '', telefono: '' };
+}
+function acompananteParaEnvio(a) {
+  if (a.modo === 'buscar' && a.jugadorId) {
+    return { jugadorId: String(a.jugadorId), nombre: a.etiqueta || '', telefono: null, origen: 'directorio' };
+  }
+  const nombreCompleto = `${(a.nombre || '').trim()} ${(a.apellido || '').trim()}`.trim();
+  return { jugadorId: null, nombre: nombreCompleto, telefono: claveTelefono(a.telefono) || '', origen: 'manual' };
+}
+// Regresa el mensaje de error del primer acompañante incompleto/duplicado,
+// o '' si todos son válidos.
+function validarAcompanantesClase(lista, titular) {
+  const telTitular = claveTelefono(titular?.telefono);
+  const vistosId = new Set(titular?.id != null ? [String(titular.id)] : []);
+  const vistosTel = new Set(telTitular ? [telTitular] : []);
+  for (let i = 0; i < (lista || []).length; i += 1) {
+    const a = lista[i];
+    const etiqueta = `Jugador ${i + 2}`;
+    if (a.modo === 'buscar') {
+      if (!a.jugadorId) return `${etiqueta}: búscalo entre los jugadores del club o captura sus datos.`;
+      if (vistosId.has(String(a.jugadorId))) return `${etiqueta} ya está en la lista — elige a otra persona.`;
+      vistosId.add(String(a.jugadorId));
+    } else {
+      if (!(a.nombre || '').trim() || !(a.apellido || '').trim()) return `${etiqueta}: escribe nombre y apellido.`;
+      const tel = claveTelefono(a.telefono);
+      if (!tel || String(a.telefono || '').replace(/\D/g, '').length !== 10) return `${etiqueta}: el teléfono debe tener 10 dígitos.`;
+      if (vistosTel.has(tel)) return `${etiqueta}: ese teléfono ya está en la lista.`;
+      vistosTel.add(tel);
+    }
+  }
+  return '';
+}
+
+// Campo de un acompañante (Portal → "Solicitar Clase Privada o Nuevo
+// Grupo"): pestañas "Buscar en el club" / "Capturar datos". La búsqueda usa
+// `buscarJugadoresClub` (RPC `fn_portal_buscar_jugadores_club`, migracion_v110)
+// que solo expone nombre + últimos 4 dígitos del teléfono.
+function CampoAcompananteClase({ numero, valor, onChange, buscarJugadoresClub, idsOcupados = [] }) {
+  const [resultados, setResultados] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+  const [sinBusqueda, setSinBusqueda] = useState(false);
+  const q = (valor.busqueda || '').trim();
+  useEffect(() => {
+    if (valor.modo !== 'buscar' || valor.jugadorId || q.length < 2 || typeof buscarJugadoresClub !== 'function') {
+      setResultados([]);
+      setBuscando(false);
+      return undefined;
+    }
+    let vigente = true;
+    setBuscando(true);
+    const t = setTimeout(async () => {
+      const r = await buscarJugadoresClub(q);
+      if (!vigente) return;
+      setBuscando(false);
+      if (!r?.ok) {
+        setSinBusqueda(true);
+        setResultados([]);
+        return;
+      }
+      setSinBusqueda(false);
+      setResultados(Array.isArray(r.data) ? r.data : []);
+    }, 300);
+    return () => {
+      vigente = false;
+      clearTimeout(t);
+    };
+  }, [q, valor.modo, valor.jugadorId, buscarJugadoresClub]);
+  const visibles = resultados.filter((r) => !idsOcupados.includes(String(r.id)));
+  const pestana = (modo, texto, Icono) => (
+    <button
+      type="button"
+      onClick={() => onChange({ modo })}
+      aria-pressed={valor.modo === modo}
+      className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1 text-[10.5px] font-bold transition ${
+        valor.modo === modo ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+      }`}
+    >
+      <Icono size={11} /> {texto}
+    </button>
+  );
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-2.5" data-testid={`acompanante-${numero}`}>
+      <div className="mb-2 flex items-center gap-2">
+        <span className="shrink-0 text-[11px] font-black text-slate-700">Jugador {numero}</span>
+        <div className="flex flex-1 rounded-md border border-slate-300 bg-slate-100 p-0.5">
+          {pestana('buscar', 'Buscar en el club', Search)}
+          {pestana('manual', 'Capturar datos', UserPlus)}
+        </div>
+      </div>
+      {valor.modo === 'buscar' ? (
+        valor.jugadorId ? (
+          <div className="flex items-center gap-2 rounded-md border border-orange-400/40 bg-orange-400/[0.06] px-2.5 py-1.5">
+            <UserCheck size={13} className="shrink-0 text-orange-500" />
+            <span className="min-w-0 flex-1 truncate text-xs font-bold text-slate-900">{valor.etiqueta}</span>
+            <button
+              type="button"
+              onClick={() => onChange({ jugadorId: null, etiqueta: '', busqueda: '' })}
+              className="shrink-0 rounded p-0.5 text-slate-500 hover:text-rose-500"
+              aria-label={`Quitar Jugador ${numero}`}
+            >
+              <X size={13} />
+            </button>
+          </div>
+        ) : (
+          <div className="relative">
+            <input
+              value={valor.busqueda}
+              onChange={(e) => onChange({ busqueda: e.target.value })}
+              className={inputClase}
+              placeholder="Escribe nombre o apellido..."
+              autoComplete="off"
+              aria-label={`Buscar Jugador ${numero}`}
+            />
+            {q.length >= 2 && (
+              <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-slate-50">
+                {buscando ? (
+                  <p className="px-3 py-2 text-[11px] text-slate-500">Buscando…</p>
+                ) : sinBusqueda || typeof buscarJugadoresClub !== 'function' ? (
+                  <p className="px-3 py-2 text-[11px] text-slate-500">La búsqueda no está disponible ahora — usa "Capturar datos".</p>
+                ) : visibles.length === 0 ? (
+                  <p className="px-3 py-2 text-[11px] text-slate-500">Sin coincidencias en el club — usa "Capturar datos" para registrarlo.</p>
+                ) : (
+                  visibles.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => onChange({ jugadorId: r.id, etiqueta: r.nombre || '', busqueda: '' })}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-slate-800 transition hover:bg-slate-200"
+                    >
+                      <Users size={12} className="shrink-0 text-orange-400" />
+                      <span className="min-w-0 flex-1 truncate font-semibold">{r.nombre}</span>
+                      {r.telefono_final && <span className="shrink-0 text-[10px] text-slate-500">•••• {r.telefono_final}</span>}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )
+      ) : (
+        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+          <input value={valor.nombre} onChange={(e) => onChange({ nombre: e.target.value })} className={inputClase} placeholder="Nombre" aria-label={`Nombre Jugador ${numero}`} />
+          <input value={valor.apellido} onChange={(e) => onChange({ apellido: e.target.value })} className={inputClase} placeholder="Apellido" aria-label={`Apellido Jugador ${numero}`} />
+          <input
+            value={valor.telefono}
+            onChange={(e) => onChange({ telefono: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+            className={inputClase}
+            placeholder="Teléfono (10 dígitos)"
+            inputMode="numeric"
+            aria-label={`Teléfono Jugador ${numero}`}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club, tarifasHorarios, jugadorTitular, buscarJugadoresClub }) {
   // Arquitectura de Tarifas Academia (Corrección — item 4): esta solicitud
   // ("modal genérico de horarios") no tenía forma de capturar si el
   // jugador busca una Clase Suelta o el Plan Mensual — ahora se pide con
@@ -58085,8 +58620,18 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   // informativo/preferencia, se guarda en `tipo_pago_deseado`
   // (migracion_v72) para que Academia & Clínicas → Solicitudes lo vea.
   const tarifasAcademiaClub = useMemo(() => tarifasAcademiaDelClub(club), [club]);
-  const [tipoPagoDeseado, setTipoPagoDeseado] = useState('clase_suelta'); // 'clase_suelta' | 'mensualidad'
+  // Estado inicial SIN preselección (App-92): ninguna de las 2 tarjetas
+  // ("Clase Suelta"/"Plan Mensual") arranca marcada — el jugador debe elegir
+  // una explícitamente antes de enviar (ver validación en `enviar()`).
+  const [tipoPagoDeseado, setTipoPagoDeseado] = useState(null); // null | 'clase_suelta' | 'mensualidad'
   const [tipo, setTipo] = useState('grupal'); // 'privada' | 'grupal'
+  // Acompañantes (App-92): Jugador 1 = el usuario logueado (fijo); hasta 3
+  // lugares más (Jugador 2..4) según "Número de Participantes". Se guardan
+  // siempre 3 en estado para no perder lo capturado si el jugador cambia
+  // de 4 → 2 → 4 personas; solo se usan los primeros `numeroParticipantes - 1`.
+  const [acompanantes, setAcompanantes] = useState(() => [acompananteVacio(), acompananteVacio(), acompananteVacio()]);
+  const actualizarAcompanante = (indice, cambios) =>
+    setAcompanantes((prev) => prev.map((a, i) => (i === indice ? { ...a, ...cambios } : a)));
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
   // NÚMERO DE PARTICIPANTES (solo aplica a "Grupal" — una "Privada" siempre
   // es 1-a-1, así que este selector se oculta y no se manda en ese caso; ver
@@ -58208,10 +58753,26 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
     return { monto: minimo, desde: minimo !== Math.max(...precios) };
   }, [slots, horaInicio, franjasClaseDelDia, tarifasAcademiaClub, duracionClaseMinutos]);
 
+  // Tarifas Grupales por Persona (App-92, migracion_v110): en "Grupal" la
+  // tarjeta superior muestra "Desde $X / persona" con la tarifa configurada
+  // para ese número de participantes; si el club no la definió, se usa el
+  // precio de Clase Suelta (incluida su franja horaria, igual que antes).
+  const esGrupal = tipo === 'grupal';
+  const precioGrupalConfigurado = esGrupal ? tarifasAcademiaClub.precioGrupalConfigurado?.[numeroParticipantes] ?? null : null;
+  const tarjetaClaseSuelta = esGrupal
+    ? { monto: precioGrupalConfigurado != null ? precioGrupalConfigurado : precioClaseSueltaTarjeta.monto, desde: true, porPersona: true }
+    : { ...precioClaseSueltaTarjeta, porPersona: false };
+  const acompanantesActivos = esGrupal ? acompanantes.slice(0, Math.max(0, numeroParticipantes - 1)) : [];
+
   async function enviar() {
     setError('');
+    if (!tipoPagoDeseado) return setError('Elige una opción: Clase Suelta o Plan Mensual de Academia.');
     if (fecha < hoyISO()) return setError('Elige una fecha a partir de hoy.');
     if (!horaInicio) return setError('Elige un horario disponible en la cuadrícula.');
+    // Acompañantes (solo Grupal): cada lugar debe ser un jugador del club
+    // elegido en la búsqueda, o Nombre + Apellido + Teléfono a 10 dígitos.
+    const errorAcompanantes = validarAcompanantesClase(acompanantesActivos, jugadorTitular);
+    if (errorAcompanantes) return setError(errorAcompanantes);
     setEnviando(true);
     const slotElegido = slots.find((s) => s.horaInicio === horaInicio);
     await onEnviar({
@@ -58237,12 +58798,13 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       // jugador vio para el horario que eligió (franja que cubre el bloque, o
       // el precio estándar) — se guarda en la solicitud para que "Nueva
       // Clase" (Panel Admin) lo precargue en vez del precio base estático.
-      precioClaseSuelta: precioClaseSueltaEnHorario(
-        horaInicio,
-        duracionClaseMinutos,
-        franjasClaseDelDia,
-        tarifasAcademiaClub.precioBaseClaseSuelta
-      ),
+      // Grupal (App-92): el precio guardado es la tarifa POR PERSONA del
+      // tamaño de grupo elegido (respaldo: Clase Suelta del horario).
+      precioClaseSuelta:
+        precioGrupalConfigurado != null
+          ? precioGrupalConfigurado
+          : precioClaseSueltaEnHorario(horaInicio, duracionClaseMinutos, franjasClaseDelDia, tarifasAcademiaClub.precioBaseClaseSuelta),
+      acompanantes: acompanantesActivos.map(acompananteParaEnvio),
     });
     setEnviando(false);
   }
@@ -58279,10 +58841,15 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                   }`}
                 />
               </div>
-              <p className="text-[10.5px] leading-snug text-slate-500">Asiste a una sesión individual sin compromisos periódicos</p>
-              <p className="text-base font-black text-slate-900">
-                {precioClaseSueltaTarjeta.desde && <span className="mr-1 text-[11px] font-bold text-slate-500">Desde</span>}
-                {formatoMoneda(precioClaseSueltaTarjeta.monto)}
+              <p className="text-[10.5px] leading-snug text-slate-500">
+                {esGrupal
+                  ? `Sesión grupal de ${numeroParticipantes} personas, cada quien paga su lugar`
+                  : 'Asiste a una sesión individual sin compromisos periódicos'}
+              </p>
+              <p className="text-base font-black text-slate-900" data-testid="precio-tarjeta-clase-suelta">
+                {tarjetaClaseSuelta.desde && <span className="mr-1 text-[11px] font-bold text-slate-500">Desde</span>}
+                {formatoMoneda(tarjetaClaseSuelta.monto)}
+                {tarjetaClaseSuelta.porPersona && <span className="ml-1 text-[11px] font-bold text-slate-500">/ persona</span>}
               </p>
             </button>
             <button
@@ -58349,6 +58916,32 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Participantes (App-92): Jugador 1 fijo (el usuario logueado) +
+            un campo dinámico por cada acompañante. Cada acompañante se
+            busca entre los jugadores registrados del club (Nombre/Apellido)
+            o se captura a mano (Nombre, Apellido, Teléfono a 10 dígitos). */}
+        {esGrupal && (
+          <div className="space-y-2" data-testid="participantes-solicitud">
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Participantes</p>
+            <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2">
+              <Lock size={12} className="shrink-0 text-slate-400" />
+              <span className="text-[11px] font-bold text-slate-500">Jugador 1</span>
+              <span className="min-w-0 flex-1 truncate text-xs font-black text-slate-900">{jugadorTitular?.nombre || 'Tú'}</span>
+              <span className="shrink-0 rounded-full bg-orange-400/10 px-2 py-0.5 text-[9px] font-bold text-orange-500 ring-1 ring-orange-400/30">Tú</span>
+            </div>
+            {acompanantesActivos.map((a, i) => (
+              <CampoAcompananteClase
+                key={i}
+                numero={i + 2}
+                valor={a}
+                onChange={(cambios) => actualizarAcompanante(i, cambios)}
+                buscarJugadoresClub={buscarJugadoresClub}
+                idsOcupados={[jugadorTitular?.id, ...acompanantesActivos.filter((_, k) => k !== i).map((x) => x.jugadorId)].filter(Boolean).map(String)}
+              />
+            ))}
           </div>
         )}
 
@@ -60665,6 +61258,23 @@ function AppInterno({ clubInicial } = {}) {
   useEffect(() => {
     telefonoContactoRef.current = configClub?.telefonoContacto || '';
   }, [configClub?.telefonoContacto]);
+  // Tarifas Grupales por Persona (migracion_v110) — mismo patrón de espejo
+  // en ref: las tarjetas viejas de Configuración del Club reconstruyen
+  // `nuevaConfig` campo por campo y NO reenvían estas 3 llaves; con el ref,
+  // `guardarConfigClub` conserva el valor vigente cuando la llave no viene
+  // (`'academiaPrecioGrupal2' in nuevaConfig === false`) en vez de borrarlo.
+  const tarifasGrupalesRef = useRef({
+    academiaPrecioGrupal2: configClub?.academiaPrecioGrupal2 ?? null,
+    academiaPrecioGrupal3: configClub?.academiaPrecioGrupal3 ?? null,
+    academiaPrecioGrupal4: configClub?.academiaPrecioGrupal4 ?? null,
+  });
+  useEffect(() => {
+    tarifasGrupalesRef.current = {
+      academiaPrecioGrupal2: configClub?.academiaPrecioGrupal2 ?? null,
+      academiaPrecioGrupal3: configClub?.academiaPrecioGrupal3 ?? null,
+      academiaPrecioGrupal4: configClub?.academiaPrecioGrupal4 ?? null,
+    };
+  }, [configClub?.academiaPrecioGrupal2, configClub?.academiaPrecioGrupal3, configClub?.academiaPrecioGrupal4]);
 
   // Interactive Onboarding Canvas (migracion_v66) — semilla desde
   // `clubInicial` (fix urgente de condición de carrera, ver `ClubAuthGate`):
@@ -61362,7 +61972,10 @@ function AppInterno({ clubInicial } = {}) {
           data.tolerancia_retas_horas != null ||
           data.academia_precio_base_clase_suelta != null ||
           data.academia_precio_base_mensualidad != null ||
-          data.academia_clases_incluidas_mensualidad != null
+          data.academia_clases_incluidas_mensualidad != null ||
+          data.academia_precio_grupal_2 != null ||
+          data.academia_precio_grupal_3 != null ||
+          data.academia_precio_grupal_4 != null
         ) {
           const nuevaConfig = {
             nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
@@ -61437,6 +62050,21 @@ function AppInterno({ clubInicial } = {}) {
               Number(data.academia_clases_incluidas_mensualidad) > 0
                 ? Number(data.academia_clases_incluidas_mensualidad)
                 : CONFIG_CLUB_DEFAULT.academiaClasesIncluidasMensualidad,
+            // Tarifas Grupales por Persona (migracion_v110) — proyecto sin la
+            // migración (`undefined`) conserva el valor local; columna en
+            // NULL = "sin definir" (respaldo a Clase Suelta).
+            academiaPrecioGrupal2:
+              data.academia_precio_grupal_2 === undefined
+                ? tarifasGrupalesRef.current.academiaPrecioGrupal2
+                : normalizarPrecioGrupal(data.academia_precio_grupal_2),
+            academiaPrecioGrupal3:
+              data.academia_precio_grupal_3 === undefined
+                ? tarifasGrupalesRef.current.academiaPrecioGrupal3
+                : normalizarPrecioGrupal(data.academia_precio_grupal_3),
+            academiaPrecioGrupal4:
+              data.academia_precio_grupal_4 === undefined
+                ? tarifasGrupalesRef.current.academiaPrecioGrupal4
+                : normalizarPrecioGrupal(data.academia_precio_grupal_4),
           };
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
@@ -62074,6 +62702,21 @@ function AppInterno({ clubInicial } = {}) {
           Number(nuevaConfig.academiaClasesIncluidasMensualidad) > 0
             ? Number(nuevaConfig.academiaClasesIncluidasMensualidad)
             : CONFIG_CLUB_DEFAULT.academiaClasesIncluidasMensualidad,
+        // Tarifas Grupales por Persona (migracion_v110) — solo cambian si el
+        // caller manda la llave (la tarjeta de Tarifas de Academia); el resto
+        // de tarjetas no las reenvía y se conserva el valor vigente (ref).
+        academiaPrecioGrupal2:
+          'academiaPrecioGrupal2' in nuevaConfig
+            ? normalizarPrecioGrupal(nuevaConfig.academiaPrecioGrupal2)
+            : tarifasGrupalesRef.current.academiaPrecioGrupal2,
+        academiaPrecioGrupal3:
+          'academiaPrecioGrupal3' in nuevaConfig
+            ? normalizarPrecioGrupal(nuevaConfig.academiaPrecioGrupal3)
+            : tarifasGrupalesRef.current.academiaPrecioGrupal3,
+        academiaPrecioGrupal4:
+          'academiaPrecioGrupal4' in nuevaConfig
+            ? normalizarPrecioGrupal(nuevaConfig.academiaPrecioGrupal4)
+            : tarifasGrupalesRef.current.academiaPrecioGrupal4,
       };
       setGuardandoConfigClub(true);
       setConfigClub(limpia);
@@ -62101,6 +62744,9 @@ function AppInterno({ clubInicial } = {}) {
           academia_precio_base_clase_suelta: limpia.academiaPrecioBaseClaseSuelta,
           academia_precio_base_mensualidad: limpia.academiaPrecioBaseMensualidad,
           academia_clases_incluidas_mensualidad: limpia.academiaClasesIncluidasMensualidad,
+          academia_precio_grupal_2: limpia.academiaPrecioGrupal2,
+          academia_precio_grupal_3: limpia.academiaPrecioGrupal3,
+          academia_precio_grupal_4: limpia.academiaPrecioGrupal4,
         };
         // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo
         // (como antes de este cambio): `hora_apertura`/`hora_cierre`/
@@ -62128,6 +62774,9 @@ function AppInterno({ clubInicial } = {}) {
           'academia_precio_base_clase_suelta',
           'academia_precio_base_mensualidad',
           'academia_clases_incluidas_mensualidad',
+          'academia_precio_grupal_2',
+          'academia_precio_grupal_3',
+          'academia_precio_grupal_4',
         ]);
         if (error) throw error;
         setConfiguracionClubId(CLUB_ACTIVO_ID);
