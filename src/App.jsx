@@ -58470,7 +58470,7 @@ function validarAcompanantesClase(lista, titular) {
     const a = lista[i];
     const etiqueta = `Jugador ${i + 2}`;
     if (a.modo === 'buscar') {
-      if (!a.jugadorId) return `${etiqueta}: búscalo entre los jugadores del club o captura sus datos.`;
+      if (!a.jugadorId) return `${etiqueta}: búscalo entre los jugadores del club o regístralo como Jugador Nuevo.`;
       if (vistosId.has(String(a.jugadorId))) return `${etiqueta} ya está en la lista — elige a otra persona.`;
       vistosId.add(String(a.jugadorId));
     } else {
@@ -58485,7 +58485,7 @@ function validarAcompanantesClase(lista, titular) {
 }
 
 // Campo de un acompañante (Portal → "Solicitar Clase Privada o Nuevo
-// Grupo"): pestañas "Buscar en el club" / "Capturar datos". La búsqueda usa
+// Grupo"): pestañas "Buscar en el club" / "Jugador Nuevo". La búsqueda usa
 // `buscarJugadoresClub` (RPC `fn_portal_buscar_jugadores_club`, migracion_v110)
 // que solo expone nombre + últimos 4 dígitos del teléfono.
 function CampoAcompananteClase({ numero, valor, onChange, buscarJugadoresClub, idsOcupados = [] }) {
@@ -58537,7 +58537,7 @@ function CampoAcompananteClase({ numero, valor, onChange, buscarJugadoresClub, i
         <span className="shrink-0 text-[11px] font-black text-slate-700">Jugador {numero}</span>
         <div className="flex flex-1 rounded-md border border-slate-300 bg-slate-100 p-0.5">
           {pestana('buscar', 'Buscar en el club', Search)}
-          {pestana('manual', 'Capturar datos', UserPlus)}
+          {pestana('manual', 'Jugador Nuevo', UserPlus)}
         </div>
       </div>
       {valor.modo === 'buscar' ? (
@@ -58569,9 +58569,9 @@ function CampoAcompananteClase({ numero, valor, onChange, buscarJugadoresClub, i
                 {buscando ? (
                   <p className="px-3 py-2 text-[11px] text-slate-500">Buscando…</p>
                 ) : sinBusqueda || typeof buscarJugadoresClub !== 'function' ? (
-                  <p className="px-3 py-2 text-[11px] text-slate-500">La búsqueda no está disponible ahora — usa "Capturar datos".</p>
+                  <p className="px-3 py-2 text-[11px] text-slate-500">La búsqueda no está disponible ahora — usa "Jugador Nuevo".</p>
                 ) : visibles.length === 0 ? (
-                  <p className="px-3 py-2 text-[11px] text-slate-500">Sin coincidencias en el club — usa "Capturar datos" para registrarlo.</p>
+                  <p className="px-3 py-2 text-[11px] text-slate-500">Sin coincidencias en el club — usa "Jugador Nuevo" para registrarlo.</p>
                 ) : (
                   visibles.map((r) => (
                     <button
@@ -58763,10 +58763,14 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
     ? { monto: precioGrupalConfigurado != null ? precioGrupalConfigurado : precioClaseSueltaTarjeta.monto, desde: true, porPersona: true }
     : { ...precioClaseSueltaTarjeta, porPersona: false };
   const acompanantesActivos = esGrupal ? acompanantes.slice(0, Math.max(0, numeroParticipantes - 1)) : [];
+  // Título dinámico de la tarjeta superior izquierda (App-93): en Grupal es
+  // "Cuota por Persona" (cada quien paga su lugar) para no confundirla con
+  // una clase individual; en Privada 1-a-1 es "Clase Personalizada".
+  const tituloTarjetaClase = esGrupal ? 'Cuota por Persona' : 'Clase Personalizada';
 
   async function enviar() {
     setError('');
-    if (!tipoPagoDeseado) return setError('Elige una opción: Clase Suelta o Plan Mensual de Academia.');
+    if (!tipoPagoDeseado) return setError(`Elige una opción: ${tituloTarjetaClase} o Plan Mensual de Academia.`);
     if (fecha < hoyISO()) return setError('Elige una fecha a partir de hoy.');
     if (!horaInicio) return setError('Elige un horario disponible en la cuadrícula.');
     // Acompañantes (solo Grupal): cada lugar debe ser un jugador del club
@@ -58834,7 +58838,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               }`}
             >
               <div className="flex items-start justify-between gap-2">
-                <p className="text-xs font-black text-slate-900">Clase Suelta</p>
+                <p className="text-xs font-black text-slate-900" data-testid="titulo-tarjeta-clase">{tituloTarjetaClase}</p>
                 <span
                   className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
                     tipoPagoDeseado === 'clase_suelta' ? 'border-orange-500 bg-orange-500' : 'border-slate-300 bg-white'
