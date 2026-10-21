@@ -799,6 +799,7 @@ import {
   UserCircle2,
   CheckCircle2,
   Wallet,
+  ShieldCheck,
   CreditCard,
   Banknote,
   ArrowRightLeft,
@@ -1474,6 +1475,28 @@ async function crearNotificacionClub({ tipo, titulo, jugadorId, jugadorNombre, p
 // Portal la lee filtrada por `jugador_id` en "Mi Perfil Deportivo"/Academia.
 // Tolerante: si la tabla todavía no existe o el insert falla, se registra en
 // consola y NUNCA bloquea la creación de la clase que lo disparó.
+// Validación de participantes mínimos de clases grupales (App-94,
+// migracion_v111): pide a la base que cancele las clases del club que, a su
+// hora límite, no juntaron el mínimo (reembolso a Wallet + libera cancha +
+// notificaciones). La lógica vive 100% en la RPC (atómica e idempotente);
+// aquí solo se dispara. Regresa la lista de clases canceladas ([] si nada
+// cambió) o `null` si la RPC no existe todavía (proyecto sin v111).
+async function validarMinimosClasesClub(clubId) {
+  if (!clubId) return [];
+  try {
+    const { data, error } = await supabase.rpc('fn_academia_validar_minimos_club', { p_club_id: Number(clubId) });
+    if (error) {
+      if (/PGRST202|42883|schema cache|does not exist/i.test(`${error.code || ''} ${error.message || ''}`)) return null;
+      console.warn('[Academia] No se pudo validar el mínimo de participantes de las clases.', error);
+      return [];
+    }
+    return Array.isArray(data?.canceladas) ? data.canceladas : [];
+  } catch (err) {
+    console.warn('[Academia] Error validando el mínimo de participantes.', err);
+    return [];
+  }
+}
+
 async function crearNotificacionJugador({ jugadorId, titulo, mensaje, tipo, payload }) {
   if (!jugadorId) return { ok: false, error: new Error('jugadorId requerido para notificar al jugador.') };
   try {
@@ -4019,6 +4042,10 @@ const CONFIG_CLUB_DEFAULT = {
   academiaPrecioGrupal2: null,
   academiaPrecioGrupal3: null,
   academiaPrecioGrupal4: null,
+  // Ventana de validación de participantes mínimos (migracion_v111): horas
+  // antes del inicio de una clase grupal en que se revisa si se juntó el
+  // mínimo de alumnos; si no, la clase se cancela sola y se reembolsa a Wallet.
+  academiaHorasValidacionMinimo: 2,
 };
 
 // ============================================================================
@@ -4259,6 +4286,25 @@ function tarifasAcademiaDelClub(fuente) {
     },
   };
 }
+// Ventana de validación de participantes mínimos (migracion_v111) — horas
+// antes de la clase. Acepta camelCase (Panel) o snake_case (Portal).
+function normalizarHorasValidacionMinimo(valor) {
+  if (valor === null || valor === undefined || valor === '') return null;
+  const n = Number(valor);
+  return Number.isFinite(n) && n >= 0 && n <= 168 ? n : null;
+}
+function horasValidacionMinimoDelClub(fuente) {
+  const n = normalizarHorasValidacionMinimo(fuente?.academiaHorasValidacionMinimo ?? fuente?.academia_horas_validacion_minimo);
+  return n != null ? n : CONFIG_CLUB_DEFAULT.academiaHorasValidacionMinimo;
+}
+// Mínimo de participantes de una clase grupal (migracion_v111). `null` =
+// clase sin mínimo definido (clases creadas antes de App-94): no se cancela
+// sola. Las clases Privadas nunca llevan mínimo.
+function minimoParticipantesClase(clase) {
+  if (!clase || clase.tipo_clase === 'privada') return null;
+  const n = Number(clase.minimo_participantes);
+  return Number.isFinite(n) && n > 1 ? Math.floor(n) : null;
+}
 // Tarifas Grupales por Persona (Configuración del Club → Reservas & Academia
 // → Tarifas y Paquetes de Academia, migracion_v110). Acepta tanto el
 // `configClub` camelCase del Panel como la fila snake_case del Portal.
@@ -4330,6 +4376,8 @@ function leerConfigClubLocal() {
       academiaPrecioGrupal2: normalizarPrecioGrupal(parsed.academiaPrecioGrupal2),
       academiaPrecioGrupal3: normalizarPrecioGrupal(parsed.academiaPrecioGrupal3),
       academiaPrecioGrupal4: normalizarPrecioGrupal(parsed.academiaPrecioGrupal4),
+      academiaHorasValidacionMinimo:
+        normalizarHorasValidacionMinimo(parsed.academiaHorasValidacionMinimo) ?? CONFIG_CLUB_DEFAULT.academiaHorasValidacionMinimo,
     };
   } catch (_e) {
     return { ...CONFIG_CLUB_DEFAULT };
@@ -38501,6 +38549,12 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   // todavía no corrió esa migración, `numero_participantes` viene `undefined`
   // y este `useState` se comporta exactamente igual que antes.
   const [capacidad, setCapacidad] = useState(solicitudOrigen?.numero_participantes ? String(solicitudOrigen.numero_participantes) : '6');
+  // Mínimo de participantes (App-94, migracion_v111) — solo Grupal. Si a la
+  // hora límite configurada por el club (`academiaHorasValidacionMinimo`)
+  // no se alcanza, la clase se cancela sola y se reembolsa a Wallet. 1 = sin
+  // mínimo (nunca se cancela automáticamente).
+  const [minimoParticipantes, setMinimoParticipantes] = useState('2');
+  const horasValidacionMinimoClub = horasValidacionMinimoDelClub(configClub);
   // Tarifas y Paquetes de Academia (Configuración del Club → Reservas &
   // Academia, migracion_v71): prellenan estos 2 campos con el precio base
   // que el club configuró para clases nuevas — antes eran '1200'/'180' fijos
@@ -38651,6 +38705,11 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
       return setError(`La clase no puede durar más de ${duracionClaseMin} minutos (duración configurada por el club).`);
     }
     if (!(Number(capacidadEfectiva) > 0)) return setError('La capacidad máxima debe ser mayor a 0.');
+    if (!esPrivada) {
+      const minimo = Number(minimoParticipantes);
+      if (!Number.isInteger(minimo) || minimo < 1) return setError('El mínimo de participantes debe ser un número entero de 1 o más.');
+      if (minimo > Number(capacidadEfectiva)) return setError('El mínimo de participantes no puede ser mayor que la capacidad máxima.');
+    }
     // "Inscribir Jugadores Ahora" (App-92): al menos un alumno; los nuevos
     // (no elegidos del directorio) requieren teléfono a 10 dígitos — es su
     // identificador único en `jugadores`; sin duplicados.
@@ -38706,6 +38765,8 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
       capacidad_maxima: Number(capacidadEfectiva) || 1,
       precio_mensualidad: Number(precioMensualidad) || 0,
       precio_clase_suelta: Number(precioClaseSuelta) || 0,
+      // Mínimo de participantes (App-94, migracion_v111) — `null` en Privada.
+      minimo_participantes: esPrivada ? null : Number(minimoParticipantes) || 1,
       estado: 'activa',
       // Arquitectura de Fecha Única Específica (ya NO hay recurrencia/
       // "repetir semanalmente") — `fecha` es la única fuente de verdad de
@@ -38724,6 +38785,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
       'precio_mensualidad',
       'precio_clase_suelta',
       'fecha',
+      'minimo_participantes',
     ]);
     if (!errClase && data) {
       claseCreada = data;
@@ -39042,6 +39104,28 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
             />
           </Campo>
         </div>
+        {/* Mínimo de participantes (App-94) — solo Grupal. */}
+        {!esPrivada && (
+          <Campo
+            label="Mínimo de participantes"
+            hint={
+              Number(minimoParticipantes) > 1
+                ? `Si ${horasValidacionMinimoClub} h antes no hay ${minimoParticipantes} inscritos, la clase se cancela sola, se reembolsa a Wallet y se libera la cancha.`
+                : 'Con 1 la clase nunca se cancela automáticamente.'
+            }
+          >
+            <input
+              type="number"
+              min="1"
+              max={capacidadEfectiva}
+              step="1"
+              value={minimoParticipantes}
+              onChange={(e) => setMinimoParticipantes(e.target.value)}
+              className={`${inputClase} sm:max-w-[160px]`}
+              aria-label="Mínimo de participantes"
+            />
+          </Campo>
+        )}
         {/* Modo de la Clase Grupal (App-92): "Inscribir Jugadores Ahora" vs
             "Clase Abierta (para el Portal)". */}
         {!esPrivada && (
@@ -39201,7 +39285,18 @@ function TarjetaClaseAcademia({
           <span className="flex items-center gap-1">
             <MapPin size={12} /> {cancha?.nombre || 'Cancha'}
           </span>
+          {/* Mínimo de participantes (App-94, migracion_v111). */}
+          {minimoParticipantesClase(clase) && (
+            <span className="flex items-center gap-1" data-testid="minimo-clase">
+              <Users size={12} /> Mín. {minimoParticipantesClase(clase)}
+            </span>
+          )}
         </div>
+        {clase.estado === 'cancelada' && clase.cancelada_por_minimo_en && (
+          <p className="rounded-lg bg-rose-400/10 px-2.5 py-1.5 text-[10.5px] font-semibold leading-snug text-rose-500 ring-1 ring-rose-400/30">
+            Cancelada automáticamente: no se alcanzó el grupo mínimo. Reembolsos abonados a Wallet y cancha liberada.
+          </p>
+        )}
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
           <div className={`h-full rounded-full ${lleno ? 'bg-rose-400' : 'bg-teal-400'}`} style={{ width: `${Math.min(100, (cupos / Math.max(clase.capacidad_maxima, 1)) * 100)}%` }} />
         </div>
@@ -47305,6 +47400,8 @@ function normalizarFilaClub(fila, tabla) {
     academia_precio_grupal_2: normalizarPrecioGrupal(fila.academia_precio_grupal_2),
     academia_precio_grupal_3: normalizarPrecioGrupal(fila.academia_precio_grupal_3),
     academia_precio_grupal_4: normalizarPrecioGrupal(fila.academia_precio_grupal_4),
+    // Ventana de validación de participantes mínimos (migracion_v111).
+    academia_horas_validacion_minimo: horasValidacionMinimoDelClub(fila),
     // Políticas y Tolerancia de Cancelación (Unificación del Motor de
     // Confirmación/Cancelación en el Portal) — hasta ahora esta función NO
     // exponía ninguna de estas columnas al Portal (lista blanca), así que el
@@ -50669,6 +50766,11 @@ function SeccionReservasAcademia({
     setPrecioGrupal4(config.academiaPrecioGrupal4 != null ? String(config.academiaPrecioGrupal4) : '');
   }, [config.academiaPrecioGrupal2, config.academiaPrecioGrupal3, config.academiaPrecioGrupal4]);
   const precioClaseSueltaVigente = Number(precioBaseClaseSuelta) >= 0 && precioBaseClaseSuelta !== '' ? Number(precioBaseClaseSuelta) : CONFIG_CLUB_DEFAULT.academiaPrecioBaseClaseSuelta;
+  // Ventana de validación de participantes mínimos (App-94, migracion_v111).
+  const [horasValidacionMinimo, setHorasValidacionMinimo] = useState(String(horasValidacionMinimoDelClub(config)));
+  useEffect(() => {
+    setHorasValidacionMinimo(String(horasValidacionMinimoDelClub(config)));
+  }, [config.academiaHorasValidacionMinimo]);
 
   async function guardarTarifasAcademia() {
     await onGuardarConfigClub?.({
@@ -50698,6 +50800,7 @@ function SeccionReservasAcademia({
       academiaPrecioGrupal2: normalizarPrecioGrupal(precioGrupal2),
       academiaPrecioGrupal3: normalizarPrecioGrupal(precioGrupal3),
       academiaPrecioGrupal4: normalizarPrecioGrupal(precioGrupal4),
+      academiaHorasValidacionMinimo: horasValidacionMinimoDelClub({ academiaHorasValidacionMinimo: horasValidacionMinimo }),
     });
   }
 
@@ -50739,6 +50842,7 @@ function SeccionReservasAcademia({
       academiaPrecioGrupal2: normalizarPrecioGrupal(precioGrupal2),
       academiaPrecioGrupal3: normalizarPrecioGrupal(precioGrupal3),
       academiaPrecioGrupal4: normalizarPrecioGrupal(precioGrupal4),
+      academiaHorasValidacionMinimo: horasValidacionMinimoDelClub({ academiaHorasValidacionMinimo: horasValidacionMinimo }),
     });
     return true;
   }
@@ -50839,6 +50943,44 @@ function SeccionReservasAcademia({
             <BotonPrimario onClick={guardarTarifasAcademia} disabled={guardandoConfigClub}>
               {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
               Guardar Tarifas de Academia
+            </BotonPrimario>
+          </div>
+        )}
+      </div>
+
+      {/* Clases Grupales — Participantes Mínimos (App-94, migracion_v111):
+          ventana (horas antes del inicio) en que el sistema valida si una
+          clase grupal juntó su mínimo de alumnos; si no, la cancela sola,
+          reembolsa a Wallet y libera la cancha. */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="config-validacion-minimo">
+        <div className="mb-1 flex items-center gap-2">
+          <Users size={16} className="text-orange-500" />
+          <h3 className="text-sm font-black text-slate-900">Clases Grupales: Participantes Mínimos</h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500">
+          Si a esta hora antes del inicio una clase grupal no juntó su mínimo de alumnos (definido al crearla), se cancela
+          automáticamente, se reembolsa el pago al Wallet de cada inscrito y se libera la cancha.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Campo label="Tiempo límite para validar participantes mínimos de clases grupales (horas antes)">
+            <input
+              type="number"
+              min="0"
+              max="168"
+              step="1"
+              value={horasValidacionMinimo}
+              onChange={(e) => setHorasValidacionMinimo(e.target.value)}
+              className={inputClase}
+              placeholder="2"
+              aria-label="Horas antes para validar participantes mínimos"
+            />
+          </Campo>
+        </div>
+        {!modoOnboarding && (
+          <div className="mt-4 flex justify-end">
+            <BotonPrimario onClick={guardarTarifasAcademia} disabled={guardandoConfigClub}>
+              {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              Guardar Ventana de Validación
             </BotonPrimario>
           </div>
         )}
@@ -53113,6 +53255,10 @@ function PortalPublicoJugadores({ clubSlug }) {
   // Flujo de pago de inscripción a Reta/Torneo — se intercala ANTES de
   // insertar la inscripción, para poder ofrecer "Pagar con Wallet".
   const [flujoPago, setFlujoPago] = useState(null); // { tipo: 'reta'|'torneo', evento, categoria, monto, pareja }
+  // Modal OBLIGATORIO de políticas de clase grupal (App-94): grupo mínimo,
+  // cancelación automática y reembolso exclusivo a Wallet — se acepta ANTES
+  // de llegar al pago (`flujoPago`). { clase, tipoPago }
+  const [confirmacionClaseGrupal, setConfirmacionClaseGrupal] = useState(null);
 
   // REDISEÑO DE TORNEOS — Modal Detallado: toda la tarjeta del torneo abre
   // este modal (antes solo la etiqueta de categoría era cliqueable). Desde
@@ -53464,6 +53610,37 @@ function PortalPublicoJugadores({ clubSlug }) {
       .subscribe();
     return () => supabase.removeChannel(canal);
   }, [club, cargarDatosPortal]);
+
+  // Cancelación automática por grupo mínimo (App-94, migracion_v111): el
+  // Portal también dispara la validación (al abrir y cada 5 min) para que
+  // una clase sin el mínimo se cancele a tiempo aunque nadie tenga el
+  // Panel abierto. Si algo cambió, recarga catálogo/inscripciones y Wallet.
+  const jugadorIdWalletRef = useRef(null);
+  jugadorIdWalletRef.current = jugador?.id || null;
+  useEffect(() => {
+    if (!club?.id) return undefined;
+    let activo = true;
+    let intervalo = null;
+    const validar = async () => {
+      const canceladas = await validarMinimosClasesClub(club.id);
+      if (!activo) return;
+      if (canceladas === null) {
+        if (intervalo) clearInterval(intervalo);
+        return;
+      }
+      if (canceladas.length > 0) {
+        cargarDatosPortal();
+        if (jugadorIdWalletRef.current) cargarWallet(jugadorIdWalletRef.current);
+      }
+    };
+    validar();
+    intervalo = setInterval(validar, 5 * 60 * 1000);
+    return () => {
+      activo = false;
+      if (intervalo) clearInterval(intervalo);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [club?.id]);
 
   // Wallet: se recarga cada vez que hay un jugador identificado (login del
   // Portal, o al volver de una compra/reserva que acaba de cobrar contra el
@@ -54016,10 +54193,9 @@ function PortalPublicoJugadores({ clubSlug }) {
         }
         setFlujoPago({ tipo: 'torneo', evento: t, categoria: null, monto: montoInscripcionTorneo(t, null) });
       } else if (eventoParaInscribir.tipo === 'academia') {
-        const c = eventoParaInscribir.evento;
-        const tipoPago = eventoParaInscribir.tipoPago;
-        const monto = tipoPago === 'mensualidad' ? Number(c.precio_mensualidad) || 0 : Number(c.precio_clase_suelta) || 0;
-        setFlujoPago({ tipo: 'academia', evento: c, tipoPago, categoria: null, monto });
+        // App-94: misma puerta que el clic directo — clase grupal pasa
+        // primero por el modal de políticas.
+        continuarInscripcionClase(eventoParaInscribir.evento, eventoParaInscribir.tipoPago);
       }
     }
     setModalIdentificacion(false);
@@ -54344,6 +54520,8 @@ function PortalPublicoJugadores({ clubSlug }) {
         estado: 'activo',
         canal_origen: ORIGEN_VENTA_WEB,
         pagado_con_creditos: true,
+        // App-94: aceptación del modal de políticas de clase grupal.
+        ...(clase.tipo_clase !== 'privada' ? { acepto_politicas_grupo_en: new Date().toISOString() } : {}),
       });
       try {
         const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payloadCredito, [
@@ -54352,6 +54530,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           'estado_pago',
           'canal_origen',
           'pagado_con_creditos',
+          'acepto_politicas_grupo_en',
         ]);
         if (error) throw error;
         const nuevosCreditos = Math.max(0, Number(membresiaActiva.creditos_restantes) - 1);
@@ -54424,6 +54603,8 @@ function PortalPublicoJugadores({ clubSlug }) {
       // si quedó pendiente por cobrar en recepción.
       metodo_pago: esPagoTarjeta ? 'tarjeta_portal' : montoWallet > 0 && montoRestante <= 0 ? 'wallet_portal' : null,
       ...(pagado && tipoPago === 'mensualidad' ? activarOrenovarMembresia(PAQUETE_CREDITOS_DEFECTO) : {}),
+      // App-94: aceptación del modal de políticas de clase grupal.
+      ...(clase.tipo_clase !== 'privada' ? { acepto_politicas_grupo_en: new Date().toISOString() } : {}),
     });
     try {
       const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payloadAlumno, [
@@ -54436,6 +54617,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         'fecha_inicio_membresia',
         'fecha_renovacion',
         'metodo_pago',
+        'acepto_politicas_grupo_en',
       ]);
       if (error) throw error;
       if (montoWallet > 0) {
@@ -55461,81 +55643,8 @@ function PortalPublicoJugadores({ clubSlug }) {
   // `insertarConColumnasOpcionales` con columnas opcionales por si el
   // proyecto todavía no corrió esas migraciones — la solicitud igual queda
   // visible en Modo Local en vez de tronar el formulario.
-  // Búsqueda de jugadores del club para los acompañantes (App-92) — RPC
-  // `fn_portal_buscar_jugadores_club` (migracion_v110), validada con el
-  // token de sesión del Portal. Sin token (sesión vieja) o sin la migración
-  // regresa `ok: false` y el campo ofrece la captura manual.
-  const buscarJugadoresClubPortal = useCallback(
-    async (q) => {
-      if (!jugador?.portalToken || !club?.id) return { ok: false, data: [] };
-      try {
-        const { data, error } = await supabase.rpc('fn_portal_buscar_jugadores_club', {
-          p_token: jugador.portalToken,
-          p_club_id: Number(club.id),
-          p_q: String(q || '').slice(0, 60),
-        });
-        if (error) throw error;
-        return { ok: true, data: Array.isArray(data) ? data : [] };
-      } catch (err) {
-        console.warn('[Portal] Búsqueda de jugadores del club no disponible.', err?.message || err);
-        return { ok: false, data: [] };
-      }
-    },
-    [jugador?.portalToken, club?.id]
-  );
-
-  // Registro de acompañantes (App-92): teléfono = identificador único; si el
-  // jugador no existe en el club se crea su expediente en `jugadores` (RPC
-  // `fn_portal_registrar_acompanantes`, migracion_v110). Si la RPC no está
-  // disponible, los acompañantes se guardan tal cual en la solicitud y el
-  // Panel los vincula/crea por teléfono al crear la clase (`resolverJugadorId`).
-  async function registrarAcompanantesPortal(lista) {
-    const base = (lista || []).map((a) => ({
-      jugador_id: a.jugadorId || null,
-      nombre: a.nombre || '',
-      telefono: a.telefono || null,
-      origen: a.origen || (a.jugadorId ? 'directorio' : 'manual'),
-    }));
-    if (base.length === 0) return { lista: [], error: null };
-    if (!jugador?.portalToken || !club?.id) return { lista: base, error: null };
-    try {
-      const { data, error } = await supabase.rpc('fn_portal_registrar_acompanantes', {
-        p_token: jugador.portalToken,
-        p_club_id: Number(club.id),
-        p_acompanantes: base.map((a) => ({ jugador_id: a.jugador_id, nombre: a.nombre, telefono: a.telefono })),
-      });
-      if (error) throw error;
-      const filas = Array.isArray(data) ? data : [];
-      return {
-        lista: base.map((a, i) => ({
-          ...a,
-          jugador_id: filas[i]?.jugador_id != null ? String(filas[i].jugador_id) : a.jugador_id,
-          nombre: a.nombre || filas[i]?.nombre || '',
-        })),
-        error: null,
-      };
-    } catch (err) {
-      // Errores de validación de la RPC (teléfono, duplicado, etc.) sí se
-      // muestran; una RPC inexistente (proyecto sin v110) no bloquea.
-      const mensaje = String(err?.message || '');
-      if (/function|schema cache|does not exist|42883|PGRST202/i.test(mensaje + ' ' + (err?.code || ''))) {
-        return { lista: base, error: null };
-      }
-      return { lista: base, error: mensaje || 'No se pudieron registrar los acompañantes.' };
-    }
-  }
-
   async function enviarSolicitudClase(datos) {
     if (!requerirCuentaPortal('solicitar una clase')) return false;
-    // Acompañantes (solo Grupal): se registran ANTES de crear la solicitud
-    // para guardarla ya con los `jugador_id` resueltos.
-    const { lista: acompanantesRegistrados, error: errorAcompanantes } = await registrarAcompanantesPortal(
-      datos.tipo === 'grupal' ? datos.acompanantes : []
-    );
-    if (errorAcompanantes) {
-      mostrarToast({ titulo: 'Revisa a tus acompañantes', detalle: errorAcompanantes, tono: 'error' });
-      return false;
-    }
     const payload = withClubId({
       jugador_id: jugador?.id || null,
       nombre: jugador?.nombre || datos.nombre || '',
@@ -55565,13 +55674,10 @@ function PortalPublicoJugadores({ clubSlug }) {
       precio_clase_suelta: Number.isFinite(Number(datos.precioClaseSuelta)) && datos.precioClaseSuelta !== null && datos.precioClaseSuelta !== undefined
         ? Number(datos.precioClaseSuelta)
         : null,
-      // Acompañantes (migracion_v110) — `null` si no hay (Privada o sin datos).
-      acompanantes: acompanantesRegistrados.length > 0 ? acompanantesRegistrados : null,
       estado: 'pendiente',
     });
     try {
       const { data: solicitudCreada, error } = await insertarConColumnasOpcionales('academia_solicitudes', payload, [
-        'acompanantes',
         'jugador_id',
         'coach_deseado',
         'nivel',
@@ -55603,7 +55709,6 @@ function PortalPublicoJugadores({ clubSlug }) {
           nivel: datos.nivel || null,
           fecha: datos.fecha || null,
           numero_participantes: datos.numeroParticipantes || null,
-          acompanantes: acompanantesRegistrados.map((a) => a.nombre).filter(Boolean),
           solicitud_id: solicitudCreada?.id || null,
           modulo_destino: 'academia',
         },
@@ -55670,6 +55775,19 @@ function PortalPublicoJugadores({ clubSlug }) {
       setModalIdentificacion(true);
       return;
     }
+    continuarInscripcionClase(clase, tipoPago);
+  }
+  // App-94: toda inscripción a una clase GRUPAL abierta pasa primero por el
+  // modal de políticas (grupo mínimo + cancelación automática + reembolso
+  // solo a Wallet); al aceptarlo se abre el pago de siempre.
+  function continuarInscripcionClase(clase, tipoPago) {
+    if (clase?.tipo_clase !== 'privada') {
+      setConfirmacionClaseGrupal({ clase, tipoPago });
+      return;
+    }
+    abrirPagoClase(clase, tipoPago);
+  }
+  function abrirPagoClase(clase, tipoPago) {
     const monto = tipoPago === 'mensualidad' ? Number(clase.precio_mensualidad) || 0 : Number(clase.precio_clase_suelta) || 0;
     setFlujoPago({ tipo: 'academia', evento: clase, tipoPago, categoria: null, monto });
   }
@@ -56777,8 +56895,8 @@ function PortalPublicoJugadores({ clubSlug }) {
                         <Sparkles size={16} />
                       </span>
                       <span>
-                        <span className="block text-sm font-black text-slate-900">Solicitar Clase Privada o Nuevo Grupo</span>
-                        <span className="block text-[11px] text-slate-600">Elige fecha, nivel y horario en la cuadrícula — el club te confirma.</span>
+                        <span className="block text-sm font-black text-slate-900">Solicitar Clase Privada</span>
+                        <span className="block text-[11px] text-slate-600">Clase personalizada 1-a-1: elige fecha, nivel y horario — el club te confirma.</span>
                       </span>
                     </span>
                     <ChevronRight size={16} className="shrink-0 text-violet-300" />
@@ -56831,7 +56949,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                   )}
 
                   {academiaClasesPortalVisibles.filter((c) => c.estado !== 'cancelada' && c.tipo_clase !== 'privada').length === 0 && (
-                    <p className="py-10 text-center text-sm text-slate-500">Este club todavía no publicó clases grupales — usa el botón de arriba para pedir una.</p>
+                    <p className="py-10 text-center text-sm text-slate-500">Este club todavía no publicó clases grupales — vuelve pronto o pide una clase privada arriba.</p>
                   )}
                   {academiaClasesPortalVisibles
                     // PORTAL: solo clases Grupales — las Privadas se piden
@@ -56867,6 +56985,12 @@ function PortalPublicoJugadores({ clubSlug }) {
                                 <CalendarClock size={12} /> {diaFecha} · {formatoHora12(c.hora_inicio)}–{formatoHora12(c.hora_fin)}
                                 {cancha ? ` · ${cancha.nombre}` : ''}
                               </p>
+                              {/* Grupo mínimo (App-94, migracion_v111). */}
+                              {minimoParticipantesClase(c) && (
+                                <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500" data-testid="portal-minimo-clase">
+                                  <Users size={12} /> Grupo mínimo: {minimoParticipantesClase(c)} · {inscritosActivos} inscrito{inscritosActivos === 1 ? '' : 's'}
+                                </p>
+                              )}
                             </div>
                             <span
                               className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold ${
@@ -57135,6 +57259,23 @@ function PortalPublicoJugadores({ clubSlug }) {
         </AnimatePresence>
 
         <AnimatePresence>
+          {confirmacionClaseGrupal && (
+            <ModalPoliticasClaseGrupal
+              clase={confirmacionClaseGrupal.clase}
+              tipoPago={confirmacionClaseGrupal.tipoPago}
+              inscritos={academiaAlumnosPortal.filter((a) => a.clase_id === confirmacionClaseGrupal.clase.id && a.estado !== 'baja').length}
+              horasValidacion={horasValidacionMinimoDelClub(club)}
+              onClose={() => setConfirmacionClaseGrupal(null)}
+              onAceptar={() => {
+                const { clase, tipoPago } = confirmacionClaseGrupal;
+                setConfirmacionClaseGrupal(null);
+                abrirPagoClase(clase, tipoPago);
+              }}
+            />
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
           {flujoPago && (
           <ModalElegirPago
             monto={flujoPago.monto}
@@ -57290,8 +57431,6 @@ function PortalPublicoJugadores({ clubSlug }) {
             academiaClases={academiaClasesPortal}
             rangosHorario={club?.rangos_horario_clases}
             club={club}
-            jugadorTitular={jugador}
-            buscarJugadoresClub={buscarJugadoresClubPortal}
           />
           )}
         </AnimatePresence>
@@ -58449,166 +58588,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
 // activas a esa hora (`estadoOcupacionAgregado`) — 100% derivado de
 // `reservas`/`academiaClases` que el Portal ya tiene cargadas, sin ninguna
 // consulta ni suscripción nueva (Regla de Oro de Realtime intacta).
-// Acompañantes de una solicitud de clase grupal (App-92) — helpers puros.
-function acompananteVacio() {
-  return { modo: 'buscar', jugadorId: null, etiqueta: '', busqueda: '', nombre: '', apellido: '', telefono: '' };
-}
-function acompananteParaEnvio(a) {
-  if (a.modo === 'buscar' && a.jugadorId) {
-    return { jugadorId: String(a.jugadorId), nombre: a.etiqueta || '', telefono: null, origen: 'directorio' };
-  }
-  const nombreCompleto = `${(a.nombre || '').trim()} ${(a.apellido || '').trim()}`.trim();
-  return { jugadorId: null, nombre: nombreCompleto, telefono: claveTelefono(a.telefono) || '', origen: 'manual' };
-}
-// Regresa el mensaje de error del primer acompañante incompleto/duplicado,
-// o '' si todos son válidos.
-function validarAcompanantesClase(lista, titular) {
-  const telTitular = claveTelefono(titular?.telefono);
-  const vistosId = new Set(titular?.id != null ? [String(titular.id)] : []);
-  const vistosTel = new Set(telTitular ? [telTitular] : []);
-  for (let i = 0; i < (lista || []).length; i += 1) {
-    const a = lista[i];
-    const etiqueta = `Jugador ${i + 2}`;
-    if (a.modo === 'buscar') {
-      if (!a.jugadorId) return `${etiqueta}: búscalo entre los jugadores del club o regístralo como Jugador Nuevo.`;
-      if (vistosId.has(String(a.jugadorId))) return `${etiqueta} ya está en la lista — elige a otra persona.`;
-      vistosId.add(String(a.jugadorId));
-    } else {
-      if (!(a.nombre || '').trim() || !(a.apellido || '').trim()) return `${etiqueta}: escribe nombre y apellido.`;
-      const tel = claveTelefono(a.telefono);
-      if (!tel || String(a.telefono || '').replace(/\D/g, '').length !== 10) return `${etiqueta}: el teléfono debe tener 10 dígitos.`;
-      if (vistosTel.has(tel)) return `${etiqueta}: ese teléfono ya está en la lista.`;
-      vistosTel.add(tel);
-    }
-  }
-  return '';
-}
-
-// Campo de un acompañante (Portal → "Solicitar Clase Privada o Nuevo
-// Grupo"): pestañas "Buscar en el club" / "Jugador Nuevo". La búsqueda usa
-// `buscarJugadoresClub` (RPC `fn_portal_buscar_jugadores_club`, migracion_v110)
-// que solo expone nombre + últimos 4 dígitos del teléfono.
-function CampoAcompananteClase({ numero, valor, onChange, buscarJugadoresClub, idsOcupados = [] }) {
-  const [resultados, setResultados] = useState([]);
-  const [buscando, setBuscando] = useState(false);
-  const [sinBusqueda, setSinBusqueda] = useState(false);
-  const q = (valor.busqueda || '').trim();
-  useEffect(() => {
-    if (valor.modo !== 'buscar' || valor.jugadorId || q.length < 2 || typeof buscarJugadoresClub !== 'function') {
-      setResultados([]);
-      setBuscando(false);
-      return undefined;
-    }
-    let vigente = true;
-    setBuscando(true);
-    const t = setTimeout(async () => {
-      const r = await buscarJugadoresClub(q);
-      if (!vigente) return;
-      setBuscando(false);
-      if (!r?.ok) {
-        setSinBusqueda(true);
-        setResultados([]);
-        return;
-      }
-      setSinBusqueda(false);
-      setResultados(Array.isArray(r.data) ? r.data : []);
-    }, 300);
-    return () => {
-      vigente = false;
-      clearTimeout(t);
-    };
-  }, [q, valor.modo, valor.jugadorId, buscarJugadoresClub]);
-  const visibles = resultados.filter((r) => !idsOcupados.includes(String(r.id)));
-  const pestana = (modo, texto, Icono) => (
-    <button
-      type="button"
-      onClick={() => onChange({ modo })}
-      aria-pressed={valor.modo === modo}
-      className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1 text-[10.5px] font-bold transition ${
-        valor.modo === modo ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
-      }`}
-    >
-      <Icono size={11} /> {texto}
-    </button>
-  );
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-2.5" data-testid={`acompanante-${numero}`}>
-      <div className="mb-2 flex items-center gap-2">
-        <span className="shrink-0 text-[11px] font-black text-slate-700">Jugador {numero}</span>
-        <div className="flex flex-1 rounded-md border border-slate-300 bg-slate-100 p-0.5">
-          {pestana('buscar', 'Buscar en el club', Search)}
-          {pestana('manual', 'Jugador Nuevo', UserPlus)}
-        </div>
-      </div>
-      {valor.modo === 'buscar' ? (
-        valor.jugadorId ? (
-          <div className="flex items-center gap-2 rounded-md border border-orange-400/40 bg-orange-400/[0.06] px-2.5 py-1.5">
-            <UserCheck size={13} className="shrink-0 text-orange-500" />
-            <span className="min-w-0 flex-1 truncate text-xs font-bold text-slate-900">{valor.etiqueta}</span>
-            <button
-              type="button"
-              onClick={() => onChange({ jugadorId: null, etiqueta: '', busqueda: '' })}
-              className="shrink-0 rounded p-0.5 text-slate-500 hover:text-rose-500"
-              aria-label={`Quitar Jugador ${numero}`}
-            >
-              <X size={13} />
-            </button>
-          </div>
-        ) : (
-          <div className="relative">
-            <input
-              value={valor.busqueda}
-              onChange={(e) => onChange({ busqueda: e.target.value })}
-              className={inputClase}
-              placeholder="Escribe nombre o apellido..."
-              autoComplete="off"
-              aria-label={`Buscar Jugador ${numero}`}
-            />
-            {q.length >= 2 && (
-              <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-slate-50">
-                {buscando ? (
-                  <p className="px-3 py-2 text-[11px] text-slate-500">Buscando…</p>
-                ) : sinBusqueda || typeof buscarJugadoresClub !== 'function' ? (
-                  <p className="px-3 py-2 text-[11px] text-slate-500">La búsqueda no está disponible ahora — usa "Jugador Nuevo".</p>
-                ) : visibles.length === 0 ? (
-                  <p className="px-3 py-2 text-[11px] text-slate-500">Sin coincidencias en el club — usa "Jugador Nuevo" para registrarlo.</p>
-                ) : (
-                  visibles.map((r) => (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => onChange({ jugadorId: r.id, etiqueta: r.nombre || '', busqueda: '' })}
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-slate-800 transition hover:bg-slate-200"
-                    >
-                      <Users size={12} className="shrink-0 text-orange-400" />
-                      <span className="min-w-0 flex-1 truncate font-semibold">{r.nombre}</span>
-                      {r.telefono_final && <span className="shrink-0 text-[10px] text-slate-500">•••• {r.telefono_final}</span>}
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-        )
-      ) : (
-        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
-          <input value={valor.nombre} onChange={(e) => onChange({ nombre: e.target.value })} className={inputClase} placeholder="Nombre" aria-label={`Nombre Jugador ${numero}`} />
-          <input value={valor.apellido} onChange={(e) => onChange({ apellido: e.target.value })} className={inputClase} placeholder="Apellido" aria-label={`Apellido Jugador ${numero}`} />
-          <input
-            value={valor.telefono}
-            onChange={(e) => onChange({ telefono: e.target.value.replace(/\D/g, '').slice(0, 10) })}
-            className={inputClase}
-            placeholder="Teléfono (10 dígitos)"
-            inputMode="numeric"
-            aria-label={`Teléfono Jugador ${numero}`}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club, tarifasHorarios, jugadorTitular, buscarJugadoresClub }) {
+function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club, tarifasHorarios }) {
   // Arquitectura de Tarifas Academia (Corrección — item 4): esta solicitud
   // ("modal genérico de horarios") no tenía forma de capturar si el
   // jugador busca una Clase Suelta o el Plan Mensual — ahora se pide con
@@ -58624,20 +58604,11 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   // ("Clase Suelta"/"Plan Mensual") arranca marcada — el jugador debe elegir
   // una explícitamente antes de enviar (ver validación en `enviar()`).
   const [tipoPagoDeseado, setTipoPagoDeseado] = useState(null); // null | 'clase_suelta' | 'mensualidad'
-  const [tipo, setTipo] = useState('grupal'); // 'privada' | 'grupal'
-  // Acompañantes (App-92): Jugador 1 = el usuario logueado (fijo); hasta 3
-  // lugares más (Jugador 2..4) según "Número de Participantes". Se guardan
-  // siempre 3 en estado para no perder lo capturado si el jugador cambia
-  // de 4 → 2 → 4 personas; solo se usan los primeros `numeroParticipantes - 1`.
-  const [acompanantes, setAcompanantes] = useState(() => [acompananteVacio(), acompananteVacio(), acompananteVacio()]);
-  const actualizarAcompanante = (indice, cambios) =>
-    setAcompanantes((prev) => prev.map((a, i) => (i === indice ? { ...a, ...cambios } : a)));
+  // App-94: el Portal SOLO solicita Clase Privada / Personalizada 1-a-1 —
+  // las clases grupales las publica el club y el jugador se inscribe a
+  // ellas desde el catálogo (con su modal de políticas de grupo mínimo).
+  const tipo = 'privada';
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
-  // NÚMERO DE PARTICIPANTES (solo aplica a "Grupal" — una "Privada" siempre
-  // es 1-a-1, así que este selector se oculta y no se manda en ese caso; ver
-  // `enviar()` más abajo). Arranca en 2 (la opción más chica) porque `tipo`
-  // ya arranca en 'grupal' por defecto.
-  const [numeroParticipantes, setNumeroParticipantes] = useState(2);
   const [fecha, setFecha] = useState(hoyISO());
   const [horaInicio, setHoraInicio] = useState('');
   // Coach Preferido (item 3) — '' = "Cualquiera disponible". La lista de
@@ -58753,30 +58724,14 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
     return { monto: minimo, desde: minimo !== Math.max(...precios) };
   }, [slots, horaInicio, franjasClaseDelDia, tarifasAcademiaClub, duracionClaseMinutos]);
 
-  // Tarifas Grupales por Persona (App-92, migracion_v110): en "Grupal" la
-  // tarjeta superior muestra "Desde $X / persona" con la tarifa configurada
-  // para ese número de participantes; si el club no la definió, se usa el
-  // precio de Clase Suelta (incluida su franja horaria, igual que antes).
-  const esGrupal = tipo === 'grupal';
-  const precioGrupalConfigurado = esGrupal ? tarifasAcademiaClub.precioGrupalConfigurado?.[numeroParticipantes] ?? null : null;
-  const tarjetaClaseSuelta = esGrupal
-    ? { monto: precioGrupalConfigurado != null ? precioGrupalConfigurado : precioClaseSueltaTarjeta.monto, desde: true, porPersona: true }
-    : { ...precioClaseSueltaTarjeta, porPersona: false };
-  const acompanantesActivos = esGrupal ? acompanantes.slice(0, Math.max(0, numeroParticipantes - 1)) : [];
-  // Título dinámico de la tarjeta superior izquierda (App-93): en Grupal es
-  // "Cuota por Persona" (cada quien paga su lugar) para no confundirla con
-  // una clase individual; en Privada 1-a-1 es "Clase Personalizada".
-  const tituloTarjetaClase = esGrupal ? 'Cuota por Persona' : 'Clase Personalizada';
+  const tarjetaClaseSuelta = precioClaseSueltaTarjeta;
+  const tituloTarjetaClase = 'Clase Personalizada';
 
   async function enviar() {
     setError('');
     if (!tipoPagoDeseado) return setError(`Elige una opción: ${tituloTarjetaClase} o Plan Mensual de Academia.`);
     if (fecha < hoyISO()) return setError('Elige una fecha a partir de hoy.');
     if (!horaInicio) return setError('Elige un horario disponible en la cuadrícula.');
-    // Acompañantes (solo Grupal): cada lugar debe ser un jugador del club
-    // elegido en la búsqueda, o Nombre + Apellido + Teléfono a 10 dígitos.
-    const errorAcompanantes = validarAcompanantesClase(acompanantesActivos, jugadorTitular);
-    if (errorAcompanantes) return setError(errorAcompanantes);
     setEnviando(true);
     const slotElegido = slots.find((s) => s.horaInicio === horaInicio);
     await onEnviar({
@@ -58791,30 +58746,20 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       // sugeridos informativos de esa hora, si hay alguno (el club confirma
       // el coach final al revisar la solicitud, esto es solo referencia).
       coach: coachPreferido || slotElegido?.coachesNombres?.[0] || null,
-      // NÚMERO DE PARTICIPANTES: solo tiene sentido para "Grupal" — una
-      // "Privada" siempre es 1-a-1, así que se manda `null` explícito (no
-      // el valor que haya quedado seleccionado de una vuelta anterior por
-      // "Grupal") para que el club/coach nunca vea un número de personas
-      // que no corresponde al tipo de solicitud.
-      numeroParticipantes: tipo === 'grupal' ? numeroParticipantes : null,
+      // Privada 1-a-1: nunca lleva número de participantes.
+      numeroParticipantes: null,
       tipoPagoDeseado,
       // Precio Dinámico de Clase Suelta (migracion_v89): el monto EXACTO que el
       // jugador vio para el horario que eligió (franja que cubre el bloque, o
       // el precio estándar) — se guarda en la solicitud para que "Nueva
       // Clase" (Panel Admin) lo precargue en vez del precio base estático.
-      // Grupal (App-92): el precio guardado es la tarifa POR PERSONA del
-      // tamaño de grupo elegido (respaldo: Clase Suelta del horario).
-      precioClaseSuelta:
-        precioGrupalConfigurado != null
-          ? precioGrupalConfigurado
-          : precioClaseSueltaEnHorario(horaInicio, duracionClaseMinutos, franjasClaseDelDia, tarifasAcademiaClub.precioBaseClaseSuelta),
-      acompanantes: acompanantesActivos.map(acompananteParaEnvio),
+      precioClaseSuelta: precioClaseSueltaEnHorario(horaInicio, duracionClaseMinutos, franjasClaseDelDia, tarifasAcademiaClub.precioBaseClaseSuelta),
     });
     setEnviando(false);
   }
 
   return (
-    <ModalShell titulo="Solicitar Clase Privada o Nuevo Grupo" subtitulo="El club revisa tu solicitud y te confirmará" onClose={onClose} icon={Sparkles} ancho="max-w-lg">
+    <ModalShell titulo="Solicitar Clase Privada" subtitulo="Clase personalizada 1-a-1 · el club revisa tu solicitud y te confirmará" onClose={onClose} icon={Sparkles} ancho="max-w-lg">
       <div className="space-y-3.5">
         {/* Arquitectura de Tarifas Academia (Corrección — item 4, refinado):
             2 tarjetas puramente SELECCIONABLES (modo toggle/radio, borde +
@@ -58846,14 +58791,11 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                 />
               </div>
               <p className="text-[10.5px] leading-snug text-slate-500">
-                {esGrupal
-                  ? `Sesión grupal de ${numeroParticipantes} personas, cada quien paga su lugar`
-                  : 'Asiste a una sesión individual sin compromisos periódicos'}
+                Sesión 1-a-1 con tu coach, sin compromisos periódicos
               </p>
               <p className="text-base font-black text-slate-900" data-testid="precio-tarjeta-clase-suelta">
                 {tarjetaClaseSuelta.desde && <span className="mr-1 text-[11px] font-bold text-slate-500">Desde</span>}
                 {formatoMoneda(tarjetaClaseSuelta.monto)}
-                {tarjetaClaseSuelta.porPersona && <span className="ml-1 text-[11px] font-bold text-slate-500">/ persona</span>}
               </p>
             </button>
             <button
@@ -58879,75 +58821,6 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
             </button>
           </div>
         </div>
-
-        <div>
-          <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Tipo de Clase</p>
-          <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
-            {TIPOS_CLASE_ACADEMIA.map((t) => (
-              <button
-                key={t.value}
-                type="button"
-                onClick={() => setTipo(t.value)}
-                className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
-                  tipo === t.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                {t.value === 'privada' ? 'Privada 1-a-1' : 'Grupal'}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* NÚMERO DE PARTICIPANTES — solo para "Grupal" (una "Privada" es
-            siempre 1-a-1, así que este selector se oculta por completo en
-            ese caso, ver `tipo === 'grupal'` abajo). Se manda en el payload
-            de la solicitud (`numeroParticipantes`, ver `enviar()`) para que
-            el club/coach sepa cuántos alumnos asistirán al revisarla. */}
-        {tipo === 'grupal' && (
-          <div>
-            <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Número de Participantes</p>
-            <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
-              {[2, 3, 4].map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => setNumeroParticipantes(n)}
-                  className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
-                    numeroParticipantes === n ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {n} Personas
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Participantes (App-92): Jugador 1 fijo (el usuario logueado) +
-            un campo dinámico por cada acompañante. Cada acompañante se
-            busca entre los jugadores registrados del club (Nombre/Apellido)
-            o se captura a mano (Nombre, Apellido, Teléfono a 10 dígitos). */}
-        {esGrupal && (
-          <div className="space-y-2" data-testid="participantes-solicitud">
-            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Participantes</p>
-            <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2">
-              <Lock size={12} className="shrink-0 text-slate-400" />
-              <span className="text-[11px] font-bold text-slate-500">Jugador 1</span>
-              <span className="min-w-0 flex-1 truncate text-xs font-black text-slate-900">{jugadorTitular?.nombre || 'Tú'}</span>
-              <span className="shrink-0 rounded-full bg-orange-400/10 px-2 py-0.5 text-[9px] font-bold text-orange-500 ring-1 ring-orange-400/30">Tú</span>
-            </div>
-            {acompanantesActivos.map((a, i) => (
-              <CampoAcompananteClase
-                key={i}
-                numero={i + 2}
-                valor={a}
-                onChange={(cambios) => actualizarAcompanante(i, cambios)}
-                buscarJugadoresClub={buscarJugadoresClub}
-                idsOcupados={[jugadorTitular?.id, ...acompanantesActivos.filter((_, k) => k !== i).map((x) => x.jugadorId)].filter(Boolean).map(String)}
-              />
-            ))}
-          </div>
-        )}
 
         <div>
           <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Nivel</p>
@@ -59545,6 +59418,106 @@ function SelectorMetodoPagoPortal({
 // Reserva de Cancha: si el saldo alcanza para cubrir todo, "Pagar con
 // Wallet" liquida el concepto de una vez; si no alcanza, cubre lo que
 // pueda y dice cuánto queda pendiente en recepción.
+// Modal OBLIGATORIO de políticas antes de inscribirse a una clase GRUPAL
+// abierta desde el Portal (App-94):
+//   a) mínimo de participantes para impartir la clase;
+//   b) hora límite (X h antes, `academia_horas_validacion_minimo`) tras la
+//      cual, sin el mínimo, la clase se cancela automáticamente;
+//   c) reembolsos ÚNICAMENTE al Wallet de Jugador en QLUBOS;
+//   d) casilla de aceptación — sin ella no se puede continuar al pago.
+function ModalPoliticasClaseGrupal({ clase, tipoPago, inscritos = 0, horasValidacion = 2, onClose, onAceptar }) {
+  const [acepto, setAcepto] = useState(false);
+  const minimo = minimoParticipantesClase(clase);
+  const monto = tipoPago === 'mensualidad' ? Number(clase?.precio_mensualidad) || 0 : Number(clase?.precio_clase_suelta) || 0;
+  const inicioMin = parseHoraAMinutos(clase?.hora_inicio);
+  // Fecha/hora límite legible (mismo reloj local del club que el resto del Portal).
+  const limite = (() => {
+    if (!clase?.fecha || inicioMin === null) return null;
+    const d = new Date(`${clase.fecha}T00:00:00`);
+    d.setMinutes(inicioMin - Math.round(Number(horasValidacion) * 60));
+    const fechaISO = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return { fecha: fechaISO, hora: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` };
+  })();
+  const horasTexto = `${horasValidacion} hora${Number(horasValidacion) === 1 ? '' : 's'}`;
+  const faltan = minimo ? Math.max(0, minimo - inscritos - 1) : 0;
+  const bloque = (Icono, titulo, children, testid) => (
+    <div className="flex gap-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3" data-testid={testid}>
+      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-orange-400/15 text-orange-500 ring-1 ring-orange-400/30">
+        <Icono size={14} />
+      </span>
+      <div className="min-w-0">
+        <p className="text-xs font-black text-slate-900">{titulo}</p>
+        <div className="mt-0.5 text-[11.5px] leading-snug text-slate-600">{children}</div>
+      </div>
+    </div>
+  );
+  return (
+    <ModalShell
+      titulo="Antes de inscribirte"
+      subtitulo={`${clase?.nombre || 'Clase grupal'}${clase?.fecha ? ` · ${formatoFechaLarga(clase.fecha)}` : ''}${clase?.hora_inicio ? ` · ${formatoHora12(clase.hora_inicio)}` : ''}`}
+      onClose={onClose}
+      icon={ShieldCheck}
+      ancho="max-w-md"
+    >
+      <div className="space-y-2.5" data-testid="modal-politicas-clase-grupal">
+        {bloque(
+          Users,
+          'Clase sujeta a un grupo mínimo',
+          minimo ? (
+            <>
+              Esta clase requiere un mínimo de <span className="font-black text-slate-900">{minimo} participantes</span> para llevarse a cabo.
+              Inscritos ahora: <span className="font-bold text-slate-900">{inscritos}</span>
+              {faltan > 0 ? ` — contándote, ${faltan === 1 ? 'faltaría 1 más' : `faltarían ${faltan} más`}.` : ' — contándote, el mínimo ya se cumple.'}
+            </>
+          ) : (
+            <>Las clases grupales requieren un mínimo de participantes para llevarse a cabo.</>
+          ),
+          'politica-minimo'
+        )}
+        {bloque(
+          Clock,
+          'Tiempo límite y cancelación automática',
+          <>
+            Si el grupo mínimo no se completa <span className="font-black text-slate-900">{horasTexto} antes</span> del inicio
+            {limite ? ` (${formatoFechaLarga(limite.fecha)} a las ${formatoHora12(limite.hora)})` : ''}, la clase se
+            <span className="font-bold text-slate-900"> cancelará automáticamente</span> y te avisaremos aquí en el Portal.
+          </>,
+          'politica-limite'
+        )}
+        {bloque(
+          Wallet,
+          'Reembolsos únicamente a tu Wallet',
+          <>
+            Las devoluciones por cancelación del grupo o dentro de las políticas del club se abonan{' '}
+            <span className="font-black text-slate-900">ÚNICAMENTE a tu Wallet de Jugador en QLUBOS</span>. No hay reembolsos en efectivo
+            ni a tarjetas bancarias.
+          </>,
+          'politica-wallet'
+        )}
+        <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200 bg-white p-3">
+          <input
+            type="checkbox"
+            checked={acepto}
+            onChange={(e) => setAcepto(e.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0 accent-orange-500"
+            aria-label="Acepto las políticas de la clase grupal"
+          />
+          <span className="text-[11.5px] font-semibold leading-snug text-slate-700">
+            He leído y acepto el mínimo de participantes, la cancelación automática y que cualquier reembolso será solo a mi Wallet de
+            QLUBOS.
+          </span>
+        </label>
+        <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={onAceptar} disabled={!acepto}>
+            <CheckCircle2 size={15} /> Aceptar y Continuar al Pago{monto > 0 ? ` · ${formatoMoneda(monto)}` : ''}
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 function ModalElegirPago({ monto, saldoWallet, concepto, politica, onClose, onConfirmar }) {
   const [metodo, setMetodo] = useState(SHOW_BETA_PORTAL_PAGO_WALLET && saldoWallet > 0 ? 'wallet' : 'recepcion');
   const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
@@ -61271,14 +61244,16 @@ function AppInterno({ clubInicial } = {}) {
     academiaPrecioGrupal2: configClub?.academiaPrecioGrupal2 ?? null,
     academiaPrecioGrupal3: configClub?.academiaPrecioGrupal3 ?? null,
     academiaPrecioGrupal4: configClub?.academiaPrecioGrupal4 ?? null,
+    academiaHorasValidacionMinimo: horasValidacionMinimoDelClub(configClub),
   });
   useEffect(() => {
     tarifasGrupalesRef.current = {
       academiaPrecioGrupal2: configClub?.academiaPrecioGrupal2 ?? null,
       academiaPrecioGrupal3: configClub?.academiaPrecioGrupal3 ?? null,
       academiaPrecioGrupal4: configClub?.academiaPrecioGrupal4 ?? null,
+      academiaHorasValidacionMinimo: horasValidacionMinimoDelClub(configClub),
     };
-  }, [configClub?.academiaPrecioGrupal2, configClub?.academiaPrecioGrupal3, configClub?.academiaPrecioGrupal4]);
+  }, [configClub?.academiaPrecioGrupal2, configClub?.academiaPrecioGrupal3, configClub?.academiaPrecioGrupal4, configClub?.academiaHorasValidacionMinimo]);
 
   // Interactive Onboarding Canvas (migracion_v66) — semilla desde
   // `clubInicial` (fix urgente de condición de carrera, ver `ClubAuthGate`):
@@ -61979,7 +61954,8 @@ function AppInterno({ clubInicial } = {}) {
           data.academia_clases_incluidas_mensualidad != null ||
           data.academia_precio_grupal_2 != null ||
           data.academia_precio_grupal_3 != null ||
-          data.academia_precio_grupal_4 != null
+          data.academia_precio_grupal_4 != null ||
+          data.academia_horas_validacion_minimo != null
         ) {
           const nuevaConfig = {
             nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
@@ -62069,6 +62045,11 @@ function AppInterno({ clubInicial } = {}) {
               data.academia_precio_grupal_4 === undefined
                 ? tarifasGrupalesRef.current.academiaPrecioGrupal4
                 : normalizarPrecioGrupal(data.academia_precio_grupal_4),
+            // Ventana de validación de participantes mínimos (migracion_v111).
+            academiaHorasValidacionMinimo:
+              data.academia_horas_validacion_minimo === undefined
+                ? tarifasGrupalesRef.current.academiaHorasValidacionMinimo
+                : horasValidacionMinimoDelClub(data),
           };
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
@@ -62721,6 +62702,12 @@ function AppInterno({ clubInicial } = {}) {
           'academiaPrecioGrupal4' in nuevaConfig
             ? normalizarPrecioGrupal(nuevaConfig.academiaPrecioGrupal4)
             : tarifasGrupalesRef.current.academiaPrecioGrupal4,
+        // Ventana de validación de participantes mínimos (migracion_v111) —
+        // mismo criterio: solo cambia si el caller manda la llave.
+        academiaHorasValidacionMinimo:
+          'academiaHorasValidacionMinimo' in nuevaConfig
+            ? horasValidacionMinimoDelClub(nuevaConfig)
+            : tarifasGrupalesRef.current.academiaHorasValidacionMinimo,
       };
       setGuardandoConfigClub(true);
       setConfigClub(limpia);
@@ -62751,6 +62738,7 @@ function AppInterno({ clubInicial } = {}) {
           academia_precio_grupal_2: limpia.academiaPrecioGrupal2,
           academia_precio_grupal_3: limpia.academiaPrecioGrupal3,
           academia_precio_grupal_4: limpia.academiaPrecioGrupal4,
+          academia_horas_validacion_minimo: limpia.academiaHorasValidacionMinimo,
         };
         // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo
         // (como antes de este cambio): `hora_apertura`/`hora_cierre`/
@@ -62781,6 +62769,7 @@ function AppInterno({ clubInicial } = {}) {
           'academia_precio_grupal_2',
           'academia_precio_grupal_3',
           'academia_precio_grupal_4',
+          'academia_horas_validacion_minimo',
         ]);
         if (error) throw error;
         setConfiguracionClubId(CLUB_ACTIVO_ID);
@@ -63346,6 +63335,44 @@ function AppInterno({ clubInicial } = {}) {
       supabase.removeChannel(canal);
     };
   }, [cargarAcademiaClases, cargarAcademiaAlumnos, cargarAcademiaAsistencias]);
+
+  // Cancelación automática por grupo mínimo (App-94, migracion_v111): el
+  // Panel dispara la validación al abrir y cada 3 min (respaldo de pg_cron).
+  // Si se canceló alguna clase, refresca Academia + Parrilla (cancha
+  // liberada) y avisa al staff; la alerta persistente llega por la campana
+  // (`notificaciones_club`, tipo 'clase_cancelada_minimo').
+  useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return undefined;
+    let activo = true;
+    let intervalo = null;
+    const validar = async () => {
+      const canceladas = await validarMinimosClasesClub(CLUB_ACTIVO_ID);
+      if (!activo) return;
+      if (canceladas === null) {
+        if (intervalo) clearInterval(intervalo);
+        return;
+      }
+      if (canceladas.length > 0) {
+        cargarAcademiaClases({ silencioso: true });
+        cargarAcademiaAlumnos({ silencioso: true });
+        cargarDatos({ silencioso: true });
+        canceladas.forEach((c) =>
+          mostrarToast({
+            titulo: `Clase "${c.nombre}" cancelada automáticamente`,
+            detalle: `No alcanzó el mínimo (${c.inscritos}/${c.minimo}). ${c.reembolsos} reembolso${c.reembolsos === 1 ? '' : 's'} a Wallet · cancha liberada.`,
+            tono: 'aviso',
+          })
+        );
+      }
+    };
+    validar();
+    intervalo = setInterval(validar, 3 * 60 * 1000);
+    return () => {
+      activo = false;
+      if (intervalo) clearInterval(intervalo);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ---------------- Beta: Tiempo Real global + revalidación por foco ----------------
      Preparación para la fase Beta de 3 meses en club piloto: además de los
@@ -64236,6 +64263,7 @@ function AppInterno({ clubInicial } = {}) {
       inscripcion_clase: 'academia',
       solicitud_clase: 'academia',
       compra_tienda: 'pos',
+      clase_cancelada_minimo: 'academia',
     }),
     []
   );
