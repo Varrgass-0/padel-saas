@@ -1731,6 +1731,63 @@ function minutosBloquesEnRango(aperturaMin, cierreMin, pasoMin) {
   return lista;
 }
 
+// SELECTOR DE HORA UNIFICADO (reemplaza TODOS los `<input type="time">` de la
+// app — "+ Nueva Clase", "Reprogramar horario" de la Parrilla, Nueva Reta,
+// Nuevo Torneo y Asignar Horario de Partido): un `<select>` limpio con
+// bloques estándar ("07:00", "07:30", "08:00"…) en vez del picker nativo con
+// rueda de minutos sueltos (00, 01, 02…). Nunca pierde un dato existente: si
+// el valor actual no está en la lista (ej. una reserva vieja a las 17:15) se
+// agrega como opción para que el `<select>` lo siga mostrando tal cual.
+// `esDeshabilitada(h)` marca opciones no elegibles (ej. horas que ya
+// pasaron); con `ocultarDeshabilitadas` directamente no se listan — salvo el
+// valor actual, que siempre se conserva visible.
+function SelectorHoraBloques({ value, onChange, opciones, esDeshabilitada, ocultarDeshabilitadas = false, className = inputClase, ariaLabel, vacio = 'Sin horarios disponibles', disabled = false }) {
+  const lista = Array.isArray(opciones) ? [...opciones] : [];
+  if (value && !lista.includes(value)) {
+    lista.push(value);
+    lista.sort((a, b) => (parseHoraAMinutos(a) ?? 0) - (parseHoraAMinutos(b) ?? 0));
+  }
+  const visibles = lista.filter((h) => !(ocultarDeshabilitadas && h !== value && esDeshabilitada?.(h)));
+  return (
+    <select value={value || ''} onChange={(e) => onChange(e.target.value)} className={className} aria-label={ariaLabel} disabled={disabled}>
+      {!value && <option value="">{visibles.length === 0 ? vacio : 'Elige una hora'}</option>}
+      {visibles.map((h) => {
+        const noElegible = h !== value && Boolean(esDeshabilitada?.(h));
+        const fueraDeLista = !opciones?.includes(h);
+        return (
+          <option key={h} value={h} disabled={noElegible}>
+            {h}
+            {fueraDeLista ? ' (actual)' : ''}
+            {noElegible ? ' · no disponible' : ''}
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
+// Opciones de inicio en pasos de `SLOT_MIN` (30 min) dentro del horario de
+// operación, exigiendo que quepa una duración mínima antes del cierre.
+function opcionesHoraInicio(aperturaMin, cierreMin, duracionMin = SLOT_MIN) {
+  const lista = [];
+  for (let m = aperturaMin; m + duracionMin <= cierreMin; m += SLOT_MIN) lista.push(minutosAHora(m));
+  return lista;
+}
+
+// Opciones de fin: de `inicio + 30 min` hasta `inicio + duracionMaxMin`
+// (o el cierre, lo que ocurra antes), en pasos de 30 min — el tope exacto se
+// agrega aunque no sea múltiplo de 30.
+function opcionesHoraFin(horaInicio, cierreMin, duracionMaxMin = null) {
+  const ini = parseHoraAMinutos(horaInicio);
+  if (ini === null) return [];
+  const tope = Math.min(cierreMin, duracionMaxMin ? ini + duracionMaxMin : cierreMin);
+  const lista = [];
+  for (let m = ini + SLOT_MIN; m <= tope; m += SLOT_MIN) lista.push(minutosAHora(m));
+  const topeTexto = minutosAHora(tope);
+  if (tope > ini && !lista.includes(topeTexto)) lista.push(topeTexto);
+  return lista;
+}
+
 const ESTADOS_PAGO = [
   { value: 'pagado', label: 'Pagado', tone: 'emerald' },
   { value: 'pendiente', label: 'Pendiente (Cobro en Recepción)', tone: 'amber' },
@@ -8339,12 +8396,26 @@ function DetalleReserva({
   const [procesandoReprogramar, setProcesandoReprogramar] = useState(false);
   const [errorReprogramar, setErrorReprogramar] = useState('');
 
+  // Selector de hora unificado (sin picker nativo): bloques de 30 min dentro
+  // del Horario de Operación del club; en una reserva de HOY no se ofrecen
+  // horas de inicio que ya pasaron (la actual siempre se conserva visible).
+  const operacionReprogramar = minutosOperacionDelClub(configClub);
+  const esHoraPasadaReprogramar = (h) => {
+    if (!reserva?.fecha || reserva.fecha !== hoyISO()) return reserva?.fecha ? reserva.fecha < hoyISO() : false;
+    const m = parseHoraAMinutos(h);
+    return m !== null && m < minutosAhora();
+  };
+
   async function reprogramar() {
     setErrorReprogramar('');
     const ini = parseHoraAMinutos(nuevaHoraInicio);
     const fin = parseHoraAMinutos(nuevaHoraFin);
     if (ini === null || fin === null || fin <= ini) {
       setErrorReprogramar('Revisa el horario: la hora de fin debe ser posterior a la de inicio.');
+      return;
+    }
+    if (nuevaHoraInicio !== reserva.hora_inicio && esHoraPasadaReprogramar(nuevaHoraInicio)) {
+      setErrorReprogramar('Ese horario ya pasó. Elige una hora futura.');
       return;
     }
     const cruce = buscarSolapeEnCancha(
@@ -8724,15 +8795,31 @@ function DetalleReserva({
           </p>
           <div className="grid grid-cols-2 gap-2">
             <Campo label="Nueva hora de inicio">
-              <input
-                type="time"
+              <SelectorHoraBloques
                 value={nuevaHoraInicio}
-                onChange={(e) => setNuevaHoraInicio(e.target.value)}
-                className={inputClase}
+                onChange={(h) => {
+                  // Conserva la misma duración de la reserva al mover el inicio.
+                  const iniPrev = parseHoraAMinutos(nuevaHoraInicio);
+                  const finPrev = parseHoraAMinutos(nuevaHoraFin);
+                  const iniNuevo = parseHoraAMinutos(h);
+                  setNuevaHoraInicio(h);
+                  if (iniPrev !== null && finPrev !== null && iniNuevo !== null && finPrev > iniPrev) {
+                    setNuevaHoraFin(minutosAHora(Math.min(iniNuevo + (finPrev - iniPrev), operacionReprogramar.cierreMin)));
+                  }
+                }}
+                opciones={opcionesHoraInicio(operacionReprogramar.aperturaMin, operacionReprogramar.cierreMin)}
+                esDeshabilitada={esHoraPasadaReprogramar}
+                ocultarDeshabilitadas
+                ariaLabel="Nueva hora de inicio"
               />
             </Campo>
             <Campo label="Nueva hora de fin">
-              <input type="time" value={nuevaHoraFin} onChange={(e) => setNuevaHoraFin(e.target.value)} className={inputClase} />
+              <SelectorHoraBloques
+                value={nuevaHoraFin}
+                onChange={setNuevaHoraFin}
+                opciones={opcionesHoraFin(nuevaHoraInicio, operacionReprogramar.cierreMin)}
+                ariaLabel="Nueva hora de fin"
+              />
             </Campo>
           </div>
           {errorReprogramar && <p className="text-xs font-semibold text-rose-400">{errorReprogramar}</p>}
@@ -32161,10 +32248,20 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Campo label="Hora inicio">
-            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+            <SelectorHoraBloques
+              value={horaInicio}
+              onChange={setHoraInicio}
+              opciones={opcionesHoraInicio(minutosOperacionDelClub(configClub).aperturaMin, minutosOperacionDelClub(configClub).cierreMin)}
+              ariaLabel="Hora de inicio"
+            />
           </Campo>
           <Campo label="Hora fin">
-            <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
+            <SelectorHoraBloques
+              value={horaFin}
+              onChange={setHoraFin}
+              opciones={opcionesHoraFin(horaInicio, minutosOperacionDelClub(configClub).cierreMin)}
+              ariaLabel="Hora de fin"
+            />
           </Campo>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -33086,17 +33183,19 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
                   ))}
                 </select>
                 <SelectorFechaClick value={b.fecha} onChange={(v) => actualizarBloqueo(idx, 'fecha', v)} compact />
-                <input
-                  type="time"
+                <SelectorHoraBloques
                   value={b.horaInicio}
-                  onChange={(e) => actualizarBloqueo(idx, 'horaInicio', e.target.value)}
+                  onChange={(h) => actualizarBloqueo(idx, 'horaInicio', h)}
+                  opciones={opcionesHoraInicio(HORA_INICIO_MIN, HORA_FIN_MIN)}
                   className={`${inputClase} text-xs`}
+                  ariaLabel="Hora de inicio del bloqueo"
                 />
-                <input
-                  type="time"
+                <SelectorHoraBloques
                   value={b.horaFin}
-                  onChange={(e) => actualizarBloqueo(idx, 'horaFin', e.target.value)}
+                  onChange={(h) => actualizarBloqueo(idx, 'horaFin', h)}
+                  opciones={opcionesHoraFin(b.horaInicio, HORA_FIN_MIN)}
                   className={`${inputClase} text-xs`}
+                  ariaLabel="Hora de fin del bloqueo"
                 />
                 <button onClick={() => quitarBloqueo(idx)} className="flex items-center justify-center text-slate-500 hover:text-rose-400">
                   <Trash2 size={14} />
@@ -34510,10 +34609,10 @@ function ModalAsignarHorarioPartido({ partido, canchas, reservas, torneos, onClo
         </Campo>
         <div className="grid grid-cols-2 gap-4">
           <Campo label="Hora inicio">
-            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+            <SelectorHoraBloques value={horaInicio} onChange={setHoraInicio} opciones={opcionesHoraInicio(HORA_INICIO_MIN, HORA_FIN_MIN)} ariaLabel="Hora de inicio" />
           </Campo>
           <Campo label="Hora fin">
-            <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
+            <SelectorHoraBloques value={horaFin} onChange={setHoraFin} opciones={opcionesHoraFin(horaInicio, HORA_FIN_MIN)} ariaLabel="Hora de fin" />
           </Campo>
         </div>
 
@@ -38285,12 +38384,50 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   // una opción de "repetir semanalmente"): esta clase existe UNA sola vez,
   // en esta fecha exacta — igual criterio que una Reta/Torneo.
   const [fecha, setFecha] = useState(prellenado?.fecha || solicitudOrigen?.fecha || hoyISO());
+  // Horario de Operación + Duración de Clases del club (Configuración del
+  // Club → Reservas & Academia): la Hora Fin se calcula SOLA como
+  // Hora Inicio + `duracionClaseMin` y nunca puede pasar de ese lapso.
+  const { aperturaMin: aperturaClaseMin, cierreMin: cierreClaseMin } = minutosOperacionDelClub(configClub);
+  const duracionClaseMin = duracionesBloqueDelClub(configClub).claseMin;
+  const finConDuracion = (inicio) => {
+    const ini = parseHoraAMinutos(inicio);
+    return ini === null ? '' : minutosAHora(Math.min(ini + duracionClaseMin, cierreClaseMin));
+  };
   const [horaInicio, setHoraInicio] = useState(prellenado?.horaInicio || solicitudOrigen?.hora_desde || '17:00');
-  const [horaFin, setHoraFin] = useState(() => {
-    const inicio = prellenado?.horaInicio || solicitudOrigen?.hora_desde;
-    if (solicitudOrigen?.hora_hasta) return solicitudOrigen.hora_hasta;
-    return inicio ? minutosAHora(Math.min(parseHoraAMinutos(inicio) + 60, HORA_FIN_MIN)) : '18:00';
-  });
+  const [horaFin, setHoraFin] = useState(() => finConDuracion(prellenado?.horaInicio || solicitudOrigen?.hora_desde || '17:00'));
+  // Bloqueo de horarios pasados (mismo criterio que el Cronograma/Parrilla:
+  // un bloque cuyo INICIO ya pasó no se puede programar).
+  const esHoraPasadaClase = (h) => {
+    if (!fecha) return false;
+    if (fecha < hoyISO()) return true;
+    if (fecha > hoyISO()) return false;
+    const m = parseHoraAMinutos(h);
+    return m !== null && m < minutosAhora();
+  };
+  const opcionesInicioClase = useMemo(
+    () => opcionesHoraInicio(aperturaClaseMin, cierreClaseMin, duracionClaseMin),
+    [aperturaClaseMin, cierreClaseMin, duracionClaseMin]
+  );
+  const opcionesFinClase = useMemo(() => opcionesHoraFin(horaInicio, cierreClaseMin, duracionClaseMin), [horaInicio, cierreClaseMin, duracionClaseMin]);
+  // Al cambiar la Hora Inicio (o la duración configurada), la Hora Fin se
+  // fija sola en Inicio + duración del club.
+  const primeraCargaHorario = useRef(true);
+  useEffect(() => {
+    if (primeraCargaHorario.current) {
+      primeraCargaHorario.current = false;
+      return;
+    }
+    setHoraFin(finConDuracion(horaInicio));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [horaInicio, duracionClaseMin, cierreClaseMin]);
+  // Si la fecha elegida es HOY y la hora seleccionada ya pasó, se recorre
+  // sola al primer bloque futuro disponible (si existe).
+  useEffect(() => {
+    if (!esHoraPasadaClase(horaInicio)) return;
+    const siguiente = opcionesInicioClase.find((h) => !esHoraPasadaClase(h));
+    if (siguiente) setHoraInicio(siguiente);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fecha, opcionesInicioClase]);
   // Si la solicitud web trae "Número de Participantes" (solo "Nuevo
   // grupo", migracion_v70) se usa para prellenar la capacidad de la clase
   // — así el operador ve de una vez cuántos lugares pidió el jugador, en
@@ -38385,6 +38522,17 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     const ini = parseHoraAMinutos(horaInicio);
     const fin = parseHoraAMinutos(horaFin);
     if (ini === null || fin === null || fin <= ini) return setError('La hora de fin debe ser posterior a la de inicio.');
+    // Bloqueo de fecha/horario pasado (misma regla que el Cronograma).
+    if (fecha < hoyISO() || (fecha === hoyISO() && ini < minutosAhora())) {
+      const mensajePasado = 'Ese horario ya pasó. Elige una hora futura para programar la clase';
+      setError(mensajePasado);
+      toast({ titulo: mensajePasado, tono: 'aviso' });
+      return;
+    }
+    // Duración máxima según Configuración del Club.
+    if (fin - ini > duracionClaseMin) {
+      return setError(`La clase no puede durar más de ${duracionClaseMin} minutos (duración configurada por el club).`);
+    }
     if (!(Number(capacidadEfectiva) > 0)) return setError('La capacidad máxima debe ser mayor a 0.');
 
     // Igual candado anti-encimado que una reserva/reta normal — clave para
@@ -38620,15 +38768,37 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
         </Campo>
         <div className="grid grid-cols-3 gap-4">
           <Campo label="Fecha" hint="Fecha específica de esta sesión — no se repite sola">
-            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClase} />
+            <input
+              type="date"
+              min={hoyISO()}
+              value={fecha}
+              onChange={(e) => {
+                const valor = e.target.value;
+                setFecha(valor && valor < hoyISO() ? hoyISO() : valor);
+              }}
+              className={inputClase}
+            />
           </Campo>
-          <Campo label="Hora inicio">
-            <input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className={inputClase} />
+          <Campo label="Hora inicio" hint={fecha === hoyISO() ? 'Las horas que ya pasaron no se muestran' : undefined}>
+            <SelectorHoraBloques
+              value={horaInicio}
+              onChange={setHoraInicio}
+              opciones={opcionesInicioClase}
+              esDeshabilitada={esHoraPasadaClase}
+              ocultarDeshabilitadas
+              ariaLabel="Hora de inicio de la clase"
+              vacio="Ya no hay horarios hoy"
+            />
           </Campo>
-          <Campo label="Hora fin">
-            <input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className={inputClase} />
+          <Campo label="Hora fin" hint={`Máx. ${duracionClaseMin} min (config. del club)`}>
+            <SelectorHoraBloques value={horaFin} onChange={setHoraFin} opciones={opcionesFinClase} ariaLabel="Hora de fin de la clase" />
           </Campo>
         </div>
+        {esHoraPasadaClase(horaInicio) && (
+          <p className="flex items-start gap-1.5 rounded-lg bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-900 ring-1 ring-amber-300">
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" /> Ese horario ya pasó. Elige una hora futura para programar la clase.
+          </p>
+        )}
         <div className="grid grid-cols-3 gap-4">
           <Campo label="Capacidad máxima">
             <input
