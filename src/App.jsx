@@ -24204,13 +24204,82 @@ function HistorialTicketsVentas({ nombreClub }) {
 const COLOR_PNL_INGRESOS = '#059669';
 const COLOR_PNL_EGRESOS = '#ea580c';
 const COLOR_PNL_UTILIDAD = '#6366f1';
+// App-97: la composición es por LÍNEA DE NEGOCIO — las ventas de producto
+// (Smart POS + Tienda Web) se reparten en Pro-Shop / Restaurante-Bar, y los
+// cobros directos sin producto (penalizaciones, conceptos libres) en "Otros"
+// (gris neutro a propósito: es el remanente, no una línea de negocio).
+// Orden validado: azul · ámbar · violeta · verde azulado · fucsia · gris.
 const CATEGORIAS_INGRESO_PNL = [
-  { key: 'ventasMostrador', label: 'Ventas Mostrador', color: '#d97706' },
-  { key: 'ventasWeb', label: 'Tienda Web', color: '#8b5cf6' },
   { key: 'reservasCanchas', label: 'Reservas', color: '#0284c7' },
+  { key: 'restauranteBar', label: 'Restaurante / Bar', color: '#d97706' },
+  { key: 'proShop', label: 'Pro-Shop', color: '#8b5cf6' },
+  { key: 'clasesClinicas', label: 'Clases / Academia', color: '#0d9488' },
   { key: 'torneosRetas', label: 'Torneos / Retas', color: '#d946ef' },
-  { key: 'clasesClinicas', label: 'Clases / Clínicas', color: '#0d9488' },
+  { key: 'otrosIngresos', label: 'Otros', color: '#64748b' },
 ];
+
+// Reparto contable de una venta de producto por línea de negocio (App-97).
+// Cada renglón del ticket se clasifica por la categoría de SU producto
+// (mismo criterio que Analytics BI: Cafetería/Bar → Restaurante/Bar; resto
+// de productos → Pro-Shop); renglones que no son producto (penalizaciones,
+// cobros directos) → Otros. El MONTO del ticket que ya cuenta el P&L
+// (`montoVentaSinInscripciones`) se reparte proporcionalmente a los
+// subtotales — así descuentos/redondeos no cambian el total: la suma de las
+// 3 líneas es exactamente el monto original.
+const LINEAS_VENTA_PNL = ['proShop', 'restauranteBar', 'otrosIngresos'];
+function lineaNegocioItemPnl(item, productosPorId, productosPorNombre, porDefecto = 'producto') {
+  const tipo = item?.tipo || porDefecto;
+  if (tipo === 'inscripcion_evento') return null;
+  const idProd = item?.producto_id ?? item?.productoPadreId ?? null;
+  const prod =
+    (idProd != null ? productosPorId[String(idProd)] : null) ||
+    productosPorNombre[claveNombre(String(item?.nombre || '').split(' — ')[0].replace(/\s*\(.*$/, ''))] ||
+    null;
+  if (tipo !== 'producto' && !prod) return 'otrosIngresos';
+  const cat = prod?.categoria || item?.categoria || null;
+  if (cat === 'Cafetería/Bar') return 'restauranteBar';
+  if (cat === 'Canchas') return 'otrosIngresos';
+  return 'proShop';
+}
+function repartirMontoPorLineaPnl(items, montoBase, productosPorId, productosPorNombre, porDefecto) {
+  const resultado = { proShop: { monto: 0, items: [] }, restauranteBar: { monto: 0, items: [] }, otrosIngresos: { monto: 0, items: [] } };
+  const base = Math.round((Number(montoBase) || 0) * 100) / 100;
+  const sumas = { proShop: 0, restauranteBar: 0, otrosIngresos: 0 };
+  let sumaItems = 0;
+  (Array.isArray(items) ? items : []).forEach((it) => {
+    const linea = lineaNegocioItemPnl(it, productosPorId, productosPorNombre, porDefecto);
+    if (!linea) return;
+    const st = Number(it?.subtotal) || 0;
+    resultado[linea].items.push(it);
+    if (st > 0) {
+      sumas[linea] += st;
+      sumaItems += st;
+    }
+  });
+  if (base <= 0) return resultado;
+  if (sumaItems <= 0) {
+    // Sin detalle de artículos con monto: todo el cobro es "Otros".
+    resultado.otrosIngresos.monto = base;
+    return resultado;
+  }
+  let asignado = 0;
+  let mayor = null;
+  // Montos en pesos enteros cuando el ticket es entero (así las tarjetas,
+  // que se muestran sin centavos, suman a la vista exactamente el total);
+  // en centavos si el ticket trae centavos.
+  const unidad = Number.isInteger(base) ? 1 : 0.01;
+  LINEAS_VENTA_PNL.forEach((k) => {
+    if (!(sumas[k] > 0)) return;
+    const monto = Math.round((base * sumas[k]) / sumaItems / unidad) * unidad;
+    resultado[k].monto = monto;
+    asignado += monto;
+    if (!mayor || sumas[k] > sumas[mayor]) mayor = k;
+  });
+  // Residuo de redondeo a la línea con más peso.
+  const residuo = Math.round((base - asignado) * 100) / 100;
+  if (mayor && residuo !== 0) resultado[mayor].monto = Math.round((resultado[mayor].monto + residuo) * 100) / 100;
+  return resultado;
+}
 
 function formatoPctPnl(v) {
   if (!(v > 0)) return '0%';
@@ -24615,7 +24684,7 @@ function DonutIngresosPnl({ pnl, cargando }) {
   const sel = activo ? datos.find((d) => d.key === activo) : null;
 
   return (
-    <TarjetaGraficaBI icono={Percent} colorIcono="text-emerald-500" titulo="Composición de Ingresos" descripcion="Peso de cada categoría sobre los Ingresos Totales Consolidados">
+    <TarjetaGraficaBI icono={Percent} colorIcono="text-emerald-500" titulo="Composición de Ingresos" descripcion="Porcentaje real por línea de negocio sobre los Ingresos Totales Consolidados">
       {suma === 0 ? (
         <div className="flex h-[230px] items-center justify-center rounded-xl border border-dashed border-slate-200 text-xs text-slate-500">
           Sin ingresos cobrados en este periodo.
@@ -25028,6 +25097,59 @@ function ModuloContabilidadCompras({
     const addonsDeReservasWeb = filasReservas.reduce((acc, r) => acc + (Number(r.monto_addons) || 0), 0);
     const ventasWeb = ventasWebTienda + addonsDeReservasWeb;
 
+    // App-97 — Reclasificación por línea de negocio: el MISMO dinero de
+    // "Ventas Mostrador (POS)" + "Ventas Tienda Web" (incl. add-ons de
+    // reservas web) se reparte en Pro-Shop / Restaurante-Bar / Otros. No
+    // cambia ningún total: Pro-Shop + Restaurante/Bar + Otros =
+    // ventasMostrador + ventasWeb (centavo a centavo).
+    const productosPorIdPnl = {};
+    const productosPorNombrePnl = {};
+    (productos || []).forEach((p) => {
+      productosPorIdPnl[String(p.id)] = p;
+      const k = claveNombre(p.nombre || '');
+      if (k && !productosPorNombrePnl[k]) productosPorNombrePnl[k] = p;
+    });
+    const repartoVentasPnl = [];
+    filasVentasMostrador.forEach((v) =>
+      repartoVentasPnl.push({
+        tipo: 'venta',
+        fila: v,
+        canal: 'Mostrador (POS)',
+        lineas: repartirMontoPorLineaPnl(v?.detalles?.items, montoVentaSinInscripciones(v), productosPorIdPnl, productosPorNombrePnl, 'otro'),
+      })
+    );
+    filasVentasWeb.forEach((v) =>
+      repartoVentasPnl.push({
+        tipo: 'venta',
+        fila: v,
+        canal: 'Tienda Web',
+        lineas: repartirMontoPorLineaPnl(v?.detalles?.items, montoVentaSinInscripciones(v), productosPorIdPnl, productosPorNombrePnl, 'otro'),
+      })
+    );
+    filasReservas
+      .filter((r) => (Number(r.monto_addons) || 0) > 0)
+      .forEach((r) => {
+        const detalle = Array.isArray(r.addons_detalle) && r.addons_detalle.length > 0 ? r.addons_detalle : [{ nombre: 'Quick Sell', subtotal: Number(r.monto_addons) || 0 }];
+        repartoVentasPnl.push({
+          tipo: 'addon',
+          fila: r,
+          canal: 'Tienda Web (Quick Sell de reserva)',
+          // Los add-ons de reserva SIEMPRE son producto (Quick Sell).
+          lineas: repartirMontoPorLineaPnl(detalle, Number(r.monto_addons) || 0, productosPorIdPnl, productosPorNombrePnl, 'producto'),
+        });
+      });
+    const sumaLineaPnl = (k) => Math.round(repartoVentasPnl.reduce((acc, e) => acc + e.lineas[k].monto, 0) * 100) / 100;
+    const sumaLineaCanalPnl = (k, web) =>
+      Math.round(repartoVentasPnl.filter((e) => (e.canal !== 'Mostrador (POS)') === web).reduce((acc, e) => acc + e.lineas[k].monto, 0) * 100) / 100;
+    const proShop = sumaLineaPnl('proShop');
+    const restauranteBar = sumaLineaPnl('restauranteBar');
+    const otrosIngresos = sumaLineaPnl('otrosIngresos');
+    const lineasPorCanal = {
+      proShop: { mostrador: sumaLineaCanalPnl('proShop', false), web: sumaLineaCanalPnl('proShop', true) },
+      restauranteBar: { mostrador: sumaLineaCanalPnl('restauranteBar', false), web: sumaLineaCanalPnl('restauranteBar', true) },
+      otrosIngresos: { mostrador: sumaLineaCanalPnl('otrosIngresos', false), web: sumaLineaCanalPnl('otrosIngresos', true) },
+    };
+
     // `inscripcionEstaPagada` lee `estado_pago` CON RESPALDO a `estatus_pago`
     // (ver su comentario) — FIX de la tarjeta "Torneos y Retas" en $0: antes
     // de este fix, un proyecto de Supabase cuya tabla solo tuviera la
@@ -25088,6 +25210,12 @@ function ModuloContabilidadCompras({
     return {
       ventasMostrador,
       ventasWeb,
+      // Líneas de negocio (App-97) — reparto del mismo dinero de arriba.
+      proShop,
+      restauranteBar,
+      otrosIngresos,
+      lineasPorCanal,
+      _repartoVentas: repartoVentasPnl,
       reservasCanchas,
       torneosRetas,
       clasesClinicas,
@@ -25112,7 +25240,7 @@ function ModuloContabilidadCompras({
       _filasInscripcionesTorneos: filasInscripcionesTorneos,
       _montoInscripcionReta: montoInscripcionReta,
     };
-  }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, retas, rangoPnl]);
+  }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, retas, rangoPnl, productos]);
 
   // Desglose para las tarjetas interactivas (ver Modal de Desglose más
   // abajo): ID de transacción, hora, concepto, canal, método de pago y
@@ -25209,6 +25337,32 @@ function ModuloContabilidadCompras({
     }));
     const ventasMostradorDesglose = filasVenta(pnl._filasVentasMostrador, 'Mostrador (POS)');
     const ventasWebDesglose = [...filasVenta(pnl._filasVentasWeb, 'Tienda Web'), ...filasAddonsReservaWebDesglose];
+    // Líneas de negocio (App-97): un renglón por ticket/reserva con SOLO los
+    // artículos de esa línea y el monto que le tocó en el reparto.
+    const desgloseLinea = (k) =>
+      (pnl._repartoVentas || [])
+        .filter((e) => e.lineas[k].monto > 0)
+        .map((e, i) => {
+          const f = e.fila;
+          const its = e.lineas[k].items;
+          const conceptoItems = its.length
+            ? its.map((it) => `${it?.nombre || 'Artículo'}${Number(it?.cantidad) > 1 ? ` ×${it.cantidad}` : ''}`).join(', ')
+            : 'Cobro directo (sin detalle de artículos)';
+          const etiquetaReserva =
+            e.tipo === 'addon' ? ` — Reserva ${canchasPorId[f.cancha_id]?.nombre || 'Cancha'}${f.jugador_nombre ? ` · ${f.jugador_nombre}` : ''}` : '';
+          return {
+            id: `${k}-${e.tipo}-${f.id ?? i}`,
+            idCorto: (f.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+            hora: e.tipo === 'addon' ? f.hora_inicio || '—' : horaDe(f.created_at || f.fecha),
+            concepto: `${conceptoItems}${etiquetaReserva}`,
+            canal: e.canal,
+            metodoPago: f.metodo_pago || '—',
+            monto: e.lineas[k].monto,
+          };
+        });
+    const proShopDesglose = desgloseLinea('proShop');
+    const restauranteBarDesglose = desgloseLinea('restauranteBar');
+    const otrosIngresosDesglose = desgloseLinea('otrosIngresos');
     // Desglose de "Clases y Clínicas" (item 4) — mismo formato normalizado
     // que el resto de las tarjetas.
     const clasesClinicasDesglose = pnl._filasInscripcionesAcademia.map((a) => ({
@@ -25250,13 +25404,23 @@ function ModuloContabilidadCompras({
     return {
       ventasMostrador: ventasMostradorDesglose,
       ventasWeb: ventasWebDesglose,
+      proShop: proShopDesglose,
+      restauranteBar: restauranteBarDesglose,
+      otrosIngresos: otrosIngresosDesglose,
       reservas: filasReservasDesglose,
       egresos: filasEgresosDesglose,
       clasesClinicas: clasesClinicasDesglose,
       torneosRetas: torneosRetasDesglose,
       // Desglose completo de Ingresos Totales Consolidados: los 5 incisos
       // (antes faltaban Torneos/Retas y Clases, así que no cuadraba con el KPI).
-      ingresosTotales: [...ventasMostradorDesglose, ...ventasWebDesglose, ...filasReservasDesglose, ...torneosRetasDesglose, ...clasesClinicasDesglose],
+      ingresosTotales: [
+        ...filasReservasDesglose,
+        ...proShopDesglose,
+        ...restauranteBarDesglose,
+        ...clasesClinicasDesglose,
+        ...torneosRetasDesglose,
+        ...otrosIngresosDesglose,
+      ],
     };
   }, [pnl, canchas]);
 
@@ -26868,11 +27032,12 @@ function ModuloContabilidadCompras({
       ['Generado', new Date().toLocaleString('es-MX')],
       [],
       ['Matriz de Ingresos Consolidados', 'Monto'],
-      ['a) Ventas Mostrador (POS)', pnl.ventasMostrador.toFixed(2)],
-      ['b) Ventas Tienda Web (PORTAL_WEB)', pnl.ventasWeb.toFixed(2)],
-      ['c) Reservas de Canchas (Renta pura de canchas, Web + Mostrador)', pnl.reservasCanchas.toFixed(2)],
-      ['d) Torneos y Retas (Inscripciones)', pnl.torneosRetas.toFixed(2)],
-      ['e) Clases y Clínicas', pnl.clasesClinicas.toFixed(2)],
+      ['a) Reservas de Canchas (Renta pura de canchas, Web + Mostrador)', pnl.reservasCanchas.toFixed(2)],
+      ['b) Pro-Shop (Smart POS + Tienda Web)', pnl.proShop.toFixed(2)],
+      ['c) Restaurante / Bar (Smart POS + Tienda Web)', pnl.restauranteBar.toFixed(2)],
+      ['d) Clases y Clínicas', pnl.clasesClinicas.toFixed(2)],
+      ['e) Torneos y Retas (Inscripciones)', pnl.torneosRetas.toFixed(2)],
+      ['f) Otros Ingresos / Penalizaciones', pnl.otrosIngresos.toFixed(2)],
       ['Ingresos Totales Consolidados', pnl.ingresosTotalesConsolidados.toFixed(2)],
       ['Egresos Totales', pnl.egresosTotales.toFixed(2)],
       ['Utilidad Real (Ingresos Totales Consolidados − Egresos Totales)', pnl.utilidadReal.toFixed(2)],
@@ -26893,8 +27058,9 @@ function ModuloContabilidadCompras({
       lista.forEach((f) => filas.push([f.idCorto, f.hora, f.concepto, f.canal, f.metodoPago, f.monto.toFixed(2)]));
       filas.push([]);
     };
-    seccionDesglose('Detalle — Ventas Mostrador (POS)', desglosePnl.ventasMostrador);
-    seccionDesglose('Detalle — Ventas Tienda Web', desglosePnl.ventasWeb);
+    seccionDesglose('Detalle — Pro-Shop', desglosePnl.proShop);
+    seccionDesglose('Detalle — Restaurante / Bar', desglosePnl.restauranteBar);
+    seccionDesglose('Detalle — Otros Ingresos / Penalizaciones', desglosePnl.otrosIngresos);
     seccionDesglose('Detalle — Reservas de Canchas', desglosePnl.reservas);
     seccionDesglose('Detalle — Egresos', desglosePnl.egresos);
 
@@ -27977,25 +28143,7 @@ function ModuloContabilidadCompras({
             <h3 className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">
               Matriz de Ingresos Consolidados — clic en una tarjeta para ver el desglose
             </h3>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-              <MetricCard
-                icon={ShoppingCart}
-                etiqueta="Ventas Mostrador (POS)"
-                valor={formatoMoneda(pnl.ventasMostrador)}
-                sub="Smart POS, sin ligar a reserva"
-                tono="sky"
-                onClick={() =>
-                  setModalDesglose({ titulo: 'Ventas Mostrador (POS)', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.ventasMostrador })
-                }
-              />
-              <MetricCard
-                icon={Truck}
-                etiqueta="Ventas Tienda Web"
-                valor={formatoMoneda(pnl.ventasWeb)}
-                sub="Tienda del Portal + add-ons de reservas web"
-                tono="violet"
-                onClick={() => setModalDesglose({ titulo: 'Ventas Tienda Web', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.ventasWeb })}
-              />
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
               <MetricCard
                 icon={CalendarDays}
                 etiqueta="Reservas de Canchas"
@@ -28003,6 +28151,25 @@ function ModuloContabilidadCompras({
                 sub="Renta pura de canchas (Web + Mostrador)"
                 tono="sky"
                 onClick={() => setModalDesglose({ titulo: 'Reservas de Canchas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.reservas })}
+              />
+              {/* App-97: "Ventas Mostrador (POS)" y "Ventas Tienda Web" se
+                  reclasifican por línea de negocio (mismo dinero, sin cambiar
+                  el total consolidado). */}
+              <MetricCard
+                icon={ShoppingBag}
+                etiqueta="Pro-Shop"
+                valor={formatoMoneda(pnl.proShop)}
+                sub={`Mostrador ${formatoMoneda(pnl.lineasPorCanal.proShop.mostrador)} · Web ${formatoMoneda(pnl.lineasPorCanal.proShop.web)}`}
+                tono="violet"
+                onClick={() => setModalDesglose({ titulo: 'Pro-Shop', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.proShop })}
+              />
+              <MetricCard
+                icon={Coffee}
+                etiqueta="Restaurante / Bar"
+                valor={formatoMoneda(pnl.restauranteBar)}
+                sub={`Mostrador ${formatoMoneda(pnl.lineasPorCanal.restauranteBar.mostrador)} · Web ${formatoMoneda(pnl.lineasPorCanal.restauranteBar.web)}`}
+                tono="amber"
+                onClick={() => setModalDesglose({ titulo: 'Restaurante / Bar', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.restauranteBar })}
               />
               <MetricCard
                 icon={Trophy}
@@ -28020,6 +28187,16 @@ function ModuloContabilidadCompras({
                 tono="orange"
                 onClick={() => setModalDesglose({ titulo: 'Clases y Clínicas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.clasesClinicas })}
               />
+              <MetricCard
+                icon={Receipt}
+                etiqueta="Otros Ingresos / Penalizaciones"
+                valor={formatoMoneda(pnl.otrosIngresos)}
+                sub="Cobros de cancelaciones y otros conceptos directos"
+                tono="rose"
+                onClick={() =>
+                  setModalDesglose({ titulo: 'Otros Ingresos / Penalizaciones', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.otrosIngresos })
+                }
+              />
             </div>
           </div>
 
@@ -28028,7 +28205,7 @@ function ModuloContabilidadCompras({
               icon={TrendingUp}
               etiqueta="Ingresos Totales Consolidados"
               valor={formatoMoneda(pnl.ingresosTotalesConsolidados)}
-              sub="Suma de las 5 categorías de arriba"
+              sub="Suma de las 6 líneas de negocio de arriba"
               tono="emerald"
               onClick={() => setModalDesglose({ titulo: 'Ingresos Totales Consolidados', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.ingresosTotales })}
             />
@@ -29005,7 +29182,7 @@ function ModuloAnalyticsBI({
             categoría preseleccionada. */}
         <MetricCard
           icon={ShoppingBag}
-          etiqueta="Insights Pro-Shop"
+          etiqueta="Ventas Pro-Shop"
           valor={formatoMoneda(analisis.ingresoProShop || 0)}
           sub={`${analisis.unidadesPorCategoria?.['Pro-Shop'] || 0} unidades vendidas · ${ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'} · Ver desglose →`}
           tono="sky"
@@ -29013,7 +29190,7 @@ function ModuloAnalyticsBI({
         />
         <MetricCard
           icon={Coffee}
-          etiqueta="Insights Restaurante / Bar"
+          etiqueta="Ventas Restaurante / Bar"
           valor={formatoMoneda(analisis.ingresoRestauranteBar || 0)}
           sub={`${analisis.unidadesPorCategoria?.['Cafetería/Bar'] || 0} unidades vendidas · ${ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'} · Ver desglose →`}
           tono="orange"
