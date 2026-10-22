@@ -22381,13 +22381,195 @@ function HeatmapOcupacion({ modo, filas, celdas }) {
   );
 }
 
+/* ---------------- Modal de Desglose de Ventas (App-96) ---------------- */
+
+const ETIQUETA_PERIODO_BI = { dia: 'Día', mes: 'Mes', anio: 'Año' };
+
+function formatoFechaHoraVentaBI(fecha) {
+  const d = fecha instanceof Date ? fecha : fecha ? new Date(fecha) : null;
+  if (!d || Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('es-MX', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// Insights Pro-Shop / Restaurante-Bar: 2 pestañas sobre las MISMAS líneas de
+// venta cobradas que ya alimentan Rentabilidad por Categoría (mismo rango y
+// mismo criterio de categoría), así los totales del modal cuadran con las
+// tarjetas y con la tabla.
+//   • Top: Producto + Variante + Extras agrupados (unidades e ingreso).
+//   • Historial: cada artículo vendido, del más reciente al más antiguo, con
+//     buscador de texto.
+function ModalDesgloseVentasBI({ categoriaInicial, lineas = [], periodo, onClose }) {
+  const [categoria, setCategoria] = useState(categoriaInicial || 'Pro-Shop');
+  const [pestana, setPestana] = useState('top');
+  const [busqueda, setBusqueda] = useState('');
+  const lineasCategoria = useMemo(() => lineas.filter((l) => l.categoria === categoria), [lineas, categoria]);
+  const totales = useMemo(
+    () => lineasCategoria.reduce((acc, l) => ({ unidades: acc.unidades + l.cantidad, ingreso: acc.ingreso + l.total }), { unidades: 0, ingreso: 0 }),
+    [lineasCategoria]
+  );
+  const ranking = useMemo(() => {
+    const mapa = {};
+    lineasCategoria.forEach((l) => {
+      if (!mapa[l.clave]) mapa[l.clave] = { clave: l.clave, descripcion: l.descripcion, unidades: 0, ingreso: 0 };
+      mapa[l.clave].unidades += l.cantidad;
+      mapa[l.clave].ingreso += l.total;
+    });
+    return Object.values(mapa).sort((a, b) => b.unidades - a.unidades || b.ingreso - a.ingreso || a.descripcion.localeCompare(b.descripcion));
+  }, [lineasCategoria]);
+  const historial = useMemo(() => {
+    const q = claveNombre(busqueda);
+    return [...lineasCategoria]
+      .filter((l) => !q || claveNombre(`${l.descripcion} ${l.metodoPago}`).includes(q))
+      .sort((a, b) => (b.fecha?.getTime?.() || 0) - (a.fecha?.getTime?.() || 0));
+  }, [lineasCategoria, busqueda]);
+  const etiquetaCat = etiquetaCategoriaProducto(categoria);
+  const thClase = 'px-3 py-2.5 text-[10px] font-bold uppercase tracking-wide text-slate-500';
+
+  return (
+    <ModalShell
+      titulo={`Desglose de Ventas · ${etiquetaCat}`}
+      subtitulo={`Periodo: ${periodo} · ${totales.unidades} u. · ${formatoMoneda(totales.ingreso)} cobrados`}
+      onClose={onClose}
+      icon={categoria === 'Pro-Shop' ? ShoppingBag : Coffee}
+      ancho="max-w-3xl"
+    >
+      <div className="space-y-3" data-testid="modal-desglose-ventas-bi">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div role="tablist" aria-label="Categoría" className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+            {[
+              { id: 'Pro-Shop', label: 'Pro-Shop' },
+              { id: 'Cafetería/Bar', label: 'Restaurante / Bar' },
+            ].map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                role="tab"
+                aria-selected={categoria === o.id}
+                onClick={() => setCategoria(o.id)}
+                className={`rounded-md px-3 py-1 text-[11px] font-bold transition ${
+                  categoria === o.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <div role="tablist" aria-label="Vista del desglose" className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+            {[
+              { id: 'top', label: 'Top Productos, Variantes y Modificadores' },
+              { id: 'historial', label: 'Historial de Transacciones' },
+            ].map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                role="tab"
+                aria-selected={pestana === o.id}
+                onClick={() => setPestana(o.id)}
+                className={`rounded-md px-3 py-1 text-[11px] font-bold transition ${
+                  pestana === o.id ? 'bg-orange-400 text-slate-950' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {pestana === 'top' ? (
+          ranking.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
+              Sin ventas de {etiquetaCat} en este periodo.
+            </div>
+          ) : (
+            <div className="max-h-[60vh] overflow-auto rounded-xl border border-slate-200">
+              <table className="w-full min-w-[480px] text-left text-xs" data-testid="desglose-top">
+                <thead className="sticky top-0 bg-white">
+                  <tr className="border-b border-slate-200">
+                    <th className={`${thClase} w-10`}>#</th>
+                    <th className={thClase}>Producto · Variante · Extras</th>
+                    <th className={`${thClase} text-right`}>Unidades Vendidas</th>
+                    <th className={`${thClase} text-right`}>Ingreso Generado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ranking.map((f, i) => (
+                    <tr key={f.clave} className="border-b border-slate-200/70 last:border-0">
+                      <td className="px-3 py-2 font-black text-slate-400">{i + 1}°</td>
+                      <td className="break-words px-3 py-2 font-semibold leading-snug text-slate-900">{f.descripcion}</td>
+                      <td className="px-3 py-2 text-right font-bold text-slate-800">{f.unidades} u.</td>
+                      <td className="px-3 py-2 text-right text-slate-800">{formatoMoneda(f.ingreso)}</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-slate-50 font-black text-slate-900">
+                    <td className="px-3 py-2" />
+                    <td className="px-3 py-2">Total</td>
+                    <td className="px-3 py-2 text-right">{totales.unidades} u.</td>
+                    <td className="px-3 py-2 text-right">{formatoMoneda(totales.ingreso)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )
+        ) : (
+          <div className="space-y-2">
+            <div className="relative">
+              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                className={`${inputClase} pl-9`}
+                placeholder="Buscar producto, variante, extra o método de pago..."
+                aria-label="Buscar en el historial de transacciones"
+              />
+            </div>
+            {historial.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
+                {busqueda ? 'Sin coincidencias para tu búsqueda.' : `Sin ventas de ${etiquetaCat} en este periodo.`}
+              </div>
+            ) : (
+              <div className="max-h-[55vh] overflow-auto rounded-xl border border-slate-200">
+                <table className="w-full min-w-[620px] text-left text-xs" data-testid="desglose-historial">
+                  <thead className="sticky top-0 bg-white">
+                    <tr className="border-b border-slate-200">
+                      <th className={thClase}>Fecha / Hora</th>
+                      <th className={thClase}>Descripción</th>
+                      <th className={`${thClase} text-right`}>Cantidad</th>
+                      <th className={`${thClase} text-right`}>Total</th>
+                      <th className={thClase}>Método de Pago</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historial.map((l) => (
+                      <tr key={l.id} className="border-b border-slate-200/70 last:border-0">
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-500">{formatoFechaHoraVentaBI(l.fecha)}</td>
+                        <td className="break-words px-3 py-2 font-semibold leading-snug text-slate-900">{l.descripcion}</td>
+                        <td className="px-3 py-2 text-right font-bold text-slate-800">{l.cantidad} u.</td>
+                        <td className="px-3 py-2 text-right text-slate-800">{formatoMoneda(l.total)}</td>
+                        <td className="px-3 py-2 text-slate-600">{l.metodoPago}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="text-[11px] text-slate-500">
+              {historial.length} artículo{historial.length === 1 ? '' : 's'}
+              {busqueda ? ' coinciden con tu búsqueda' : ' vendidos en el periodo'}.
+            </p>
+          </div>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
 /* ---------------- Rentabilidad por Categoría ---------------- */
 
 // "Costo Total" ya no se muestra: en servicios (Canchas, Retas & Torneos,
 // Academia) siempre era $0 y solo llenaba la tabla de ceros. El costo de
 // producto sigue reflejado en el Margen Bruto de Pro-Shop y Cafetería/Bar
 // (Ingreso − Costo), y el CSV exportable conserva la columna completa.
-function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando }) {
+function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando, onAbrirDesglose }) {
   if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
 
   return (
@@ -22396,7 +22578,7 @@ function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando }) 
         <Percent size={16} className="text-orange-400" /> Rentabilidad por Categoría
       </h3>
 
-      {/* Complemento visual: peso de cada categoría sobre el ingreso total. */}
+      {/* Complemento visual: distribución de ingresos por categoría. */}
       <DistribucionIngresosCategoriaBI filas={filas} />
 
       <div className="overflow-x-auto rounded-xl border border-slate-200">
@@ -22404,27 +22586,32 @@ function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando }) 
           <thead>
             <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
               <th className="px-3 py-2.5">Categoría</th>
-              <th className="px-3 py-2.5 text-right">Ingreso Bruto</th>
-              <th className="px-3 py-2.5 text-right">Margen Bruto / Contribución</th>
-              <th className="px-3 py-2.5 text-right">Margen %</th>
+              <th className="px-3 py-2.5 text-right">Ingresos Totales</th>
+              <th className="px-3 py-2.5 text-right">Ganancia Estimada</th>
+              <th className="px-3 py-2.5 text-right">% de Ganancia</th>
             </tr>
           </thead>
           <tbody>
             {filas.map((f) => {
               const meta = CATEGORIAS_BI.find((c) => c.key === f.categoria);
-              // Servicios (sin costo variable directo) → Margen de
-              // Contribución; producto físico → Margen Bruto.
-              const tipoMargen = ['Canchas', 'Retas & Torneos', 'Academia'].includes(f.categoria) ? 'Margen de Contribución' : 'Margen Bruto';
-              const desglose =
-                f.categoria === 'Academia' && academiaDesglose && f.ingreso > 0
-                  ? `Mensualidades ${formatoMoneda(academiaDesglose.mensualidades)} · Grupales ${formatoMoneda(academiaDesglose.grupales)} · Privadas ${formatoMoneda(academiaDesglose.privadas)}`
-                  : null;
+              // App-96: sin leyendas secundarias bajo el nombre. Pro-Shop y
+              // Restaurante/Bar abren el Modal de Desglose de Ventas.
+              const abreDesglose = typeof onAbrirDesglose === 'function' && (f.categoria === 'Pro-Shop' || f.categoria === 'Cafetería/Bar');
               return (
                 <tr key={f.categoria} className="border-b border-slate-200/70 last:border-0">
                   <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-800'}`}>
-                    {etiquetaCategoriaProducto(f.categoria)}
-                    <span className="ml-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">({tipoMargen})</span>
-                    {desglose && <p className="mt-0.5 text-[10px] font-medium normal-case text-slate-500">{desglose}</p>}
+                    {abreDesglose ? (
+                      <button
+                        type="button"
+                        onClick={() => onAbrirDesglose(f.categoria)}
+                        className="inline-flex items-center gap-1 font-bold underline decoration-dotted underline-offset-2 hover:opacity-80"
+                        title="Ver desglose de ventas"
+                      >
+                        {etiquetaCategoriaProducto(f.categoria)} <ChevronRight size={12} />
+                      </button>
+                    ) : (
+                      etiquetaCategoriaProducto(f.categoria)
+                    )}
                   </td>
                   <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingreso)}</td>
                   <td className={`px-3 py-2.5 text-right font-bold ${f.utilidad >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -22550,8 +22737,18 @@ function TopModificadoresTabla({ filas, cargando }) {
               {filas.map((f, i) => (
                 <tr key={f.id} className="border-b border-slate-200/70 last:border-0">
                   <td className="px-3 py-2.5 font-black text-slate-400">{i + 1}°</td>
-                  <td className="px-3 py-2.5 font-bold text-slate-900">{f.nombre}</td>
-                  <td className="px-3 py-2.5 text-right font-bold text-slate-800">{f.unidades}</td>
+                  {/* App-96: mismo formato que Smart POS — "Producto — Extra". */}
+                  <td className="break-words px-3 py-2.5 leading-snug text-slate-800" title={f.nombre}>
+                    {f.producto ? (
+                      <>
+                        <span className="text-slate-500">{f.producto} — </span>
+                        <span className="font-semibold">{f.extra}</span>
+                      </>
+                    ) : (
+                      <span className="font-bold text-slate-900">{f.nombre}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-bold text-slate-800">{f.unidades} u.</td>
                   <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingresoExtra)}</td>
                 </tr>
               ))}
@@ -22616,9 +22813,7 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, aca
         )}
       </div>
       <p className="mb-3 text-[11px] text-slate-500">
-        Ingreso real cobrado (mismo criterio de fecha que Rentabilidad por Categoría y el Estado de Resultados): renta de cancha +
-        Retas y Torneos de esa cancha + Academia (mensualidades y clases grupales/privadas asignadas a ella). La ocupación incluye
-        reservas pendientes de pago.
+        Ingresos cobrados y horas ocupadas por cancha en el periodo seleccionado.
       </p>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
@@ -23178,7 +23373,7 @@ function DistribucionIngresosCategoriaBI({ filas }) {
   return (
     <div className="mb-4">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Peso sobre el ingreso total</p>
+        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Distribución de ingresos</p>
         <p className="text-xs font-black text-slate-900">{formatoMoneda(total)}</p>
       </div>
       {total === 0 ? (
@@ -27948,6 +28143,8 @@ function ModuloAnalyticsBI({
 
   /* ---- Filtro temporal global ---- */
   const [modoFiltro, setModoFiltro] = useState('mes'); // 'dia' | 'mes' | 'anio'
+  // Modal de Desglose de Ventas (App-96): categoría abierta o `null`.
+  const [desgloseVentasBI, setDesgloseVentasBI] = useState(null);
   const [fechaDia, setFechaDia] = useState(hoyISO());
   const [mesSel, setMesSel] = useState(() => new Date().getMonth() + 1);
   const [anioSel, setAnioSel] = useState(() => new Date().getFullYear());
@@ -28426,6 +28623,12 @@ function ModuloAnalyticsBI({
     // históricas, y cualquier producto sin grupo asignado) simplemente no
     // aporta nada aquí, sin romper el resto de la consulta.
     const filasPorModificador = {};
+    // Insights Pro-Shop / Restaurante-Bar (App-96): unidades por categoría y
+    // una línea por artículo vendido (Producto + Variante + Extras) para el
+    // Modal de Desglose. Solo LECTURA del mismo recorrido — no cambia ningún
+    // ingreso, costo ni total.
+    const unidadesPorCategoria = { 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
+    const lineasVentaProducto = [];
     ventasPagadas.forEach((v) => {
       const items = v?.detalles?.items;
       if (!Array.isArray(items)) return;
@@ -28466,13 +28669,34 @@ function ModuloAnalyticsBI({
         // extra (`precio_adicional × cantidad`) — nunca costo/margen, porque
         // el modificador no tiene costo propio (no gestiona stock, regla
         // crítica de no-regresión).
+        // App-96: MISMO formato que la tabla de Smart POS — cada extra se
+        // asocia a SU producto base ("Alitas — Mango Habanero") y se agrupa
+        // por producto + extra; un extra repetido dentro del renglón cuenta
+        // una sola vez. El ingreso extra sigue siendo precio_adicional × cant.
+        const nombreProductoExtra = prod?.nombre || String(resuelto.nombre || '').split(' — ')[0].trim() || 'Producto';
+        const claveProductoExtra = prod?.id != null ? `p:${prod.id}` : `n:${claveNombre(nombreProductoExtra) || nombreProductoExtra}`;
+        const extrasDelRenglon = [];
+        const vistosRenglon = new Set();
         (Array.isArray(item.modificadores) ? item.modificadores : []).forEach((mod) => {
-          if (!mod?.id) return;
-          if (!filasPorModificador[mod.id]) {
-            filasPorModificador[mod.id] = { id: mod.id, nombre: mod.nombre || 'Extra', unidades: 0, ingresoExtra: 0 };
+          const nombreExtra = String((typeof mod === 'string' ? mod : mod?.nombre) || '').trim();
+          if (!nombreExtra) return;
+          const claveExtraNombre = claveNombre(nombreExtra) || nombreExtra;
+          if (vistosRenglon.has(claveExtraNombre)) return;
+          vistosRenglon.add(claveExtraNombre);
+          extrasDelRenglon.push(nombreExtra);
+          const claveExtra = `${claveProductoExtra}::${claveExtraNombre}`;
+          if (!filasPorModificador[claveExtra]) {
+            filasPorModificador[claveExtra] = {
+              id: claveExtra,
+              nombre: `${nombreProductoExtra} — ${nombreExtra}`,
+              producto: nombreProductoExtra,
+              extra: nombreExtra,
+              unidades: 0,
+              ingresoExtra: 0,
+            };
           }
-          filasPorModificador[mod.id].unidades += cantidad;
-          filasPorModificador[mod.id].ingresoExtra += (Number(mod.precio_adicional) || 0) * cantidad;
+          filasPorModificador[claveExtra].unidades += cantidad;
+          filasPorModificador[claveExtra].ingresoExtra += (typeof mod === 'object' ? Number(mod?.precio_adicional) || 0 : 0) * cantidad;
         });
 
         cogsTotal += costo;
@@ -28488,6 +28712,22 @@ function ModuloAnalyticsBI({
         if (cat === 'Cafetería/Bar') ingresoPorCategoria['Cafetería/Bar'] += subtotal;
         else if (cat === 'Canchas') ingresoPorCategoria.Canchas += subtotal;
         else ingresoPorCategoria['Pro-Shop'] += subtotal;
+        // Insights / Modal de Desglose (App-96) — mismo `catBucket`.
+        if (catBucket !== 'Canchas') {
+          unidadesPorCategoria[catBucket] += cantidad;
+          const claveLinea = `${clave}::${extrasDelRenglon.map((x) => claveNombre(x) || x).sort().join('|')}`;
+          lineasVentaProducto.push({
+            id: `${v.id ?? ''}-${lineasVentaProducto.length}`,
+            ventaId: v.id ?? null,
+            fecha: obtenerTimestampVenta(v),
+            categoria: catBucket,
+            clave: claveLinea,
+            descripcion: `${resuelto.nombre || item.nombre || 'Artículo'}${extrasDelRenglon.length ? ` (c/ ${extrasDelRenglon.join(', ')})` : ''}`,
+            cantidad,
+            total: subtotal,
+            metodoPago: etiquetaMetodoPagoVenta(v.metodo_pago),
+          });
+        }
       });
       // Solo tickets con cobro real de producto cuentan como transacción.
       if (tieneProducto && subtotalProductosTicket > 0) transaccionesConProducto += 1;
@@ -28588,6 +28828,10 @@ function ModuloAnalyticsBI({
       topProductos,
       topModificadores,
       auditoriaKardex,
+      unidadesPorCategoria,
+      ingresoProShop: ingresoPorCategoria['Pro-Shop'],
+      ingresoRestauranteBar: ingresoPorCategoria['Cafetería/Bar'],
+      lineasVentaProducto,
     };
   }, [ventasRango, kardexRango, productosPorId, variantesPorId, variantesPorProducto, reservasCobradas, ingresosEventos]);
 
@@ -28719,7 +28963,7 @@ function ModuloAnalyticsBI({
           el dato (`analisis.ingresosBrutosTorneosRetas`) se conserva
           internamente porque el Reporte CSV exportable sí lo sigue
           desglosando. */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7">
         {/* Regla de oro financiera: solo cobros con estatus 'pagado'. */}
         <MetricCard
           icon={Wallet}
@@ -28756,14 +29000,35 @@ function ModuloAnalyticsBI({
           sub="Mayor concentración de reservas"
           tono="amber"
         />
+        {/* App-96: reemplazan a "Ratio de Gasto Secundario" — dos tarjetas
+            independientes y clicables que abren el Modal de Desglose con su
+            categoría preseleccionada. */}
         <MetricCard
           icon={ShoppingBag}
-          etiqueta="Ratio de Gasto Secundario"
-          valor={`${analisis.ratioCrossSelling.toFixed(1)}%`}
-          sub="Pro-Shop + Cafetería sobre ingresos totales"
+          etiqueta="Insights Pro-Shop"
+          valor={formatoMoneda(analisis.ingresoProShop || 0)}
+          sub={`${analisis.unidadesPorCategoria?.['Pro-Shop'] || 0} unidades vendidas · ${ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'} · Ver desglose →`}
+          tono="sky"
+          onClick={() => setDesgloseVentasBI('Pro-Shop')}
+        />
+        <MetricCard
+          icon={Coffee}
+          etiqueta="Insights Restaurante / Bar"
+          valor={formatoMoneda(analisis.ingresoRestauranteBar || 0)}
+          sub={`${analisis.unidadesPorCategoria?.['Cafetería/Bar'] || 0} unidades vendidas · ${ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'} · Ver desglose →`}
           tono="orange"
+          onClick={() => setDesgloseVentasBI('Cafetería/Bar')}
         />
       </div>
+
+      {desgloseVentasBI && (
+        <ModalDesgloseVentasBI
+          categoriaInicial={desgloseVentasBI}
+          lineas={analisis.lineasVentaProducto || []}
+          periodo={ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'}
+          onClose={() => setDesgloseVentasBI(null)}
+        />
+      )}
 
       {/* Complemento visual de los KPIs: flujo de ingresos cobrados por
           hora (Día), por día (Mes) o por mes (Año). */}
@@ -28771,7 +29036,12 @@ function ModuloAnalyticsBI({
 
       <HeatmapOcupacion modo={modoFiltro} filas={heatmap.filas} celdas={heatmap.celdas} />
 
-      <RentabilidadPorCategoria filas={analisis.rentabilidadPorCategoria} academiaDesglose={analisis.academiaDesglose} cargando={cargandoFinanciero} />
+      <RentabilidadPorCategoria
+        filas={analisis.rentabilidadPorCategoria}
+        academiaDesglose={analisis.academiaDesglose}
+        cargando={cargandoFinanciero}
+        onAbrirDesglose={setDesgloseVentasBI}
+      />
 
       {/* Reemplaza a "Ingresos Cruzados por Cancha y Bloque Horario":
           resumen limpio por cancha (horas, ocupación e ingreso real). */}
