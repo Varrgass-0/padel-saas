@@ -15,20 +15,40 @@
 // 500 error transitorio (Stripe reintenta con backoff hasta 3 días).
 // Idempotencia: tabla `stripe_eventos` (v113).
 // =============================================================================
-import { crearAdmin, crearStripe, proveedorCripto } from '../_shared/billing.ts';
+import { corsHeaders, crearAdmin, crearStripe, proveedorCripto } from '../_shared/billing.ts';
 import { ErrorNoReintentable, unixAIso } from '../_shared/billing_logica.ts';
 import { dominioDeEvento, procesarEvento, type EventoLite, type StripeMin } from './procesar.ts';
 import { crearRepoSupabase } from './repo_supabase.ts';
 
-const stripe = crearStripe();
-const admin = crearAdmin();
-const repo = crearRepoSupabase(admin);
+// Encabezados CORS estándar (ver _shared/billing.ts). Stripe llama
+// servidor-a-servidor y no los necesita, pero toda respuesta los incluye.
+export { corsHeaders };
+
+// Clientes perezosos: si falta un secret, la función igual arranca y responde
+// (con CORS) en vez de fallar al iniciar. Se crean una vez por instancia.
+let _clientes: { stripe: ReturnType<typeof crearStripe>; repo: ReturnType<typeof crearRepoSupabase> } | null = null;
+function clientes() {
+  if (!_clientes) _clientes = { stripe: crearStripe(), repo: crearRepoSupabase(crearAdmin()) };
+  return _clientes;
+}
 
 function texto(cuerpo: unknown, status: number): Response {
-  return new Response(JSON.stringify(cuerpo), { status, headers: { 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify(cuerpo), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
 Deno.serve(async (req) => {
+  // Preflight CORS: respuesta inmediata.
+  if (req.method === 'OPTIONS') return new Response('ok', { status: 200, headers: corsHeaders });
+  try {
+    return await atenderWebhook(req);
+  } catch (err) {
+    // Fallo inesperado (p. ej. secret faltante): 500 con CORS; Stripe reintenta.
+    console.error('[billing-webhook] Error inesperado', (err as Error)?.message || err);
+    return texto({ error: 'Error interno del webhook' }, 500);
+  }
+});
+
+async function atenderWebhook(req: Request): Promise<Response> {
   if (req.method !== 'POST') return texto({ error: 'Método no permitido' }, 405);
 
   const secreto = Deno.env.get('STRIPE_WEBHOOK_SECRET');
@@ -38,6 +58,7 @@ Deno.serve(async (req) => {
   }
 
   // 1) Firma (sobre el cuerpo CRUDO, sin parsear).
+  const { stripe, repo } = clientes();
   const firma = req.headers.get('stripe-signature') ?? '';
   const cuerpo = await req.text();
   let evento: EventoLite;
@@ -84,4 +105,4 @@ Deno.serve(async (req) => {
     console.error(`[billing-webhook] ${evento.type} ${evento.id} (se reintentará): ${mensaje}`);
     return texto({ error: 'Error procesando el evento' }, 500);
   }
-});
+}

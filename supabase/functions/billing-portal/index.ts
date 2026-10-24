@@ -12,6 +12,7 @@
 import {
   appUrl,
   autorizarClub,
+  corsHeaders,
   crearAdmin,
   crearStripe,
   mensajeStripe,
@@ -22,13 +23,25 @@ import {
 } from '../_shared/billing.ts';
 import { clubIdValido, urlDeRetornoValida } from '../_shared/billing_logica.ts';
 
-const stripe = crearStripe();
+// Encabezados CORS estándar (ver _shared/billing.ts), exportados también aquí.
+export { corsHeaders };
+
+// Cliente de Stripe perezoso: si falta un secret, la función igual arranca y
+// el preflight (OPTIONS) responde con CORS; el error sale como JSON con CORS.
+let _stripe: ReturnType<typeof crearStripe> | null = null;
+function clienteStripe(): ReturnType<typeof crearStripe> {
+  if (!_stripe) _stripe = crearStripe();
+  return _stripe;
+}
 
 Deno.serve(async (req) => {
+  // Preflight CORS: respuesta inmediata, antes de cualquier otra lógica.
+  if (req.method === 'OPTIONS') return new Response('ok', { status: 200, headers: corsHeaders });
   const corto = preflight(req);
   if (corto) return corto;
 
   try {
+    const stripe = clienteStripe();
     const base = appUrl();
     if (!base) return respuestaJson(req, { error: 'Falta APP_URL en los secrets de la función.' }, 500);
 

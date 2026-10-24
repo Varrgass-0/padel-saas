@@ -47,30 +47,39 @@ export function origenes(): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// CORS (solo billing-checkout / billing-portal; el webhook no lo necesita)
+// CORS — encabezados estándar de Supabase Edge Functions, en TODAS las
+// respuestas (éxito, error y preflight) de billing-checkout, billing-portal y
+// billing-webhook.
+//
+// Antes se respondía con el origen de APP_URL / BILLING_ALLOWED_ORIGINS; si el
+// front (p. ej. https://qlub-os-mx.vercel.app) no coincidía, el navegador
+// bloqueaba el preflight. Con '*' el navegador ya no bloquea; la seguridad
+// sigue en el JWT del dueño/staff (Authorization: Bearer …, sin cookies) y,
+// para las redirecciones de Stripe, en la validación de success_url /
+// cancel_url / return_url contra `origenes()`.
 // ---------------------------------------------------------------------------
-export function cabecerasCors(req: Request): Record<string, string> {
-  const permitidos = origenes();
-  const origen = req.headers.get('Origin') ?? '';
-  const permitido = permitidos.includes(origen) ? origen : permitidos[0] ?? '*';
-  return {
-    'Access-Control-Allow-Origin': permitido,
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Max-Age': '86400',
-    Vary: 'Origin',
-  };
+export const corsHeaders: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+};
+
+/** Respuesta al preflight del navegador: 200 'ok' con los corsHeaders. */
+export function respuestaPreflight(): Response {
+  return new Response('ok', { status: 200, headers: corsHeaders });
 }
 
-export function respuestaJson(req: Request, cuerpo: unknown, status = 200): Response {
+/** JSON con corsHeaders. `_req` se conserva por compatibilidad de firma. */
+export function respuestaJson(_req: Request | null, cuerpo: unknown, status = 200): Response {
   return new Response(JSON.stringify(cuerpo), {
     status,
-    headers: { ...cabecerasCors(req), 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 }
 
+/** OPTIONS → 200 'ok'; cualquier método que no sea POST → 405 (con CORS). */
 export function preflight(req: Request): Response | null {
-  if (req.method === 'OPTIONS') return new Response('ok', { status: 204, headers: cabecerasCors(req) });
+  if (req.method === 'OPTIONS') return respuestaPreflight();
   if (req.method !== 'POST') return respuestaJson(req, { error: 'Método no permitido.' }, 405);
   return null;
 }
