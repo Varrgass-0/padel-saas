@@ -773,6 +773,7 @@ import { QRCodeSVG } from 'qrcode.react';
 // Íconos nuevos con alias para no chocar con el import principal de lucide.
 import { QrCode as IconoQrTicket, Printer as IconoImprimirTicket, ScrollText as IconoHistorialTickets } from 'lucide-react';
 import {
+  ExternalLink,
   LayoutGrid,
   CalendarDays,
   Search,
@@ -892,7 +893,10 @@ import {
 // club", antes "Pagar en Recepción" — el cambio de texto es solo visual, la
 // clave interna sigue siendo `'recepcion'`).
 const SHOW_BETA_PORTAL_PAGO_WALLET = false;
-const SHOW_BETA_PORTAL_PAGO_TARJETA = false;
+// (Fase 3 Stripe / PCI) La opción "Pagar con Tarjeta" del Portal y su
+// formulario simulado (número/vencimiento/CVV) se ELIMINARON: ningún
+// formulario propio captura datos de tarjeta. El cobro con tarjeta a
+// jugadores llegará vía Stripe (Connect, columnas reservadas en v116).
 // Configuración del Club → Jugadores y Fidelización: oculta la tarjeta de
 // "Cortesías por Frecuencia de Actividad" (migracion_v46/v47) — el motor,
 // su estado y sus llamadas a Supabase se quedan intactos, solo no se
@@ -9749,13 +9753,11 @@ function ModuloParrillaOperativa({
           mensajeLimite={`Has alcanzado el límite de ${limiteCanchasPlan} canchas de tu plan actual. Actualiza tu suscripción para agregar más canchas.`}
           soloPlanesSuperioresA={limiteCanchasPlan}
           onClose={() => setModalLimiteCanchasPlan(false)}
-          onConfirmar={async (plan) => {
-            await onCambiarPlan?.(plan);
-            setModalLimiteCanchasPlan(false);
-            // Con el plan superior ya contratado, se retoma justo donde iba:
-            // el alta de la nueva cancha.
-            setModalNuevaCancha(true);
-          }}
+          // Fase 3 Stripe: el upgrade se paga en Stripe (Checkout o Customer
+          // Portal) y lo confirma el webhook — `onCambiarPlan` redirige y
+          // devuelve `true`; el modal NO reabre "Nueva Cancha" (el límite
+          // sube solo cuando Stripe confirma el nuevo plan).
+          onConfirmar={(plan) => onCambiarPlan?.(plan)}
         />
       )}
 
@@ -47987,13 +47989,8 @@ function ModuloConfiguracionClub({
   nombreClub,
   onEliminarClub,
   eliminandoClub,
-  // Mi Cuenta & Suscripción (reestructuración Cuenta & Plan) — snapshot del
-  // plan elegido (`planClubSeleccionado`, mismo estado que ya usaba el
-  // Onboarding Canvas) + su guardado (`guardarPlanSeleccionadoClub` en
-  // `AppInterno`, reutilizado tal cual — ni la firma ni la lógica de
-  // Supabase cambiaron, solo se volvió a llamar desde un lugar nuevo).
-  planClubSeleccionado,
-  onGuardarPlanSeleccionado,
+  // Mi Cuenta & Suscripción: el estado de facturación llega por
+  // `BillingClubContext` (lo arma `AppInterno`), no por props.
 }) {
   const [tab, setTab] = useState('general');
   // Mi Cuenta & Suscripción es EXCLUSIVA Owner (candado en profundidad,
@@ -48175,8 +48172,6 @@ function ModuloConfiguracionClub({
           configClub={configClub}
           nombreClub={nombreClub}
           empleados={empleados}
-          planClubSeleccionado={planClubSeleccionado}
-          onGuardarPlanSeleccionado={onGuardarPlanSeleccionado}
           onEliminarClub={onEliminarClub}
           eliminandoClub={eliminandoClub}
         />
@@ -48316,85 +48311,409 @@ function SeccionOperadoresStaff({ empleados, onCrearEmpleado, onRegistrarGuardad
 // continua, no un salto a otra app.
 // ============================================================================
 
-// Copy final de tarjetas (corrección — el `descripcion` de cada plan es la
-// fuente real que lee `PantallaSeleccionPlanOnboarding` vía `plan.descripcion`;
-// un cambio de texto SIEMPRE se hace aquí, nunca solo en el JSX/comentarios
-// de esa pantalla, o el render sigue mostrando este string sin importar qué
-// diga el comentario de al lado).
-// Estructura de Precios (MXN, IVA incluido en TODOS los montos):
-//  - `precioMensual`: precio REGULAR de lista (referencia / tachado).
-//  - `precioFundadorMensual`: modo "Mensual" con promo "Precio Fundador" 15% OFF
-//    durante los primeros 6 meses.
-//  - `precioAnualMensual` / `precioAnualTotal`: modo "Anual" (25% OFF) — el
-//    equivalente mensual y el total facturado una vez al año (montos exactos
-//    definidos por negocio, no se recalculan con redondeo aquí).
-//  - `cuadros`: cantidad de cuadros del ícono-grid de la tarjeta (ver
-//    `IconoGridCanchas`).
-const PLANES_ONBOARDING_CLUB = [
-  {
-    canchas: '1-3',
-    nombre: '1 – 3 Canchas',
-    precioMensual: 1599,
-    precioFundadorMensual: 1359,
-    precioAnualMensual: 1199,
-    precioAnualTotal: 14390,
-    cuadros: 3,
-    descripcion: 'Diseñado para clubes ágiles y en crecimiento.',
-  },
-  {
-    canchas: '4-7',
-    nombre: '4 – 7 Canchas',
-    precioMensual: 2499,
-    precioFundadorMensual: 2124,
-    precioAnualMensual: 1874,
-    precioAnualTotal: 22490,
-    cuadros: 4,
-    descripcion: 'Ideal para clubes de capacidad intermedia.',
-  },
-  {
-    canchas: '8-12',
-    nombre: '8 – 12 Canchas',
-    precioMensual: 3499,
-    precioFundadorMensual: 2974,
-    precioAnualMensual: 2624,
-    precioAnualTotal: 31490,
-    cuadros: 8,
-    descripcion: 'Optimizado para complejos de gran escala.',
-  },
-];
+// ============================================================================
+// FACTURACIÓN QLUBOS (Fase 3 Stripe) — catálogo de planes y cliente de billing
+// ============================================================================
+// Los PRECIOS ya no viven en el código: se leen de `billing_precios` (tabla
+// pública de solo lectura, migración v113), la misma que valida
+// `billing-checkout` en el servidor. Aquí solo queda metadata visual por plan
+// (ícono y descripción) y la promo "Precio Fundador" (cupón FUNDADOR15 de
+// Stripe, solo planes mensuales) — el descuento real lo aplica Stripe; el
+// número que se muestra es solo la referencia (precio mensual × 0.85).
+//
+// Seguridad (PCI): el navegador NUNCA captura datos de tarjeta ni escribe
+// `estado_suscripcion`/`fecha_fin_prueba`/`codigo_promo_usado`. Todo pago va
+// por Stripe Checkout / Customer Portal (Edge Functions `billing-checkout` y
+// `billing-portal`), los códigos de prueba por RPC
+// (`fn_validar_codigo_prueba` / `fn_canjear_codigo_prueba`) y el acceso del
+// club lo decide `fn_club_acceso_permitido`.
+const METADATA_PLANES_QLUBOS = {
+  inicial: { cuadros: 3, descripcion: 'Diseñado para clubes ágiles y en crecimiento.' },
+  club: { cuadros: 4, descripcion: 'Ideal para clubes de capacidad intermedia.' },
+  pro: { cuadros: 8, descripcion: 'Optimizado para complejos de gran escala.' },
+};
 
-// Precio vigente de un plan según la frecuencia elegida en el Toggle
-// (`'mensual'` | `'anual'`). `mensual` = lo que realmente se cobra por mes en
-// esa modalidad (es lo que se guarda como snapshot en `plan_precio_mensual`);
-// `tachado` = precio regular de referencia (solo en modo mensual, promo
-// Fundador); `totalAnual` = monto facturado una vez al año (solo modo anual).
+// Promo de lanzamiento (no es un precio): el cupón vive en Stripe y el
+// servidor lo valida contra su lista blanca (`STRIPE_CUPONES_PERMITIDOS`).
+const PROMO_FUNDADOR_QLUBOS = { couponId: 'FUNDADOR15', porcentaje: 15, meses: 6, frecuencia: 'mensual' };
+
+const CLAVE_INTENCION_PLAN = 'qlubos_plan_intencion_v1';
+const CATALOGO_PLANES_TTL_MS = 5 * 60 * 1000;
+let _catalogoPlanesCache = { en: 0, planes: null, promesa: null };
+
+function nombreRangoCanchas(canchas) {
+  return String(canchas || '').replace(/\s*-\s*/, ' – ') + ' Canchas';
+}
+
+// Filas de `billing_precios` (tipo 'suscripcion') → una tarjeta por plan con
+// sus dos frecuencias. Un plan con una frecuencia faltante se muestra igual
+// (esa frecuencia queda "no disponible").
+function construirCatalogoPlanes(filas) {
+  const porPlan = new Map();
+  (filas || [])
+    .filter((f) => f && f.tipo === 'suscripcion' && f.plan_clave && f.activo !== false)
+    .forEach((f) => {
+      const actual = porPlan.get(f.plan_clave) || {
+        clave: f.plan_clave,
+        canchas: f.plan_canchas || null,
+        nombrePlan: f.plan_nombre || f.plan_clave,
+        maxCanchas: f.max_canchas != null ? Number(f.max_canchas) : null,
+        orden: Number(f.orden) || 0,
+        mensual: null,
+        anual: null,
+      };
+      const precio = { monto: Number(f.monto_mxn), priceId: f.stripe_price_id || null, clave: f.clave };
+      if (f.frecuencia === 'anual') actual.anual = precio;
+      else if (f.frecuencia === 'mensual') actual.mensual = precio;
+      actual.orden = Math.min(actual.orden, Number(f.orden) || 0);
+      if (!actual.canchas && f.plan_canchas) actual.canchas = f.plan_canchas;
+      porPlan.set(f.plan_clave, actual);
+    });
+  return [...porPlan.values()]
+    .sort((a, b) => a.orden - b.orden)
+    .map((p) => {
+      const meta = METADATA_PLANES_QLUBOS[p.clave] || { cuadros: 4, descripcion: '' };
+      const mensual = p.mensual && Number.isFinite(p.mensual.monto) ? p.mensual.monto : null;
+      const anual = p.anual && Number.isFinite(p.anual.monto) ? p.anual.monto : null;
+      return {
+        clave: p.clave,
+        canchas: p.canchas,
+        nombre: nombreRangoCanchas(p.canchas),
+        nombrePlan: p.nombrePlan,
+        maxCanchas: p.maxCanchas,
+        cuadros: meta.cuadros,
+        descripcion: meta.descripcion,
+        precioMensual: mensual,
+        precioFundadorMensual: mensual != null ? Math.round(mensual * (1 - PROMO_FUNDADOR_QLUBOS.porcentaje / 100)) : null,
+        precioAnualMensual: anual != null ? Math.round(anual / 12) : null,
+        precioAnualTotal: anual,
+        priceIdMensual: p.mensual?.priceId || null,
+        priceIdAnual: p.anual?.priceId || null,
+      };
+    });
+}
+
+async function cargarCatalogoPlanesQlubos({ forzar = false } = {}) {
+  const ahora = Date.now();
+  if (!forzar && _catalogoPlanesCache.planes && ahora - _catalogoPlanesCache.en < CATALOGO_PLANES_TTL_MS) {
+    return _catalogoPlanesCache.planes;
+  }
+  if (!forzar && _catalogoPlanesCache.promesa) return _catalogoPlanesCache.promesa;
+  const promesa = (async () => {
+    const { data, error } = await supabase
+      .from('billing_precios')
+      .select('clave, tipo, plan_clave, plan_nombre, plan_canchas, max_canchas, frecuencia, monto_mxn, stripe_price_id, activo, orden')
+      .eq('tipo', 'suscripcion')
+      .order('orden', { ascending: true });
+    if (error) throw error;
+    const planes = construirCatalogoPlanes(data);
+    if (planes.length === 0) throw new Error('El catálogo de planes está vacío.');
+    _catalogoPlanesCache = { en: Date.now(), planes, promesa: null };
+    return planes;
+  })();
+  _catalogoPlanesCache = { ..._catalogoPlanesCache, promesa };
+  try {
+    return await promesa;
+  } catch (err) {
+    _catalogoPlanesCache = { ..._catalogoPlanesCache, promesa: null };
+    throw err;
+  }
+}
+
+function useCatalogoPlanesQlubos() {
+  const [estado, setEstado] = useState(() => ({
+    planes: _catalogoPlanesCache.planes || [],
+    cargando: !_catalogoPlanesCache.planes,
+    error: null,
+  }));
+  const montado = useRef(true);
+  const cargar = useCallback(async (forzar = false) => {
+    setEstado((e) => ({ ...e, cargando: e.planes.length === 0 || forzar, error: null }));
+    try {
+      const planes = await cargarCatalogoPlanesQlubos({ forzar });
+      if (montado.current) setEstado({ planes, cargando: false, error: null });
+    } catch (err) {
+      console.warn('[Billing] No se pudo cargar el catálogo de planes.', err);
+      if (montado.current) setEstado((e) => ({ ...e, cargando: false, error: 'No pudimos cargar los planes. Revisa tu conexión e intenta de nuevo.' }));
+    }
+  }, []);
+  useEffect(() => {
+    montado.current = true;
+    cargar(false);
+    return () => {
+      montado.current = false;
+    };
+  }, [cargar]);
+  return { ...estado, recargar: () => cargar(true) };
+}
+
+// Porcentaje de ahorro anual vs. 12 meses de lista (el mayor del catálogo),
+// para la etiqueta del Toggle. `null` si no se puede calcular.
+function ahorroAnualCatalogo(planes) {
+  let mejor = null;
+  (planes || []).forEach((p) => {
+    if (p.precioMensual > 0 && p.precioAnualTotal > 0) {
+      const pct = Math.round((1 - p.precioAnualTotal / (p.precioMensual * 12)) * 100);
+      if (pct > 0 && (mejor == null || pct > mejor)) mejor = pct;
+    }
+  });
+  return mejor;
+}
+
+function planDelCatalogo(planes, { clave = null, canchas = null } = {}) {
+  return (planes || []).find((p) => (clave && p.clave === clave) || (!clave && canchas && p.canchas === canchas)) || null;
+}
+
+// Precio vigente de un plan según la frecuencia del Toggle (`'mensual'` |
+// `'anual'`) CON la promo Fundador (solo Onboarding). `mensual` = lo que se
+// paga por mes; `tachado` = precio de lista (solo mensual); `totalAnual` =
+// monto facturado una vez al año (solo anual).
 function precioPlanSegunFrecuencia(plan, frecuencia) {
   if (frecuencia === 'anual') return { mensual: plan.precioAnualMensual, tachado: null, totalAnual: plan.precioAnualTotal };
   return { mensual: plan.precioFundadorMensual, tachado: plan.precioMensual, totalAnual: null };
 }
 
-// Precio REGULAR (sin promo "Precio Fundador") según frecuencia — lo usan las
-// pantallas secundarias (`PantallaPruebaVencida`, `ModalCambiarPlan`).
-// Mensual = precio de lista; Anual = equivalente mensual con 25% OFF.
+// Precio REGULAR (sin promo Fundador) — pantalla de bloqueo y "Cambiar Plan".
 function precioRegularPlanSegunFrecuencia(plan, frecuencia) {
   if (frecuencia === 'anual') return { mensual: plan.precioAnualMensual, totalAnual: plan.precioAnualTotal };
   return { mensual: plan.precioMensual, totalAnual: null };
 }
 
-// Snapshot del plan (shape que persiste `guardarPlanSeleccionadoClub`) con el
-// precio mensual efectivo REGULAR de la frecuencia elegida.
+// Snapshot del plan elegido (solo INTENCIÓN de compra en memoria / sesión —
+// lo contratado lo escribe el webhook de Stripe en `club_suscripciones`).
 function snapshotPlanRegular(plan, frecuencia) {
   return { ...plan, precioMensual: precioRegularPlanSegunFrecuencia(plan, frecuencia).mensual, frecuenciaFacturacion: frecuencia };
 }
 
+function priceIdDelPlan(plan, frecuencia) {
+  if (!plan) return null;
+  return frecuencia === 'anual' ? plan.priceIdAnual || null : plan.priceIdMensual || null;
+}
+
+function leerIntencionPlanSesion(clubId) {
+  if (typeof window === 'undefined' || clubId == null) return null;
+  try {
+    const crudo = window.sessionStorage.getItem(`${CLAVE_INTENCION_PLAN}:${clubId}`);
+    const v = crudo ? JSON.parse(crudo) : null;
+    if (v && typeof v.clave === 'string' && (v.frecuencia === 'mensual' || v.frecuencia === 'anual')) {
+      return { clave: v.clave, canchas: typeof v.canchas === 'string' ? v.canchas : null, frecuenciaFacturacion: v.frecuencia };
+    }
+  } catch (_e) {
+    /* sesión sin storage */
+  }
+  return null;
+}
+
+function guardarIntencionPlanSesion(clubId, plan) {
+  if (typeof window === 'undefined' || clubId == null) return;
+  try {
+    const clave = `${CLAVE_INTENCION_PLAN}:${clubId}`;
+    if (!plan?.clave) window.sessionStorage.removeItem(clave);
+    else
+      window.sessionStorage.setItem(
+        clave,
+        JSON.stringify({ clave: plan.clave, canchas: plan.canchas || null, frecuencia: plan.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual' })
+      );
+  } catch (_e) {
+    /* sesión sin storage */
+  }
+}
+
+// ---- Cliente de las Edge Functions de billing --------------------------------
+async function errorDeFuncionBilling(error, porDefecto) {
+  let mensaje = error?.message || porDefecto;
+  let codigo = null;
+  const status = error?.context?.status ?? null;
+  try {
+    const cuerpo = await error?.context?.json?.();
+    if (cuerpo?.error) mensaje = cuerpo.error;
+    if (cuerpo?.codigo) codigo = cuerpo.codigo;
+  } catch (_e) {
+    /* respuesta sin JSON */
+  }
+  return { mensaje: mensaje || porDefecto, codigo, status };
+}
+
+function urlRetornoBilling(resultado) {
+  if (typeof window === 'undefined') return null;
+  const base = `${window.location.origin}${window.location.pathname}`;
+  return resultado === 'exito' ? `${base}?billing=exito&session_id={CHECKOUT_SESSION_ID}` : `${base}?billing=${resultado}`;
+}
+
+function esUrlStripeSegura(url) {
+  try {
+    const u = new URL(String(url));
+    return u.protocol === 'https:' && /(^|\.)stripe\.com$/i.test(u.hostname);
+  } catch (_e) {
+    return false;
+  }
+}
+
+// Invoca una Edge Function de billing. Si el servidor rechaza las URLs de
+// regreso (origen no listado en APP_URL/BILLING_ALLOWED_ORIGINS), reintenta
+// UNA vez sin ellas para usar las del servidor.
+async function invocarFuncionBilling(nombre, cuerpo, camposUrl, porDefecto) {
+  const intentar = async (body) => {
+    const { data, error } = await supabase.functions.invoke(nombre, { body });
+    if (error) return { data: null, error: await errorDeFuncionBilling(error, porDefecto) };
+    if (data?.error) return { data: null, error: { mensaje: data.error, codigo: data.codigo || null, status: null } };
+    return { data, error: null };
+  };
+  try {
+    let r = await intentar(cuerpo);
+    if (r.error && r.error.status === 400 && camposUrl.length > 0 && /url/i.test(r.error.mensaje || '')) {
+      const sinUrls = { ...cuerpo };
+      camposUrl.forEach((k) => delete sinUrls[k]);
+      r = await intentar(sinUrls);
+    }
+    if (!r.error && !esUrlStripeSegura(r.data?.url)) {
+      return { data: null, error: { mensaje: 'Stripe no devolvió una liga de pago válida.', codigo: null, status: null } };
+    }
+    return r;
+  } catch (err) {
+    return { data: null, error: { mensaje: err?.message || porDefecto, codigo: null, status: null } };
+  }
+}
+
+async function solicitarCheckoutSuscripcion({ clubId, priceId, couponId = null }) {
+  const body = {
+    club_id: Number(clubId),
+    price_id: priceId,
+    success_url: urlRetornoBilling('exito'),
+    cancel_url: urlRetornoBilling('cancelado'),
+  };
+  if (couponId) body.coupon_id = couponId;
+  return invocarFuncionBilling('billing-checkout', body, ['success_url', 'cancel_url'], 'No se pudo iniciar el pago. Intenta de nuevo.');
+}
+
+async function solicitarPortalSuscripcion({ clubId }) {
+  return invocarFuncionBilling(
+    'billing-portal',
+    { club_id: Number(clubId), return_url: urlRetornoBilling('portal') },
+    ['return_url'],
+    'No se pudo abrir el portal de facturación. Intenta de nuevo.'
+  );
+}
+
+function mensajeErrorRpcBilling(error, porDefecto) {
+  if (!error) return porDefecto;
+  if (esErrorTablaInexistente(error)) return 'La facturación todavía no está habilitada en este proyecto (falta la migración v112–v116).';
+  return error.message || porDefecto;
+}
+
+const BillingClubContext = React.createContext(null);
+function useBillingClub() {
+  return React.useContext(BillingClubContext);
+}
+
+function formatoFechaBilling(valor) {
+  if (!valor) return null;
+  const d = new Date(valor);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+// Estado visual de la suscripción a partir de `fn_estado_suscripcion_club`.
+// Devuelve { clave, etiqueta, detalle, tono } — tono: emerald | sky | amber | orange | rose | slate.
+function insigniaEstadoSuscripcion(estado) {
+  if (!estado) return { clave: 'desconocido', etiqueta: 'Sin información', detalle: null, tono: 'slate' };
+  const efectivo = estado.estado_efectivo || estado.estado_guardado;
+  const finPeriodo = formatoFechaBilling(estado.current_period_end);
+  if (efectivo === 'prueba') {
+    const dias = Number(estado.dias_prueba_restantes);
+    return {
+      clave: 'prueba',
+      etiqueta: 'Prueba',
+      detalle: Number.isFinite(dias) ? `${dias} ${dias === 1 ? 'día restante' : 'días restantes'}` : null,
+      tono: 'sky',
+    };
+  }
+  if (efectivo === 'past_due') {
+    const dias = Number(estado.dias_gracia_restantes);
+    return {
+      clave: 'past_due',
+      etiqueta: 'Pago Atrasado',
+      detalle: Number.isFinite(dias) ? `${dias} ${dias === 1 ? 'día de gracia' : 'días de gracia'}` : null,
+      tono: 'orange',
+    };
+  }
+  if (efectivo === 'cancelada' || (efectivo === 'activa' && estado.cancel_at_period_end)) {
+    return { clave: 'cancelada', etiqueta: 'Cancelada', detalle: finPeriodo ? `acceso hasta el ${finPeriodo}` : null, tono: 'amber' };
+  }
+  if (efectivo === 'activa') return { clave: 'activa', etiqueta: 'Activa', detalle: estado.es_cortesia ? 'cortesía QLUBOS' : null, tono: 'emerald' };
+  return { clave: 'bloqueada', etiqueta: 'Bloqueada', detalle: null, tono: 'rose' };
+}
+
+const CLASES_TONO_INSIGNIA_BILLING = {
+  emerald: { caja: 'bg-emerald-400/10 text-emerald-700 ring-emerald-400/30', punto: 'bg-emerald-500' },
+  sky: { caja: 'bg-sky-400/10 text-sky-700 ring-sky-400/30', punto: 'bg-sky-500' },
+  amber: { caja: 'bg-amber-400/10 text-amber-700 ring-amber-400/30', punto: 'bg-amber-500' },
+  orange: { caja: 'bg-orange-400/10 text-orange-700 ring-orange-400/30', punto: 'bg-orange-500' },
+  rose: { caja: 'bg-rose-400/10 text-rose-700 ring-rose-400/30', punto: 'bg-rose-500' },
+  slate: { caja: 'bg-slate-400/10 text-slate-600 ring-slate-400/30', punto: 'bg-slate-400' },
+};
+
+function InsigniaEstadoSuscripcion({ estado }) {
+  const ins = insigniaEstadoSuscripcion(estado);
+  const tono = CLASES_TONO_INSIGNIA_BILLING[ins.tono] || CLASES_TONO_INSIGNIA_BILLING.slate;
+  return (
+    <span
+      data-testid="insignia-estado-suscripcion"
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ${tono.caja}`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${tono.punto}`} />
+      {ins.etiqueta}
+      {ins.detalle && <span className="font-semibold opacity-80">· {ins.detalle}</span>}
+    </span>
+  );
+}
+
+// Aviso de pago seguro, compartido por todas las pantallas que mandan a Stripe.
+function AvisoPagoSeguroStripe({ className = '' }) {
+  return (
+    <p className={`flex items-center justify-center gap-1.5 text-[11px] font-medium text-slate-400 ${className}`}>
+      <ShieldCheck size={13} className="shrink-0" />
+      Pago seguro con tarjeta procesado por Stripe. QLUBOS nunca ve ni guarda los datos de tu tarjeta.
+    </p>
+  );
+}
+
+// Estado de carga / error del catálogo, compartido por las grillas de planes.
+function EstadoCatalogoPlanes({ cargando, error, onReintentar }) {
+  if (cargando) {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white/80 px-4 py-10 text-sm font-semibold text-slate-500">
+        <Loader2 size={16} className="animate-spin" /> Cargando planes…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-6 text-center">
+        <p className="text-sm font-semibold text-rose-700">{error}</p>
+        <button
+          type="button"
+          onClick={onReintentar}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-bold text-rose-700 transition hover:bg-rose-100"
+        >
+          <RefreshCw size={13} /> Reintentar
+        </button>
+      </div>
+    );
+  }
+  return null;
+}
+
 // Toggle Switch de frecuencia [Mensual] | [Anual — Ahorra 25%], compartido por
 // la selección de plan del Onboarding y las pantallas secundarias.
-function SelectorFrecuenciaPlan({ frecuencia, onChange }) {
+// La etiqueta de ahorro se calcula del catálogo de `billing_precios`
+// (`ahorroAnualPct`); sin dato, solo dice "Anual".
+function SelectorFrecuenciaPlan({ frecuencia, onChange, ahorroAnualPct = null }) {
   return (
     <div role="group" aria-label="Frecuencia de facturación" className="inline-flex rounded-full border border-slate-200 bg-white p-1 shadow-sm">
       {[
         { value: 'mensual', label: 'Mensual' },
-        { value: 'anual', label: 'Anual — Ahorra 25%' },
+        { value: 'anual', label: ahorroAnualPct ? `Anual — Ahorra ${ahorroAnualPct}%` : 'Anual' },
       ].map((op) => {
         const sel = frecuencia === op.value;
         return (
@@ -48418,6 +48737,9 @@ function SelectorFrecuenciaPlan({ frecuencia, onChange }) {
 // Líneas de precio regular de una tarjeta (precio/mes + leyenda IVA o total anual).
 function PrecioPlanRegular({ plan, frecuencia, tamano = 'text-2xl' }) {
   const p = precioRegularPlanSegunFrecuencia(plan, frecuencia);
+  if (p.mensual == null) {
+    return <p className="text-sm font-semibold text-slate-400">No disponible en esta modalidad</p>;
+  }
   return (
     <div>
       <p className={`${tamano} font-black text-slate-900`}>
@@ -48450,7 +48772,7 @@ function IconoGridCanchas({ cuadros, activo }) {
 }
 
 // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) — el
-// tope NUMÉRICO de canchas de cada rango elegido en `PLANES_ONBOARDING_CLUB`
+// tope NUMÉRICO de canchas de cada rango del catálogo (`billing_precios`)
 // (el límite superior de cada rango: "1-3" → 3, etc.). `null` significa
 // "sin límite" — un club que todavía no eligió plan (`planClubSeleccionado`
 // vacío, proyecto sin migracion_v66/v67, o un valor de plan que no coincide
@@ -48466,6 +48788,7 @@ function limiteCanchasDelPlan(planCanchas) {
 }
 
 function formatoPrecioPlanOnboarding(precio) {
+  if (precio == null || !Number.isFinite(Number(precio))) return '—';
   return `$${Number(precio).toLocaleString('es-MX')}`;
 }
 
@@ -48573,15 +48896,14 @@ function PantallaSeleccionPlanOnboarding({
   onActivarPrueba,
   activandoPrueba,
 }) {
-  // Periodo de Prueba / Free Trial mediante Códigos Promocionales
-  // (migracion_v84) — campo opcional debajo de las 3 tarjetas de plan.
-  // `codigoPromoAplicado` guarda la fila YA validada de
-  // `codigos_promocionales` (id/codigo/diasPrueba/usosActuales) — se
-  // consulta directo aquí (lectura simple, sin tocar ningún estado de
-  // `AppInterno`); el GUARDADO real (escribir en `configuracion_club` +
-  // incrementar `usos_actuales`) sí vive en `AppInterno`
-  // (`activarPruebaGratuita`, reenviado como `onActivarPrueba`) porque ahí
-  // es donde vive `configClub`/`CLUB_ACTIVO_ID`.
+  // Catálogo real de `billing_precios` (Fase 3 Stripe): sin precios en duro.
+  const { planes, cargando: cargandoPlanes, error: errorPlanes, recargar: recargarPlanes } = useCatalogoPlanesQlubos();
+  const ahorroAnualPct = useMemo(() => ahorroAnualCatalogo(planes), [planes]);
+  // Código de prueba: "Aplicar" solo VALIDA por RPC (`fn_validar_codigo_prueba`,
+  // sin leer la tabla de códigos desde el navegador). El canje real —
+  // atómico, una prueba por club, fecha fin calculada en el servidor— lo
+  // hace `fn_canjear_codigo_prueba` desde `AppInterno`
+  // (`activarPruebaGratuita`, reenviado como `onActivarPrueba`).
   const [codigoPromoInput, setCodigoPromoInput] = useState('');
   const [codigoPromoAplicado, setCodigoPromoAplicado] = useState(null);
   const [validandoCodigoPromo, setValidandoCodigoPromo] = useState(false);
@@ -48592,19 +48914,28 @@ function PantallaSeleccionPlanOnboarding({
   // plan", conserva su elección); si no hay, 'mensual'.
   const [frecuencia, setFrecuencia] = useState(planSeleccionado?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual');
 
-  // Snapshot del plan con el precio MENSUAL EFECTIVO de la frecuencia elegida
-  // (es lo que `guardarPlanSeleccionadoClub` persiste en `plan_precio_mensual`).
+  // Intención de plan (catálogo + frecuencia). Ya no se guarda en
+  // `configuracion_club`: lo contratado lo escribe el webhook de Stripe.
   function snapshotPlanConFrecuencia(plan, freq) {
-    return { ...plan, precioMensual: precioPlanSegunFrecuencia(plan, freq).mensual, frecuenciaFacturacion: freq };
+    return { ...plan, frecuenciaFacturacion: freq };
   }
 
   function cambiarFrecuencia(nueva) {
     setFrecuencia(nueva);
     if (planSeleccionado) {
-      const base = PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planSeleccionado.canchas);
+      const base = planDelCatalogo(planes, { clave: planSeleccionado.clave, canchas: planSeleccionado.canchas });
       if (base) onSeleccionarPlan(snapshotPlanConFrecuencia(base, nueva));
     }
   }
+
+  // Si el snapshot en memoria viene de una sesión anterior (solo `clave`/
+  // `canchas`), se completa con el catálogo en cuanto carga.
+  useEffect(() => {
+    if (!planSeleccionado || planSeleccionado.precioMensual != null || planes.length === 0) return;
+    const base = planDelCatalogo(planes, { clave: planSeleccionado.clave, canchas: planSeleccionado.canchas });
+    if (base) onSeleccionarPlan(snapshotPlanConFrecuencia(base, frecuencia));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planes]);
 
   async function aplicarCodigoPromo() {
     const codigoNormalizado = (codigoPromoInput || '').trim().toUpperCase();
@@ -48613,22 +48944,21 @@ function PantallaSeleccionPlanOnboarding({
     setCodigoPromoAplicado(null);
     setValidandoCodigoPromo(true);
     try {
-      const { data, error } = await supabase.from('codigos_promocionales').select('*').eq('codigo', codigoNormalizado).maybeSingle();
+      const { data, error } = await supabase.rpc('fn_validar_codigo_prueba', { p_codigo: codigoNormalizado });
       if (error) throw error;
-      const valido = data && data.activo !== false && (data.usos_maximos == null || Number(data.usos_actuales || 0) < Number(data.usos_maximos));
-      if (!valido) {
+      const r = Array.isArray(data) ? data[0] : data;
+      if (!r?.valido) {
         setErrorCodigoPromo('Ese código no es válido o ya no está disponible.');
       } else {
-        setCodigoPromoAplicado({
-          id: data.id,
-          codigo: data.codigo,
-          diasPrueba: Number(data.dias_prueba) || 0,
-          usosActuales: Number(data.usos_actuales || 0),
-        });
+        setCodigoPromoAplicado({ codigo: r.codigo || codigoNormalizado, diasPrueba: Number(r.dias_prueba) || 0 });
       }
     } catch (err) {
-      console.warn('[Onboarding] No se pudo validar el código promocional.', err);
-      setErrorCodigoPromo('No se pudo validar el código — intenta de nuevo en unos segundos.');
+      console.warn('[Onboarding] No se pudo validar el código de prueba.', err?.code || err?.message);
+      setErrorCodigoPromo(
+        esErrorTablaInexistente(err)
+          ? 'Los códigos de prueba todavía no están habilitados. Contacta a soporte QLUBOS.'
+          : 'No se pudo validar el código — intenta de nuevo en unos segundos.'
+      );
     }
     setValidandoCodigoPromo(false);
   }
@@ -48657,16 +48987,17 @@ function PantallaSeleccionPlanOnboarding({
 
       {/* Toggle de frecuencia (Mensual / Anual). Cambiarlo con un plan ya
           elegido re-envía el snapshot (`onSeleccionarPlan`) con el precio de
-          la nueva frecuencia, para que Confirmación y `plan_precio_mensual`
-          reflejen lo que el dueño está viendo. La leyenda de IVA vive en
+          la nueva frecuencia, para que la Confirmación y el Checkout de
+          Stripe reflejen lo que el dueño está viendo. La leyenda de IVA vive en
           cada tarjeta (ya no hay texto global debajo del toggle). */}
       <div className="mb-6 flex justify-center">
-        <SelectorFrecuenciaPlan frecuencia={frecuencia} onChange={cambiarFrecuencia} />
+        <SelectorFrecuenciaPlan frecuencia={frecuencia} onChange={cambiarFrecuencia} ahorroAnualPct={ahorroAnualPct} />
       </div>
 
+      <EstadoCatalogoPlanes cargando={cargandoPlanes && planes.length === 0} error={planes.length === 0 ? errorPlanes : null} onReintentar={recargarPlanes} />
       <div className="grid gap-4 sm:grid-cols-3">
-        {PLANES_ONBOARDING_CLUB.map((plan, i) => {
-          const activo = planSeleccionado?.canchas === plan.canchas;
+        {planes.map((plan, i) => {
+          const activo = planSeleccionado?.clave ? planSeleccionado.clave === plan.clave : planSeleccionado?.canchas === plan.canchas;
           const precio = precioPlanSegunFrecuencia(plan, frecuencia);
           return (
             <motion.button
@@ -48696,11 +49027,11 @@ function PantallaSeleccionPlanOnboarding({
                 <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
                 {frecuencia === 'mensual' ? (
                   <span className="mt-1.5 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
-                    15% OFF — Precio Fundador (6 meses)
+                    {PROMO_FUNDADOR_QLUBOS.porcentaje}% OFF — Precio Fundador ({PROMO_FUNDADOR_QLUBOS.meses} meses)
                   </span>
                 ) : (
                   <span className="mt-1.5 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
-                    Ahorras 25% anual
+                    {ahorroAnualPct ? `Ahorras ${ahorroAnualPct}% anual` : 'Pago anual'}
                   </span>
                 )}
                 {precio.tachado != null && (
@@ -48862,12 +49193,24 @@ function PantallaKickoffOnboarding({ nombreClub, onComenzar }) {
   );
 }
 
-// ---- Paso 5: Confirmación y Activación (mock, listo para Stripe) --------
-function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar, onAtras, fechaFinPrueba = null }) {
-  // Club con prueba gratuita activada desde el SuperAdmin (sin paso de plan):
-  // en vez del plan elegido se muestran los días de prueba que quedan.
+// ---- Paso 5: Confirmación y Activación (Stripe Checkout) ------------------
+// Club con acceso vigente (prueba por código, prueba del CRM o cortesía):
+// "Entrar a mi club" solo marca `onboarding_completed`. Club sin acceso:
+// "Pagar y activar mi club" abre Stripe Checkout con el plan elegido (ver
+// `confirmarActivacionOnboarding` en `AppInterno`); la activación real la
+// confirma el webhook de Stripe, nunca el navegador.
+function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirmar, onAtras, fechaFinPrueba = null, accesoPermitido = false }) {
+  // Club con prueba gratuita vigente: en vez del cobro se muestran los días
+  // de prueba que quedan.
   const finPruebaMs = fechaFinPrueba ? new Date(fechaFinPrueba).getTime() : NaN;
   const diasPrueba = Number.isFinite(finPruebaMs) ? Math.max(0, Math.ceil((finPruebaMs - Date.now()) / 86_400_000)) : null;
+  const frecuenciaPlan = planSeleccionado?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual';
+  // Precio siempre del catálogo del servidor (la intención guardada en la
+  // sesión solo trae plan + frecuencia).
+  const { planes } = useCatalogoPlanesQlubos();
+  const planCatalogo = planSeleccionado ? planDelCatalogo(planes, { clave: planSeleccionado.clave, canchas: planSeleccionado.canchas }) : null;
+  const precioPlan = planCatalogo ? precioPlanSegunFrecuencia(planCatalogo, frecuenciaPlan) : null;
+  const requierePago = !accesoPermitido && diasPrueba == null;
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
       {/* La animación de salida hacia la Terminal de Operadores (Kiosko/PIN)
@@ -48891,7 +49234,11 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
         </motion.div>
         <div>
           <h2 className="text-2xl font-black text-slate-900 sm:text-3xl">Tu club está listo.</h2>
-          <p className="mt-2 text-sm font-medium text-slate-500">La configuración inicial está completa. Ahora puedes empezar a operar con QLUBOS.</p>
+          <p className="mt-2 text-sm font-medium text-slate-500">
+            {requierePago
+              ? 'La configuración inicial está completa. Activa tu suscripción para empezar a operar con QLUBOS.'
+              : 'La configuración inicial está completa. Ahora puedes empezar a operar con QLUBOS.'}
+          </p>
         </div>
 
         {diasPrueba != null ? (
@@ -48910,22 +49257,27 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
         <div className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left">
           <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Plan seleccionado</p>
           <p className="mt-1.5 text-lg font-black text-slate-900">
-            {planSeleccionado ? `${planSeleccionado.canchas} Canchas`.toUpperCase() : 'Sin plan seleccionado'}
+            {planSeleccionado?.canchas ? `${planSeleccionado.canchas} Canchas`.toUpperCase() : 'Sin plan seleccionado'}
+            {planSeleccionado?.canchas && <span className="text-sm font-bold text-slate-400"> · {frecuenciaPlan === 'anual' ? 'Anual' : 'Mensual'}</span>}
           </p>
-          {planSeleccionado?.precioMensual != null && (
-            <p className="text-sm font-semibold text-slate-500">{formatoPrecioPlanOnboarding(planSeleccionado.precioMensual)} MXN / mes · IVA incluido</p>
+          {precioPlan && frecuenciaPlan === 'anual' && precioPlan.totalAnual != null && (
+            <p className="text-sm font-semibold text-slate-500">{formatoPrecioPlanOnboarding(precioPlan.totalAnual)} MXN al año · IVA incluido</p>
           )}
-          <p className="mt-2 text-xs font-semibold text-orange-600">Todo QLUBOS incluido.</p>
+          {precioPlan && frecuenciaPlan === 'mensual' && precioPlan.mensual != null && (
+            <p className="text-sm font-semibold text-slate-500">
+              {formatoPrecioPlanOnboarding(precioPlan.mensual)} MXN / mes los primeros {PROMO_FUNDADOR_QLUBOS.meses} meses
+              {precioPlan.tachado != null && ` (después ${formatoPrecioPlanOnboarding(precioPlan.tachado)})`} · IVA incluido
+            </p>
+          )}
+          <p className="mt-2 text-xs font-semibold text-orange-600">
+            {accesoPermitido ? 'Todo QLUBOS incluido.' : 'Todo QLUBOS incluido. Tu club se activa en cuanto Stripe confirme el pago.'}
+          </p>
         </div>
         )}
 
-        {/* Mock de pasarela de pago — placeholder listo para reemplazarse por
-            un Checkout real de Stripe: HOY no se cobra nada, este botón solo
-            marca `onboarding_completed: true` en `configuracion_club` (ver
-            `finalizarOnboardingClub` en `AppInterno`). Cuando se integre
-            Stripe, la confirmación real de pago debe ocurrir ANTES de esta
-            llamada — este es el único punto donde se "abre la puerta" al
-            Panel Operativo. */}
+        {/* Activación: con acceso vigente solo termina el Onboarding; sin
+            acceso abre Stripe Checkout (el webhook confirma el pago y recién
+            entonces `fn_club_acceso_permitido` deja operar el Panel). */}
         {/* Pulso suave de resplandor (Naranja QLUBOS, `#FF6B35`) mientras el
             botón espera el tap del dueño — se detiene en cuanto `guardando`
             es true (ya está procesando, un pulso infinito ahí se vería
@@ -48943,47 +49295,95 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
           transition={{ boxShadow: { duration: 1.6, repeat: guardando ? 0 : Infinity, ease: 'easeOut' }, default: { duration: 0.15, ease: 'easeOut' } }}
           className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-orange-400 px-6 py-3 text-base font-bold text-slate-950 transition hover:bg-orange-300 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {guardando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
-          {diasPrueba != null ? 'Entrar a mi club' : 'Activar mi club'}
+          {guardando ? <Loader2 size={16} className="animate-spin" /> : requierePago ? <Lock size={16} /> : <ArrowRight size={16} />}
+          {guardando && requierePago ? 'Abriendo pago seguro…' : requierePago ? 'Pagar y activar mi club' : 'Entrar a mi club'}
         </motion.button>
+        {requierePago && <AvisoPagoSeguroStripe />}
       </div>
     </LienzoOnboardingClub>
   );
 }
 
-// ---- Periodo de Prueba / Free Trial — Bloqueo por Expiración (migracion_v84)
-// --------------------------------------------------------------------------
-// "Tu periodo de prueba ha finalizado": pantalla completa fija que
-// `AppInterno` renderiza EN VEZ del layout principal del Panel de
-// Administración del Club (Sidebar/TopHeader/módulos) en cuanto
-// `estado_suscripcion === 'prueba'` Y `now() > fecha_fin_prueba` (ver el
-// chequeo global más abajo, justo antes del `else` que arma ese layout).
-// Mismo lenguaje visual que el resto del Onboarding (`LienzoOnboardingClub`,
-// `FondoGlowQlubOS`) para que se sienta como la continuación natural del
-// wizard, no como una pantalla de error aparte. Mock de pasarela de pago —
-// mismo criterio que `PantallaConfirmacionOnboarding`/`finalizarOnboardingClub`:
-// HOY no se cobra nada real, los campos de tarjeta son solo visuales,
-// listos para reemplazarse por un Checkout real de Stripe. Al "reactivar",
-// `onRestaurarAcceso` (→ `restaurarAccesoClub` en `AppInterno`) SOLO cambia
-// `estado_suscripcion` de vuelta a 'activa' — ningún dato operativo del club
-// (canchas, reservas, jugadores, ventas, Kárdex, etc.) se toca ni se pierde.
-function PantallaPruebaVencida({ nombreClub, planActual, restaurando, onRestaurarAcceso }) {
-  const [planElegido, setPlanElegido] = useState(planActual || null);
-  // Frecuencia de facturación (Toggle Mensual/Anual) — precios REGULARES, sin
-  // la promo "Precio Fundador" (esa solo aplica en el Onboarding).
-  const [frecuencia, setFrecuencia] = useState(planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual');
-  // Campos de tarjeta — mock visual únicamente (ver comentario de cabecera):
-  // no se validan con ningún procesador real todavía, solo se exige que no
-  // estén vacíos para que el flujo se sienta "real" sin fingir una
-  // validación que no existe.
-  const [numeroTarjeta, setNumeroTarjeta] = useState('');
-  const [vencimientoTarjeta, setVencimientoTarjeta] = useState('');
-  const [cvvTarjeta, setCvvTarjeta] = useState('');
+// ---- Pantalla de Bloqueo de Suscripción (Fase 3 Stripe) -------------------
+// Reemplaza a la antigua `PantallaPruebaVencida` (que pedía la tarjeta en
+// inputs propios y "reactivaba" escribiendo `estado_suscripcion` desde el
+// navegador). `AppInterno` la muestra EN VEZ del Kiosko y del Panel cuando
+// `fn_club_acceso_permitido` responde `false`: prueba vencida, suscripción
+// bloqueada/cancelada o `past_due` sin días de gracia. Salidas:
+//   • Stripe Checkout con el plan elegido (sin datos de tarjeta en QLUBOS),
+//   • Customer Portal si el club ya tiene cliente en Stripe (actualizar
+//     tarjeta / reactivar),
+//   • canje de un código de prueba o de soporte (`fn_canjear_codigo_prueba`).
+// Ningún dato operativo del club se toca mientras está bloqueado.
+const TEXTOS_BLOQUEO_SUSCRIPCION = {
+  prueba_vencida: {
+    titulo: 'Tu periodo de prueba ha finalizado',
+    detalle: 'queda en pausa hasta activar tu suscripción.',
+  },
+  pago_fallido: {
+    titulo: 'No pudimos cobrar tu suscripción',
+    detalle: 'queda en pausa porque se agotaron los días de gracia del último cobro. Actualiza tu método de pago para reactivarlo.',
+  },
+  manual: {
+    titulo: 'Tu cuenta está en pausa',
+    detalle: 'fue pausado por el equipo de QLUBOS. Activa tu suscripción o escríbenos a soporte si crees que es un error.',
+  },
+  cancelada: {
+    titulo: 'Tu suscripción terminó',
+    detalle: 'queda en pausa porque la suscripción se canceló. Elige un plan para volver a operar.',
+  },
+  sin_suscripcion: {
+    titulo: 'Activa tu suscripción para operar',
+    detalle: 'necesita una suscripción activa para usar el Panel Operativo.',
+  },
+};
 
-  const datosTarjetaCompletos = numeroTarjeta.trim().length >= 12 && vencimientoTarjeta.trim().length >= 4 && cvvTarjeta.trim().length >= 3;
+function PantallaBloqueoSuscripcion({
+  nombreClub,
+  estado,
+  planActual,
+  procesando = null, // null | 'checkout' | 'portal' | 'codigo' | 'verificar'
+  onPagar,
+  onAbrirPortal,
+  onCanjearCodigo,
+  onVerificar,
+  onCerrarSesion,
+}) {
+  const { planes, cargando: cargandoPlanes, error: errorPlanes, recargar: recargarPlanes } = useCatalogoPlanesQlubos();
+  const ahorroAnualPct = useMemo(() => ahorroAnualCatalogo(planes), [planes]);
+  const [frecuencia, setFrecuencia] = useState(planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual');
+  const [claveElegida, setClaveElegida] = useState(planActual?.clave || null);
+  const [codigo, setCodigo] = useState('');
+  const [errorCodigo, setErrorCodigo] = useState('');
+
+  useEffect(() => {
+    if (claveElegida || planes.length === 0) return;
+    const sugerido = planDelCatalogo(planes, { clave: planActual?.clave, canchas: planActual?.canchas });
+    if (sugerido) setClaveElegida(sugerido.clave);
+  }, [planes, planActual, claveElegida]);
+
+  const planElegido = planDelCatalogo(planes, { clave: claveElegida });
+  const motivo =
+    estado?.estado_efectivo === 'cancelada' || estado?.estado_guardado === 'cancelada'
+      ? 'cancelada'
+      : estado?.motivo_bloqueo && TEXTOS_BLOQUEO_SUSCRIPCION[estado.motivo_bloqueo]
+        ? estado.motivo_bloqueo
+        : 'sin_suscripcion';
+  const textos = TEXTOS_BLOQUEO_SUSCRIPCION[motivo];
+  const tieneClienteStripe = estado?.tiene_cliente_stripe === true;
+  const priorizarPortal = tieneClienteStripe && motivo === 'pago_fallido';
+  const ocupado = procesando != null;
+
+  async function canjear() {
+    const limpio = codigo.trim().toUpperCase();
+    if (!limpio) return;
+    setErrorCodigo('');
+    const r = await onCanjearCodigo?.(limpio);
+    if (r && r.ok === false) setErrorCodigo(r.mensaje || 'Ese código no es válido o ya no está disponible.');
+  }
 
   return (
-    <div className="fixed inset-0 z-[100] overflow-y-auto bg-[#f8fafc]">
+    <div className="fixed inset-0 z-[100] overflow-y-auto bg-[#f8fafc]" data-testid="pantalla-bloqueo-suscripcion">
       <div className="relative flex min-h-full flex-col items-center px-4 py-10">
         <FondoGlowQlubOS />
         <div className="relative z-10 w-full max-w-4xl">
@@ -48991,31 +49391,40 @@ function PantallaPruebaVencida({ nombreClub, planActual, restaurando, onRestaura
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-100 text-red-600">
               <Lock size={26} strokeWidth={1.75} />
             </div>
-            <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">Tu periodo de prueba ha finalizado</h1>
+            <h1 className="text-3xl font-black text-slate-900 sm:text-4xl">{textos.titulo}</h1>
             <p className="max-w-xl text-sm font-medium text-slate-500">
-              {nombreClub ? `${nombreClub} queda` : 'Tu club queda'} en pausa hasta elegir un plan y agregar un método de pago — toda tu
-              configuración, canchas, reservas y datos siguen exactamente como los dejaste, no se pierde nada.
+              {nombreClub || 'Tu club'} {textos.detalle} Toda tu configuración, canchas, reservas y datos siguen exactamente como los
+              dejaste — no se pierde nada.
             </p>
           </div>
 
+          {priorizarPortal && (
+            <div className="mx-auto mt-6 flex max-w-md flex-col items-center gap-2 rounded-2xl border border-orange-200 bg-orange-50 p-5 text-center">
+              <p className="text-sm font-bold text-orange-800">Tu suscripción sigue registrada en Stripe.</p>
+              <p className="text-xs text-orange-700">Actualiza tu tarjeta en el portal seguro y el cobro pendiente se reintenta automáticamente.</p>
+              <BotonPrimarioWizard onClick={onAbrirPortal} disabled={ocupado} className="mt-1 px-6 py-2.5">
+                {procesando === 'portal' ? <Loader2 size={16} className="animate-spin" /> : <CreditCard size={16} />}
+                Actualizar método de pago
+              </BotonPrimarioWizard>
+            </div>
+          )}
+
           <div className="mt-8 flex justify-center">
-            <SelectorFrecuenciaPlan
-              frecuencia={frecuencia}
-              onChange={(f) => {
-                setFrecuencia(f);
-                if (planElegido) setPlanElegido(snapshotPlanRegular(PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planElegido.canchas) || planElegido, f));
-              }}
-            />
+            <SelectorFrecuenciaPlan frecuencia={frecuencia} onChange={setFrecuencia} ahorroAnualPct={ahorroAnualPct} />
           </div>
 
-          <div className="mt-6 grid gap-4 sm:grid-cols-3">
-            {PLANES_ONBOARDING_CLUB.map((plan) => {
-              const activo = planElegido?.canchas === plan.canchas;
+          <div className="mt-6">
+            <EstadoCatalogoPlanes cargando={cargandoPlanes && planes.length === 0} error={planes.length === 0 ? errorPlanes : null} onReintentar={recargarPlanes} />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            {planes.map((plan) => {
+              const activo = claveElegida === plan.clave;
               return (
                 <button
-                  key={plan.canchas}
+                  key={plan.clave}
                   type="button"
-                  onClick={() => setPlanElegido(snapshotPlanRegular(plan, frecuencia))}
+                  onClick={() => setClaveElegida(plan.clave)}
+                  aria-pressed={activo}
                   className={`flex flex-col items-start gap-2 rounded-2xl border-2 bg-white p-5 text-left shadow-sm transition ${
                     activo ? 'border-[#FF6B35] shadow-[0_0_0_4px_rgba(255,107,53,0.25)]' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
                   }`}
@@ -49033,52 +49442,126 @@ function PantallaPruebaVencida({ nombreClub, planActual, restaurando, onRestaura
             })}
           </div>
 
-          <div className="mx-auto mt-6 max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
-              <CreditCard size={14} /> Tarjeta de crédito o débito
-            </p>
-            <div className="mt-3 space-y-2.5">
-              <input
-                type="text"
-                inputMode="numeric"
-                value={numeroTarjeta}
-                onChange={(e) => setNumeroTarjeta(e.target.value)}
-                placeholder="Número de tarjeta"
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400 focus:border-orange-400"
-              />
-              <div className="flex gap-2.5">
-                <input
-                  type="text"
-                  value={vencimientoTarjeta}
-                  onChange={(e) => setVencimientoTarjeta(e.target.value)}
-                  placeholder="MM/AA"
-                  className="w-1/2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400 focus:border-orange-400"
-                />
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={cvvTarjeta}
-                  onChange={(e) => setCvvTarjeta(e.target.value)}
-                  placeholder="CVV"
-                  className="w-1/2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400 focus:border-orange-400"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-6 flex justify-center">
+          <div className="mt-6 flex flex-col items-center gap-2">
             <BotonPrimarioWizard
-              onClick={() => onRestaurarAcceso?.(planElegido)}
-              disabled={!planElegido || !datosTarjetaCompletos || restaurando}
+              onClick={() => planElegido && onPagar?.(planElegido, frecuencia)}
+              disabled={!planElegido || ocupado}
               className="px-8 py-3 text-base"
             >
-              {restaurando ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
-              Restaurar acceso a mi club
+              {procesando === 'checkout' ? <Loader2 size={16} className="animate-spin" /> : <Lock size={16} />}
+              {procesando === 'checkout' ? 'Abriendo pago seguro…' : 'Pagar con tarjeta y reactivar'}
             </BotonPrimarioWizard>
+            <AvisoPagoSeguroStripe />
+            {tieneClienteStripe && !priorizarPortal && (
+              <button
+                type="button"
+                onClick={onAbrirPortal}
+                disabled={ocupado}
+                className="mt-1 inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 underline-offset-2 transition hover:text-slate-900 hover:underline disabled:opacity-50"
+              >
+                {procesando === 'portal' ? <Loader2 size={13} className="animate-spin" /> : <ExternalLink size={13} />}
+                Gestionar suscripción / método de pago
+              </button>
+            )}
+          </div>
+
+          <div className="mx-auto mt-8 max-w-sm rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <label htmlFor="codigo-bloqueo-suscripcion" className="block text-xs font-bold uppercase tracking-wide text-slate-400">
+              ¿Tienes un código de prueba o de soporte?
+            </label>
+            <div className="mt-1.5 flex gap-2">
+              <input
+                id="codigo-bloqueo-suscripcion"
+                type="text"
+                value={codigo}
+                autoComplete="off"
+                onChange={(e) => {
+                  setCodigo(e.target.value);
+                  if (errorCodigo) setErrorCodigo('');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    canjear();
+                  }
+                }}
+                placeholder="Ingresa tu código"
+                className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold uppercase tracking-wide text-slate-900 outline-none placeholder:font-normal placeholder:normal-case placeholder:text-slate-400 focus:border-orange-400"
+              />
+              <button
+                type="button"
+                onClick={canjear}
+                disabled={!codigo.trim() || ocupado}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {procesando === 'codigo' && <Loader2 size={14} className="animate-spin" />}
+                Canjear
+              </button>
+            </div>
+            {errorCodigo && <p className="mt-1.5 text-xs font-semibold text-red-600">{errorCodigo}</p>}
+          </div>
+
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs font-semibold text-slate-500">
+            <button type="button" onClick={onVerificar} disabled={ocupado} className="inline-flex items-center gap-1.5 transition hover:text-slate-800 disabled:opacity-50">
+              {procesando === 'verificar' ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+              Ya pagué — verificar de nuevo
+            </button>
+            <button type="button" onClick={onCerrarSesion} className="inline-flex items-center gap-1.5 transition hover:text-slate-800">
+              <LogOut size={13} /> Cerrar sesión
+            </button>
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+// Overlay "Esperando confirmación de pago…" — al volver de Stripe Checkout
+// (`?billing=exito`), mientras el webhook sincroniza `club_suscripciones`.
+function OverlayConfirmacionPagoBilling({ fase, onReintentar, onCerrar }) {
+  const tardando = fase === 'tardando';
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/60 px-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-live="polite"
+      data-testid="overlay-confirmacion-pago"
+    >
+      <div className="w-full max-w-sm rounded-3xl border border-slate-200/70 bg-white p-8 text-center shadow-2xl">
+        <div className={`mx-auto flex h-14 w-14 items-center justify-center rounded-2xl ${tardando ? 'bg-amber-100 text-amber-600' : 'bg-orange-100 text-orange-600'}`}>
+          {tardando ? <Clock size={26} strokeWidth={1.75} /> : <Loader2 size={26} strokeWidth={1.75} className="animate-spin" />}
+        </div>
+        <h2 className="mt-4 text-xl font-black text-slate-900">{tardando ? 'Tu pago se sigue procesando' : 'Esperando confirmación de pago…'}</h2>
+        <p className="mt-2 text-sm text-slate-500">
+          {tardando
+            ? 'Stripe todavía no nos confirma el cobro. Puede tardar unos minutos; tu tarjeta no se cobrará dos veces.'
+            : 'Estamos sincronizando tu suscripción con Stripe. No cierres esta ventana.'}
+        </p>
+        {tardando && (
+          <div className="mt-5 flex flex-col gap-2">
+            <BotonPrimario onClick={onReintentar} className="w-full justify-center">
+              <RefreshCw size={15} /> Verificar de nuevo
+            </BotonPrimario>
+            <button type="button" onClick={onCerrar} className="text-xs font-semibold text-slate-500 transition hover:text-slate-800">
+              Cerrar
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Pantalla neutra mientras se consulta por primera vez el acceso del club.
+function PantallaVerificandoSuscripcion() {
+  return (
+    <LienzoOnboardingClub ancho="max-w-sm">
+      <div className="flex flex-col items-center gap-3 text-center" data-testid="verificando-suscripcion">
+        <Loader2 size={28} className="animate-spin text-orange-500" />
+        <p className="text-sm font-semibold text-slate-500">Verificando tu suscripción…</p>
+      </div>
+    </LienzoOnboardingClub>
   );
 }
 
@@ -49547,8 +50030,14 @@ function OnboardingCanvasClub({
   // Configuración → Confirmación) es idéntico al registro tradicional.
   omitirPlan = false,
   fechaFinPrueba = null,
+  // Fase 3 Stripe: `accesoPermitido` (fn_club_acceso_permitido) decide si la
+  // Confirmación cobra (Stripe Checkout) o solo deja entrar (prueba vigente).
+  // `etapaInicial` permite volver directo a 'confirmacion' al regresar de un
+  // Checkout cancelado.
+  accesoPermitido = false,
+  etapaInicial = 'kickoff',
 }) {
-  const [etapa, setEtapa] = useState('kickoff'); // 'kickoff' | 'plan' | 'canchas' | 'setup' | 'confirmacion'
+  const [etapa, setEtapa] = useState(etapaInicial); // 'kickoff' | 'plan' | 'canchas' | 'setup' | 'confirmacion'
   const etapaPrevia = omitirPlan ? 'kickoff' : 'plan';
   const [direccion, setDireccion] = useState(1); // 1 = avanzar (Siguiente), -1 = retroceder (Atrás)
 
@@ -49577,8 +50066,9 @@ function OnboardingCanvasClub({
         // configurar. El guardado del código/estado de prueba en sí
         // (`onActivarPruebaGratuita`) ya ocurrió antes de avanzar.
         onActivarPrueba={async (codigoInfo) => {
-          await onActivarPruebaGratuita?.(codigoInfo);
-          irA('canchas', 1);
+          // Solo avanza si el servidor canjeó el código (fn_canjear_codigo_prueba).
+          const ok = await onActivarPruebaGratuita?.(codigoInfo);
+          if (ok !== false) irA('canchas', 1);
         }}
         activandoPrueba={activandoPruebaGratuita}
       />
@@ -49607,7 +50097,8 @@ function OnboardingCanvasClub({
         guardando={guardandoActivacion}
         onConfirmar={onConfirmarActivacion}
         onAtras={() => irA('setup', -1)}
-        fechaFinPrueba={omitirPlan ? fechaFinPrueba : null}
+        fechaFinPrueba={fechaFinPrueba}
+        accesoPermitido={accesoPermitido}
       />
     );
   } else {
@@ -50163,54 +50654,127 @@ function ModalEliminarCuenta({ nombreClub, onClose, onConfirmar, eliminando }) {
 }
 
 // ============================================================================
-// MI CUENTA & SUSCRIPCIÓN (reestructuración Cuenta & Plan) — pestaña nueva y
-// EXCLUSIVA Owner dentro de "Configuración del Club" (ver el filtro
-// `esOwner` en `ModuloConfiguracionClub`). Junta 3 bloques que antes vivían
-// dispersos o no existían: (a) Perfil de la Cuenta (solo lectura — nombre
-// del dueño/correo/club, ya capturados en otro lado, ninguno se edita
-// aquí), (b) Plan y Suscripción (snapshot real del plan elegido en el
-// Onboarding — `planClubSeleccionado`/`guardarPlanSeleccionadoClub`, mismo
-// estado y mismo guardado de siempre, reutilizados tal cual) preparado para
-// Stripe, y (c) Eliminar Cuenta ("Eliminar Club"), reubicada aquí desde el
-// fondo de "General" y rediseñada post-QA a una sección discreta con
-// Encuesta de Salida de 2 pasos — ver `SeccionEliminarCuenta`/
-// `ModalEliminarCuenta` (arriba).
+// MI CUENTA & SUSCRIPCIÓN — pestaña EXCLUSIVA Owner dentro de "Configuración
+// del Club" (ver el filtro `esOwner` en `ModuloConfiguracionClub`). Bloques:
+// (a) Perfil de la Cuenta (solo lectura), (b) Plan y Suscripción con el
+// estado REAL de `club_suscripciones` (`fn_estado_suscripcion_club`, vía
+// `BillingClubContext` que arma `AppInterno`) + botón al Stripe Customer
+// Portal + facturas recientes (`billing_facturas`), y (c) Eliminar Cuenta.
+// Fase 3 Stripe: ya no hay mocks de cancelación ni escrituras de plan desde
+// el navegador — cambiar de plan, cambiar tarjeta o cancelar se hace en el
+// Portal de Stripe y el webhook sincroniza el estado.
 // ============================================================================
-function SeccionCuentaSuscripcion({
-  configClub,
-  nombreClub,
-  empleados,
-  planClubSeleccionado,
-  onGuardarPlanSeleccionado,
-  onEliminarClub,
-  eliminandoClub,
-}) {
+const ETIQUETAS_ESTADO_FACTURA = {
+  paid: { texto: 'Pagada', clase: 'bg-emerald-400/10 text-emerald-700 ring-emerald-400/30' },
+  open: { texto: 'Pendiente', clase: 'bg-amber-400/10 text-amber-700 ring-amber-400/30' },
+  uncollectible: { texto: 'Impagada', clase: 'bg-rose-400/10 text-rose-700 ring-rose-400/30' },
+  void: { texto: 'Anulada', clase: 'bg-slate-400/10 text-slate-600 ring-slate-400/30' },
+  draft: { texto: 'Borrador', clase: 'bg-slate-400/10 text-slate-600 ring-slate-400/30' },
+};
+
+function FacturasRecientesSuscripcion({ clubId, version }) {
+  const [facturas, setFacturas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      if (clubId == null) {
+        setCargando(false);
+        return;
+      }
+      try {
+        const { data, error } = await supabase
+          .from('billing_facturas')
+          .select('stripe_invoice_id, numero, estado, total_mxn, pagado_mxn, periodo_inicio, periodo_fin, hosted_invoice_url, invoice_pdf, creada_stripe')
+          .eq('club_id', clubId)
+          .order('creada_stripe', { ascending: false })
+          .limit(6);
+        if (error) throw error;
+        if (vivo) setFacturas((data || []).filter((f) => f.estado !== 'draft'));
+      } catch (err) {
+        if (!esErrorTablaInexistente(err)) console.warn('[Billing] No se pudieron cargar las facturas.', err?.code || err?.message);
+        if (vivo) setFacturas([]);
+      }
+      if (vivo) setCargando(false);
+    })();
+    return () => {
+      vivo = false;
+    };
+  }, [clubId, version]);
+
+  if (cargando || facturas.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-xl border border-slate-200 bg-white" data-testid="facturas-suscripcion">
+      <p className="border-b border-slate-200 px-3.5 py-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">Facturas recientes</p>
+      <ul className="divide-y divide-slate-100">
+        {facturas.map((f) => {
+          const etq = ETIQUETAS_ESTADO_FACTURA[f.estado] || ETIQUETAS_ESTADO_FACTURA.draft;
+          const liga = f.hosted_invoice_url || f.invoice_pdf;
+          const ligaSegura = liga && esUrlStripeSegura(liga) ? liga : null;
+          return (
+            <li key={f.stripe_invoice_id} className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 text-xs">
+              <div className="min-w-0">
+                <p className="font-bold text-slate-800">{formatoFechaBilling(f.creada_stripe) || '—'}</p>
+                {f.numero && <p className="truncate font-mono text-[10px] text-slate-400">{f.numero}</p>}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-black text-slate-900">{formatoMoneda(Number(f.total_mxn) || 0)}</span>
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${etq.clase}`}>{etq.texto}</span>
+                {ligaSegura && (
+                  <a
+                    href={ligaSegura}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 font-bold text-orange-600 hover:text-orange-700"
+                  >
+                    Ver <ExternalLink size={11} />
+                  </a>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function SeccionCuentaSuscripcion({ configClub, nombreClub, empleados, onEliminarClub, eliminandoClub }) {
   const config = configClub || CONFIG_CLUB_DEFAULT;
-  // El Perfil de la Cuenta no tiene su propio formulario/tabla — reutiliza
-  // datos que YA existen en otro lado: `nombreAdministrador` viene de
-  // `configuracion_club` (misma tarjeta "Nombre del Administrador/Dueño" de
-  // "General"/Onboarding), y el correo viene del registro de `empleados`
-  // con `rol: 'owner'` (`email`, capturado en la Auto-provisión del
-  // Propietario — ver `AppInterno` — o al editarlo desde `ModalGestionEmpleados`).
+  const billing = useBillingClub();
+  // El Perfil de la Cuenta reutiliza datos que YA existen: `nombreAdministrador`
+  // de `configuracion_club` y el correo del registro `empleados` con `rol: 'owner'`.
   const ownerEmpleado = useMemo(() => (empleados || []).find((e) => e.rol === 'owner'), [empleados]);
-  const mostrarToast = useToast();
-  // "Plan configurado" = el dueño ya eligió un plan de suscripción (nombre o
-  // precio guardados en `configuracion_club.plan_*`). Un club creado desde el
-  // CRM (CRM-LEAD, en prueba) solo trae `plan_canchas` como referencia del
-  // tamaño del club — eso NO cuenta como plan contratado.
-  const tienePlanConfigurado = planTieneSuscripcionConfigurada(planClubSeleccionado);
-  const [modalCambiarPlan, setModalCambiarPlan] = useState(false);
-  const [modalCancelarSuscripcion, setModalCancelarSuscripcion] = useState(false);
-  // Mock de Cancelación (preparado para Stripe Webhooks): sin backend de
-  // facturación real todavía, esta bandera SOLO vive en memoria de este
-  // componente (se resetea al recargar) — a propósito no se inventa una
-  // columna nueva en Supabase para un estado que hoy no representa ningún
-  // cobro real. El día que se conecte Stripe, el webhook
-  // `customer.subscription.deleted` (o `updated` con `cancel_at_period_end`)
-  // es quien de verdad debe escribir este estado — aquí ya queda listo el
-  // punto exacto de la UI donde ese dato entraría (mismo criterio que
-  // `plan_activado_en`/mock de pasarela de pago en `finalizarOnboardingClub`).
-  const [suscripcionCancelada, setSuscripcionCancelada] = useState(false);
+  const { planes } = useCatalogoPlanesQlubos();
+  const [modalElegirPlan, setModalElegirPlan] = useState(false);
+
+  const estado = billing?.estado || null;
+  const procesando = billing?.procesando || null;
+  const planContratado = billing?.planContratado || null;
+  const planCatalogo = planContratado ? planDelCatalogo(planes, { clave: planContratado.clave, canchas: planContratado.canchas }) : null;
+  const frecuencia = planContratado?.frecuenciaFacturacion || estado?.frecuencia || null;
+  const precioVigente = planCatalogo && frecuencia ? precioRegularPlanSegunFrecuencia(planCatalogo, frecuencia) : null;
+  const insignia = insigniaEstadoSuscripcion(estado);
+  const tieneSuscripcionStripe = billing?.tieneSuscripcionStripeViva === true;
+
+  // Fecha clave según el estado (próximo cobro / fin de prueba / fin de acceso / gracia).
+  let filaFecha = null;
+  if (estado) {
+    if (insignia.clave === 'prueba') filaFecha = { etiqueta: 'Fin de la prueba', valor: formatoFechaBilling(estado.prueba_fin) };
+    else if (insignia.clave === 'cancelada') filaFecha = { etiqueta: 'Acceso hasta', valor: formatoFechaBilling(estado.current_period_end) };
+    else if (insignia.clave === 'past_due') filaFecha = { etiqueta: 'Gracia hasta', valor: formatoFechaBilling(estado.gracia_hasta) };
+    else if (insignia.clave === 'activa')
+      filaFecha = estado.current_period_end
+        ? { etiqueta: 'Próximo cobro', valor: formatoFechaBilling(estado.current_period_end) }
+        : { etiqueta: 'Próximo cobro', valor: estado.es_cortesia ? 'Sin cobro programado (cortesía)' : null };
+  }
+
+  const nombreCortoPlan = planCatalogo?.nombrePlan || planContratado?.nombrePlan || null;
+  const nombrePlan = planContratado?.canchas
+    ? `Plan ${nombreCortoPlan ? `${nombreCortoPlan} · ` : ''}${planContratado.canchas} canchas`
+    : estado?.es_cortesia
+      ? 'Plan de cortesía QLUBOS'
+      : 'Sin plan contratado';
 
   return (
     <div className="space-y-4">
@@ -50238,155 +50802,153 @@ function SeccionCuentaSuscripcion({
         </div>
       </div>
 
-      {/* b) Plan y Suscripción — Preparado para Integración con Stripe */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-4">
-        <div className="mb-1 flex items-center gap-2">
-          <CreditCard size={16} className="text-orange-500" />
-          <h3 className="text-sm font-black text-slate-900">Plan y Suscripción</h3>
-        </div>
-        <p className="mb-3 text-xs text-slate-500">
-          El cobro real y los webhooks de Stripe se conectan aquí mismo más adelante — hoy el plan y su estado son un
-          snapshot guardado en Supabase (`configuracion_club.plan_*`), sin pasarela de pago real todavía.
-        </p>
-        <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-black text-slate-900">
-              {tienePlanConfigurado && planClubSeleccionado?.nombre ? `Plan ${planClubSeleccionado.nombre}` : 'Sin plan configurado'}
-              {planClubSeleccionado?.precioMensual != null && (
-                <span className="font-semibold text-slate-500">
-                  {' '}
-                  — {formatoPrecioPlanOnboarding(planClubSeleccionado.precioMensual)} MXN / mes
-                </span>
-              )}
-            </p>
-            {tienePlanConfigurado ? (
-            <span
-              className={`mt-1.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                suscripcionCancelada
-                  ? 'bg-amber-400/10 text-amber-600 ring-1 ring-amber-400/30'
-                  : 'bg-emerald-400/10 text-emerald-600 ring-1 ring-emerald-400/30'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${suscripcionCancelada ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-              {suscripcionCancelada ? 'Cancelación Programada' : 'Suscripción Activa'}
-            </span>
-            ) : (
-              <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-600 ring-1 ring-sky-400/30">
-                <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
-                Elige tu plan para continuar después de la prueba
-              </span>
-            )}
+      {/* b) Plan y Suscripción — estado real de Stripe */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="seccion-plan-suscripcion">
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <CreditCard size={16} className="text-orange-500" />
+            <h3 className="text-sm font-black text-slate-900">Plan y Suscripción</h3>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {tienePlanConfigurado ? (
-              <BotonSecundario onClick={() => setModalCambiarPlan(true)}>
-                <RefreshCw size={14} /> Cambiar Plan
-              </BotonSecundario>
-            ) : (
-              <BotonPrimario onClick={() => setModalCambiarPlan(true)}>
-                <CheckCircle2 size={14} /> Elegir Plan
-              </BotonPrimario>
-            )}
-            {tienePlanConfigurado && !suscripcionCancelada && (
-              <button
-                type="button"
-                onClick={() => setModalCancelarSuscripcion(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-200"
-              >
-                <Ban size={14} /> Cancelar Suscripción
-              </button>
-            )}
-          </div>
+          <button
+            type="button"
+            onClick={() => billing?.recargar?.()}
+            disabled={!billing || billing.cargando}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 transition hover:text-slate-800 disabled:opacity-50"
+            title="Actualizar estado"
+          >
+            <RefreshCw size={12} className={billing?.cargando ? 'animate-spin' : ''} /> Actualizar
+          </button>
         </div>
+        <p className="mb-3 text-xs text-slate-500">Pagos con tarjeta procesados por Stripe. QLUBOS no guarda datos de tu tarjeta.</p>
+
+        {!billing || (billing.cargando && !estado) ? (
+          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-500">
+            <Loader2 size={15} className="animate-spin" /> Cargando tu suscripción…
+          </div>
+        ) : billing.error && !estado ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">{billing.error}</div>
+        ) : (
+          <>
+            <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-black text-slate-900" data-testid="nombre-plan-suscripcion">
+                  {nombrePlan}
+                  {frecuencia && planContratado?.canchas && (
+                    <span className="font-semibold text-slate-500"> — {frecuencia === 'anual' ? 'Anual' : 'Mensual'}</span>
+                  )}
+                </p>
+                {precioVigente?.mensual != null && (
+                  <p className="text-xs font-semibold text-slate-500">
+                    {frecuencia === 'anual'
+                      ? `${formatoPrecioPlanOnboarding(precioVigente.totalAnual)} MXN al año · IVA incluido`
+                      : `${formatoPrecioPlanOnboarding(precioVigente.mensual)} MXN / mes · IVA incluido`}
+                  </p>
+                )}
+                <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                  <InsigniaEstadoSuscripcion estado={estado} />
+                  {estado?.es_cortesia && insignia.clave !== 'activa' && (
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">Cortesía</span>
+                  )}
+                </div>
+                {filaFecha?.valor && (
+                  <p className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-slate-600" data-testid="fecha-suscripcion">
+                    <CalendarClock size={13} className="text-slate-400" />
+                    {filaFecha.etiqueta}: <span className="font-black text-slate-900">{filaFecha.valor}</span>
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <BotonPrimario onClick={() => billing.abrirPortal?.({ alFallarSinCliente: () => setModalElegirPlan(true) })} disabled={procesando != null}>
+                  {procesando === 'portal' ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}
+                  Gestionar Suscripción / Método de Pago
+                </BotonPrimario>
+                {!tieneSuscripcionStripe && (
+                  <BotonSecundario onClick={() => setModalElegirPlan(true)} disabled={procesando != null}>
+                    <CheckCircle2 size={14} /> Elegir Plan y Pagar
+                  </BotonSecundario>
+                )}
+              </div>
+            </div>
+
+            {insignia.clave === 'cancelada' && (
+              <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2.5">
+                <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-600" />
+                <p className="text-xs font-semibold text-amber-800">
+                  Tu suscripción está cancelada y no se renovará.
+                  {estado?.current_period_end ? ` Conservas acceso completo hasta el ${formatoFechaBilling(estado.current_period_end)}.` : ''} Puedes
+                  reactivarla desde "Gestionar Suscripción".
+                </p>
+              </div>
+            )}
+            {insignia.clave === 'past_due' && (
+              <div className="mt-3 flex items-start gap-2 rounded-xl border border-orange-300 bg-orange-50 px-3.5 py-2.5">
+                <AlertTriangle size={15} className="mt-0.5 shrink-0 text-orange-600" />
+                <p className="text-xs font-semibold text-orange-800">
+                  No pudimos cobrar tu última factura.{' '}
+                  {Number.isFinite(Number(estado?.dias_gracia_restantes))
+                    ? `Te quedan ${estado.dias_gracia_restantes} ${Number(estado.dias_gracia_restantes) === 1 ? 'día' : 'días'} de gracia`
+                    : 'Estás en periodo de gracia'}{' '}
+                  antes de que el Panel se bloquee. Actualiza tu tarjeta en "Gestionar Suscripción".
+                </p>
+              </div>
+            )}
+
+            <FacturasRecientesSuscripcion clubId={CLUB_ACTIVO_ID} version={billing.version} />
+          </>
+        )}
       </div>
 
       {/* c) Eliminación de Cuenta (Zona Crítica) — discreta, al final. */}
       <SeccionEliminarCuenta nombreClub={nombreClub} onEliminarClub={onEliminarClub} eliminandoClub={eliminandoClub} />
 
-      {modalCambiarPlan && (
+      {modalElegirPlan && (
         <ModalCambiarPlan
-          planActual={planClubSeleccionado}
-          onClose={() => setModalCambiarPlan(false)}
-          onConfirmar={async (plan) => {
-            const ok = await onGuardarPlanSeleccionado?.(plan);
-            if (ok === false) {
-              mostrarToast({ titulo: 'No se pudo guardar el plan', detalle: 'Revisa tu conexión e intenta de nuevo.', tono: 'error' });
-              return;
-            }
-            mostrarToast({
-              titulo: tienePlanConfigurado ? 'Plan actualizado' : 'Plan elegido',
-              detalle: `${plan?.nombre || 'Plan'} — quedó listo para tu facturación.`,
-            });
-            setModalCambiarPlan(false);
-          }}
-        />
-      )}
-
-      {modalCancelarSuscripcion && (
-        <ModalCancelarSuscripcion
-          onClose={() => setModalCancelarSuscripcion(false)}
-          onConfirmar={() => {
-            setSuscripcionCancelada(true);
-            setModalCancelarSuscripcion(false);
-          }}
+          planActual={planContratado}
+          titulo="Elegir Plan"
+          onClose={() => setModalElegirPlan(false)}
+          onConfirmar={(plan) => billing?.cambiarPlan?.(plan)}
         />
       )}
     </div>
   );
 }
 
-// Modal "Cambiar Plan" (Upgrade/Downgrade) — reutiliza el mismo catálogo de
-// 3 tarjetas del Onboarding (`PLANES_ONBOARDING_CLUB`) y el mismo callback
-// de guardado (`onGuardarPlanSeleccionado` → `guardarPlanSeleccionadoClub`
-// en `AppInterno`) que ya escribe `plan_canchas`/`plan_nombre`/
-// `plan_precio_mensual` en `configuracion_club` — ningún estado ni columna
-// nueva, solo un segundo punto de entrada a la misma lógica.
-// ¿El club ya tiene un plan de suscripción elegido? (nombre o precio en
-// `configuracion_club.plan_*`). `plan_canchas` sola — como la deja la
-// conversión de un lead del CRM — es solo el tamaño del club, no un plan.
-function planTieneSuscripcionConfigurada(plan) {
-  return Boolean(plan && (plan.nombre || plan.precioMensual != null));
-}
-
-function ModalCambiarPlan({ planActual: planActualProp, onClose, onConfirmar, titulo: tituloProp, mensajeLimite, soloPlanesSuperioresA }) {
-  // Sin plan configurado: ninguna tarjeta es "Plan actual" ni queda
-  // bloqueada; la que coincide con el tamaño del club solo se sugiere.
-  const sinPlanConfigurado = !planTieneSuscripcionConfigurada(planActualProp);
-  const planActual = sinPlanConfigurado ? null : planActualProp;
-  const canchasRecomendadas = sinPlanConfigurado ? planActualProp?.canchas || null : null;
-  const titulo = tituloProp || (sinPlanConfigurado && soloPlanesSuperioresA == null ? 'Elegir Plan' : 'Cambiar Plan');
-  // Modo Upselling (tope de canchas alcanzado desde la Parrilla): solo se
-  // ofrecen los planes cuyo límite de canchas supera al actual
-  // (`soloPlanesSuperioresA` = límite actual), y se preselecciona el
-  // inmediato superior. Sin esa prop, el modal funciona igual que siempre.
-  const planesVisibles = PLANES_ONBOARDING_CLUB.filter(
-    (p) => soloPlanesSuperioresA == null || (limiteCanchasDelPlan(p.canchas) ?? 0) > soloPlanesSuperioresA
+// Modal "Elegir / Cambiar Plan" — catálogo real (`billing_precios`). NO
+// guarda nada en Supabase: al confirmar, `onConfirmar(snapshot)` manda al
+// club a Stripe (Checkout si no tiene suscripción viva; Customer Portal si
+// ya la tiene — ver `cambiarPlanSuscripcion` en `AppInterno`) y devuelve
+// `true` mientras redirige.
+function ModalCambiarPlan({ planActual, onClose, onConfirmar, titulo: tituloProp, mensajeLimite, soloPlanesSuperioresA }) {
+  const billing = useBillingClub();
+  const { planes, cargando: cargandoPlanes, error: errorPlanes, recargar: recargarPlanes } = useCatalogoPlanesQlubos();
+  const ahorroAnualPct = useMemo(() => ahorroAnualCatalogo(planes), [planes]);
+  const modoPortal = billing?.tieneSuscripcionStripeViva === true;
+  const titulo = tituloProp || (planActual?.clave || planActual?.canchas ? 'Cambiar Plan' : 'Elegir Plan');
+  // Modo Upselling (tope de canchas alcanzado desde la Parrilla): solo los
+  // planes cuyo límite supera al actual, preseleccionando el inmediato superior.
+  const planesVisibles = planes.filter(
+    (p) => soloPlanesSuperioresA == null || (p.maxCanchas ?? limiteCanchasDelPlan(p.canchas) ?? 0) > soloPlanesSuperioresA
   );
   const [frecuencia, setFrecuencia] = useState(planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual');
-  // `canchasElegidas` (no el objeto plan) — el snapshot con el precio de la
-  // frecuencia vigente se arma al confirmar (`snapshotPlanRegular`).
-  const [canchasElegidas, setCanchasElegidas] = useState(
-    () =>
+  const [claveElegida, setClaveElegida] = useState(null);
+  const [redirigiendo, setRedirigiendo] = useState(false);
+  useEffect(() => {
+    if (claveElegida || planesVisibles.length === 0) return;
+    const inicial =
       soloPlanesSuperioresA != null
-        ? planesVisibles[0]?.canchas || null
-        : PLANES_ONBOARDING_CLUB.find((p) => p.canchas === planActual?.canchas)?.canchas || null
-  );
-  const planElegido = PLANES_ONBOARDING_CLUB.find((p) => p.canchas === canchasElegidas) || null;
-  const [guardando, setGuardando] = useState(false);
-  // Periodicidad realmente contratada ('mensual' | 'anual') — "PLAN ACTUAL" solo
-  // se marca cuando coinciden la categoría de canchas Y esta periodicidad con
-  // la pestaña que se está viendo (un club en Mensual no tiene "plan actual"
-  // en la pestaña Anual, y viceversa).
+        ? planesVisibles[0]
+        : planDelCatalogo(planesVisibles, { clave: planActual?.clave, canchas: planActual?.canchas }) || null;
+    if (inicial) setClaveElegida(inicial.clave);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planes]);
+  const planElegido = planDelCatalogo(planesVisibles, { clave: claveElegida });
   const frecuenciaContratada = planActual?.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual';
-  const cambioReal = sinPlanConfigurado
-    ? Boolean(planElegido)
-    : planElegido && (planElegido.canchas !== planActual?.canchas || frecuencia !== frecuenciaContratada);
 
   async function confirmar() {
-    if (!planElegido || !cambioReal) return;
-    setGuardando(true);
-    await onConfirmar?.(snapshotPlanRegular(planElegido, frecuencia));
-    setGuardando(false);
+    if (!modoPortal && !planElegido) return;
+    setRedirigiendo(true);
+    const ok = await onConfirmar?.(planElegido ? snapshotPlanRegular(planElegido, frecuencia) : null);
+    if (!ok) setRedirigiendo(false);
   }
 
   return (
@@ -50395,11 +50957,11 @@ function ModalCambiarPlan({ planActual: planActualProp, onClose, onConfirmar, ti
       subtitulo={
         mensajeLimite
           ? undefined
-          : sinPlanConfigurado
-            ? 'Elige el plan con el que continuarás en QLUBOS. Se guarda en tu cuenta, listo para la facturación.'
-            : 'Upgrade — el nuevo precio aplica desde tu siguiente ciclo de facturación.'
+          : modoPortal
+            ? 'Tu suscripción está activa en Stripe: el cambio de plan se hace en el portal seguro, con prorrateo automático.'
+            : 'Elige tu plan. Te llevaremos al pago seguro de Stripe para activarlo con tu tarjeta.'
       }
-      onClose={onClose}
+      onClose={redirigiendo ? () => {} : onClose}
       ancho="max-w-2xl"
       icon={CreditCard}
     >
@@ -50410,35 +50972,33 @@ function ModalCambiarPlan({ planActual: planActualProp, onClose, onConfirmar, ti
         </div>
       )}
       <div className="mb-4 flex justify-center">
-        <SelectorFrecuenciaPlan frecuencia={frecuencia} onChange={setFrecuencia} />
+        <SelectorFrecuenciaPlan frecuencia={frecuencia} onChange={setFrecuencia} ahorroAnualPct={ahorroAnualPct} />
       </div>
 
-      {planesVisibles.length === 0 && (
+      <EstadoCatalogoPlanes cargando={cargandoPlanes && planes.length === 0} error={planes.length === 0 ? errorPlanes : null} onReintentar={recargarPlanes} />
+      {planes.length > 0 && planesVisibles.length === 0 && (
         <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-          Ya tienes el plan más alto disponible (hasta 12 canchas). Para agregar más, contacta a soporte de QLUBOS.
+          Ya tienes el plan más alto disponible. Para agregar más canchas, contacta a soporte de QLUBOS.
         </p>
       )}
       <div className={`grid gap-3 ${planesVisibles.length >= 3 ? 'sm:grid-cols-3' : planesVisibles.length === 2 ? 'sm:grid-cols-2' : ''}`}>
         {planesVisibles.map((plan) => {
-          const activo = planElegido?.canchas === plan.canchas;
-          const esPlanActual = planActual?.canchas === plan.canchas && frecuencia === frecuenciaContratada;
+          const activo = !modoPortal && planElegido?.clave === plan.clave;
+          const esPlanActual =
+            (planActual?.clave ? planActual.clave === plan.clave : planActual?.canchas === plan.canchas) && frecuencia === frecuenciaContratada;
           return (
             <button
-              key={plan.canchas}
+              key={plan.clave}
               type="button"
-              onClick={() => setCanchasElegidas(plan.canchas)}
-              className={`relative flex flex-col items-start gap-2 rounded-2xl border-2 bg-white p-4 text-left transition ${
+              onClick={() => setClaveElegida(plan.clave)}
+              disabled={modoPortal}
+              className={`relative flex flex-col items-start gap-2 rounded-2xl border-2 bg-white p-4 text-left transition disabled:cursor-default ${
                 activo ? 'border-orange-400 shadow-[0_0_0_4px_rgba(251,146,60,0.15)]' : 'border-slate-200 hover:border-slate-300'
               }`}
             >
               {esPlanActual && (
                 <span className="absolute right-3 top-3 rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
                   Plan actual
-                </span>
-              )}
-              {!esPlanActual && canchasRecomendadas === plan.canchas && (
-                <span className="rounded-full bg-orange-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-orange-600 ring-1 ring-orange-400/30">
-                  Recomendado
                 </span>
               )}
               <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
@@ -50454,47 +51014,20 @@ function ModalCambiarPlan({ planActual: planActualProp, onClose, onConfirmar, ti
         })}
       </div>
 
-      <div className="mt-5 flex justify-end gap-2">
-        <BotonSecundario onClick={onClose} disabled={guardando}>
-          Cancelar
-        </BotonSecundario>
-        <BotonPrimario onClick={confirmar} disabled={!cambioReal || guardando}>
-          {guardando ? <Loader2 size={15} className="animate-spin" /> : sinPlanConfigurado ? <CheckCircle2 size={15} /> : <RefreshCw size={15} />}
-          {sinPlanConfigurado ? 'Confirmar Plan' : 'Confirmar Cambio de Plan'}
-        </BotonPrimario>
-      </div>
-    </ModalShell>
-  );
-}
-
-// Modal "Cancelar Suscripción" — explica el fin del período pagado (mismo
-// criterio de fricción/claridad que el Paso 2 de `ModalEliminarCuenta`,
-// aunque esta acción es reversible y mucho menos destructiva). Preparado para
-// Stripe Webhooks: `onConfirmar` hoy solo marca el estado local de
-// `SeccionCuentaSuscripcion` (ver su comentario) — el día que haya cobro
-// real, este mismo botón dispara la llamada que cancela la suscripción en
-// Stripe (`cancel_at_period_end: true`) y el webhook correspondiente es
-// quien confirma el estado final.
-function ModalCancelarSuscripcion({ onClose, onConfirmar }) {
-  return (
-    <ModalShell titulo="Cancelar Suscripción" onClose={onClose} ancho="max-w-md" icon={AlertTriangle}>
-      <p className="mb-3 text-sm text-slate-600">
-        Tu suscripción seguirá <span className="font-bold text-slate-800">activa hasta el final de tu período ya pagado</span>.
-        No se hará ningún cargo adicional, y conservas acceso completo al Panel Operativo hasta esa fecha.
-      </p>
-      <p className="mb-4 text-sm text-slate-600">
-        Después de esa fecha, tu equipo perderá acceso y tu club dejará de aparecer en el Portal de Jugadores. Puedes
-        reactivar tu plan en cualquier momento antes de que termine el período — solo vuelve a "Cambiar Plan".
-      </p>
-      <div className="flex justify-end gap-2">
-        <BotonSecundario onClick={onClose}>Volver</BotonSecundario>
-        <button
-          type="button"
-          onClick={onConfirmar}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-700"
-        >
-          <Ban size={15} /> Confirmar Cancelación
-        </button>
+      <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <AvisoPagoSeguroStripe className="sm:justify-start sm:text-left" />
+        <div className="flex shrink-0 justify-end gap-2">
+          <BotonSecundario onClick={onClose} disabled={redirigiendo}>
+            Cancelar
+          </BotonSecundario>
+          <BotonPrimario
+            onClick={confirmar}
+            disabled={redirigiendo || (!modoPortal && !planElegido)}
+          >
+            {redirigiendo ? <Loader2 size={15} className="animate-spin" /> : <ExternalLink size={15} />}
+            {modoPortal ? 'Cambiar plan en Stripe' : 'Continuar al pago seguro'}
+          </BotonPrimario>
+        </div>
       </div>
     </ModalShell>
   );
@@ -59775,9 +60308,10 @@ const DATOS_TARJETA_VACIOS = { numero: '', vencimiento: '', cvv: '', nombreTitul
 // Selector de método de pago compartido por los tres flujos de checkout del
 // Portal (Reserva de Cancha, Carrito de la Tienda, y el genérico
 // `ModalElegirPago` de Reta/Torneo): 1) Pagar en Recepción, 2) Pagar con
-// Wallet (usando el saldo a favor), 3) Pagar con Tarjeta (Débito/Crédito —
-// simulación de TPV en línea con formulario de datos de tarjeta, ver
-// `tarjetaEsValida` arriba). `mostrarWallet` oculta la opción cuando no hay
+// Wallet (usando el saldo a favor). La opción 3 "Pagar con Tarjeta" (simulación
+// de TPV con formulario propio de tarjeta) se eliminó por PCI — `datosTarjeta`/
+// `onCambiarDatosTarjeta` se siguen aceptando solo por compatibilidad de
+// firma con los tres checkouts, sin uso. `mostrarWallet` oculta la opción cuando no hay
 // jugador identificado o su saldo es 0 — igual criterio que ya tenía cada
 // modal por separado.
 function SelectorMetodoPagoPortal({
@@ -59827,63 +60361,12 @@ function SelectorMetodoPagoPortal({
           <Banknote size={chico ? 14 : 15} className="text-slate-500" /> Pagar en el club
         </span>
       </button>
-      {SHOW_BETA_PORTAL_PAGO_TARJETA && (
-        <button
-          type="button"
-          onClick={() => onCambiarMetodo('tarjeta')}
-          className={`${claseBoton} ${metodo === 'tarjeta' ? 'border-orange-400/50 bg-orange-400/10' : 'border-slate-300 bg-slate-100'}`}
-        >
-          <span className="flex items-center gap-2">
-            <CreditCard size={chico ? 14 : 15} className="text-slate-500" /> Pagar con Tarjeta (Débito/Crédito)
-          </span>
-        </button>
-      )}
-
       {metodo === 'wallet' && (
         <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-xs text-slate-500">
           {montoRestante > 0
             ? `Tu Wallet cubre ${formatoMoneda(montoWallet)} — quedan ${formatoMoneda(montoRestante)} por pagar en recepción.`
             : 'Tu Wallet cubre el total — no debes nada más.'}
         </p>
-      )}
-
-      {metodo === 'tarjeta' && (
-        <div className="space-y-2 rounded-xl border border-slate-300 bg-slate-100/60 p-3">
-          <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-400">
-            <ShieldAlert size={12} /> Simulación de TPV — no se procesa ningún cargo real
-          </p>
-          <input
-            value={datosTarjeta.numero}
-            onChange={(e) => onCambiarDatosTarjeta({ ...datosTarjeta, numero: e.target.value })}
-            inputMode="numeric"
-            placeholder="Número de tarjeta"
-            maxLength={19}
-            className={inputClase}
-          />
-          <div className="flex gap-2">
-            <input
-              value={datosTarjeta.vencimiento}
-              onChange={(e) => onCambiarDatosTarjeta({ ...datosTarjeta, vencimiento: e.target.value })}
-              placeholder="MM/AA"
-              maxLength={5}
-              className={`${inputClase} w-24`}
-            />
-            <input
-              value={datosTarjeta.cvv}
-              onChange={(e) => onCambiarDatosTarjeta({ ...datosTarjeta, cvv: e.target.value })}
-              inputMode="numeric"
-              placeholder="CVV"
-              maxLength={4}
-              className={`${inputClase} w-20`}
-            />
-          </div>
-          <input
-            value={datosTarjeta.nombreTitular}
-            onChange={(e) => onCambiarDatosTarjeta({ ...datosTarjeta, nombreTitular: e.target.value })}
-            placeholder="Nombre del titular"
-            className={inputClase}
-          />
-        </div>
       )}
     </div>
   );
@@ -61754,40 +62237,83 @@ function AppInterno({ clubInicial } = {}) {
   // (o si `clubInicial` ya trae un plan guardado, ej. el dueño recargó la
   // página a medio Onboarding).
   const [onboardingCompletedClub, setOnboardingCompletedClub] = useState(() => clubInicial?.onboarding_completed !== false);
-  const [planClubSeleccionado, setPlanClubSeleccionado] = useState(() =>
-    clubInicial && (clubInicial.plan_canchas != null || clubInicial.plan_nombre != null || clubInicial.plan_precio_mensual != null)
-      ? {
-          canchas: clubInicial.plan_canchas || null,
-          nombre: clubInicial.plan_nombre || null,
-          precioMensual: clubInicial.plan_precio_mensual != null ? Number(clubInicial.plan_precio_mensual) : null,
-        }
-      : null
+  // Fase 3 Stripe — el plan ya no se escribe desde el navegador:
+  //   • `planIntencionClub`: lo que el dueño eligió en el Onboarding (memoria
+  //     + sessionStorage, sobrevive al ir y volver de Stripe Checkout).
+  //   • `planLegadoClub`: `configuracion_club.plan_*` (solo lectura; hoy lo
+  //     escribe el webhook de Stripe / el CRM).
+  //   • `planContratadoClub` (más abajo): derivado de `club_suscripciones`.
+  const [planIntencionClub, setPlanIntencionClub] = useState(() => leerIntencionPlanSesion(CLUB_ACTIVO_ID ?? clubInicial?.id ?? null));
+  const [planLegadoClub, setPlanLegadoClub] = useState(() =>
+    clubInicial && clubInicial.plan_canchas != null ? { canchas: clubInicial.plan_canchas || null, nombre: clubInicial.plan_nombre || null } : null
   );
   const [guardandoActivacionOnboarding, setGuardandoActivacionOnboarding] = useState(false);
   const [guardandoCanchasOnboarding, setGuardandoCanchasOnboarding] = useState(false);
-  // Periodo de Prueba / Free Trial mediante Códigos Promocionales
-  // (migracion_v84) — mismo criterio que `onboardingCompletedClub`/
-  // `planClubSeleccionado` arriba: el primer render ya conoce el estado real
-  // (sin esperar el round-trip de `cargarConfigClubSupabase`) leyendo
-  // `clubInicial`, que viene del mismo `select('*')` sobre
-  // `configuracion_club` que ya resuelve `ClubAuthGate`. A PROPÓSITO quedan
-  // FUERA del objeto `configClub` (no se agregan a `CONFIG_CLUB_DEFAULT`):
-  // `guardarConfigClub` REEMPLAZA el objeto `configClub` completo en cada
-  // guardado de Horario/Tarifas/Tolerancia (ver su `setConfigClub(limpia)`),
-  // construido solo con los campos que ESA función conoce — si estos 3
-  // campos vivieran ahí, cualquier guardado de otra tarjeta de Configuración
-  // los resetearía a 'activa'/null sin que el dueño lo pidiera, el mismo bug
-  // de "last write wins" ya corregido para `nombreAdministrador` (Refactor
-  // Onboarding v67). Mantenerlos como estado propio evita el problema de raíz.
+  // Espejo LEGADO de la suscripción en `configuracion_club` (solo lectura —
+  // lo mantiene el trigger de v112 desde `club_suscripciones`). Se usa
+  // únicamente como respaldo si la facturación aún no está desplegada.
   const [estadoSuscripcionClub, setEstadoSuscripcionClub] = useState(() => clubInicial?.estado_suscripcion || 'activa');
   const [fechaFinPruebaClub, setFechaFinPruebaClub] = useState(() => clubInicial?.fecha_fin_prueba || null);
   const [codigoPromoUsadoClub, setCodigoPromoUsadoClub] = useState(() => clubInicial?.codigo_promo_usado || null);
   const [activandoPruebaGratuita, setActivandoPruebaGratuita] = useState(false);
-  const [restaurandoAccesoClub, setRestaurandoAccesoClub] = useState(false);
+
+  // ---- Suscripción real (Fase 3 Stripe) ------------------------------------
+  // `accesoClubPermitido` = `fn_club_acceso_permitido` (null = aún no se sabe),
+  // `estadoBillingClub` = `fn_estado_suscripcion_club` (badge, fechas, días),
+  // `filaBillingClub` = fila de `club_suscripciones` (RLS: solo el dueño).
+  const [accesoClubPermitido, setAccesoClubPermitido] = useState(null);
+  const [estadoBillingClub, setEstadoBillingClub] = useState(null);
+  const [filaBillingClub, setFilaBillingClub] = useState(null);
+  const [billingNoDisponible, setBillingNoDisponible] = useState(false);
+  const [errorBillingClub, setErrorBillingClub] = useState(null);
+  const [cargandoBillingClub, setCargandoBillingClub] = useState(false);
+  const [versionBillingClub, setVersionBillingClub] = useState(0);
+  const [procesandoBilling, setProcesandoBilling] = useState(null); // null | 'checkout' | 'portal' | 'codigo' | 'verificar'
+  const [confirmacionPagoBilling, setConfirmacionPagoBilling] = useState(null); // null | 'esperando' | 'tardando'
+  const [relojBilling, setRelojBilling] = useState(() => Date.now());
+  const { planes: catalogoPlanesClub } = useCatalogoPlanesQlubos();
+  // Regreso de un Checkout cancelado con el Onboarding aún abierto: el
+  // wizard retoma en la Confirmación en vez de empezar desde el Kickoff.
+  const [etapaInicialOnboarding] = useState(() => {
+    if (typeof window === 'undefined') return 'kickoff';
+    return new URLSearchParams(window.location.search).get('billing') === 'cancelado' ? 'confirmacion' : 'kickoff';
+  });
+
+  const planContratadoClub = useMemo(() => {
+    const src = filaBillingClub || estadoBillingClub;
+    const clave = src?.plan_clave || null;
+    const canchasPlan = src?.plan_canchas || null;
+    if (!clave && !canchasPlan) return null;
+    const base = planDelCatalogo(catalogoPlanesClub, { clave, canchas: canchasPlan });
+    const frecuencia = src?.frecuencia === 'anual' || src?.frecuencia === 'mensual' ? src.frecuencia : null;
+    return {
+      ...(base || {}),
+      clave: base?.clave || clave,
+      canchas: base?.canchas || canchasPlan,
+      nombrePlan: base?.nombrePlan || null,
+      frecuenciaFacturacion: frecuencia,
+    };
+  }, [filaBillingClub, estadoBillingClub, catalogoPlanesClub]);
+  // Plan vigente para el Panel (límite de canchas, Mi Cuenta) y plan del
+  // Onboarding (la intención del dueño manda mientras no termina el wizard).
+  const planClubSeleccionado = planContratadoClub || planLegadoClub || null;
+  const planOnboardingClub = planIntencionClub || planContratadoClub || planLegadoClub || null;
+  const tieneSuscripcionStripeViva = Boolean(
+    filaBillingClub?.stripe_subscription_id && ['active', 'trialing', 'past_due', 'unpaid'].includes(filaBillingClub?.stripe_status)
+  );
+  // Acceso efectivo: lo que dijo el servidor + vencimientos que ocurran con
+  // la app abierta (prueba o gracia que terminan entre consultas).
+  const accesoEfectivoClub = useMemo(() => {
+    if (accesoClubPermitido !== true) return accesoClubPermitido;
+    const e = estadoBillingClub;
+    if (e?.estado_efectivo === 'prueba' && e.prueba_fin && new Date(e.prueba_fin).getTime() <= relojBilling) return false;
+    if (e?.estado_efectivo === 'past_due' && e.gracia_hasta && new Date(e.gracia_hasta).getTime() <= relojBilling) return false;
+    return true;
+  }, [accesoClubPermitido, estadoBillingClub, relojBilling]);
+
   // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) —
-  // tope numérico derivado del plan snapshot de arriba (`null` = sin
-  // límite, ver `limiteCanchasDelPlan`). Memoizado para no recalcular en
-  // cada render; se reenvía tal cual a `ModuloParrillaOperativa`.
+  // tope numérico derivado del plan vigente (`null` = sin límite, ver
+  // `limiteCanchasDelPlan`). Se reenvía tal cual a `ModuloParrillaOperativa`.
   const limiteCanchasPlan = useMemo(() => limiteCanchasDelPlan(planClubSeleccionado?.canchas), [planClubSeleccionado]);
 
   // Rangos de Horario Habilitados para Clases (migracion_v30) — misma fila
@@ -62602,20 +63128,10 @@ function AppInterno({ clubInicial } = {}) {
         // undefined`, que aquí se trata igual que `true` (completado) — solo
         // un `false` explícito (club nuevo, recién creado) activa el wizard.
         setOnboardingCompletedClub(data.onboarding_completed !== false);
-        if (data.plan_canchas != null || data.plan_nombre != null || data.plan_precio_mensual != null) {
-          setPlanClubSeleccionado({
-            canchas: data.plan_canchas || null,
-            nombre: data.plan_nombre || null,
-            precioMensual: data.plan_precio_mensual != null ? Number(data.plan_precio_mensual) : null,
-          });
+        if (data.plan_canchas != null) {
+          setPlanLegadoClub({ canchas: data.plan_canchas || null, nombre: data.plan_nombre || null });
         }
-        // Periodo de Prueba / Free Trial mediante Códigos Promocionales
-        // (migracion_v84) — mismo `select('*')` de arriba, sin consulta
-        // nueva. A PROPÓSITO se guardan en su propio estado (NO dentro de
-        // `configClub`, ver el comentario donde se declaran estos 3
-        // `useState` más arriba) — en un proyecto sin esta migración, los 3
-        // campos vienen `undefined` y caen a sus defaults de siempre
-        // ('activa'/null), cero impacto.
+        // Espejo legado de la suscripción (solo lectura, ver su `useState`).
         setEstadoSuscripcionClub(data.estado_suscripcion || 'activa');
         setFechaFinPruebaClub(data.fecha_fin_prueba || null);
         setCodigoPromoUsadoClub(data.codigo_promo_usado || null);
@@ -63407,133 +63923,336 @@ function AppInterno({ clubInicial } = {}) {
     [mostrarToast, registrarEventoAuditoria, configClub]
   );
 
-  // Interactive Onboarding Canvas (migracion_v66) — Paso 1 "Selección de
-  // Plan": guarda el snapshot del plan elegido (rango de canchas, nombre,
-  // precio mensual). Sincronización Silenciosa: el estado local avanza de
-  // inmediato (nunca bloquea el wizard esperando la red) y Supabase se
-  // actualiza best-effort por debajo — un fallo aquí no debe trabar el
-  // onboarding, ya se reintentará en el guardado final de Confirmación si
-  // hace falta.
-  const guardarPlanSeleccionadoClub = useCallback(async (plan) => {
-    setPlanClubSeleccionado(plan);
-    if (!CLUB_ACTIVO_ID || !plan) return true;
+  // ---- Facturación (Fase 3 Stripe) -----------------------------------------
+  // Lee el estado REAL de la suscripción: `fn_club_acceso_permitido` decide
+  // el acceso al Panel; `fn_estado_suscripcion_club` y la fila de
+  // `club_suscripciones` alimentan Mi Cuenta, el bloqueo y el Onboarding.
+  // Si las funciones aún no existen (migración v112–v116 sin correr), la app
+  // NO bloquea a nadie (`billingNoDisponible`).
+  const cargarSuscripcionClub = useCallback(async ({ silencioso = false } = {}) => {
+    if (!CLUB_ACTIVO_ID) return null;
+    if (!silencioso) setCargandoBillingClub(true);
     try {
-      const { error } = await actualizarConColumnasOpcionales(
-        'configuracion_club',
-        CLUB_ACTIVO_ID,
-        {
-          plan_canchas: plan.canchas || null,
-          plan_nombre: plan.nombre || null,
-          plan_precio_mensual: plan.precioMensual != null ? plan.precioMensual : null,
-        },
-        ['plan_canchas', 'plan_nombre', 'plan_precio_mensual']
-      );
-      if (error) throw error;
-      return true;
+      const [rAcceso, rEstado, rFila] = await Promise.all([
+        supabase.rpc('fn_club_acceso_permitido', { p_club_id: CLUB_ACTIVO_ID }),
+        supabase.rpc('fn_estado_suscripcion_club', { p_club_id: CLUB_ACTIVO_ID }),
+        supabase
+          .from('club_suscripciones')
+          .select(
+            'club_id, estado_suscripcion, plan_clave, plan_canchas, frecuencia, stripe_subscription_id, stripe_status, codigo_prueba, es_cortesia, current_period_end, cancel_at_period_end'
+          )
+          .eq('club_id', CLUB_ACTIVO_ID)
+          .maybeSingle(),
+      ]);
+      if (rAcceso.error) throw rAcceso.error;
+      const acceso = (Array.isArray(rAcceso.data) ? rAcceso.data[0] : rAcceso.data) === true;
+      const estado = rEstado.error ? null : (Array.isArray(rEstado.data) ? rEstado.data[0] : rEstado.data) || null;
+      const fila = rFila.error ? null : rFila.data || null;
+      if (rEstado.error) console.warn('[Billing] No se pudo leer el estado de la suscripción.', rEstado.error.code || rEstado.error.message);
+      setAccesoClubPermitido(acceso);
+      setEstadoBillingClub(estado);
+      setFilaBillingClub(fila);
+      setBillingNoDisponible(false);
+      setErrorBillingClub(null);
+      setRelojBilling(Date.now());
+      setVersionBillingClub((v) => v + 1);
+      return { acceso, estado, fila };
     } catch (err) {
-      // No se interrumpe el wizard — el plan ya quedó elegido en pantalla;
-      // si Supabase no lo aceptó (columnas sin migrar, red), el paso final
-      // de "Confirmar y Activar Club" vuelve a intentar guardarlo todo.
-      // Devuelve `false` para que "Mi Cuenta & Suscripción" sí pueda avisar.
-      console.warn('[Onboarding Canvas] No se pudo guardar el plan elegido en Supabase todavía.', err);
-      return false;
+      if (esErrorTablaInexistente(err) || err?.code === '42883') {
+        console.warn('[Billing] La facturación (v112–v116) no está desplegada; el acceso no se restringe.');
+        setBillingNoDisponible(true);
+      } else {
+        console.warn('[Billing] No se pudo consultar la suscripción del club.', err?.code || err?.message);
+        setErrorBillingClub('No pudimos consultar tu suscripción. Revisa tu conexión e intenta de nuevo.');
+      }
+      return null;
+    } finally {
+      if (!silencioso) setCargandoBillingClub(false);
     }
   }, []);
 
-  // Periodo de Prueba / Free Trial mediante Códigos Promocionales
-  // (migracion_v84) — Paso 3 "Selección de Plan": se dispara cuando el dueño
-  // aplica un código válido y aprieta "Activar prueba gratuita de X días"
-  // (ver `PantallaSeleccionPlanOnboarding`). `codigoInfo` es la fila YA
-  // validada/leída de `codigos_promocionales` (id/codigo/diasPrueba/
-  // usosActuales) — esta función no vuelve a consultarla, solo la usa para
-  // calcular `fecha_fin_prueba` e incrementar `usos_actuales`. Mismo
-  // criterio de Sincronización Silenciosa que `guardarPlanSeleccionadoClub`:
-  // el estado local (`estadoSuscripcionClub`/`fechaFinPruebaClub`/
-  // `codigoPromoUsadoClub`) avanza de inmediato y NUNCA bloquea el wizard —
-  // un fallo de red aquí no debe trabar el registro de un club nuevo; si
-  // Supabase no guardó el estado "prueba", el club simplemente sigue
-  // operando como 'activa' (sin bloqueo indebido) y el dueño puede
-  // reintentar el código desde Configuración del Club más adelante.
-  const activarPruebaGratuita = useCallback(async (codigoInfo) => {
-    if (!codigoInfo?.codigo || !(Number(codigoInfo.diasPrueba) > 0)) return;
-    setActivandoPruebaGratuita(true);
-    const fechaFinPrueba = new Date(Date.now() + Number(codigoInfo.diasPrueba) * 24 * 60 * 60 * 1000).toISOString();
-    if (CLUB_ACTIVO_ID) {
-      try {
-        const { error } = await actualizarConColumnasOpcionales(
-          'configuracion_club',
-          CLUB_ACTIVO_ID,
-          {
-            estado_suscripcion: 'prueba',
-            fecha_fin_prueba: fechaFinPrueba,
-            codigo_promo_usado: codigoInfo.codigo,
-          },
-          ['estado_suscripcion', 'fecha_fin_prueba', 'codigo_promo_usado']
-        );
-        if (error) throw error;
-      } catch (err) {
-        console.warn('[Onboarding Canvas] No se pudo activar la prueba gratuita en Supabase todavía.', err);
-      }
-      // Incremento de `usos_actuales` — best-effort, igual criterio que el
-      // resto de esta función: un código "gastado de más" por una
-      // condición de carrera rarísima es preferible a trabar el registro de
-      // un club nuevo por un error de red en un contador.
-      try {
-        const { error: errorIncremento } = await supabase
-          .from('codigos_promocionales')
-          .update({ usos_actuales: Number(codigoInfo.usosActuales || 0) + 1 })
-          .eq('id', codigoInfo.id);
-        if (errorIncremento) throw errorIncremento;
-      } catch (err) {
-        console.warn('[Onboarding Canvas] No se pudo incrementar usos_actuales del código promocional.', err);
-      }
-    }
-    setEstadoSuscripcionClub('prueba');
-    setFechaFinPruebaClub(fechaFinPrueba);
-    setCodigoPromoUsadoClub(codigoInfo.codigo);
-    setActivandoPruebaGratuita(false);
+  const montadoBillingRef = useRef(true);
+  useEffect(() => {
+    montadoBillingRef.current = true;
+    return () => {
+      montadoBillingRef.current = false;
+    };
   }, []);
 
-  // Interactive Onboarding Canvas (migracion_v66) — Paso 4 "Confirmación":
-  // marca `onboarding_completed: true` (además de re-confirmar el plan, por
-  // si el guardado del Paso 1 no había llegado a Supabase) — este es el
-  // ÚNICO punto donde `AppInterno` deja de mostrar `OnboardingCanvasClub` y
-  // pasa al Panel Operativo normal. Mock de pasarela de pago: hoy no cobra
-  // nada real — `plan_activado_en` queda como el snapshot de cuándo se
-  // "activó" la cuenta, listo para que una integración de Stripe futura lo
-  // sustituya por una confirmación real de pago ANTES de este punto (ver el
-  // comentario del botón "Confirmar y Activar Club" en
-  // `PantallaConfirmacionOnboarding`).
+  useEffect(() => {
+    cargarSuscripcionClub();
+  }, [cargarSuscripcionClub]);
+
+  // Refresco: al volver a la pestaña, cada 5 min, y un "reloj" de 1 min para
+  // que una prueba/gracia que vence con la app abierta bloquee a tiempo.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const alVolver = () => {
+      if (document.visibilityState === 'visible') cargarSuscripcionClub({ silencioso: true });
+    };
+    document.addEventListener('visibilitychange', alVolver);
+    const refresco = setInterval(() => cargarSuscripcionClub({ silencioso: true }), 5 * 60 * 1000);
+    const reloj = setInterval(() => setRelojBilling(Date.now()), 60 * 1000);
+    return () => {
+      document.removeEventListener('visibilitychange', alVolver);
+      clearInterval(refresco);
+      clearInterval(reloj);
+    };
+  }, [cargarSuscripcionClub]);
+
+  // Primer intento fallido (red): reintento cada 30 s hasta tener respuesta.
+  useEffect(() => {
+    if (!errorBillingClub || accesoClubPermitido !== null) return undefined;
+    const id = setTimeout(() => cargarSuscripcionClub({ silencioso: true }), 30 * 1000);
+    return () => clearTimeout(id);
+  }, [errorBillingClub, accesoClubPermitido, cargarSuscripcionClub]);
+
+  const marcarOnboardingCompletado = useCallback(async () => {
+    if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
+    const { error } = await actualizarConColumnasOpcionales('configuracion_club', CLUB_ACTIVO_ID, { onboarding_completed: true }, ['onboarding_completed']);
+    if (error) throw error;
+  }, []);
+
+  const abrirPortalSuscripcion = useCallback(
+    async ({ alFallarSinCliente } = {}) => {
+      if (!CLUB_ACTIVO_ID) return false;
+      setProcesandoBilling('portal');
+      const { data, error } = await solicitarPortalSuscripcion({ clubId: CLUB_ACTIVO_ID });
+      if (error) {
+        setProcesandoBilling(null);
+        if (error.codigo === 'sin_cliente_stripe') {
+          mostrarToast({
+            titulo: 'Aún no tienes un método de pago',
+            detalle: 'Elige un plan para activar tu suscripción con tarjeta.',
+            tono: 'aviso',
+          });
+          alFallarSinCliente?.();
+          return false;
+        }
+        mostrarToast({ titulo: 'No se pudo abrir el portal', detalle: error.mensaje, tono: 'error' });
+        return false;
+      }
+      window.location.assign(data.url);
+      return true;
+    },
+    [mostrarToast]
+  );
+
+  // Stripe Checkout de la suscripción. El precio se toma SIEMPRE del
+  // catálogo del servidor (`billing_precios`); el navegador solo dice qué
+  // plan/frecuencia quiere. Devuelve `true` mientras redirige.
+  const iniciarCheckoutSuscripcion = useCallback(
+    async (plan, frecuencia, { couponId = null } = {}) => {
+      if (!CLUB_ACTIVO_ID) return false;
+      setProcesandoBilling('checkout');
+      try {
+        const catalogo = await cargarCatalogoPlanesQlubos();
+        const base = planDelCatalogo(catalogo, { clave: plan?.clave, canchas: plan?.canchas });
+        const freq = frecuencia === 'anual' ? 'anual' : 'mensual';
+        const priceId = priceIdDelPlan(base, freq);
+        if (!priceId) throw new Error('Este plan todavía no está habilitado para pago en línea. Escríbenos a soporte QLUBOS.');
+        const { data, error } = await solicitarCheckoutSuscripcion({ clubId: CLUB_ACTIVO_ID, priceId, couponId });
+        if (error) {
+          if (error.codigo === 'suscripcion_existente') {
+            mostrarToast({ titulo: 'Ya tienes una suscripción', detalle: 'Te llevamos al portal de Stripe para gestionarla.', tono: 'aviso' });
+            setProcesandoBilling(null);
+            return abrirPortalSuscripcion();
+          }
+          throw new Error(error.mensaje);
+        }
+        window.location.assign(data.url);
+        return true;
+      } catch (err) {
+        console.warn('[Billing] No se pudo iniciar el Checkout.', err?.message);
+        mostrarToast({ titulo: 'No se pudo iniciar el pago', detalle: err?.message || 'Intenta de nuevo en unos segundos.', tono: 'error' });
+        setProcesandoBilling(null);
+        return false;
+      }
+    },
+    [mostrarToast, abrirPortalSuscripcion]
+  );
+
+  // "Cambiar / Elegir plan" (Mi Cuenta y tope de canchas): con suscripción
+  // viva en Stripe el cambio se hace en el Customer Portal (prorrateo); sin
+  // ella, Checkout con el plan elegido.
+  const cambiarPlanSuscripcion = useCallback(
+    async (plan) => {
+      if (tieneSuscripcionStripeViva) return abrirPortalSuscripcion();
+      if (!plan) return false;
+      return iniciarCheckoutSuscripcion(plan, plan.frecuenciaFacturacion);
+    },
+    [tieneSuscripcionStripeViva, abrirPortalSuscripcion, iniciarCheckoutSuscripcion]
+  );
+
+  // Canje de código de prueba / soporte (`fn_canjear_codigo_prueba`):
+  // atómico y validado en el servidor (dueño, una prueba por club, usos).
+  const canjearCodigoSuscripcion = useCallback(
+    async (codigo, planClave = null) => {
+      if (!CLUB_ACTIVO_ID) return { ok: false, mensaje: 'No hay un club activo en esta sesión.' };
+      const { data, error } = await supabase.rpc('fn_canjear_codigo_prueba', {
+        p_club_id: CLUB_ACTIVO_ID,
+        p_codigo: String(codigo || '').trim().toUpperCase(),
+        p_plan_clave: planClave || null,
+      });
+      if (error) {
+        console.warn('[Billing] Canje de código rechazado.', error.code || error.message);
+        return { ok: false, mensaje: mensajeErrorRpcBilling(error, 'Ese código no es válido o ya no está disponible.') };
+      }
+      const r = (Array.isArray(data) ? data[0] : data) || {};
+      await cargarSuscripcionClub({ silencioso: true });
+      return { ok: true, dias: Number(r.dias_prueba) || null, pruebaFin: r.prueba_fin || null };
+    },
+    [cargarSuscripcionClub]
+  );
+
+  const canjearCodigoDesdeBloqueo = useCallback(
+    async (codigo) => {
+      setProcesandoBilling('codigo');
+      const r = await canjearCodigoSuscripcion(codigo, planClubSeleccionado?.clave || planIntencionClub?.clave || null);
+      setProcesandoBilling(null);
+      if (r.ok) {
+        mostrarToast({ titulo: '¡Código aplicado!', detalle: r.dias ? `Prueba gratuita de ${r.dias} días activada.` : 'Tu club ya puede operar.' });
+      }
+      return r;
+    },
+    [canjearCodigoSuscripcion, planClubSeleccionado, planIntencionClub, mostrarToast]
+  );
+
+  const verificarSuscripcionDeNuevo = useCallback(async () => {
+    setProcesandoBilling('verificar');
+    const r = await cargarSuscripcionClub();
+    setProcesandoBilling(null);
+    if (r && !r.acceso) {
+      mostrarToast({ titulo: 'Aún sin pago confirmado', detalle: 'Si acabas de pagar, espera unos segundos y vuelve a verificar.', tono: 'aviso' });
+    }
+  }, [cargarSuscripcionClub, mostrarToast]);
+
+  // Regreso de Stripe Checkout (`?billing=exito`): espera a que el webhook
+  // sincronice `club_suscripciones` (sondeo cada 2 s, hasta ~60 s).
+  const onboardingCompletedRef = useRef(onboardingCompletedClub);
+  onboardingCompletedRef.current = onboardingCompletedClub;
+  const verificarPagoConfirmado = useCallback(async () => {
+    setConfirmacionPagoBilling('esperando');
+    for (let intento = 0; intento < 30; intento += 1) {
+      if (!montadoBillingRef.current) return false;
+      const r = await cargarSuscripcionClub({ silencioso: true });
+      const confirmado = Boolean(r && r.acceso && (r.fila ? r.fila.stripe_subscription_id : r.estado?.tiene_cliente_stripe));
+      if (confirmado) {
+        if (!onboardingCompletedRef.current) {
+          try {
+            await marcarOnboardingCompletado();
+          } catch (err) {
+            console.warn('[Billing] No se pudo marcar el Onboarding como completado.', err?.message);
+          }
+          setOnboardingCompletedClub(true);
+        }
+        guardarIntencionPlanSesion(CLUB_ACTIVO_ID, null);
+        setConfirmacionPagoBilling(null);
+        mostrarToast({ titulo: '¡Pago confirmado!', detalle: 'Tu suscripción QLUBOS está activa.' });
+        return true;
+      }
+      await new Promise((resolver) => setTimeout(resolver, 2000));
+    }
+    if (montadoBillingRef.current) setConfirmacionPagoBilling('tardando');
+    return false;
+  }, [cargarSuscripcionClub, marcarOnboardingCompletado, mostrarToast]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const resultado = params.get('billing');
+    if (!resultado) return;
+    params.delete('billing');
+    params.delete('session_id');
+    const resto = params.toString();
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${resto ? `?${resto}` : ''}${window.location.hash}`);
+    if (resultado === 'exito') {
+      verificarPagoConfirmado();
+    } else if (resultado === 'cancelado') {
+      mostrarToast({ titulo: 'Pago cancelado', detalle: 'No se realizó ningún cargo. Puedes activarlo cuando quieras.', tono: 'aviso' });
+    } else if (resultado === 'portal') {
+      cargarSuscripcionClub({ silencioso: true });
+      mostrarToast({ titulo: 'Suscripción actualizada', detalle: 'Sincronizando los cambios hechos en Stripe…' });
+    }
+    // Solo al montar: la URL de regreso se consume una vez.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Interactive Onboarding Canvas — "Selección de Plan": solo guarda la
+  // INTENCIÓN (memoria + sessionStorage). Nada se escribe en Supabase.
+  const guardarPlanSeleccionadoClub = useCallback(async (plan) => {
+    setPlanIntencionClub(plan || null);
+    guardarIntencionPlanSesion(CLUB_ACTIVO_ID, plan || null);
+    return true;
+  }, []);
+
+  // Onboarding — "Activar prueba gratuita de X días": canje por RPC. Devuelve
+  // `false` (y avisa) si el servidor lo rechaza, para que el wizard no avance.
+  const activarPruebaGratuita = useCallback(
+    async (codigoInfo) => {
+      if (!codigoInfo?.codigo) return false;
+      setActivandoPruebaGratuita(true);
+      const r = await canjearCodigoSuscripcion(codigoInfo.codigo, planIntencionClub?.clave || null);
+      setActivandoPruebaGratuita(false);
+      if (!r.ok) {
+        mostrarToast({ titulo: 'No se pudo activar la prueba', detalle: r.mensaje, tono: 'error' });
+        return false;
+      }
+      mostrarToast({ titulo: '¡Prueba activada!', detalle: `${r.dias || codigoInfo.diasPrueba} días de QLUBOS sin costo, sin tarjeta.` });
+      return true;
+    },
+    [canjearCodigoSuscripcion, planIntencionClub, mostrarToast]
+  );
+
+  // Onboarding — Paso final. Con acceso vigente (prueba/cortesía) solo marca
+  // `onboarding_completed`. Sin acceso abre Stripe Checkout con el plan
+  // elegido (cupón Fundador en mensual); `onboarding_completed` se marca
+  // justo antes de redirigir para que, al volver, el club caiga en el
+  // overlay de confirmación (o en la pantalla de bloqueo si canceló).
   const finalizarOnboardingClub = useCallback(async () => {
     setGuardandoActivacionOnboarding(true);
     try {
       if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
-      const { error } = await actualizarConColumnasOpcionales(
-        'configuracion_club',
-        CLUB_ACTIVO_ID,
-        {
-          onboarding_completed: true,
-          plan_canchas: planClubSeleccionado?.canchas || null,
-          plan_nombre: planClubSeleccionado?.nombre || null,
-          plan_precio_mensual: planClubSeleccionado?.precioMensual != null ? planClubSeleccionado.precioMensual : null,
-          plan_activado_en: new Date().toISOString(),
-        },
-        ['onboarding_completed', 'plan_canchas', 'plan_nombre', 'plan_precio_mensual', 'plan_activado_en']
-      );
-      if (error) throw error;
-      setOnboardingCompletedClub(true);
-      mostrarToast({ titulo: '¡Club activado!', detalle: 'La configuración inicial quedó lista — bienvenido a tu Panel Operativo.' });
+      if (accesoEfectivoClub === true || billingNoDisponible) {
+        await marcarOnboardingCompletado();
+        setOnboardingCompletedClub(true);
+        mostrarToast({ titulo: '¡Club activado!', detalle: 'La configuración inicial quedó lista — bienvenido a tu Panel Operativo.' });
+        setGuardandoActivacionOnboarding(false);
+        return;
+      }
+      const plan = planOnboardingClub;
+      if (!plan?.clave && !plan?.canchas) throw new Error('Elige tu plan antes de activar tu club.');
+      const catalogo = await cargarCatalogoPlanesQlubos();
+      const base = planDelCatalogo(catalogo, { clave: plan.clave, canchas: plan.canchas });
+      const frecuencia = plan.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual';
+      const priceId = priceIdDelPlan(base, frecuencia);
+      if (!priceId) throw new Error('Este plan todavía no está habilitado para pago en línea. Escríbenos a soporte QLUBOS.');
+      const couponId = frecuencia === PROMO_FUNDADOR_QLUBOS.frecuencia ? PROMO_FUNDADOR_QLUBOS.couponId : null;
+      const { data, error } = await solicitarCheckoutSuscripcion({ clubId: CLUB_ACTIVO_ID, priceId, couponId });
+      if (error) {
+        if (error.codigo === 'suscripcion_existente') {
+          await marcarOnboardingCompletado().catch(() => {});
+          setOnboardingCompletedClub(true);
+          await cargarSuscripcionClub({ silencioso: true });
+          mostrarToast({ titulo: 'Tu club ya tiene una suscripción', detalle: 'La administras desde Mi Cuenta & Suscripción.', tono: 'aviso' });
+          setGuardandoActivacionOnboarding(false);
+          return;
+        }
+        throw new Error(error.mensaje);
+      }
+      try {
+        await marcarOnboardingCompletado();
+      } catch (err) {
+        console.warn('[Onboarding Canvas] No se pudo marcar el Onboarding antes del pago; se reintenta al confirmar.', err?.message);
+      }
+      window.location.assign(data.url);
+      // Se queda en "Abriendo pago seguro…" mientras el navegador redirige.
     } catch (err) {
-      // Aquí SÍ se avisa con un toast de error (a diferencia del guardado
-      // silencioso del Paso 1): este es el paso que de verdad "abre la
-      // puerta" al panel — si falla, el dueño del club se queda en la
-      // pantalla de Confirmación para reintentar, en vez de quedar varado
-      // sin saber por qué nunca entra a su panel.
-      console.warn('[Onboarding Canvas] No se pudo activar el club.', err);
+      console.warn('[Onboarding Canvas] No se pudo activar el club.', err?.message);
       mostrarToast({ titulo: 'No se pudo activar el club', detalle: err?.message || 'Intenta de nuevo en unos segundos.', tono: 'error' });
+      setGuardandoActivacionOnboarding(false);
     }
-    setGuardandoActivacionOnboarding(false);
-  }, [planClubSeleccionado, mostrarToast]);
+  }, [accesoEfectivoClub, billingNoDisponible, planOnboardingClub, marcarOnboardingCompletado, cargarSuscripcionClub, mostrarToast]);
 
   // Configuración de Canchas (Onboarding) — guardado MASIVO del borrador de
   // `PantallaCanchasOnboarding` al presionar "Continuar". Compara el borrador
@@ -63555,7 +64274,7 @@ function AppInterno({ clubInicial } = {}) {
       try {
         if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
         const lista = Array.isArray(borrador) ? borrador : [];
-        const maximoPlanCanchas = maximoCanchasDelPlan(planClubSeleccionado);
+        const maximoPlanCanchas = maximoCanchasDelPlan(planOnboardingClub);
         if (maximoPlanCanchas !== null && lista.length > maximoPlanCanchas) {
           throw new Error(`Tu plan permite hasta ${maximoPlanCanchas} canchas.`);
         }
@@ -63634,46 +64353,7 @@ function AppInterno({ clubInicial } = {}) {
         setGuardandoCanchasOnboarding(false);
       }
     },
-    [canchas, planClubSeleccionado, mostrarToast]
-  );
-
-  // Periodo de Prueba / Free Trial mediante Códigos Promocionales
-  // (migracion_v84) — "Tu periodo de prueba ha finalizado"
-  // (`PantallaPruebaVencida`, bloqueo global del layout principal del Panel
-  // de Administración, ver `AppInterno` más abajo): el dueño ingresa su
-  // tarjeta (mock, mismo placeholder "listo para Stripe" que
-  // `finalizarOnboardingClub`/`PantallaConfirmacionOnboarding` — HOY no se
-  // cobra nada real) y esta función SOLO cambia `estado_suscripcion` de
-  // vuelta a 'activa' (opcionalmente actualiza el plan si el dueño cambió de
-  // tier al reactivar) — nunca toca/borra ningún dato operativo del club
-  // (canchas, reservas, jugadores, ventas, etc.), tal como pide la
-  // especificación ("restaurar el acceso sin perder ningún dato
-  // configurado").
-  const restaurarAccesoClub = useCallback(
-    async (plan) => {
-      setRestaurandoAccesoClub(true);
-      try {
-        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
-        const payload = { estado_suscripcion: 'activa' };
-        const columnasOpcionales = ['estado_suscripcion'];
-        if (plan) {
-          payload.plan_canchas = plan.canchas || null;
-          payload.plan_nombre = plan.nombre || null;
-          payload.plan_precio_mensual = plan.precioMensual != null ? plan.precioMensual : null;
-          columnasOpcionales.push('plan_canchas', 'plan_nombre', 'plan_precio_mensual');
-        }
-        const { error } = await actualizarConColumnasOpcionales('configuracion_club', CLUB_ACTIVO_ID, payload, columnasOpcionales);
-        if (error) throw error;
-        setEstadoSuscripcionClub('activa');
-        if (plan) setPlanClubSeleccionado(plan);
-        mostrarToast({ titulo: '¡Acceso restaurado!', detalle: 'Tu club sigue exactamente como lo configuraste — ningún dato se perdió.' });
-      } catch (err) {
-        console.warn('[Panel] No se pudo restaurar el acceso del club.', err);
-        mostrarToast({ titulo: 'No se pudo restaurar el acceso', detalle: err?.message || 'Intenta de nuevo en unos segundos.', tono: 'error' });
-      }
-      setRestaurandoAccesoClub(false);
-    },
-    [mostrarToast]
+    [canchas, planOnboardingClub, mostrarToast]
   );
 
   useEffect(() => {
@@ -65096,6 +65776,28 @@ function AppInterno({ clubInicial } = {}) {
   // — nunca cambia dentro de la MISMA fase (ej. el Panel Operativo
   // renderizando módulos distintos NO retriggerea esta animación, solo los
   // 3 cambios de fase en sí).
+  // Fase 3 Stripe — derivados para los gates de abajo.
+  const clubEnPrueba = billingNoDisponible
+    ? estadoSuscripcionClub === 'prueba' && Boolean(fechaFinPruebaClub) && Date.now() < new Date(fechaFinPruebaClub).getTime()
+    : estadoBillingClub?.estado_efectivo === 'prueba';
+  const finPruebaClub = billingNoDisponible ? fechaFinPruebaClub : estadoBillingClub?.prueba_fin || null;
+  const codigoPruebaClub = filaBillingClub?.codigo_prueba || codigoPromoUsadoClub;
+  const verificandoAccesoClub = accesoClubPermitido === null && !billingNoDisponible && !errorBillingClub;
+  const clubBloqueadoPorSuscripcion = !billingNoDisponible && accesoEfectivoClub === false && confirmacionPagoBilling !== 'esperando';
+  const billingClubCtx = {
+    estado: estadoBillingClub,
+    fila: filaBillingClub,
+    planContratado: planContratadoClub,
+    tieneSuscripcionStripeViva,
+    cargando: cargandoBillingClub,
+    error: billingNoDisponible ? 'La facturación todavía no está habilitada en este proyecto.' : errorBillingClub,
+    version: versionBillingClub,
+    procesando: procesandoBilling,
+    recargar: () => cargarSuscripcionClub(),
+    abrirPortal: abrirPortalSuscripcion,
+    cambiarPlan: cambiarPlanSuscripcion,
+  };
+
   let contenido;
   let faseEntrada = 'panel';
 
@@ -65167,7 +65869,7 @@ function AppInterno({ clubInicial } = {}) {
       <ToastContext.Provider value={mostrarToast}>
         <OnboardingCanvasClub
           nombreClub={configClub?.nombre}
-          planSeleccionado={planClubSeleccionado}
+          planSeleccionado={planOnboardingClub}
           onSeleccionarPlan={guardarPlanSeleccionadoClub}
           guardandoActivacion={guardandoActivacionOnboarding}
           onConfirmarActivacion={finalizarOnboardingClub}
@@ -65177,8 +65879,10 @@ function AppInterno({ clubInicial } = {}) {
           canchas={canchas}
           onGuardarCanchas={guardarCanchasOnboarding}
           guardandoCanchas={guardandoCanchasOnboarding}
-          omitirPlan={codigoPromoUsadoClub === CODIGO_PRUEBA_CRM_LEAD && estadoSuscripcionClub === 'prueba'}
-          fechaFinPrueba={fechaFinPruebaClub}
+          omitirPlan={codigoPruebaClub === CODIGO_PRUEBA_CRM_LEAD && clubEnPrueba}
+          fechaFinPrueba={clubEnPrueba ? finPruebaClub : null}
+          accesoPermitido={accesoEfectivoClub === true || billingNoDisponible}
+          etapaInicial={etapaInicialOnboarding}
         />
         <ToastHost toasts={toasts} />
       </ToastContext.Provider>
@@ -65191,6 +65895,34 @@ function AppInterno({ clubInicial } = {}) {
     // `PantallaKiosko`, ya no hay ningún bypass). Sigue envuelto en
     // `ToastContext.Provider` + `ToastHost` para que "PIN creado"/errores de
     // carga de `empleados` se vean igual que en el resto de la app.
+  } else if (verificandoAccesoClub) {
+    // Fase 3 Stripe — primera consulta de `fn_club_acceso_permitido` en
+    // curso: pantalla neutra (ni Kiosko ni Panel) para no mostrar nada de
+    // un club que podría estar bloqueado.
+    faseEntrada = 'verificando-suscripcion';
+    contenido = <PantallaVerificandoSuscripcion />;
+  } else if (clubBloqueadoPorSuscripcion) {
+    // Fase 3 Stripe — CONTROL DE ACCESO: `fn_club_acceso_permitido` = false
+    // (prueba vencida, bloqueada/cancelada o past_due sin gracia). Gate MÁS
+    // ALTO que el Kiosko/PIN: ni la Terminal de Operadores ni el Panel
+    // operan sin suscripción vigente. Reemplaza a `PantallaPruebaVencida`.
+    faseEntrada = 'bloqueo-suscripcion';
+    contenido = (
+      <ToastContext.Provider value={mostrarToast}>
+        <PantallaBloqueoSuscripcion
+          nombreClub={configClub?.nombre}
+          estado={estadoBillingClub}
+          planActual={planClubSeleccionado || planIntencionClub}
+          procesando={procesandoBilling}
+          onPagar={(plan, frecuencia) => iniciarCheckoutSuscripcion(plan, frecuencia)}
+          onAbrirPortal={() => abrirPortalSuscripcion()}
+          onCanjearCodigo={canjearCodigoDesdeBloqueo}
+          onVerificar={verificarSuscripcionDeNuevo}
+          onCerrarSesion={cerrarSesionClub}
+        />
+        <ToastHost toasts={toasts} />
+      </ToastContext.Provider>
+    );
   } else if (!hayColaboradorFichado) {
     faseEntrada = 'kiosko';
     contenido = (
@@ -65204,31 +65936,6 @@ function AppInterno({ clubInicial } = {}) {
           onEntrarComoColaborador={entrarComoColaborador}
           onCrearPinColaborador={crearPinColaborador}
           onCerrarSesionMaster={cerrarSesionClub}
-        />
-        <ToastHost toasts={toasts} />
-      </ToastContext.Provider>
-    );
-  } else if (estadoSuscripcionClub === 'prueba' && fechaFinPruebaClub && Date.now() > new Date(fechaFinPruebaClub).getTime()) {
-    // Periodo de Prueba / Free Trial mediante Códigos Promocionales
-    // (migracion_v84) — verificación GLOBAL de vencimiento, más alta que el
-    // router de módulos del Panel: gatea TODO el layout principal del Panel
-    // de Administración del Club (Sidebar/TopHeader/módulos, el `else` de
-    // abajo) en cuanto la prueba vence, sin importar en qué módulo estuviera
-    // el dueño — exactamente "el layout principal del Panel de
-    // Administración del Club" que pide la especificación. El Kiosko/PIN
-    // (arriba) NO queda bloqueado a propósito: el candado es del Panel
-    // Admin, no de la Terminal de Operadores. `PantallaPruebaVencida` SOLO
-    // cambia `estado_suscripcion` al reactivar (`restaurarAccesoClub`) —
-    // ningún dato operativo del club se toca ni se pierde mientras está
-    // bloqueado.
-    faseEntrada = 'prueba-vencida';
-    contenido = (
-      <ToastContext.Provider value={mostrarToast}>
-        <PantallaPruebaVencida
-          nombreClub={configClub?.nombre}
-          planActual={planClubSeleccionado}
-          restaurando={restaurandoAccesoClub}
-          onRestaurarAcceso={restaurarAccesoClub}
         />
         <ToastHost toasts={toasts} />
       </ToastContext.Provider>
@@ -65294,7 +66001,7 @@ function AppInterno({ clubInicial } = {}) {
                 tarifasHorarios={tarifasHorarios}
                 limiteCanchasPlan={limiteCanchasPlan}
                 planActual={planClubSeleccionado}
-                onCambiarPlan={guardarPlanSeleccionadoClub}
+                onCambiarPlan={cambiarPlanSuscripcion}
                 onCancelarClaseDesdeParrilla={irACancelarClaseDesdeParrilla}
                 retas={retas}
                 inscripcionesRetas={inscripciones}
@@ -65627,8 +66334,6 @@ function AppInterno({ clubInicial } = {}) {
                 nombreClub={configClub?.nombre}
                 onEliminarClub={eliminarClub}
                 eliminandoClub={eliminandoClub}
-                planClubSeleccionado={planClubSeleccionado}
-                onGuardarPlanSeleccionado={guardarPlanSeleccionadoClub}
                 rangosHorarioClases={rangosHorarioClases}
                 onGuardarRangosHorarioClases={guardarRangosHorarioClases}
                 guardandoRangosHorarioClases={guardandoRangosHorarioClases}
@@ -65684,18 +66389,27 @@ function AppInterno({ clubInicial } = {}) {
   }
 
   return (
-    <AnimatePresence mode="wait" initial={false}>
-      <motion.div
-        key={faseEntrada}
-        variants={VARIANTES_IMPACTO_ENTRADA}
-        initial="enter"
-        animate="center"
-        exit="exit"
-        transition={{ duration: 0.45, ease: 'easeInOut' }}
-      >
-        {contenido}
-      </motion.div>
-    </AnimatePresence>
+    <BillingClubContext.Provider value={billingClubCtx}>
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={faseEntrada}
+          variants={VARIANTES_IMPACTO_ENTRADA}
+          initial="enter"
+          animate="center"
+          exit="exit"
+          transition={{ duration: 0.45, ease: 'easeInOut' }}
+        >
+          {contenido}
+        </motion.div>
+      </AnimatePresence>
+      {confirmacionPagoBilling && (
+        <OverlayConfirmacionPagoBilling
+          fase={confirmacionPagoBilling}
+          onReintentar={verificarPagoConfirmado}
+          onCerrar={() => setConfirmacionPagoBilling(null)}
+        />
+      )}
+    </BillingClubContext.Provider>
   );
 }
 
