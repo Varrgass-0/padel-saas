@@ -48317,9 +48317,9 @@ function SeccionOperadoresStaff({ empleados, onCrearEmpleado, onRegistrarGuardad
 // Los PRECIOS ya no viven en el código: se leen de `billing_precios` (tabla
 // pública de solo lectura, migración v113), la misma que valida
 // `billing-checkout` en el servidor. Aquí solo queda metadata visual por plan
-// (ícono y descripción) y la promo "Precio Fundador" (cupón FUNDADOR15 de
-// Stripe, solo planes mensuales) — el descuento real lo aplica Stripe; el
-// número que se muestra es solo la referencia (precio mensual × 0.85).
+// (ícono y descripción). La promo "Precio Fundador" (solo planes mensuales)
+// se enciende/apaga desde Supabase (`usePromoFundador`, abajo); el descuento
+// real lo aplica Stripe y el número que se muestra es solo la referencia.
 //
 // Seguridad (PCI): el navegador NUNCA captura datos de tarjeta ni escribe
 // `estado_suscripcion`/`fecha_fin_prueba`/`codigo_promo_usado`. Todo pago va
@@ -48333,9 +48333,70 @@ const METADATA_PLANES_QLUBOS = {
   pro: { cuadros: 8, descripcion: 'Optimizado para complejos de gran escala.' },
 };
 
-// Promo de lanzamiento (no es un precio): el cupón vive en Stripe y el
-// servidor lo valida contra su lista blanca (`STRIPE_CUPONES_PERMITIDOS`).
-const PROMO_FUNDADOR_QLUBOS = { couponId: 'FUNDADOR15', porcentaje: 15, meses: 6, frecuencia: 'mensual' };
+// ---- Precio Fundador DINÁMICO ----------------------------------------------
+// La promo de bienvenida se enciende/apaga desde Supabase:
+// `billing_parametros.cupon_bienvenida_activo` (valor = cupón de Stripe,
+// vacío = sin promo). El navegador no puede leer esa tabla; la consulta por la
+// RPC pública `fn_cupon_bienvenida_activo()` (v119), que solo dice si está
+// activa y su % / meses — nunca el ID del cupón. El descuento REAL lo decide
+// y aplica `billing-checkout` con el mismo parámetro; aquí solo se muestra.
+// Solo aplica a planes mensuales (igual que en el servidor). Si la RPC falla
+// o no existe, se muestran precios regulares: nunca se promete un descuento
+// que no está confirmado.
+const PROMO_FUNDADOR_INACTIVA = { activo: false, porcentaje: 0, meses: 0, frecuencia: 'mensual' };
+const PROMO_FUNDADOR_TTL_MS = 60 * 1000;
+let _promoFundadorCache = { en: 0, valor: null, promesa: null };
+
+function normalizarPromoFundador(dato) {
+  const d = Array.isArray(dato) ? dato[0] : dato;
+  const porcentaje = Number(d?.porcentaje);
+  const meses = Number(d?.meses);
+  if (!d || d.activo !== true || !(porcentaje > 0 && porcentaje < 100)) return PROMO_FUNDADOR_INACTIVA;
+  return { activo: true, porcentaje, meses: meses > 0 ? Math.round(meses) : null, frecuencia: 'mensual' };
+}
+
+async function cargarPromoFundador({ forzar = false } = {}) {
+  const ahora = Date.now();
+  if (!forzar && _promoFundadorCache.valor && ahora - _promoFundadorCache.en < PROMO_FUNDADOR_TTL_MS) return _promoFundadorCache.valor;
+  if (!forzar && _promoFundadorCache.promesa) return _promoFundadorCache.promesa;
+  const promesa = (async () => {
+    let valor = PROMO_FUNDADOR_INACTIVA;
+    try {
+      const limite = new Promise((resolver) => setTimeout(() => resolver({ data: null, error: { message: 'timeout' } }), 8000));
+      const { data, error } = await Promise.race([supabase.rpc('fn_cupon_bienvenida_activo'), limite]);
+      if (error) throw error;
+      valor = normalizarPromoFundador(data);
+    } catch (err) {
+      console.warn('[Billing] No se pudo consultar el Precio Fundador; se muestran precios regulares.', err?.code || err?.message);
+    }
+    _promoFundadorCache = { en: Date.now(), valor, promesa: null };
+    return valor;
+  })();
+  _promoFundadorCache = { ..._promoFundadorCache, promesa };
+  return promesa;
+}
+
+function usePromoFundador() {
+  const [estado, setEstado] = useState(() => ({ promo: _promoFundadorCache.valor || PROMO_FUNDADOR_INACTIVA, cargando: !_promoFundadorCache.valor }));
+  useEffect(() => {
+    let vivo = true;
+    cargarPromoFundador().then((promo) => {
+      if (vivo) setEstado({ promo, cargando: false });
+    });
+    return () => {
+      vivo = false;
+    };
+  }, []);
+  return estado;
+}
+
+function promoFundadorAplica(promo, frecuencia) {
+  return Boolean(promo?.activo && frecuencia === promo.frecuencia);
+}
+
+function textoPromoFundador(promo) {
+  return `${promo.porcentaje}% OFF — Precio Fundador${promo.meses ? ` (${promo.meses} ${promo.meses === 1 ? 'mes' : 'meses'})` : ''}`;
+}
 
 const CLAVE_INTENCION_PLAN = 'qlubos_plan_intencion_v1';
 const CATALOGO_PLANES_TTL_MS = 5 * 60 * 1000;
@@ -48384,7 +48445,6 @@ function construirCatalogoPlanes(filas) {
         cuadros: meta.cuadros,
         descripcion: meta.descripcion,
         precioMensual: mensual,
-        precioFundadorMensual: mensual != null ? Math.round(mensual * (1 - PROMO_FUNDADOR_QLUBOS.porcentaje / 100)) : null,
         precioAnualMensual: anual != null ? Math.round(anual / 12) : null,
         precioAnualTotal: anual,
         priceIdMensual: p.mensual?.priceId || null,
@@ -48465,12 +48525,15 @@ function planDelCatalogo(planes, { clave = null, canchas = null } = {}) {
 }
 
 // Precio vigente de un plan según la frecuencia del Toggle (`'mensual'` |
-// `'anual'`) CON la promo Fundador (solo Onboarding). `mensual` = lo que se
-// paga por mes; `tachado` = precio de lista (solo mensual); `totalAnual` =
-// monto facturado una vez al año (solo anual).
-function precioPlanSegunFrecuencia(plan, frecuencia) {
+// `'anual'`) y la promo Fundador ACTIVA (solo Onboarding, ver
+// `usePromoFundador`). `mensual` = lo que se paga por mes; `tachado` = precio
+// de lista (solo con promo); `totalAnual` = monto facturado una vez al año.
+function precioPlanSegunFrecuencia(plan, frecuencia, promo = null) {
   if (frecuencia === 'anual') return { mensual: plan.precioAnualMensual, tachado: null, totalAnual: plan.precioAnualTotal };
-  return { mensual: plan.precioFundadorMensual, tachado: plan.precioMensual, totalAnual: null };
+  if (promoFundadorAplica(promo, frecuencia) && plan.precioMensual != null) {
+    return { mensual: Math.round(plan.precioMensual * (1 - promo.porcentaje / 100)), tachado: plan.precioMensual, totalAnual: null };
+  }
+  return { mensual: plan.precioMensual, tachado: null, totalAnual: null };
 }
 
 // Precio REGULAR (sin promo Fundador) — pantalla de bloqueo y "Cambiar Plan".
@@ -48899,6 +48962,10 @@ function PantallaSeleccionPlanOnboarding({
   // Catálogo real de `billing_precios` (Fase 3 Stripe): sin precios en duro.
   const { planes, cargando: cargandoPlanes, error: errorPlanes, recargar: recargarPlanes } = useCatalogoPlanesQlubos();
   const ahorroAnualPct = useMemo(() => ahorroAnualCatalogo(planes), [planes]);
+  // Precio Fundador dinámico (`billing_parametros.cupon_bienvenida_activo`):
+  // mientras se consulta, las tarjetas esperan (no se muestra un descuento
+  // que luego desaparezca).
+  const { promo: promoFundador, cargando: cargandoPromo } = usePromoFundador();
   // Código de prueba: "Aplicar" solo VALIDA por RPC (`fn_validar_codigo_prueba`,
   // sin leer la tabla de códigos desde el navegador). El canje real —
   // atómico, una prueba por club, fecha fin calculada en el servidor— lo
@@ -48994,11 +49061,15 @@ function PantallaSeleccionPlanOnboarding({
         <SelectorFrecuenciaPlan frecuencia={frecuencia} onChange={cambiarFrecuencia} ahorroAnualPct={ahorroAnualPct} />
       </div>
 
-      <EstadoCatalogoPlanes cargando={cargandoPlanes && planes.length === 0} error={planes.length === 0 ? errorPlanes : null} onReintentar={recargarPlanes} />
+      <EstadoCatalogoPlanes
+        cargando={(cargandoPlanes && planes.length === 0) || cargandoPromo}
+        error={planes.length === 0 ? errorPlanes : null}
+        onReintentar={recargarPlanes}
+      />
       <div className="grid gap-4 sm:grid-cols-3">
-        {planes.map((plan, i) => {
+        {(cargandoPromo ? [] : planes).map((plan, i) => {
           const activo = planSeleccionado?.clave ? planSeleccionado.clave === plan.clave : planSeleccionado?.canchas === plan.canchas;
-          const precio = precioPlanSegunFrecuencia(plan, frecuencia);
+          const precio = precioPlanSegunFrecuencia(plan, frecuencia, promoFundador);
           return (
             <motion.button
               key={plan.canchas}
@@ -49025,10 +49096,18 @@ function PantallaSeleccionPlanOnboarding({
               <IconoGridCanchas cuadros={plan.cuadros} activo={activo} />
               <div className="pr-2">
                 <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{plan.canchas} Canchas</p>
+                {/* Insignia de descuento: Precio Fundador solo si la promo está
+                    activa en Supabase (mensual); en anual, el ahorro anual. Sin
+                    promo en mensual no se muestra ninguna etiqueta. */}
                 {frecuencia === 'mensual' ? (
-                  <span className="mt-1.5 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
-                    {PROMO_FUNDADOR_QLUBOS.porcentaje}% OFF — Precio Fundador ({PROMO_FUNDADOR_QLUBOS.meses} meses)
-                  </span>
+                  promoFundadorAplica(promoFundador, 'mensual') && (
+                    <span
+                      data-testid="insignia-precio-fundador"
+                      className="mt-1.5 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700"
+                    >
+                      {textoPromoFundador(promoFundador)}
+                    </span>
+                  )
                 ) : (
                   <span className="mt-1.5 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
                     {ahorroAnualPct ? `Ahorras ${ahorroAnualPct}% anual` : 'Pago anual'}
@@ -49208,8 +49287,9 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
   // Precio siempre del catálogo del servidor (la intención guardada en la
   // sesión solo trae plan + frecuencia).
   const { planes } = useCatalogoPlanesQlubos();
+  const { promo: promoFundador, cargando: cargandoPromo } = usePromoFundador();
   const planCatalogo = planSeleccionado ? planDelCatalogo(planes, { clave: planSeleccionado.clave, canchas: planSeleccionado.canchas }) : null;
-  const precioPlan = planCatalogo ? precioPlanSegunFrecuencia(planCatalogo, frecuenciaPlan) : null;
+  const precioPlan = planCatalogo && !cargandoPromo ? precioPlanSegunFrecuencia(planCatalogo, frecuenciaPlan, promoFundador) : null;
   const requierePago = !accesoPermitido && diasPrueba == null;
   return (
     <LienzoOnboardingClub ancho="max-w-lg">
@@ -49264,9 +49344,12 @@ function PantallaConfirmacionOnboarding({ planSeleccionado, guardando, onConfirm
             <p className="text-sm font-semibold text-slate-500">{formatoPrecioPlanOnboarding(precioPlan.totalAnual)} MXN al año · IVA incluido</p>
           )}
           {precioPlan && frecuenciaPlan === 'mensual' && precioPlan.mensual != null && (
-            <p className="text-sm font-semibold text-slate-500">
-              {formatoPrecioPlanOnboarding(precioPlan.mensual)} MXN / mes los primeros {PROMO_FUNDADOR_QLUBOS.meses} meses
-              {precioPlan.tachado != null && ` (después ${formatoPrecioPlanOnboarding(precioPlan.tachado)})`} · IVA incluido
+            <p className="text-sm font-semibold text-slate-500" data-testid="precio-confirmacion">
+              {precioPlan.tachado != null
+                ? `${formatoPrecioPlanOnboarding(precioPlan.mensual)} MXN / mes ${
+                    promoFundador.meses ? `los primeros ${promoFundador.meses} ${promoFundador.meses === 1 ? 'mes' : 'meses'}` : 'con Precio Fundador'
+                  } (después ${formatoPrecioPlanOnboarding(precioPlan.tachado)}) · IVA incluido`
+                : `${formatoPrecioPlanOnboarding(precioPlan.mensual)} MXN / mes · IVA incluido`}
             </p>
           )}
           <p className="mt-2 text-xs font-semibold text-orange-600">
@@ -64206,7 +64289,7 @@ function AppInterno({ clubInicial } = {}) {
 
   // Onboarding — Paso final. Con acceso vigente (prueba/cortesía) solo marca
   // `onboarding_completed`. Sin acceso abre Stripe Checkout con el plan
-  // elegido (cupón Fundador en mensual); `onboarding_completed` se marca
+  // elegido (el cupón Fundador lo decide el servidor); `onboarding_completed` se marca
   // justo antes de redirigir para que, al volver, el club caiga en el
   // overlay de confirmación (o en la pantalla de bloqueo si canceló).
   const finalizarOnboardingClub = useCallback(async () => {
@@ -64227,8 +64310,9 @@ function AppInterno({ clubInicial } = {}) {
       const frecuencia = plan.frecuenciaFacturacion === 'anual' ? 'anual' : 'mensual';
       const priceId = priceIdDelPlan(base, frecuencia);
       if (!priceId) throw new Error('Este plan todavía no está habilitado para pago en línea. Escríbenos a soporte QLUBOS.');
-      const couponId = frecuencia === PROMO_FUNDADOR_QLUBOS.frecuencia ? PROMO_FUNDADOR_QLUBOS.couponId : null;
-      const { data, error } = await solicitarCheckoutSuscripcion({ clubId: CLUB_ACTIVO_ID, priceId, couponId });
+      // El cupón de bienvenida lo decide `billing-checkout` (servidor) con
+      // `billing_parametros.cupon_bienvenida_activo`; el navegador no lo manda.
+      const { data, error } = await solicitarCheckoutSuscripcion({ clubId: CLUB_ACTIVO_ID, priceId });
       if (error) {
         if (error.codigo === 'suscripcion_existente') {
           await marcarOnboardingCompletado().catch(() => {});
