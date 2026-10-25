@@ -3645,6 +3645,14 @@ function TransicionPestana({ activeKey, children, className }) {
 
 function BadgePago({ estadoPago }) {
   if (!estadoPago) return null;
+  // Reserva retenida mientras el jugador paga en línea (Stripe Connect, v121).
+  if (estadoPago === 'procesando_pago') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-sky-400/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-500 ring-1 ring-sky-400/30">
+        <Clock size={11} /> Pago en línea en proceso
+      </span>
+    );
+  }
   const meta = ESTADOS_PAGO.find((e) => e.value === estadoPago);
   if (!meta) return null;
   if (estadoPago === 'pagado') {
@@ -3685,6 +3693,9 @@ function BadgeEstatusFinanciero({ estatus }) {
   const CONFIG = {
     pendiente: { texto: 'Pago Pendiente en Club', clase: 'bg-amber-50 text-amber-700 border border-amber-200' },
     pagado: { texto: 'Pagado', clase: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
+    // Stripe Connect (v121).
+    pagado_en_linea: { texto: 'Pagado en línea', clase: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
+    procesando: { texto: 'Procesando pago en línea', clase: 'bg-sky-50 text-sky-700 border border-sky-200' },
     adeudo: { texto: 'Adeudo Pendiente', clase: 'bg-red-50 text-red-700 border border-red-200' },
     liquidada: { texto: 'Penalización Liquidada', clase: 'bg-slate-100 text-slate-600 border border-slate-200' },
     exonerada: { texto: 'Penalización Exonerada', clase: 'bg-slate-100 text-slate-600 border border-slate-200' },
@@ -8462,6 +8473,13 @@ function DetalleReserva({
   // — una reserva marcada 'Pendiente', 'pago_en_club', etc. siempre cuenta
   // como sin pago real, sin importar cómo haya quedado escrito el valor.
   const reservaSinPago = esPagoPendiente(reserva) || montoPagado <= 0;
+  // Reserva PAGADA EN LÍNEA con Stripe Connect (v121): su cancelación la
+  // decide el servidor (`fn_reserva_cancelar_pago_en_linea`) con la misma
+  // política para Panel y Portal — dentro de tolerancia → saldo a favor
+  // automático en el Wallet del jugador; fuera → el club retiene el pago (sin
+  // Wallet y sin adeudo). Aquí no hay checkbox de abono ni de penalización.
+  const pagadoEnLinea = reserva.pago_en_linea_estado === 'pagado';
+  const montoPagadoEnLinea = Number(reserva.pago_en_linea_monto) || 0;
   const [abonarSaldo, setAbonarSaldo] = useState(true);
   const [montoAbono, setMontoAbono] = useState(String(montoPagado || reserva.monto_total || 0));
   const [motivoCancelacion, setMotivoCancelacion] = useState('');
@@ -8672,7 +8690,39 @@ function DetalleReserva({
     );
   }
 
+  async function cancelarPagadaEnLinea() {
+    setProcesando(true);
+    setError('');
+    const { data, error: errRpc } = await supabase.rpc('fn_reserva_cancelar_pago_en_linea', { p_reserva_id: String(reserva.id) });
+    setProcesando(false);
+    if (errRpc) {
+      setError(errRpc.message || 'No se pudo cancelar la reserva.');
+      toast({ titulo: 'Error al cancelar', detalle: errRpc.message, tono: 'error' });
+      return;
+    }
+    const r = (Array.isArray(data) ? data[0] : data) || {};
+    toast({
+      titulo: 'Reserva cancelada',
+      detalle:
+        r.resultado === 'retenido'
+          ? `Cancelación fuera de tiempo — el pago en línea de ${formatoMoneda(r.monto ?? montoPagadoEnLinea)} queda retenido por el club, sin reembolso.`
+          : r.resultado === 'reembolso_wallet'
+          ? `Se abonaron ${formatoMoneda(r.monto ?? montoPagadoEnLinea)} como saldo a favor al Wallet del jugador.`
+          : 'El horario quedó liberado.',
+    });
+    onRegistrarAuditoria?.('cancelacion_reserva', {
+      cancha: cancha?.nombre,
+      fecha: reserva.fecha,
+      hora: `${formatoHora12(reserva.hora_inicio)} – ${formatoHora12(reserva.hora_fin)}`,
+      jugador: reserva.jugador_nombre,
+      motivo: `${motivoCancelacion.trim() || 'Sin especificar'} · pago en línea ${r.resultado === 'retenido' ? 'retenido' : 'abonado a Wallet'}`,
+    });
+    onCancelada(reserva.id);
+    onClose();
+  }
+
   async function cancelar() {
+    if (pagadoEnLinea) return cancelarPagadaEnLinea();
     setProcesando(true);
     setError('');
 
@@ -8974,7 +9024,20 @@ function DetalleReserva({
               sección se oculta por completo — solo queda el mensaje de
               arriba y "Confirmar Cancelación" abajo. Con pago real, se
               conserva el aviso de tolerancia + checkbox de siempre. */}
-          {!reservaSinPago && (
+          {pagadoEnLinea && (
+            <div className="rounded-lg bg-white p-3 ring-1 ring-rose-200" data-testid="aviso-cancelacion-pago-en-linea">
+              <p className="flex items-start gap-1.5 text-xs font-semibold text-gray-700">
+                <CreditCard size={13} className="mt-0.5 shrink-0 text-orange-500" />
+                Reserva pagada en línea con Stripe ({formatoMoneda(montoPagadoEnLinea)}).
+              </p>
+              <p className="mt-1.5 text-[11px] text-slate-500">
+                {fueraDeTolerancia
+                  ? 'Cancelación fuera de tiempo: el pago queda retenido por el club. No se abona nada al Wallet ni se genera adeudo.'
+                  : 'Dentro de tolerancia: el monto pagado se abonará automáticamente como saldo a favor en el Wallet del jugador (sin reembolso a tarjeta).'}
+              </p>
+            </div>
+          )}
+          {!reservaSinPago && !pagadoEnLinea && (
             <>
               {toleranciaReservasActiva && fueraDeTolerancia ? (
                 // Corrección de Lógica de Negocio (fix): antes, una reserva
@@ -49611,7 +49674,7 @@ function PantallaBloqueoSuscripcion({
 
 // Overlay "Esperando confirmación de pago…" — al volver de Stripe Checkout
 // (`?billing=exito`), mientras el webhook sincroniza `club_suscripciones`.
-function OverlayConfirmacionPagoBilling({ fase, onReintentar, onCerrar }) {
+function OverlayConfirmacionPagoBilling({ fase, onReintentar, onCerrar, detalleEsperando = null }) {
   const tardando = fase === 'tardando';
   return (
     <div
@@ -49629,7 +49692,7 @@ function OverlayConfirmacionPagoBilling({ fase, onReintentar, onCerrar }) {
         <p className="mt-2 text-sm text-slate-500">
           {tardando
             ? 'Stripe todavía no nos confirma el cobro. Puede tardar unos minutos; tu tarjeta no se cobrará dos veces.'
-            : 'Estamos sincronizando tu suscripción con Stripe. No cierres esta ventana.'}
+            : detalleEsperando || 'Estamos sincronizando tu suscripción con Stripe. No cierres esta ventana.'}
         </p>
         {tardando && (
           <div className="mt-5 flex flex-col gap-2">
@@ -54930,6 +54993,31 @@ function PortalPublicoJugadores({ clubSlug }) {
     cargarDatosPortal();
   }, [club, cargarDatosPortal]);
 
+  // ---- Pagos en línea con Stripe Connect (v121) ----------------------------
+  // Enrutamiento por club: el `slug` de la URL + `club.id` se validan en el
+  // servidor (`fn_portal_pagos_club`). Si el club tiene su cuenta de Stripe
+  // activa, "Reservar Cancha" ofrece "Pagar en línea"; si no, todo sigue con
+  // "Pago Pendiente en Club" exactamente como antes.
+  const [pagosEnLineaClub, setPagosEnLineaClub] = useState(false);
+  useEffect(() => {
+    if (!club?.id) return undefined;
+    let vivo = true;
+    (async () => {
+      try {
+        const { data, error } = await supabase.rpc('fn_portal_pagos_club', { p_club_id: Number(club.id), p_slug: clubSlug || null });
+        if (error) throw error;
+        const r = Array.isArray(data) ? data[0] : data;
+        if (vivo) setPagosEnLineaClub(r?.acepta_pagos_en_linea === true);
+      } catch (err) {
+        if (vivo) setPagosEnLineaClub(false);
+        if (!esErrorRpcInexistente(err)) console.warn('[Portal] No se pudo consultar si el club acepta pagos en línea.', err?.code || err?.message);
+      }
+    })();
+    return () => {
+      vivo = false;
+    };
+  }, [club, clubSlug]);
+
   // Realtime: cualquier cambio hecho desde el mostrador (nueva reta, cupo
   // que se llena, torneo que se archiva, producto que se agota) se refleja
   // aquí solo, sin recargar.
@@ -56520,6 +56608,10 @@ function PortalPublicoJugadores({ clubSlug }) {
               ? 'retenido'
               : r.estado_pago === 'penalizacion_pendiente'
               ? 'adeudo'
+              : r.estado_pago === 'procesando_pago'
+              ? 'procesando'
+              : r.estado_pago === 'pagado' && r.pago_en_linea_estado === 'pagado'
+              ? 'pagado_en_linea'
               : r.estado_pago === 'pagado'
               ? 'pagado'
               // FIX (Estatus Financiero Confuso — item B): cancelada dentro
@@ -56859,7 +56951,130 @@ function PortalPublicoJugadores({ clubSlug }) {
     });
   }
 
+  // Regreso de Stripe Checkout: `?pago=exito|cancelado&reserva=<id>`.
+  const [confirmandoPagoPortal, setConfirmandoPagoPortal] = useState(null); // null | 'esperando' | 'tardando'
+  const reservaPorConfirmarRef = useRef(null);
+  const retornoPagoAtendidoRef = useRef(false);
+
+  async function verificarPagoReservaPortal(reservaId) {
+    if (!reservaId) return;
+    reservaPorConfirmarRef.current = reservaId;
+    setConfirmandoPagoPortal('esperando');
+    for (let intento = 0; intento < 20; intento += 1) {
+      const { data } = await supabase.from('reservas').select('*').eq('id', reservaId).maybeSingle();
+      if (data?.pago_en_linea_estado === 'pagado') {
+        setReservas((prev) => (prev.some((r) => String(r.id) === String(data.id)) ? prev.map((r) => (String(r.id) === String(data.id) ? data : r)) : [...prev, data]));
+        setConfirmandoPagoPortal(null);
+        if (data.estado === 'Cancelada') {
+          if (jugador?.id) cargarWallet(jugador.id);
+          mostrarToast({
+            titulo: 'Pago recibido como saldo a favor',
+            detalle: 'El horario se había liberado antes de confirmar tu pago; el monto quedó como saldo a favor en tu Wallet del club.',
+            tono: 'aviso',
+          });
+        } else {
+          mostrarToast({ titulo: '¡Reserva pagada!', detalle: `Tu pago de ${formatoMoneda(data.pago_en_linea_monto)} se acreditó. ¡Nos vemos en la cancha!` });
+        }
+        return;
+      }
+      if (data?.pago_en_linea_estado === 'expirado') {
+        setConfirmandoPagoPortal(null);
+        mostrarToast({ titulo: 'El pago no se completó', detalle: 'La reserva se liberó sin ningún cargo. Puedes intentarlo de nuevo.', tono: 'error' });
+        cargarDatosPortal();
+        return;
+      }
+      await new Promise((resolver) => setTimeout(resolver, 2000));
+    }
+    setConfirmandoPagoPortal('tardando');
+  }
+
+  async function liberarPagoReservaPortal(reservaId) {
+    if (jugador?.portalToken && club?.id) {
+      await invocarPortalCheckout({ accion: 'liberar', club_id: Number(club.id), portal_token: jugador.portalToken, reserva_id: reservaId });
+    }
+    mostrarToast({
+      titulo: 'Pago cancelado',
+      detalle: jugador?.portalToken
+        ? 'No se realizó ningún cargo y el horario quedó libre.'
+        : 'No se realizó ningún cargo. El horario se libera automáticamente en unos minutos.',
+      tono: 'aviso',
+    });
+    cargarDatosPortal();
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !club?.id || retornoPagoAtendidoRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const pago = params.get('pago');
+    const reservaId = params.get('reserva');
+    if (!pago || !reservaId) return;
+    retornoPagoAtendidoRef.current = true;
+    params.delete('pago');
+    params.delete('reserva');
+    params.delete('session_id');
+    const resto = params.toString();
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${resto ? `?${resto}` : ''}${window.location.hash}`);
+    if (pago === 'exito') verificarPagoReservaPortal(reservaId);
+    else if (pago === 'cancelado') liberarPagoReservaPortal(reservaId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [club?.id, jugador?.portalToken]);
+
+  // Cancelación de una reserva PAGADA EN LÍNEA: la decide el servidor
+  // (`fn_reserva_cancelar_pago_en_linea`, v121) con el token del Portal —
+  // dentro de tolerancia abona al Wallet del club; fuera, el club retiene el
+  // pago (sin reembolso, sin saldo a favor y sin adeudo).
+  async function cancelarReservaPagadaEnLinea(reserva) {
+    if (!jugador?.portalToken) {
+      mostrarToast({ titulo: 'Inicia sesión de nuevo', detalle: 'Para cancelar una reserva pagada en línea vuelve a iniciar sesión en el Portal.', tono: 'error' });
+      return;
+    }
+    const { data, error } = await supabase.rpc('fn_reserva_cancelar_pago_en_linea', {
+      p_reserva_id: String(reserva.id),
+      p_portal_token: jugador.portalToken,
+    });
+    if (error) {
+      console.warn('[Portal] No se pudo cancelar la reserva pagada en línea.', error.code || error.message);
+      mostrarToast({ titulo: 'No se pudo cancelar', detalle: error.message || 'Intenta de nuevo en unos segundos.', tono: 'error' });
+      return;
+    }
+    const r = (Array.isArray(data) ? data[0] : data) || {};
+    const monto = Number(r.monto) || Number(reserva.pago_en_linea_monto) || 0;
+    const estadoPago = r.resultado === 'retenido' ? 'retenido' : r.resultado === 'reembolso_wallet' ? 'reembolsado' : r.estado_pago || reserva.estado_pago;
+    setReservas((prev) => prev.map((x) => (x.id === reserva.id ? { ...x, estado: 'Cancelada', estado_pago: estadoPago } : x)));
+    if (r.resultado === 'reembolso_wallet' && jugador?.id) cargarWallet(jugador.id);
+    {
+      const canchaCancelada = canchas.find((c) => String(c.id) === String(reserva.cancha_id));
+      notificarCancelacionAlClub(
+        `su reserva pagada en línea de ${canchaCancelada?.nombre || 'cancha'} del ${reserva.fecha || ''} · ${String(reserva.hora_inicio || '').slice(0, 5)}`.trim(),
+        {
+          subtipo: 'reserva',
+          reserva_id: reserva.id,
+          cancha_id: reserva.cancha_id,
+          fecha: reserva.fecha,
+          pago_en_linea: true,
+          reembolso_wallet: r.resultado === 'reembolso_wallet',
+          pago_retenido: r.resultado === 'retenido',
+          modulo_destino: 'parrilla',
+        }
+      );
+    }
+    mostrarToast(
+      r.resultado === 'retenido'
+        ? {
+            titulo: 'Reserva cancelada sin reembolso',
+            detalle: `Cancelaste fuera del periodo de tolerancia: el pago de ${formatoMoneda(monto)} queda retenido por el club.`,
+            tono: 'aviso',
+          }
+        : {
+            titulo: 'Reserva cancelada',
+            detalle: `El horario quedó liberado y se abonaron ${formatoMoneda(monto)} como saldo a favor en tu Wallet del club.`,
+          }
+    );
+    setHistorialDetalle(null);
+  }
+
   async function cancelarReservaPortal(reserva) {
+    if (reserva?.pago_en_linea_estado === 'pagado') return cancelarReservaPagadaEnLinea(reserva);
     const huboReembolso = reserva.estado_pago === 'pagado' && Number(reserva.monto_total) > 0;
     const cambios = huboReembolso ? { estado: 'Cancelada', estado_pago: 'reembolsado' } : { estado: 'Cancelada' };
     const { error } = await actualizarConColumnasOpcionales('reservas', reserva.id, cambios, []);
@@ -57484,12 +57699,63 @@ function PortalPublicoJugadores({ clubSlug }) {
   // y si hay Add-ons, arma una `ventas` vinculada por `reserva_id` — igual
   // patrón que "Reservar y Cobrar en POS" — para que cancha + consumos
   // queden en un solo ticket, con su stock y kardex reales.
-  async function confirmarReservaConAddons({ cancha, fecha, horaInicio, horaFin, costoCancha, addons, metodo, nombre, telefono }) {
+  // Pago en línea de una reserva (Stripe Connect, v121): el servidor
+  // (`portal-checkout`) valida club/slug/jugador/horario, calcula el precio,
+  // retiene el horario y devuelve la URL de Stripe Checkout del CLUB.
+  async function invocarPortalCheckout(cuerpo) {
+    try {
+      const { data, error } = await supabase.functions.invoke('portal-checkout', { body: cuerpo });
+      if (error) return { data: null, error: await errorDeFuncionBilling(error, 'No se pudo iniciar el pago en línea. Intenta de nuevo.') };
+      if (data?.error) return { data: null, error: { mensaje: data.error, codigo: data.codigo || null, status: null } };
+      return { data, error: null };
+    } catch (err) {
+      return { data: null, error: { mensaje: err?.message || 'No se pudo iniciar el pago en línea. Intenta de nuevo.', codigo: null, status: null } };
+    }
+  }
+
+  async function iniciarPagoEnLineaReserva({ cancha, fecha, horaInicio, duracionMinutos }) {
+    if (!jugador?.portalToken) {
+      return { ok: false, mensaje: 'Para pagar en línea vuelve a iniciar sesión en el Portal.' };
+    }
+    const { data, error } = await invocarPortalCheckout({
+      accion: 'crear',
+      club_id: Number(club.id),
+      slug: String(clubSlug || '').toLowerCase(),
+      portal_token: jugador.portalToken,
+      cancha_id: cancha.id,
+      fecha,
+      hora_inicio: horaInicio,
+      duracion_minutos: Number(duracionMinutos),
+      return_url: typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : undefined,
+    });
+    if (error) {
+      if (error.codigo === 'pagos_en_linea_no_disponibles') {
+        setPagosEnLineaClub(false);
+        mostrarToast({ titulo: 'Pago en línea no disponible', detalle: 'Este club ya no acepta pagos en línea. Elige "Pagar en el club".', tono: 'aviso' });
+        return { ok: false, mensaje: 'Este club ya no acepta pagos en línea. Elige "Pagar en el club".' };
+      }
+      if (error.codigo === 'sesion_portal') {
+        return { ok: false, mensaje: 'Tu sesión expiró. Vuelve a iniciar sesión para pagar en línea.' };
+      }
+      if (error.codigo === 'horario_ocupado') cargarDatosPortal();
+      mostrarToast({ titulo: 'No se pudo iniciar el pago', detalle: error.mensaje, tono: 'error' });
+      return { ok: false, mensaje: error.mensaje };
+    }
+    if (!data?.url || !esUrlStripeSegura(data.url)) {
+      mostrarToast({ titulo: 'No se pudo iniciar el pago', detalle: 'Stripe no devolvió una liga de pago válida.', tono: 'error' });
+      return { ok: false };
+    }
+    window.location.assign(data.url);
+    return { ok: true, redirigiendo: true };
+  }
+
+  async function confirmarReservaConAddons({ cancha, fecha, horaInicio, horaFin, duracionMinutos, costoCancha, addons, metodo, nombre, telefono }) {
     const jugadorActivo = jugador;
     if (!jugadorActivo) {
       requerirCuentaPortal('reservar una cancha', { canchaReservar: cancha });
       return { ok: false };
     }
+    if (metodo === 'en_linea') return iniciarPagoEnLineaReserva({ cancha, fecha, horaInicio, duracionMinutos });
     const addonsSubtotal = Math.round(addons.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100;
     const totalReserva = Math.round((costoCancha + addonsSubtotal) * 100) / 100;
     const esPagoTarjeta = metodo === 'tarjeta';
@@ -58897,12 +59163,25 @@ function PortalPublicoJugadores({ clubSlug }) {
             onClose={() => setCanchaParaReservar(null)}
             onConfirmar={async (payload) => {
               const resultado = await confirmarReservaConAddons({ ...payload, cancha: canchaParaReservar });
-              if (resultado.ok) setCanchaParaReservar(null);
+              if (resultado.ok && !resultado.redirigiendo) setCanchaParaReservar(null);
               return resultado;
             }}
+            aceptaPagoEnLinea={pagosEnLineaClub}
           />
           )}
         </AnimatePresence>
+
+        {confirmandoPagoPortal && (
+          <OverlayConfirmacionPagoBilling
+            fase={confirmandoPagoPortal}
+            detalleEsperando="Estamos confirmando el pago de tu reserva con Stripe. No cierres esta ventana."
+            onReintentar={() => verificarPagoReservaPortal(reservaPorConfirmarRef.current)}
+            onCerrar={() => {
+              setConfirmandoPagoPortal(null);
+              cargarDatosPortal();
+            }}
+          />
+        )}
 
         <ToastHost toasts={toasts} />
       </div>
@@ -59120,6 +59399,29 @@ function ModalElegirCategoriaTorneo({ torneo, onClose, onElegir }) {
 // política (`politicaCancelacionModulo`) que después evalúa la cancelación
 // autoservicio en Historial/Academia — así el jugador siempre ve la regla
 // real del club, nunca un texto genérico.
+// Política de cancelación de una reserva PAGADA EN LÍNEA (Stripe Connect,
+// v121 — la aplica el servidor en `fn_reserva_cancelar_pago_en_linea`):
+// dentro de tolerancia → saldo a favor en el Wallet del club (sin reembolso
+// a tarjeta); fuera de tolerancia → el club retiene el pago.
+function AvisoPoliticaCancelacionPagoEnLinea({ activa, horas }) {
+  return (
+    <div className="bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-lg text-xs font-medium" data-testid="politica-pago-en-linea">
+      <p className="mb-0.5 flex items-center gap-1.5 font-semibold text-amber-800">
+        <ShieldAlert size={13} className="text-amber-600" />
+        Cancelación de reservas pagadas en línea
+      </p>
+      {activa ? (
+        <p>
+          Si cancelas con al menos {horas} h de anticipación, el monto pagado se abona como saldo a favor en tu Wallet de este club (no se
+          reembolsa a tu tarjeta). Si cancelas después, pierdes la reserva y el pago queda retenido por el club.
+        </p>
+      ) : (
+        <p>Si cancelas antes de tu horario, el monto pagado se abona como saldo a favor en tu Wallet de este club (no se reembolsa a tu tarjeta).</p>
+      )}
+    </div>
+  );
+}
+
 function AvisoPoliticaCancelacion({ activa, horas }) {
   // Reestructuración UX/UI (Checkout, Parte 1) — dos estilos sobrios y de
   // alto contraste, uno por estado, en vez de un solo estilo ámbar
@@ -59163,7 +59465,14 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
 
   const politica = politicaCancelacionModulo(configTolerancia, item.modulo);
   const { dentroDeTolerancia } = validarToleranciaCancelacion(item.fechaEventoMs, politica.activa ? politica.horas : 0);
-  const puedeCancelar = !!item.raw && item.activo !== false && dentroDeTolerancia;
+  // Reserva PAGADA EN LÍNEA (Stripe Connect, v121): también se puede cancelar
+  // FUERA de tolerancia (antes de su horario) — el jugador pierde el pago,
+  // que queda retenido por el club. La regla la aplica el servidor.
+  const pagadoEnLinea = item.modulo === 'reservas' && item.raw?.pago_en_linea_estado === 'pagado';
+  const pagoEnProceso = item.modulo === 'reservas' && item.raw?.pago_en_linea_estado === 'procesando';
+  const eventoIniciado = Boolean(item.fechaEventoMs) && Date.now() >= Number(item.fechaEventoMs);
+  const cancelacionSinReembolso = pagadoEnLinea && !dentroDeTolerancia;
+  const puedeCancelar = !!item.raw && item.activo !== false && !pagoEnProceso && (dentroDeTolerancia || (pagadoEnLinea && !eventoIniciado));
 
   async function cancelar() {
     if (!puedeCancelar) return;
@@ -59215,10 +59524,18 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
             <p className="mb-0.5 font-semibold text-slate-800">{esPenalizada ? 'Reserva Penalizada' : 'Reserva Cancelada'}</p>
             <p>
               {esPenalizada
-                ? `Se canceló fuera del periodo de tolerancia y el club retuvo la cuota como adeudo pendiente en tu cuenta.`
+                ? item.estatusFinanciero === 'retenido'
+                  ? 'Se canceló fuera del periodo de tolerancia: el club retuvo el pago por su política de cancelación (sin reembolso).'
+                  : `Se canceló fuera del periodo de tolerancia y el club retuvo la cuota como adeudo pendiente en tu cuenta.`
+                : item.estatusFinanciero === 'reembolsado'
+                ? 'Esta reserva/inscripción ya está cancelada — el monto pagado quedó como saldo a favor en tu Wallet.'
                 : `Esta reserva/inscripción ya está cancelada — el horario/cupo quedó liberado.`}
             </p>
           </div>
+        ) : pagoEnProceso ? (
+          <p className="rounded-lg bg-sky-50 px-3 py-2 text-[11px] text-sky-800 ring-1 ring-sky-200">
+            Tu pago en línea se está procesando. En cuanto Stripe lo confirme, tu reserva quedará pagada.
+          </p>
         ) : !puedeCancelar ? (
           // Claridad en Modal Fuera de Tiempo (Parte 2) — la actividad SIGUE
           // ACTIVA (no se auto-cancela sola): se explica qué pasa si el
@@ -59226,18 +59543,34 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
           // botón de auto-cancelación (ya se dejó de mostrar arriba).
           <>
             <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
-              <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
+              <p className="mb-1 font-semibold">{pagadoEnLinea ? 'Tu reserva ya comenzó' : 'Cancelación fuera de tolerancia'}</p>
+              {pagadoEnLinea ? (
+                <p>Tu horario ya inició, así que la reserva ya no se puede cancelar desde el Portal. El pago en línea no es reembolsable.</p>
+              ) : (
               <p>
                 El periodo de cancelación libre ({politica.horas} hrs de anticipación) ha expirado. Si no te presentas o
                 solicitas la cancelación en recepción, el club registrará un adeudo/penalización pendiente de{' '}
                 {formatoMoneda(item.monto)} en tu cuenta para tu próxima visita.
               </p>
+              )}
             </div>
             <BotonContactarClub telefono={telefonoClub} />
           </>
         ) : confirmando ? (
           <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5">
             <p className="text-xs font-bold text-rose-700">¿Seguro que quieres cancelar?</p>
+            {cancelacionSinReembolso ? (
+              <p className="mt-1 text-[11px] font-semibold text-rose-700" data-testid="aviso-cancelacion-sin-reembolso">
+                Estás fuera del periodo de cancelación libre ({politica.horas} h de anticipación). Si cancelas, pierdes tu reserva y el
+                pago de <b>{formatoMoneda(item.raw?.pago_en_linea_monto ?? item.monto)}</b> queda retenido por el club: no hay reembolso ni
+                saldo a favor.
+              </p>
+            ) : pagadoEnLinea ? (
+              <p className="mt-1 text-[11px] text-slate-500">
+                Se libera de inmediato en el club. El monto pagado de <b>{formatoMoneda(item.raw?.pago_en_linea_monto ?? item.monto)}</b> se
+                abonará como saldo a favor en tu Wallet de este club (no se reembolsa a tu tarjeta).
+              </p>
+            ) : (
             <p className="mt-1 text-[11px] text-slate-500">
               Se libera de inmediato en el club — si cambias de opinión, tendrás que volver a inscribirte/reservar.
               {item.estadoPago === 'pagado' && (
@@ -59248,6 +59581,7 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
                 </>
               )}
             </p>
+            )}
             <div className="mt-2.5 flex justify-end gap-2">
               <BotonSecundario onClick={() => setConfirmando(false)} className="px-2.5 py-1.5 text-xs">
                 Ya no
@@ -59258,7 +59592,7 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
                 className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-600 disabled:opacity-60"
               >
                 {cancelando ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
-                Sí, cancelar
+                {cancelacionSinReembolso ? 'Sí, cancelar sin reembolso' : 'Sí, cancelar'}
               </button>
             </div>
           </div>
@@ -59267,7 +59601,7 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
             onClick={() => setConfirmando(true)}
             className="w-full rounded-lg border border-rose-500/20 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"
           >
-            Cancelar
+            {cancelacionSinReembolso ? 'Cancelar (sin reembolso)' : 'Cancelar'}
           </button>
         )}
 
@@ -60684,6 +61018,12 @@ function SelectorMetodoPagoPortal({
   datosTarjeta,
   onCambiarDatosTarjeta,
   tamano = 'normal',
+  // Stripe Connect (v121): el club acepta pagos en línea → opción "Pagar en
+  // línea con tarjeta" (Stripe Checkout en la cuenta del club). Si el
+  // jugador no tiene token de sesión del Portal se muestra deshabilitada.
+  mostrarPagoEnLinea = false,
+  pagoEnLineaDisponible = true,
+  avisoPagoEnLinea = null,
 }) {
   const chico = tamano === 'chico';
   const claseBoton = `flex w-full items-center justify-between rounded-xl border ${
@@ -60695,6 +61035,23 @@ function SelectorMetodoPagoPortal({
           presencial. `mostrarWallet` (según haya jugador/saldo) se queda
           intacto y vuelve a mandar en cuanto SHOW_BETA_PORTAL_PAGO_WALLET
           regrese a `true`. */}
+      {mostrarPagoEnLinea && (
+        <button
+          type="button"
+          data-testid="metodo-pago-en-linea"
+          onClick={() => onCambiarMetodo('en_linea')}
+          disabled={!pagoEnLineaDisponible}
+          className={`${claseBoton} ${metodo === 'en_linea' ? 'border-orange-400/50 bg-orange-400/10' : 'border-slate-300 bg-slate-100'}`}
+        >
+          <span className="flex items-center gap-2">
+            <CreditCard size={chico ? 14 : 15} className="text-orange-500" /> Pagar en línea con tarjeta
+          </span>
+          <span className="text-[10px] font-semibold text-slate-500">Pago seguro con Stripe</span>
+        </button>
+      )}
+      {mostrarPagoEnLinea && !pagoEnLineaDisponible && avisoPagoEnLinea && (
+        <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-[11px] text-slate-500">{avisoPagoEnLinea}</p>
+      )}
       {mostrarWallet && SHOW_BETA_PORTAL_PAGO_WALLET && (
         <button
           type="button"
@@ -60721,6 +61078,12 @@ function SelectorMetodoPagoPortal({
           <Banknote size={chico ? 14 : 15} className="text-slate-500" /> Pagar en el club
         </span>
       </button>
+      {metodo === 'en_linea' && (
+        <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-xs text-slate-500">
+          Te llevaremos al pago seguro de Stripe. El cobro va directo a la cuenta del club y tu reserva queda confirmada en cuanto se
+          acredite.
+        </p>
+      )}
       {metodo === 'wallet' && (
         <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-xs text-slate-500">
           {montoRestante > 0
@@ -61309,7 +61672,7 @@ const TURNOS_RESERVA_PORTAL = [
 // Reserva de cancha desde el Portal, con Add-ons de consumo — flujo
 // completo: fecha/hora/duración → add-ons opcionales → método de pago →
 // identificación (si hace falta) → confirmar.
-function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, productosAddOns, variantesPorProducto, saldoWallet, tarifasHorarios, onClose, onConfirmar }) {
+function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, productosAddOns, variantesPorProducto, saldoWallet, tarifasHorarios, onClose, onConfirmar, aceptaPagoEnLinea = false }) {
   const [fecha, setFecha] = useState(hoyISO());
   const [turnoFiltro, setTurnoFiltro] = useState('todos');
   // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
@@ -61357,7 +61720,18 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   const [horaInicio, setHoraInicio] = useState('');
   const [addons, setAddons] = useState([]);
   const [addonParaVariante, setAddonParaVariante] = useState(null);
-  const [metodo, setMetodo] = useState(SHOW_BETA_PORTAL_PAGO_WALLET && saldoWallet > 0 ? 'wallet' : 'recepcion');
+  // Pago en línea (Stripe Connect, v121): solo si el club tiene su cuenta
+  // activa Y el jugador tiene token de sesión del Portal (lo exige el
+  // servidor). Si el club lo acepta, es la opción preseleccionada.
+  const pagoEnLineaDisponible = aceptaPagoEnLinea && Boolean(jugador?.portalToken);
+  const [metodo, setMetodo] = useState(() =>
+    pagoEnLineaDisponible ? 'en_linea' : SHOW_BETA_PORTAL_PAGO_WALLET && saldoWallet > 0 ? 'wallet' : 'recepcion'
+  );
+  const esPagoEnLinea = metodo === 'en_linea';
+  // Si el club deja de aceptar pagos en línea mientras el modal está abierto.
+  useEffect(() => {
+    if (!pagoEnLineaDisponible && metodo === 'en_linea') setMetodo('recepcion');
+  }, [pagoEnLineaDisponible, metodo]);
   const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
   const [nombre, setNombre] = useState(jugador?.nombre || '');
   const [telefono, setTelefono] = useState(jugador?.telefono || '');
@@ -61482,7 +61856,9 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
     return calcularPrecioReserva(hora, Math.round(duracionHoras * 60), tarifasDelDia, precioBaseEfectivo);
   }
   const costoCancha = horaInicio ? precioDelBloque(horaInicio) : Math.round(duracionHoras * precioBaseEfectivo * 100) / 100;
-  const addonsSubtotal = Math.round(addons.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100;
+  // El pago en línea cubre SOLO la renta de la cancha: los extras se piden
+  // en recepción (su stock/Kardex se descuenta al cobrarlos allá).
+  const addonsSubtotal = esPagoEnLinea ? 0 : Math.round(addons.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100;
   const total = Math.round((costoCancha + addonsSubtotal) * 100) / 100;
   const { montoWallet, montoRestante } = repartirPagoConWallet(total, saldoWallet, metodo === 'wallet' && !!jugador);
   const puedeConfirmarPago = metodo !== 'tarjeta' || tarjetaEsValida(datosTarjeta);
@@ -61546,9 +61922,22 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
     const duracionMin = Math.round(duracionHoras * 60);
     const horaFin = minutosAHora((parseHoraAMinutos(horaInicio) || 0) + duracionMin);
     setEnviando(true);
-    const resultado = await onConfirmar({ fecha, horaInicio, horaFin, costoCancha, addons, metodo, nombre, telefono });
+    const resultado = await onConfirmar({
+      fecha,
+      horaInicio,
+      horaFin,
+      duracionMinutos: duracionMin,
+      costoCancha,
+      addons: esPagoEnLinea ? [] : addons,
+      metodo,
+      nombre,
+      telefono,
+    });
+    // Pago en línea: el navegador ya va camino a Stripe — se deja el botón en
+    // "Abriendo pago seguro…".
+    if (resultado?.redirigiendo) return;
     setEnviando(false);
-    if (!resultado?.ok) setError('No se pudo confirmar — intenta de nuevo.');
+    if (!resultado?.ok) setError(resultado?.mensaje || 'No se pudo confirmar — intenta de nuevo.');
   }
 
   return (
@@ -61731,7 +62120,12 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
             del Club (ver el comentario de su `useMemo` arriba), así que la
             franja entera se oculta cuando no hay nada que sugerir en vez de
             mostrar un aviso de "Sin adicionales disponibles". */}
-        {productosAddOns.length > 0 && (
+        {productosAddOns.length > 0 && esPagoEnLinea && (
+          <p className="rounded-lg bg-slate-100/60 px-3 py-2 text-[11px] text-slate-500">
+            El pago en línea cubre la renta de la cancha. Si quieres extras (pelotas, bebidas, renta de pala), pídelos en recepción.
+          </p>
+        )}
+        {productosAddOns.length > 0 && !esPagoEnLinea && (
           <div>
             <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Para ti</p>
             <div className="flex gap-2 overflow-x-auto pb-1">
@@ -61816,17 +62210,24 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           datosTarjeta={datosTarjeta}
           onCambiarDatosTarjeta={setDatosTarjeta}
           tamano="chico"
+          mostrarPagoEnLinea={aceptaPagoEnLinea}
+          pagoEnLineaDisponible={pagoEnLineaDisponible}
+          avisoPagoEnLinea={aceptaPagoEnLinea && !jugador?.portalToken ? 'Para pagar en línea vuelve a iniciar sesión en el Portal.' : null}
         />
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
-        <AvisoPoliticaCancelacion activa={politicaReserva.activa} horas={politicaReserva.horas} />
+        {esPagoEnLinea ? (
+          <AvisoPoliticaCancelacionPagoEnLinea activa={politicaReserva.activa} horas={politicaReserva.horas} />
+        ) : (
+          <AvisoPoliticaCancelacion activa={politicaReserva.activa} horas={politicaReserva.horas} />
+        )}
 
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={confirmar} disabled={enviando || !horaInicio || !puedeConfirmarPago}>
-            {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Aceptar y Confirmar Reserva
+          <BotonPrimario onClick={confirmar} disabled={enviando || !horaInicio || !puedeConfirmarPago} data-testid="boton-confirmar-reserva">
+            {enviando ? <Loader2 size={15} className="animate-spin" /> : esPagoEnLinea ? <CreditCard size={15} /> : <CheckCircle2 size={15} />}
+            {esPagoEnLinea ? (enviando ? 'Abriendo pago seguro…' : `Pagar ${formatoMoneda(total)} en línea`) : 'Aceptar y Confirmar Reserva'}
           </BotonPrimario>
         </div>
       </div>
