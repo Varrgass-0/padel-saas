@@ -2,15 +2,20 @@
 // Edge Function: billing-checkout  — Stripe Checkout de la suscripción SaaS.
 //
 // POST (Authorization: Bearer <jwt del dueño o staff>)
-//   { club_id, price_id, coupon_id?, success_url?, cancel_url? }
-// → { url, session_id }
+//   { club_id, price_id, success_url?, cancel_url? }
+// → { url, session_id, descuento_aplicado }
 //
 // Reglas:
 //   • price_id debe existir ACTIVO en `billing_precios` (tipo 'suscripcion'):
 //     el navegador no puede mandar un precio arbitrario.
-//   • coupon_id solo si está en STRIPE_CUPONES_PERMITIDOS (y para su
-//     frecuencia, ej. FUNDADOR15 solo mensual) y es válido en Stripe. Sin
-//     coupon_id, Checkout acepta códigos promocionales creados en Stripe.
+//   • Descuento de bienvenida ("Precio Fundador") DINÁMICO: lo decide el
+//     servidor leyendo `billing_parametros.cupon_bienvenida_activo` (ver
+//     `resolverCuponBienvenida`). Valor vacío / sin fila → precio regular.
+//     El `coupon_id` que mande el navegador se IGNORA.
+//   • Si Stripe rechaza el descuento (cupón vencido, agotado, borrado, no
+//     aplica al producto…), se reintenta el Checkout SIN descuento: la compra
+//     nunca se bloquea por el cupón.
+//   • Sin descuento, Checkout acepta códigos promocionales creados en Stripe.
 //   • success_url / cancel_url solo de orígenes permitidos (APP_URL…).
 //   • Reutiliza el Customer del club (`club_suscripciones.stripe_customer_id`)
 //     o lo crea con el correo del club y lo guarda.
@@ -18,6 +23,12 @@
 //   • Club en prueba con > 48 h restantes: la suscripción arranca al terminar
 //     la prueba (trial_end), sin perder días.
 //   • Solo tarjeta (crédito/débito). La activación la hace billing-webhook.
+//
+// Activar / desactivar el Precio Fundador (SQL Editor):
+//   INSERT INTO public.billing_parametros (clave, valor, descripcion)
+//   VALUES ('cupon_bienvenida_activo', 'FUNDADOR15', 'Cupón de Stripe del Precio Fundador. Vacío = sin descuento.')
+//   ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_en = now();
+//   -- Apagar: UPDATE public.billing_parametros SET valor = '' WHERE clave = 'cupon_bienvenida_activo';
 // =============================================================================
 import {
   appUrl,
@@ -53,12 +64,81 @@ function clienteStripe(): ReturnType<typeof crearStripe> {
 }
 const VIGENTES = new Set<string>(STATUS_STRIPE_VIGENTES);
 
+// Clave del parámetro con el cupón de bienvenida en `billing_parametros`.
+const CLAVE_CUPON_BIENVENIDA = 'cupon_bienvenida_activo';
+
+// Suscripciones que NO cuentan como "compra previa" para el cupón de
+// bienvenida: un primer intento cuyo pago nunca se completó.
+const STATUS_SIN_COMPRA = new Set<string>(['incomplete', 'incomplete_expired']);
+
 function correoDelClub(fila: Record<string, unknown>): string | null {
   for (const k of ['correo', 'email', 'correo_contacto', 'email_contacto', 'correo_administrador']) {
     const v = fila[k];
     if (typeof v === 'string' && /.+@.+\..+/.test(v.trim())) return v.trim();
   }
   return null;
+}
+
+/**
+ * Cupón de bienvenida a aplicar, o `null` (precio regular). Nunca lanza: si
+ * la lectura falla o el cupón no sirve, simplemente no hay descuento.
+ *   1. `billing_parametros.cupon_bienvenida_activo` con valor no vacío.
+ *   2. Si ese cupón aparece en STRIPE_CUPONES_PERMITIDOS con frecuencia
+ *      (default "FUNDADOR15:mensual"), solo aplica a esa frecuencia — así el
+ *      Precio Fundador sigue siendo solo para planes mensuales, como lo
+ *      muestra la app. Un cupón que no está en la lista aplica a todo.
+ *   3. Primera compra: el Customer no debe haber tenido antes una suscripción
+ *      pagada (evita cancelar y volver a contratar para repetir el descuento).
+ *   4. Vigente en Stripe (`coupon.valid`: no vencido, no agotado, no borrado).
+ */
+async function resolverCuponBienvenida(opciones: {
+  // deno-lint-ignore no-explicit-any
+  admin: any;
+  stripe: ReturnType<typeof crearStripe>;
+  frecuencia: string | null;
+  suscripcionesPrevias: Array<{ status: string }>;
+  clubId: number;
+}): Promise<string | null> {
+  const { admin, stripe, frecuencia, suscripcionesPrevias, clubId } = opciones;
+  let cupon = '';
+  try {
+    const { data, error } = await admin.from('billing_parametros').select('valor').eq('clave', CLAVE_CUPON_BIENVENIDA).maybeSingle();
+    if (error) throw error;
+    cupon = typeof data?.valor === 'string' ? data.valor.trim() : '';
+  } catch (err) {
+    console.warn(`[billing-checkout] No se pudo leer ${CLAVE_CUPON_BIENVENIDA}; se cobra precio regular.`, (err as Error)?.message || err);
+    return null;
+  }
+  if (!cupon) return null;
+
+  const lista = parsearCuponesPermitidos(Deno.env.get('STRIPE_CUPONES_PERMITIDOS'));
+  if (lista.has(cupon) && !cuponPermitido(cupon, frecuencia, lista)) {
+    console.log(`[billing-checkout] Club ${clubId}: el cupón ${cupon} no aplica a la frecuencia "${frecuencia}".`);
+    return null;
+  }
+
+  if (suscripcionesPrevias.some((s) => !STATUS_SIN_COMPRA.has(s.status))) {
+    console.log(`[billing-checkout] Club ${clubId}: ya tuvo una suscripción; no aplica el cupón de bienvenida ${cupon}.`);
+    return null;
+  }
+
+  try {
+    const detalle = await stripe.coupons.retrieve(cupon);
+    if (!detalle?.valid) {
+      console.warn(`[billing-checkout] El cupón ${cupon} ya no está vigente en Stripe; se cobra precio regular.`);
+      return null;
+    }
+  } catch (err) {
+    console.warn(`[billing-checkout] El cupón ${cupon} no existe en Stripe; se cobra precio regular.`, mensajeStripe(err, ''));
+    return null;
+  }
+  return cupon;
+}
+
+/** ¿Es un rechazo de la PETICIÓN (p. ej. el descuento), no de red/servidor? */
+function esRechazoDeStripe(err: unknown): boolean {
+  const tipo = (err as { type?: string })?.type ?? '';
+  return tipo === 'StripeInvalidRequestError';
 }
 
 Deno.serve(async (req) => {
@@ -78,7 +158,6 @@ Deno.serve(async (req) => {
     const cuerpo = await req.json().catch(() => ({}));
     const clubId = clubIdValido(cuerpo?.club_id);
     const priceId = typeof cuerpo?.price_id === 'string' ? cuerpo.price_id.trim() : '';
-    const couponId = typeof cuerpo?.coupon_id === 'string' && cuerpo.coupon_id.trim() ? cuerpo.coupon_id.trim() : null;
     if (!clubId) return respuestaJson(req, { error: 'club_id inválido.' }, 400);
     if (!priceId) return respuestaJson(req, { error: 'price_id requerido.' }, 400);
 
@@ -105,20 +184,6 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (errPrecio) throw errPrecio;
     if (!precio) return respuestaJson(req, { error: 'Ese plan no está disponible.' }, 400);
-
-    // Cupón (lista blanca + vigente en Stripe).
-    if (couponId) {
-      const lista = parsearCuponesPermitidos(Deno.env.get('STRIPE_CUPONES_PERMITIDOS'));
-      if (!cuponPermitido(couponId, precio.frecuencia, lista)) {
-        return respuestaJson(req, { error: 'Ese cupón no aplica para este plan.' }, 400);
-      }
-      try {
-        const cupon = await stripe.coupons.retrieve(couponId);
-        if (!cupon?.valid) return respuestaJson(req, { error: 'Ese cupón ya no está vigente.' }, 400);
-      } catch (err) {
-        return respuestaJson(req, { error: mensajeStripe(err, 'Ese cupón no existe.') }, 400);
-      }
-    }
 
     const suscripcion = await filaSuscripcion(admin, clubId);
     if (suscripcion.stripe_subscription_id && VIGENTES.has(suscripcion.stripe_status ?? '')) {
@@ -180,6 +245,15 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Descuento de bienvenida (Precio Fundador), decidido por el servidor.
+    const cuponBienvenida = await resolverCuponBienvenida({
+      admin,
+      stripe,
+      frecuencia: precio.frecuencia ?? null,
+      suscripcionesPrevias: existentes.data as Array<{ status: string }>,
+      clubId,
+    });
+
     const metadata = {
       club_id: String(clubId),
       type: 'suscripcion',
@@ -188,14 +262,16 @@ Deno.serve(async (req) => {
     };
     const trialEnd = trialEndParaConversion(suscripcion.estado_suscripcion, suscripcion.prueba_fin);
 
-    const sesion = await stripe.checkout.sessions.create({
-      mode: 'subscription',
+    // Parámetros de la sesión. `discounts` y `allow_promotion_codes` son
+    // excluyentes en Stripe: sin cupón se permite escribir códigos promo.
+    const parametrosSesion = (cupon: string | null) => ({
+      mode: 'subscription' as const,
       customer: customerId!,
       client_reference_id: String(clubId),
       line_items: [{ price: priceId, quantity: 1 }],
-      payment_method_types: ['card'],
-      locale: 'es-419',
-      ...(couponId ? { discounts: [{ coupon: couponId }] } : { allow_promotion_codes: true }),
+      payment_method_types: ['card' as const],
+      locale: 'es-419' as const,
+      ...(cupon ? { discounts: [{ coupon: cupon }] } : { allow_promotion_codes: true }),
       metadata,
       subscription_data: {
         metadata,
@@ -205,7 +281,24 @@ Deno.serve(async (req) => {
       cancel_url: cancelUrl,
     });
 
-    return respuestaJson(req, { url: sesion.url, session_id: sesion.id });
+    let descuentoAplicado: string | null = cuponBienvenida;
+    let sesion;
+    try {
+      sesion = await stripe.checkout.sessions.create(parametrosSesion(cuponBienvenida));
+    } catch (err) {
+      // Solo se reintenta si había descuento y Stripe RECHAZÓ la petición
+      // (cupón vencido/agotado/no aplicable…). Errores de red o de Stripe se
+      // propagan tal cual al catch general.
+      if (!cuponBienvenida || !esRechazoDeStripe(err)) throw err;
+      console.warn(
+        `[billing-checkout] Club ${clubId}: Stripe rechazó el cupón ${cuponBienvenida}; se reintenta sin descuento.`,
+        mensajeStripe(err, '')
+      );
+      descuentoAplicado = null;
+      sesion = await stripe.checkout.sessions.create(parametrosSesion(null));
+    }
+
+    return respuestaJson(req, { url: sesion.url, session_id: sesion.id, descuento_aplicado: descuentoAplicado });
   } catch (err) {
     console.error('[billing-checkout]', err);
     return respuestaJson(req, { error: mensajeStripe(err, 'No se pudo iniciar el pago. Intenta de nuevo.') }, 500);
