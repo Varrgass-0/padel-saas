@@ -47907,6 +47907,9 @@ const TABS_CONFIGURACION_CLUB = [
   // `ModuloConfiguracionClub`); un Coach/Recepción/Bar/Contador nunca la ve,
   // aunque de alguna forma llegara a montar este módulo (mismo candado de
   // defensa en profundidad que el resto del archivo).
+  // Cobros Digitales con Stripe Connect (v120) — OPCIONAL y EXCLUSIVA Owner;
+  // fuera del Onboarding (ver `tabsVisibles`).
+  { value: 'cobros', label: 'Cobros Digitales', icon: Banknote },
   { value: 'cuenta', label: 'Mi Cuenta & Suscripción', icon: CreditCard },
   // Datos Fiscales del ticket (migracion_v100) — Owner y Manager; fuera del
   // Onboarding (ver `tabsVisibles`).
@@ -47983,6 +47986,11 @@ function ModuloConfiguracionClub({
   // último módulo ("Finalizar Configuración").
   modoOnboarding = false,
   onFinalizarOnboarding,
+  // Regreso desde el onboarding de Stripe Connect (`?stripe_connect=…`):
+  // abre directo la pestaña "Cobros Digitales" (ver `AppInterno`).
+  tabInicial = null,
+  retornoStripeConnect = null,
+  onRetornoStripeConnectProcesado,
   // Zona de Peligro (item 5) — reenviados tal cual a `SeccionGeneralClub`;
   // `AppInterno` es quien realmente sabe cómo se llama el club y cómo
   // ejecutar el borrado suave.
@@ -47992,7 +48000,7 @@ function ModuloConfiguracionClub({
   // Mi Cuenta & Suscripción: el estado de facturación llega por
   // `BillingClubContext` (lo arma `AppInterno`), no por props.
 }) {
-  const [tab, setTab] = useState('general');
+  const [tab, setTab] = useState(tabInicial || 'general');
   // Mi Cuenta & Suscripción es EXCLUSIVA Owner (candado en profundidad,
   // mismo criterio que el resto del archivo: el Sidebar ya solo deja llegar
   // a Owner a este módulo, pero cada punto sensible vuelve a exigir el rol
@@ -48007,10 +48015,10 @@ function ModuloConfiguracionClub({
   // dos lugares. "Wallet" es al revés: solo se oculta DURANTE el Onboarding
   // (fuera de alcance del wizard, ver comentario original de `modoOnboarding`).
   const tabsVisibles = (modoOnboarding
-    ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet' && t.value !== 'cuenta' && t.value !== 'fiscal')
+    ? TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'wallet' && t.value !== 'cuenta' && t.value !== 'fiscal' && t.value !== 'cobros')
     : TABS_CONFIGURACION_CLUB.filter((t) => t.value !== 'staff')
   )
-    .filter((t) => t.value !== 'cuenta' || esOwner)
+    .filter((t) => (t.value !== 'cuenta' && t.value !== 'cobros') || esOwner)
     .filter((t) => t.value !== 'fiscal' || puedeEditarDatosFiscales(permisos, operador));
   const tabActual = tabsVisibles.find((t) => t.value === tab) || tabsVisibles[0];
   const indiceTabActual = tabsVisibles.findIndex((t) => t.value === tabActual.value);
@@ -48167,6 +48175,8 @@ function ModuloConfiguracionClub({
           nombreClub={nombreClub || configClub?.nombre}
           telefonoContactoClub={configClub?.telefonoContacto}
         />
+      ) : tab === 'cobros' && esOwner && !modoOnboarding ? (
+        <SeccionCobrosStripeConnect retorno={retornoStripeConnect} onRetornoProcesado={onRetornoStripeConnectProcesado} />
       ) : tab === 'cuenta' && esOwner ? (
         <SeccionCuentaSuscripcion
           configClub={configClub}
@@ -50733,6 +50743,273 @@ function ModalEliminarCuenta({ nombreClub, onClose, onConfirmar, eliminando }) {
         </div>
       </div>
     </ModalShell>
+  );
+}
+
+// ============================================================================
+// COBROS DIGITALES CON STRIPE CONNECT (Standard) — v120 · pestaña EXCLUSIVA
+// Owner en "Configuración del Club". OPCIONAL: sin cuenta vinculada el club
+// sigue exactamente igual (pago en recepción / "Pago pendiente en club",
+// penalizaciones y adeudos extemporáneos).
+//
+// El navegador NUNCA escribe `stripe_account_id` ni los flags (los protege el
+// candado de `configuracion_club`): todo pasa por la Edge Function
+// `stripe-connect-onboarding` (accion 'onboarding' → Account Link de Stripe;
+// accion 'estado' → sincroniza con Stripe). Aquí solo se LEE la fila del club.
+// ============================================================================
+async function invocarStripeConnect(accion, extra = {}) {
+  try {
+    const { data, error } = await supabase.functions.invoke('stripe-connect-onboarding', {
+      body: { club_id: Number(CLUB_ACTIVO_ID), accion, ...extra },
+    });
+    if (error) return { data: null, error: await errorDeFuncionBilling(error, 'No se pudo conectar con Stripe. Intenta de nuevo.') };
+    if (data?.error) return { data: null, error: { mensaje: data.error, codigo: data.codigo || null, status: null } };
+    return { data, error: null };
+  } catch (err) {
+    return { data: null, error: { mensaje: err?.message || 'No se pudo conectar con Stripe. Intenta de nuevo.', codigo: null, status: null } };
+  }
+}
+
+// Fila de `configuracion_club` o respuesta de la Edge Function → estado de UI.
+function estadoConnectDesde(dato) {
+  if (!dato) return { accountId: null, onboardingCompletado: false, cobrosHabilitados: false, requisitosPendientes: 0 };
+  const accountId = dato.stripe_account_id || null;
+  return {
+    accountId,
+    onboardingCompletado: Boolean(accountId) && (dato.onboarding_completado ?? dato.stripe_onboarding_completed) === true,
+    cobrosHabilitados: Boolean(accountId) && (dato.cobros_habilitados ?? dato.stripe_connect_enabled) === true,
+    requisitosPendientes: Number(dato.requisitos_pendientes) || 0,
+  };
+}
+
+function SeccionCobrosStripeConnect({ retorno = null, onRetornoProcesado }) {
+  const mostrarToast = useToast();
+  const [estado, setEstado] = useState(() => estadoConnectDesde(null));
+  const [cargando, setCargando] = useState(true);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [conectando, setConectando] = useState(false);
+  const [error, setError] = useState('');
+  const retornoAtendido = useRef(false);
+  // Lo que responde Stripe manda sobre la lectura inicial de la BD (que puede
+  // llegar después y venir desactualizada).
+  const estadoDeStripeRef = useRef(false);
+
+  const sincronizar = useCallback(
+    async ({ silencioso = false } = {}) => {
+      setSincronizando(true);
+      const { data, error: err } = await invocarStripeConnect('estado');
+      setSincronizando(false);
+      if (err) {
+        if (!silencioso) mostrarToast({ titulo: 'No se pudo consultar Stripe', detalle: err.mensaje, tono: 'error' });
+        return null;
+      }
+      const nuevo = estadoConnectDesde(data);
+      estadoDeStripeRef.current = true;
+      setEstado(nuevo);
+      if (data?.revocada) {
+        mostrarToast({
+          titulo: 'Tu cuenta de Stripe se desconectó',
+          detalle: 'La cuenta ya no autoriza a QLUBOS. Puedes volver a conectarla cuando quieras.',
+          tono: 'aviso',
+        });
+      }
+      return nuevo;
+    },
+    [mostrarToast]
+  );
+
+  const conectar = useCallback(async () => {
+    setConectando(true);
+    const returnUrl = typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : undefined;
+    const { data, error: err } = await invocarStripeConnect('onboarding', { return_url: returnUrl });
+    if (err) {
+      setConectando(false);
+      mostrarToast({ titulo: 'No se pudo abrir Stripe', detalle: err.mensaje, tono: 'error' });
+      return;
+    }
+    if (data?.url && esUrlStripeSegura(data.url)) {
+      window.location.assign(data.url);
+      return; // se queda en "Abriendo Stripe…" mientras redirige
+    }
+    setConectando(false);
+    estadoDeStripeRef.current = true;
+    setEstado(estadoConnectDesde(data));
+    if (data?.ya_conectada) mostrarToast({ titulo: 'Tu cuenta de Stripe ya está activa', detalle: 'No hay nada pendiente por configurar.' });
+    else mostrarToast({ titulo: 'Stripe no devolvió un enlace válido', detalle: 'Intenta de nuevo en unos segundos.', tono: 'error' });
+  }, [mostrarToast]);
+
+  // Carga inicial: la fila del club (RLS: solo el dueño) y, si ya hay cuenta,
+  // una sincronización silenciosa con Stripe.
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const { data, error: err } = await supabase
+          .from('configuracion_club')
+          .select('stripe_account_id, stripe_connect_enabled, stripe_onboarding_completed')
+          .eq('id', CLUB_ACTIVO_ID)
+          .maybeSingle();
+        if (err) throw err;
+        if (!vivo) return;
+        const inicial = estadoConnectDesde(data);
+        if (!estadoDeStripeRef.current) setEstado(inicial);
+        setCargando(false);
+        if (inicial.accountId && !retorno) sincronizar({ silencioso: true });
+      } catch (err) {
+        if (!vivo) return;
+        setCargando(false);
+        setError(
+          err?.code === '42703' || /stripe_account_id/i.test(err?.message || '')
+            ? 'Falta correr la migración v120 (Stripe Connect) en Supabase.'
+            : 'No pudimos cargar el estado de tus cobros digitales. Revisa tu conexión.'
+        );
+      }
+    })();
+    return () => {
+      vivo = false;
+    };
+    // Solo al montar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Regreso desde Stripe (`?stripe_connect=retorno|refrescar`, ver AppInterno).
+  useEffect(() => {
+    if (!retorno || retornoAtendido.current) return;
+    retornoAtendido.current = true;
+    (async () => {
+      if (retorno === 'refrescar') {
+        // El enlace de Stripe venció o se recargó: se genera uno nuevo.
+        await conectar();
+      } else {
+        const nuevo = await sincronizar({ silencioso: false });
+        if (nuevo?.cobrosHabilitados) {
+          mostrarToast({ titulo: '¡Stripe conectado!', detalle: 'Tu cuenta quedó vinculada y lista para recibir cobros.' });
+        } else if (nuevo?.accountId) {
+          mostrarToast({
+            titulo: 'Configuración de Stripe pendiente',
+            detalle: 'Stripe aún necesita algunos datos o está revisando tu cuenta.',
+            tono: 'aviso',
+          });
+        }
+      }
+      onRetornoProcesado?.();
+    })();
+  }, [retorno, conectar, sincronizar, mostrarToast, onRetornoProcesado]);
+
+  const conectada = Boolean(estado.accountId);
+  const activa = conectada && estado.cobrosHabilitados && estado.onboardingCompletado;
+  const enRevision = conectada && estado.onboardingCompletado && !estado.cobrosHabilitados;
+  const pendiente = conectada && !estado.onboardingCompletado;
+
+  return (
+    <div className="space-y-4" data-testid="seccion-stripe-connect">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="mb-1 flex flex-wrap items-center gap-2">
+          <Banknote size={16} className="text-orange-500" />
+          <h3 className="text-sm font-black text-slate-900">Cobros Digitales con Stripe Connect</h3>
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">Opcional</span>
+        </div>
+        <p className="text-xs leading-relaxed text-slate-500">
+          Conecta la cuenta de Stripe de tu club para que tus jugadores paguen con tarjeta directamente desde el Portal de Jugadores. El
+          dinero se deposita en la cuenta de Stripe de tu club; Stripe cobra su comisión de procesamiento directamente.
+        </p>
+        <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+          Si no la conectas, todo sigue igual: pago en recepción (Pago pendiente en club) y el registro de penalizaciones y adeudos
+          extemporáneos.
+        </p>
+
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+          {cargando ? (
+            <p className="flex items-center gap-2 text-sm font-semibold text-slate-500">
+              <Loader2 size={15} className="animate-spin" /> Cargando estado…
+            </p>
+          ) : error ? (
+            <p className="text-sm font-semibold text-rose-700">{error}</p>
+          ) : !conectada ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-black text-slate-900">Sin cuenta vinculada</p>
+                <p className="text-xs text-slate-500">Te llevaremos al registro seguro de Stripe. Al terminar regresarás a esta pantalla.</p>
+              </div>
+              <BotonPrimario onClick={conectar} disabled={conectando} data-testid="boton-conectar-stripe">
+                {conectando ? <Loader2 size={15} className="animate-spin" /> : <ExternalLink size={15} />}
+                {conectando ? 'Abriendo Stripe…' : 'Conectar cuenta de Stripe'}
+              </BotonPrimario>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  {activa ? (
+                    <span
+                      data-testid="badge-stripe-connect"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-400/30"
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Activa
+                    </span>
+                  ) : enRevision ? (
+                    <span
+                      data-testid="badge-stripe-connect"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-700 ring-1 ring-sky-400/30"
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-sky-500" /> En revisión por Stripe
+                    </span>
+                  ) : (
+                    <span
+                      data-testid="badge-stripe-connect"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-400/30"
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" /> Configuración pendiente
+                    </span>
+                  )}
+                  {sincronizando && <Loader2 size={13} className="animate-spin text-slate-400" />}
+                </div>
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Cuenta:{' '}
+                  <span className="select-all break-all font-mono text-[11px] font-bold text-slate-800" data-testid="stripe-account-id">
+                    {estado.accountId}
+                  </span>
+                </p>
+                {!activa && estado.requisitosPendientes > 0 && (
+                  <p className="mt-1 text-xs font-semibold text-amber-700">
+                    Stripe necesita {estado.requisitosPendientes} {estado.requisitosPendientes === 1 ? 'dato más' : 'datos más'} para habilitar los cobros.
+                  </p>
+                )}
+                {activa && (
+                  <p className="mt-1 text-xs text-slate-500">Tu cuenta puede recibir cobros. Los pagos con tarjeta en el Portal se habilitan en la siguiente actualización.</p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {(pendiente || enRevision) && (
+                  <BotonPrimario onClick={conectar} disabled={conectando}>
+                    {conectando ? <Loader2 size={15} className="animate-spin" /> : <ExternalLink size={15} />}
+                    {pendiente ? 'Continuar configuración en Stripe' : 'Revisar en Stripe'}
+                  </BotonPrimario>
+                )}
+                {activa && (
+                  <a
+                    href="https://dashboard.stripe.com/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-200"
+                  >
+                    Abrir mi panel de Stripe <ExternalLink size={13} />
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => sincronizar({ silencioso: false })}
+                  disabled={sincronizando || conectando}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 transition hover:text-slate-800 disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={sincronizando ? 'animate-spin' : ''} /> Actualizar estado
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -64261,6 +64538,33 @@ function AppInterno({ clubInicial } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Regreso del onboarding de Stripe Connect (v120):
+  // `?stripe_connect=retorno|refrescar&club=<slug>` → abre Configuración del
+  // Club → "Cobros Digitales", que sincroniza el estado (o pide un enlace
+  // nuevo si venció). El slug debe ser el de ESTE club.
+  const [retornoStripeConnect, setRetornoStripeConnect] = useState(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const tipo = params.get('stripe_connect');
+    if (!tipo) return;
+    const slugRetorno = (params.get('club') || '').toLowerCase().trim();
+    params.delete('stripe_connect');
+    params.delete('club');
+    const resto = params.toString();
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${resto ? `?${resto}` : ''}${window.location.hash}`);
+    if (tipo !== 'retorno' && tipo !== 'refrescar') return;
+    const slugClub = String(clubInicial?.slug || '').toLowerCase().trim();
+    if (slugRetorno && slugClub && slugRetorno !== slugClub) {
+      mostrarToast({ titulo: 'Enlace de Stripe de otro club', detalle: 'Inicia sesión con la cuenta del club que estabas conectando.', tono: 'aviso' });
+      return;
+    }
+    setRetornoStripeConnect(tipo);
+    setModuloActivo('configuracion');
+    // Solo al montar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Interactive Onboarding Canvas — "Selección de Plan": solo guarda la
   // INTENCIÓN (memoria + sessionStorage). Nada se escribe en Supabase.
   const guardarPlanSeleccionadoClub = useCallback(async (plan) => {
@@ -65622,6 +65926,12 @@ function AppInterno({ clubInicial } = {}) {
     if (primerPermitido) setModuloActivo(primerPermitido);
   }, [permisos, moduloActivo, esStaffQlubos]);
 
+  // Regreso de Stripe Connect pendiente: en cuanto ficha el Propietario (el
+  // único que ve "Configuración del Club"), se abre "Cobros Digitales".
+  useEffect(() => {
+    if (retornoStripeConnect && operador?.rol === 'owner' && permisos.modulos.has('configuracion')) setModuloActivo('configuracion');
+  }, [retornoStripeConnect, operador?.rol, permisos]);
+
   // Rutas del módulo de Soporte: entrar directo a /soporte o /admin/soporte
   // (p. ej. al volver de Stripe Checkout) abre ese módulo, y mientras se esté
   // en él la URL lo refleja. No toca ninguna otra ruta: al salir de Soporte la
@@ -66403,6 +66713,9 @@ function AppInterno({ clubInicial } = {}) {
               // 'configuracion' por alguna otra vía (ej. orden de navegación
               // guardado en localStorage de una sesión anterior con otro rol).
               <ModuloConfiguracionClub
+                tabInicial={retornoStripeConnect ? 'cobros' : null}
+                retornoStripeConnect={retornoStripeConnect}
+                onRetornoStripeConnectProcesado={() => setRetornoStripeConnect(null)}
                 productos={productos}
                 variantesPorProducto={variantesPorProducto}
                 addonsHabilitados={addonsHabilitados}
