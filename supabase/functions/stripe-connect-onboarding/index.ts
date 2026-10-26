@@ -5,9 +5,14 @@
 //   { club_id, return_url?, accion?: 'onboarding' | 'estado' }
 //
 //   accion 'onboarding' (default):
-//     • Si el club no tiene `stripe_account_id`, crea una cuenta Standard
-//       (metadata: club_id, slug) y la guarda en `configuracion_club`.
-//     • Devuelve el Account Link de onboarding:
+//     • Si el club no tiene `stripe_account_id`, crea su cuenta conectada con
+//       ACCOUNTS V2 (`POST /v2/core/accounts`, ver stripe_v2.ts): configuración
+//       "merchant" (card_payments), dashboard "full", comisiones y riesgo a
+//       cargo de Stripe (equivalente a una cuenta Standard; 100 % de cada cobro
+//       para el club), metadata club_id + slug. La guarda en `configuracion_club`.
+//       (Stripe ya no recomienda `POST /v1/accounts` para integraciones nuevas.)
+//     • Devuelve el Account Link de onboarding (Account Links v2,
+//       `POST /v2/core/account_links`, use_case account_onboarding/merchant):
 //         { url, stripe_account_id, estado }
 //       Si la cuenta ya está completa y cobrando: { url: null, ya_conectada: true, … }
 //     • Regreso: return_url (validada) + ?stripe_connect=retorno&club=<slug>
@@ -30,7 +35,11 @@
 // '*' es seguro aquí: no se usan cookies; la seguridad está en el JWT del
 // dueño/staff (Authorization: Bearer …) y en la validación de return_url.
 //
+// Cuentas creadas ANTES con Accounts v1 siguen funcionando: si Stripe responde
+// que el id es de v1, se leen y onboardean con la API v1 de siempre.
+//
 // Secrets: STRIPE_SECRET_KEY, APP_URL (y BILLING_ALLOWED_ORIGINS opcional).
+//          STRIPE_V2_API_VERSION (opcional; por defecto 2025-12-15.clover).
 // Deploy:  supabase functions deploy stripe-connect-onboarding --no-verify-jwt
 //   (--no-verify-jwt: la función YA valida la sesión con usuarioDeLaPeticion;
 //    así un JWT rechazado responde 401 desde AQUÍ, con CORS, en vez de un
@@ -41,15 +50,23 @@ import { clubIdValido, urlDeRetornoValida } from '../_shared/billing_logica.ts';
 import {
   correoDelClub,
   cuentaPerteneceAlClub,
+  cuerpoAccountLinkV2,
+  cuerpoCuentaV2,
+  esAccountsV2Bloqueado,
   esCuentaRevocada,
+  esCuentaSoloV1,
   ESTADO_SIN_CUENTA,
   estadoDeCuenta,
+  estadoDeCuentaV2,
+  INCLUDE_CUENTA_V2,
   requiereEnlaceOnboarding,
   slugDelClub,
   urlConParametros,
   type CuentaConectadaLite,
+  type CuentaV2Lite,
   type EstadoConnect,
 } from './logica.ts';
+import { crearClienteStripeV2, STRIPE_V2_API_VERSION_DEFAULT, type ClienteStripeV2 } from './stripe_v2.ts';
 
 // ---------------------------------------------------------------------------
 // CORS
@@ -86,6 +103,20 @@ function clienteStripe(): ReturnType<typeof crearStripe> {
   if (!_stripe) _stripe = crearStripe();
   return _stripe;
 }
+
+// Accounts v2 (REST). Las cuentas conectadas NUEVAS se crean aquí.
+let _stripeV2: ClienteStripeV2 | null = null;
+function clienteStripeV2(): ClienteStripeV2 {
+  if (!_stripeV2) {
+    const clave = Deno.env.get('STRIPE_SECRET_KEY');
+    if (!clave) throw new Error('Falta el secret STRIPE_SECRET_KEY.');
+    _stripeV2 = crearClienteStripeV2(clave, Deno.env.get('STRIPE_V2_API_VERSION') || STRIPE_V2_API_VERSION_DEFAULT);
+  }
+  return _stripeV2;
+}
+
+const MENSAJE_V2_BLOQUEADO =
+  'Tu plataforma de Stripe todavía no tiene habilitado Accounts v2. Actívalo en Stripe → Connect → Configuración de la plataforma (en el mismo modo, prueba o producción, de tu STRIPE_SECRET_KEY) y vuelve a intentar.';
 
 // deno-lint-ignore no-explicit-any
 type Admin = any;
@@ -129,7 +160,7 @@ async function atender(req: Request): Promise<Response> {
   if (req.method !== 'POST') return json({ error: 'Método no permitido.' }, 405);
 
   try {
-    const stripe = clienteStripe();
+    const stripeV2 = clienteStripeV2();
     const base = appUrl();
     if (!base) return json({ error: 'Falta APP_URL en los secrets de la función.' }, 500);
 
@@ -153,11 +184,25 @@ async function atender(req: Request): Promise<Response> {
     let accountId = typeof fila.stripe_account_id === 'string' && fila.stripe_account_id ? fila.stripe_account_id : null;
 
     // ---- Cuenta existente: verificar pertenencia y sincronizar estado -----
+    // Cuentas creadas antes con Accounts v1 se siguen leyendo/onboardeando
+    // por v1; todas las demás (y las nuevas) por Accounts v2.
+    let esCuentaV1 = false;
     let estado: EstadoConnect = ESTADO_SIN_CUENTA;
     if (accountId) {
-      let cuenta: CuentaConectadaLite | null = null;
+      let cuenta: { id: string; metadata?: Record<string, string> | null } | null = null;
       try {
-        cuenta = (await stripe.accounts.retrieve(accountId)) as unknown as CuentaConectadaLite;
+        try {
+          const v2 = (await stripeV2.leerCuenta(accountId, INCLUDE_CUENTA_V2)) as unknown as CuentaV2Lite;
+          cuenta = v2;
+          estado = estadoDeCuentaV2(v2);
+        } catch (errV2) {
+          // Cuenta creada con Accounts v1, o plataforma sin Accounts v2: se lee por v1.
+          if (!esCuentaSoloV1(errV2) && !esAccountsV2Bloqueado(errV2)) throw errV2;
+          esCuentaV1 = true;
+          const v1 = (await clienteStripe().accounts.retrieve(accountId)) as unknown as CuentaConectadaLite;
+          cuenta = v1;
+          estado = estadoDeCuenta(v1);
+        }
       } catch (err) {
         if (!esCuentaRevocada(err)) throw err;
         console.warn(`[stripe-connect-onboarding] Club ${clubId}: sin acceso a ${accountId} (desconectada desde Stripe); se desvincula.`);
@@ -175,7 +220,6 @@ async function atender(req: Request): Promise<Response> {
             409
           );
         }
-        estado = estadoDeCuenta(cuenta);
         await guardarEstado(admin, clubId, estado);
       }
     }
@@ -196,16 +240,15 @@ async function atender(req: Request): Promise<Response> {
     }
 
     if (!accountId) {
-      const cuentaNueva = await stripe.accounts.create(
-        {
-          type: 'standard',
-          country: 'MX',
-          email: correoDelClub(fila) ?? usuario.email ?? undefined,
-          business_profile: { name: club.nombre ?? undefined },
-          metadata: { club_id: String(clubId), slug, plataforma: 'qlubos' },
-        },
-        { idempotencyKey: `qlubos-connect-club-${clubId}` }
-      );
+      // Accounts v2: POST /v2/core/accounts (configuración "merchant",
+      // dashboard completo, comisiones y riesgo con Stripe = cuenta Standard).
+      const cuentaNueva = (await stripeV2.crearCuenta(
+        cuerpoCuentaV2({ clubId, slug, nombre: club.nombre ?? null, correo: correoDelClub(fila) ?? usuario.email ?? null }),
+        { idempotencyKey: `qlubos-connect-v2-club-${clubId}` }
+      )) as unknown as CuentaV2Lite;
+      if (typeof cuentaNueva?.id !== 'string' || !/^acct_/.test(cuentaNueva.id)) {
+        throw new Error('Stripe no devolvió el id de la cuenta conectada.');
+      }
       // Solo se guarda si el club sigue sin cuenta (dos pestañas a la vez).
       const { error: errGuardar } = await admin
         .from('configuracion_club')
@@ -228,16 +271,25 @@ async function atender(req: Request): Promise<Response> {
       estado = { ...ESTADO_SIN_CUENTA, conectada: true, stripe_account_id: accountId };
     }
 
-    const enlace = await stripe.accountLinks.create({
-      account: accountId!,
-      type: 'account_onboarding',
-      return_url: urlConParametros(retornoBase, { stripe_connect: 'retorno', club: slug }),
-      refresh_url: urlConParametros(retornoBase, { stripe_connect: 'refrescar', club: slug }),
-    });
+    const returnUrl = urlConParametros(retornoBase, { stripe_connect: 'retorno', club: slug });
+    const refreshUrl = urlConParametros(retornoBase, { stripe_connect: 'refrescar', club: slug });
+    const enlace = esCuentaV1
+      ? await clienteStripe().accountLinks.create({ account: accountId!, type: 'account_onboarding', return_url: returnUrl, refresh_url: refreshUrl })
+      : ((await stripeV2.crearAccountLink(cuerpoAccountLinkV2(accountId!, returnUrl, refreshUrl))) as { url?: string });
+    if (typeof enlace?.url !== 'string' || !enlace.url) throw new Error('Stripe no devolvió el link de onboarding.');
 
     return json({ ...estado, url: enlace.url, ya_conectada: false });
   } catch (err) {
+    if (esAccountsV2Bloqueado(err)) {
+      console.error('[stripe-connect-onboarding] Accounts v2 no habilitado en la plataforma de Stripe.');
+      return json({ error: MENSAJE_V2_BLOQUEADO, codigo: 'accounts_v2_no_habilitado' }, 409);
+    }
     console.error('[stripe-connect-onboarding]', err);
-    return json({ error: mensajeStripe(err, 'No se pudo conectar con Stripe. Intenta de nuevo.') }, 500);
+    const e = err as { type?: string; code?: string | null };
+    const esDeStripe = typeof e?.type === 'string' && e.type.startsWith('Stripe');
+    return json(
+      { error: mensajeStripe(err, 'No se pudo conectar con Stripe. Intenta de nuevo.'), ...(esDeStripe && e.code ? { codigo: e.code } : {}) },
+      esDeStripe ? 502 : 500
+    );
   }
 }
