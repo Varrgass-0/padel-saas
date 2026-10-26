@@ -212,3 +212,303 @@ export function urlConParametros(base: string, parametros: Record<string, string
   for (const [k, v] of Object.entries(parametros)) u.searchParams.set(k, v);
   return u.toString().replace(/%7BCHECKOUT_SESSION_ID%7D/g, '{CHECKOUT_SESSION_ID}');
 }
+
+// =============================================================================
+// v122 — Todos los módulos del Portal (Torneos, Retas, Academia, Tienda y
+// Quick Sell en reservas). Réplica EXACTA de los cálculos del Portal
+// (App.jsx: `precioDeReta`, `montoInscripcionTorneo`,
+// `descuentoProntoPagoVigente`, `montoParaUnirseATorneo`, `inscribirseAClase`,
+// `normalizarVarianteJSONB`, `productoIgnoraStockRigido`,
+// `agregarAlCarritoPortal`). El servidor siempre los recalcula desde la BD.
+// =============================================================================
+
+export const CUPOS_RETA = 4;
+export const PAQUETE_CREDITOS_DEFECTO = 4;
+export const CANTIDAD_MAXIMA_ARTICULO = 99;
+export const TIPOS_PAGO_PORTAL = ['reserva', 'torneo', 'torneo_union', 'reta', 'academia', 'tienda'] as const;
+export type TipoPagoPortal = (typeof TIPOS_PAGO_PORTAL)[number];
+
+export function esTipoPagoPortal(v: unknown): v is TipoPagoPortal {
+  return typeof v === 'string' && (TIPOS_PAGO_PORTAL as readonly string[]).includes(v);
+}
+
+/** Redondeo a centavos (evita 0.1 + 0.2). */
+export function redondear2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+export function precioDeReta(reta: Fila | null | undefined): number {
+  if (!reta) return 0;
+  const candidatos = [reta.precio_inscripcion, reta.costo_inscripcion, reta.precio_persona, reta.precio_individual, reta.precio, reta.costo];
+  const encontrado = candidatos.find((c) => c !== null && c !== undefined && c !== '');
+  return Number(encontrado) || 0;
+}
+
+export function descuentoProntoPagoVigente(torneo: Fila | null | undefined, fechaISO: string): number {
+  const reglas = Array.isArray(torneo?.descuentos_pronto_pago) ? (torneo!.descuentos_pronto_pago as Fila[]) : [];
+  const vigentes = reglas.filter(
+    (r) => r?.fecha_inicio && r?.fecha_fin && fechaISO >= String(r.fecha_inicio) && fechaISO <= String(r.fecha_fin)
+  );
+  if (vigentes.length === 0) return 0;
+  const maxPorcentaje = Math.max(...vigentes.map((r) => Number(r.porcentaje) || 0));
+  return Math.min(100, Math.max(0, maxPorcentaje));
+}
+
+export type ModoPareja = 'ninguna' | 'sin' | 'nueva' | 'registrada';
+
+export function montoInscripcionTorneo(torneo: Fila, pareja: { modo?: string } | null, fechaISO: string): number {
+  const precioBase = Number(torneo?.precio) || 0;
+  const incluyePareja = pareja?.modo === 'registrada' || pareja?.modo === 'nueva';
+  const precioConPareja = incluyePareja && torneo?.unidad_precio === 'jugador' ? precioBase * 2 : precioBase;
+  const descuentoPct = descuentoProntoPagoVigente(torneo, fechaISO);
+  return descuentoPct > 0 ? Math.round(precioConPareja * (1 - descuentoPct / 100)) : precioConPareja;
+}
+
+/** Lo que le falta cubrir a quien se une a una inscripción "en busca de pareja". */
+export function montoParaUnirseATorneo(torneo: Fila, participanteExistente: Fila, fechaISO: string): number {
+  const montoEquipo = montoInscripcionTorneo(torneo, { modo: 'nueva' }, fechaISO);
+  const montoYaCubierto = Number(participanteExistente?.monto) || 0;
+  return Math.max(0, montoEquipo - montoYaCubierto);
+}
+
+export function precioClase(clase: Fila, tipoPago: string): number {
+  return tipoPago === 'mensualidad' ? Number(clase?.precio_mensualidad) || 0 : Number(clase?.precio_clase_suelta) || 0;
+}
+
+/** ¿La fila ocupa lugar? (mismo criterio que `inscripcionOcupaLugar` / bajas de Academia). */
+export function filaActiva(fila: Fila, tabla: 'torneo_participantes' | 'reta_inscripciones' | 'academia_alumnos'): boolean {
+  if (tabla === 'academia_alumnos') return fila?.estado !== 'baja';
+  return fila?.estado !== 'cancelado' && fila?.estado !== 'retenido';
+}
+
+/** Membresía de Academia vigente (`buscarMembresiaActivaDeJugador`). */
+export function membresiaActiva(alumnos: Fila[], jugadorId: string, hoyISO: string): Fila | null {
+  return (
+    (alumnos || []).find(
+      (a) =>
+        String(a.jugador_id) === String(jugadorId) &&
+        a.tipo_pago === 'mensualidad' &&
+        (a.estado_pago ?? a.estatus_pago) === 'pagado' &&
+        a.estado !== 'baja' &&
+        Number(a.creditos_restantes) > 0 &&
+        (!a.fecha_renovacion || String(a.fecha_renovacion) >= hoyISO)
+    ) || null
+  );
+}
+
+/** ¿El evento (fecha + hora en la zona del club) ya empezó? Sin fecha → no. */
+export function eventoYaInicio(fecha: unknown, hora: unknown, zona: string, ahora: Date = new Date()): boolean {
+  const f = typeof fecha === 'string' ? fecha.slice(0, 10) : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return false;
+  const min = parseHoraAMinutos(hora ?? '00:00') ?? 0;
+  const hoy = ahoraEnZona(zona, ahora);
+  return f < hoy.fecha || (f === hoy.fecha && min <= hoy.minutos);
+}
+
+export function zonaDelClub(club: Fila): string {
+  return typeof club?.zona_horaria === 'string' && club.zona_horaria ? club.zona_horaria : 'America/Mexico_City';
+}
+
+// ---------------------------------------------------------------------------
+// Productos (Tienda y Quick Sell)
+// ---------------------------------------------------------------------------
+export interface VarianteNormalizada {
+  id: string;
+  nombre: string;
+  precio: number | null;
+  stock: number | null;
+  activo: boolean;
+  recibido: boolean;
+}
+
+function nombreDeVariante(v: Fila): string {
+  const crudo = v?.nombre ?? v?.variante ?? v?.label ?? v?.nombre_variante ?? v?.id;
+  return crudo == null ? '' : String(crudo).trim();
+}
+
+function claveStockVariante(v: Fila): string | null {
+  if (v == null) return null;
+  if (Object.prototype.hasOwnProperty.call(v, 'stock')) return 'stock';
+  if (Object.prototype.hasOwnProperty.call(v, 'cantidad')) return 'cantidad';
+  if (Object.prototype.hasOwnProperty.call(v, 'existencias')) return 'existencias';
+  return null;
+}
+
+export function idEstableVariante(v: Fila, indice: number): string {
+  if (v?.id != null && v.id !== '') return String(v.id);
+  const nombre = nombreDeVariante(v);
+  return nombre ? `var-${nombre.toLowerCase().replace(/\s+/g, '-')}` : `var-${indice}`;
+}
+
+export function normalizarVariante(v: Fila, indice: number): VarianteNormalizada {
+  const clave = claveStockVariante(v);
+  return {
+    id: idEstableVariante(v, indice),
+    nombre: nombreDeVariante(v) || `Variante ${indice + 1}`,
+    precio: v?.precio != null ? Number(v.precio) : null,
+    stock: clave ? Number(v[clave]) || 0 : null,
+    activo: v?.activo !== false,
+    recibido: v?.recibido !== false,
+  };
+}
+
+/** Variantes que el Portal deja vender (activas y recibidas). */
+export function variantesVendibles(producto: Fila): VarianteNormalizada[] {
+  if (!Array.isArray(producto?.variantes)) return [];
+  return (producto.variantes as Fila[]).map(normalizarVariante).filter((v) => v.activo !== false && v.recibido !== false);
+}
+
+export function productoIgnoraStock(producto: Fila): boolean {
+  if (!producto) return false;
+  if (producto.maneja_stock === false) return true;
+  return producto.categoria === 'Cafetería/Bar' && producto.subcategoria === 'alimentos';
+}
+
+function productoVendible(p: Fila): boolean {
+  return p?.disponible !== false && p?.recibido !== false;
+}
+
+/** Add-ons curados por el club (Quick Sell). Vacío si el switch está apagado. */
+export function idsAddonsDelClub(club: Fila): Set<string> {
+  if (club?.addons_habilitados === false) return new Set();
+  const ids = Array.isArray(club?.productos_addons_ids) ? (club.productos_addons_ids as unknown[]) : [];
+  return new Set(ids.map((id) => String(id)));
+}
+
+/**
+ * Productos que se pueden cobrar en línea:
+ *  - 'addons' (Quick Sell en la reserva): solo los curados por el club.
+ *  - 'tienda' (carrito del Portal): Pro-Shop + los curados (el carrito también
+ *    ofrece las sugerencias "Para ti").
+ */
+export function productoPermitido(producto: Fila, club: Fila, modo: 'addons' | 'tienda'): boolean {
+  if (!producto || !productoVendible(producto)) return false;
+  if (String(producto.club_id) !== String(club?.id)) return false;
+  const curado = idsAddonsDelClub(club).has(String(producto.id));
+  return modo === 'addons' ? curado : producto.categoria === 'Pro-Shop' || curado;
+}
+
+export interface SolicitudArticulo {
+  producto_id: unknown;
+  variante_id?: unknown;
+  cantidad: unknown;
+}
+
+export interface ArticuloCobrado {
+  tipo: 'producto';
+  producto_id: string;
+  variante_id: string | null;
+  variante_nombre: string | null;
+  es_variante: boolean;
+  cancha_id: null;
+  nombre: string;
+  precio: number;
+  cantidad: number;
+  subtotal: number;
+}
+
+export type ResultadoArticulos =
+  | { ok: true; items: ArticuloCobrado[]; subtotal: number }
+  | { ok: false; codigo: string; error: string };
+
+/**
+ * Valida y cotiza los artículos contra la BD: producto del club y permitido,
+ * variante obligatoria si el producto tiene variantes, cantidad entera 1..99 y
+ * existencias suficientes (salvo productos sin control de stock). Junta
+ * renglones repetidos del mismo producto/variante.
+ */
+export function cotizarArticulos(
+  solicitud: unknown,
+  productosPorId: Map<string, Fila>,
+  club: Fila,
+  modo: 'addons' | 'tienda'
+): ResultadoArticulos {
+  if (solicitud == null) return { ok: true, items: [], subtotal: 0 };
+  if (!Array.isArray(solicitud)) return { ok: false, codigo: 'articulos_invalidos', error: 'Lista de artículos inválida.' };
+  if (solicitud.length > 50) return { ok: false, codigo: 'articulos_invalidos', error: 'Demasiados artículos en una sola compra.' };
+  const agrupados = new Map<string, { producto: Fila; variante: VarianteNormalizada | null; cantidad: number }>();
+  for (const s of solicitud as SolicitudArticulo[]) {
+    const productoId = s?.producto_id != null ? String(s.producto_id) : '';
+    const producto = productosPorId.get(productoId);
+    if (!producto || !productoPermitido(producto, club, modo)) {
+      return { ok: false, codigo: 'producto_no_disponible', error: 'Uno de los artículos ya no está disponible.' };
+    }
+    const cantidad = Number(s?.cantidad);
+    if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > CANTIDAD_MAXIMA_ARTICULO) {
+      return { ok: false, codigo: 'cantidad_invalida', error: `Cantidad inválida para ${String(producto.nombre ?? 'un artículo')}.` };
+    }
+    const variantes = variantesVendibles(producto);
+    let variante: VarianteNormalizada | null = null;
+    if (variantes.length > 0) {
+      const varianteId = s?.variante_id != null ? String(s.variante_id) : '';
+      variante = variantes.find((v) => v.id === varianteId) ?? null;
+      if (!variante) return { ok: false, codigo: 'variante_invalida', error: `Elige una opción válida de ${String(producto.nombre ?? 'el producto')}.` };
+    } else if (s?.variante_id != null && s.variante_id !== '') {
+      return { ok: false, codigo: 'variante_invalida', error: `${String(producto.nombre ?? 'El producto')} no tiene esa opción.` };
+    }
+    const clave = `${productoId}|${variante?.id ?? ''}`;
+    const previo = agrupados.get(clave);
+    agrupados.set(clave, { producto, variante, cantidad: (previo?.cantidad ?? 0) + cantidad });
+  }
+  const items: ArticuloCobrado[] = [];
+  for (const { producto, variante, cantidad } of agrupados.values()) {
+    if (cantidad > CANTIDAD_MAXIMA_ARTICULO) {
+      return { ok: false, codigo: 'cantidad_invalida', error: `Cantidad inválida para ${String(producto.nombre ?? 'un artículo')}.` };
+    }
+    const nombre = variante ? `${String(producto.nombre ?? 'Producto')} — ${variante.nombre}` : String(producto.nombre ?? 'Producto');
+    if (!productoIgnoraStock(producto)) {
+      const disponible = variante ? variante.stock : producto.maneja_stock === false || producto.stock == null ? null : Number(producto.stock);
+      if (disponible != null && Number.isFinite(disponible) && cantidad > disponible) {
+        return {
+          ok: false,
+          codigo: 'sin_stock',
+          error: disponible > 0 ? `${nombre} solo tiene ${disponible} disponible(s).` : `${nombre} está agotado.`,
+        };
+      }
+    }
+    const precio = variante && variante.precio != null ? variante.precio : Number(producto.precio) || 0;
+    if (!(precio > 0)) return { ok: false, codigo: 'producto_no_disponible', error: `${nombre} no tiene precio de venta.` };
+    items.push({
+      tipo: 'producto',
+      producto_id: String(producto.id),
+      variante_id: variante ? variante.id : null,
+      variante_nombre: variante ? variante.nombre : null,
+      es_variante: Boolean(variante),
+      cancha_id: null,
+      nombre,
+      precio: redondear2(precio),
+      cantidad,
+      subtotal: redondear2(precio * cantidad),
+    });
+  }
+  return { ok: true, items, subtotal: redondear2(items.reduce((acc, i) => acc + i.subtotal, 0)) };
+}
+
+/** Texto corto y seguro (nombres, categorías) para guardar en filas. */
+export function textoCorto(v: unknown, max = 80): string | null {
+  if (typeof v !== 'string') return null;
+  const limpio = Array.from(v, (c) => (c.charCodeAt(0) < 32 ? ' ' : c)).join('').trim();
+  return limpio ? limpio.slice(0, max) : null;
+}
+
+/** Teléfono a 10 dígitos (o null). */
+export function telefonoLimpio(v: unknown): string | null {
+  if (typeof v !== 'string' && typeof v !== 'number') return null;
+  const d = String(v).replace(/\D/g, '');
+  return d.length >= 10 ? d.slice(-10) : null;
+}
+
+/** Mensaje y status HTTP de los errores de retención (P0001 de v122). */
+export function errorDeRetencion(mensaje: string): { codigo: string; error: string } | null {
+  const mapa: Record<string, string> = {
+    horario_ocupado: 'Ese horario se acaba de ocupar. Elige otro.',
+    ya_inscrito: 'Ya tienes un lugar en este evento.',
+    cupo_lleno: 'Ya no hay lugares disponibles.',
+    pareja_completa: 'Esa pareja ya se completó.',
+    evento_no_disponible: 'Ese evento ya no está disponible.',
+  };
+  for (const codigo of Object.keys(mapa)) {
+    if (mensaje.includes(codigo)) return { codigo, error: mapa[codigo] };
+  }
+  return null;
+}

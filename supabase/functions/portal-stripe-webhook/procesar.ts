@@ -25,6 +25,17 @@ export interface DepsPortal {
   }): Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
   /** RPC fn_portal_expirar_reserva_en_linea. */
   expirar(args: { p_reserva_id: string; p_session_id: string }): Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
+  /** v122 · RPC fn_portal_pago_confirmar (todos los módulos del Portal). */
+  confirmarPago?(args: {
+    p_pago_id: string;
+    p_session_id: string;
+    p_cuenta: string;
+    p_payment_intent: string | null;
+    p_monto_centavos: number;
+    p_moneda: string;
+  }): Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
+  /** v122 · RPC fn_portal_pago_expirar. */
+  expirarPago?(args: { p_pago_id: string; p_session_id: string }): Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
 }
 
 export interface ResultadoPortal {
@@ -48,9 +59,17 @@ export async function procesarEventoPortal(evento: EventoConnectLite, deps: Deps
   const metadata = (s.metadata ?? {}) as Record<string, string>;
   const sesionId = texto(s.id);
   const clubId = texto(metadata.club_id);
-  if (metadata.qlubos_tipo !== 'reserva') return { estado: 'ignorado', nota: 'no es una reserva del Portal', objeto_id: sesionId };
-  const reservaId = texto(metadata.reserva_id) ?? texto(s.client_reference_id);
-  if (!reservaId || !sesionId) return { estado: 'error', nota: 'sesión sin reserva_id', objeto_id: sesionId, club_id: clubId };
+  const esPagoPortal = metadata.qlubos_tipo === 'portal_pago';
+  if (metadata.qlubos_tipo !== 'reserva' && !esPagoPortal) return { estado: 'ignorado', nota: 'no es un cobro del Portal', objeto_id: sesionId };
+  const reservaId = esPagoPortal ? null : texto(metadata.reserva_id) ?? texto(s.client_reference_id);
+  const pagoId = esPagoPortal ? texto(metadata.pago_id) ?? texto(s.client_reference_id) : null;
+  if (!sesionId || (!reservaId && !pagoId)) {
+    return { estado: 'error', nota: esPagoPortal ? 'sesión sin pago_id' : 'sesión sin reserva_id', objeto_id: sesionId, club_id: clubId };
+  }
+  if (esPagoPortal && (!deps.confirmarPago || !deps.expirarPago)) {
+    return { estado: 'error', nota: 'webhook sin soporte de portal_pago', objeto_id: sesionId, club_id: clubId, reintentar: true };
+  }
+  const etiqueta = esPagoPortal ? `pago ${pagoId} (${texto(metadata.tipo) ?? 'portal'})` : `reserva ${reservaId}`;
 
   const evaluar = (error: { code?: string; message?: string } | null, okNota: string): ResultadoPortal => {
     if (!error) return { estado: 'procesado', nota: okNota, club_id: clubId, objeto_id: sesionId };
@@ -65,20 +84,24 @@ export async function procesarEventoPortal(evento: EventoConnectLite, deps: Deps
       if (s.payment_status !== 'paid') return { estado: 'ignorado', nota: `payment_status=${String(s.payment_status)}`, club_id: clubId, objeto_id: sesionId };
       const pi = s.payment_intent;
       const paymentIntent = typeof pi === 'string' ? pi : texto((pi as Record<string, unknown> | null)?.id);
-      const { error } = await deps.confirmar({
-        p_reserva_id: reservaId,
+      const comun = {
         p_session_id: sesionId,
         p_cuenta: cuenta,
         p_payment_intent: paymentIntent,
         p_monto_centavos: Number(s.amount_total),
         p_moneda: String(s.currency ?? ''),
-      });
-      return evaluar(error, `reserva ${reservaId} pagada`);
+      };
+      const { error } = esPagoPortal
+        ? await deps.confirmarPago!({ p_pago_id: pagoId!, ...comun })
+        : await deps.confirmar({ p_reserva_id: reservaId!, ...comun });
+      return evaluar(error, `${etiqueta} pagado`);
     }
     case 'checkout.session.expired':
     case 'checkout.session.async_payment_failed': {
-      const { error } = await deps.expirar({ p_reserva_id: reservaId, p_session_id: sesionId });
-      return evaluar(error, `retención de la reserva ${reservaId} liberada`);
+      const { error } = esPagoPortal
+        ? await deps.expirarPago!({ p_pago_id: pagoId!, p_session_id: sesionId })
+        : await deps.expirar({ p_reserva_id: reservaId!, p_session_id: sesionId });
+      return evaluar(error, `retención del ${etiqueta} liberada`);
     }
     default:
       return { estado: 'ignorado', nota: evento.type, club_id: clubId, objeto_id: sesionId };

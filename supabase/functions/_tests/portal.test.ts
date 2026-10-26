@@ -13,6 +13,18 @@ import {
   tarifasActivasDelDia,
   urlConParametros,
   validarSolicitudReserva,
+  cotizarArticulos,
+  descuentoProntoPagoVigente,
+  errorDeRetencion,
+  esTipoPagoPortal,
+  eventoYaInicio,
+  membresiaActiva,
+  montoInscripcionTorneo,
+  montoParaUnirseATorneo,
+  precioClase,
+  precioDeReta,
+  productoIgnoraStock,
+  variantesVendibles,
 } from '../portal-checkout/logica.ts';
 import { procesarEventoPortal, type DepsPortal } from '../portal-stripe-webhook/procesar.ts';
 
@@ -110,6 +122,14 @@ function depsFalsas(errorConfirmar: { code?: string; message?: string } | null =
       llamadas.push({ fn: 'expirar', args });
       return Promise.resolve({ data: { resultado: 'liberada' }, error: null });
     },
+    confirmarPago: (args) => {
+      llamadas.push({ fn: 'confirmarPago', args });
+      return Promise.resolve({ data: { resultado: 'confirmada' }, error: errorConfirmar });
+    },
+    expirarPago: (args) => {
+      llamadas.push({ fn: 'expirarPago', args });
+      return Promise.resolve({ data: { resultado: 'liberada' }, error: null });
+    },
   };
   return { deps, llamadas };
 }
@@ -164,4 +184,150 @@ Deno.test('portal webhook: inconsistencia (P0001) no se reintenta; error transit
     depsFalsas({ code: '08006', message: 'conexión' }).deps
   );
   igual([r.estado, r.reintentar], ['error', true]);
+});
+
+// =============================================================================
+// v122 — todos los módulos del Portal
+// =============================================================================
+Deno.test('portal v122: precio de reta por alias y torneo con pareja / pronto pago', () => {
+  igual(precioDeReta({ costo_inscripcion: '180' }), 180);
+  igual(precioDeReta({ precio_inscripcion: null, precio_persona: 0, precio: 300 }), 0); // 0 es un valor capturado (igual que el Portal)
+  igual(precioDeReta(null), 0);
+  const torneo = { precio: 500, unidad_precio: 'jugador', descuentos_pronto_pago: [{ fecha_inicio: '2026-10-01', fecha_fin: '2026-10-31', porcentaje: 10 }, { fecha_inicio: '2026-10-20', fecha_fin: '2026-10-30', porcentaje: 15 }] };
+  igual(descuentoProntoPagoVigente(torneo, '2026-10-26'), 15);
+  igual(descuentoProntoPagoVigente(torneo, '2026-11-02'), 0);
+  igual(montoInscripcionTorneo(torneo, { modo: 'nueva' }, '2026-11-02'), 1000); // por jugador × 2
+  igual(montoInscripcionTorneo(torneo, { modo: 'ninguna' }, '2026-11-02'), 500);
+  igual(montoInscripcionTorneo(torneo, { modo: 'registrada' }, '2026-10-26'), 850); // 1000 − 15 %
+  igual(montoInscripcionTorneo({ precio: 600, unidad_precio: 'pareja' }, { modo: 'nueva' }, '2026-10-26'), 600);
+  igual(montoParaUnirseATorneo(torneo, { monto: 500 }, '2026-11-02'), 500);
+  igual(montoParaUnirseATorneo({ precio: 600, unidad_precio: 'pareja' }, { monto: 600 }, '2026-11-02'), 0);
+});
+
+Deno.test('portal v122: academia (precio, membresía vigente) y eventos iniciados', () => {
+  const clase = { precio_mensualidad: 900, precio_clase_suelta: '250' };
+  igual([precioClase(clase, 'mensualidad'), precioClase(clase, 'clase_suelta')], [900, 250]);
+  const alumnos = [
+    { jugador_id: 3, tipo_pago: 'mensualidad', estado_pago: 'pagado', estado: 'activo', creditos_restantes: 2, fecha_renovacion: '2026-11-20' },
+    { jugador_id: 4, tipo_pago: 'mensualidad', estado_pago: 'pagado', estado: 'activo', creditos_restantes: 0, fecha_renovacion: '2026-11-20' },
+    { jugador_id: 5, tipo_pago: 'mensualidad', estatus_pago: 'pagado', estado: 'baja', creditos_restantes: 3 },
+  ];
+  igual(Boolean(membresiaActiva(alumnos, '3', '2026-10-26')), true);
+  igual(Boolean(membresiaActiva(alumnos, '3', '2026-11-21')), false); // vencida
+  igual(Boolean(membresiaActiva(alumnos, '4', '2026-10-26')), false); // sin créditos
+  igual(Boolean(membresiaActiva(alumnos, '5', '2026-10-26')), false); // baja
+  const ahora = new Date('2026-10-26T18:00:00Z'); // 12:00 en CDMX
+  igual(eventoYaInicio('2026-10-26', '11:30', 'America/Mexico_City', ahora), true);
+  igual(eventoYaInicio('2026-10-26', '12:30', 'America/Mexico_City', ahora), false);
+  igual(eventoYaInicio('2026-10-25', '23:00', 'America/Mexico_City', ahora), true);
+  igual(eventoYaInicio(null, '10:00', 'America/Mexico_City', ahora), false);
+  igual([esTipoPagoPortal('tienda'), esTipoPagoPortal('suscripcion')], [true, false]);
+});
+
+const CLUB_TIENDA = { id: 1, addons_habilitados: true, productos_addons_ids: [10, '13'] };
+const PRODUCTOS = new Map<string, Record<string, unknown>>([
+  ['10', { id: 10, club_id: 1, nombre: 'Grip', categoria: 'Pro-Shop', precio: 80, stock: 3 }],
+  ['11', { id: 11, club_id: 1, nombre: 'Playera', categoria: 'Pro-Shop', precio: 400, variantes: [{ id: 'v1', nombre: 'M', stock: 1 }, { nombre: 'L', precio: 420, stock: 5 }, { nombre: 'XL', stock: 9, recibido: false }] }],
+  ['12', { id: 12, club_id: 1, nombre: 'Raqueta', categoria: 'Pro-Shop', precio: 3000, stock: 2, disponible: false }],
+  ['13', { id: 13, club_id: 1, nombre: 'Agua', categoria: 'Cafetería/Bar', subcategoria: 'alimentos', precio: 25, stock: 0 }],
+  ['14', { id: 14, club_id: 1, nombre: 'Gorra', categoria: 'Accesorios', precio: 200, stock: 4 }],
+]);
+
+Deno.test('portal v122: variantes vendibles y productos sin control de stock', () => {
+  igual(variantesVendibles(PRODUCTOS.get('11')!).map((v) => [v.id, v.precio, v.stock]), [['v1', null, 1], ['var-l', 420, 5]]);
+  igual([productoIgnoraStock(PRODUCTOS.get('13')!), productoIgnoraStock({ maneja_stock: false }), productoIgnoraStock(PRODUCTOS.get('10')!)], [true, true, false]);
+});
+
+Deno.test('portal v122: cotización de tienda con precios de la BD (ignora el precio del navegador)', () => {
+  const r = cotizarArticulos(
+    [
+      { producto_id: 10, cantidad: 2, precio: 1 },
+      { producto_id: '11', variante_id: 'var-l', cantidad: 1 },
+      { producto_id: '11', variante_id: 'v1', cantidad: 1 },
+      { producto_id: 10, cantidad: 1 },
+      { producto_id: 13, cantidad: 4 },
+    ],
+    PRODUCTOS,
+    CLUB_TIENDA,
+    'tienda'
+  );
+  if (!r.ok) throw new Error(r.error);
+  igual(r.items.map((i) => [i.producto_id, i.variante_id, i.nombre, i.precio, i.cantidad, i.subtotal]), [
+    ['10', null, 'Grip', 80, 3, 240],
+    ['11', 'var-l', 'Playera — L', 420, 1, 420],
+    ['11', 'v1', 'Playera — M', 400, 1, 400],
+    ['13', null, 'Agua', 25, 4, 100], // alimentos: sin límite de stock
+  ]);
+  igual(r.subtotal, 1160);
+});
+
+Deno.test('portal v122: rechazos de la cotización (stock, variante, no disponible, cantidad, no curado)', () => {
+  const codigo = (sol: unknown, modo: 'tienda' | 'addons' = 'tienda') => {
+    const r = cotizarArticulos(sol, PRODUCTOS, CLUB_TIENDA, modo);
+    return r.ok ? 'ok' : r.codigo;
+  };
+  igual(codigo([{ producto_id: 10, cantidad: 4 }]), 'sin_stock');
+  igual(codigo([{ producto_id: 10, cantidad: 2 }, { producto_id: 10, cantidad: 2 }]), 'sin_stock'); // renglones repetidos se suman
+  igual(codigo([{ producto_id: 11, cantidad: 1 }]), 'variante_invalida');
+  igual(codigo([{ producto_id: 11, variante_id: 'var-xl', cantidad: 1 }]), 'variante_invalida'); // no recibida
+  igual(codigo([{ producto_id: 10, variante_id: 'v9', cantidad: 1 }]), 'variante_invalida');
+  igual(codigo([{ producto_id: 12, cantidad: 1 }]), 'producto_no_disponible');
+  igual(codigo([{ producto_id: 14, cantidad: 1 }]), 'producto_no_disponible'); // ni Pro-Shop ni curado
+  igual(codigo([{ producto_id: 99, cantidad: 1 }]), 'producto_no_disponible');
+  igual(codigo([{ producto_id: 10, cantidad: 0 }]), 'cantidad_invalida');
+  igual(codigo([{ producto_id: 10, cantidad: 1.5 }]), 'cantidad_invalida');
+  igual(codigo('x'), 'articulos_invalidos');
+  // Quick Sell: solo los curados por el club, y nada si el switch está apagado.
+  igual(codigo([{ producto_id: 11, variante_id: 'v1', cantidad: 1 }], 'addons'), 'producto_no_disponible');
+  igual(codigo([{ producto_id: 10, cantidad: 1 }], 'addons'), 'ok');
+  const apagado = cotizarArticulos([{ producto_id: 10, cantidad: 1 }], PRODUCTOS, { ...CLUB_TIENDA, addons_habilitados: false }, 'addons');
+  igual(apagado.ok, false);
+  // Producto de otro club
+  const ajeno = new Map([['10', { ...PRODUCTOS.get('10')!, club_id: 2 }]]);
+  igual(cotizarArticulos([{ producto_id: 10, cantidad: 1 }], ajeno, CLUB_TIENDA, 'tienda').ok, false);
+});
+
+Deno.test('portal v122: errores de retención → código y mensaje para el Portal', () => {
+  igual(errorDeRetencion('cupo_lleno')?.codigo, 'cupo_lleno');
+  igual(errorDeRetencion('ERROR: ya_inscrito')?.codigo, 'ya_inscrito');
+  igual(errorDeRetencion('otra cosa'), null);
+});
+
+const SESION_PAGO = {
+  ...SESION,
+  id: 'cs_9',
+  amount_total: 158000,
+  client_reference_id: 'b3b1c3a0-0000-4000-8000-000000000001',
+  metadata: { qlubos_tipo: 'portal_pago', pago_id: 'b3b1c3a0-0000-4000-8000-000000000001', tipo: 'reserva', club_id: '1', jugador_id: '3' },
+};
+
+Deno.test('portal webhook v122: portal_pago confirma y expira con el pago genérico', async () => {
+  const { deps, llamadas } = depsFalsas();
+  let r = await procesarEventoPortal({ id: 'e1', type: 'checkout.session.completed', account: 'acct_1A', data: { object: SESION_PAGO } }, deps);
+  igual(r.estado, 'procesado');
+  r = await procesarEventoPortal({ id: 'e2', type: 'checkout.session.expired', account: 'acct_1A', data: { object: { ...SESION_PAGO, payment_status: 'unpaid' } } }, deps);
+  igual(r.estado, 'procesado');
+  igual(llamadas, [
+    {
+      fn: 'confirmarPago',
+      args: { p_pago_id: 'b3b1c3a0-0000-4000-8000-000000000001', p_session_id: 'cs_9', p_cuenta: 'acct_1A', p_payment_intent: 'pi_1', p_monto_centavos: 158000, p_moneda: 'mxn' },
+    },
+    { fn: 'expirarPago', args: { p_pago_id: 'b3b1c3a0-0000-4000-8000-000000000001', p_session_id: 'cs_9' } },
+  ]);
+});
+
+Deno.test('portal webhook v122: la ruta v121 (reserva) no cambia y P0001 no se reintenta', async () => {
+  const { deps, llamadas } = depsFalsas();
+  await procesarEventoPortal({ id: 'e', type: 'checkout.session.completed', account: 'acct_1A', data: { object: SESION } }, deps);
+  igual(llamadas[0].fn, 'confirmar');
+  const r = await procesarEventoPortal(
+    { id: 'e', type: 'checkout.session.completed', account: 'acct_1A', data: { object: SESION_PAGO } },
+    depsFalsas({ code: 'P0001', message: 'monto distinto' }).deps
+  );
+  igual([r.estado, r.reintentar ?? false], ['error', false]);
+  const sinPago = await procesarEventoPortal(
+    { id: 'e', type: 'checkout.session.completed', account: 'acct_1A', data: { object: { ...SESION_PAGO, client_reference_id: null, metadata: { qlubos_tipo: 'portal_pago' } } } },
+    deps
+  );
+  igual(sinPago.estado, 'error');
 });

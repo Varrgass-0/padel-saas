@@ -12,9 +12,15 @@
 // Secret: STRIPE_CONNECT_WEBHOOK_SECRET (whsec_… de ESE endpoint).
 // Deploy: supabase functions deploy portal-stripe-webhook --no-verify-jwt
 //
-// Seguridad: firma verificada; la reserva solo se marca pagada si la sesión,
+// Seguridad: firma verificada; el cobro solo se marca pagado si la sesión,
 // la cuenta conectada (`event.account`) y el monto coinciden con lo que
-// guardó portal-checkout (ver fn_portal_confirmar_pago_reserva, v121).
+// guardó portal-checkout:
+//   • metadata.qlubos_tipo = 'portal_pago' (v122: reservas + Quick Sell,
+//     torneos, retas, academia, tienda) → fn_portal_pago_confirmar: marca
+//     pagado, genera el ticket en `ventas` y DESCUENTA EL INVENTARIO del POS
+//     (+ Kardex) de los artículos comprados.
+//   • metadata.qlubos_tipo = 'reserva' (sesiones creadas con v121) →
+//     fn_portal_confirmar_pago_reserva, sin cambios.
 // Idempotencia: tabla `stripe_eventos` (dominio 'portal').
 // Respuestas: 400 firma inválida · 200 procesado/ignorado/duplicado/dato
 // inconsistente · 500 error transitorio (Stripe reintenta).
@@ -88,6 +94,8 @@ async function atender(req: Request): Promise<Response> {
   const r = await procesarEventoPortal(evento, {
     confirmar: (args) => admin.rpc('fn_portal_confirmar_pago_reserva', args),
     expirar: (args) => admin.rpc('fn_portal_expirar_reserva_en_linea', args),
+    confirmarPago: (args) => admin.rpc('fn_portal_pago_confirmar', args),
+    expirarPago: (args) => admin.rpc('fn_portal_pago_expirar', args),
   });
 
   const clubNum = r.club_id && /^\d+$/.test(r.club_id) ? Number(r.club_id) : null;
