@@ -23,21 +23,20 @@
 //   • Antes de usar una cuenta guardada se verifica que su metadata.club_id
 //     sea este club; si no coincide, se rechaza (nunca se cruzan cobros).
 //
+// CORS (autocontenido en este archivo, no depende de _shared): TODAS las
+// respuestas — preflight OPTIONS, éxito y errores 400/401/403/405/409/500 —
+// salen con Access-Control-Allow-Origin '*', Allow-Headers y Allow-Methods.
+// Así un error interno nunca se ve en Chrome DevTools como "CORS error".
+// '*' es seguro aquí: no se usan cookies; la seguridad está en el JWT del
+// dueño/staff (Authorization: Bearer …) y en la validación de return_url.
+//
 // Secrets: STRIPE_SECRET_KEY, APP_URL (y BILLING_ALLOWED_ORIGINS opcional).
-// Deploy:  supabase functions deploy stripe-connect-onboarding
+// Deploy:  supabase functions deploy stripe-connect-onboarding --no-verify-jwt
+//   (--no-verify-jwt: la función YA valida la sesión con usuarioDeLaPeticion;
+//    así un JWT rechazado responde 401 desde AQUÍ, con CORS, en vez de un
+//    rechazo del gateway de Supabase que el navegador reporta como CORS.)
 // =============================================================================
-import {
-  appUrl,
-  autorizarClub,
-  corsHeaders,
-  crearAdmin,
-  crearStripe,
-  mensajeStripe,
-  origenes,
-  preflight,
-  respuestaJson,
-  usuarioDeLaPeticion,
-} from '../_shared/billing.ts';
+import { appUrl, autorizarClub, crearAdmin, crearStripe, mensajeStripe, origenes, usuarioDeLaPeticion } from '../_shared/billing.ts';
 import { clubIdValido, urlDeRetornoValida } from '../_shared/billing_logica.ts';
 import {
   correoDelClub,
@@ -52,8 +51,35 @@ import {
   type EstadoConnect,
 } from './logica.ts';
 
-// Encabezados CORS estándar (ver _shared/billing.ts), exportados también aquí.
-export { corsHeaders };
+// ---------------------------------------------------------------------------
+// CORS
+// ---------------------------------------------------------------------------
+export const corsHeaders: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-region, x-supabase-api-version, accept, prefer',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+  'Access-Control-Max-Age': '86400',
+};
+
+/** Preflight: 200 'ok' + CORS. Acepta cualquier encabezado que pida el navegador. */
+function respuestaPreflight(req: Request): Response {
+  const pedidos = req.headers.get('Access-Control-Request-Headers');
+  const headers = { ...corsHeaders };
+  if (pedidos) headers['Access-Control-Allow-Headers'] = `${corsHeaders['Access-Control-Allow-Headers']}, ${pedidos}`;
+  return new Response('ok', { status: 200, headers });
+}
+
+/** JSON con CORS (éxito o error). */
+function json(cuerpo: unknown, status = 200): Response {
+  return new Response(JSON.stringify(cuerpo), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+}
+
+/** Garantiza CORS en cualquier respuesta (por si alguna rama futura no usa `json`). */
+function conCors(res: Response): Response {
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(corsHeaders)) if (!headers.has(k)) headers.set(k, v);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
 
 let _stripe: ReturnType<typeof crearStripe> | null = null;
 function clienteStripe(): ReturnType<typeof crearStripe> {
@@ -89,30 +115,39 @@ async function desvincular(admin: Admin, clubId: number, accountId: string): Pro
 
 Deno.serve(async (req) => {
   // Preflight CORS: respuesta inmediata, antes de cualquier otra lógica.
-  if (req.method === 'OPTIONS') return new Response('ok', { status: 200, headers: corsHeaders });
-  const corto = preflight(req);
-  if (corto) return corto;
+  if (req.method === 'OPTIONS') return respuestaPreflight(req);
+  try {
+    return conCors(await atender(req));
+  } catch (err) {
+    // Último recurso: nada sale sin CORS.
+    console.error('[stripe-connect-onboarding] Error no controlado', err);
+    return json({ error: 'No se pudo conectar con Stripe. Intenta de nuevo.' }, 500);
+  }
+});
+
+async function atender(req: Request): Promise<Response> {
+  if (req.method !== 'POST') return json({ error: 'Método no permitido.' }, 405);
 
   try {
     const stripe = clienteStripe();
     const base = appUrl();
-    if (!base) return respuestaJson(req, { error: 'Falta APP_URL en los secrets de la función.' }, 500);
+    if (!base) return json({ error: 'Falta APP_URL en los secrets de la función.' }, 500);
 
     const usuario = await usuarioDeLaPeticion(req);
-    if (!usuario) return respuestaJson(req, { error: 'Sesión inválida. Vuelve a iniciar sesión.' }, 401);
+    if (!usuario) return json({ error: 'Sesión inválida. Vuelve a iniciar sesión.' }, 401);
 
     const cuerpo = await req.json().catch(() => ({}));
     const clubId = clubIdValido(cuerpo?.club_id);
-    if (!clubId) return respuestaJson(req, { error: 'club_id inválido.' }, 400);
+    if (!clubId) return json({ error: 'club_id inválido.' }, 400);
     const accion = cuerpo?.accion === 'estado' ? 'estado' : 'onboarding';
 
     const admin = crearAdmin();
     const club = await autorizarClub(admin, usuario, clubId);
-    if (!club) return respuestaJson(req, { error: 'No tienes permiso para configurar los cobros de este club.' }, 403);
+    if (!club) return json({ error: 'No tienes permiso para configurar los cobros de este club.' }, 403);
 
     const fila = club.fila as Record<string, unknown>;
     if (!('stripe_account_id' in fila)) {
-      return respuestaJson(req, { error: 'Falta correr la migración v120 (Stripe Connect) en Supabase.', codigo: 'sin_migracion' }, 500);
+      return json({ error: 'Falta correr la migración v120 (Stripe Connect) en Supabase.', codigo: 'sin_migracion' }, 500);
     }
     const slug = slugDelClub(fila);
     let accountId = typeof fila.stripe_account_id === 'string' && fila.stripe_account_id ? fila.stripe_account_id : null;
@@ -128,15 +163,14 @@ Deno.serve(async (req) => {
         console.warn(`[stripe-connect-onboarding] Club ${clubId}: sin acceso a ${accountId} (desconectada desde Stripe); se desvincula.`);
         await desvincular(admin, clubId, accountId);
         accountId = null;
-        if (accion === 'estado') return respuestaJson(req, { ...ESTADO_SIN_CUENTA, revocada: true });
+        if (accion === 'estado') return json({ ...ESTADO_SIN_CUENTA, revocada: true });
       }
       if (cuenta) {
         if (!cuentaPerteneceAlClub(cuenta, clubId)) {
           console.error(
             `[stripe-connect-onboarding] ALERTA: ${accountId} guardada en el club ${clubId} pertenece a club_id=${cuenta.metadata?.club_id ?? '∅'}.`
           );
-          return respuestaJson(
-            req,
+          return json(
             { error: 'La cuenta de Stripe vinculada no corresponde a este club. Escríbenos a soporte QLUBOS.', codigo: 'cuenta_de_otro_club' },
             409
           );
@@ -146,11 +180,11 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (accion === 'estado') return respuestaJson(req, estado);
+    if (accion === 'estado') return json(estado);
 
     // ---- Onboarding --------------------------------------------------------
     if (accountId && !requiereEnlaceOnboarding(estado)) {
-      return respuestaJson(req, { ...estado, url: null, ya_conectada: true });
+      return json({ ...estado, url: null, ya_conectada: true });
     }
 
     // URL de regreso: solo orígenes permitidos; si no sirve, la de APP_URL.
@@ -181,7 +215,7 @@ Deno.serve(async (req) => {
       if (errGuardar) {
         if (errGuardar.code === '23505') {
           console.error(`[stripe-connect-onboarding] ${cuentaNueva.id} ya está ligada a otro club (UNIQUE).`);
-          return respuestaJson(req, { error: 'Esa cuenta de Stripe ya está vinculada a otro club.', codigo: 'cuenta_duplicada' }, 409);
+          return json({ error: 'Esa cuenta de Stripe ya está vinculada a otro club.', codigo: 'cuenta_duplicada' }, 409);
         }
         throw errGuardar;
       }
@@ -201,9 +235,9 @@ Deno.serve(async (req) => {
       refresh_url: urlConParametros(retornoBase, { stripe_connect: 'refrescar', club: slug }),
     });
 
-    return respuestaJson(req, { ...estado, url: enlace.url, ya_conectada: false });
+    return json({ ...estado, url: enlace.url, ya_conectada: false });
   } catch (err) {
     console.error('[stripe-connect-onboarding]', err);
-    return respuestaJson(req, { error: mensajeStripe(err, 'No se pudo conectar con Stripe. Intenta de nuevo.') }, 500);
+    return json({ error: mensajeStripe(err, 'No se pudo conectar con Stripe. Intenta de nuevo.') }, 500);
   }
-});
+}
