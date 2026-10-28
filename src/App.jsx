@@ -2422,6 +2422,7 @@ function tarifasActivasDelDia(listaTarifas, diaSemana, contexto = {}) {
     // la misma tabla pero NUNCA aplican al precio de una cancha.
     if (esTarifaDeAcademia(t)) return false;
     if (t?.activo === false) return false;
+    if (esAjusteDescontinuado(t)) return false;
     const dias = Array.isArray(t?.dias_semana) ? t.dias_semana : null;
     if (dias && dias.length > 0 && !dias.map(Number).includes(Number(diaSemana))) return false;
     if (fecha && !reglaTarifaVigenteEn(t, fecha)) return false;
@@ -2433,17 +2434,22 @@ function tarifasActivasDelDia(listaTarifas, diaSemana, contexto = {}) {
 // --- Reglas de Tarifa (migracion v124) — MISMA lógica, línea por línea, que
 // `supabase/functions/portal-checkout/logica.ts` (el servidor recalcula el
 // precio del Portal y nunca confía en el navegador).
+// App-114: solo DOS tipos de ajuste — precio fijo por hora y % de descuento.
+// El "% de recargo" (App-112/113) se eliminó: una fila vieja con
+// `tipo_ajuste = 'RECARGO_PORCENTAJE'` queda DESCONTINUADA (la migración
+// v125 la apaga) y nunca aplica a ningún precio.
 const TIPO_AJUSTE_PRECIO_FIJO = 'PRECIO_FIJO';
 const TIPO_AJUSTE_DESCUENTO = 'DESCUENTO_PORCENTAJE';
-const TIPO_AJUSTE_RECARGO = 'RECARGO_PORCENTAJE';
 const TIPOS_AJUSTE_TARIFA = [
   { value: TIPO_AJUSTE_PRECIO_FIJO, label: 'Precio fijo por hora' },
   { value: TIPO_AJUSTE_DESCUENTO, label: '% de descuento' },
-  { value: TIPO_AJUSTE_RECARGO, label: '% de recargo' },
 ];
 function tipoAjusteDeRegla(t) {
+  return String(t?.tipo_ajuste || '').toUpperCase() === TIPO_AJUSTE_DESCUENTO ? TIPO_AJUSTE_DESCUENTO : TIPO_AJUSTE_PRECIO_FIJO;
+}
+function esAjusteDescontinuado(t) {
   const tipo = String(t?.tipo_ajuste || '').toUpperCase();
-  return tipo === TIPO_AJUSTE_DESCUENTO || tipo === TIPO_AJUSTE_RECARGO ? tipo : TIPO_AJUSTE_PRECIO_FIJO;
+  return tipo !== '' && tipo !== TIPO_AJUSTE_PRECIO_FIJO && tipo !== TIPO_AJUSTE_DESCUENTO;
 }
 function canchasDeRegla(t) {
   return Array.isArray(t?.cancha_ids) ? t.cancha_ids.filter((c) => c != null && c !== '').map(String) : [];
@@ -2471,15 +2477,14 @@ function finMinutosRegla(t) {
 // Precio por hora que resulta de aplicar la regla sobre el precio/hora de la
 // cancha (`base`). `null` = la regla no produce un precio válido.
 function precioHoraDeRegla(t, base) {
-  const tipo = tipoAjusteDeRegla(t);
-  if (tipo === TIPO_AJUSTE_PRECIO_FIJO) {
+  if (esAjusteDescontinuado(t)) return null;
+  if (tipoAjusteDeRegla(t) === TIPO_AJUSTE_PRECIO_FIJO) {
     const fijo = Number(t?.precio_hora ?? t?.precioHora);
     return Number.isFinite(fijo) && fijo > 0 ? fijo : null;
   }
   const pct = Number(t?.porcentaje_ajuste);
-  if (!Number.isFinite(pct) || pct <= 0 || !(Number(base) > 0)) return null;
-  const factor = tipo === TIPO_AJUSTE_DESCUENTO ? 1 - Math.min(pct, 100) / 100 : 1 + pct / 100;
-  return Math.round(Number(base) * factor * 100) / 100;
+  if (!Number.isFinite(pct) || pct <= 0 || pct > 100 || !(Number(base) > 0)) return null;
+  return Math.round(Number(base) * (1 - pct / 100) * 100) / 100;
 }
 // Sin prioridades automáticas (App-113): si dos reglas activas se sobreponen,
 // el club apaga o ajusta una con su switch. Para que el resultado sea
@@ -2496,7 +2501,7 @@ function ordenListaReglasTarifa(a, b) {
 // Configuración — el cálculo nunca depende de esto.
 function reglasTarifaSeSobreponen(a, b) {
   if (!a || !b || a === b || a.activo === false || b.activo === false) return false;
-  if (esTarifaDeAcademia(a) || esTarifaDeAcademia(b)) return false;
+  if (esTarifaDeAcademia(a) || esTarifaDeAcademia(b) || esAjusteDescontinuado(a) || esAjusteDescontinuado(b)) return false;
   const iniA = parseHoraAMinutos(a.hora_inicio), finA = finMinutosRegla(a);
   const iniB = parseHoraAMinutos(b.hora_inicio), finB = finMinutosRegla(b);
   if ([iniA, finA, iniB, finB].some((v) => v === null) || !(iniA < finB && iniB < finA)) return false;
@@ -2525,7 +2530,7 @@ function cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase) {
   const redondear = (n) => Math.round(n * 100) / 100;
   const totalBase = redondear(base * (duracion / 60));
   const inicioMin = parseHoraAMinutos(horaInicio);
-  if (inicioMin === null) return { total: totalBase, totalBase, tramos: [], reglas: [], conAjuste: false };
+  if (inicioMin === null) return { total: totalBase, totalBase, totalSinPromo: totalBase, tramos: [], reglas: [], promos: [], conAjuste: false };
   const finMin = inicioMin + duracion;
   const reglas = (Array.isArray(listaTarifas) ? listaTarifas : [])
     .map((t) => ({ t, desde: parseHoraAMinutos(t?.hora_inicio ?? t?.horaInicio), hasta: finMinutosRegla(t), precioHora: precioHoraDeRegla(t, base) }))
@@ -2560,11 +2565,25 @@ function cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase) {
     if (tr.regla && !aplicadas.includes(tr.regla)) aplicadas.push(tr.regla);
   });
   const totalFinal = redondear(total);
-  return { total: totalFinal, totalBase, tramos, reglas: aplicadas, conAjuste: aplicadas.length > 0 };
+  // App-114 — vista del JUGADOR: solo las PROMOCIONES (% de descuento) se
+  // anuncian. `totalSinPromo` = lo que costaría el mismo bloque sin las
+  // reglas de descuento (con los precios fijos internos, p. ej. Hora Pico,
+  // incluidos en silencio): es el precio que se muestra tachado.
+  const promos = aplicadas.filter((t) => tipoAjusteDeRegla(t) === TIPO_AJUSTE_DESCUENTO);
+  const totalSinPromo =
+    promos.length > 0
+      ? cotizarReserva(horaInicio, duracion, reglas.map((r) => r.t).filter((t) => tipoAjusteDeRegla(t) !== TIPO_AJUSTE_DESCUENTO), base).total
+      : totalFinal;
+  return { total: totalFinal, totalBase, totalSinPromo, tramos, reglas: aplicadas, promos, conAjuste: aplicadas.length > 0 };
 }
 // Nombre corto para insignias: "Hora Pico", "Hora Pico + Miércoles Locos".
-function nombresReglasCotizacion(cotizacion) {
-  return (cotizacion?.reglas || []).map((t) => (t?.nombre || '').trim() || 'Tarifa especial').join(' + ');
+function nombresReglasCotizacion(cotizacion, soloPromos = false) {
+  return ((soloPromos ? cotizacion?.promos : cotizacion?.reglas) || []).map((t) => (t?.nombre || '').trim() || 'Promoción').join(' + ');
+}
+// ¿El jugador debe ver una promoción en este bloque? Solo si un % de
+// descuento lo dejó MÁS BARATO que su precio sin promoción.
+function promoVisibleParaJugador(cotizacion) {
+  return !!cotizacion && (cotizacion.promos || []).length > 0 && cotizacion.totalSinPromo - cotizacion.total > 0.005;
 }
 // Fila de `tarifas_horarios` → objeto que recibe `guardarTarifaHorario`
 // (mismo formato que arma `ModalTarifaHorario`).
@@ -2588,11 +2607,11 @@ function reglaTarifaAFormulario(t) {
 }
 // Texto corto del ajuste de una regla ("$500/h", "−50%", "+20%").
 function etiquetaAjusteRegla(t) {
+  if (esAjusteDescontinuado(t)) return 'Descontinuada';
   const tipo = tipoAjusteDeRegla(t);
   if (tipo === TIPO_AJUSTE_PRECIO_FIJO) return `${formatoMoneda(Number(t?.precio_hora) || 0)}/h`;
   const pct = Number(t?.porcentaje_ajuste) || 0;
-  const txt = `${pct % 1 === 0 ? pct : pct.toFixed(2)}%`;
-  return tipo === TIPO_AJUSTE_DESCUENTO ? `−${txt}` : `+${txt}`;
+  return `−${pct % 1 === 0 ? pct : pct.toFixed(2)}%`;
 }
 
 // Franjas Horarias de CLASE SUELTA de Academia (migracion_v88) — comparten la
@@ -2631,7 +2650,7 @@ function precioClaseSueltaEnHorario(horaInicio, duracionMinutos, franjasDelDia, 
 // reglas ya vienen filtradas por día/vigencia/cancha (`tarifasActivasDelDia`).
 // El precio estándar (`precioBase`) es SIEMPRE el `precio_por_hora` de la
 // cancha elegida; cada regla cobra precio fijo por hora o un % de descuento
-// / recargo sobre él, PRORRATEADO por tramos (ver `cotizarReserva`).
+// sobre él, PRORRATEADO por tramos (ver `cotizarReserva`).
 function calcularPrecioReserva(horaInicio, duracionMinutos, listaTarifas, precioBase) {
   return cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase).total;
 }
@@ -8167,8 +8186,38 @@ function SeccionDatosFiscalesClub({ permisos, operador, nombreClub, telefonoCont
  * bloque elegido (prorrateo), para que el jugador o el recepcionista vean
  * por qué el sistema ajustó el precio. Ambos leen la MISMA `cotizarReserva`
  * que cobra el servidor. */
-function PrecioSlotTarifa({ cotizacion, seleccionado = false }) {
+// `vista = 'jugador'` (Portal, App-114): SOLO se anuncian promociones de
+// descuento (precio sin promo tachado + insignia con el nombre de la promo).
+// Un precio fijo mayor (p. ej. "Hora Pico") se muestra limpio, sin nombre de
+// franja ni tachado: ese concepto es de uso interno del club.
+// `vista = 'staff'` (Parrilla): muestra cualquier regla, para que recepción
+// sepa por qué el sistema ajustó el precio.
+function PrecioSlotTarifa({ cotizacion, seleccionado = false, vista = 'staff' }) {
   if (!cotizacion) return null;
+  if (vista === 'jugador') {
+    const promo = promoVisibleParaJugador(cotizacion);
+    return (
+      <span className="flex max-w-full flex-col items-center leading-tight" data-testid="precio-slot">
+        {promo && (
+          <span className="text-[9px] font-semibold text-slate-400 line-through" data-testid="precio-base-tachado">
+            {formatoMoneda(cotizacion.totalSinPromo)}
+          </span>
+        )}
+        <span className={`text-[10px] font-black ${promo ? 'text-emerald-600' : seleccionado ? 'text-orange-500' : 'text-slate-500'}`} data-testid="precio-final">
+          {formatoMoneda(cotizacion.total)}
+        </span>
+        {promo && (
+          <span
+            className="mt-0.5 max-w-full truncate rounded-full bg-emerald-400/15 px-1.5 py-px text-[8px] font-bold text-emerald-700"
+            title={nombresReglasCotizacion(cotizacion, true)}
+            data-testid="badge-tarifa"
+          >
+            {nombresReglasCotizacion(cotizacion, true)}
+          </span>
+        )}
+      </span>
+    );
+  }
   const diferencia = cotizacion.total - cotizacion.totalBase;
   const cambiaPrecio = cotizacion.conAjuste && Math.abs(diferencia) > 0.005;
   const colorFinal = cambiaPrecio ? (diferencia < 0 ? 'text-emerald-600' : 'text-amber-600') : seleccionado ? 'text-orange-500' : 'text-slate-500';
@@ -8195,7 +8244,21 @@ function PrecioSlotTarifa({ cotizacion, seleccionado = false }) {
   );
 }
 
-function ResumenTarifaAplicada({ cotizacion, precioHoraBase }) {
+function ResumenTarifaAplicada({ cotizacion, precioHoraBase, vista = 'staff' }) {
+  if (vista === 'jugador') {
+    // Portal: solo la promoción y el ahorro — nunca tramos ni tarifas internas.
+    if (!promoVisibleParaJugador(cotizacion)) return null;
+    return (
+      <div className="rounded-lg border border-emerald-300/60 bg-emerald-400/10 px-3 py-2" data-testid="resumen-tarifa">
+        <p className="flex flex-wrap items-center gap-1.5 text-[11px] font-black text-emerald-700">
+          <Tag size={12} /> {nombresReglasCotizacion(cotizacion, true)}
+          <span className="rounded-full bg-emerald-400/15 px-1.5 py-px text-[10px]">
+            Ahorras {formatoMoneda(cotizacion.totalSinPromo - cotizacion.total)}
+          </span>
+        </p>
+      </div>
+    );
+  }
   if (!cotizacion?.conAjuste) return null;
   const diferencia = cotizacion.total - cotizacion.totalBase;
   return (
@@ -42971,7 +43034,7 @@ function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardan
 // inventar un catálogo de horas/días paralelo.
 // App-112 (migracion v124): en franjas de CANCHA la regla además define
 // canchas aplicables (Todas / específicas), tipo de ajuste (precio fijo por
-// hora, % de descuento o % de recargo sobre el precio/hora de la cancha) y
+// hora o % de descuento sobre el precio/hora de la cancha — App-114) y
 // vigencia opcional (desde/hasta; vacío = permanente). Las franjas de Clase
 // Suelta de Academia siguen siendo solo precio fijo por clase.
 function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'cancha', canchas = [] }) {
@@ -43020,12 +43083,9 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'c
       return;
     }
     const pct = Number(porcentaje);
-    if (!esPrecioFijo) {
-      const maxPct = tipoAjuste === TIPO_AJUSTE_DESCUENTO ? 100 : 500;
-      if (!(pct > 0 && pct <= maxPct)) {
-        setError(tipoAjuste === TIPO_AJUSTE_DESCUENTO ? 'El descuento debe ser mayor a 0% y máximo 100%.' : 'El recargo debe ser mayor a 0% y máximo 500%.');
-        return;
-      }
+    if (!esPrecioFijo && !(pct > 0 && pct <= 100)) {
+      setError('El descuento debe ser mayor a 0% y máximo 100%.');
+      return;
     }
     if (diasSemana.length === 0) {
       setError('Selecciona al menos un día de la semana.');
@@ -43104,7 +43164,7 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'c
         {!esAcademia && (
           <div>
             <p className="mb-1.5 text-xs font-bold text-slate-700">Tipo de ajuste</p>
-            <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Tipo de ajuste">
+            <div className="grid grid-cols-2 gap-1.5" role="radiogroup" aria-label="Tipo de ajuste">
               {TIPOS_AJUSTE_TARIFA.map((op) => (
                 <button
                   key={op.value}
@@ -43140,15 +43200,15 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'c
             />
           </Campo>
         ) : (
-          <Campo label={tipoAjuste === TIPO_AJUSTE_DESCUENTO ? 'Descuento sobre el precio/hora de la cancha (%)' : 'Recargo sobre el precio/hora de la cancha (%)'}>
+          <Campo label="Descuento sobre el precio/hora de la cancha (%)">
             <input
               type="number"
               min="0"
-              max={tipoAjuste === TIPO_AJUSTE_DESCUENTO ? 100 : 500}
+              max={100}
               step="0.5"
               value={porcentaje}
               onChange={(e) => setPorcentaje(e.target.value)}
-              placeholder={tipoAjuste === TIPO_AJUSTE_DESCUENTO ? '50' : '20'}
+              placeholder="50"
               className={inputClase}
               data-testid="regla-porcentaje"
             />
@@ -52797,8 +52857,8 @@ function SeccionTarifasFranjas({
 
         <p className="mb-4 text-[11px] text-slate-500">
           El precio estándar de cada horario es el precio por hora de la cancha (se edita en su tarjeta de la
-          Parrilla Operativa). Cada regla puede fijar un precio por hora o aplicar un % de descuento o recargo sobre
-          ese precio, para todas las canchas o solo algunas, y con vigencia opcional. Si una reserva cruza dos
+          Parrilla Operativa). Cada regla puede fijar un precio por hora o aplicar un % de descuento sobre ese
+          precio, para todas las canchas o solo algunas, y con vigencia opcional. Si una reserva cruza dos
           franjas, cada tramo se cobra con su propia tarifa (prorrateo). Si dos reglas activas se sobreponen, apaga
           o ajusta una con su switch.
         </p>
@@ -52862,6 +52922,12 @@ function SeccionTarifasFranjas({
                       </span>
                     )}
                   </p>
+                  {esAjusteDescontinuado(t) && (
+                    <p className="mt-1 flex items-start gap-1 text-[11px] font-semibold text-slate-500" data-testid="regla-descontinuada">
+                      <AlertTriangle size={12} className="mt-px shrink-0" />
+                      El % de recargo ya no existe y esta regla no se aplica. Edítala para elegir precio fijo o % de descuento, o elimínala.
+                    </p>
+                  )}
                   {sobrepuestas.length > 0 && (
                     <p className="mt-1 flex items-start gap-1 text-[11px] font-semibold text-amber-700" data-testid="regla-sobrepuesta">
                       <AlertTriangle size={12} className="mt-px shrink-0" />
@@ -52871,7 +52937,7 @@ function SeccionTarifasFranjas({
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <span
-                    className={`text-xs font-black ${tipo === TIPO_AJUSTE_DESCUENTO ? 'text-emerald-600' : tipo === TIPO_AJUSTE_RECARGO ? 'text-rose-500' : 'text-orange-600'}`}
+                    className={`text-xs font-black ${esAjusteDescontinuado(t) ? 'text-slate-400' : tipo === TIPO_AJUSTE_DESCUENTO ? 'text-emerald-600' : 'text-orange-600'}`}
                     data-testid="regla-ajuste"
                   >
                     {etiquetaAjusteRegla(t)}
@@ -52884,7 +52950,7 @@ function SeccionTarifasFranjas({
                     aria-label={`${t.activo === false ? 'Activar' : 'Apagar'} ${t.nombre || 'regla'}`}
                     title={t.activo === false ? 'Activar regla' : 'Apagar regla'}
                     data-testid={`switch-regla-${t.id}`}
-                    disabled={guardandoTarifaHorario}
+                    disabled={guardandoTarifaHorario || esAjusteDescontinuado(t)}
                     onClick={() => onGuardarTarifaHorario?.({ ...reglaTarifaAFormulario(t), activo: t.activo === false })}
                     className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition disabled:opacity-60 ${
                       t.activo === false ? 'bg-slate-300' : 'bg-orange-500'
@@ -63655,7 +63721,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           </Campo>
         </div>
 
-        <Campo label="Hora" hint="Blanco = disponible, gris = no disponible (reservado, clase o torneo/reta), borde naranja = tu horario elegido.">
+        <Campo label="Hora">
           {/* INDICADOR DE DISPONIBILIDAD — solo bloques vigentes del día
               elegido (los "Pasado" no cuentan); verde/amarillo/rojo según
               el % ocupado Y los horarios libres que quedan
@@ -63738,7 +63804,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                     {bloqueado ? (
                       <span className="truncate text-[9px] font-semibold">{etiqueta}</span>
                     ) : (
-                      <PrecioSlotTarifa cotizacion={cotizacionSlot} seleccionado={seleccionado} />
+                      <PrecioSlotTarifa cotizacion={cotizacionSlot} seleccionado={seleccionado} vista="jugador" />
                     )}
                   </button>
                 );
@@ -63807,17 +63873,17 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Cancha ({duracionHoras}h)</span>
             <span className="flex items-center gap-1.5">
-              {cotizacionElegida?.conAjuste && Math.abs(cotizacionElegida.total - cotizacionElegida.totalBase) > 0.005 && (
+              {promoVisibleParaJugador(cotizacionElegida) && (
                 <span className="text-slate-400 line-through" data-testid="costo-base-tachado">
-                  {formatoMoneda(cotizacionElegida.totalBase)}
+                  {formatoMoneda(cotizacionElegida.totalSinPromo)}
                 </span>
               )}
-              <span className={cotizacionElegida?.conAjuste ? 'font-black text-slate-900' : ''} data-testid="costo-cancha">
+              <span className={promoVisibleParaJugador(cotizacionElegida) ? 'font-black text-emerald-600' : ''} data-testid="costo-cancha">
                 {formatoMoneda(costoCancha)}
               </span>
             </span>
           </div>
-          {cotizacionElegida?.conAjuste && <ResumenTarifaAplicada cotizacion={cotizacionElegida} precioHoraBase={precioBaseEfectivo} />}
+          <ResumenTarifaAplicada cotizacion={cotizacionElegida} precioHoraBase={precioBaseEfectivo} vista="jugador" />
           {addonsSubtotal > 0 && (
             <div className="flex items-center justify-between text-xs text-slate-500">
               <span>Adicionales</span>
@@ -65711,9 +65777,9 @@ function AppInterno({ clubInicial } = {}) {
         precio_hora: tarifa?.precioHora == null ? null : Number(tarifa.precioHora) || 0,
         activo: tarifa?.activo !== false,
         // App-112 (migracion v124): reglas de CANCHA — canchas aplicables,
-        // tipo de ajuste (precio fijo / % descuento / % recargo) y vigencia.
+        // tipo de ajuste (precio fijo / % descuento — App-114) y vigencia.
         cancha_ids: Array.isArray(tarifa?.canchaIds) && tarifa.canchaIds.length > 0 ? tarifa.canchaIds.map(String) : null,
-        tipo_ajuste: [TIPO_AJUSTE_DESCUENTO, TIPO_AJUSTE_RECARGO].includes(tarifa?.tipoAjuste) ? tarifa.tipoAjuste : TIPO_AJUSTE_PRECIO_FIJO,
+        tipo_ajuste: tarifa?.tipoAjuste === TIPO_AJUSTE_DESCUENTO ? TIPO_AJUSTE_DESCUENTO : TIPO_AJUSTE_PRECIO_FIJO,
         porcentaje_ajuste: tarifa?.porcentajeAjuste == null ? null : Number(tarifa.porcentajeAjuste),
         vigencia_desde: tarifa?.vigenciaDesde || null,
         vigencia_hasta: tarifa?.vigenciaHasta || null,

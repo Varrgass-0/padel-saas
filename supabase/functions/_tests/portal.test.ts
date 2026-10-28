@@ -8,6 +8,8 @@ import {
   diaSemanaDeFecha,
   duracionesPermitidas,
   esTokenPortal,
+  cotizarReserva,
+  precioHoraDeRegla,
   precioPorHoraDeCancha,
   slugDelClub,
   tarifasActivasDelDia,
@@ -59,7 +61,7 @@ Deno.test('portal: calcularPrecioReserva = mismo resultado que el Portal', () =>
   const lunes = tarifasActivasDelDia(TARIFAS, 1);
   igual(calcularPrecioReserva('19:00', 60, lunes, 500), 800);
   igual(calcularPrecioReserva('08:00', 90, lunes, 500), 600);
-  igual(calcularPrecioReserva('11:30', 60, lunes, 500), 500); // no cabe completo en la franja
+  igual(calcularPrecioReserva('11:30', 60, lunes, 500), 450); // prorrateo: 30 min a $400/h + 30 min a $500/h
   igual(calcularPrecioReserva('14:00', 60, lunes, 500), 500);
 });
 
@@ -71,6 +73,95 @@ Deno.test('portal: 2 horas en club de 60 min = suma de 2 bloques (precio mixto)'
   igual(costoCancha({ cancha: { precio_por_hora: 500 }, club: { ...club, tarifas_habilitadas: false }, tarifas: TARIFAS, fecha: '2026-10-26', horaInicio: '19:00', duracionMin: 60 }), 500);
   // Club de 90 min: un solo bloque de 90.
   igual(costoCancha({ cancha: { precio_por_hora: 500 }, club: { duracion_reserva_minutos: 90 }, tarifas: [], fecha: '2026-10-26', horaInicio: '19:00', duracionMin: 90 }), 750);
+});
+
+// --- v124/v125 · App-114: Reglas de Tarifa (canchas, precio fijo / % descuento, vigencia, prorrateo) ---
+const REGLAS_V124 = [
+  { id: 1, nombre: 'Hora Pico', hora_inicio: '18:00', hora_fin: '22:00', precio_hora: 800 },
+  { id: 2, nombre: 'Miércoles Valle', dias_semana: [3], hora_inicio: '07:00', hora_fin: '12:00', tipo_ajuste: 'DESCUENTO_PORCENTAJE', porcentaje_ajuste: 50, precio_hora: null },
+  { id: 3, nombre: 'Panorámica Tarde', cancha_ids: ['9'], hora_inicio: '12:00', hora_fin: '18:00', tipo_ajuste: 'PRECIO_FIJO', precio_hora: 600 },
+  { id: 4, nombre: 'Promo Lunes Noviembre', dias_semana: [1], hora_inicio: '07:00', hora_fin: '12:00', precio_hora: 300, vigencia_desde: '2026-11-01', vigencia_hasta: '2026-11-30' },
+  { id: 5, nombre: 'Noche', hora_inicio: '22:00', hora_fin: '00:00', precio_hora: 400 },
+];
+const delDiaV124 = (fecha: string, canchaId: unknown) => tarifasActivasDelDia(REGLAS_V124, diaSemanaDeFecha(fecha), { fecha, canchaId });
+
+Deno.test('v124: filtro por canchas aplicables y vigencia', () => {
+  // 2026-10-28 es miércoles (3); 2026-11-02 es lunes (1)
+  igual(delDiaV124('2026-10-28', 5).map((t) => t.id), [1, 2, 5]);
+  igual(delDiaV124('2026-10-28', 9).map((t) => t.id), [1, 2, 3, 5]);
+  igual(delDiaV124('2026-11-02', 5).map((t) => t.id), [1, 4, 5]); // lunes de noviembre: promo vigente
+  igual(delDiaV124('2026-12-07', 5).map((t) => t.id), [1, 5]); // lunes de diciembre: vencida
+  igual(tarifasActivasDelDia(REGLAS_V124, 3).length, 4); // sin contexto: solo día + activo (la promo es de lunes)
+});
+
+Deno.test('v124: precio fijo, % de descuento y vigencia', () => {
+  const base = 500;
+  igual(calcularPrecioReserva('10:00', 60, delDiaV124('2026-10-28', 5), base), 250); // −50%
+  igual(calcularPrecioReserva('19:00', 60, delDiaV124('2026-10-28', 5), base), 800); // precio fijo
+  igual(calcularPrecioReserva('13:00', 60, delDiaV124('2026-10-28', 9), base), 600); // precio fijo solo cancha 9
+  igual(calcularPrecioReserva('13:00', 60, delDiaV124('2026-10-28', 5), base), 500);
+  igual(calcularPrecioReserva('10:00', 60, delDiaV124('2026-11-02', 5), base), 300); // promo vigente
+  igual(calcularPrecioReserva('10:00', 60, delDiaV124('2026-10-26', 5), base), 500); // promo aún no vigente
+  igual(calcularPrecioReserva('23:00', 60, delDiaV124('2026-10-26', 5), base), 400); // 22:00–00:00 = hasta medianoche
+  igual(precioHoraDeRegla(REGLAS_V124[1], 0), null); // % sin precio base → nunca $0
+});
+
+Deno.test('v124: prorrateo exacto de bloques que cruzan franjas (90 y 120 min)', () => {
+  const base = 500;
+  // 11:30–13:00 miércoles: 30 min a $250/h + 60 min a $500/h
+  igual(calcularPrecioReserva('11:30', 90, delDiaV124('2026-10-28', 5), base), 625);
+  // 17:00–19:00 lunes: 60 min estándar + 60 min Hora Pico
+  igual(calcularPrecioReserva('17:00', 120, delDiaV124('2026-10-26', 5), base), 1300);
+  // 17:30–19:00: 30 min estándar + 60 min Hora Pico
+  igual(calcularPrecioReserva('17:30', 90, delDiaV124('2026-10-26', 5), base), 1050);
+  // 21:30–23:00: Hora Pico → Noche
+  igual(calcularPrecioReserva('21:30', 90, delDiaV124('2026-10-26', 5), base), 800);
+  const c = cotizarReserva('17:30', 90, delDiaV124('2026-10-26', 5), base);
+  igual([c.total, c.totalBase, c.conAjuste, c.tramos.length, c.reglas.map((r) => r.nombre)], [1050, 750, true, 2, ['Hora Pico']]);
+  igual(c.tramos.map((t) => [t.minutos, t.precioHora, t.subtotal, t.regla?.nombre ?? null]), [[30, 500, 250, null], [60, 800, 800, 'Hora Pico']]);
+});
+
+Deno.test('v124: reglas sobrepuestas → sin prioridades, resultado determinista (primera por hora de inicio)', () => {
+  const sobrepuestas = [
+    { id: 2, nombre: 'Corta', hora_inicio: '10:00', hora_fin: '11:00', precio_hora: 200 },
+    { id: 7, nombre: 'Amplia', hora_inicio: '09:00', hora_fin: '12:00', precio_hora: 400 },
+  ];
+  igual(calcularPrecioReserva('10:00', 60, sobrepuestas, 500), 400);
+  igual(calcularPrecioReserva('10:00', 60, [...sobrepuestas].reverse(), 500), 400); // el orden de llegada no importa
+  // Apagando la amplia (switch) aplica la corta.
+  igual(calcularPrecioReserva('10:00', 60, tarifasActivasDelDia([sobrepuestas[0], { ...sobrepuestas[1], activo: false }], 3), 500), 200);
+});
+
+Deno.test('v125: el % de recargo está descontinuado (nunca aplica)', () => {
+  const recargoViejo = { id: 8, nombre: 'Recargo viejo', hora_inicio: '07:00', hora_fin: '23:00', tipo_ajuste: 'RECARGO_PORCENTAJE', porcentaje_ajuste: 20, precio_hora: null };
+  igual(tarifasActivasDelDia([recargoViejo], 3).length, 0);
+  igual(precioHoraDeRegla(recargoViejo, 500), null);
+  igual(calcularPrecioReserva('10:00', 60, [recargoViejo], 500), 500);
+  igual(precioHoraDeRegla({ tipo_ajuste: 'DESCUENTO_PORCENTAJE', porcentaje_ajuste: 120 }, 500), null); // descuento > 100% inválido
+});
+
+Deno.test('App-114: solo los descuentos son "promo" para el jugador (Hora Pico nunca)', () => {
+  const base = 500;
+  const pico = cotizarReserva('19:00', 60, delDiaV124('2026-10-28', 5), base);
+  igual([pico.total, pico.promos.length, pico.totalSinPromo], [800, 0, 800]); // precio mayor: sin promo, sin tachado
+  const valle = cotizarReserva('10:00', 60, delDiaV124('2026-10-28', 5), base);
+  igual([valle.total, valle.promos.map((r) => r.nombre), valle.totalSinPromo], [250, ['Miércoles Valle'], 500]);
+  // Promo sobre una hora con precio fijo interno: el tachado es el precio SIN promo (incluye la Hora Pico en silencio).
+  const reglas = [
+    { id: 1, nombre: 'Hora Pico', hora_inicio: '18:00', hora_fin: '22:00', precio_hora: 800 },
+    { id: 2, nombre: 'Promo Lunes Noche', hora_inicio: '20:00', hora_fin: '22:00', tipo_ajuste: 'DESCUENTO_PORCENTAJE', porcentaje_ajuste: 50 },
+  ];
+  const mixto = cotizarReserva('20:00', 60, [reglas[1]], base);
+  igual([mixto.total, mixto.totalSinPromo], [250, 500]);
+  const conPico = cotizarReserva('19:00', 120, [{ ...reglas[1], hora_inicio: '20:00' }, { ...reglas[0], hora_fin: '20:00' }], base);
+  igual([conPico.total, conPico.totalSinPromo, conPico.promos.length], [1050, 1300, 1]); // 800 + 250 vs 800 + 500
+});
+
+Deno.test('v124: costoCancha usa cancha + fecha y prorratea', () => {
+  const club = { duracion_reserva_minutos: 60 };
+  igual(costoCancha({ cancha: { id: 9, precio_por_hora: 500 }, club, tarifas: REGLAS_V124, fecha: '2026-10-28', horaInicio: '13:00', duracionMin: 120 }), 1200);
+  igual(costoCancha({ cancha: { id: 5, precio_por_hora: 500 }, club, tarifas: REGLAS_V124, fecha: '2026-10-28', horaInicio: '11:00', duracionMin: 120 }), 750); // 250 + 500
+  igual(costoCancha({ cancha: { id: 5, precio_por_hora: 500 }, club: { duracion_reserva_minutos: 90 }, tarifas: REGLAS_V124, fecha: '2026-10-28', horaInicio: '11:30', duracionMin: 90 }), 625);
 });
 
 Deno.test('portal: duraciones permitidas', () => {

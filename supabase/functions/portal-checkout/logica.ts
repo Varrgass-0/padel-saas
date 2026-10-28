@@ -56,13 +56,18 @@ function esTarifaDeAcademia(t: Fila): boolean {
 // `tarifasActivasDelDia`, `precioHoraDeRegla`, `cotizarReserva`,
 // `calcularPrecioReserva` (prorrateo por tramos, sin prioridades).
 // ---------------------------------------------------------------------------
+// App-114: solo precio fijo por hora y % de descuento. Una fila vieja con
+// 'RECARGO_PORCENTAJE' está descontinuada (v125 la apaga) y nunca aplica.
 export const TIPO_AJUSTE_PRECIO_FIJO = 'PRECIO_FIJO';
 export const TIPO_AJUSTE_DESCUENTO = 'DESCUENTO_PORCENTAJE';
-export const TIPO_AJUSTE_RECARGO = 'RECARGO_PORCENTAJE';
 
 export function tipoAjusteDeRegla(t: Fila): string {
+  return String(t?.tipo_ajuste ?? '').toUpperCase() === TIPO_AJUSTE_DESCUENTO ? TIPO_AJUSTE_DESCUENTO : TIPO_AJUSTE_PRECIO_FIJO;
+}
+
+export function esAjusteDescontinuado(t: Fila): boolean {
   const tipo = String(t?.tipo_ajuste ?? '').toUpperCase();
-  return tipo === TIPO_AJUSTE_DESCUENTO || tipo === TIPO_AJUSTE_RECARGO ? tipo : TIPO_AJUSTE_PRECIO_FIJO;
+  return tipo !== '' && tipo !== TIPO_AJUSTE_PRECIO_FIJO && tipo !== TIPO_AJUSTE_DESCUENTO;
 }
 
 function canchasDeRegla(t: Fila): string[] {
@@ -95,6 +100,7 @@ export function tarifasActivasDelDia(
   return (Array.isArray(listaTarifas) ? listaTarifas : []).filter((t) => {
     if (esTarifaDeAcademia(t)) return false;
     if (t?.activo === false) return false;
+    if (esAjusteDescontinuado(t)) return false;
     const dias = Array.isArray(t?.dias_semana) ? (t.dias_semana as unknown[]) : null;
     if (dias && dias.length > 0 && !dias.map(Number).includes(Number(diaSemana))) return false;
     if (fecha && !reglaTarifaVigenteEn(t, fecha)) return false;
@@ -111,15 +117,14 @@ function finMinutosRegla(t: Fila): number | null {
 }
 
 export function precioHoraDeRegla(t: Fila, base: number): number | null {
-  const tipo = tipoAjusteDeRegla(t);
-  if (tipo === TIPO_AJUSTE_PRECIO_FIJO) {
+  if (esAjusteDescontinuado(t)) return null;
+  if (tipoAjusteDeRegla(t) === TIPO_AJUSTE_PRECIO_FIJO) {
     const fijo = Number(t?.precio_hora ?? t?.precioHora);
     return Number.isFinite(fijo) && fijo > 0 ? fijo : null;
   }
   const pct = Number(t?.porcentaje_ajuste);
-  if (!Number.isFinite(pct) || pct <= 0 || !(Number(base) > 0)) return null;
-  const factor = tipo === TIPO_AJUSTE_DESCUENTO ? 1 - Math.min(pct, 100) / 100 : 1 + pct / 100;
-  return Math.round(Number(base) * factor * 100) / 100;
+  if (!Number.isFinite(pct) || pct <= 0 || pct > 100 || !(Number(base) > 0)) return null;
+  return Math.round(Number(base) * (1 - pct / 100) * 100) / 100;
 }
 
 /** Sin prioridades automáticas: si dos reglas se sobreponen, gana la primera por hora de inicio y luego por id. */
@@ -142,8 +147,12 @@ export interface TramoTarifa {
 export interface CotizacionReserva {
   total: number;
   totalBase: number;
+  /** Lo que costaría el bloque sin las reglas de % de descuento (precio tachado del Portal). */
+  totalSinPromo: number;
   tramos: TramoTarifa[];
   reglas: Fila[];
+  /** Reglas de % de descuento aplicadas (las únicas que se anuncian al jugador). */
+  promos: Fila[];
   conAjuste: boolean;
 }
 
@@ -158,7 +167,7 @@ export function cotizarReserva(horaInicio: string, duracionMinutos: number, list
   const redondear = (n: number) => Math.round(n * 100) / 100;
   const totalBase = redondear(base * (duracion / 60));
   const inicioMin = parseHoraAMinutos(horaInicio);
-  if (inicioMin === null) return { total: totalBase, totalBase, tramos: [], reglas: [], conAjuste: false };
+  if (inicioMin === null) return { total: totalBase, totalBase, totalSinPromo: totalBase, tramos: [], reglas: [], promos: [], conAjuste: false };
   const finMin = inicioMin + duracion;
   const reglas = (Array.isArray(listaTarifas) ? listaTarifas : [])
     .map((t) => ({ t, desde: parseHoraAMinutos(t?.hora_inicio ?? t?.horaInicio), hasta: finMinutosRegla(t), precioHora: precioHoraDeRegla(t, base) }))
@@ -192,7 +201,13 @@ export function cotizarReserva(horaInicio: string, duracionMinutos: number, list
   tramos.forEach((tr) => {
     if (tr.regla && !aplicadas.includes(tr.regla)) aplicadas.push(tr.regla);
   });
-  return { total: redondear(total), totalBase, tramos, reglas: aplicadas, conAjuste: aplicadas.length > 0 };
+  const totalFinal = redondear(total);
+  const promos = aplicadas.filter((t) => tipoAjusteDeRegla(t) === TIPO_AJUSTE_DESCUENTO);
+  const totalSinPromo =
+    promos.length > 0
+      ? cotizarReserva(horaInicio, duracion, reglas.map((r) => r.t).filter((t) => tipoAjusteDeRegla(t) !== TIPO_AJUSTE_DESCUENTO), base).total
+      : totalFinal;
+  return { total: totalFinal, totalBase, totalSinPromo, tramos, reglas: aplicadas, promos, conAjuste: aplicadas.length > 0 };
 }
 
 export function calcularPrecioReserva(horaInicio: string, duracionMinutos: number, listaTarifas: Fila[], precioBase: number): number {
