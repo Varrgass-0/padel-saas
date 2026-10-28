@@ -44409,6 +44409,42 @@ function DirectorioJugadoresCRM({
         const gastoAcademia = alumnosDeJ.filter((a) => esCobroConfirmado(a)).reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
         const clasesAcademiaTomadas = (academiaAsistencias || []).filter((a) => alumnoIdsJ.has(a.alumno_id) && a.asistio === true).length;
 
+        // App-109 — tarjeta "Clases / Academia" de la Vista 360° (Score y
+        // vista operativa): historial de pase de lista (asistió / faltó) de
+        // ESTE jugador — mismas asistencias y mismo enlace por `jugador_id`
+        // (`alumnoIdsJ`) que `clasesAcademiaTomadas` — enriquecido con la
+        // clase (grupal/privada, horario, coach, cancha). Sin montos: sirve
+        // igual para Owner/Manager y para Recepción/Coach.
+        const alumnosPorIdJ = new Map(alumnosDeJ.map((a) => [a.id, a]));
+        const datosClaseAcademia = (clase) => ({
+          claseNombre: clase?.nombre || 'Clase',
+          tipoClase: clase?.tipo_clase === 'privada' ? 'Privada' : 'Grupal',
+          horario: clase?.hora_inicio ? `${formatoHora12(clase.hora_inicio)}${clase.hora_fin ? `–${formatoHora12(clase.hora_fin)}` : ''}` : '',
+          coach: clase?.coach_nombre || '',
+          cancha: clase?.cancha_id ? canchasPorId[clase.cancha_id]?.nombre || '' : '',
+        });
+        const historialAcademia = (academiaAsistencias || [])
+          .filter((a) => alumnoIdsJ.has(a.alumno_id) && a.fecha && a.fecha <= hoyISOStr && (a.asistio === true || a.asistio === false))
+          .map((a, idx) => {
+            const clase = clasesAcademiaPorId.get(a.clase_id ?? alumnosPorIdJ.get(a.alumno_id)?.clase_id);
+            return { id: a.id ?? `${a.alumno_id}-${a.fecha}-${idx}`, fecha: a.fecha, asistio: a.asistio === true, ...datosClaseAcademia(clase) };
+          })
+          .sort((x, y) => y.fecha.localeCompare(x.fecha));
+        const asistenciasAcademia = historialAcademia.filter((h) => h.asistio);
+        const proximaClaseAcademia =
+          alumnosDeJ
+            .map((a) => clasesAcademiaPorId.get(a.clase_id))
+            .filter((c) => c && c.fecha && c.fecha >= hoyISOStr && c.estado !== 'cancelada')
+            .sort((x, y) => `${x.fecha} ${x.hora_inicio || ''}`.localeCompare(`${y.fecha} ${y.hora_inicio || ''}`))
+            .map((c) => ({ fecha: c.fecha, ...datosClaseAcademia(c) }))[0] || null;
+        const resumenAcademia = {
+          clasesTomadas: asistenciasAcademia.length,
+          faltas: historialAcademia.length - asistenciasAcademia.length,
+          clasesUltimoMes: asistenciasAcademia.filter((h) => h.fecha >= hace30ISO).length,
+          ultimaClase: asistenciasAcademia[0] || null,
+          proximaClase: proximaClaseAcademia,
+        };
+
         // Participación pagada en los últimos 6 meses (indicador CHS #4).
         const eventosTorneoRetaUltimos6Meses =
           inscripcionesValidas.filter((i) => {
@@ -44927,6 +44963,8 @@ function DirectorioJugadoresCRM({
           gastoTorneosRetas,
           gastoAcademia,
           clasesAcademiaTomadas,
+          historialAcademia,
+          resumenAcademia,
           gastoBarReciente,
           gastoProShopReciente,
           ltvTotal,
@@ -46022,7 +46060,9 @@ function EstadoVacioHistorial({ mensaje }) {
 // muestra el conteo de eventos tal cual ("3/10"), sin formatear como
 // dinero — mismo componente, mismo contrato `{progreso, meta, lista}` para
 // los dos motores (ver `calcularProgresoCortesiaFrecuencia`).
-function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, canjeando, comoConteo }) {
+// `comoPorcentaje` (App-109, vista operativa sin montos): en vez de
+// "$progreso/$meta" muestra solo el avance en % — mismo candado y mismo botón.
+function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, canjeando, comoConteo, comoPorcentaje = false }) {
   const pct = meta > 0 ? Math.min(100, Math.round((progreso / meta) * 100)) : 0;
   const formatearValor = (n) => (comoConteo ? `${Math.round(Number(n) || 0)}` : formatoMoneda(n));
   return (
@@ -46032,7 +46072,7 @@ function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, can
           <Gift size={12} className={lista ? 'text-amber-300' : 'text-slate-500'} /> {etiqueta}
         </span>
         <span className="font-bold text-slate-500">
-          {formatearValor(progreso)}/{formatearValor(meta)}
+          {comoPorcentaje ? `${pct}%` : `${formatearValor(progreso)}/${formatearValor(meta)}`}
         </span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
@@ -46057,7 +46097,7 @@ function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, can
   );
 }
 
-function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria }) {
+function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria, ocultarMontos = false }) {
   const compras = perfil.comprasPOS || [];
   const cortesiaBar = perfil.cortesiaBar;
   const cortesiaProShop = perfil.cortesiaProShop;
@@ -46082,6 +46122,7 @@ function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria })
           lista={cortesiaProShop.lista}
           onCanjear={() => onAbrirCanjeCortesia?.('proshop')}
           canjeando={canjeandoCategoria === 'proshop'}
+          comoPorcentaje={ocultarMontos}
         />
       )}
       {cortesiaBar && compras.some((c) => c.categoria === 'Cafetería/Bar') && (
@@ -46092,6 +46133,7 @@ function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria })
           lista={cortesiaBar.lista}
           onCanjear={() => onAbrirCanjeCortesia?.('bar')}
           canjeando={canjeandoCategoria === 'bar'}
+          comoPorcentaje={ocultarMontos}
         />
       )}
       <div className={listaHistorialClase}>
@@ -46105,7 +46147,7 @@ function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria })
                 {c.fecha ? formatoFechaLarga(c.fecha) : 'Fecha desconocida'} · {etiquetaCategoriaProducto(c.categoria)}
               </p>
             </div>
-            <span className="shrink-0 font-bold text-slate-600">{formatoMoneda(c.subtotal)}</span>
+            {!ocultarMontos && <span className="shrink-0 font-bold text-slate-600">{formatoMoneda(c.subtotal)}</span>}
           </div>
         ))}
       </div>
@@ -46113,7 +46155,7 @@ function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria })
   );
 }
 
-function DetalleTorneosRetas({ perfil }) {
+function DetalleTorneosRetas({ perfil, ocultarMontos = false }) {
   const eventos = perfil.eventosTorneoRetas || [];
   if (eventos.length === 0) return <EstadoVacioHistorial mensaje="Sin inscripciones a Torneos o Retas todavía." />;
   return (
@@ -46135,7 +46177,13 @@ function DetalleTorneosRetas({ perfil }) {
               {e.fecha ? formatoFechaLarga(e.fecha) : 'Fecha por confirmar'} · {e.categoria}
             </p>
           </div>
-          <span className="shrink-0 font-bold text-slate-600">{formatoMoneda(e.monto)}</span>
+          {ocultarMontos ? (
+            e.fecha && e.fecha > (perfil.hoyISO || hoyISO()) ? (
+              <span className="shrink-0 rounded-full bg-sky-400/15 px-2 py-0.5 text-[10px] font-bold text-sky-500">Próximo</span>
+            ) : null
+          ) : (
+            <span className="shrink-0 font-bold text-slate-600">{formatoMoneda(e.monto)}</span>
+          )}
         </div>
       ))}
     </div>
@@ -46144,16 +46192,45 @@ function DetalleTorneosRetas({ perfil }) {
 
 function DetalleHistorialCanchas({ perfil }) {
   const historial = perfil.historialCanchas || [];
+  const hoyStr = perfil.hoyISO || hoyISO();
+  // App-109: resumen de constancia (última visita + ritmo habitual) arriba
+  // del historial — mismo `fechaUltimoPartido`/`intervaloPromedioDias` que
+  // ya usa el indicador. Sin montos (sirve igual a la vista operativa).
+  const diasDesdeUltima = perfil.fechaUltimoPartido
+    ? Math.max(0, Math.round((new Date(`${hoyStr}T12:00:00`).getTime() - perfil.fechaUltimoPartido.getTime()) / MS_POR_DIA))
+    : null;
+  const ultimaISO = perfil.fechaUltimoPartido
+    ? `${perfil.fechaUltimoPartido.getFullYear()}-${pad2(perfil.fechaUltimoPartido.getMonth() + 1)}-${pad2(perfil.fechaUltimoPartido.getDate())}`
+    : null;
+  const ritmo = Number(perfil.intervaloPromedioDias);
   return (
-    <div className="space-y-2">
+    <div className="space-y-2" data-testid="detalle-antiguedad">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-lg bg-white px-3 py-2">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Última vez que vino</p>
+          <p className="text-sm font-black text-slate-900" data-testid="ultima-visita">
+            {ultimaISO ? formatoFechaLarga(ultimaISO) : 'Sin actividad'}
+          </p>
+          {diasDesdeUltima !== null && (
+            <p className="text-[10px] text-slate-500">{diasDesdeUltima === 0 ? 'Hoy' : `Hace ${diasDesdeUltima} día${diasDesdeUltima === 1 ? '' : 's'}`}</p>
+          )}
+        </div>
+        <div className="rounded-lg bg-white px-3 py-2">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Constancia</p>
+          <p className="text-sm font-black text-slate-900">
+            {(perfil.historialCanchas || []).length > 1 && Number.isFinite(ritmo) ? `Cada ~${Math.max(1, Math.round(ritmo))} días` : '—'}
+          </p>
+          <p className="text-[10px] text-slate-500">Ritmo habitual de visitas</p>
+        </div>
+      </div>
       <div className="flex flex-wrap gap-1.5">
         {perfil.canchaPreferida && (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-300 ring-1 ring-sky-400/30">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-500 ring-1 ring-sky-400/30">
             <MapPin size={11} /> Cancha preferida: {perfil.canchaPreferida.nombre}
           </span>
         )}
         {perfil.horarioFavorito && (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11px] font-bold text-violet-300 ring-1 ring-violet-400/30">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11px] font-bold text-violet-500 ring-1 ring-violet-400/30">
             <Clock size={11} /> Horario favorito: {perfil.horarioFavorito.rango}
           </span>
         )}
@@ -46170,6 +46247,9 @@ function DetalleHistorialCanchas({ perfil }) {
                   {formatoFechaLarga(r.fecha)} · {formatoHora12(r.horaInicio)}–{formatoHora12(r.horaFin)}
                 </p>
               </div>
+              {r.fecha > hoyStr && (
+                <span className="shrink-0 rounded-full bg-sky-400/15 px-2 py-0.5 text-[10px] font-bold text-sky-500">Próxima</span>
+              )}
             </div>
           ))}
         </div>
@@ -46228,7 +46308,10 @@ function DetalleFrecuenciaMensual({ perfil }) {
                   <span className="truncate">{p.detalle}</span>
                 </p>
               </div>
-              <span className="shrink-0 text-[10px] text-slate-500">{formatoFechaLarga(p.fecha)}</span>
+              <span className="shrink-0 text-right text-[10px] text-slate-500">
+                {formatoFechaLarga(p.fecha)}
+                {p.hora ? ` · ${formatoHora12(p.hora)}` : ''}
+              </span>
             </div>
           ))}
         </div>
@@ -46278,22 +46361,114 @@ function DetalleVisitasConsolidadas({ perfil }) {
   );
 }
 
+// App-109 — tarjeta "Clases / Academia" (informativa: NO suma al Score de
+// 100 pts, para no alterar el puntaje ni el Motor Anti-Churn). Semáforo por
+// asistencias del último mes: 4+ alto, 1-3 medio, 0 bajo.
+function indicadorClasesAcademia(perfil) {
+  const r = perfil.resumenAcademia || { clasesTomadas: 0, clasesUltimoMes: 0, ultimaClase: null };
+  const nivel = r.clasesUltimoMes >= 4 ? 'alto' : r.clasesUltimoMes >= 1 ? 'medio' : 'bajo';
+  let detalle = 'Sin clases tomadas todavía.';
+  if (r.ultimaClase) {
+    const dias = Math.max(0, Math.round((new Date(`${perfil.hoyISO}T12:00:00`).getTime() - new Date(`${r.ultimaClase.fecha}T12:00:00`).getTime()) / MS_POR_DIA));
+    detalle = `${r.clasesTomadas} clase${r.clasesTomadas === 1 ? '' : 's'} tomada${r.clasesTomadas === 1 ? '' : 's'} · ${r.clasesUltimoMes} este mes · última ${dias === 0 ? 'hoy' : `hace ${dias} día${dias === 1 ? '' : 's'}`}`;
+  } else if (r.proximaClase) {
+    detalle = 'Inscrito · aún sin asistencias registradas';
+  }
+  return { key: 'academia', label: 'Clases / Academia', nivel, detalle };
+}
+
+function DetalleClasesAcademia({ perfil }) {
+  const r = perfil.resumenAcademia || { clasesTomadas: 0, faltas: 0, clasesUltimoMes: 0, ultimaClase: null, proximaClase: null };
+  const historial = perfil.historialAcademia || [];
+  const lineaClase = (c) => [c.horario, c.cancha, c.coach ? `Coach ${c.coach}` : ''].filter(Boolean).join(' · ');
+  return (
+    <div className="space-y-2" data-testid="detalle-academia">
+      <div className="grid grid-cols-3 gap-2 text-center">
+        {[
+          ['Clases tomadas', r.clasesTomadas],
+          ['Este mes', r.clasesUltimoMes],
+          ['Faltas', r.faltas],
+        ].map(([etq, n]) => (
+          <div key={etq} className="rounded-lg bg-white px-2 py-2">
+            <p className="text-lg font-black text-slate-900">{n}</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{etq}</p>
+          </div>
+        ))}
+      </div>
+      {r.ultimaClase && (
+        <p className="rounded-lg bg-white px-3 py-2 text-[11px] text-slate-600">
+          <span className="font-bold text-slate-800">Última clase:</span> {formatoFechaLarga(r.ultimaClase.fecha)} · {r.ultimaClase.claseNombre} ({r.ultimaClase.tipoClase})
+          {lineaClase(r.ultimaClase) ? ` · ${lineaClase(r.ultimaClase)}` : ''}
+        </p>
+      )}
+      {r.proximaClase && (
+        <p className="rounded-lg bg-sky-400/10 px-3 py-2 text-[11px] text-slate-600" data-testid="proxima-clase">
+          <span className="font-bold text-slate-800">Próxima clase:</span> {formatoFechaLarga(r.proximaClase.fecha)} · {r.proximaClase.claseNombre} (
+          {r.proximaClase.tipoClase}){lineaClase(r.proximaClase) ? ` · ${lineaClase(r.proximaClase)}` : ''}
+        </p>
+      )}
+      {historial.length === 0 ? (
+        <EstadoVacioHistorial mensaje="Sin asistencias a clases registradas todavía." />
+      ) : (
+        <div className={listaHistorialClase}>
+          {historial.map((h) => (
+            <div key={h.id} className={filaHistorialClase}>
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 font-semibold text-slate-800">
+                  <span
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                      h.tipoClase === 'Privada' ? 'bg-amber-400/15 text-amber-600' : 'bg-orange-400/15 text-orange-600'
+                    }`}
+                  >
+                    {h.tipoClase}
+                  </span>
+                  <span className="truncate">{h.claseNombre}</span>
+                </p>
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  {formatoFechaLarga(h.fecha)}
+                  {lineaClase(h) ? ` · ${lineaClase(h)}` : ''}
+                </p>
+              </div>
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                  h.asistio ? 'bg-emerald-400/15 text-emerald-600' : 'bg-rose-400/15 text-rose-500'
+                }`}
+              >
+                {h.asistio ? 'Asistió' : 'Faltó'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Despacha, según la llave del indicador del Nivel de Fidelidad que se
 // expandió, el desglose analítico correspondiente. App-108: Antigüedad/
 // Constancia es la ÚNICA que muestra Cancha Preferida + Horario Favorito;
 // Frecuencia de Juego muestra solo partidos al mes.
-function DetalleIndicadorCHS({ indKey, perfil, onAbrirCanjeCortesia, canjeandoCategoria }) {
+function DetalleIndicadorCHS({ indKey, perfil, onAbrirCanjeCortesia, canjeandoCategoria, ocultarMontos = false }) {
   switch (indKey) {
     case 'consumo_secundario':
-      return <DetalleConsumoPOS perfil={perfil} onAbrirCanjeCortesia={onAbrirCanjeCortesia} canjeandoCategoria={canjeandoCategoria} />;
+      return (
+        <DetalleConsumoPOS
+          perfil={perfil}
+          onAbrirCanjeCortesia={onAbrirCanjeCortesia}
+          canjeandoCategoria={canjeandoCategoria}
+          ocultarMontos={ocultarMontos}
+        />
+      );
     case 'comunidad':
-      return <DetalleTorneosRetas perfil={perfil} />;
+      return <DetalleTorneosRetas perfil={perfil} ocultarMontos={ocultarMontos} />;
+    case 'academia':
+      return <DetalleClasesAcademia perfil={perfil} />;
     case 'antiguedad':
       return <DetalleHistorialCanchas perfil={perfil} />;
     case 'frecuencia':
       return <DetalleFrecuenciaMensual perfil={perfil} />;
     case 'gasto_promedio':
-      return <DetalleVisitasConsolidadas perfil={perfil} />;
+      return ocultarMontos ? null : <DetalleVisitasConsolidadas perfil={perfil} />;
     default:
       return null;
   }
@@ -46308,7 +46483,7 @@ function DetalleIndicadorCHS({ indKey, perfil, onAbrirCanjeCortesia, canjeandoCa
 // es Pro-Shop). Reutiliza `ModalSeleccionarVariante` (idéntico componente
 // que usa Smart POS para elegir variante) cuando el producto elegido sí
 // tiene variantes — nunca se reinventa ese flujo.
-function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPorProducto, productosAutorizados, procesando, onConfirmar, onClose }) {
+function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPorProducto, productosAutorizados, procesando, onConfirmar, onClose, ocultarMontos = false }) {
   const [busqueda, setBusqueda] = useState('');
   const [error, setError] = useState('');
   const [productoParaVariante, setProductoParaVariante] = useState(null);
@@ -46361,7 +46536,7 @@ function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPo
   return (
     <ModalShell
       titulo="Otorgar/Canjear Cortesía"
-      subtitulo={`${jugador.nombre} · ${etiquetaCategoria} · Meta cumplida: ${formatoMoneda(meta)}`}
+      subtitulo={`${jugador.nombre} · ${etiquetaCategoria} · ${ocultarMontos ? 'Meta cumplida' : `Meta cumplida: ${formatoMoneda(meta)}`}`}
       onClose={onClose}
       icon={Gift}
       ancho="max-w-lg"
@@ -46662,16 +46837,69 @@ function ModalPerfilJugadorCRM({
     { label: 'Restaurante/Bar', valor: perfil.gastoBar, color: 'bg-amber-400' },
     { label: 'Torneos/Retas', valor: perfil.gastoTorneosRetas, color: 'bg-violet-400' },
     { label: 'Pro-Shop', valor: perfil.gastoProShop, color: 'bg-fuchsia-400' },
-    // Academia & Clínicas: única fila del desglose con un `detalle` extra
-    // (clases tomadas) además del monto — ver render de `ltvFilas` abajo.
+    // Clases / Academia (App-109, antes "Academia & Clínicas"): única fila
+    // del desglose con un `detalle` extra (clases tomadas) además del monto.
     {
-      label: 'Academia & Clínicas',
+      label: 'Clases / Academia',
       valor: perfil.gastoAcademia,
       color: 'bg-teal-400',
       detalle: `${perfil.clasesAcademiaTomadas} clase${perfil.clasesAcademiaTomadas === 1 ? '' : 's'} tomada${perfil.clasesAcademiaTomadas === 1 ? '' : 's'}`,
     },
   ];
   const ltvMax = Math.max(perfil.ltvTotal, 1);
+
+  // App-109 — Vista para Operadores (Recepción/Caja, Restaurante/Bar, Coach:
+  // todo rol con `puedeVerMontos === false`). REGLA DE ORO: cero montos —
+  // ni Gasto Histórico, ni ticket por visita, ni consumos en $, ni Score
+  // (que se alimenta de gasto). Solo actividad operativa: Frecuencia de
+  // Juego, Antigüedad y Constancia, Torneos y Retas, Clases / Academia.
+  const vistaOperativa = permisos?.puedeVerMontos === false;
+  const indicadorAcademia = indicadorClasesAcademia(perfil);
+  const indicadoresOperativos = [
+    ...['frecuencia', 'antiguedad', 'comunidad']
+      .map((k) => perfil.chs.indicadores.find((i) => i.key === k))
+      .filter(Boolean)
+      .map((i) => (i.key === 'comunidad' ? { ...i, label: 'Participación en Torneos y Retas' } : i)),
+    indicadorAcademia,
+  ];
+
+  // Tarjeta expandible compartida por el Score (Owner/Manager) y la vista
+  // operativa: `derecha` es "x/y pts", "Informativo" o el nivel del semáforo.
+  function renderTarjetaIndicador(ind, derecha) {
+    const meta = NIVEL_CHS_META[ind.nivel] || NIVEL_CHS_META.bajo;
+    const expandido = indicadorExpandido === ind.key;
+    return (
+      <div key={ind.key} className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50" data-testid={`indicador-${ind.key}`}>
+        <button
+          type="button"
+          onClick={() => setIndicadorExpandido(expandido ? null : ind.key)}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-white/70"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="flex items-center gap-1.5 font-bold text-slate-800">
+                {meta.emoji} {ind.label}
+              </span>
+              <span className={`shrink-0 font-bold ${derecha === 'Informativo' ? 'text-slate-500' : meta.color}`}>{derecha}</span>
+            </div>
+            <p className="mt-1 text-[11px] text-slate-500">{ind.detalle}</p>
+          </div>
+          <ChevronDown size={15} className={`shrink-0 text-slate-500 transition-transform ${expandido ? 'rotate-180' : ''}`} />
+        </button>
+        {expandido && (
+          <div className="border-t border-slate-200 bg-slate-50/60 px-3 py-2.5">
+            <DetalleIndicadorCHS
+              indKey={ind.key}
+              perfil={perfil}
+              onAbrirCanjeCortesia={setCanjeCategoria}
+              canjeandoCategoria={canjeando ? canjeCategoria : null}
+              ocultarMontos={vistaOperativa}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const mensajeWhatsApp = useMemo(() => plantillaWhatsAppAntiChurn(perfil, nombreClub), [perfil, nombreClub]);
   const linkWhatsApp = useMemo(() => construirEnlaceWhatsApp({ telefono: perfil.telefono, mensaje: mensajeWhatsApp }), [perfil.telefono, mensajeWhatsApp]);
@@ -46796,7 +47024,13 @@ function ModalPerfilJugadorCRM({
 
   return (
     <>
-    <ModalShell titulo={perfil.nombre} subtitulo="Vista 360° · Gasto Total Histórico & Nivel de Fidelidad" onClose={onClose} ancho="max-w-2xl" icon={HeartPulse}>
+    <ModalShell
+      titulo={perfil.nombre}
+      subtitulo={vistaOperativa ? 'Vista 360° · Actividad del Jugador' : 'Vista 360° · Gasto Total Histórico & Nivel de Fidelidad'}
+      onClose={onClose}
+      ancho="max-w-2xl"
+      icon={HeartPulse}
+    >
       <div className="space-y-5">
         {/* Pancarta de Cumpleaños — solo el día exacto (`esCumpleanosHoy`):
             felicitación + recordatorio de gestionar una cortesía/detalle, y
@@ -46960,46 +47194,39 @@ function ModalPerfilJugadorCRM({
             Histórico/Nivel de Fidelidad, gateados por `puedeVerMontos`). */}
         <SeccionPenalizacionesPendientes jugadorId={perfil.id} ocultarSiVacio onIrACobrarEnComanda={onCargarPenalizacionAComanda} />
 
-        {permisos?.puedeVerMontos === false ? (
-          // Mejora de RBAC: roles sin `puedeVerMontos` (Recepción/Caja,
-          // Restaurante/Bar, Coach) NUNCA deben ver una cifra en pesos en la
-          // Vista 360° — se reemplazan por completo "Gasto Total Histórico"
-          // y "Nivel de Fidelidad" (cuyos indicadores expandibles sí muestran
-          // montos, ver `DetalleIndicadorCHS`) por un resumen puramente
-          // operativo: reservas, visitas y asistencias a Academia.
+        {vistaOperativa ? (
+          // Mejora de RBAC + App-109 (Vista para Operadores): roles sin
+          // `puedeVerMontos` (Recepción/Caja, Restaurante/Bar, Coach) NUNCA
+          // ven una cifra en pesos — ni Gasto Total Histórico ni el Score.
+          // En su lugar: resumen rápido + las 4 tarjetas de actividad
+          // operativa, cada una expandible con fechas, canchas y horarios.
           <>
-            <div>
+            <div data-testid="vista-operativa">
               <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
                 <CalendarClock size={15} className="text-orange-400" /> Actividad del Jugador
               </h3>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
-                  <p className="text-xl font-black text-orange-400">{perfil.historialCanchas?.length || 0}</p>
-                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reservas</p>
-                </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
-                  <p className="text-xl font-black text-orange-400">{perfil.visitasPropias || 0}</p>
-                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Visitas</p>
-                </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
-                  <p className="text-xl font-black text-orange-400">{perfil.clasesAcademiaTomadas || 0}</p>
-                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Asistencias Academia</p>
-                </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {(() => {
+                  const dias = perfil.fechaUltimoPartido
+                    ? Math.max(0, Math.round((new Date(`${perfil.hoyISO}T12:00:00`).getTime() - perfil.fechaUltimoPartido.getTime()) / MS_POR_DIA))
+                    : null;
+                  return [
+                    ['Partidos este mes', perfil.partidosMes || 0],
+                    ['Última visita', dias === null ? '—' : dias === 0 ? 'Hoy' : `Hace ${dias} d`],
+                    ['Reservas', perfil.historialCanchas?.length || 0],
+                    ['Clases tomadas', perfil.resumenAcademia?.clasesTomadas || 0],
+                  ];
+                })().map(([etq, valor]) => (
+                  <div key={etq} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
+                    <p className="text-xl font-black text-orange-400">{valor}</p>
+                    <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{etq}</p>
+                  </div>
+                ))}
               </div>
-              {(perfil.canchaPreferida || perfil.horarioFavorito) && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {perfil.canchaPreferida && (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-300 ring-1 ring-sky-400/30">
-                      <MapPin size={11} /> Cancha preferida: {perfil.canchaPreferida.nombre}
-                    </span>
-                  )}
-                  {perfil.horarioFavorito && (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11px] font-bold text-violet-300 ring-1 ring-violet-400/30">
-                      <Clock size={11} /> Horario favorito: {perfil.horarioFavorito.rango}
-                    </span>
-                  )}
-                </div>
-              )}
+              <p className="mb-2 mt-3 text-[11px] text-slate-500">Da clic en cualquier tarjeta para ver fechas, canchas y horarios.</p>
+              <div className="space-y-2">
+                {indicadoresOperativos.map((ind) => renderTarjetaIndicador(ind, (NIVEL_CHS_META[ind.nivel] || NIVEL_CHS_META.bajo).label))}
+              </div>
             </div>
 
             {/* Permisos de Cortesías y Favoritos para Recepción/Caja: fuera
@@ -47021,6 +47248,7 @@ function ModalPerfilJugadorCRM({
                   perfil={perfil}
                   onAbrirCanjeCortesia={setCanjeCategoria}
                   canjeandoCategoria={canjeando ? canjeCategoria : null}
+                  ocultarMontos
                 />
               </div>
             )}
@@ -47059,45 +47287,9 @@ function ModalPerfilJugadorCRM({
               </h3>
               <p className="mb-2 text-[11px] text-slate-500">Da clic en cualquier indicador para ver su historial exacto.</p>
               <div className="space-y-2">
-                {perfil.chs.indicadores.map((ind) => {
-                  const meta = NIVEL_CHS_META[ind.nivel];
-                  const expandido = indicadorExpandido === ind.key;
-                  return (
-                    <div key={ind.key} className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-                      <button
-                        type="button"
-                        onClick={() => setIndicadorExpandido(expandido ? null : ind.key)}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-white/70"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="flex items-center gap-1.5 font-bold text-slate-800">
-                              {meta.emoji} {ind.label}
-                            </span>
-                            <span className={`font-bold ${meta.color}`}>
-                              {ind.puntos}/{ind.max} pts
-                            </span>
-                          </div>
-                          <p className="mt-1 text-[11px] text-slate-500">{ind.detalle}</p>
-                        </div>
-                        <ChevronDown
-                          size={15}
-                          className={`shrink-0 text-slate-500 transition-transform ${expandido ? 'rotate-180' : ''}`}
-                        />
-                      </button>
-                      {expandido && (
-                        <div className="border-t border-slate-200 bg-slate-50/60 px-3 py-2.5">
-                          <DetalleIndicadorCHS
-                            indKey={ind.key}
-                            perfil={perfil}
-                            onAbrirCanjeCortesia={setCanjeCategoria}
-                            canjeandoCategoria={canjeando ? canjeCategoria : null}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {perfil.chs.indicadores.map((ind) => renderTarjetaIndicador(ind, `${ind.puntos}/${ind.max} pts`))}
+                {/* App-109: Clases / Academia — informativa, no suma al Score. */}
+                {renderTarjetaIndicador(indicadorAcademia, 'Informativo')}
               </div>
             </div>
           </>
@@ -47170,6 +47362,7 @@ function ModalPerfilJugadorCRM({
         procesando={canjeando}
         onConfirmar={confirmarCanjeCortesia}
         onClose={() => setCanjeCategoria(null)}
+        ocultarMontos={vistaOperativa}
       />
     )}
     {categoriaFrecuenciaAConfirmar && (
