@@ -22917,7 +22917,7 @@ function TopModificadoresTabla({ filas, cargando }) {
 // por cancha con sus horas ocupadas (incluye reservas pendientes), su
 // ocupación y su ingreso REAL cobrado — renta de cancha + Retas/Torneos
 // jugados en ella. Solo dinero con estatus 'pagado' (regla de oro).
-function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, academia: 0 } }) {
+function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, academia: 0 }, ocupacionGlobalPct = null }) {
   const sinEventos = Number(sinAsignar?.eventos) || 0;
   const sinAcademia = Number(sinAsignar?.academia) || 0;
   const total = filas.reduce(
@@ -23022,7 +23022,23 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, aca
               <tr className="bg-slate-50 font-black text-slate-900">
                 <td className="px-3 py-2.5">Total</td>
                 <td className="px-3 py-2.5 text-right">{total.horas.toFixed(1)} h</td>
-                <td className="px-3 py-2.5" />
+                {/* App-105: ocupación global = horas ocupadas ÷ capacidad de
+                    todas las canchas activas en el periodo (mismo KPI que la
+                    tarjeta "Ocupación de Canchas"). */}
+                <td className="px-3 py-2.5 text-right" data-testid="ocupacion-total">
+                  {Number.isFinite(Number(ocupacionGlobalPct)) && ocupacionGlobalPct !== null ? (
+                    <span
+                      className={`font-black ${
+                        ocupacionGlobalPct >= 67 ? 'text-emerald-500' : ocupacionGlobalPct >= 34 ? 'text-amber-500' : 'text-rose-400'
+                      }`}
+                      title="Ocupación global de todas las canchas en el periodo"
+                    >
+                      {formatoPctOcupacionBI(ocupacionGlobalPct)}
+                    </span>
+                  ) : (
+                    '—'
+                  )}
+                </td>
                 <td className="px-3 py-2.5 text-right">{formatoMoneda(total.reservas)}</td>
                 <td className="px-3 py-2.5 text-right">{formatoMoneda(total.eventos + sinEventos)}</td>
                 <td className="px-3 py-2.5 text-right">{formatoMoneda(total.academia + sinAcademia)}</td>
@@ -23033,6 +23049,171 @@ function IngresosOcupacionPorCanchaTabla({ filas, sinAsignar = { eventos: 0, aca
         </div>
       )}
     </div>
+  );
+}
+
+/* ---------------- Composición de Ocupación (App-105) ---------------- */
+
+// Origen de cada bloque que ocupa cancha (`reservas` no canceladas): los
+// bloqueos de eventos llevan su `estado` ('Torneo' | 'Reta' | 'Clase');
+// todo lo demás es una reserva de cancha. Cuatro categorías exactas — sin
+// "Otros": su suma es el 100 % de las horas ocupadas.
+const TIPOS_OCUPACION_BI = [
+  { key: 'reservas', label: 'Reservas', color: '#0284c7' },
+  { key: 'torneos', label: 'Torneos', color: '#d946ef' },
+  { key: 'retas', label: 'Retas', color: '#ea580c' },
+  { key: 'clases', label: 'Clases / Academia', color: '#16a34a' },
+];
+function tipoOcupacionBI(reserva) {
+  if (reserva?.estado === 'Torneo') return 'torneos';
+  if (reserva?.estado === 'Reta') return 'retas';
+  if (reserva?.estado === 'Clase') return 'clases';
+  return 'reservas';
+}
+// Mismo formato (1 decimal) que la tarjeta KPI "Ocupación de Canchas".
+function formatoPctOcupacionBI(v) {
+  const n = Number(v) || 0;
+  return `${n.toFixed(1)}%`;
+}
+function formatoHorasBI(h) {
+  const n = Number(h) || 0;
+  return `${n % 1 === 0 ? n.toFixed(0) : n.toFixed(1)} h`;
+}
+
+/* ---- Composición de Ocupación: anillo + leyenda lateral (mismo estilo que
+ * "Composición de Ingresos" de Contabilidad) ---- */
+function DonutComposicionOcupacionBI({ horasPorTipo = {}, ocupacionGlobalPct = null }) {
+  const [activo, setActivo] = useState(null);
+  const oscuro = useOscuroBI();
+  const superficie = oscuro ? '#1e293b' : '#ffffff';
+  const datos = TIPOS_OCUPACION_BI.map((t) => ({ ...t, horas: Math.max(0, Number(horasPorTipo?.[t.key]) || 0) }));
+  const suma = datos.reduce((acc, d) => acc + d.horas, 0);
+  const pct = (v) => (suma > 0 ? (v / suma) * 100 : 0);
+
+  const tam = 176;
+  const cx = tam / 2;
+  const cy = tam / 2;
+  const rExt = 84;
+  const rInt = 58;
+  const conHoras = datos.filter((d) => d.horas > 0);
+  // Separación de 2px (color de superficie) entre rebanadas, en ángulo.
+  const hueco = conHoras.length > 1 ? 2 / rExt : 0;
+  let angulo = -Math.PI / 2;
+  const punto = (r, a) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  const arcos = conHoras.map((d) => {
+    const barrido = (d.horas / suma) * Math.PI * 2;
+    const ini = angulo + hueco / 2;
+    const fin = angulo + barrido - hueco / 2;
+    angulo += barrido;
+    const grande = fin - ini > Math.PI ? 1 : 0;
+    if (conHoras.length === 1) return { ...d, completo: true, d: '', medio: 0 };
+    const [x1, y1] = punto(rExt, ini);
+    const [x2, y2] = punto(rExt, fin);
+    const [x3, y3] = punto(rInt, fin);
+    const [x4, y4] = punto(rInt, ini);
+    return {
+      ...d,
+      completo: false,
+      d: `M${x1},${y1} A${rExt},${rExt} 0 ${grande} 1 ${x2},${y2} L${x3},${y3} A${rInt},${rInt} 0 ${grande} 0 ${x4},${y4} Z`,
+      medio: (ini + fin) / 2,
+    };
+  });
+  const sel = activo ? datos.find((d) => d.key === activo) : null;
+  const tieneGlobal = ocupacionGlobalPct !== null && Number.isFinite(Number(ocupacionGlobalPct));
+
+  return (
+    <TarjetaGraficaBI
+      icono={Percent}
+      colorIcono="text-sky-500"
+      titulo="Composición de Ocupación"
+      descripcion="Origen de las horas ocupadas en todas las canchas del periodo: Reservas, Torneos, Retas y Clases (suman el 100 %)"
+    >
+      <div data-testid="composicion-ocupacion">
+        {suma === 0 ? (
+          <div className="flex h-[230px] items-center justify-center rounded-xl border border-dashed border-slate-200 text-xs text-slate-500">
+            Sin horas ocupadas en este periodo.
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-center">
+            <div className="relative shrink-0" style={{ width: tam, height: tam }}>
+              <svg width={tam} height={tam} viewBox={`0 0 ${tam} ${tam}`} role="img" aria-label="Composición de la ocupación por tipo">
+                {arcos.map((a) =>
+                  a.completo ? (
+                    <circle
+                      key={a.key}
+                      cx={cx}
+                      cy={cy}
+                      r={(rExt + rInt) / 2}
+                      fill="none"
+                      stroke={a.color}
+                      strokeWidth={rExt - rInt}
+                      onMouseEnter={() => setActivo(a.key)}
+                      onMouseLeave={() => setActivo(null)}
+                    />
+                  ) : (
+                    <path
+                      key={a.key}
+                      d={a.d}
+                      fill={a.color}
+                      stroke={superficie}
+                      strokeWidth="0"
+                      className="cursor-pointer transition-[opacity,transform] duration-150"
+                      style={{
+                        opacity: activo && activo !== a.key ? 0.3 : 1,
+                        transformOrigin: `${cx}px ${cy}px`,
+                        transform: activo === a.key ? `translate(${Math.cos(a.medio) * 3}px, ${Math.sin(a.medio) * 3}px)` : undefined,
+                      }}
+                      onMouseEnter={() => setActivo(a.key)}
+                      onMouseLeave={() => setActivo(null)}
+                    />
+                  )
+                )}
+              </svg>
+              {/* Centro: horas ocupadas + ocupación global, o la categoría bajo el cursor. */}
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-8 text-center" role="status" data-testid="centro-ocupacion">
+                <p className="max-w-full truncate text-[10px] font-bold uppercase tracking-wide text-slate-500">{sel ? sel.label : 'Horas ocupadas'}</p>
+                <p className="text-lg font-black leading-tight text-slate-900" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                  {formatoHorasBI(sel ? sel.horas : suma)}
+                </p>
+                <p className="text-[11px] font-semibold text-slate-500" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                  {sel ? `${formatoPctPnl(pct(sel.horas))} de lo ocupado` : tieneGlobal ? `Ocupación ${formatoPctOcupacionBI(ocupacionGlobalPct)}` : ''}
+                </p>
+              </div>
+            </div>
+
+            <ul className="w-full min-w-0 flex-1 space-y-0.5 sm:max-w-md">
+              {datos.map((d) => (
+                <li key={d.key}>
+                  <button
+                    type="button"
+                    onMouseEnter={() => setActivo(d.key)}
+                    onMouseLeave={() => setActivo(null)}
+                    onFocus={() => setActivo(d.key)}
+                    onBlur={() => setActivo(null)}
+                    title={`${d.label}: ${formatoHorasBI(d.horas)} · ${formatoPctPnl(pct(d.horas))}`}
+                    data-testid={`ocupacion-${d.key}`}
+                    className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                      activo === d.key ? 'bg-slate-100' : 'hover:bg-slate-50'
+                    } ${activo && activo !== d.key ? 'opacity-50' : ''}`}
+                  >
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: d.color }} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-semibold text-slate-700">{d.label}</span>
+                      <span className="block text-[11px] text-slate-500" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                        {formatoHorasBI(d.horas)}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-sm font-black text-slate-900" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {formatoPctPnl(pct(d.horas))}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </TarjetaGraficaBI>
   );
 }
 
@@ -28795,6 +28976,10 @@ function ModuloAnalyticsBI({
     };
     canchas.filter((c) => c.activa !== false).forEach((c) => fila(c));
     const canchaDe = (id) => canchas.find((c) => mismoId(c.id, id)) || null;
+    // Composición de Ocupación (App-105): las MISMAS horas de la tabla,
+    // separadas por origen (Reservas / Torneos / Retas / Clases). Se suman
+    // en este mismo recorrido, así su total = "Horas ocupadas" de la tabla.
+    const horasPorTipo = { reservas: 0, torneos: 0, retas: 0, clases: 0 };
 
     reservasOcupacion.forEach((r) => {
       const c = canchaDe(r.cancha_id);
@@ -28803,6 +28988,7 @@ function ModuloAnalyticsBI({
       const hf = parseHoraAMinutos(r.hora_fin);
       if (hi === null || hf === null || hf <= hi) return;
       fila(c).horas += (hf - hi) / 60;
+      horasPorTipo[tipoOcupacionBI(r)] += (hf - hi) / 60;
     });
     reservasCobradas.forEach((r) => {
       const c = canchaDe(r.cancha_id);
@@ -28853,7 +29039,7 @@ function ModuloAnalyticsBI({
         ocupacion: horasDisponiblesPorCancha > 0 ? Math.min(100, (f.horas / horasDisponiblesPorCancha) * 100) : 0,
       }))
       .sort((a, b) => b.ingresos - a.ingresos || String(a.cancha.nombre).localeCompare(String(b.cancha.nombre)));
-    return { filas, sinAsignar: { eventos: sinAsignar, academia: sinAsignarAcademia } };
+    return { filas, sinAsignar: { eventos: sinAsignar, academia: sinAsignarAcademia }, horasPorTipo };
   }, [canchas, reservasOcupacion, reservasCobradas, ingresosEventos, partidosTorneo, rango]);
   const rendimientoPorCancha = ingresosPorCancha.filas;
 
@@ -29375,7 +29561,14 @@ function ModuloAnalyticsBI({
 
       {/* Reemplaza a "Ingresos Cruzados por Cancha y Bloque Horario":
           resumen limpio por cancha (horas, ocupación e ingreso real). */}
-      <IngresosOcupacionPorCanchaTabla filas={rendimientoPorCancha} sinAsignar={ingresosPorCancha.sinAsignar} />
+      <IngresosOcupacionPorCanchaTabla
+        filas={rendimientoPorCancha}
+        sinAsignar={ingresosPorCancha.sinAsignar}
+        ocupacionGlobalPct={ocupacionCanchasPct}
+      />
+
+      {/* App-105: origen de la ocupación (mismas horas que la tabla). */}
+      <DonutComposicionOcupacionBI horasPorTipo={ingresosPorCancha.horasPorTipo} ocupacionGlobalPct={ocupacionCanchasPct} />
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
         <TopProductosTabla filas={analisis.topProductos} cargando={cargandoFinanciero} />
