@@ -22730,17 +22730,30 @@ function ModalDesgloseVentasBI({ categoria, lineas = [], periodo, onClose }) {
 // Academia) siempre era $0 y solo llenaba la tabla de ceros. El costo de
 // producto sigue reflejado en el Margen Bruto de Pro-Shop y Cafetería/Bar
 // (Ingreso − Costo), y el CSV exportable conserva la columna completa.
+// App-106: "Utilidad de Pro-Shop y Restaurante / Bar". La TABLA de márgenes
+// muestra SOLO las categorías de mostrador (con costo directo de inventario).
+// Canchas, Retas & Torneos y Academia son servicios de espacio: se evalúan
+// por ocupación y horas (tabla de canchas + dona de Composición de
+// Ocupación), no por margen. La barra "Distribución de ingresos" de arriba
+// sigue recibiendo TODAS las categorías (100 % del ingreso consolidado).
+const CATEGORIAS_UTILIDAD_MOSTRADOR_BI = ['Pro-Shop', 'Cafetería/Bar'];
 function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando }) {
   if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
+  const filasMostrador = CATEGORIAS_UTILIDAD_MOSTRADOR_BI.map((cat) => (filas || []).find((f) => f.categoria === cat)).filter(Boolean);
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="utilidad-mostrador">
       <h3 className="mb-4 flex items-center gap-1.5 text-sm font-black text-slate-900">
-        <Percent size={16} className="text-orange-400" /> Rentabilidad por Categoría
+        <Percent size={16} className="text-orange-400" /> Utilidad de Pro-Shop y Restaurante / Bar
       </h3>
 
-      {/* Complemento visual: distribución de ingresos por categoría. */}
+      {/* Complemento visual: distribución de ingresos de TODAS las categorías
+          del club (sin cambios: 100 % del ingreso consolidado). */}
       <DistribucionIngresosCategoriaBI filas={filas} />
+
+      <p className="mb-2 text-[11px] text-slate-500">
+        Margen de las ventas de mostrador (ingreso cobrado − costo directo del inventario).
+      </p>
 
       <div className="overflow-x-auto rounded-xl border border-slate-200">
         <table className="w-full min-w-[420px] text-left text-xs">
@@ -22753,7 +22766,7 @@ function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando }) 
             </tr>
           </thead>
           <tbody>
-            {filas.map((f) => {
+            {filasMostrador.map((f) => {
               const meta = CATEGORIAS_BI.find((c) => c.key === f.categoria);
               // App-104: el nombre de la categoría es texto plano (sin clic).
               // El desglose de ventas se abre SOLO desde las tarjetas
