@@ -22498,6 +22498,64 @@ function HeatmapOcupacion({ modo, filas, celdas }) {
 
 /* ---------------- Modal de Desglose de Ventas (App-96) ---------------- */
 
+// App-104 — Clasificación estricta Pro-Shop vs. Restaurante/Bar para
+// Analytics BI. `normalizarTextoBI` quita acentos/mayúsculas para comparar.
+function normalizarTextoBI(t) {
+  return String(t ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+// Categoría guardada en `productos.categoria` → bucket de Analytics.
+// 'Cafetería/Bar' (el valor oficial) y variantes escritas a mano
+// ("Restaurante", "Bar", "Cocina", "Bebidas", "Alimentos") → Restaurante/Bar;
+// 'Canchas' → Canchas; el resto (Pro-Shop, Rentas…) → Pro-Shop.
+function bucketCategoriaBI(categoria) {
+  if (categoria === 'Cafetería/Bar') return 'Cafetería/Bar';
+  if (categoria === 'Canchas') return 'Canchas';
+  const n = normalizarTextoBI(categoria);
+  if (!n) return null;
+  if (/cafeteri|restaur|cocina|bebida|alimento|comida|\bbar\b/.test(n)) return 'Cafetería/Bar';
+  if (/^canchas?$/.test(n)) return 'Canchas';
+  return 'Pro-Shop';
+}
+// Índice nombre de producto (normalizado) → categoría, para artículos cuyo
+// producto ya no se resuelve por id. Si dos productos con el mismo nombre
+// tienen categorías distintas, el nombre queda ambiguo (no se usa).
+const CATEGORIA_AMBIGUA_BI = '__ambigua__';
+function indiceCategoriaPorNombreBI(productos) {
+  const mapa = new Map();
+  (productos || []).forEach((p) => {
+    const clave = normalizarTextoBI(p?.nombre);
+    const bucket = bucketCategoriaBI(p?.categoria);
+    if (!clave || !bucket) return;
+    const previo = mapa.get(clave);
+    mapa.set(clave, previo && previo !== bucket ? CATEGORIA_AMBIGUA_BI : bucket);
+  });
+  return mapa;
+}
+// Bucket de un artículo vendido ('Pro-Shop' | 'Cafetería/Bar' | 'Canchas'):
+//   1. Categoría del producto (o del padre de la variante) en el catálogo.
+//   2. Categoría guardada en el propio artículo del ticket, si la trae.
+//   3. Producto ya no existe: por nombre ("Cerveza — Corona (Extra: …)" →
+//      "Cerveza"), contra el catálogo actual.
+//   4. Trae Modificadores/Extras de preparación → Restaurante/Bar.
+//   5. Sin ninguna señal → Pro-Shop (criterio histórico).
+function categoriaVentaBI(item, resuelto, indicePorNombre) {
+  const delCatalogo = resuelto?.producto?.categoria ?? resuelto?.variante?._productoPadre?.categoria;
+  const directa = bucketCategoriaBI(delCatalogo) || bucketCategoriaBI(item?.categoria) || bucketCategoriaBI(item?.categoria_producto);
+  if (directa) return directa;
+  const nombre = String(item?.nombre || resuelto?.nombre || '').replace(/\s*\(Extra:[^)]*\)\s*$/i, '').trim();
+  const candidatos = [nombre, nombre.split(' — ')[0]];
+  for (const c of candidatos) {
+    const porNombre = indicePorNombre?.get(normalizarTextoBI(c));
+    if (porNombre && porNombre !== CATEGORIA_AMBIGUA_BI) return porNombre;
+  }
+  if (Array.isArray(item?.modificadores) && item.modificadores.length > 0) return 'Cafetería/Bar';
+  return 'Pro-Shop';
+}
+
 const ETIQUETA_PERIODO_BI = { dia: 'Día', mes: 'Mes', anio: 'Año' };
 
 function formatoFechaHoraVentaBI(fecha) {
@@ -22507,17 +22565,24 @@ function formatoFechaHoraVentaBI(fecha) {
 }
 
 // Insights Pro-Shop / Restaurante-Bar: 2 pestañas sobre las MISMAS líneas de
-// venta cobradas que ya alimentan Rentabilidad por Categoría (mismo rango y
-// mismo criterio de categoría), así los totales del modal cuadran con las
-// tarjetas y con la tabla.
+// venta cobradas que ya alimentan las tarjetas y Rentabilidad por Categoría
+// (mismo rango y mismo criterio de categoría, `categoriaVentaBI`), así los
+// totales del modal cuadran con la tarjeta que lo abrió.
 //   • Top: Producto + Variante + Extras agrupados (unidades e ingreso).
 //   • Historial: cada artículo vendido, del más reciente al más antiguo, con
 //     buscador de texto.
-function ModalDesgloseVentasBI({ categoriaInicial, lineas = [], periodo, onClose }) {
-  const [categoria, setCategoria] = useState(categoriaInicial || 'Pro-Shop');
+// App-104: la categoría es FIJA — la decide la tarjeta que se presionó
+// ("Ventas Pro-Shop" o "Ventas Restaurante / Bar"). Ya no existe el switch
+// interno Pro-Shop / Restaurante-Bar: cada modal muestra SOLO las líneas de
+// su categoría (filtro estricto), sin cruce de información.
+const CATEGORIAS_DESGLOSE_VENTAS_BI = ['Pro-Shop', 'Cafetería/Bar'];
+function ModalDesgloseVentasBI({ categoria, lineas = [], periodo, onClose }) {
   const [pestana, setPestana] = useState('top');
   const [busqueda, setBusqueda] = useState('');
-  const lineasCategoria = useMemo(() => lineas.filter((l) => l.categoria === categoria), [lineas, categoria]);
+  const lineasCategoria = useMemo(
+    () => (CATEGORIAS_DESGLOSE_VENTAS_BI.includes(categoria) ? lineas.filter((l) => l.categoria === categoria) : []),
+    [lineas, categoria]
+  );
   const totales = useMemo(
     () => lineasCategoria.reduce((acc, l) => ({ unidades: acc.unidades + l.cantidad, ingreso: acc.ingreso + l.total }), { unidades: 0, ingreso: 0 }),
     [lineasCategoria]
@@ -22548,27 +22613,8 @@ function ModalDesgloseVentasBI({ categoriaInicial, lineas = [], periodo, onClose
       icon={categoria === 'Pro-Shop' ? ShoppingBag : Coffee}
       ancho="max-w-3xl"
     >
-      <div className="space-y-3" data-testid="modal-desglose-ventas-bi">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div role="tablist" aria-label="Categoría" className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
-            {[
-              { id: 'Pro-Shop', label: 'Pro-Shop' },
-              { id: 'Cafetería/Bar', label: 'Restaurante / Bar' },
-            ].map((o) => (
-              <button
-                key={o.id}
-                type="button"
-                role="tab"
-                aria-selected={categoria === o.id}
-                onClick={() => setCategoria(o.id)}
-                className={`rounded-md px-3 py-1 text-[11px] font-bold transition ${
-                  categoria === o.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
+      <div className="space-y-3" data-testid="modal-desglose-ventas-bi" data-categoria={categoria}>
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <div role="tablist" aria-label="Vista del desglose" className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
             {[
               { id: 'top', label: 'Top Productos, Variantes y Modificadores' },
@@ -22684,7 +22730,7 @@ function ModalDesgloseVentasBI({ categoriaInicial, lineas = [], periodo, onClose
 // Academia) siempre era $0 y solo llenaba la tabla de ceros. El costo de
 // producto sigue reflejado en el Margen Bruto de Pro-Shop y Cafetería/Bar
 // (Ingreso − Costo), y el CSV exportable conserva la columna completa.
-function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando, onAbrirDesglose }) {
+function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando }) {
   if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
 
   return (
@@ -22709,24 +22755,13 @@ function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando, on
           <tbody>
             {filas.map((f) => {
               const meta = CATEGORIAS_BI.find((c) => c.key === f.categoria);
-              // App-96: sin leyendas secundarias bajo el nombre. Pro-Shop y
-              // Restaurante/Bar abren el Modal de Desglose de Ventas.
-              const abreDesglose = typeof onAbrirDesglose === 'function' && (f.categoria === 'Pro-Shop' || f.categoria === 'Cafetería/Bar');
+              // App-104: el nombre de la categoría es texto plano (sin clic).
+              // El desglose de ventas se abre SOLO desde las tarjetas
+              // "Ventas Pro-Shop" / "Ventas Restaurante / Bar".
               return (
                 <tr key={f.categoria} className="border-b border-slate-200/70 last:border-0">
-                  <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-800'}`}>
-                    {abreDesglose ? (
-                      <button
-                        type="button"
-                        onClick={() => onAbrirDesglose(f.categoria)}
-                        className="inline-flex items-center gap-1 font-bold underline decoration-dotted underline-offset-2 hover:opacity-80"
-                        title="Ver desglose de ventas"
-                      >
-                        {etiquetaCategoriaProducto(f.categoria)} <ChevronRight size={12} />
-                      </button>
-                    ) : (
-                      etiquetaCategoriaProducto(f.categoria)
-                    )}
+                  <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-800'}`} data-testid={`rentabilidad-categoria-${f.categoria}`}>
+                    {etiquetaCategoriaProducto(f.categoria)}
                   </td>
                   <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingreso)}</td>
                   <td className={`px-3 py-2.5 text-right font-bold ${f.utilidad >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -28836,6 +28871,13 @@ function ModuloAnalyticsBI({
     // productos — ver `resolverProductoYVarianteDeItem`).
     const resolverItem = (item) =>
       resolverProductoYVarianteDeItem(item, { productosPorId, variantesPorProducto, variantesPorIdLegado: variantesPorId });
+    // App-104 — categoría ESTRICTA de cada artículo vendido (Pro-Shop vs.
+    // Restaurante/Bar). Antes, un artículo cuyo producto ya no se encontraba
+    // en el catálogo (borrado, o variante legada) caía por default en
+    // Pro-Shop: así se colaban platillos/bebidas de Restaurante en el
+    // desglose de Pro-Shop. Ver `categoriaVentaBI`.
+    const categoriaPorNombreCatalogo = indiceCategoriaPorNombreBI(productos);
+    const categoriaDeItem = (item, resuelto) => categoriaVentaBI(item, resuelto, categoriaPorNombreCatalogo);
 
     // FIX "Ingreso Total y Margen en $0 aunque las unidades sí se ven bien":
     // antes, "unidades vendidas" salía de `kardex` (movimientos
@@ -28939,6 +28981,8 @@ function ModuloAnalyticsBI({
         const prod = resuelto.producto;
         const costoUnitario = costoUnitarioParaItem(item.producto_id, resuelto);
         const costo = cantidad * costoUnitario;
+        // Mismo bucket para ingreso, COGS, tarjetas y Modal de Desglose.
+        const catBucket = categoriaDeItem(item, resuelto);
 
         if (!filasPorClave[clave]) {
           filasPorClave[clave] = {
@@ -28946,7 +28990,7 @@ function ModuloAnalyticsBI({
             varianteId,
             producto: prod,
             nombre: resuelto.nombre,
-            categoria: prod?.categoria || null,
+            categoria: prod?.categoria || (catBucket === 'Cafetería/Bar' ? 'Cafetería/Bar' : null),
             unidades: 0,
             ingreso: 0,
             costo: 0,
@@ -28992,18 +29036,13 @@ function ModuloAnalyticsBI({
         });
 
         cogsTotal += costo;
-        const cat = prod?.categoria;
-        // Mismo criterio en ingreso y COGS: Cafetería/Bar y Canchas
-        // (literal) se quedan en su propia categoría; todo lo demás
-        // (Pro-Shop, 'Rentas' de palas/equipo, o cualquier categoría no
-        // reconocida) cae en Pro-Shop — NUNCA en Canchas, para que el costo
-        // de rentar una pala no ensucie el margen de Canchas (que debe
-        // reflejar solo la renta de la pista).
-        const catBucket = cat === 'Cafetería/Bar' ? 'Cafetería/Bar' : cat === 'Canchas' ? 'Canchas' : 'Pro-Shop';
+        // Mismo criterio en ingreso y COGS (`categoriaVentaBI`):
+        // Restaurante/Bar y Canchas se quedan en su propia categoría; todo
+        // lo demás (Pro-Shop, 'Rentas' de palas/equipo) cae en Pro-Shop —
+        // NUNCA en Canchas, para que el costo de rentar una pala no ensucie
+        // el margen de Canchas.
         cogsPorCategoria[catBucket] += costo;
-        if (cat === 'Cafetería/Bar') ingresoPorCategoria['Cafetería/Bar'] += subtotal;
-        else if (cat === 'Canchas') ingresoPorCategoria.Canchas += subtotal;
-        else ingresoPorCategoria['Pro-Shop'] += subtotal;
+        ingresoPorCategoria[catBucket] += subtotal;
         // Insights / Modal de Desglose (App-96) — mismo `catBucket`.
         if (catBucket !== 'Canchas') {
           unidadesPorCategoria[catBucket] += cantidad;
@@ -29125,7 +29164,7 @@ function ModuloAnalyticsBI({
       ingresoRestauranteBar: ingresoPorCategoria['Cafetería/Bar'],
       lineasVentaProducto,
     };
-  }, [ventasRango, kardexRango, productosPorId, variantesPorId, variantesPorProducto, reservasCobradas, ingresosEventos]);
+  }, [ventasRango, kardexRango, productos, productosPorId, variantesPorId, variantesPorProducto, reservasCobradas, ingresosEventos]);
 
   /* ---- Nº de canchas activas (denominador de RevPACP y Pico/Valle) ---- */
   const numCanchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false).length, [canchas]);
@@ -29315,7 +29354,7 @@ function ModuloAnalyticsBI({
 
       {desgloseVentasBI && (
         <ModalDesgloseVentasBI
-          categoriaInicial={desgloseVentasBI}
+          categoria={desgloseVentasBI}
           lineas={analisis.lineasVentaProducto || []}
           periodo={ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'}
           onClose={() => setDesgloseVentasBI(null)}
@@ -29332,7 +29371,6 @@ function ModuloAnalyticsBI({
         filas={analisis.rentabilidadPorCategoria}
         academiaDesglose={analisis.academiaDesglose}
         cargando={cargandoFinanciero}
-        onAbrirDesglose={setDesgloseVentasBI}
       />
 
       {/* Reemplaza a "Ingresos Cruzados por Cancha y Bloque Horario":
