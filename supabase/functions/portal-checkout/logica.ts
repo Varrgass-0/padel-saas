@@ -51,32 +51,152 @@ function esTarifaDeAcademia(t: Fila): boolean {
   return String(t?.modulo ?? '').toLowerCase() === 'academia';
 }
 
-export function tarifasActivasDelDia(listaTarifas: Fila[] | null | undefined, diaSemana: number): Fila[] {
+// ---------------------------------------------------------------------------
+// Reglas de Tarifa (migracion v124) — réplica EXACTA de App.jsx:
+// `tarifasActivasDelDia`, `precioHoraDeRegla`, `cotizarReserva`,
+// `calcularPrecioReserva` (prorrateo por tramos, sin prioridades).
+// ---------------------------------------------------------------------------
+export const TIPO_AJUSTE_PRECIO_FIJO = 'PRECIO_FIJO';
+export const TIPO_AJUSTE_DESCUENTO = 'DESCUENTO_PORCENTAJE';
+export const TIPO_AJUSTE_RECARGO = 'RECARGO_PORCENTAJE';
+
+export function tipoAjusteDeRegla(t: Fila): string {
+  const tipo = String(t?.tipo_ajuste ?? '').toUpperCase();
+  return tipo === TIPO_AJUSTE_DESCUENTO || tipo === TIPO_AJUSTE_RECARGO ? tipo : TIPO_AJUSTE_PRECIO_FIJO;
+}
+
+function canchasDeRegla(t: Fila): string[] {
+  return Array.isArray(t?.cancha_ids) ? (t.cancha_ids as unknown[]).filter((c) => c != null && c !== '').map(String) : [];
+}
+
+export function reglaTarifaAplicaACancha(t: Fila, canchaId: unknown): boolean {
+  const ids = canchasDeRegla(t);
+  return ids.length === 0 || ids.includes(String(canchaId));
+}
+
+export function reglaTarifaVigenteEn(t: Fila, fecha: string): boolean {
+  const f = String(fecha ?? '').slice(0, 10);
+  if (!f) return true;
+  const desde = t?.vigencia_desde ? String(t.vigencia_desde).slice(0, 10) : null;
+  const hasta = t?.vigencia_hasta ? String(t.vigencia_hasta).slice(0, 10) : null;
+  if (desde && f < desde) return false;
+  if (hasta && f > hasta) return false;
+  return true;
+}
+
+/** `contexto` opcional: `{ fecha, canchaId }` filtra además por vigencia y canchas aplicables. */
+export function tarifasActivasDelDia(
+  listaTarifas: Fila[] | null | undefined,
+  diaSemana: number,
+  contexto: { fecha?: string | null; canchaId?: unknown } = {}
+): Fila[] {
+  const fecha = contexto?.fecha || null;
+  const canchaId = contexto?.canchaId ?? null;
   return (Array.isArray(listaTarifas) ? listaTarifas : []).filter((t) => {
     if (esTarifaDeAcademia(t)) return false;
     if (t?.activo === false) return false;
     const dias = Array.isArray(t?.dias_semana) ? (t.dias_semana as unknown[]) : null;
-    return !dias || dias.length === 0 || dias.includes(diaSemana);
+    if (dias && dias.length > 0 && !dias.map(Number).includes(Number(diaSemana))) return false;
+    if (fecha && !reglaTarifaVigenteEn(t, fecha)) return false;
+    if (canchaId != null && !reglaTarifaAplicaACancha(t, canchaId)) return false;
+    return true;
   });
 }
 
-export function calcularPrecioReserva(horaInicio: string, duracionMinutos: number, listaTarifas: Fila[], precioBase: number): number {
-  const inicioMin = parseHoraAMinutos(horaInicio);
+function finMinutosRegla(t: Fila): number | null {
+  const hasta = parseHoraAMinutos(t?.hora_fin ?? t?.horaFin);
+  if (hasta === null) return null;
+  const desde = parseHoraAMinutos(t?.hora_inicio ?? t?.horaInicio);
+  return hasta === 0 && desde !== null && desde > 0 ? 24 * 60 : hasta;
+}
+
+export function precioHoraDeRegla(t: Fila, base: number): number | null {
+  const tipo = tipoAjusteDeRegla(t);
+  if (tipo === TIPO_AJUSTE_PRECIO_FIJO) {
+    const fijo = Number(t?.precio_hora ?? t?.precioHora);
+    return Number.isFinite(fijo) && fijo > 0 ? fijo : null;
+  }
+  const pct = Number(t?.porcentaje_ajuste);
+  if (!Number.isFinite(pct) || pct <= 0 || !(Number(base) > 0)) return null;
+  const factor = tipo === TIPO_AJUSTE_DESCUENTO ? 1 - Math.min(pct, 100) / 100 : 1 + pct / 100;
+  return Math.round(Number(base) * factor * 100) / 100;
+}
+
+/** Sin prioridades automáticas: si dos reglas se sobreponen, gana la primera por hora de inicio y luego por id. */
+function ordenListaReglasTarifa(a: Fila, b: Fila): number {
+  const ha = String(a?.hora_inicio ?? a?.horaInicio ?? '');
+  const hb = String(b?.hora_inicio ?? b?.horaInicio ?? '');
+  if (ha !== hb) return ha.localeCompare(hb);
+  return String(a?.id ?? '').localeCompare(String(b?.id ?? ''), undefined, { numeric: true });
+}
+
+export interface TramoTarifa {
+  desde: number;
+  hasta: number;
+  minutos: number;
+  regla: Fila | null;
+  precioHora: number;
+  subtotal: number;
+}
+
+export interface CotizacionReserva {
+  total: number;
+  totalBase: number;
+  tramos: TramoTarifa[];
+  reglas: Fila[];
+  conAjuste: boolean;
+}
+
+/**
+ * Cotización con PRORRATEO por tramos: el bloque se corta en cada inicio/fin de
+ * regla que caiga dentro; cada tramo se cobra con la regla que lo cubre (o con
+ * el precio/hora de la cancha) × minutos / 60. Réplica exacta de App.jsx.
+ */
+export function cotizarReserva(horaInicio: string, duracionMinutos: number, listaTarifas: Fila[], precioBase: number): CotizacionReserva {
   const duracion = Number(duracionMinutos) > 0 ? Number(duracionMinutos) : 60;
   const base = Number(precioBase) > 0 ? Number(precioBase) : 0;
-  let precioHora = base;
-  if (inicioMin !== null) {
-    const finMin = inicioMin + duracion;
-    const franja = (Array.isArray(listaTarifas) ? listaTarifas : []).find((t) => {
-      const desde = parseHoraAMinutos(t?.hora_inicio ?? t?.horaInicio);
-      const hasta = parseHoraAMinutos(t?.hora_fin ?? t?.horaFin);
-      if (desde === null || hasta === null) return false;
-      return inicioMin >= desde && finMin <= hasta;
-    });
-    const precioFranja = franja ? Number(franja.precio_hora ?? franja.precioHora) : null;
-    if (precioFranja !== null && Number.isFinite(precioFranja) && precioFranja > 0) precioHora = precioFranja;
+  const redondear = (n: number) => Math.round(n * 100) / 100;
+  const totalBase = redondear(base * (duracion / 60));
+  const inicioMin = parseHoraAMinutos(horaInicio);
+  if (inicioMin === null) return { total: totalBase, totalBase, tramos: [], reglas: [], conAjuste: false };
+  const finMin = inicioMin + duracion;
+  const reglas = (Array.isArray(listaTarifas) ? listaTarifas : [])
+    .map((t) => ({ t, desde: parseHoraAMinutos(t?.hora_inicio ?? t?.horaInicio), hasta: finMinutosRegla(t), precioHora: precioHoraDeRegla(t, base) }))
+    .filter((r) => r.desde !== null && r.hasta !== null && (r.hasta as number) > (r.desde as number) && r.precioHora !== null)
+    .sort((x, y) => ordenListaReglasTarifa(x.t, y.t)) as Array<{ t: Fila; desde: number; hasta: number; precioHora: number }>;
+  const cortes = new Set<number>([inicioMin, finMin]);
+  reglas.forEach((r) => {
+    if (r.desde > inicioMin && r.desde < finMin) cortes.add(r.desde);
+    if (r.hasta > inicioMin && r.hasta < finMin) cortes.add(r.hasta);
+  });
+  const puntos = Array.from(cortes).sort((x, y) => x - y);
+  const tramos: TramoTarifa[] = [];
+  let total = 0;
+  for (let i = 0; i < puntos.length - 1; i += 1) {
+    const desde = puntos[i];
+    const hasta = puntos[i + 1];
+    const r = reglas.find((x) => x.desde <= desde && x.hasta >= hasta) ?? null;
+    const precioHora = r ? r.precioHora : base;
+    const subtotal = precioHora * ((hasta - desde) / 60);
+    total += subtotal;
+    const previo = tramos[tramos.length - 1];
+    if (previo && previo.regla === (r ? r.t : null)) {
+      previo.hasta = hasta;
+      previo.minutos += hasta - desde;
+      previo.subtotal = redondear(previo.subtotal + subtotal);
+    } else {
+      tramos.push({ desde, hasta, minutos: hasta - desde, regla: r ? r.t : null, precioHora, subtotal: redondear(subtotal) });
+    }
   }
-  return Math.round(precioHora * (duracion / 60) * 100) / 100;
+  const aplicadas: Fila[] = [];
+  tramos.forEach((tr) => {
+    if (tr.regla && !aplicadas.includes(tr.regla)) aplicadas.push(tr.regla);
+  });
+  return { total: redondear(total), totalBase, tramos, reglas: aplicadas, conAjuste: aplicadas.length > 0 };
+}
+
+export function calcularPrecioReserva(horaInicio: string, duracionMinutos: number, listaTarifas: Fila[], precioBase: number): number {
+  return cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase).total;
 }
 
 /** Duración base del bloque del club (`duracion_reserva_minutos`). */
@@ -97,7 +217,7 @@ export function diaSemanaDeFecha(fecha: string): number {
   return new Date(Date.UTC(y, m - 1, d, 12)).getUTCDay();
 }
 
-/** Precio del bloque, igual que `precioDelBloque` del Portal. */
+/** Precio del bloque, igual que `cotizacionDelBloque` del Portal (prorrateo por tramos). */
 export function costoCancha(opciones: {
   cancha: Fila;
   club: Fila;
@@ -108,14 +228,8 @@ export function costoCancha(opciones: {
 }): number {
   const { cancha, club, tarifas, fecha, horaInicio, duracionMin } = opciones;
   const tarifasHabilitadas = club?.tarifas_habilitadas !== false;
-  const delDia = tarifasHabilitadas ? tarifasActivasDelDia(tarifas, diaSemanaDeFecha(fecha)) : [];
-  const base = precioPorHoraDeCancha(cancha);
-  const permiteDosHoras = duracionesPermitidas(duracionBaseDelClub(club)).includes(120);
-  if (permiteDosHoras && duracionMin === 120) {
-    const segunda = minutosAHora((parseHoraAMinutos(horaInicio) ?? 0) + 60);
-    return Math.round((calcularPrecioReserva(horaInicio, 60, delDia, base) + calcularPrecioReserva(segunda, 60, delDia, base)) * 100) / 100;
-  }
-  return calcularPrecioReserva(horaInicio, duracionMin, delDia, base);
+  const delDia = tarifasHabilitadas ? tarifasActivasDelDia(tarifas, diaSemanaDeFecha(fecha), { fecha, canchaId: cancha?.id ?? null }) : [];
+  return calcularPrecioReserva(horaInicio, duracionMin, delDia, precioPorHoraDeCancha(cancha));
 }
 
 /** Fecha y minutos actuales en la zona del club. */

@@ -831,6 +831,7 @@ import {
   Star,
   Trophy,
   Percent,
+  Tag,
   CalendarRange,
   Download,
   UserPlus,
@@ -2407,15 +2408,191 @@ function precioPorHoraDeCancha(cancha) {
 // (`horaInicio, duracionMinutos, listaTarifas, precioBase`, sin un quinto
 // parámetro de fecha/día) — cada caller pasa ya la lista filtrada por el día
 // que le corresponde.
-function tarifasActivasDelDia(listaTarifas, diaSemana) {
+//
+// App-112 (migracion v124, Reglas de Tarifa): `contexto` opcional
+// `{ fecha: 'YYYY-MM-DD', canchaId }` filtra además por VIGENCIA
+// (`vigencia_desde`/`vigencia_hasta`, inclusive; NULL = sin límite) y por
+// CANCHAS aplicables (`cancha_ids` vacío/NULL = todas). Sin `contexto` se
+// comporta exactamente como antes (solo día + activo).
+function tarifasActivasDelDia(listaTarifas, diaSemana, contexto = {}) {
+  const fecha = contexto?.fecha || null;
+  const canchaId = contexto?.canchaId ?? null;
   return (Array.isArray(listaTarifas) ? listaTarifas : []).filter((t) => {
     // Las franjas de Academia (`modulo = 'academia'`, migracion_v88) viven en
     // la misma tabla pero NUNCA aplican al precio de una cancha.
     if (esTarifaDeAcademia(t)) return false;
     if (t?.activo === false) return false;
     const dias = Array.isArray(t?.dias_semana) ? t.dias_semana : null;
-    return !dias || dias.length === 0 || dias.includes(diaSemana);
+    if (dias && dias.length > 0 && !dias.map(Number).includes(Number(diaSemana))) return false;
+    if (fecha && !reglaTarifaVigenteEn(t, fecha)) return false;
+    if (canchaId != null && !reglaTarifaAplicaACancha(t, canchaId)) return false;
+    return true;
   });
+}
+
+// --- Reglas de Tarifa (migracion v124) — MISMA lógica, línea por línea, que
+// `supabase/functions/portal-checkout/logica.ts` (el servidor recalcula el
+// precio del Portal y nunca confía en el navegador).
+const TIPO_AJUSTE_PRECIO_FIJO = 'PRECIO_FIJO';
+const TIPO_AJUSTE_DESCUENTO = 'DESCUENTO_PORCENTAJE';
+const TIPO_AJUSTE_RECARGO = 'RECARGO_PORCENTAJE';
+const TIPOS_AJUSTE_TARIFA = [
+  { value: TIPO_AJUSTE_PRECIO_FIJO, label: 'Precio fijo por hora' },
+  { value: TIPO_AJUSTE_DESCUENTO, label: '% de descuento' },
+  { value: TIPO_AJUSTE_RECARGO, label: '% de recargo' },
+];
+function tipoAjusteDeRegla(t) {
+  const tipo = String(t?.tipo_ajuste || '').toUpperCase();
+  return tipo === TIPO_AJUSTE_DESCUENTO || tipo === TIPO_AJUSTE_RECARGO ? tipo : TIPO_AJUSTE_PRECIO_FIJO;
+}
+function canchasDeRegla(t) {
+  return Array.isArray(t?.cancha_ids) ? t.cancha_ids.filter((c) => c != null && c !== '').map(String) : [];
+}
+function reglaTarifaAplicaACancha(t, canchaId) {
+  const ids = canchasDeRegla(t);
+  return ids.length === 0 || ids.includes(String(canchaId));
+}
+function reglaTarifaVigenteEn(t, fecha) {
+  const f = String(fecha || '').slice(0, 10);
+  if (!f) return true;
+  const desde = t?.vigencia_desde ? String(t.vigencia_desde).slice(0, 10) : null;
+  const hasta = t?.vigencia_hasta ? String(t.vigencia_hasta).slice(0, 10) : null;
+  if (desde && f < desde) return false;
+  if (hasta && f > hasta) return false;
+  return true;
+}
+// Hora fin '00:00' = medianoche (fin del día), para reglas tipo 22:00–00:00.
+function finMinutosRegla(t) {
+  const hasta = parseHoraAMinutos(t?.hora_fin ?? t?.horaFin);
+  if (hasta === null) return null;
+  const desde = parseHoraAMinutos(t?.hora_inicio ?? t?.horaInicio);
+  return hasta === 0 && desde !== null && desde > 0 ? 24 * 60 : hasta;
+}
+// Precio por hora que resulta de aplicar la regla sobre el precio/hora de la
+// cancha (`base`). `null` = la regla no produce un precio válido.
+function precioHoraDeRegla(t, base) {
+  const tipo = tipoAjusteDeRegla(t);
+  if (tipo === TIPO_AJUSTE_PRECIO_FIJO) {
+    const fijo = Number(t?.precio_hora ?? t?.precioHora);
+    return Number.isFinite(fijo) && fijo > 0 ? fijo : null;
+  }
+  const pct = Number(t?.porcentaje_ajuste);
+  if (!Number.isFinite(pct) || pct <= 0 || !(Number(base) > 0)) return null;
+  const factor = tipo === TIPO_AJUSTE_DESCUENTO ? 1 - Math.min(pct, 100) / 100 : 1 + pct / 100;
+  return Math.round(Number(base) * factor * 100) / 100;
+}
+// Sin prioridades automáticas (App-113): si dos reglas activas se sobreponen,
+// el club apaga o ajusta una con su switch. Para que el resultado sea
+// siempre el mismo mientras tanto, se toma la PRIMERA por hora de inicio y
+// luego por id (orden de la lista en Configuración).
+function ordenListaReglasTarifa(a, b) {
+  const ha = String(a?.hora_inicio ?? a?.horaInicio ?? '');
+  const hb = String(b?.hora_inicio ?? b?.horaInicio ?? '');
+  if (ha !== hb) return ha.localeCompare(hb);
+  return String(a?.id ?? '').localeCompare(String(b?.id ?? ''), undefined, { numeric: true });
+}
+// ¿Dos reglas de cancha activas pueden cobrar el mismo minuto? (mismo día,
+// horas que se cruzan, canchas y vigencias compatibles). Solo para avisar en
+// Configuración — el cálculo nunca depende de esto.
+function reglasTarifaSeSobreponen(a, b) {
+  if (!a || !b || a === b || a.activo === false || b.activo === false) return false;
+  if (esTarifaDeAcademia(a) || esTarifaDeAcademia(b)) return false;
+  const iniA = parseHoraAMinutos(a.hora_inicio), finA = finMinutosRegla(a);
+  const iniB = parseHoraAMinutos(b.hora_inicio), finB = finMinutosRegla(b);
+  if ([iniA, finA, iniB, finB].some((v) => v === null) || !(iniA < finB && iniB < finA)) return false;
+  const diasA = Array.isArray(a.dias_semana) && a.dias_semana.length > 0 ? a.dias_semana.map(Number) : null;
+  const diasB = Array.isArray(b.dias_semana) && b.dias_semana.length > 0 ? b.dias_semana.map(Number) : null;
+  if (diasA && diasB && !diasA.some((d) => diasB.includes(d))) return false;
+  const cA = canchasDeRegla(a), cB = canchasDeRegla(b);
+  if (cA.length > 0 && cB.length > 0 && !cA.some((c) => cB.includes(c))) return false;
+  const dA = a.vigencia_desde ? String(a.vigencia_desde).slice(0, 10) : '0000-00-00';
+  const hA = a.vigencia_hasta ? String(a.vigencia_hasta).slice(0, 10) : '9999-12-31';
+  const dB = b.vigencia_desde ? String(b.vigencia_desde).slice(0, 10) : '0000-00-00';
+  const hB = b.vigencia_hasta ? String(b.vigencia_hasta).slice(0, 10) : '9999-12-31';
+  return dA <= hB && dB <= hA;
+}
+// Cotización de un bloque con PRORRATEO por tramos (App-113): el bloque
+// [horaInicio, horaInicio + duración] se corta en cada inicio/fin de regla
+// que caiga dentro de él; cada tramo se cobra con la regla que lo cubre
+// (o con el precio/hora de la cancha si ninguna) × sus minutos / 60. Así una
+// reserva de 90 o 120 min que cruza dos franjas paga exactamente la parte
+// que le toca a cada una. Devuelve el desglose para la UI:
+//   { total, totalBase, tramos: [{ desde, hasta, minutos, regla, precioHora, subtotal }],
+//     reglas: [regla única aplicada…], conAjuste }
+function cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase) {
+  const duracion = Number(duracionMinutos) > 0 ? Number(duracionMinutos) : 60;
+  const base = Number(precioBase) > 0 ? Number(precioBase) : 0;
+  const redondear = (n) => Math.round(n * 100) / 100;
+  const totalBase = redondear(base * (duracion / 60));
+  const inicioMin = parseHoraAMinutos(horaInicio);
+  if (inicioMin === null) return { total: totalBase, totalBase, tramos: [], reglas: [], conAjuste: false };
+  const finMin = inicioMin + duracion;
+  const reglas = (Array.isArray(listaTarifas) ? listaTarifas : [])
+    .map((t) => ({ t, desde: parseHoraAMinutos(t?.hora_inicio ?? t?.horaInicio), hasta: finMinutosRegla(t), precioHora: precioHoraDeRegla(t, base) }))
+    .filter((r) => r.desde !== null && r.hasta !== null && r.hasta > r.desde && r.precioHora !== null)
+    .sort((x, y) => ordenListaReglasTarifa(x.t, y.t));
+  const cortes = new Set([inicioMin, finMin]);
+  reglas.forEach((r) => {
+    if (r.desde > inicioMin && r.desde < finMin) cortes.add(r.desde);
+    if (r.hasta > inicioMin && r.hasta < finMin) cortes.add(r.hasta);
+  });
+  const puntos = Array.from(cortes).sort((x, y) => x - y);
+  const tramos = [];
+  let total = 0;
+  for (let i = 0; i < puntos.length - 1; i += 1) {
+    const desde = puntos[i];
+    const hasta = puntos[i + 1];
+    const r = reglas.find((x) => x.desde <= desde && x.hasta >= hasta) || null;
+    const precioHora = r ? r.precioHora : base;
+    const subtotal = precioHora * ((hasta - desde) / 60);
+    total += subtotal;
+    const previo = tramos[tramos.length - 1];
+    if (previo && previo.regla === (r ? r.t : null)) {
+      previo.hasta = hasta;
+      previo.minutos += hasta - desde;
+      previo.subtotal = redondear(previo.subtotal + subtotal);
+    } else {
+      tramos.push({ desde, hasta, minutos: hasta - desde, regla: r ? r.t : null, precioHora, subtotal: redondear(subtotal) });
+    }
+  }
+  const aplicadas = [];
+  tramos.forEach((tr) => {
+    if (tr.regla && !aplicadas.includes(tr.regla)) aplicadas.push(tr.regla);
+  });
+  const totalFinal = redondear(total);
+  return { total: totalFinal, totalBase, tramos, reglas: aplicadas, conAjuste: aplicadas.length > 0 };
+}
+// Nombre corto para insignias: "Hora Pico", "Hora Pico + Miércoles Locos".
+function nombresReglasCotizacion(cotizacion) {
+  return (cotizacion?.reglas || []).map((t) => (t?.nombre || '').trim() || 'Tarifa especial').join(' + ');
+}
+// Fila de `tarifas_horarios` → objeto que recibe `guardarTarifaHorario`
+// (mismo formato que arma `ModalTarifaHorario`).
+function reglaTarifaAFormulario(t) {
+  const tipo = tipoAjusteDeRegla(t);
+  return {
+    id: t?.id,
+    nombre: t?.nombre || '',
+    horaInicio: t?.hora_inicio,
+    horaFin: t?.hora_fin,
+    diasSemana: Array.isArray(t?.dias_semana) ? t.dias_semana : [],
+    precioHora: tipo === TIPO_AJUSTE_PRECIO_FIJO ? Number(t?.precio_hora) || 0 : null,
+    activo: t?.activo !== false,
+    modulo: esTarifaDeAcademia(t) ? 'academia' : 'cancha',
+    tipoAjuste: tipo,
+    porcentajeAjuste: tipo === TIPO_AJUSTE_PRECIO_FIJO ? null : Number(t?.porcentaje_ajuste) || null,
+    canchaIds: canchasDeRegla(t),
+    vigenciaDesde: t?.vigencia_desde ? String(t.vigencia_desde).slice(0, 10) : null,
+    vigenciaHasta: t?.vigencia_hasta ? String(t.vigencia_hasta).slice(0, 10) : null,
+  };
+}
+// Texto corto del ajuste de una regla ("$500/h", "−50%", "+20%").
+function etiquetaAjusteRegla(t) {
+  const tipo = tipoAjusteDeRegla(t);
+  if (tipo === TIPO_AJUSTE_PRECIO_FIJO) return `${formatoMoneda(Number(t?.precio_hora) || 0)}/h`;
+  const pct = Number(t?.porcentaje_ajuste) || 0;
+  const txt = `${pct % 1 === 0 ? pct : pct.toFixed(2)}%`;
+  return tipo === TIPO_AJUSTE_DESCUENTO ? `−${txt}` : `+${txt}`;
 }
 
 // Franjas Horarias de CLASE SUELTA de Academia (migracion_v88) — comparten la
@@ -2449,44 +2626,14 @@ function precioClaseSueltaEnHorario(horaInicio, duracionMinutos, franjasDelDia, 
   return Number.isFinite(precioFranja) && precioFranja > 0 ? precioFranja : estandar;
 }
 
-// Helper Centralizado de Cálculo de Precios (requerimiento explícito de
-// "Tarifas Dinámicas por Franja Horaria") — NOTA DE ARQUITECTURA: este
-// proyecto se entrega como un solo archivo `src/App.jsx` (sin `utils/`
-// separado, ver cabecera del archivo), así que esta función vive aquí, junto
-// al resto de helpers de precios (`precioPorHoraDeCancha`), en vez de en un
-// módulo `utils/precios.js` aparte — mismo criterio de ubicación que
-// `calcularTotalSlots`/`minutosBloquesEnRango` para sus respectivos dominios.
-//
-// Evalúa qué franja de `listaTarifas` (ya filtrada por día vía
-// `tarifasActivasDelDia`) corresponde al bloque de la reserva
-// (`horaInicio` + `duracionMinutos`) y regresa el MONTO TOTAL (no el
-// precio/hora) ya multiplicado por la duración, redondeado a centavos.
-// Una franja SOLO aplica si cubre el bloque COMPLETO (hora de inicio Y hora
-// de fin de la reserva caen dentro de la franja) — si la reserva cruza el
-// límite de una franja, o ninguna franja aplica, se usa `precioBase` — que
-// SIEMPRE es el `precio_por_hora` de la cancha elegida (ver
-// `ModalNuevaReserva`/`ModalReservarCancha`); el club ya NO tiene una "Tarifa
-// Base" global. El `precio_hora` de una franja es un valor ABSOLUTO: se
-// aplica tal cual, sin escalarlo ni multiplicarlo contra ninguna otra tarifa
-// — NUNCA se inventa un precio mixto entre dos franjas o entre una franja y
-// la base.
+// Helper Centralizado de Cálculo de Precios — MONTO TOTAL del bloque de una
+// reserva (`horaInicio` + `duracionMinutos`), redondeado a centavos. Las
+// reglas ya vienen filtradas por día/vigencia/cancha (`tarifasActivasDelDia`).
+// El precio estándar (`precioBase`) es SIEMPRE el `precio_por_hora` de la
+// cancha elegida; cada regla cobra precio fijo por hora o un % de descuento
+// / recargo sobre él, PRORRATEADO por tramos (ver `cotizarReserva`).
 function calcularPrecioReserva(horaInicio, duracionMinutos, listaTarifas, precioBase) {
-  const inicioMin = parseHoraAMinutos(horaInicio);
-  const duracion = Number(duracionMinutos) > 0 ? Number(duracionMinutos) : 60;
-  const base = Number(precioBase) > 0 ? Number(precioBase) : 0;
-  let precioHora = base;
-  if (inicioMin !== null) {
-    const finMin = inicioMin + duracion;
-    const franja = (Array.isArray(listaTarifas) ? listaTarifas : []).find((t) => {
-      const desde = parseHoraAMinutos(t?.hora_inicio ?? t?.horaInicio);
-      const hasta = parseHoraAMinutos(t?.hora_fin ?? t?.horaFin);
-      if (desde === null || hasta === null) return false;
-      return inicioMin >= desde && finMin <= hasta;
-    });
-    const precioFranja = franja ? Number(franja.precio_hora ?? franja.precioHora) : null;
-    if (Number.isFinite(precioFranja) && precioFranja > 0) precioHora = precioFranja;
-  }
-  return Math.round(precioHora * (duracion / 60) * 100) / 100;
+  return cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase).total;
 }
 
 /* ============================================================================
@@ -8013,6 +8160,74 @@ function SeccionDatosFiscalesClub({ permisos, operador, nombreClub, telefonoCont
 // dinámica del bloque (mismo cálculo que el Portal, `precioDelBloque`).
 // La firma de props es la misma de siempre (drop-in): `onRegistrarAuditoria`
 // se sigue aceptando aunque ya no haya descuentos manuales que auditar.
+/* ---- Tarifas especiales en pantalla (App-113) ----
+ * `PrecioSlotTarifa`: precio de un horario en la cuadrícula — si una regla
+ * cambia el precio, el estándar tachado + el final + insignia con el nombre
+ * de la franja/promoción. `ResumenTarifaAplicada`: desglose por tramos del
+ * bloque elegido (prorrateo), para que el jugador o el recepcionista vean
+ * por qué el sistema ajustó el precio. Ambos leen la MISMA `cotizarReserva`
+ * que cobra el servidor. */
+function PrecioSlotTarifa({ cotizacion, seleccionado = false }) {
+  if (!cotizacion) return null;
+  const diferencia = cotizacion.total - cotizacion.totalBase;
+  const cambiaPrecio = cotizacion.conAjuste && Math.abs(diferencia) > 0.005;
+  const colorFinal = cambiaPrecio ? (diferencia < 0 ? 'text-emerald-600' : 'text-amber-600') : seleccionado ? 'text-orange-500' : 'text-slate-500';
+  return (
+    <span className="flex max-w-full flex-col items-center leading-tight" data-testid="precio-slot">
+      {cambiaPrecio && (
+        <span className="text-[9px] font-semibold text-slate-400 line-through" data-testid="precio-base-tachado">
+          {formatoMoneda(cotizacion.totalBase)}
+        </span>
+      )}
+      <span className={`text-[10px] font-black ${colorFinal}`} data-testid="precio-final">
+        {formatoMoneda(cotizacion.total)}
+      </span>
+      {cotizacion.conAjuste && (
+        <span
+          className="mt-0.5 max-w-full truncate rounded-full bg-violet-400/15 px-1.5 py-px text-[8px] font-bold text-violet-600"
+          title={nombresReglasCotizacion(cotizacion)}
+          data-testid="badge-tarifa"
+        >
+          {nombresReglasCotizacion(cotizacion)}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function ResumenTarifaAplicada({ cotizacion, precioHoraBase }) {
+  if (!cotizacion?.conAjuste) return null;
+  const diferencia = cotizacion.total - cotizacion.totalBase;
+  return (
+    <div className="rounded-lg border border-violet-300/60 bg-violet-400/10 px-3 py-2" data-testid="resumen-tarifa">
+      <p className="flex flex-wrap items-center gap-1.5 text-[11px] font-black text-violet-700">
+        <Tag size={12} /> Tarifa especial: {nombresReglasCotizacion(cotizacion)}
+        {Math.abs(diferencia) > 0.005 && (
+          <span className={`rounded-full px-1.5 py-px text-[10px] ${diferencia < 0 ? 'bg-emerald-400/15 text-emerald-700' : 'bg-amber-400/15 text-amber-700'}`}>
+            {diferencia < 0 ? `Ahorras ${formatoMoneda(-diferencia)}` : `+${formatoMoneda(diferencia)} sobre el estándar`}
+          </span>
+        )}
+      </p>
+      <ul className="mt-1 space-y-0.5 text-[11px] text-slate-600">
+        {cotizacion.tramos.map((tr) => (
+          <li key={`${tr.desde}-${tr.hasta}`} className="flex items-center justify-between gap-2" data-testid="tramo-tarifa">
+            <span className="min-w-0 truncate">
+              {formatoHora12(minutosAHora(tr.desde))}–{formatoHora12(minutosAHora(tr.hasta % (24 * 60)))} ·{' '}
+              {tr.regla ? tr.regla.nombre || 'Tarifa especial' : 'Precio estándar'} · {formatoMoneda(tr.precioHora)}/h
+            </span>
+            <span className="shrink-0 font-bold text-slate-800">{formatoMoneda(tr.subtotal)}</span>
+          </li>
+        ))}
+      </ul>
+      {Math.abs(diferencia) > 0.005 && (
+        <p className="mt-1 text-[10px] text-slate-500">
+          Precio estándar de la cancha ({formatoMoneda(precioHoraBase)}/h): <span className="line-through">{formatoMoneda(cotizacion.totalBase)}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ModalNuevaReserva({
   canchas,
   reservas,
@@ -8148,30 +8363,25 @@ function ModalNuevaReserva({
   const tarifasDelDia = useMemo(() => {
     if (!tarifasHabilitadas) return [];
     const dow = fecha ? new Date(`${fecha}T12:00:00`).getDay() : null;
-    return dow === null ? [] : tarifasActivasDelDia(tarifasHorarios, dow);
-  }, [tarifasHorarios, fecha, tarifasHabilitadas]);
+    // App-112: también por vigencia (fecha) y canchas aplicables.
+    return dow === null ? [] : tarifasActivasDelDia(tarifasHorarios, dow, { fecha, canchaId: canchaSeleccionada?.id ?? null });
+  }, [tarifasHorarios, fecha, tarifasHabilitadas, canchaSeleccionada]);
   // Precio estándar = `precio_por_hora` de la cancha elegida (no existe una
   // "Tarifa Base" global del club).
   const precioPorHora = canchaSeleccionada ? precioPorHoraDeCancha(canchaSeleccionada) : 0;
-  // Precio TOTAL del bloque — idéntico a `precioDelBloque` del Portal: con 2
-  // horas es la suma de 2 tarifas horarias independientes (cada hora puede
-  // caer en una franja distinta).
+  // Cotización del bloque — idéntica a la del Portal y a la del servidor:
+  // prorrateo por tramos cuando el bloque (60/90/120 min) cruza franjas.
+  function cotizacionDelBloque(hora) {
+    return cotizarReserva(hora, duracionMin, tarifasDelDia, precioPorHora);
+  }
   function precioDelBloque(hora) {
-    if (permiteDosHoras && duracionHoras === 2) {
-      const horaSegunda = minutosAHora((parseHoraAMinutos(hora) || 0) + 60);
-      return (
-        Math.round(
-          (calcularPrecioReserva(hora, 60, tarifasDelDia, precioPorHora) + calcularPrecioReserva(horaSegunda, 60, tarifasDelDia, precioPorHora)) * 100
-        ) / 100
-      );
-    }
-    return calcularPrecioReserva(hora, duracionMin, tarifasDelDia, precioPorHora);
+    return cotizacionDelBloque(hora).total;
   }
   const horaFin = horaInicio ? minutosAHora(Math.min((parseHoraAMinutos(horaInicio) || 0) + duracionMin, horaCierreMin)) : '';
-  const montoAutomatico = horaInicio ? precioDelBloque(horaInicio) : null;
-  // ¿El precio del bloque viene de una franja dinámica (pico/valle) o del
-  // precio/hora estándar de la cancha?
-  const esTarifaDinamica = montoAutomatico !== null && Math.abs(montoAutomatico - Math.round(duracionHoras * precioPorHora * 100) / 100) > 0.005;
+  const cotizacionElegida = horaInicio ? cotizacionDelBloque(horaInicio) : null;
+  const montoAutomatico = cotizacionElegida ? cotizacionElegida.total : null;
+  // ¿El precio del bloque lo ajustó una regla de tarifa?
+  const esTarifaDinamica = !!cotizacionElegida?.conAjuste;
 
   /* ---- Cliente / CRM ---- */
   const digitosTelefono = telefono.replace(/\D/g, '');
@@ -8380,7 +8590,8 @@ function ModalNuevaReserva({
                 const bloqueado = f.ocupado || f.pasado;
                 const estilo = ESTILO_OCUPACION_SLOT[f.tipo] || ESTILO_OCUPACION_SLOT.disponible;
                 const etiqueta = f.pasado ? 'Pasado' : f.tipo === 'clase' ? `Clase${f.coachNombre ? ` · ${f.coachNombre}` : ''}` : estilo.etiqueta;
-                const precioSlot = bloqueado ? null : precioDelBloque(f.horaInicio);
+                const cotizacionSlot = bloqueado ? null : cotizacionDelBloque(f.horaInicio);
+                const precioSlot = cotizacionSlot ? cotizacionSlot.total : null;
                 return (
                   <button
                     key={f.horaInicio}
@@ -8404,7 +8615,7 @@ function ModalNuevaReserva({
                     {bloqueado ? (
                       <span className="max-w-full truncate text-[9px] font-semibold">{etiqueta}</span>
                     ) : (
-                      <span className={`text-[10px] font-bold ${seleccionado ? 'text-orange-500' : 'text-slate-500'}`}>{formatoMoneda(precioSlot)}</span>
+                      <PrecioSlotTarifa cotizacion={cotizacionSlot} seleccionado={seleccionado} />
                     )}
                   </button>
                 );
@@ -8473,11 +8684,23 @@ function ModalNuevaReserva({
             </div>
             <div className="text-right">
               <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                Total {esTarifaDinamica ? '· tarifa por franja' : '· tarifa estándar'}
+                Total {esTarifaDinamica ? '· tarifa especial' : '· tarifa estándar'}
               </p>
-              <p className="text-2xl font-black leading-tight text-slate-900">{montoAutomatico !== null ? formatoMoneda(montoAutomatico) : '—'}</p>
+              {esTarifaDinamica && Math.abs(cotizacionElegida.total - cotizacionElegida.totalBase) > 0.005 && (
+                <p className="text-xs font-semibold text-slate-400 line-through" data-testid="total-base-tachado">
+                  {formatoMoneda(cotizacionElegida.totalBase)}
+                </p>
+              )}
+              <p className="text-2xl font-black leading-tight text-slate-900" data-testid="total-reserva">
+                {montoAutomatico !== null ? formatoMoneda(montoAutomatico) : '—'}
+              </p>
             </div>
           </div>
+          {esTarifaDinamica && (
+            <div className="mt-2">
+              <ResumenTarifaAplicada cotizacion={cotizacionElegida} precioHoraBase={precioPorHora} />
+            </div>
+          )}
           <p className="mt-2 flex items-start gap-1.5 text-[11px] font-semibold text-slate-500">
             <Info size={13} className="mt-0.5 shrink-0 text-sky-500" /> Precio fijado por el sistema según la tarifa de la cancha y la franja horaria. El cobro
             (Efectivo, Tarjeta, SPEI o Dividir Cuenta) se hace enseguida en Smart POS.
@@ -42746,9 +42969,22 @@ function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardan
 // selectores de Configuración del Club) y `DIAS_SEMANA_ACADEMIA` (mismo
 // criterio `Date.prototype.getDay()` que el resto de la app) para no
 // inventar un catálogo de horas/días paralelo.
-function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'cancha' }) {
+// App-112 (migracion v124): en franjas de CANCHA la regla además define
+// canchas aplicables (Todas / específicas), tipo de ajuste (precio fijo por
+// hora, % de descuento o % de recargo sobre el precio/hora de la cancha) y
+// vigencia opcional (desde/hasta; vacío = permanente). Las franjas de Clase
+// Suelta de Academia siguen siendo solo precio fijo por clase.
+function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'cancha', canchas = [] }) {
   const editando = !!tarifa;
   const esAcademia = modulo === 'academia';
+  const canchasActivas = (Array.isArray(canchas) ? canchas : []).filter((c) => c && c.id != null);
+  const [tipoAjuste, setTipoAjuste] = useState(() => (esAcademia ? TIPO_AJUSTE_PRECIO_FIJO : tipoAjusteDeRegla(tarifa)));
+  const [porcentaje, setPorcentaje] = useState(tarifa?.porcentaje_ajuste != null ? String(tarifa.porcentaje_ajuste) : '');
+  const [canchaIds, setCanchaIds] = useState(() => canchasDeRegla(tarifa));
+  const [todasLasCanchas, setTodasLasCanchas] = useState(() => canchasDeRegla(tarifa).length === 0);
+  const [vigenciaDesde, setVigenciaDesde] = useState(tarifa?.vigencia_desde ? String(tarifa.vigencia_desde).slice(0, 10) : '');
+  const [vigenciaHasta, setVigenciaHasta] = useState(tarifa?.vigencia_hasta ? String(tarifa.vigencia_hasta).slice(0, 10) : '');
+  const esPrecioFijo = tipoAjuste === TIPO_AJUSTE_PRECIO_FIJO;
   const [nombre, setNombre] = useState(tarifa?.nombre || '');
   const [horaInicio, setHoraInicio] = useState(tarifa?.hora_inicio || '07:00');
   const [horaFin, setHoraFin] = useState(tarifa?.hora_fin || '12:00');
@@ -42764,21 +43000,43 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'c
   function alternarDia(indice) {
     setDiasSemana((prev) => (prev.includes(indice) ? prev.filter((d) => d !== indice) : [...prev, indice].sort((a, b) => a - b)));
   }
+  function alternarCancha(id) {
+    const clave = String(id);
+    setCanchaIds((prev) => (prev.includes(clave) ? prev.filter((c) => c !== clave) : [...prev, clave]));
+  }
 
   async function guardar() {
     setError('');
     const ini = parseHoraAMinutos(horaInicio);
-    const fin = parseHoraAMinutos(horaFin);
+    const finCrudo = parseHoraAMinutos(horaFin);
+    // 00:00 como hora fin = medianoche (ej. 22:00–00:00).
+    const fin = finCrudo === 0 && ini > 0 ? 24 * 60 : finCrudo;
     if (ini === null || fin === null || fin <= ini) {
       setError('La Hora Fin debe ser posterior a la Hora Inicio.');
       return;
     }
-    if (!(Number(precioHora) > 0)) {
+    if (esPrecioFijo && !(Number(precioHora) > 0)) {
       setError(esAcademia ? 'Captura un Precio por Clase mayor a $0.' : 'Captura un Precio por Hora mayor a $0.');
       return;
     }
+    const pct = Number(porcentaje);
+    if (!esPrecioFijo) {
+      const maxPct = tipoAjuste === TIPO_AJUSTE_DESCUENTO ? 100 : 500;
+      if (!(pct > 0 && pct <= maxPct)) {
+        setError(tipoAjuste === TIPO_AJUSTE_DESCUENTO ? 'El descuento debe ser mayor a 0% y máximo 100%.' : 'El recargo debe ser mayor a 0% y máximo 500%.');
+        return;
+      }
+    }
     if (diasSemana.length === 0) {
       setError('Selecciona al menos un día de la semana.');
+      return;
+    }
+    if (!esAcademia && !todasLasCanchas && canchaIds.length === 0) {
+      setError('Elige al menos una cancha o marca "Todas las canchas".');
+      return;
+    }
+    if (vigenciaDesde && vigenciaHasta && vigenciaDesde > vigenciaHasta) {
+      setError('La fecha de fin de vigencia debe ser igual o posterior a la de inicio.');
       return;
     }
     await onGuardar?.({
@@ -42787,27 +43045,38 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'c
       horaInicio,
       horaFin,
       diasSemana,
-      precioHora: Number(precioHora),
+      precioHora: esPrecioFijo ? Number(precioHora) : null,
       activo,
       modulo: esAcademia ? 'academia' : 'cancha',
+      ...(esAcademia
+        ? {}
+        : {
+            tipoAjuste,
+            porcentajeAjuste: esPrecioFijo ? null : Math.round(pct * 100) / 100,
+            canchaIds: todasLasCanchas ? [] : canchaIds,
+            vigenciaDesde: vigenciaDesde || null,
+            vigenciaHasta: vigenciaHasta || null,
+          }),
     });
     onClose();
   }
 
   return (
     <ModalShell
-      titulo={editando ? 'Editar Franja Horaria' : 'Nueva Franja Horaria'}
-      subtitulo={esAcademia ? 'Franja de Clase Suelta (Academia)' : 'Tarifas Dinámicas por Franja Horaria'}
+      titulo={esAcademia ? (editando ? 'Editar Franja Horaria' : 'Nueva Franja Horaria') : editando ? 'Editar Regla de Tarifa' : 'Nueva Regla de Tarifa'}
+      subtitulo={esAcademia ? 'Franja de Clase Suelta (Academia)' : 'Tarifas y Franjas Horarias'}
       onClose={onClose}
       icon={DollarSign}
-      ancho="max-w-md"
+      ancho={esAcademia ? 'max-w-md' : 'max-w-lg'}
     >
       <div className="space-y-3.5">
         <Campo label="Nombre">
           <input
             value={nombre}
             onChange={(e) => setNombre(e.target.value)}
+            placeholder={esAcademia ? '' : 'Ej. Hora Pico, Miércoles Locos, Promo Fin de Semana'}
             className={inputClase}
+            data-testid="regla-nombre"
           />
         </Campo>
 
@@ -42832,17 +43101,59 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'c
           </Campo>
         </div>
 
-        <Campo label={esAcademia ? 'Precio por Clase Suelta (MXN)' : 'Precio por Hora (MXN)'}>
-          <input
-            type="number"
-            min="0"
-            step="1"
-            value={precioHora}
-            onChange={(e) => setPrecioHora(e.target.value)}
-            placeholder="600"
-            className={inputClase}
-          />
-        </Campo>
+        {!esAcademia && (
+          <div>
+            <p className="mb-1.5 text-xs font-bold text-slate-700">Tipo de ajuste</p>
+            <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Tipo de ajuste">
+              {TIPOS_AJUSTE_TARIFA.map((op) => (
+                <button
+                  key={op.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={tipoAjuste === op.value}
+                  data-testid={`regla-tipo-${op.value}`}
+                  onClick={() => setTipoAjuste(op.value)}
+                  className={`rounded-lg border px-2 py-2 text-[11px] font-bold transition ${
+                    tipoAjuste === op.value
+                      ? 'border-orange-400 bg-orange-400/10 text-orange-700'
+                      : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+                  }`}
+                >
+                  {op.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {esPrecioFijo ? (
+          <Campo label={esAcademia ? 'Precio por Clase Suelta (MXN)' : 'Precio por Hora (MXN)'}>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={precioHora}
+              onChange={(e) => setPrecioHora(e.target.value)}
+              placeholder="600"
+              className={inputClase}
+              data-testid="regla-precio"
+            />
+          </Campo>
+        ) : (
+          <Campo label={tipoAjuste === TIPO_AJUSTE_DESCUENTO ? 'Descuento sobre el precio/hora de la cancha (%)' : 'Recargo sobre el precio/hora de la cancha (%)'}>
+            <input
+              type="number"
+              min="0"
+              max={tipoAjuste === TIPO_AJUSTE_DESCUENTO ? 100 : 500}
+              step="0.5"
+              value={porcentaje}
+              onChange={(e) => setPorcentaje(e.target.value)}
+              placeholder={tipoAjuste === TIPO_AJUSTE_DESCUENTO ? '50' : '20'}
+              className={inputClase}
+              data-testid="regla-porcentaje"
+            />
+          </Campo>
+        )}
 
         <div>
           <p className="mb-1.5 text-xs font-bold text-slate-700">Días de la Semana</p>
@@ -42864,6 +43175,62 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'c
           </div>
         </div>
 
+        {!esAcademia && (
+          <div>
+            <p className="mb-1.5 text-xs font-bold text-slate-700">Canchas aplicables</p>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                data-testid="regla-todas-canchas"
+                onClick={() => setTodasLasCanchas(true)}
+                className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition ${
+                  todasLasCanchas ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+                }`}
+              >
+                Todas las canchas
+              </button>
+              {canchasActivas.map((c) => {
+                const marcada = !todasLasCanchas && canchaIds.includes(String(c.id));
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    data-testid={`regla-cancha-${c.id}`}
+                    onClick={() => {
+                      if (todasLasCanchas) {
+                        setTodasLasCanchas(false);
+                        setCanchaIds([String(c.id)]);
+                      } else {
+                        alternarCancha(c.id);
+                      }
+                    }}
+                    className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition ${
+                      marcada ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+                    }`}
+                  >
+                    {c.nombre || `Cancha ${c.id}`}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {!esAcademia && (
+          <div>
+            <p className="mb-1.5 text-xs font-bold text-slate-700">Vigencia (opcional)</p>
+            <div className="grid grid-cols-2 gap-3">
+              <Campo label="Desde">
+                <input type="date" value={vigenciaDesde} onChange={(e) => setVigenciaDesde(e.target.value)} className={inputClase} data-testid="regla-vigencia-desde" />
+              </Campo>
+              <Campo label="Hasta">
+                <input type="date" value={vigenciaHasta} onChange={(e) => setVigenciaHasta(e.target.value)} className={inputClase} data-testid="regla-vigencia-hasta" />
+              </Campo>
+            </div>
+            <p className="mt-1 text-[11px] text-slate-500">Sin fechas, la regla opera de forma permanente.</p>
+          </div>
+        )}
+
         <button
           type="button"
           onClick={() => setActivo((a) => !a)}
@@ -42874,7 +43241,7 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'c
           <span className="flex items-center gap-2">
             <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activo ? 'bg-orange-500' : 'bg-slate-400'}`} />
             <span className={`text-xs font-bold ${activo ? 'text-orange-700' : 'text-slate-600'}`}>
-              Franja {activo ? 'Activa' : 'Desactivada'}
+              {esAcademia ? 'Franja' : 'Regla'} {activo ? 'Activa' : 'Desactivada'}
             </span>
           </span>
           <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${activo ? 'bg-orange-500' : 'bg-slate-300'}`}>
@@ -42891,7 +43258,7 @@ function ModalTarifaHorario({ tarifa, onClose, onGuardar, guardando, modulo = 'c
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={guardar} disabled={guardando}>
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Guardar Franja
+            {esAcademia ? 'Guardar Franja' : 'Guardar Regla'}
           </BotonPrimario>
         </div>
       </div>
@@ -48877,6 +49244,7 @@ function ModuloConfiguracionClub({
   onGuardarTarifaHorario,
   guardandoTarifaHorario,
   onEliminarTarifaHorario,
+  canchasClub = [],
   jugadoresPorId,
   operador,
   permisos,
@@ -49018,6 +49386,7 @@ function ModuloConfiguracionClub({
           onGuardarTarifaHorario={onGuardarTarifaHorario}
           guardandoTarifaHorario={guardandoTarifaHorario}
           onEliminarTarifaHorario={onEliminarTarifaHorario}
+          canchasClub={canchasClub}
           modoOnboarding={modoOnboarding}
           onRegistrarGuardadoModulo={registrarGuardadoModulo}
         />
@@ -51167,6 +51536,7 @@ function SeccionGeneralClub({
   onGuardarTarifaHorario,
   guardandoTarifaHorario,
   onEliminarTarifaHorario,
+  canchasClub = [],
   modoOnboarding = false,
   onRegistrarGuardadoModulo,
 }) {
@@ -51451,6 +51821,7 @@ function SeccionGeneralClub({
         onGuardarTarifaHorario={onGuardarTarifaHorario}
         guardandoTarifaHorario={guardandoTarifaHorario}
         onEliminarTarifaHorario={onEliminarTarifaHorario}
+        canchasClub={canchasClub}
         modoOnboarding={modoOnboarding}
       />
 
@@ -52317,6 +52688,7 @@ function SeccionTarifasFranjas({
   onGuardarTarifaHorario,
   guardandoTarifaHorario,
   onEliminarTarifaHorario,
+  canchasClub = [],
   modoOnboarding = false,
 }) {
   const config = configClub || CONFIG_CLUB_DEFAULT;
@@ -52425,8 +52797,10 @@ function SeccionTarifasFranjas({
 
         <p className="mb-4 text-[11px] text-slate-500">
           El precio estándar de cada horario es el precio por hora de la cancha (se edita en su tarjeta de la
-          Parrilla Operativa). Una franja cobra su precio por hora exactamente tal cual lo configures, sin escalarlo
-          contra ninguna otra tarifa, y solo aplica si cubre por completo el bloque reservado.
+          Parrilla Operativa). Cada regla puede fijar un precio por hora o aplicar un % de descuento o recargo sobre
+          ese precio, para todas las canchas o solo algunas, y con vigencia opcional. Si una reserva cruza dos
+          franjas, cada tramo se cobra con su propia tarifa (prorrateo). Si dos reglas activas se sobreponen, apaga
+          o ajusta una con su switch.
         </p>
 
         {lista.length === 0 ? (
@@ -52436,9 +52810,28 @@ function SeccionTarifasFranjas({
           </p>
         ) : (
           <div className="space-y-2">
-            {lista.map((t) => (
+            {lista.map((t) => {
+              // App-112: canchas, vigencia y tipo de ajuste de la regla.
+              const ids = canchasDeRegla(t);
+              const nombresCanchas =
+                ids.length === 0
+                  ? 'Todas las canchas'
+                  : ids.map((id) => (canchasClub || []).find((c) => String(c.id) === id)?.nombre || `Cancha ${id}`).join(', ');
+              const desde = t.vigencia_desde ? String(t.vigencia_desde).slice(0, 10) : null;
+              const hasta = t.vigencia_hasta ? String(t.vigencia_hasta).slice(0, 10) : null;
+              const hoyStr = hoyISO();
+              const estadoVigencia = hasta && hoyStr > hasta ? 'Vencida' : desde && hoyStr < desde ? 'Programada' : null;
+              const textoVigencia =
+                desde || hasta
+                  ? `${desde ? `Del ${formatoFechaCorta(desde)}` : 'Hasta'}${desde && hasta ? ' al ' : ' '}${hasta ? formatoFechaCorta(hasta) : 'en adelante'}`
+                  : 'Permanente';
+              const tipo = tipoAjusteDeRegla(t);
+              // App-113: aviso de reglas activas que cobran el mismo horario.
+              const sobrepuestas = lista.filter((o) => o.id !== t.id && reglasTarifaSeSobreponen(t, o));
+              return (
               <div
                 key={t.id}
+                data-testid={`regla-tarifa-${t.id}`}
                 className={`flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 ${
                   t.activo === false ? 'border-slate-200 bg-slate-100/50 opacity-60' : 'border-slate-200 bg-slate-50/60'
                 }`}
@@ -52457,9 +52850,51 @@ function SeccionTarifasFranjas({
                           .join(', ')
                       : 'Todos los días'}
                   </p>
+                  <p className="mt-0.5 truncate text-[11px] text-slate-500" data-testid="regla-alcance">
+                    {nombresCanchas} · {textoVigencia}
+                    {estadoVigencia && (
+                      <span
+                        className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                          estadoVigencia === 'Vencida' ? 'bg-slate-200 text-slate-600' : 'bg-sky-400/15 text-sky-600'
+                        }`}
+                      >
+                        {estadoVigencia}
+                      </span>
+                    )}
+                  </p>
+                  {sobrepuestas.length > 0 && (
+                    <p className="mt-1 flex items-start gap-1 text-[11px] font-semibold text-amber-700" data-testid="regla-sobrepuesta">
+                      <AlertTriangle size={12} className="mt-px shrink-0" />
+                      Se sobrepone con {sobrepuestas.map((o) => `"${o.nombre || 'Franja sin nombre'}"`).join(', ')} — apaga o ajusta una.
+                    </p>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <span className="text-xs font-black text-orange-600">{formatoMoneda(t.precio_hora)}/h</span>
+                  <span
+                    className={`text-xs font-black ${tipo === TIPO_AJUSTE_DESCUENTO ? 'text-emerald-600' : tipo === TIPO_AJUSTE_RECARGO ? 'text-rose-500' : 'text-orange-600'}`}
+                    data-testid="regla-ajuste"
+                  >
+                    {etiquetaAjusteRegla(t)}
+                  </span>
+                  {/* Switch rápido Activa/Apagada (App-113): sin abrir el modal. */}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={t.activo !== false}
+                    aria-label={`${t.activo === false ? 'Activar' : 'Apagar'} ${t.nombre || 'regla'}`}
+                    title={t.activo === false ? 'Activar regla' : 'Apagar regla'}
+                    data-testid={`switch-regla-${t.id}`}
+                    disabled={guardandoTarifaHorario}
+                    onClick={() => onGuardarTarifaHorario?.({ ...reglaTarifaAFormulario(t), activo: t.activo === false })}
+                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition disabled:opacity-60 ${
+                      t.activo === false ? 'bg-slate-300' : 'bg-orange-500'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block transform rounded-full bg-white shadow transition ${t.activo === false ? 'translate-x-0.5' : 'translate-x-[1.125rem]'}`}
+                      style={{ height: '0.875rem', width: '0.875rem' }}
+                    />
+                  </button>
                   <button
                     type="button"
                     onClick={() => setModalTarifa(t)}
@@ -52478,7 +52913,8 @@ function SeccionTarifasFranjas({
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -52487,7 +52923,7 @@ function SeccionTarifasFranjas({
           onClick={() => setModalTarifa({})}
           className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-2 text-xs font-bold text-slate-500 hover:border-orange-400/50 hover:text-orange-400"
         >
-          <Plus size={13} /> Nueva Franja Horaria
+          <Plus size={13} /> Nueva Regla de Tarifa
         </button>
       </div>
 
@@ -52497,6 +52933,7 @@ function SeccionTarifasFranjas({
           onClose={() => setModalTarifa(null)}
           onGuardar={onGuardarTarifaHorario}
           guardando={guardandoTarifaHorario}
+          canchas={canchasClub}
         />
       )}
 
@@ -63029,35 +63466,27 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   const tarifasDelDia = useMemo(() => {
     if (!tarifasHabilitadas) return [];
     const dow = fecha ? new Date(`${fecha}T12:00:00`).getDay() : null;
-    return dow === null ? [] : tarifasActivasDelDia(tarifasHorarios, dow);
-  }, [tarifasHorarios, fecha, tarifasHabilitadas]);
+    // App-112: también por vigencia (fecha) y canchas aplicables.
+    return dow === null ? [] : tarifasActivasDelDia(tarifasHorarios, dow, { fecha, canchaId: cancha?.id ?? null });
+  }, [tarifasHorarios, fecha, tarifasHabilitadas, cancha]);
   // Precio estándar de cada slot = EXACTAMENTE el `precio_por_hora` ACTUAL de
   // la cancha elegida (y sus variantes de columna, ver
   // `precioPorHoraDeCancha`). No existe una "Tarifa Base" global del club.
   // Sin franjas, un bloque de N horas cuesta `precio_por_hora × N`; una
   // franja configurada aplica su valor ABSOLUTO, sin escalarlo.
   const precioBaseEfectivo = precioPorHoraDeCancha(cancha);
-  // Extensión Opción 2 Horas — precio total de un bloque que empieza a
-  // `hora`, respetando la duración ELEGIDA (`duracionHoras`): con 2 horas es
-  // la SUMA de 2 tarifas horarias INDEPENDIENTES (cada hora puede caer en
-  // una franja distinta) — nunca un solo `calcularPrecioReserva` de 120 min,
-  // que solo aplicaría precio si UNA franja cubriera el bloque completo y
-  // ocultaría un precio mixto entre 2 franjas (o entre una franja y el
-  // precio de la cancha).
-  function precioDelBloque(hora) {
-    if (permiteDosHoras && duracionHoras === 2) {
-      const horaSegunda = minutosAHora((parseHoraAMinutos(hora) || 0) + 60);
-      return (
-        Math.round(
-          (calcularPrecioReserva(hora, 60, tarifasDelDia, precioBaseEfectivo) +
-            calcularPrecioReserva(horaSegunda, 60, tarifasDelDia, precioBaseEfectivo)) *
-            100
-        ) / 100
-      );
-    }
-    return calcularPrecioReserva(hora, Math.round(duracionHoras * 60), tarifasDelDia, precioBaseEfectivo);
+  // Cotización de un bloque que empieza a `hora` con la duración ELEGIDA:
+  // prorrateo por tramos (`cotizarReserva`) — si 60/90/120 min cruzan dos
+  // franjas, cada tramo paga su tarifa. Misma función que usa el servidor
+  // (`portal-checkout`) para cobrar.
+  function cotizacionDelBloque(hora) {
+    return cotizarReserva(hora, Math.round(duracionHoras * 60), tarifasDelDia, precioBaseEfectivo);
   }
-  const costoCancha = horaInicio ? precioDelBloque(horaInicio) : Math.round(duracionHoras * precioBaseEfectivo * 100) / 100;
+  function precioDelBloque(hora) {
+    return cotizacionDelBloque(hora).total;
+  }
+  const cotizacionElegida = horaInicio ? cotizacionDelBloque(horaInicio) : null;
+  const costoCancha = cotizacionElegida ? cotizacionElegida.total : Math.round(duracionHoras * precioBaseEfectivo * 100) / 100;
   // Quick Sell (v122): con pago en línea, cancha + extras se cobran en la
   // MISMA transacción de Stripe; el servidor recalcula los precios y, al
   // confirmarse el pago, descuenta el inventario del POS (+ Kardex).
@@ -63275,7 +63704,8 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 // 1 o 2 horas — ver `precioDelBloque`), para que el jugador
                 // vea de un vistazo cuáles horarios son Horario Pico antes de
                 // elegir uno.
-                const precioSlot = precioDelBloque(f.horaInicio);
+                const cotizacionSlot = cotizacionDelBloque(f.horaInicio);
+                const precioSlot = cotizacionSlot.total;
                 return (
                   <button
                     key={f.horaInicio}
@@ -63308,7 +63738,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                     {bloqueado ? (
                       <span className="truncate text-[9px] font-semibold">{etiqueta}</span>
                     ) : (
-                      <span className="truncate text-[9px] font-bold text-slate-500">{formatoMoneda(precioSlot)}</span>
+                      <PrecioSlotTarifa cotizacion={cotizacionSlot} seleccionado={seleccionado} />
                     )}
                   </button>
                 );
@@ -63376,8 +63806,18 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
           )}
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Cancha ({duracionHoras}h)</span>
-            <span>{formatoMoneda(costoCancha)}</span>
+            <span className="flex items-center gap-1.5">
+              {cotizacionElegida?.conAjuste && Math.abs(cotizacionElegida.total - cotizacionElegida.totalBase) > 0.005 && (
+                <span className="text-slate-400 line-through" data-testid="costo-base-tachado">
+                  {formatoMoneda(cotizacionElegida.totalBase)}
+                </span>
+              )}
+              <span className={cotizacionElegida?.conAjuste ? 'font-black text-slate-900' : ''} data-testid="costo-cancha">
+                {formatoMoneda(costoCancha)}
+              </span>
+            </span>
           </div>
+          {cotizacionElegida?.conAjuste && <ResumenTarifaAplicada cotizacion={cotizacionElegida} precioHoraBase={precioBaseEfectivo} />}
           {addonsSubtotal > 0 && (
             <div className="flex items-center justify-between text-xs text-slate-500">
               <span>Adicionales</span>
@@ -65268,8 +65708,15 @@ function AppInterno({ clubInicial } = {}) {
         hora_inicio: tarifa?.horaInicio,
         hora_fin: tarifa?.horaFin,
         dias_semana: Array.isArray(tarifa?.diasSemana) ? tarifa.diasSemana : [],
-        precio_hora: Number(tarifa?.precioHora) || 0,
+        precio_hora: tarifa?.precioHora == null ? null : Number(tarifa.precioHora) || 0,
         activo: tarifa?.activo !== false,
+        // App-112 (migracion v124): reglas de CANCHA — canchas aplicables,
+        // tipo de ajuste (precio fijo / % descuento / % recargo) y vigencia.
+        cancha_ids: Array.isArray(tarifa?.canchaIds) && tarifa.canchaIds.length > 0 ? tarifa.canchaIds.map(String) : null,
+        tipo_ajuste: [TIPO_AJUSTE_DESCUENTO, TIPO_AJUSTE_RECARGO].includes(tarifa?.tipoAjuste) ? tarifa.tipoAjuste : TIPO_AJUSTE_PRECIO_FIJO,
+        porcentaje_ajuste: tarifa?.porcentajeAjuste == null ? null : Number(tarifa.porcentajeAjuste),
+        vigencia_desde: tarifa?.vigenciaDesde || null,
+        vigencia_hasta: tarifa?.vigenciaHasta || null,
         // Franjas de Clase Suelta de Academia (migracion_v88): 'cancha' es el
         // default histórico de la tabla, así que solo se manda `modulo`
         // cuando es 'academia' (un proyecto sin v88 sigue guardando franjas
@@ -65294,19 +65741,42 @@ function AppInterno({ clubInicial } = {}) {
           precio_hora: limpia.precio_hora,
           activo: limpia.activo,
           ...(limpia.modulo === 'academia' ? { modulo: 'academia' } : {}),
+          ...(limpia.modulo === 'academia'
+            ? {}
+            : {
+                cancha_ids: limpia.cancha_ids,
+                tipo_ajuste: limpia.tipo_ajuste,
+                porcentaje_ajuste: limpia.porcentaje_ajuste,
+                vigencia_desde: limpia.vigencia_desde,
+                vigencia_hasta: limpia.vigencia_hasta,
+              }),
         };
         // `modulo` NO es columna opcional a propósito: si falta (sin v88), un
         // intento tolerante la descartaría y la franja de Academia quedaría
         // guardada como franja de CANCHA, alterando precios de renta.
+        // App-112: mismo criterio para las columnas de v124 — solo son
+        // opcionales (descartables si el proyecto aún no corre v124) cuando
+        // llevan su valor por defecto. Una regla con canchas específicas, %
+        // o vigencia NUNCA se guarda "recortada" (eso cambiaría el precio de
+        // canchas/fechas que no debía tocar): falla y queda solo local.
+        const opcionales = ['dias_semana', 'activo'];
+        if (limpia.modulo !== 'academia') {
+          if (limpia.cancha_ids === null) opcionales.push('cancha_ids');
+          if (limpia.tipo_ajuste === TIPO_AJUSTE_PRECIO_FIJO) opcionales.push('tipo_ajuste', 'porcentaje_ajuste');
+          if (!limpia.vigencia_desde) opcionales.push('vigencia_desde');
+          if (!limpia.vigencia_hasta) opcionales.push('vigencia_hasta');
+        }
         const { data, error } = editando
-          ? await actualizarConColumnasOpcionales('tarifas_horarios', idPrevio, campos, ['dias_semana', 'activo'])
-          : await insertarConColumnasOpcionales('tarifas_horarios', campos, ['dias_semana', 'activo']);
+          ? await actualizarConColumnasOpcionales('tarifas_horarios', idPrevio, campos, opcionales)
+          : await insertarConColumnasOpcionales('tarifas_horarios', campos, opcionales);
         if (error) throw error;
         // Reemplaza el id local temporal (si lo hubo) por el id real de
         // Supabase — así una edición/borrado posterior de esta MISMA franja,
         // antes de recargar la página, ya apunta a la fila real.
         setTarifasHorarios((prev) => {
-          const siguiente = prev.map((t) => (t.id === idOptimista ? data : t));
+          // Fusiona con lo guardado: una respuesta parcial de Supabase nunca
+          // deja una fila "vacía" en pantalla.
+          const siguiente = prev.map((t) => (t.id === idOptimista ? { ...limpia, ...(data && typeof data === 'object' ? data : {}) } : t));
           guardarTarifasHorariosLocal(siguiente);
           return siguiente;
         });
@@ -65326,9 +65796,22 @@ function AppInterno({ clubInicial } = {}) {
         });
         return;
       }
+      const usaReglasV124 =
+        limpia.modulo !== 'academia' &&
+        (limpia.cancha_ids !== null || limpia.tipo_ajuste !== TIPO_AJUSTE_PRECIO_FIJO || !!limpia.vigencia_desde || !!limpia.vigencia_hasta);
+      if (guardadoSoloLocal && usaReglasV124) {
+        mostrarToast({
+          titulo: 'Regla guardada solo en este dispositivo',
+          detalle: 'No llegó a Supabase (¿falta correr la migración v124?) — el Portal y el cobro en línea aún no la aplican.',
+          tono: 'aviso',
+        });
+        return;
+      }
       mostrarToast({
-        titulo: editando ? 'Franja actualizada' : 'Franja creada',
-        detalle: `${limpia.nombre} · ${formatoHora12(limpia.hora_inicio)}–${formatoHora12(limpia.hora_fin)} · ${formatoMoneda(limpia.precio_hora)}${unidadPrecio}`,
+        titulo: editando ? 'Regla actualizada' : 'Regla creada',
+        detalle: `${limpia.nombre} · ${formatoHora12(limpia.hora_inicio)}–${formatoHora12(limpia.hora_fin)} · ${
+          limpia.modulo === 'academia' ? `${formatoMoneda(limpia.precio_hora)}${unidadPrecio}` : etiquetaAjusteRegla(limpia)
+        }`,
       });
     },
     [mostrarToast]
@@ -67930,6 +68413,7 @@ function AppInterno({ clubInicial } = {}) {
       onGuardarTarifaHorario: guardarTarifaHorario,
       guardandoTarifaHorario,
       onEliminarTarifaHorario: eliminarTarifaHorario,
+      canchasClub: canchas,
       jugadoresPorId,
       operador,
       permisos,
@@ -68437,6 +68921,7 @@ function AppInterno({ clubInicial } = {}) {
                 onGuardarTarifaHorario={guardarTarifaHorario}
                 guardandoTarifaHorario={guardandoTarifaHorario}
                 onEliminarTarifaHorario={eliminarTarifaHorario}
+                canchasClub={canchas}
                 jugadoresPorId={jugadoresPorId}
                 operador={operador}
                 permisos={permisos}
