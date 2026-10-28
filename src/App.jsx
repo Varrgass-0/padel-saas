@@ -483,10 +483,12 @@
 //      Más Comprado" y la barra de Progreso de Cortesía; Participación en
 //      Comunidad lista cada evento de Torneo/Reta con fecha/categoría/tipo
 //      (Clases se sumará automáticamente en cuanto exista ese módulo);
-//      Antigüedad/Constancia y Frecuencia de Juego comparten el historial de
-//      reservas de cancha (Parrilla) con "Horario Favorito" y "Cancha
-//      Preferida"; Gasto Promedio por Visita lista los tickets de renta de
-//      cancha pagados. Todos estos arreglos (`comprasPOS`,
+//      Antigüedad/Constancia muestra el historial de reservas de cancha
+//      (Parrilla) con "Horario Favorito" y "Cancha Preferida"; Frecuencia de
+//      Juego lista SOLO los partidos del último mes (App-108: sin cancha ni
+//      horario, para no repetir Antigüedad/Constancia); Gasto Promedio por
+//      Visita lista cada día de visita consolidado (cancha + consumo de
+//      Restaurante/Bar y Pro-Shop de ese mismo día). Todos estos arreglos (`comprasPOS`,
 //      `eventosTorneoRetas`, `historialCanchas`, `ticketsCanchas`, y los
 //      derivados `productoFavorito`/`canchaPreferida`/`horarioFavorito`/
 //      `cortesiaBar`/`cortesiaProShop`) se calculan una sola vez dentro del
@@ -508,7 +510,8 @@
 //      30 (4+ partidos/mes = 30, 2-3 = 20, 1 = 10, 0 = 0), Antigüedad/
 //      Constancia 20 (regla binaria: 20 pts si hubo actividad en los últimos
 //      30 días, 0 pts si lleva más de 30 días inactivo), Gasto Promedio por
-//      Visita 20 (ticket promedio global Canchas + POS), Consumo Secundario
+//      Visita 20 (ticket por día de visita: cancha + consumo POS del mismo
+//      día), Consumo Secundario
 //      15 (compras en Bar/Cafetería/Pro-Shop) y Participación en Comunidad
 //      15 (inscripciones activas a Torneos/Retas — Clases se integrará
 //      cuando exista su propio módulo) — "último partido real" combina
@@ -30499,11 +30502,12 @@ function calcularCHS(perfil) {
   const hoy = new Date(`${perfil.hoyISO}T12:00:00`);
   const indicadores = [];
 
-  // 1) Frecuencia de Juego (30 pts): promedio de partidos/mes en los últimos
-  // 3 meses. 4+ partidos/mes = 30 pts | 2-3 partidos/mes = 20 pts | 1
-  // partido/mes = 10 pts | menos de 1/mes = 0 pts.
+  // 1) Frecuencia de Juego (30 pts) — App-108: partidos AL MES (último mes,
+  // `perfil.partidosMes`), ya no un promedio de 90 días. 4+ partidos/mes =
+  // 30 pts | 2-3 = 20 pts | 1 = 10 pts | 0 = 0 pts. La cancha y el horario
+  // preferidos viven SOLO en Antigüedad/Constancia.
   {
-    const partidosMes = perfil.eventosUltimos90Dias / 3;
+    const partidosMes = Number(perfil.partidosMes) || 0;
     let puntos = 0;
     let nivel = 'bajo';
     if (partidosMes >= 4) {
@@ -30522,7 +30526,7 @@ function calcularCHS(perfil) {
       puntos,
       max: 30,
       nivel,
-      detalle: `${partidosMes.toFixed(1)} partidos/mes (últimos 90 días)`,
+      detalle: `${partidosMes} partido${partidosMes === 1 ? '' : 's'}/mes · meta 4+ al mes`,
     });
   }
 
@@ -30548,13 +30552,15 @@ function calcularCHS(perfil) {
     indicadores.push({ key: 'antiguedad', label: 'Antigüedad/Constancia', puntos, max: 20, nivel, detalle });
   }
 
-  // 3) Gasto Promedio por Visita (20 pts): ticket promedio global, cruzando
-  // Canchas + Smart POS de sus propias visitas.
+  // 3) Gasto Promedio por Visita (20 pts) — App-108: ticket por DÍA de
+  // visita consolidado (cancha cobrada + consumo de Restaurante/Bar y
+  // Pro-Shop de ese mismo día), ver `visitasConsolidadas`.
   {
-    const ticket = perfil.visitasPropias > 0 ? (perfil.gastoCanchas + perfil.gastoBar + perfil.gastoProShop) / perfil.visitasPropias : 0;
+    const visitas = (perfil.visitasConsolidadas || []).length;
+    const ticket = visitas > 0 ? Number(perfil.ticketPromedioVisita) || 0 : 0;
     let puntos = 0;
     let nivel = 'bajo';
-    if (perfil.visitasPropias === 0) {
+    if (visitas === 0) {
       puntos = 0;
       nivel = 'bajo';
     } else if (ticket >= 600) {
@@ -30573,7 +30579,10 @@ function calcularCHS(perfil) {
       puntos,
       max: 20,
       nivel,
-      detalle: perfil.visitasPropias > 0 ? `Ticket promedio: ${formatoMoneda(ticket)}/visita` : 'Sin visitas registradas',
+      detalle:
+        visitas > 0
+          ? `Ticket promedio: ${formatoMoneda(ticket)}/visita · cancha + consumo del día (${visitas} visita${visitas === 1 ? '' : 's'})`
+          : 'Sin visitas pagadas registradas',
     });
   }
 
@@ -44220,6 +44229,10 @@ function DirectorioJugadoresCRM({
     const hoy = new Date(`${hoyISOStr}T12:00:00`);
     const hace90 = new Date(hoy.getTime() - 90 * MS_POR_DIA);
     const hace180 = new Date(hoy.getTime() - 180 * MS_POR_DIA);
+    // App-108: Frecuencia de Juego se mide AL MES (últimos 30 días, misma
+    // ventana que Antigüedad/Constancia) — ya no promedia 90 días.
+    const hace30 = new Date(hoy.getTime() - 30 * MS_POR_DIA);
+    const hace30ISO = `${hace30.getFullYear()}-${pad2(hace30.getMonth() + 1)}-${pad2(hace30.getDate())}`;
 
     // Metas del Motor de Cortesías (migracion_v35) — la que configuró el
     // club (`metaCortesiaProShop`/`metaCortesiaBar`, prop) o, si todavía no
@@ -44548,6 +44561,31 @@ function DirectorioJugadoresCRM({
 
         const eventosUltimos90Dias = fechasEventos.filter((f) => new Date(`${f}T12:00:00`) >= hace90).length;
 
+        // App-108 — Frecuencia de Juego (al mes): los MISMOS partidos reales
+        // de `fechasEventos` (reservas propias no canceladas, Retas
+        // asistidas y partidos de Torneo jugados), acotados al último mes
+        // (últimos 30 días). Lista para el desglose del indicador; su
+        // longitud es el conteo de partidos/mes.
+        const enUltimoMes = (f) => !!f && f >= hace30ISO && f <= hoyISOStr;
+        const partidosUltimoMes = [
+          ...propiasActivas
+            .filter((r) => enUltimoMes(r.fecha))
+            .map((r) => ({ tipo: 'Cancha', fecha: r.fecha, hora: r.hora_inicio || '', detalle: 'Reserva de cancha' })),
+          ...inscripcionesAsistidas
+            .map((i) => (retas || []).find((r) => r.id === i.reta_id))
+            .filter((reta) => reta && enUltimoMes(reta.fecha))
+            .map((reta) => ({ tipo: 'Reta', fecha: reta.fecha, hora: reta.hora_inicio || '', detalle: `Reta${reta.nivel ? ` · ${reta.nivel}` : ''}` })),
+          ...partidosJugados
+            .filter((p) => enUltimoMes(p.fecha))
+            .map((p) => ({
+              tipo: 'Torneo',
+              fecha: p.fecha,
+              hora: '',
+              detalle: (torneos || []).find((t) => t.id === p.torneo_id)?.nombre || 'Partido de torneo',
+            })),
+        ].sort((a, b) => b.fecha.localeCompare(a.fecha) || String(b.hora).localeCompare(String(a.hora)));
+        const partidosMes = partidosUltimoMes.length;
+
         /* --- Confiabilidad: % de asistencia exitosa (Parrilla + Retas) --- */
         const totalEventosConfiabilidad = propias.length + inscripcionesJ.length;
         const totalCancelaciones = propiasCanceladas.length + retasNoAsistidas;
@@ -44808,6 +44846,37 @@ function DirectorioJugadoresCRM({
           }))
           .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
 
+        // 4.b) App-108 — Gasto Promedio por Visita CONSOLIDADO: una visita =
+        // un DÍA con reserva de cancha propia ya cobrada y ya jugada (fecha
+        // ≤ hoy). Al monto de cancha de ese día se le suma todo lo que el
+        // jugador consumió ESE MISMO DÍA en Restaurante/Bar y Pro-Shop
+        // (`comprasPOS`, mismas ventas y mismo bucket de categoría que
+        // Consumo Secundario). Dos reservas el mismo día = una sola visita.
+        const consumoPOSPorFecha = {};
+        comprasPOS.forEach((c) => {
+          if (!c.fecha) return;
+          const dia = (consumoPOSPorFecha[c.fecha] = consumoPOSPorFecha[c.fecha] || { bar: 0, proShop: 0 });
+          if (c.categoria === 'Cafetería/Bar') dia.bar += c.subtotal;
+          else dia.proShop += c.subtotal;
+        });
+        const visitasPorFecha = new Map();
+        propiasActivas
+          .filter((r) => esCobroConfirmado(r) && r.fecha && r.fecha <= hoyISOStr)
+          .forEach((r) => {
+            const visita = visitasPorFecha.get(r.fecha) || { fecha: r.fecha, canchas: [], montoCancha: 0 };
+            visita.montoCancha += Number(r.monto_total) || 0;
+            visita.canchas.push(`${canchasPorId[r.cancha_id]?.nombre || 'Cancha'} · ${formatoHora12(r.hora_inicio)}`);
+            visitasPorFecha.set(r.fecha, visita);
+          });
+        const visitasConsolidadas = Array.from(visitasPorFecha.values())
+          .map((v) => {
+            const pos = consumoPOSPorFecha[v.fecha] || { bar: 0, proShop: 0 };
+            return { ...v, montoBar: pos.bar, montoProShop: pos.proShop, total: v.montoCancha + pos.bar + pos.proShop };
+          })
+          .sort((a, b) => b.fecha.localeCompare(a.fecha));
+        const ticketPromedioVisita =
+          visitasConsolidadas.length > 0 ? visitasConsolidadas.reduce((acc, v) => acc + v.total, 0) / visitasConsolidadas.length : 0;
+
         // 5) Confiabilidad: reservas/inscripciones asistidas vs. canceladas.
         const historialConfiabilidad = [
           ...propias.map((r) => ({
@@ -44863,6 +44932,8 @@ function DirectorioJugadoresCRM({
           ltvTotal,
           visitasPropias: propiasActivas.length,
           eventosUltimos90Dias,
+          partidosMes,
+          partidosUltimoMes,
           eventosTorneoRetaUltimos6Meses,
           asistenciasClaseUltimos6Meses,
           inscripcionesClasePagadasUltimos6Meses,
@@ -44885,6 +44956,8 @@ function DirectorioJugadoresCRM({
           canchaPreferida,
           horarioFavorito,
           ticketsCanchas,
+          visitasConsolidadas,
+          ticketPromedioVisita,
           historialConfiabilidad,
         };
 
@@ -45993,7 +46066,7 @@ function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria })
     <div className="space-y-2">
       {perfil.productoFavorito && (
         <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/30">
-          <Star size={11} /> Favorito: {perfil.productoFavorito.nombre} ({perfil.productoFavorito.cantidad}x)
+          <Star size={11} /> Favorito Pro-Shop: {perfil.productoFavorito.nombre} ({perfil.productoFavorito.cantidad}x)
         </span>
       )}
       {perfil.productoFavoritoBar && (
@@ -46105,30 +46178,110 @@ function DetalleHistorialCanchas({ perfil }) {
   );
 }
 
-function DetalleTicketsCanchas({ perfil }) {
-  const tickets = perfil.ticketsCanchas || [];
-  if (tickets.length === 0) return <EstadoVacioHistorial mensaje="Sin rentas de cancha pagadas todavía." />;
+// App-108 — Frecuencia de Juego (al mes): resumen de partidos/mes y la
+// lista de partidos del último mes. A propósito SIN cancha preferida ni
+// horario favorito: esos viven solo en Antigüedad/Constancia.
+const ESTILO_TIPO_PARTIDO_CHS = {
+  Cancha: 'bg-sky-400/15 text-sky-500',
+  Reta: 'bg-fuchsia-400/15 text-fuchsia-500',
+  Torneo: 'bg-violet-400/15 text-violet-500',
+};
+
+function DetalleFrecuenciaMensual({ perfil }) {
+  const partidos = perfil.partidosUltimoMes || [];
+  const total = partidos.length;
+  const porTipo = ['Cancha', 'Reta', 'Torneo']
+    .map((tipo) => ({ tipo, n: partidos.filter((p) => p.tipo === tipo).length }))
+    .filter((t) => t.n > 0);
+  const faltan = Math.max(0, 4 - total);
   return (
-    <div className={listaHistorialClase}>
-      {tickets.map((t) => (
-        <div key={t.id} className={filaHistorialClase}>
-          <div className="min-w-0">
-            <p className="truncate font-semibold text-slate-800">{t.canchaNombre}</p>
-            <p className="text-[10px] text-slate-500">
-              {formatoFechaLarga(t.fecha)} · {formatoHora12(t.horaInicio)}
-            </p>
-          </div>
-          <span className="shrink-0 font-bold text-emerald-400">{formatoMoneda(t.monto)}</span>
+    <div className="space-y-2" data-testid="detalle-frecuencia-mensual">
+      <div className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Partidos al mes</p>
+          <p className="text-lg font-black text-slate-900">
+            {total} <span className="text-xs font-semibold text-slate-500">partido{total === 1 ? '' : 's'}/mes</span>
+          </p>
         </div>
-      ))}
+        <p className="text-right text-[11px] text-slate-500">
+          {faltan === 0 ? 'Meta mensual cumplida (4+)' : `${faltan === 1 ? 'Falta' : 'Faltan'} ${faltan} para la meta de 4 al mes`}
+        </p>
+      </div>
+      {porTipo.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {porTipo.map((t) => (
+            <span key={t.tipo} className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${ESTILO_TIPO_PARTIDO_CHS[t.tipo]}`}>
+              {t.tipo === 'Cancha' ? 'Reservas' : t.tipo === 'Reta' ? 'Retas' : 'Torneo'}: {t.n}
+            </span>
+          ))}
+        </div>
+      )}
+      {total === 0 ? (
+        <EstadoVacioHistorial mensaje="Sin partidos en el último mes." />
+      ) : (
+        <div className={listaHistorialClase}>
+          {partidos.map((p, idx) => (
+            <div key={`${p.tipo}-${p.fecha}-${idx}`} className={filaHistorialClase}>
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 font-semibold text-slate-800">
+                  <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${ESTILO_TIPO_PARTIDO_CHS[p.tipo]}`}>{p.tipo}</span>
+                  <span className="truncate">{p.detalle}</span>
+                </p>
+              </div>
+              <span className="shrink-0 text-[10px] text-slate-500">{formatoFechaLarga(p.fecha)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// App-108 — Gasto Promedio por Visita consolidado: cada fila es un DÍA de
+// visita (cancha cobrada + consumo de Restaurante/Bar y Pro-Shop de ese
+// mismo día), y arriba el ticket promedio resultante.
+function DetalleVisitasConsolidadas({ perfil }) {
+  const visitas = perfil.visitasConsolidadas || [];
+  if (visitas.length === 0) return <EstadoVacioHistorial mensaje="Sin visitas con renta de cancha pagada todavía." />;
+  return (
+    <div className="space-y-2" data-testid="detalle-gasto-visita">
+      <div className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Ticket promedio por visita</p>
+          <p className="text-lg font-black text-slate-900" data-testid="ticket-promedio-visita">{formatoMoneda(perfil.ticketPromedioVisita)}</p>
+        </div>
+        <p className="text-right text-[11px] text-slate-500">
+          {visitas.length} visita{visitas.length === 1 ? '' : 's'}
+          <br />
+          Cancha + consumo del mismo día
+        </p>
+      </div>
+      <div className={listaHistorialClase}>
+        {visitas.map((v) => (
+          <div key={v.fecha} className="rounded-lg bg-white px-2.5 py-1.5 text-xs" data-testid={`visita-${v.fecha}`}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-semibold text-slate-800">{formatoFechaLarga(v.fecha)}</p>
+                <p className="truncate text-[10px] text-slate-500">{v.canchas.join(' · ')}</p>
+              </div>
+              <span className="shrink-0 font-black text-emerald-400">{formatoMoneda(v.total)}</span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-slate-500">
+              <span>Cancha {formatoMoneda(v.montoCancha)}</span>
+              {v.montoBar > 0 && <span>Restaurante/Bar {formatoMoneda(v.montoBar)}</span>}
+              {v.montoProShop > 0 && <span>Pro-Shop {formatoMoneda(v.montoProShop)}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 // Despacha, según la llave del indicador del Nivel de Fidelidad que se
-// expandió, el desglose analítico correspondiente — Antigüedad/Constancia y
-// Frecuencia de Juego comparten el mismo historial (reservas de cancha +
-// Horario Favorito + Cancha Preferida).
+// expandió, el desglose analítico correspondiente. App-108: Antigüedad/
+// Constancia es la ÚNICA que muestra Cancha Preferida + Horario Favorito;
+// Frecuencia de Juego muestra solo partidos al mes.
 function DetalleIndicadorCHS({ indKey, perfil, onAbrirCanjeCortesia, canjeandoCategoria }) {
   switch (indKey) {
     case 'consumo_secundario':
@@ -46136,10 +46289,11 @@ function DetalleIndicadorCHS({ indKey, perfil, onAbrirCanjeCortesia, canjeandoCa
     case 'comunidad':
       return <DetalleTorneosRetas perfil={perfil} />;
     case 'antiguedad':
-    case 'frecuencia':
       return <DetalleHistorialCanchas perfil={perfil} />;
+    case 'frecuencia':
+      return <DetalleFrecuenciaMensual perfil={perfil} />;
     case 'gasto_promedio':
-      return <DetalleTicketsCanchas perfil={perfil} />;
+      return <DetalleVisitasConsolidadas perfil={perfil} />;
     default:
       return null;
   }
