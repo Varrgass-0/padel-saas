@@ -505,21 +505,22 @@
 //      Gasto Total Histórico (`UMBRAL_LTV_VIP`, `UMBRAL_LTV_FRECUENTE`,
 //      editables en el código; el nombre interno se conserva, solo cambió el
 //      rótulo visible).
-//      Nivel de Fidelidad (Score, `calcularCHS`) sale de 5 indicadores
-//      semaforizados y transparentes que suman 100 pts: Frecuencia de Juego
-//      30 (4+ partidos/mes = 30, 2-3 = 20, 1 = 10, 0 = 0), Antigüedad/
+//      Nivel de Fidelidad (Score, `calcularCHS`) sale de 6 indicadores
+//      semaforizados y transparentes que suman 100 pts (App-110): Frecuencia
+//      de Juego 25 (4+ partidos/mes = 25, 2-3 = 17, 1 = 8, 0 = 0), Antigüedad/
 //      Constancia 20 (regla binaria: 20 pts si hubo actividad en los últimos
 //      30 días, 0 pts si lleva más de 30 días inactivo), Gasto Promedio por
-//      Visita 20 (ticket por día de visita: cancha + consumo POS del mismo
-//      día), Consumo Secundario
-//      15 (compras en Bar/Cafetería/Pro-Shop) y Participación en Comunidad
-//      15 (inscripciones activas a Torneos/Retas — Clases se integrará
-//      cuando exista su propio módulo) — "último partido real" combina
+//      Visita 15 (ticket por día de visita: cancha + consumo POS del mismo
+//      día), Consumo 10 (compras en Bar/Cafetería/Pro-Shop), Participación
+//      en Torneos/Retas 15 (inscripciones pagadas en 6 meses) y Clases/
+//      Academia 15 (clases asistidas en el último mes) — "último partido real" combina
 //      reservas propias no canceladas, Retas con inscripción 'confirmado'
 //      (no 'retenido') y partidos de Torneo con `estado: 'jugado'`
 //      (emparejados por nombre en `pareja1`/`pareja2`, igual criterio que el
 //      WhatsApp de Cuadros & Partidos).
-//      "En Riesgo de Abandono" = Score < 60 pts O el indicador de
+//      "En Riesgo de Abandono" (App-111) = Score < 60% del máximo ALCANZABLE
+//      por el jugador (Torneos/Retas y Clases/Academia solo cuentan si
+//      alguna vez participó en ellas) O el indicador de
 //      Antigüedad/Constancia en 0 pts (más de 30 días sin Actividad
 //      Reciente), y dispara una plantilla de WhatsApp
 //      (`plantillaWhatsAppAntiChurn`) que menciona el indicador más débil
@@ -2139,6 +2140,10 @@ const PERMISOS_POR_ROL = {
     // redundante en la práctica — se deja explícito por consistencia con el
     // resto de la matriz y por si el módulo se abre a Manager más adelante.
     puedeGestionarWalletOperadores: true,
+    // App-110: adeudos y penalizaciones pendientes del jugador en la
+    // Vista 360° — SOLO Administración (Owner/Manager) y Recepción/Caja
+    // (quien cobra en mostrador).
+    puedeVerAdeudosJugador: true,
   },
   manager: {
     modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'],
@@ -2165,6 +2170,7 @@ const PERMISOS_POR_ROL = {
     puedeEliminarClaseAcademia: true,
     puedeGestionarCortesias: true,
     puedeGestionarWalletOperadores: true,
+    puedeVerAdeudosJugador: true,
   },
   recepcion: {
     // "Recepción/Caja": Parrilla Operativa, Smart POS, Jugadores
@@ -2200,6 +2206,7 @@ const PERMISOS_POR_ROL = {
     // de `puedeVerMontos` (Gasto Total Histórico, Nivel de Fidelidad $).
     puedeGestionarCortesias: true,
     puedeGestionarWalletOperadores: false,
+    puedeVerAdeudosJugador: true,
   },
   bar: {
     // "Restaurante/Bar": Smart POS (filtrado por defecto a la pestaña
@@ -2224,6 +2231,7 @@ const PERMISOS_POR_ROL = {
     puedeEliminarClaseAcademia: false,
     puedeGestionarCortesias: false,
     puedeGestionarWalletOperadores: false,
+    puedeVerAdeudosJugador: false,
   },
   coach: {
     // Academia & Clínicas (crear/programar clases) + Torneos & Retas
@@ -2254,6 +2262,9 @@ const PERMISOS_POR_ROL = {
     // cortesías de consumo (eso es de Recepción/Caja al cobrar).
     puedeGestionarCortesias: false,
     puedeGestionarWalletOperadores: false,
+    // App-110: el Coach solo ve lo deportivo (asistencia, partidos,
+    // clases) — nunca adeudos/penalizaciones en la Vista 360°.
+    puedeVerAdeudosJugador: false,
   },
   contador: {
     // Rol de solo lectura/exportación: ÚNICAMENTE Contabilidad & Compras,
@@ -2288,6 +2299,7 @@ const PERMISOS_POR_ROL = {
     // por consistencia con el resto de la matriz de roles.
     puedeGestionarCortesias: false,
     puedeGestionarWalletOperadores: false,
+    puedeVerAdeudosJugador: false,
   },
 };
 
@@ -30492,6 +30504,10 @@ const NIVEL_CHS_META = {
 
 const MS_POR_DIA = 1000 * 60 * 60 * 24;
 
+// App-111: umbral de "En Riesgo de Abandono" como % del puntaje máximo
+// ALCANZABLE por cada jugador (ver `calcularCHS`), ya no 60 pts fijos.
+const UMBRAL_RIESGO_CHS_PCT = 60;
+
 // Motor del Nivel de Fidelidad / Score (0-100 pts, 5 indicadores
 // semaforizados, regla transparente basada en hábitos simples). Recibe el
 // "perfil crudo" de un jugador (ya cruzado con Parrilla/POS/Torneos & Retas
@@ -30502,31 +30518,34 @@ function calcularCHS(perfil) {
   const hoy = new Date(`${perfil.hoyISO}T12:00:00`);
   const indicadores = [];
 
-  // 1) Frecuencia de Juego (30 pts) — App-108: partidos AL MES (último mes,
+  // App-110 — Ponderación definitiva (100 pts): Frecuencia 25 · Antigüedad/
+  // Constancia 20 · Gasto Promedio por Visita 15 · Consumo 10 · Torneos/
+  // Retas 15 · Clases/Academia 15.
+  // 1) Frecuencia de Juego (25 pts) — App-108: partidos AL MES (último mes,
   // `perfil.partidosMes`), ya no un promedio de 90 días. 4+ partidos/mes =
-  // 30 pts | 2-3 = 20 pts | 1 = 10 pts | 0 = 0 pts. La cancha y el horario
+  // 25 pts | 2-3 = 17 pts | 1 = 8 pts | 0 = 0 pts. La cancha y el horario
   // preferidos viven SOLO en Antigüedad/Constancia.
   {
     const partidosMes = Number(perfil.partidosMes) || 0;
     let puntos = 0;
     let nivel = 'bajo';
     if (partidosMes >= 4) {
-      puntos = 30;
+      puntos = 25;
       nivel = 'alto';
     } else if (partidosMes >= 2) {
-      puntos = 20;
+      puntos = 17;
       nivel = 'medio';
     } else if (partidosMes >= 1) {
-      puntos = 10;
+      puntos = 8;
       nivel = 'bajo';
     }
     indicadores.push({
       key: 'frecuencia',
       label: 'Frecuencia de Juego',
       puntos,
-      max: 30,
+      max: 25,
       nivel,
-      detalle: `${partidosMes} partido${partidosMes === 1 ? '' : 's'}/mes · meta 4+ al mes`,
+      detalle: `${partidosMes} partido${partidosMes === 1 ? '' : 's'}/mes`,
     });
   }
 
@@ -30552,7 +30571,7 @@ function calcularCHS(perfil) {
     indicadores.push({ key: 'antiguedad', label: 'Antigüedad/Constancia', puntos, max: 20, nivel, detalle });
   }
 
-  // 3) Gasto Promedio por Visita (20 pts) — App-108: ticket por DÍA de
+  // 3) Gasto Promedio por Visita (15 pts: $600+ = 15 | $300+ = 9 | <$300 = 4) — App-108: ticket por DÍA de
   // visita consolidado (cancha cobrada + consumo de Restaurante/Bar y
   // Pro-Shop de ese mismo día), ver `visitasConsolidadas`.
   {
@@ -30564,20 +30583,20 @@ function calcularCHS(perfil) {
       puntos = 0;
       nivel = 'bajo';
     } else if (ticket >= 600) {
-      puntos = 20;
+      puntos = 15;
       nivel = 'alto';
     } else if (ticket >= 300) {
-      puntos = 12;
+      puntos = 9;
       nivel = 'medio';
     } else {
-      puntos = 5;
+      puntos = 4;
       nivel = 'bajo';
     }
     indicadores.push({
       key: 'gasto_promedio',
       label: 'Gasto Promedio por Visita',
       puntos,
-      max: 20,
+      max: 15,
       nivel,
       detalle:
         visitas > 0
@@ -30586,27 +30605,28 @@ function calcularCHS(perfil) {
     });
   }
 
-  // 4) Consumo Secundario (15 pts): gasto en Bar/Cafetería/Pro-Shop de los
-  // últimos 90 días.
+  // 4) Consumo (10 pts, App-110 — antes "Consumo Secundario"): gasto en
+  // Bar/Cafetería/Pro-Shop de los últimos 90 días. $300+ = 10 | $100+ = 6 |
+  // >$0 = 2.
   {
     const gasto = perfil.gastoBarReciente + perfil.gastoProShopReciente;
     let puntos = 0;
     let nivel = 'bajo';
     if (gasto >= 300) {
-      puntos = 15;
+      puntos = 10;
       nivel = 'alto';
     } else if (gasto >= 100) {
-      puntos = 9;
+      puntos = 6;
       nivel = 'medio';
     } else if (gasto > 0) {
-      puntos = 3;
+      puntos = 2;
       nivel = 'bajo';
     }
     indicadores.push({
       key: 'consumo_secundario',
-      label: 'Consumo Secundario',
+      label: 'Consumo',
       puntos,
-      max: 15,
+      max: 10,
       nivel,
       detalle: `${formatoMoneda(gasto)} en Bar/Cafetería/Pro-Shop (últimos 90 días)`,
     });
@@ -30643,22 +30663,46 @@ function calcularCHS(perfil) {
     });
   }
 
-  const puntaje = indicadores.reduce((acc, i) => acc + i.puntos, 0);
-  const antiguedadIndicador = indicadores.find((i) => i.key === 'antiguedad');
-  const enRiesgo = puntaje < 60 || antiguedadIndicador.nivel !== 'alto';
+  // 6) Clases / Academia (15 pts, App-110 — ya NO es informativa): clases
+  // asistidas en el último mes. 4+ = 15 | 2-3 = 10 | 1 = 5 | 0 = 0.
+  indicadores.push(indicadorClasesAcademia(perfil));
 
-  return { puntaje, indicadores, enRiesgo };
+  // App-111 — Riesgo de Abandono PROPORCIONAL al perfil real del jugador.
+  // Frecuencia, Antigüedad, Gasto por Visita y Consumo aplican a todos;
+  // Torneos/Retas y Clases/Academia solo si el jugador ALGUNA VEZ participó
+  // en esa línea (`participaTorneosRetas`/`participaAcademia`). Así un
+  // jugador recreativo que solo reserva cancha se evalúa sobre 70 pts, no
+  // sobre 100, y no dispara falsas alarmas por no tomar clases ni jugar
+  // torneos. En riesgo = menos del 60% de SU máximo alcanzable, o más de 30
+  // días sin actividad (regla de recencia de siempre).
+  const LINEAS_OPCIONALES_CHS = { comunidad: 'participaTorneosRetas', academia: 'participaAcademia' };
+  const indicadoresConAplica = indicadores.map((i) => {
+    const flag = LINEAS_OPCIONALES_CHS[i.key];
+    return { ...i, aplica: flag ? perfil[flag] !== false || i.puntos > 0 : true };
+  });
+  const puntaje = indicadoresConAplica.reduce((acc, i) => acc + i.puntos, 0);
+  const maxAplicable = indicadoresConAplica.filter((i) => i.aplica).reduce((acc, i) => acc + i.max, 0);
+  const puntajeAplicable = indicadoresConAplica.filter((i) => i.aplica).reduce((acc, i) => acc + i.puntos, 0);
+  const porcentajeAplicable = maxAplicable > 0 ? (puntajeAplicable / maxAplicable) * 100 : 0;
+  const antiguedadIndicador = indicadoresConAplica.find((i) => i.key === 'antiguedad');
+  const enRiesgo = porcentajeAplicable < UMBRAL_RIESGO_CHS_PCT || antiguedadIndicador.nivel !== 'alto';
+
+  return { puntaje, indicadores: indicadoresConAplica, enRiesgo, maxAplicable, porcentajeAplicable };
 }
 
 // Plantillas dinámicas de WhatsApp para el Motor Anti-Churn: elige el
 // indicador MÁS débil (relativo a su propio máximo, no en puntos absolutos —
-// así "Consumo Secundario" de 15 pts compite en igualdad de condiciones con
-// "Frecuencia de Juego" de 30) y arma un mensaje que lo menciona
+// así "Consumo" de 10 pts compite en igualdad de condiciones con
+// "Frecuencia de Juego" de 25) y arma un mensaje que lo menciona
 // directamente, tal como pediste (bebida favorita si el consumo secundario
 // está bajo, descuento de cancha si la actividad reciente bajó).
 function plantillaWhatsAppAntiChurn(perfil, nombreClub) {
   const nombreCorto = (perfil.nombre || 'Jugador').split(' ')[0];
-  const porRelativo = [...perfil.chs.indicadores].sort((a, b) => a.puntos / a.max - b.puntos / b.max);
+  // App-111: solo líneas que aplican al jugador (no se le "reclama" una
+  // clase a quien nunca ha tomado una).
+  const porRelativo = [...perfil.chs.indicadores]
+    .filter((i) => i.aplica !== false)
+    .sort((a, b) => a.puntos / a.max - b.puntos / b.max);
   const debil = porRelativo[0];
 
   // Nombre real del club activo, con frase gramaticalmente correcta cuando
@@ -30676,6 +30720,9 @@ function plantillaWhatsAppAntiChurn(perfil, nombreClub) {
     gasto_promedio: `¡Hola ${nombreCorto}! Como jugador ${deElClub} tenemos una promo especial para tu próxima visita (cancha + algo de la barra). ¿Te gustaría reservar esta semana?`,
     comunidad: `¡Hola ${nombreCorto}! Viene un Torneo/Reta nuevo en el club y nos encantaría contar contigo — ¿te apunto un lugar antes de que se llenen los cupos?`,
     consumo_secundario: `¡Hola ${nombreCorto}! La próxima vez que juegues, tu bebida favorita va por cuenta de la casa 🥤 Solo menciónalo en la barra. ¡Nos vemos en cancha!`,
+    academia: perfil.resumenAcademia?.clasesTomadas
+      ? `¡Hola ${nombreCorto}! Te extrañamos en tus clases ${deElClub} 🎾 ¿Te apartamos lugar en la próxima para retomar el ritmo?`
+      : `¡Hola ${nombreCorto}! ¿Te gustaría mejorar tu juego? Tenemos clases grupales y privadas ${enElClub} — avísanos y te apartamos lugar.`,
   };
 
   return mensajesPorIndicador[debil.key] || mensajesPorIndicador.antiguedad;
@@ -44965,6 +45012,10 @@ function DirectorioJugadoresCRM({
           clasesAcademiaTomadas,
           historialAcademia,
           resumenAcademia,
+          // App-111: líneas OPCIONALES del Score — solo cuentan para el
+          // riesgo de abandono si el jugador alguna vez participó en ellas.
+          participaAcademia: alumnosDeJ.length > 0 || historialAcademia.length > 0,
+          participaTorneosRetas: inscripcionesJ.length > 0 || participacionesJ.length > 0,
           gastoBarReciente,
           gastoProShopReciente,
           ltvTotal,
@@ -45262,7 +45313,7 @@ function DirectorioJugadoresCRM({
           icon={ShieldAlert}
           etiqueta="En Riesgo de Abandono"
           valor={String(resumen.enRiesgo)}
-          sub="Score < 60 pts o Actividad Reciente en alerta"
+          sub="Score < 60% de su máximo alcanzable o +30 días sin actividad"
           tono={resumen.enRiesgo > 0 ? 'rose' : 'emerald'}
         />
       </div>
@@ -45930,8 +45981,11 @@ function ModalCortesiasFrecuencia({
 function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos, diaHoy }) {
   const metaSeg = SEGMENTO_META[perfil.segmento];
   const SegIcon = metaSeg.icon;
-  const colorBarra = perfil.chs.puntaje >= 80 ? 'bg-emerald-400' : perfil.chs.puntaje >= 60 ? 'bg-amber-400' : 'bg-rose-400';
-  const colorTexto = perfil.chs.puntaje >= 80 ? 'text-emerald-400' : perfil.chs.puntaje >= 60 ? 'text-amber-400' : 'text-rose-400';
+  // App-111: el color sigue el % de SU máximo alcanzable (mismo criterio
+  // que "En Riesgo de Abandono"), no los 100 pts absolutos.
+  const pctColor = Number.isFinite(perfil.chs.porcentajeAplicable) ? perfil.chs.porcentajeAplicable : perfil.chs.puntaje;
+  const colorBarra = pctColor >= 80 ? 'bg-emerald-400' : pctColor >= UMBRAL_RIESGO_CHS_PCT ? 'bg-amber-400' : 'bg-rose-400';
+  const colorTexto = pctColor >= 80 ? 'text-emerald-400' : pctColor >= UMBRAL_RIESGO_CHS_PCT ? 'text-amber-400' : 'text-rose-400';
   // Cumpleaños: SOLO el día exacto (día y mes de `fecha_nacimiento` == hoy).
   // Al día siguiente `esCumple` es false y la tarjeta vuelve sola al diseño
   // estándar — no hay nada guardado que limpiar.
@@ -46273,7 +46327,6 @@ function DetalleFrecuenciaMensual({ perfil }) {
   const porTipo = ['Cancha', 'Reta', 'Torneo']
     .map((tipo) => ({ tipo, n: partidos.filter((p) => p.tipo === tipo).length }))
     .filter((t) => t.n > 0);
-  const faltan = Math.max(0, 4 - total);
   return (
     <div className="space-y-2" data-testid="detalle-frecuencia-mensual">
       <div className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2">
@@ -46283,9 +46336,7 @@ function DetalleFrecuenciaMensual({ perfil }) {
             {total} <span className="text-xs font-semibold text-slate-500">partido{total === 1 ? '' : 's'}/mes</span>
           </p>
         </div>
-        <p className="text-right text-[11px] text-slate-500">
-          {faltan === 0 ? 'Meta mensual cumplida (4+)' : `${faltan === 1 ? 'Falta' : 'Faltan'} ${faltan} para la meta de 4 al mes`}
-        </p>
+        <p className="text-right text-[11px] text-slate-500">Últimos 30 días</p>
       </div>
       {porTipo.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -46361,12 +46412,14 @@ function DetalleVisitasConsolidadas({ perfil }) {
   );
 }
 
-// App-109 — tarjeta "Clases / Academia" (informativa: NO suma al Score de
-// 100 pts, para no alterar el puntaje ni el Motor Anti-Churn). Semáforo por
-// asistencias del último mes: 4+ alto, 1-3 medio, 0 bajo.
+// Tarjeta "Clases / Academia" (App-109) — App-110: suma al Score (15 pts)
+// por clases asistidas en el último mes: 4+ = 15 (alto) | 2-3 = 10 (medio)
+// | 1 = 5 (medio) | 0 = 0 (bajo). La llama `calcularCHS`.
 function indicadorClasesAcademia(perfil) {
   const r = perfil.resumenAcademia || { clasesTomadas: 0, clasesUltimoMes: 0, ultimaClase: null };
-  const nivel = r.clasesUltimoMes >= 4 ? 'alto' : r.clasesUltimoMes >= 1 ? 'medio' : 'bajo';
+  const n = Number(r.clasesUltimoMes) || 0;
+  const nivel = n >= 4 ? 'alto' : n >= 1 ? 'medio' : 'bajo';
+  const puntos = n >= 4 ? 15 : n >= 2 ? 10 : n >= 1 ? 5 : 0;
   let detalle = 'Sin clases tomadas todavía.';
   if (r.ultimaClase) {
     const dias = Math.max(0, Math.round((new Date(`${perfil.hoyISO}T12:00:00`).getTime() - new Date(`${r.ultimaClase.fecha}T12:00:00`).getTime()) / MS_POR_DIA));
@@ -46374,7 +46427,7 @@ function indicadorClasesAcademia(perfil) {
   } else if (r.proximaClase) {
     detalle = 'Inscrito · aún sin asistencias registradas';
   }
-  return { key: 'academia', label: 'Clases / Academia', nivel, detalle };
+  return { key: 'academia', label: 'Clases / Academia', puntos, max: 15, nivel, detalle };
 }
 
 function DetalleClasesAcademia({ perfil }) {
@@ -46854,14 +46907,13 @@ function ModalPerfilJugadorCRM({
   // (que se alimenta de gasto). Solo actividad operativa: Frecuencia de
   // Juego, Antigüedad y Constancia, Torneos y Retas, Clases / Academia.
   const vistaOperativa = permisos?.puedeVerMontos === false;
-  const indicadorAcademia = indicadorClasesAcademia(perfil);
-  const indicadoresOperativos = [
-    ...['frecuencia', 'antiguedad', 'comunidad']
-      .map((k) => perfil.chs.indicadores.find((i) => i.key === k))
-      .filter(Boolean)
-      .map((i) => (i.key === 'comunidad' ? { ...i, label: 'Participación en Torneos y Retas' } : i)),
-    indicadorAcademia,
-  ];
+  // App-110: Coach (y cualquier rol sin `puedeVerAdeudosJugador`) no ve
+  // adeudos ni penalizaciones — solo lo deportivo.
+  const puedeVerAdeudos = permisos?.puedeVerAdeudosJugador !== false;
+  const indicadoresOperativos = ['frecuencia', 'antiguedad', 'comunidad', 'academia']
+    .map((k) => perfil.chs.indicadores.find((i) => i.key === k) || (k === 'academia' ? indicadorClasesAcademia(perfil) : null))
+    .filter(Boolean)
+    .map((i) => (i.key === 'comunidad' ? { ...i, label: 'Participación en Torneos y Retas' } : i));
 
   // Tarjeta expandible compartida por el Score (Owner/Manager) y la vista
   // operativa: `derecha` es "x/y pts", "Informativo" o el nivel del semáforo.
@@ -46880,7 +46932,7 @@ function ModalPerfilJugadorCRM({
               <span className="flex items-center gap-1.5 font-bold text-slate-800">
                 {meta.emoji} {ind.label}
               </span>
-              <span className={`shrink-0 font-bold ${derecha === 'Informativo' ? 'text-slate-500' : meta.color}`}>{derecha}</span>
+              <span className={`shrink-0 font-bold ${String(derecha).endsWith('no aplica') ? 'text-slate-500' : meta.color}`}>{derecha}</span>
             </div>
             <p className="mt-1 text-[11px] text-slate-500">{ind.detalle}</p>
           </div>
@@ -47189,10 +47241,11 @@ function ModalPerfilJugadorCRM({
             `SeccionPenalizacionesPendientes` (ya construida para el Smart
             POS → "Penalizaciones Pendientes") filtrada por `jugadorId`, con
             sus mismos botones "Cobrar Penalización"/"Condonar / Exonerar" —
-            visible para cualquier rol, ya que es un adeudo operativo, no una
-            cifra de rentabilidad del club (a diferencia de Gasto Total
-            Histórico/Nivel de Fidelidad, gateados por `puedeVerMontos`). */}
-        <SeccionPenalizacionesPendientes jugadorId={perfil.id} ocultarSiVacio onIrACobrarEnComanda={onCargarPenalizacionAComanda} />
+            App-110: visible SOLO para Owner/Manager y Recepción/Caja
+            (`puedeVerAdeudosJugador`); el Coach no ve adeudos. */}
+        {puedeVerAdeudos && (
+          <SeccionPenalizacionesPendientes jugadorId={perfil.id} ocultarSiVacio onIrACobrarEnComanda={onCargarPenalizacionAComanda} />
+        )}
 
         {vistaOperativa ? (
           // Mejora de RBAC + App-109 (Vista para Operadores): roles sin
@@ -47242,7 +47295,7 @@ function ModalPerfilJugadorCRM({
             {permisos?.puedeGestionarCortesias && (
               <div>
                 <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
-                  <Gift size={15} className="text-orange-400" /> Consumo Secundario
+                  <Gift size={15} className="text-orange-400" /> Consumo
                 </h3>
                 <DetalleConsumoPOS
                   perfil={perfil}
@@ -47285,11 +47338,17 @@ function ModalPerfilJugadorCRM({
               <h3 className="mb-2 flex items-center gap-1.5 text-sm font-black text-slate-900">
                 <Gauge size={15} className="text-orange-400" /> Nivel de Fidelidad (Score) — {perfil.chs.puntaje}/100 pts
               </h3>
-              <p className="mb-2 text-[11px] text-slate-500">Da clic en cualquier indicador para ver su historial exacto.</p>
+              <p className="mb-2 text-[11px] text-slate-500" data-testid="base-riesgo">
+                {perfil.chs.maxAplicable < 100
+                  ? `Riesgo evaluado sobre ${perfil.chs.maxAplicable} pts alcanzables (${perfil.chs.puntaje} pts = ${Math.round(perfil.chs.porcentajeAplicable)}%): ${perfil.chs.indicadores
+                      .filter((i) => i.aplica === false)
+                      .map((i) => (i.key === 'comunidad' ? 'Torneos/Retas' : i.label))
+                      .join(' y ')} no aplica${perfil.chs.indicadores.filter((i) => i.aplica === false).length > 1 ? 'n' : ''} a este jugador. `
+                  : ''}
+                Da clic en cualquier indicador para ver su historial exacto.
+              </p>
               <div className="space-y-2">
-                {perfil.chs.indicadores.map((ind) => renderTarjetaIndicador(ind, `${ind.puntos}/${ind.max} pts`))}
-                {/* App-109: Clases / Academia — informativa, no suma al Score. */}
-                {renderTarjetaIndicador(indicadorAcademia, 'Informativo')}
+                {perfil.chs.indicadores.map((ind) => renderTarjetaIndicador(ind, ind.aplica === false ? `${ind.puntos}/${ind.max} pts · no aplica` : `${ind.puntos}/${ind.max} pts`))}
               </div>
             </div>
           </>
