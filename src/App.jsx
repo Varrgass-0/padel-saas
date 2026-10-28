@@ -22724,69 +22724,154 @@ function ModalDesgloseVentasBI({ categoria, lineas = [], periodo, onClose }) {
   );
 }
 
-/* ---------------- Rentabilidad por Categoría ---------------- */
+/* ---------------- Utilidad de mostrador: Pro-Shop | Restaurante / Bar ---------------- */
 
-// "Costo Total" ya no se muestra: en servicios (Canchas, Retas & Torneos,
-// Academia) siempre era $0 y solo llenaba la tabla de ceros. El costo de
-// producto sigue reflejado en el Margen Bruto de Pro-Shop y Cafetería/Bar
-// (Ingreso − Costo), y el CSV exportable conserva la columna completa.
-// App-106: "Utilidad de Pro-Shop y Restaurante / Bar". La TABLA de márgenes
-// muestra SOLO las categorías de mostrador (con costo directo de inventario).
-// Canchas, Retas & Torneos y Academia son servicios de espacio: se evalúan
-// por ocupación y horas (tabla de canchas + dona de Composición de
-// Ocupación), no por margen. La barra "Distribución de ingresos" de arriba
-// sigue recibiendo TODAS las categorías (100 % del ingreso consolidado).
-const CATEGORIAS_UTILIDAD_MOSTRADOR_BI = ['Pro-Shop', 'Cafetería/Bar'];
-function RentabilidadPorCategoria({ filas, academiaDesglose = null, cargando }) {
-  if (cargando) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
-  const filasMostrador = CATEGORIAS_UTILIDAD_MOSTRADOR_BI.map((cat) => (filas || []).find((f) => f.categoria === cat)).filter(Boolean);
+// App-107: la sección de mostrador son DOS tarjetas totalmente independientes
+// (una por negocio), sin la barra de "Distribución de ingresos". Cada tarjeta
+// lee SOLO su propia fila de `rentabilidadPorCategoria` (mismo cálculo de
+// siempre: utilidad = ingreso − costo directo; margen = utilidad ÷ ingreso)
+// y su propio split de canal (presencial POS + Portal web = ingreso total).
+// Canchas, Retas & Torneos y Academia no viven aquí: se evalúan por ocupación
+// (tabla de canchas + dona de Composición de Ocupación). El CSV exportable
+// conserva la sección completa "Rentabilidad por Categoría".
+const NEGOCIOS_MOSTRADOR_BI = [
+  {
+    categoria: 'Pro-Shop',
+    titulo: 'Pro-Shop',
+    icono: ShoppingBag,
+    chip: 'bg-violet-400/10 text-violet-400',
+    etiquetaCosto: 'Costo de inventario vendido',
+  },
+  {
+    categoria: 'Cafetería/Bar',
+    titulo: 'Restaurante / Bar',
+    icono: Coffee,
+    chip: 'bg-amber-400/10 text-amber-400',
+    etiquetaCosto: 'Costo de insumos vendidos',
+  },
+];
+
+function TarjetaUtilidadNegocioBI({ negocio, fila, canal }) {
+  const Icono = negocio.icono;
+  const ingreso = Number(fila?.ingreso) || 0;
+  const costo = Number(fila?.costo) || 0;
+  const utilidad = Number.isFinite(Number(fila?.utilidad)) ? Number(fila.utilidad) : ingreso - costo;
+  const margen = fila?.margen !== null && fila?.margen !== undefined && Number.isFinite(Number(fila.margen)) ? Number(fila.margen) : null;
+  const presencial = Number(canal?.presencial) || 0;
+  const portal = Number(canal?.portal) || 0;
+  const sinVentas = ingreso === 0 && costo === 0;
+  const color = COLOR_CATEGORIA_GRAFICA_BI[negocio.categoria];
+  const anchoMargen = margen === null ? 0 : Math.max(0, Math.min(100, margen));
+  const slug = negocio.categoria === 'Pro-Shop' ? 'proshop' : 'bar';
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="utilidad-mostrador">
-      <h3 className="mb-4 flex items-center gap-1.5 text-sm font-black text-slate-900">
-        <Percent size={16} className="text-orange-400" /> Utilidad de Pro-Shop y Restaurante / Bar
-      </h3>
+    <section
+      className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white"
+      data-testid={`utilidad-negocio-${slug}`}
+      aria-label={`Utilidad de ${negocio.titulo}`}
+    >
+      <div className="h-1 w-full" style={{ backgroundColor: color }} />
+      <div className="flex flex-1 flex-col p-4 sm:p-5">
+        <header className="flex items-center gap-3">
+          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${negocio.chip}`}>
+            <Icono size={18} />
+          </div>
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-black text-slate-900">Utilidad {negocio.titulo}</h3>
+            <p className="text-[11px] text-slate-500">Ventas presenciales y del portal web</p>
+          </div>
+        </header>
 
-      {/* Complemento visual: distribución de ingresos de TODAS las categorías
-          del club (sin cambios: 100 % del ingreso consolidado). */}
-      <DistribucionIngresosCategoriaBI filas={filas} />
+        <dl className="mt-4 text-sm">
+          <div className="py-2.5">
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="font-semibold text-slate-700">Ingresos Totales</dt>
+              <dd className="font-black tabular-nums text-slate-900" data-testid={`utilidad-${slug}-ingreso`}>
+                {formatoMoneda(ingreso)}
+              </dd>
+            </div>
+            <div className="mt-1.5 space-y-1 pl-3 text-[11px] text-slate-500">
+              <div className="flex justify-between gap-3">
+                <span>Presencial (POS)</span>
+                <span className="tabular-nums" data-testid={`utilidad-${slug}-presencial`}>{formatoMoneda(presencial)}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Portal web</span>
+                <span className="tabular-nums" data-testid={`utilidad-${slug}-portal`}>{formatoMoneda(portal)}</span>
+              </div>
+            </div>
+          </div>
 
-      <p className="mb-2 text-[11px] text-slate-500">
-        Margen de las ventas de mostrador (ingreso cobrado − costo directo del inventario).
-      </p>
+          <div className="border-t border-slate-200 py-2.5">
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="font-semibold text-slate-700">Costo Directo</dt>
+              <dd className="font-bold tabular-nums text-slate-600" data-testid={`utilidad-${slug}-costo`}>
+                {costo > 0 ? `− ${formatoMoneda(costo)}` : formatoMoneda(0)}
+              </dd>
+            </div>
+            <p className="mt-0.5 text-[11px] text-slate-500">{negocio.etiquetaCosto}</p>
+          </div>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-200">
-        <table className="w-full min-w-[420px] text-left text-xs">
-          <thead>
-            <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-              <th className="px-3 py-2.5">Categoría</th>
-              <th className="px-3 py-2.5 text-right">Ingresos Totales</th>
-              <th className="px-3 py-2.5 text-right">Ganancia Estimada</th>
-              <th className="px-3 py-2.5 text-right">% de Ganancia</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filasMostrador.map((f) => {
-              const meta = CATEGORIAS_BI.find((c) => c.key === f.categoria);
-              // App-104: el nombre de la categoría es texto plano (sin clic).
-              // El desglose de ventas se abre SOLO desde las tarjetas
-              // "Ventas Pro-Shop" / "Ventas Restaurante / Bar".
-              return (
-                <tr key={f.categoria} className="border-b border-slate-200/70 last:border-0">
-                  <td className={`px-3 py-2.5 font-bold ${meta?.texto || 'text-slate-800'}`} data-testid={`rentabilidad-categoria-${f.categoria}`}>
-                    {etiquetaCategoriaProducto(f.categoria)}
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-slate-800">{formatoMoneda(f.ingreso)}</td>
-                  <td className={`px-3 py-2.5 text-right font-bold ${f.utilidad >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {formatoMoneda(f.utilidad)}
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-slate-600">{f.margen !== null ? `${f.margen.toFixed(1)}%` : '—'}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+          <div className="border-t border-slate-200 py-3">
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="font-black text-slate-900">Ganancia Estimada</dt>
+              <dd
+                className={`text-xl font-black tabular-nums ${sinVentas ? 'text-slate-900' : utilidad >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}
+                data-testid={`utilidad-${slug}-ganancia`}
+              >
+                {formatoMoneda(utilidad)}
+              </dd>
+            </div>
+            <p className="mt-0.5 text-[11px] text-slate-500">Utilidad neta: ingresos − costo directo</p>
+          </div>
+
+          <div className="border-t border-slate-200 pt-3">
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="font-semibold text-slate-700">% de Margen</dt>
+              <dd className="font-black tabular-nums text-slate-900" data-testid={`utilidad-${slug}-margen`}>
+                {margen !== null ? `${margen.toFixed(1)}%` : '—'}
+              </dd>
+            </div>
+            <div
+              className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200"
+              role="meter"
+              aria-label={`% de margen de ${negocio.titulo}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={margen !== null ? Number(margen.toFixed(1)) : undefined}
+              title={margen !== null ? `Margen ${margen.toFixed(1)}%` : 'Sin ventas en el periodo'}
+            >
+              <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${anchoMargen}%`, backgroundColor: color }} />
+            </div>
+          </div>
+        </dl>
+
+        {sinVentas && <p className="mt-3 text-[11px] text-slate-500">Sin ventas cobradas en este periodo.</p>}
       </div>
+    </section>
+  );
+}
+
+function UtilidadMostradorBI({ filas, canales = null, cargando }) {
+  if (cargando) {
+    return (
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <div className="h-72 animate-pulse rounded-2xl bg-white" />
+        <div className="h-72 animate-pulse rounded-2xl bg-white" />
+      </div>
+    );
+  }
+  return (
+    <div className="grid grid-cols-1 gap-5 lg:grid-cols-2" data-testid="utilidad-mostrador">
+      {NEGOCIOS_MOSTRADOR_BI.map((negocio) => (
+        <React.Fragment key={negocio.categoria}>
+          <TarjetaUtilidadNegocioBI
+            negocio={negocio}
+            fila={(filas || []).find((f) => f.categoria === negocio.categoria) || null}
+            canal={canales?.[negocio.categoria] || null}
+          />
+        </React.Fragment>
+      ))}
     </div>
   );
 }
@@ -23700,69 +23785,6 @@ function TendenciaIngresosBI({ modo, tendencia, cargando }) {
         </p>
       )}
     </TarjetaGraficaBI>
-  );
-}
-
-/* ---- 2) Distribución de ingresos por categoría (barra 100%) ---- */
-function DistribucionIngresosCategoriaBI({ filas }) {
-  const [resaltada, setResaltada] = useState(null);
-  const datos = CATEGORIAS_BI.map((c) => {
-    const fila = (filas || []).find((f) => f.categoria === c.key);
-    return { key: c.key, ingreso: Math.max(0, Number(fila?.ingreso) || 0) };
-  });
-  const total = datos.reduce((acc, d) => acc + d.ingreso, 0);
-  const pct = (v) => (total > 0 ? (v / total) * 100 : 0);
-  const formatoPct = (v) => (v > 0 && v < 1 ? '<1%' : `${v.toFixed(v < 10 ? 1 : 0).replace(/\.0$/, '')}%`);
-
-  return (
-    <div className="mb-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Distribución de ingresos</p>
-        <p className="text-xs font-black text-slate-900">{formatoMoneda(total)}</p>
-      </div>
-      {total === 0 ? (
-        <div className="h-3 w-full rounded-full bg-slate-100" title="Sin ingresos cobrados en este rango" />
-      ) : (
-        <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-full" role="img" aria-label="Distribución del ingreso total por categoría">
-          {datos
-            .filter((d) => d.ingreso > 0)
-            .map((d) => (
-              <div
-                key={d.key}
-                title={`${etiquetaCategoriaProducto(d.key)} · ${formatoPct(pct(d.ingreso))} · ${formatoMoneda(d.ingreso)}`}
-                onMouseEnter={() => setResaltada(d.key)}
-                onMouseLeave={() => setResaltada(null)}
-                className="h-full transition-opacity duration-150"
-                style={{
-                  width: `${pct(d.ingreso)}%`,
-                  minWidth: 3,
-                  backgroundColor: COLOR_CATEGORIA_GRAFICA_BI[d.key],
-                  opacity: resaltada && resaltada !== d.key ? 0.3 : 1,
-                }}
-              />
-            ))}
-        </div>
-      )}
-      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 xl:grid-cols-5">
-        {datos.map((d) => (
-          <div
-            key={d.key}
-            onMouseEnter={() => setResaltada(d.key)}
-            onMouseLeave={() => setResaltada(null)}
-            className={`min-w-0 transition-opacity ${resaltada && resaltada !== d.key ? 'opacity-50' : ''}`}
-          >
-            <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
-              <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: COLOR_CATEGORIA_GRAFICA_BI[d.key] }} />
-              <span className="truncate">{etiquetaCategoriaProducto(d.key)}</span>
-            </p>
-            <p className="mt-0.5 pl-3.5 text-xs">
-              <span className="font-black text-slate-900">{formatoPct(pct(d.ingreso))}</span>
-              <span className="ml-1.5 text-[11px] text-slate-500">{formatoMoneda(d.ingreso)}</span>
-            </p>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -29162,6 +29184,14 @@ function ModuloAnalyticsBI({
     // ingreso, costo ni total.
     const unidadesPorCategoria = { 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
     const lineasVentaProducto = [];
+    // App-107: canal del ingreso de mostrador (presencial POS vs. Portal
+    // web) para las tarjetas "Utilidad Pro-Shop" / "Utilidad Restaurante /
+    // Bar". Solo LECTURA del mismo recorrido: presencial + portal = el mismo
+    // `ingresoPorCategoria` de cada negocio (no cambia ningún total).
+    const ingresoPorCanalMostrador = {
+      'Pro-Shop': { presencial: 0, portal: 0 },
+      'Cafetería/Bar': { presencial: 0, portal: 0 },
+    };
     ventasPagadas.forEach((v) => {
       const items = v?.detalles?.items;
       if (!Array.isArray(items)) return;
@@ -29242,6 +29272,9 @@ function ModuloAnalyticsBI({
         // el margen de Canchas.
         cogsPorCategoria[catBucket] += costo;
         ingresoPorCategoria[catBucket] += subtotal;
+        if (ingresoPorCanalMostrador[catBucket]) {
+          ingresoPorCanalMostrador[catBucket][esOrigenPortalWeb(v?.origen) ? 'portal' : 'presencial'] += subtotal;
+        }
         // Insights / Modal de Desglose (App-96) — mismo `catBucket`.
         if (catBucket !== 'Canchas') {
           unidadesPorCategoria[catBucket] += cantidad;
@@ -29359,6 +29392,7 @@ function ModuloAnalyticsBI({
       topModificadores,
       auditoriaKardex,
       unidadesPorCategoria,
+      ingresoPorCanalMostrador,
       ingresoProShop: ingresoPorCategoria['Pro-Shop'],
       ingresoRestauranteBar: ingresoPorCategoria['Cafetería/Bar'],
       lineasVentaProducto,
@@ -29566,9 +29600,10 @@ function ModuloAnalyticsBI({
 
       <HeatmapOcupacion modo={modoFiltro} filas={heatmap.filas} celdas={heatmap.celdas} />
 
-      <RentabilidadPorCategoria
+      {/* App-107: dos tarjetas independientes de utilidad de mostrador. */}
+      <UtilidadMostradorBI
         filas={analisis.rentabilidadPorCategoria}
-        academiaDesglose={analisis.academiaDesglose}
+        canales={analisis.ingresoPorCanalMostrador}
         cargando={cargandoFinanciero}
       />
 
