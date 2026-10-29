@@ -30593,8 +30593,8 @@ function resolverJugadorIdVentaCancha(venta, { reservasPorId, reservasPorCanchaF
 const UMBRAL_LTV_FRECUENTE = 5000;
 const VENTANAS_VIP_DIAS = [30, 60, 90];
 const COMBINACIONES_VIP = [
-  { value: 'AMBOS', label: 'Ambos (gasto Y visitas)' },
-  { value: 'CUALQUIERA', label: 'Cualquiera (gasto O visitas)' },
+  { value: 'AMBOS', label: 'Gasto y visitas' },
+  { value: 'CUALQUIERA', label: 'Gasto o visitas' },
 ];
 const CRITERIO_VIP_DEFAULT = { automatico: true, ventanaDias: 60, gastoMinimo: 3000, visitasMinimas: 4, combinacion: 'AMBOS' };
 function normalizarCriterioVip(c) {
@@ -30642,6 +30642,18 @@ function textoCriterioVip(criterio, { conMontos = true } = {}) {
   if (c.visitasMinimas > 0) partes.push(`${c.visitasMinimas}+ visitas`);
   if (partes.length === 0) return 'Solo VIP manuales';
   return `${partes.join(c.combinacion === 'CUALQUIERA' ? ' o ' : ' y ')} en ${c.ventanaDias} días`;
+}
+// App-116 — Frase amigable del criterio para Configuración:
+// "Gasto mínimo $3,000 + 4 visitas en los últimos 60 días para ser VIP".
+function fraseCriterioVip(criterio) {
+  const c = normalizarCriterioVip(criterio);
+  const visitas = `${c.visitasMinimas} visita${c.visitasMinimas === 1 ? '' : 's'}`;
+  if (!c.automatico || (c.gastoMinimo <= 0 && c.visitasMinimas <= 0)) return 'Solo son VIP los jugadores que marques a mano en su Vista 360°';
+  const periodo = `en los últimos ${c.ventanaDias} días para ser VIP`;
+  if (c.gastoMinimo > 0 && c.visitasMinimas > 0) {
+    return `Gasto mínimo ${formatoMoneda(c.gastoMinimo)} ${c.combinacion === 'CUALQUIERA' ? 'o' : '+'} ${visitas} ${periodo}`;
+  }
+  return c.gastoMinimo > 0 ? `Gasto mínimo ${formatoMoneda(c.gastoMinimo)} ${periodo}` : `${visitas} ${periodo}`;
 }
 const LS_KEY_CRITERIO_VIP = 'smashpadel_criterio_vip_v1';
 function leerCriterioVipLocal() {
@@ -45888,22 +45900,31 @@ function DirectorioJugadoresCRM({
         {permisos?.puedeVerMontos !== false && (
           <MetricCard icon={DollarSign} etiqueta="Gasto Total Histórico del Club" valor={formatoMoneda(resumen.ltvClubTotal)} tono="orange" />
         )}
+        {/* App-116: tarjetas limpias (título + número) y CLICABLES — filtran
+            el listado de abajo; un segundo clic vuelve a "Todos". */}
         <MetricCard
           icon={Crown}
           etiqueta="Jugadores VIP"
           valor={String(resumen.vip)}
-          // App-115: criterio activo del club (automático reciente) + VIP manuales.
-          sub={`${textoCriterioVip(criterioVipEfectivo, { conMontos: permisos?.puedeVerMontos !== false })}${
-            resumen.vipManuales > 0 ? ` · ${resumen.vipManuales} manual${resumen.vipManuales === 1 ? '' : 'es'}` : ''
-          }`}
           tono="amber"
+          activo={filtroSegmento === 'VIP' && !soloRiesgo}
+          onClick={() => {
+            const activar = !(filtroSegmento === 'VIP' && !soloRiesgo);
+            setFiltroSegmento(activar ? 'VIP' : 'todos');
+            setSoloRiesgo(false);
+          }}
         />
         <MetricCard
           icon={ShieldAlert}
           etiqueta="En Riesgo de Abandono"
           valor={String(resumen.enRiesgo)}
-          sub="Score < 60% de su máximo alcanzable o +30 días sin actividad"
           tono={resumen.enRiesgo > 0 ? 'rose' : 'emerald'}
+          activo={soloRiesgo && filtroSegmento === 'todos'}
+          onClick={() => {
+            const activar = !(soloRiesgo && filtroSegmento === 'todos');
+            setSoloRiesgo(activar);
+            setFiltroSegmento('todos');
+          }}
         />
       </div>
 
@@ -53358,8 +53379,8 @@ function TarjetaCriterioVip({ criterio, onGuardar, guardando = false }) {
         <h3 className="text-sm font-black text-slate-900">Criterio VIP</h3>
       </div>
       <p className="mb-3 text-xs text-slate-500">
-        Un jugador es VIP automático si cumple este criterio con su actividad RECIENTE (quien ya no viene deja de serlo solo).
-        Owner y Manager pueden además marcar o quitar el VIP a mano desde la Vista 360° de cualquier jugador.
+        Define qué necesita un jugador para ser VIP según su actividad reciente. También puedes marcar o quitar el VIP a
+        mano desde la Vista 360° de cada jugador.
       </p>
 
       <button
@@ -53386,7 +53407,7 @@ function TarjetaCriterioVip({ criterio, onGuardar, guardando = false }) {
 
       {borrador.automatico && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Campo label="Ventana de evaluación">
+          <Campo label="Periodo">
             <select value={borrador.ventanaDias} onChange={(e) => cambiar('ventanaDias', Number(e.target.value))} className={inputClase} data-testid="vip-ventana">
               {VENTANAS_VIP_DIAS.map((d) => (
                 <option key={d} value={d}>
@@ -53395,7 +53416,7 @@ function TarjetaCriterioVip({ criterio, onGuardar, guardando = false }) {
               ))}
             </select>
           </Campo>
-          <Campo label="Combinar umbrales">
+          <Campo label="Debe cumplir">
             <select value={borrador.combinacion} onChange={(e) => cambiar('combinacion', e.target.value)} className={inputClase} data-testid="vip-combinacion">
               {COMBINACIONES_VIP.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -53404,7 +53425,7 @@ function TarjetaCriterioVip({ criterio, onGuardar, guardando = false }) {
               ))}
             </select>
           </Campo>
-          <Campo label="Gasto mínimo en la ventana (MXN · 0 = no se exige)">
+          <Campo label="Gasto mínimo (MXN · 0 = no cuenta)">
             <input
               type="number"
               min="0"
@@ -53415,7 +53436,7 @@ function TarjetaCriterioVip({ criterio, onGuardar, guardando = false }) {
               data-testid="vip-gasto"
             />
           </Campo>
-          <Campo label="Visitas mínimas en la ventana (0 = no se exige)">
+          <Campo label="Visitas mínimas (0 = no cuenta)">
             <input
               type="number"
               min="0"
@@ -53430,8 +53451,7 @@ function TarjetaCriterioVip({ criterio, onGuardar, guardando = false }) {
       )}
 
       <p className="mt-3 rounded-lg bg-amber-400/10 px-3 py-2 text-[11px] font-semibold text-amber-800" data-testid="vip-resumen">
-        <Crown size={11} className="mr-1 inline" /> VIP = {textoCriterioVip(normalizarCriterioVip(borrador))} + VIP manuales.
-        Visita = día con partido (reserva, reta o torneo) o clase asistida.
+        <Crown size={11} className="mr-1 inline" /> {fraseCriterioVip(borrador)}
       </p>
       {error && <p className="mt-2 text-xs font-semibold text-rose-500">{error}</p>}
       <div className="mt-3 flex justify-end">
@@ -66696,7 +66716,7 @@ function AppInterno({ clubInicial } = {}) {
         });
       }
       setGuardandoCriterioVip(false);
-      if (ok) mostrarToast({ titulo: 'Criterio VIP actualizado', detalle: textoCriterioVip(criterio) });
+      if (ok) mostrarToast({ titulo: 'Criterio VIP actualizado', detalle: fraseCriterioVip(criterio) });
       return ok;
     },
     [mostrarToast]
