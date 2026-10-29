@@ -9653,13 +9653,32 @@ function ModalDetalleRetaParrilla({
     return () => clearInterval(t);
   }, []);
   const [inscribiendo, setInscribiendo] = useState(false);
+  // App-117 — Plan de Rescate: Coach / Invitado de emergencia.
+  const [invitando, setInvitando] = useState(false);
+  const rescate = useRescateRetas();
   const jugadores = useMemo(() => Object.values(jugadoresPorId || {}), [jugadoresPorId]);
 
   const { confirmados, ocupados, disponibles, completa } = resumenCuposReta(reta, inscripciones);
   const nombresCanchas = nombresCanchasDeReta(reta, canchas) || 'Por confirmar';
   const concluida = reta.archivado === true || eventoYaTermino(reta.fecha, reta.hora_fin, ahoraMs);
   const iniciada = !concluida && eventoYaInicio(reta.fecha, reta.hora_inicio, ahoraMs);
-  const puedeInscribir = !soloLectura && !completa && !concluida && !iniciada;
+  // Gracia de Entrada (App-117): solo Recepción / Administración, y solo
+  // mientras corre la ventana — fuera de ella todo sigue igual que antes.
+  const enGraciaRescate =
+    !soloLectura && rescate.puedeOperar && estadoRescateReta(reta, ocupados, ahoraMs, rescate.graciaMinutos).enGracia;
+  const puedeInscribir = (!soloLectura && !completa && !concluida && !iniciada) || enGraciaRescate;
+  const inscritosReta = useMemo(() => (inscripciones || []).filter((i) => mismoId(i.reta_id, reta?.id)), [inscripciones, reta?.id]);
+
+  if (invitando) {
+    return (
+      <ModalInvitadoEmergenciaReta
+        reta={reta}
+        inscritos={inscritosReta}
+        onClose={() => setInvitando(false)}
+        onInscrito={(inscripcion) => onInscripcionCreada?.(inscripcion)}
+      />
+    );
+  }
 
   if (inscribiendo) {
     return (
@@ -9695,6 +9714,7 @@ function ModalDetalleRetaParrilla({
             </span>
           )}
         </div>
+        <InsigniaRetaCancelada reta={reta} />
 
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
           <div className="col-span-2">
@@ -9762,7 +9782,6 @@ function ModalDetalleRetaParrilla({
                   </div>
                 );
               }
-              const pagado = estadoPagoInscripcion(jugador) === 'pagado';
               return (
                 <div key={jugador.id || idx} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-2 text-xs">
                   <span className="flex min-w-0 items-center gap-2 font-semibold text-slate-800">
@@ -9770,18 +9789,24 @@ function ModalDetalleRetaParrilla({
                     <CheckCircle2 size={12} className="shrink-0 text-emerald-500" />
                     <span className="truncate">{jugador.nombre || 'Jugador'}</span>
                   </span>
-                  <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                      pagado ? 'bg-emerald-400/10 text-emerald-500 ring-1 ring-emerald-400/30' : 'bg-amber-400/10 text-amber-500 ring-1 ring-amber-400/30'
-                    }`}
-                  >
-                    {pagado ? 'Pagado' : 'Pendiente'}
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${claseEstadoPagoInscripcion(jugador)}`}>
+                    {etiquetaEstadoPagoInscripcion(jugador)}
                   </span>
                 </div>
               );
             })}
           </div>
         </div>
+
+        {/* App-117 — Plan de Rescate (solo Recepción / Administración). */}
+        <PanelRescateReta
+          reta={reta}
+          inscritos={inscritosReta}
+          ahoraMs={ahoraMs}
+          soloLectura={soloLectura}
+          onInscribirUltimoMomento={() => setInscribiendo(true)}
+          onInvitadoEmergencia={() => setInvitando(true)}
+        />
 
         <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-3">
           {onIrATorneosRetas && (
@@ -31846,6 +31871,34 @@ const TIPOS_EVENTO_AUDITORIA = {
         d?.cancha ? ` — ${d.cancha}` : ''
       }.`,
   },
+  // App-117 — Plan de Rescate de Retas (v127).
+  reta_inscripcion_gracia: {
+    label: 'Reta · inscripción en gracia de entrada',
+    icon: Timer,
+    color: 'text-orange-400',
+    bg: 'bg-orange-400/10',
+    detalleTexto: (d) => `${d?.jugador || 'Jugador'} → ${d?.reta || 'Reta'} (${d?.fecha ? formatoFechaLarga(d.fecha) : ''} ${d?.hora || ''}) · ${d?.estado_pago || '—'}.`,
+  },
+  reta_invitado_emergencia: {
+    label: 'Reta · Coach / Invitado de emergencia',
+    icon: UserCheck,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    detalleTexto: (d) =>
+      `${d?.invitado || 'Invitado'} → ${d?.reta || 'Reta'} · ${
+        d?.ajuste === 'club_absorbe' ? 'el club absorbe el lugar' : d?.ajuste === 'dividido' ? 'dividido entre los jugadores' : 'tarifa especial'
+      } (${formatoMoneda(d?.monto)}).`,
+  },
+  reta_cancelada_incompleta: {
+    label: 'Reta cancelada · cuarteto incompleto',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    detalleTexto: (d) =>
+      `${d?.reta || 'Reta'} (${d?.fecha ? formatoFechaLarga(d.fecha) : ''} ${d?.hora || ''}) — ${formatoMoneda(d?.total_reembolsado)} al Wallet de ${
+        d?.reembolsados ?? 0
+      } jugador(es)${d?.reembolso_manual ? ` · ${d.reembolso_manual} reembolso(s) manual(es)` : ''}. Motivo: ${d?.motivo || 'Falta de cuarteto'}.`,
+  },
   // App-115 — Estatus VIP manual de un jugador (Vista 360°).
   vip_manual: {
     label: 'Estatus VIP manual',
@@ -32377,6 +32430,471 @@ function resumenCuposReta(reta, inscripciones) {
   return { confirmados, ocupados, disponibles: Math.max(0, CUPOS_RETA - ocupados), completa: ocupados >= CUPOS_RETA };
 }
 
+// =============================================================================
+// App-117 — PLAN DE RESCATE DE RETAS (v127). Capa de EXCEPCIÓN operativa,
+// exclusiva de Recepción / Administración, para Retas "En curso" con lugares
+// libres. NO toca el flujo normal: inscripción, cobro, bloqueo por horario y
+// cancelación individual siguen exactamente igual. Solo agrega:
+//   1) Gracia de Entrada (configurable, default 15 min desde `hora_inicio`):
+//      inscribir de último momento o un Coach / Invitado de emergencia.
+//   2) Cancelación por Cuarteto Incompleto (después de la gracia): RPC
+//      atómica `fn_reta_cancelar_incompleta` → libera la Parrilla, reembolsa
+//      al Wallet a quien ya pagó y archiva la Reta.
+// El Portal no cambia: sigue ocultando las Retas iniciadas y, con v127, la
+// base rechaza cualquier inscripción tardía que no venga de la administración.
+// =============================================================================
+const GRACIA_RETAS_DEFAULT = 15;
+const LS_KEY_GRACIA_RETAS = 'smashpadel_retas_gracia_min_v1';
+const ROLES_RESCATE_RETAS = ['owner', 'manager', 'recepcion'];
+
+function normalizarGraciaRetas(valor) {
+  const n = Math.round(Number(valor));
+  if (!Number.isFinite(n)) return GRACIA_RETAS_DEFAULT;
+  return Math.min(60, Math.max(0, n));
+}
+function leerGraciaRetasLocal() {
+  try {
+    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_GRACIA_RETAS));
+    return crudo == null ? GRACIA_RETAS_DEFAULT : normalizarGraciaRetas(crudo);
+  } catch (_e) {
+    return GRACIA_RETAS_DEFAULT;
+  }
+}
+function guardarGraciaRetasLocal(minutos) {
+  try {
+    localStorage.setItem(claveLocalPorClub(LS_KEY_GRACIA_RETAS), String(normalizarGraciaRetas(minutos)));
+  } catch (_e) {
+    /* sin localStorage: queda aplicado solo en esta sesión */
+  }
+}
+
+// Contexto del Plan de Rescate (lo provee `AppInterno`). Fuera del Panel (o
+// para roles sin permiso) `puedeOperar` es `false` y nada de esto se pinta.
+const RescateRetasContext = React.createContext({ graciaMinutos: GRACIA_RETAS_DEFAULT, puedeOperar: false });
+function useRescateRetas() {
+  return React.useContext(RescateRetasContext) || { graciaMinutos: GRACIA_RETAS_DEFAULT, puedeOperar: false };
+}
+
+// ¿La Reta fue cancelada por el Plan de Rescate? (`cancelada_en`, v127).
+function retaCanceladaPorRescate(reta) {
+  return Boolean(reta?.cancelada_en) || reta?.cancelacion_tipo === 'cuarteto_incompleto';
+}
+
+// Lugar absorbido por el club (Invitado de emergencia): `estado_pago =
+// 'cortesia'`, o la marca `ajuste_pago_rescate` si el proyecto guardó la
+// fila sin estado de pago. Nunca es ingreso ni adeudo.
+function esInscripcionCortesia(fila) {
+  return estatusCobroNormalizado(fila) === 'cortesia' || (fila?.ajuste_pago_rescate === 'club_absorbe' && !esCobroConfirmado(fila));
+}
+function etiquetaEstadoPagoInscripcion(fila) {
+  if (esCobroConfirmado(fila)) return 'Pagado';
+  if (esInscripcionCortesia(fila)) return 'Cortesía';
+  return 'Pendiente';
+}
+function claseEstadoPagoInscripcion(fila) {
+  if (esCobroConfirmado(fila)) return 'bg-emerald-400/10 text-emerald-500 ring-1 ring-emerald-400/30';
+  if (esInscripcionCortesia(fila)) return 'bg-sky-400/10 text-sky-500 ring-1 ring-sky-400/30';
+  return 'bg-amber-400/10 text-amber-500 ring-1 ring-amber-400/30';
+}
+
+// Estado de rescate de una Reta en este instante.
+//   enGracia               → ventana [inicio, inicio + gracia) con lugares libres.
+//   puedeCancelarIncompleta → pasó la gracia, sigue incompleta y es el mismo día.
+function estadoRescateReta(reta, ocupados, ahoraMs, graciaMinutos) {
+  const base = { enGracia: false, minutosRestantes: 0, puedeCancelarIncompleta: false, cancelada: false, finGraciaMs: null };
+  if (!reta || reta._local) return base;
+  const cancelada = retaCanceladaPorRescate(reta);
+  const inicioMs = timestampEvento(reta.fecha, reta.hora_inicio);
+  if (inicioMs === null) return { ...base, cancelada };
+  const gracia = normalizarGraciaRetas(graciaMinutos);
+  const finGraciaMs = inicioMs + gracia * 60000;
+  const finDiaMs = timestampEvento(reta.fecha, '23:59');
+  const incompleta = Number(ocupados) < CUPOS_RETA;
+  const vigente = !cancelada && reta.archivado !== true && incompleta;
+  const enGracia = vigente && ahoraMs >= inicioMs && ahoraMs < finGraciaMs && !eventoYaTermino(reta.fecha, reta.hora_fin, ahoraMs);
+  return {
+    enGracia,
+    minutosRestantes: enGracia ? Math.max(1, Math.ceil((finGraciaMs - ahoraMs) / 60000)) : 0,
+    puedeCancelarIncompleta: vigente && ahoraMs >= finGraciaMs && (finDiaMs === null || ahoraMs < finDiaMs + 60000),
+    cancelada,
+    finGraciaMs,
+  };
+}
+
+// Mensaje amable para los errores de `fn_reta_cancelar_incompleta`.
+function mensajeErrorRescateReta(error) {
+  const msg = String(error?.message || '');
+  if (esErrorRpcInexistente(error)) return 'Falta correr la migración v127 (Plan de Rescate de Retas) en Supabase.';
+  if (msg.includes('en_gracia')) return 'La gracia de entrada sigue corriendo: todavía se puede completar el cuarteto.';
+  if (msg.includes('reta_completa')) return 'La Reta ya tiene sus 4 jugadores; no se puede cancelar por cuarteto incompleto.';
+  if (msg.includes('pago_en_proceso')) return `${error?.details || 'Un jugador está pagando en línea.'} Espera unos minutos y vuelve a intentarlo.`;
+  if (msg.includes('sin_permiso') || error?.code === '42501') return 'Solo la administración del club puede cancelar una Reta.';
+  if (msg.includes('reta_no_encontrada')) return 'No encontramos la Reta en Supabase (¿se eliminó?).';
+  if (msg.includes('reta_sin_horario')) return 'La Reta no tiene fecha u hora de inicio válidas.';
+  return msg || 'Error desconocido.';
+}
+
+// Qué le pasará a cada inscripción activa al cancelar (vista previa; el
+// servidor aplica exactamente este criterio).
+function previaCancelacionReta(reta, inscritosActivos) {
+  const precio = precioDeReta(reta);
+  const filas = (inscritosActivos || []).map((i) => {
+    const pagado = esCobroConfirmado(i);
+    const monto = montoInscripcionCobrada(i, precio);
+    const identificable = Boolean(i.jugador_id) || Boolean(claveTelefono(i.telefono || ''));
+    let accion;
+    if (pagado && monto > 0) accion = identificable ? 'wallet' : 'manual';
+    else accion = esInscripcionCortesia(i) ? 'cortesia' : 'sin_cargo';
+    return { id: i.id, nombre: i.nombre || 'Jugador', monto, accion };
+  });
+  const totalWallet = filas.filter((f) => f.accion === 'wallet').reduce((acc, f) => acc + f.monto, 0);
+  const totalManual = filas.filter((f) => f.accion === 'manual').reduce((acc, f) => acc + f.monto, 0);
+  return { filas, totalWallet, totalManual };
+}
+
+// Panel de rescate dentro de `TarjetaReta` y del Detalle de Reta de la
+// Parrilla. Solo Recepción / Gerencia / Dueño; nada para Coach, Bar o Contador.
+function PanelRescateReta({ reta, inscritos, ahoraMs, onInscribirUltimoMomento, onInvitadoEmergencia, soloLectura = false }) {
+  const ctx = useRescateRetas();
+  const [confirmando, setConfirmando] = useState(false);
+  const activos = useMemo(() => (inscritos || []).filter(inscripcionOcupaLugar), [inscritos]);
+  if (!ctx.puedeOperar || soloLectura || !reta || reta._local) return null;
+  const est = estadoRescateReta(reta, activos.length, ahoraMs ?? Date.now(), ctx.graciaMinutos);
+
+  if (est.enGracia) {
+    return (
+      <div data-rescate="gracia" className="mt-2 rounded-xl border border-orange-400/40 bg-orange-400/10 p-2.5">
+        <p className="flex items-center gap-1.5 text-[11px] font-black text-orange-500">
+          <Timer size={13} /> Gracia de entrada · quedan {est.minutosRestantes} min
+        </p>
+        <p className="mt-0.5 text-[10px] leading-snug text-slate-500">Solo Recepción / Administración. El Portal sigue cerrado para esta Reta.</p>
+        <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => onInscribirUltimoMomento?.(reta)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-orange-500 px-2.5 py-1.5 text-[11px] font-black text-white transition hover:bg-orange-400"
+          >
+            <UserPlus size={12} /> Inscribir de último momento
+          </button>
+          <button
+            type="button"
+            onClick={() => onInvitadoEmergencia?.(reta)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 transition hover:border-orange-400/50 hover:text-orange-500"
+          >
+            <UserCheck size={12} /> Coach / Invitado de emergencia
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (est.puedeCancelarIncompleta) {
+    return (
+      <>
+        <button
+          type="button"
+          data-rescate="cancelar"
+          onClick={() => setConfirmando(true)}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs font-black text-rose-500 transition hover:bg-rose-500/20"
+        >
+          <Ban size={14} /> Cancelar Reta por Incompleta
+        </button>
+        {confirmando && <ModalCancelarRetaIncompleta reta={reta} inscritosActivos={activos} onClose={() => setConfirmando(false)} />}
+      </>
+    );
+  }
+  return null;
+}
+
+// Etiqueta "Cancelada · cuarteto incompleto" (todos los roles; los montos
+// solo para quien opera el rescate).
+function InsigniaRetaCancelada({ reta }) {
+  const ctx = useRescateRetas();
+  if (!retaCanceladaPorRescate(reta)) return null;
+  const resumen = reta.cancelacion_resumen && typeof reta.cancelacion_resumen === 'object' ? reta.cancelacion_resumen : null;
+  const reembolsados = Array.isArray(resumen?.reembolsados) ? resumen.reembolsados.length : 0;
+  const manuales = Array.isArray(resumen?.reembolso_manual) ? resumen.reembolso_manual.length : 0;
+  return (
+    <div data-rescate="cancelada" className="mt-2 rounded-lg border border-rose-400/30 bg-rose-400/5 px-2.5 py-1.5 text-[11px]">
+      <p className="flex items-center gap-1.5 font-black text-rose-500">
+        <Ban size={12} /> Cancelada · cuarteto incompleto
+      </p>
+      {ctx.puedeOperar && resumen && (
+        <p className="mt-0.5 text-slate-500">
+          {reembolsados > 0
+            ? `${formatoMoneda(Number(resumen.total_reembolsado) || 0)} reembolsados al Wallet (${reembolsados} jugador${reembolsados === 1 ? '' : 'es'})`
+            : 'Sin pagos que reembolsar'}
+          {manuales > 0 ? ` · ${manuales} reembolso${manuales === 1 ? '' : 's'} manual${manuales === 1 ? '' : 'es'} en Recepción` : ''}
+          {reta.cancelada_por ? ` · por ${reta.cancelada_por}` : ''}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ModalCancelarRetaIncompleta({ reta, inscritosActivos, onClose }) {
+  const ctx = useRescateRetas();
+  const [motivo, setMotivo] = useState('');
+  const [procesando, setProcesando] = useState(false);
+  const previa = useMemo(() => previaCancelacionReta(reta, inscritosActivos), [reta, inscritosActivos]);
+  const textoAccion = {
+    wallet: 'Reembolso al Wallet',
+    manual: 'Reembolso manual (sin teléfono)',
+    cortesia: 'Cortesía · sin cargo',
+    sin_cargo: 'No había pagado · sin cargo',
+  };
+
+  async function confirmar() {
+    if (procesando) return;
+    setProcesando(true);
+    const r = await ctx.cancelarRetaIncompleta?.(reta, motivo.trim());
+    setProcesando(false);
+    if (r?.ok) onClose();
+  }
+
+  return (
+    <ModalShell titulo="Cancelar Reta por Incompleta" subtitulo={`${reta.nombre || 'Reta'} · ${inscritosActivos.length}/${CUPOS_RETA} jugadores`} onClose={onClose} icon={Ban} ancho="max-w-md">
+      <div className="space-y-4">
+        <p className="text-xs leading-relaxed text-slate-500">
+          Se libera la cancha en la Parrilla, se cancelan las inscripciones (sin adeudos ni penalizaciones) y quien ya pagó
+          recibe su dinero íntegro como saldo a favor en su Wallet. La Reta queda archivada como cancelada.
+        </p>
+        <div className="space-y-1.5" data-rescate="previa">
+          {previa.filas.length === 0 && <p className="rounded-lg bg-slate-50 px-2.5 py-2 text-xs text-slate-500">Nadie se inscribió: solo se libera la cancha.</p>}
+          {previa.filas.map((f) => (
+            <div key={f.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-2 text-xs">
+              <span className="min-w-0 truncate font-semibold text-slate-800">{f.nombre}</span>
+              <span className={`shrink-0 text-[11px] font-bold ${f.accion === 'wallet' ? 'text-emerald-600' : f.accion === 'manual' ? 'text-amber-600' : 'text-slate-500'}`}>
+                {textoAccion[f.accion]}
+                {f.accion === 'wallet' || f.accion === 'manual' ? ` · ${formatoMoneda(f.monto)}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+        {(previa.totalWallet > 0 || previa.totalManual > 0) && (
+          <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/5 px-3 py-2 text-xs">
+            <p className="flex items-center gap-1.5 font-black text-emerald-600">
+              <Wallet size={13} /> Total al Wallet: {formatoMoneda(previa.totalWallet)}
+            </p>
+            {previa.totalManual > 0 && (
+              <p className="mt-0.5 font-semibold text-amber-600">
+                Devolver en Recepción: {formatoMoneda(previa.totalManual)} (inscripción sin teléfono ni expediente)
+              </p>
+            )}
+          </div>
+        )}
+        <Campo label="Motivo (opcional)">
+          <input value={motivo} onChange={(e) => setMotivo(e.target.value)} className={inputClase} placeholder="Falta de cuarteto" maxLength={200} />
+        </Campo>
+        <div className="flex justify-end gap-2 border-t border-slate-200 pt-3">
+          <BotonSecundario onClick={onClose} disabled={procesando}>
+            Volver
+          </BotonSecundario>
+          <button
+            type="button"
+            onClick={confirmar}
+            disabled={procesando}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-rose-500 px-3.5 py-2 text-sm font-bold text-white transition hover:bg-rose-400 disabled:opacity-50"
+          >
+            {procesando ? <Loader2 size={15} className="animate-spin" /> : <Ban size={15} />}
+            Confirmar cancelación
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Coach / Invitado de emergencia — ajuste de pago al vuelo:
+//   club_absorbe     → $0, `estado_pago 'cortesia'` (no es ingreso ni adeudo).
+//   dividido         → precio del lugar, pendiente; Recepción lo cobra en
+//                      Smart POS dividido entre los jugadores de la Reta.
+//   tarifa_especial  → monto capturado, pendiente (0 = cortesía).
+const OPCIONES_AJUSTE_INVITADO_RETA = [
+  { value: 'club_absorbe', label: 'El club absorbe el lugar', detalle: 'Cortesía · no genera ingreso ni adeudo' },
+  { value: 'dividido', label: 'Dividir entre los jugadores', detalle: 'Se cobra en Smart POS con Dividir Cuenta' },
+  { value: 'tarifa_especial', label: 'Tarifa especial', detalle: 'Monto acordado, se cobra en Smart POS' },
+];
+
+function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
+  const ctx = useRescateRetas();
+  const toast = useToast();
+  const precio = precioDeReta(reta);
+  const activos = useMemo(() => (inscritos || []).filter(inscripcionOcupaLugar), [inscritos]);
+  const jugadoresQuePagan = activos.filter((i) => !esInscripcionCortesia(i)).length;
+  const [nombre, setNombre] = useState('');
+  const [telefono, setTelefono] = useState('');
+  const [ajuste, setAjuste] = useState('club_absorbe');
+  const [tarifa, setTarifa] = useState(String(precio || 0));
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+  const coaches = Array.isArray(ctx.coaches) ? ctx.coaches : [];
+
+  const montoTarifa = Math.max(0, Math.round((Number(tarifa) || 0) * 100) / 100);
+  const monto = ajuste === 'club_absorbe' ? 0 : ajuste === 'dividido' ? precio : montoTarifa;
+  const esCortesia = monto <= 0;
+  const cuotaPorJugador = jugadoresQuePagan > 0 ? Math.round((precio / jugadoresQuePagan) * 100) / 100 : 0;
+
+  async function guardar() {
+    if (guardando) return;
+    if (!nombre.trim()) return setError('Indica el nombre del Coach o invitado.');
+    if (ajuste === 'dividido' && jugadoresQuePagan === 0) return setError('No hay jugadores entre quienes dividir: elige otra opción.');
+    const est = estadoRescateReta(reta, activos.length, Date.now(), ctx.graciaMinutos);
+    if (!est.enGracia) return setError('La gracia de entrada ya terminó o la Reta se completó.');
+    setGuardando(true);
+    setError('');
+    const estadoPago = esCortesia ? 'cortesia' : 'pendiente';
+    const payload = withClubId({
+      reta_id: reta.id,
+      nombre: nombre.trim(),
+      telefono: telefono.trim() || null,
+      monto,
+      estado_pago: estadoPago,
+      estatus_pago: estadoPago,
+      estado: 'confirmado',
+      ingreso_rescate: 'invitado_emergencia',
+      ajuste_pago_rescate: esCortesia ? 'club_absorbe' : ajuste,
+    });
+    const opcionales = ['telefono', 'estado_pago', 'estatus_pago', 'estado', 'ingreso_rescate', 'ajuste_pago_rescate'];
+    let { data, error: err } = await insertarConColumnasOpcionales('reta_inscripciones', payload, opcionales);
+    // Proyecto con un CHECK de estado_pago que no conoce 'cortesia' (sin
+    // v127): se guarda sin estado de pago — `ajuste_pago_rescate` o el monto
+    // en 0 lo siguen marcando como cortesía, nunca como adeudo.
+    if (err && esCortesia && (err.code === '23514' || /check constraint/i.test(err.message || ''))) {
+      const { estado_pago: _e1, estatus_pago: _e2, ...sinEstado } = payload;
+      ({ data, error: err } = await insertarConColumnasOpcionales('reta_inscripciones', sinEstado, opcionales));
+    }
+    setGuardando(false);
+    if (err || !data) {
+      setError(
+        /reta_cancelada/.test(err?.message || '')
+          ? 'La Reta ya fue cancelada.'
+          : `No se pudo guardar en Supabase: ${err?.message || 'error desconocido'}`
+      );
+      return;
+    }
+    ctx.registrarAuditoria?.('reta_invitado_emergencia', {
+      reta: reta.nombre,
+      fecha: reta.fecha,
+      hora: reta.hora_inicio,
+      invitado: nombre.trim(),
+      ajuste: esCortesia ? 'club_absorbe' : ajuste,
+      monto,
+    });
+    toast({
+      titulo: 'Invitado de emergencia agregado',
+      detalle: esCortesia
+        ? `${nombre.trim()} · el club absorbe el lugar (cortesía).`
+        : ajuste === 'dividido'
+        ? `${nombre.trim()} · ${formatoMoneda(precio)} pendiente: ${formatoMoneda(cuotaPorJugador)} por jugador en Smart POS.`
+        : `${nombre.trim()} · tarifa especial ${formatoMoneda(monto)} pendiente en Smart POS.`,
+    });
+    onInscrito?.(data);
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Coach / Invitado de emergencia" subtitulo={`${reta.nombre || 'Reta'} · ${activos.length}/${CUPOS_RETA} jugadores`} onClose={onClose} icon={UserCheck} ancho="max-w-md">
+      <div className="space-y-4">
+        <Campo label="Nombre">
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Coach o invitado" autoFocus />
+        </Campo>
+        {coaches.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {coaches.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => {
+                  setNombre(c.nombre || '');
+                  setTelefono(c.telefono || '');
+                }}
+                className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:border-orange-400/60 hover:text-orange-500"
+              >
+                Coach · {c.nombre}
+              </button>
+            ))}
+          </div>
+        )}
+        <Campo label="Teléfono (opcional)">
+          <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="10 dígitos" />
+        </Campo>
+        <div className="space-y-1.5" role="radiogroup" aria-label="Ajuste de pago">
+          {OPCIONES_AJUSTE_INVITADO_RETA.map((op) => (
+            <label
+              key={op.value}
+              className={`flex cursor-pointer items-start gap-2 rounded-xl border px-3 py-2 text-xs transition ${
+                ajuste === op.value ? 'border-orange-400 bg-orange-400/10' : 'border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <input type="radio" name="ajuste-invitado" value={op.value} checked={ajuste === op.value} onChange={() => setAjuste(op.value)} className="mt-0.5" />
+              <span className="min-w-0">
+                <span className="block font-black text-slate-800">{op.label}</span>
+                <span className="block text-[11px] text-slate-500">
+                  {op.value === 'dividido'
+                    ? jugadoresQuePagan > 0
+                      ? `${formatoMoneda(precio)} ÷ ${jugadoresQuePagan} = ${formatoMoneda(cuotaPorJugador)} por jugador · ${op.detalle}`
+                      : 'No hay jugadores entre quienes dividir'
+                    : op.detalle}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {ajuste === 'tarifa_especial' && (
+          <Campo label="Tarifa especial (MXN)">
+            <input type="number" min="0" step="1" value={tarifa} onChange={(e) => setTarifa(e.target.value)} className={inputClase} />
+          </Campo>
+        )}
+        <p className="rounded-lg bg-slate-50 px-2.5 py-2 text-[11px] text-slate-500">
+          {esCortesia ? 'Quedará como Cortesía ($0).' : `Quedará pendiente de cobro: ${formatoMoneda(monto)}.`}
+        </p>
+        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando}>
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <UserCheck size={15} />}
+            Agregar a la Reta
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Configuración del Club → Reservas & Academia: minutos de Gracia de Entrada.
+function TarjetaGraciaRetas() {
+  const ctx = useRescateRetas();
+  const [valor, setValor] = useState(String(ctx.graciaMinutos ?? GRACIA_RETAS_DEFAULT));
+  useEffect(() => {
+    setValor(String(ctx.graciaMinutos ?? GRACIA_RETAS_DEFAULT));
+  }, [ctx.graciaMinutos]);
+  if (!ctx.guardarGracia) return null;
+  const n = normalizarGraciaRetas(valor);
+  const cambio = n !== normalizarGraciaRetas(ctx.graciaMinutos);
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-rescate="config-gracia">
+      <div className="mb-1 flex items-center gap-2">
+        <Timer size={16} className="text-orange-500" />
+        <h3 className="text-sm font-black text-slate-900">Retas: Gracia de Entrada</h3>
+      </div>
+      <p className="mb-3 text-xs text-slate-500">
+        Minutos después de la hora de inicio en los que Recepción todavía puede completar una Reta incompleta (último
+        momento o Coach / Invitado). Al terminar, si sigue incompleta, se puede cancelar con reembolso al Wallet.
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <Campo label="Minutos (0–60)">
+          <input type="number" min="0" max="60" value={valor} onChange={(e) => setValor(e.target.value)} className={`${inputClase} w-28`} />
+        </Campo>
+        <BotonPrimario onClick={() => ctx.guardarGracia(n)} disabled={!ctx.puedeEditarGracia || !cambio || ctx.guardandoGracia}>
+          {ctx.guardandoGracia ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+          Guardar
+        </BotonPrimario>
+      </div>
+    </div>
+  );
+}
+
 // Parrilla Operativa: índice memoizado bloque→Reta y bloque→cupos, para que
 // Calendario/Agenda/Cronograma pinten "Abierta"/"Completada" sin recorrer
 // todas las retas en cada tarjeta. Se recalcula solo cuando Realtime trae
@@ -32511,7 +33029,10 @@ function ModalGestionInscripcionReta({ reta, inscripcion, configClub, cancelando
   const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaRetaMs, toleranciaActiva ? toleranciaHoras : 0);
   const fueraDeTolerancia = toleranciaActiva && !dentroDeTolerancia;
   const pagada = inscripcionEstaPagada(inscripcion);
-  const monto = Number(inscripcion?.monto) || precioDeReta(reta);
+  // App-117 — lugar absorbido por el club (Invitado de emergencia): $0, sin
+  // cobro ni penalización posibles.
+  const esCortesia = esInscripcionCortesia(inscripcion);
+  const monto = esCortesia ? 0 : Number(inscripcion?.monto) || precioDeReta(reta);
   const yaResuelta = inscripcion?.estado === 'cancelado' || inscripcion?.estado === 'retenido';
 
   async function confirmarCancelar() {
@@ -32534,7 +33055,9 @@ function ModalGestionInscripcionReta({ reta, inscripcion, configClub, cancelando
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="text-slate-500">Estado de pago</dt>
-            <dd className={`font-bold ${pagada ? 'text-emerald-500' : 'text-amber-500'}`}>{pagada ? 'Pagado' : 'Pendiente'}</dd>
+            <dd className={`font-bold ${pagada ? 'text-emerald-500' : esCortesia ? 'text-sky-500' : 'text-amber-500'}`}>
+              {etiquetaEstadoPagoInscripcion(inscripcion)}
+            </dd>
           </div>
           {inscripcion?.estado && (
             <div className="flex items-center justify-between gap-2">
@@ -32551,6 +33074,7 @@ function ModalGestionInscripcionReta({ reta, inscripcion, configClub, cancelando
           </p>
         ) : !mostrarCancelacion ? (
           <div className="flex flex-col gap-2">
+            {!esCortesia && (
             <button
               type="button"
               onClick={() => onTogglePago(inscripcion)}
@@ -32560,6 +33084,7 @@ function ModalGestionInscripcionReta({ reta, inscripcion, configClub, cancelando
               {actualizandoPago ? <Loader2 size={15} className="animate-spin" /> : <DollarSign size={15} />}
               {pagada ? 'Marcar como Pendiente' : 'Marcar como Pagado'}
             </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -32612,7 +33137,7 @@ function ModalGestionInscripcionReta({ reta, inscripcion, configClub, cancelando
                   </span>
                 </label>
               </>
-            ) : fueraDeTolerancia ? (
+            ) : fueraDeTolerancia && !esCortesia ? (
               <>
                 <p className="flex items-start gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-rose-200">
                   <ShieldAlert size={13} className="mt-0.5 shrink-0 text-rose-500" />
@@ -32689,8 +33214,11 @@ function TarjetaReta({
   // Generación Masiva (lote): { indice, total, clase } cuando la reta forma
   // parte de una sesión creada en lote (`lote_id`, migracion_v103).
   lote,
+  // App-117 — Plan de Rescate: Coach / Invitado de emergencia (Gracia de Entrada).
+  onInvitadoEmergencia,
 }) {
   const confirmados = inscritos.filter(inscripcionOcupaLugar);
+  const retaCancelada = retaCanceladaPorRescate(reta);
   const lugaresDisponibles = Math.max(0, CUPOS_RETA - confirmados.length);
   const completa = lugaresDisponibles === 0;
   const archivado = reta.archivado === true;
@@ -32880,6 +33408,11 @@ function TarjetaReta({
               <span className="flex min-w-0 items-center gap-1.5 truncate font-semibold text-slate-800">
                 <CheckCircle2 size={12} className="shrink-0 text-emerald-400" />
                 <span className="truncate">{jugador.nombre}</span>
+                {jugador.ingreso_rescate === 'invitado_emergencia' && (
+                  <span className="shrink-0 rounded-full bg-sky-400/10 px-1.5 py-0.5 text-[9px] font-bold text-sky-500 ring-1 ring-sky-400/30">
+                    {esInscripcionCortesia(jugador) ? 'Invitado · Cortesía' : 'Invitado'}
+                  </span>
+                )}
               </span>
               {estadoPagoInscripcion(jugador) === 'pendiente' && <AlertTriangle size={11} className="shrink-0 text-amber-400" />}
             </button>
@@ -32898,7 +33431,9 @@ function TarjetaReta({
         </div>
       )}
 
-      {completa ? (
+      {retaCancelada ? (
+        <InsigniaRetaCancelada reta={reta} />
+      ) : completa ? (
         <BotonPrimario onClick={() => onCargarMarcador?.(reta)} className="mt-3 w-full">
           <ClipboardList size={15} /> {tieneMarcador ? 'Editar Marcador' : 'Cargar Marcador'}
         </BotonPrimario>
@@ -32915,6 +33450,17 @@ function TarjetaReta({
           <UserPlus size={15} /> Unirse / Inscribir Jugador
         </BotonPrimario>
       )}
+
+      {/* App-117 — Plan de Rescate (solo Recepción / Administración): Gracia de
+          Entrada o "Cancelar Reta por Incompleta". El botón "En curso /
+          Bloqueada" de arriba se queda tal cual. */}
+      <PanelRescateReta
+        reta={reta}
+        inscritos={inscritos}
+        ahoraMs={ahoraMs}
+        onInscribirUltimoMomento={onInscribir}
+        onInvitadoEmergencia={onInvitadoEmergencia}
+      />
 
       {confirmarEliminarVisual ? (
         <ConfirmarEliminacionVisual
@@ -32950,6 +33496,9 @@ function TarjetaReta({
         </div>
       ) : (
         <div className="mt-2 flex flex-wrap items-center gap-2">
+          {/* App-117 — una Reta cancelada por cuarteto incompleto ya liberó su
+              cancha y reembolsó: no se "restaura" (quedaría activa sin bloqueo). */}
+          {!retaCancelada && (
           <button
             type="button"
             onClick={() => onArchivar?.(reta, !archivado)}
@@ -32965,6 +33514,7 @@ function TarjetaReta({
             )}
             {archivado ? 'Restaurar' : 'Archivar'}
           </button>
+          )}
           {/* "Eliminar Reta": borra la Reta y libera la cancha en la Parrilla.
               A diferencia de "Eliminar Definitivamente" (abajo), NO exige que
               esté archivada ni que tenga cero inscritos — las inscripciones y
@@ -33736,6 +34286,11 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
 
 function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClose, onInscrito }) {
   const toast = useToast();
+  // App-117 — Plan de Rescate: si la Reta ya empezó, esta inscripción solo
+  // pudo abrirse desde la Gracia de Entrada (Recepción) — se marca
+  // `ingreso_rescate: 'gracia'` (columna opcional, v127) y queda en auditoría.
+  // Antes de la hora de inicio el payload es exactamente el de siempre.
+  const rescateRetas = useRescateRetas();
   const [nombre, setNombre] = useState('');
   const [telefono, setTelefono] = useState('');
   const [correo, setCorreo] = useState('');
@@ -33765,6 +34320,9 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
     // repetido puede fusionarse por accidente con otro cliente.
     const claveTelInscripcion = claveTelefono(telefono);
     if (!claveTelInscripcion) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio & CRM.');
+    const esIngresoGracia =
+      eventoYaInicio(reta?.fecha, reta?.hora_inicio) &&
+      estadoRescateReta(reta, CUPOS_RETA - lugaresDisponibles, Date.now(), rescateRetas.graciaMinutos).enGracia;
     setGuardando(true);
     setError('');
 
@@ -33796,6 +34354,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       // columnas opcionales igual que `metodo_pago` en su momento.
       monto_efectivo: estadoPago === 'pagado' && metodoPago === 'mixto' ? Number(montoEfectivoMixto) || 0 : null,
       monto_tarjeta: estadoPago === 'pagado' && metodoPago === 'mixto' ? Number(montoTarjetaMixto) || 0 : null,
+      ...(esIngresoGracia ? { ingreso_rescate: 'gracia' } : {}),
     });
 
     let inscripcionCreada = null;
@@ -33813,6 +34372,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       'metodo_pago',
       'monto_efectivo',
       'monto_tarjeta',
+      ...(esIngresoGracia ? ['ingreso_rescate'] : []),
     ]);
 
     if (!errInscripcion && data) {
@@ -33849,6 +34409,15 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
     // en modo local ya se avisó arriba con un toast de error explícito.
     if (!modoLocal) {
       toast({ titulo: 'Jugador inscrito', detalle: `${nombre.trim()} · ${formatoMoneda(precioDeReta(reta))}` });
+      if (esIngresoGracia) {
+        rescateRetas.registrarAuditoria?.('reta_inscripcion_gracia', {
+          reta: reta.nombre,
+          fecha: reta.fecha,
+          hora: reta.hora_inicio,
+          jugador: nombre.trim(),
+          estado_pago: estadoPago,
+        });
+      }
     }
     onInscrito(inscripcionCreada);
     onClose();
@@ -36277,7 +36846,9 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo, pue
 
   const resumen = useMemo(() => {
     const cobradoRetas = inscripcionesFiltradas.filter((i) => inscripcionEstaPagada(i)).reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
-    const pendientesRetas = inscripcionesFiltradas.filter((i) => !inscripcionEstaPagada(i) && estadoPagoInscripcion(i) != null);
+    const pendientesRetas = inscripcionesFiltradas.filter(
+      (i) => !inscripcionEstaPagada(i) && estadoPagoInscripcion(i) != null && !esInscripcionCortesia(i)
+    );
     const cobradoTorneos = participantesFiltrados.filter((p) => inscripcionEstaPagada(p)).reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
     const pendientesTorneos = participantesFiltrados.filter((p) => !inscripcionEstaPagada(p) && estadoPagoInscripcion(p) != null);
     const pendienteRetas = pendientesRetas.reduce((acc, i) => acc + (Number(i.monto) || 0), 0);
@@ -36454,7 +37025,7 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo, pue
                             : 'bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/30'
                         }`}
                       >
-                        {f.estadoPago === 'pagado' ? 'Pagado' : 'Pendiente'}
+                        {f.estadoPago === 'pagado' ? 'Pagado' : f.estadoPago === 'cortesia' ? 'Cortesía' : 'Pendiente'}
                       </span>
                     </td>
                   </tr>
@@ -36544,6 +37115,8 @@ function ModuloTorneosRetas({
   /* ---- Retas ---- */
   const [modalNuevaReta, setModalNuevaReta] = useState(false);
   const [retaParaInscribir, setRetaParaInscribir] = useState(null);
+  // App-117 — Plan de Rescate: Coach / Invitado de emergencia.
+  const [retaParaInvitado, setRetaParaInvitado] = useState(null);
   const [cancelandoInscripcionId, setCancelandoInscripcionId] = useState(null);
   // Modal de Gestión de Inscripción (requerimiento 2C — Panel del Club,
   // Retas): `{ reta, inscripcion }` del jugador cuyo NOMBRE se dio clic en
@@ -36633,8 +37206,11 @@ function ModuloTorneosRetas({
     //   - Fuera de tolerancia + no pagada → se genera el adeudo/penalización
     //     pendiente (nunca se cobró, así que sí hay algo que cobrar luego).
     const pagada = inscripcionEstaPagada(inscripcion);
-    const monto = Number(inscripcion.monto) || precioDeReta(reta);
-    const nuevoEstado = dentroDeTolerancia ? 'cancelado' : 'retenido';
+    // App-117 — una cortesía (Invitado de emergencia que absorbe el club)
+    // nunca genera adeudo ni reembolso: se libera el lugar y listo.
+    const esCortesia = esInscripcionCortesia(inscripcion);
+    const monto = esCortesia ? 0 : Number(inscripcion.monto) || precioDeReta(reta);
+    const nuevoEstado = dentroDeTolerancia || esCortesia ? 'cancelado' : 'retenido';
     // Modal Unificado de Gestión de Inscripción (mismo patrón que
     // `DetalleReserva.cancelar`/`cancelarClaseCompleta`): el staff puede
     // destildar "Abonar a Wallet"/"Generar penalización" desde los
@@ -38100,6 +38676,7 @@ function ModuloTorneosRetas({
                   onCargarMarcador={setRetaMarcador}
                   ahoraMs={ahoraMsRetas}
                   lote={lotesRetas[reta.id]}
+                  onInvitadoEmergencia={setRetaParaInvitado}
                 />
               ))}
             </div>
@@ -38222,6 +38799,15 @@ function ModuloTorneosRetas({
             setInscripciones((prev) => [...prev, inscripcion]);
             if (inscripcion._local) guardarRegistroLocal(LS_KEY_RETA_INSCRIPCIONES_LOCAL, inscripcion);
           }}
+        />
+      )}
+
+      {retaParaInvitado && (
+        <ModalInvitadoEmergenciaReta
+          reta={retaParaInvitado}
+          inscritos={inscripcionesPorReta[retaParaInvitado.id] || []}
+          onClose={() => setRetaParaInvitado(null)}
+          onInscrito={(inscripcion) => setInscripciones((prev) => [...prev, inscripcion])}
         />
       )}
 
@@ -54537,6 +55123,9 @@ function SeccionReservasAcademia({
         )}
       </div>
 
+      {/* App-117 — Plan de Rescate de Retas: minutos de Gracia de Entrada. */}
+      {!modoOnboarding && <TarjetaGraciaRetas />}
+
       {modalRangosHorario && (
         <ModalRangosHorarioClases
           rangos={rangosHorarioClases}
@@ -65310,6 +65899,9 @@ function AppInterno({ clubInicial } = {}) {
   // App-115 — Criterio VIP automático del club (configuracion_club, v126).
   const [criterioVip, setCriterioVip] = useState(() => leerCriterioVipLocal());
   const [guardandoCriterioVip, setGuardandoCriterioVip] = useState(false);
+  // App-117 — Plan de Rescate de Retas: minutos de Gracia de Entrada (v127).
+  const [graciaRetasMinutos, setGraciaRetasMinutos] = useState(() => leerGraciaRetasLocal());
+  const [guardandoGraciaRetas, setGuardandoGraciaRetas] = useState(false);
 
   // Configuración del Club → "Portal & Tienda Web" → Add-ons (módulo nuevo):
   // misma fila de `configuracion_club`, mismo criterio de flujo
@@ -66111,6 +66703,12 @@ function AppInterno({ clubInicial } = {}) {
             guardarCriterioVipLocal(vip);
           }
         }
+        // App-117 — Gracia de Entrada de Retas (v127): mismo `select('*')`.
+        if (data.retas_gracia_minutos != null) {
+          const gracia = normalizarGraciaRetas(data.retas_gracia_minutos);
+          setGraciaRetasMinutos(gracia);
+          guardarGraciaRetasLocal(gracia);
+        }
         // Configuración del Club → Add-ons (módulo nuevo) — mismo
         // `select('*')` de arriba, sin consulta nueva: en un proyecto que
         // todavía no corrió la migración de estas 2 columnas, ambas vienen
@@ -66720,6 +67318,99 @@ function AppInterno({ clubInicial } = {}) {
       return ok;
     },
     [mostrarToast]
+  );
+
+  // App-117 — Plan de Rescate de Retas: guarda los minutos de Gracia de
+  // Entrada (`configuracion_club.retas_gracia_minutos`, v127). Mismo patrón
+  // que `guardarCriterioVip`.
+  const guardarGraciaRetas = useCallback(
+    async (minutos) => {
+      const gracia = normalizarGraciaRetas(minutos);
+      setGuardandoGraciaRetas(true);
+      setGraciaRetasMinutos(gracia);
+      guardarGraciaRetasLocal(gracia);
+      let ok = false;
+      try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
+        const { error } = await supabase.from('configuracion_club').update({ retas_gracia_minutos: gracia }).eq('id', CLUB_ACTIVO_ID);
+        if (error) throw error;
+        ok = true;
+      } catch (err) {
+        console.warn('[Retas] No se pudo guardar la Gracia de Entrada en Supabase — quedó en este navegador.', err);
+        mostrarToast({
+          titulo: 'Gracia de entrada guardada solo en este navegador',
+          detalle: esErrorColumnaInexistente(err)
+            ? 'Falta correr la migración v127 (Plan de Rescate de Retas) en Supabase.'
+            : 'No se pudo guardar en Supabase. Vuelve a intentarlo.',
+          tono: 'error',
+        });
+      }
+      setGuardandoGraciaRetas(false);
+      if (ok) {
+        mostrarToast({
+          titulo: 'Gracia de entrada actualizada',
+          detalle: gracia > 0 ? `Recepción tendrá ${gracia} min para completar una Reta en curso.` : 'Sin gracia: las Retas se bloquean al iniciar.',
+        });
+      }
+      return ok;
+    },
+    [mostrarToast]
+  );
+
+  // App-117 — "Cancelar Reta por Incompleta / Falta de Cuarteto": todo en UNA
+  // transacción del servidor (`fn_reta_cancelar_incompleta`, v127) — libera
+  // los bloqueos de la Parrilla, reembolsa al Wallet a quien ya pagó (con su
+  // movimiento en `wallet_movimientos`) y archiva la Reta. Aquí solo se
+  // muestra el resultado, se audita y se recargan Retas + Parrilla.
+  const cancelarRetaIncompleta = useCallback(
+    async (reta, motivo) => {
+      if (!reta?.id || reta._local) return { ok: false };
+      const { data, error } = await supabase.rpc('fn_reta_cancelar_incompleta', {
+        p_reta_id: String(reta.id),
+        p_motivo: (motivo || '').trim() || null,
+        p_operador: operador?.nombre || null,
+      });
+      if (error) {
+        console.error('[Retas] fn_reta_cancelar_incompleta', error);
+        mostrarToast({ titulo: 'No se pudo cancelar la Reta', detalle: mensajeErrorRescateReta(error), tono: 'error' });
+        return { ok: false, error };
+      }
+      const resumen = data && typeof data === 'object' ? data : {};
+      const reembolsados = Array.isArray(resumen.reembolsados) ? resumen.reembolsados.length : 0;
+      const manuales = Array.isArray(resumen.reembolso_manual) ? resumen.reembolso_manual : [];
+      const total = Number(resumen.total_reembolsado) || 0;
+      if (!resumen.ya_cancelada) {
+        registrarEventoAuditoria('reta_cancelada_incompleta', {
+          reta: reta.nombre,
+          reta_id: String(reta.id),
+          fecha: reta.fecha,
+          hora: reta.hora_inicio,
+          ocupados: resumen.ocupados ?? null,
+          reembolsados,
+          total_reembolsado: total,
+          reembolso_manual: manuales.length,
+          bloqueos_liberados: resumen.bloqueos_liberados ?? 0,
+          motivo: (motivo || '').trim() || 'Falta de cuarteto',
+        });
+      }
+      mostrarToast({
+        titulo: resumen.ya_cancelada ? 'La Reta ya estaba cancelada' : 'Reta cancelada · cuarteto incompleto',
+        detalle: [
+          reembolsados > 0 ? `${formatoMoneda(total)} reembolsados al Wallet de ${reembolsados} jugador${reembolsados === 1 ? '' : 'es'}.` : 'No había pagos que reembolsar.',
+          manuales.length > 0
+            ? `Devuelve en Recepción: ${manuales.map((m) => `${m.nombre || 'Jugador'} ${formatoMoneda(Number(m.monto) || 0)}`).join(', ')}.`
+            : '',
+          resumen.bloqueos_error ? 'No se pudo liberar la cancha: cancélala desde el Cronograma.' : 'La cancha quedó libre en la Parrilla.',
+        ]
+          .filter(Boolean)
+          .join(' '),
+        tono: manuales.length > 0 || resumen.bloqueos_error ? 'aviso' : 'ok',
+      });
+      await Promise.all([cargarRetas({ silencioso: true }), cargarInscripciones({ silencioso: true })]);
+      cargarDatos({ silencioso: true });
+      return { ok: true, resumen };
+    },
+    [operador, mostrarToast, registrarEventoAuditoria, cargarRetas, cargarInscripciones, cargarDatos]
   );
 
   // Guarda Nombre/Logo del Club: SIEMPRE actualiza el estado en vivo y el
@@ -68954,6 +69645,23 @@ function AppInterno({ clubInicial } = {}) {
     cambiarPlan: cambiarPlanSuscripcion,
   };
 
+  // App-117 — Plan de Rescate de Retas: lo consumen `TarjetaReta`, el Detalle
+  // de Reta de la Parrilla, `ModalInscribirJugador` y Configuración.
+  const coachesRescateRetas = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
+  const rescateRetasCtx = useMemo(
+    () => ({
+      graciaMinutos: graciaRetasMinutos,
+      guardarGracia: guardarGraciaRetas,
+      guardandoGracia: guardandoGraciaRetas,
+      puedeEditarGracia: operador?.rol === 'owner' || operador?.rol === 'manager',
+      puedeOperar: ROLES_RESCATE_RETAS.includes(operador?.rol),
+      cancelarRetaIncompleta,
+      registrarAuditoria: registrarEventoAuditoria,
+      coaches: coachesRescateRetas,
+    }),
+    [graciaRetasMinutos, guardarGraciaRetas, guardandoGraciaRetas, operador?.rol, cancelarRetaIncompleta, registrarEventoAuditoria, coachesRescateRetas]
+  );
+
   let contenido;
   let faseEntrada = 'panel';
 
@@ -69566,6 +70274,7 @@ function AppInterno({ clubInicial } = {}) {
 
   return (
     <BillingClubContext.Provider value={billingClubCtx}>
+      <RescateRetasContext.Provider value={rescateRetasCtx}>
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={faseEntrada}
@@ -69578,6 +70287,7 @@ function AppInterno({ clubInicial } = {}) {
           {contenido}
         </motion.div>
       </AnimatePresence>
+      </RescateRetasContext.Provider>
       {confirmacionPagoBilling && (
         <OverlayConfirmacionPagoBilling
           fase={confirmacionPagoBilling}
