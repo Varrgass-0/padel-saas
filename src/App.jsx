@@ -502,7 +502,8 @@
 //      Torneos/Retas (`monto` de las inscripciones pagadas — cuenta
 //      'confirmado' y 'retenido', que ya cobró el club aunque el jugador no
 //      se haya presentado). Segmento VIP/Frecuente/Estándar por umbrales del
-//      Gasto Total Histórico (`UMBRAL_LTV_VIP`, `UMBRAL_LTV_FRECUENTE`,
+//      Gasto Total Histórico (App-115: VIP = criterio híbrido reciente +
+//      manual, ver `cumpleCriterioVipAutomatico`; `UMBRAL_LTV_FRECUENTE`,
 //      editables en el código; el nombre interno se conserva, solo cambió el
 //      rótulo visible).
 //      Nivel de Fidelidad (Score, `calcularCHS`) sale de 6 indicadores
@@ -2145,6 +2146,9 @@ const PERMISOS_POR_ROL = {
     // Vista 360° — SOLO Administración (Owner/Manager) y Recepción/Caja
     // (quien cobra en mostrador).
     puedeVerAdeudosJugador: true,
+    // App-115: marcar/quitar "VIP manual" a un jugador (Vista 360°) —
+    // solo Owner/Manager.
+    puedeGestionarVip: true,
   },
   manager: {
     modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'],
@@ -2172,6 +2176,7 @@ const PERMISOS_POR_ROL = {
     puedeGestionarCortesias: true,
     puedeGestionarWalletOperadores: true,
     puedeVerAdeudosJugador: true,
+    puedeGestionarVip: true,
   },
   recepcion: {
     // "Recepción/Caja": Parrilla Operativa, Smart POS, Jugadores
@@ -2208,6 +2213,7 @@ const PERMISOS_POR_ROL = {
     puedeGestionarCortesias: true,
     puedeGestionarWalletOperadores: false,
     puedeVerAdeudosJugador: true,
+    puedeGestionarVip: false,
   },
   bar: {
     // "Restaurante/Bar": Smart POS (filtrado por defecto a la pestaña
@@ -2233,6 +2239,7 @@ const PERMISOS_POR_ROL = {
     puedeGestionarCortesias: false,
     puedeGestionarWalletOperadores: false,
     puedeVerAdeudosJugador: false,
+    puedeGestionarVip: false,
   },
   coach: {
     // Academia & Clínicas (crear/programar clases) + Torneos & Retas
@@ -2266,6 +2273,7 @@ const PERMISOS_POR_ROL = {
     // App-110: el Coach solo ve lo deportivo (asistencia, partidos,
     // clases) — nunca adeudos/penalizaciones en la Vista 360°.
     puedeVerAdeudosJugador: false,
+    puedeGestionarVip: false,
   },
   contador: {
     // Rol de solo lectura/exportación: ÚNICAMENTE Contabilidad & Compras,
@@ -2301,6 +2309,7 @@ const PERMISOS_POR_ROL = {
     puedeGestionarCortesias: false,
     puedeGestionarWalletOperadores: false,
     puedeVerAdeudosJugador: false,
+    puedeGestionarVip: false,
   },
 };
 
@@ -30571,10 +30580,85 @@ function resolverJugadorIdVentaCancha(venta, { reservasPorId, reservasPorCanchaF
   return candidatas[0].jugador_id || null;
 }
 
-// Segmentación por LTV real acumulado — umbrales de negocio, ajustables aquí
-// si el club redefine sus rangos de valor.
-const UMBRAL_LTV_VIP = 15000;
+// Segmentación de jugadores. App-115: "VIP" ya NO es un gasto histórico
+// absoluto ($15,000): es HÍBRIDO —
+//   1) Automático y configurable por el club (Configuración del Club →
+//      Jugadores & Fidelización → Criterio VIP): gasto y/o visitas dentro de
+//      una ventana RECIENTE (30/60/90 días). Quien gastó hace meses pero ya
+//      no viene deja de ser VIP solo.
+//   2) Manual (excepción humana, `jugadores.vip_manual`, migración v126):
+//      Owner/Manager lo marcan VIP (true) o se lo quitan (false) sin importar
+//      el criterio; NULL = manda el criterio automático.
+// "Frecuente" sigue siendo por gasto histórico (sin cambios).
 const UMBRAL_LTV_FRECUENTE = 5000;
+const VENTANAS_VIP_DIAS = [30, 60, 90];
+const COMBINACIONES_VIP = [
+  { value: 'AMBOS', label: 'Ambos (gasto Y visitas)' },
+  { value: 'CUALQUIERA', label: 'Cualquiera (gasto O visitas)' },
+];
+const CRITERIO_VIP_DEFAULT = { automatico: true, ventanaDias: 60, gastoMinimo: 3000, visitasMinimas: 4, combinacion: 'AMBOS' };
+function normalizarCriterioVip(c) {
+  const base = CRITERIO_VIP_DEFAULT;
+  const ventana = Number(c?.ventanaDias);
+  const gasto = Number(c?.gastoMinimo);
+  const visitas = Number(c?.visitasMinimas);
+  return {
+    automatico: c?.automatico === undefined || c?.automatico === null ? base.automatico : c.automatico !== false,
+    ventanaDias: VENTANAS_VIP_DIAS.includes(ventana) ? ventana : base.ventanaDias,
+    gastoMinimo: Number.isFinite(gasto) && gasto >= 0 ? Math.round(gasto * 100) / 100 : base.gastoMinimo,
+    visitasMinimas: Number.isFinite(visitas) && visitas >= 0 ? Math.floor(visitas) : base.visitasMinimas,
+    combinacion: c?.combinacion === 'CUALQUIERA' ? 'CUALQUIERA' : 'AMBOS',
+  };
+}
+// Fila de `configuracion_club` → criterio VIP; `null` si el proyecto aún no
+// tiene las columnas (v126 sin correr) — se conserva el respaldo local.
+function criterioVipDesdeFila(fila) {
+  if (!fila || typeof fila !== 'object' || fila.vip_auto_activo === undefined) return null;
+  return normalizarCriterioVip({
+    automatico: fila.vip_auto_activo,
+    ventanaDias: fila.vip_ventana_dias,
+    gastoMinimo: fila.vip_gasto_minimo,
+    visitasMinimas: fila.vip_visitas_minimas,
+    combinacion: fila.vip_combinacion,
+  });
+}
+// ¿Cumple el criterio automático? Un umbral en 0 "no se exige"; con los dos
+// en 0 nadie es VIP automático (solo los manuales).
+function cumpleCriterioVipAutomatico(criterio, { gasto = 0, visitas = 0 } = {}) {
+  const c = normalizarCriterioVip(criterio);
+  if (!c.automatico) return false;
+  const pruebas = [];
+  if (c.gastoMinimo > 0) pruebas.push((Number(gasto) || 0) >= c.gastoMinimo);
+  if (c.visitasMinimas > 0) pruebas.push((Number(visitas) || 0) >= c.visitasMinimas);
+  if (pruebas.length === 0) return false;
+  return c.combinacion === 'CUALQUIERA' ? pruebas.some(Boolean) : pruebas.every(Boolean);
+}
+// Texto corto del criterio ("≥ $3,000 y 4+ visitas en 60 días").
+function textoCriterioVip(criterio, { conMontos = true } = {}) {
+  const c = normalizarCriterioVip(criterio);
+  if (!c.automatico) return 'Solo VIP manuales';
+  const partes = [];
+  if (c.gastoMinimo > 0) partes.push(conMontos ? `≥ ${formatoMoneda(c.gastoMinimo)}` : 'gasto mínimo');
+  if (c.visitasMinimas > 0) partes.push(`${c.visitasMinimas}+ visitas`);
+  if (partes.length === 0) return 'Solo VIP manuales';
+  return `${partes.join(c.combinacion === 'CUALQUIERA' ? ' o ' : ' y ')} en ${c.ventanaDias} días`;
+}
+const LS_KEY_CRITERIO_VIP = 'smashpadel_criterio_vip_v1';
+function leerCriterioVipLocal() {
+  try {
+    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_CRITERIO_VIP));
+    return normalizarCriterioVip(crudo ? JSON.parse(crudo) : null);
+  } catch (_e) {
+    return { ...CRITERIO_VIP_DEFAULT };
+  }
+}
+function guardarCriterioVipLocal(criterio) {
+  try {
+    localStorage.setItem(claveLocalPorClub(LS_KEY_CRITERIO_VIP), JSON.stringify(normalizarCriterioVip(criterio)));
+  } catch (_e) {
+    /* sin localStorage: queda aplicado solo en esta sesión */
+  }
+}
 
 // Metas del Motor de Cortesías (tarjeta "Consumo Secundario" de la Vista
 // 360°, migracion_v35) — AHORA CONFIGURABLES POR EL CLUB en $ (Pro-Shop y
@@ -30769,8 +30853,10 @@ function sanitizarAutorizadosCortesia(productos, variantesPorProducto, autorizad
   return limpio;
 }
 
-function segmentoPorLTV(ltvTotal) {
-  if (ltvTotal >= UMBRAL_LTV_VIP) return 'VIP';
+// App-115: `esVip` ya viene resuelto (manual > automático); el resto del
+// segmento sigue por gasto histórico.
+function segmentoJugador(ltvTotal, esVip) {
+  if (esVip) return 'VIP';
   if (ltvTotal >= UMBRAL_LTV_FRECUENTE) return 'Frecuente';
   return 'Estándar';
 }
@@ -30892,8 +30978,8 @@ function calcularCHS(perfil) {
   }
 
   // 4) Consumo (10 pts, App-110 — antes "Consumo Secundario"): gasto en
-  // Bar/Cafetería/Pro-Shop de los últimos 90 días. $300+ = 10 | $100+ = 6 |
-  // >$0 = 2.
+  // Bar/Cafetería/Pro-Shop de los ÚLTIMOS 30 DÍAS (App-115, antes 90 —
+  // misma ventana que el resto del Score). $300+ = 10 | $100+ = 6 | >$0 = 2.
   {
     const gasto = perfil.gastoBarReciente + perfil.gastoProShopReciente;
     let puntos = 0;
@@ -30914,7 +31000,7 @@ function calcularCHS(perfil) {
       puntos,
       max: 10,
       nivel,
-      detalle: `${formatoMoneda(gasto)} en Bar/Cafetería/Pro-Shop (últimos 90 días)`,
+      detalle: `${formatoMoneda(gasto)} en Bar/Cafetería/Pro-Shop (últimos 30 días)`,
     });
   }
 
@@ -30929,7 +31015,8 @@ function calcularCHS(perfil) {
   // `perfil` siguen viviendo en `DirectorioJugadoresCRM` sin cambios — solo
   // dejaron de sumarse AQUÍ.
   {
-    const eventos = perfil.eventosTorneoRetaUltimos6Meses;
+    // App-115: últimos 30 días (antes 6 meses) — actividad reciente.
+    const eventos = Number(perfil.eventosTorneoRetaUltimos30Dias ?? perfil.eventosTorneoRetaUltimos6Meses) || 0;
     let puntos = 0;
     let nivel = 'bajo';
     if (eventos >= 2) {
@@ -30945,7 +31032,7 @@ function calcularCHS(perfil) {
       puntos,
       max: 15,
       nivel,
-      detalle: `${eventos} inscripción${eventos === 1 ? '' : 'es'} a Torneo/Reta en los últimos 6 meses`,
+      detalle: `${eventos} inscripción${eventos === 1 ? '' : 'es'} a Torneo/Reta en los últimos 30 días`,
     });
   }
 
@@ -31746,6 +31833,14 @@ const TIPOS_EVENTO_AUDITORIA = {
       `Consumo de ${d?.origen || 'un jugador'} transferido a ${d?.destino || 'otro jugador'} · ${formatoMoneda(d?.monto)}${
         d?.cancha ? ` — ${d.cancha}` : ''
       }.`,
+  },
+  // App-115 — Estatus VIP manual de un jugador (Vista 360°).
+  vip_manual: {
+    label: 'Estatus VIP manual',
+    icon: Crown,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    detalleTexto: (d) => `${d?.jugador || 'Jugador'} → ${d?.estatus || '—'}.`,
   },
   descuento_manual: {
     label: 'Descuento / precio manual',
@@ -44472,6 +44567,10 @@ function DirectorioJugadoresCRM({
   recompensaTipoFrecuenciaClases,
   recompensaValorFrecuenciaClases,
   premiosFrecuencia,
+  criterioVip = null,
+  onGuardarCriterioVip,
+  guardandoCriterioVip = false,
+  onActualizarVipManualJugador,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
   // Motor de Gestión de Penalizaciones Pendientes — Reestructuración del
@@ -44697,6 +44796,15 @@ function DirectorioJugadoresCRM({
   // imprimir el debug de esta vuelta.
   const jugadorSeleccionadoIdDebugRef = useRef(null);
 
+  // App-115 — Criterio VIP del club (Configuración → Jugadores &
+  // Fidelización) y el primer día de su ventana reciente.
+  const criterioVipEfectivo = useMemo(() => normalizarCriterioVip(criterioVip), [criterioVip]);
+  const hoyVipISO = hoyISO();
+  const desdeVentanaVipISO = useMemo(() => {
+    const d = new Date(new Date(`${hoyVipISO}T12:00:00`).getTime() - criterioVipEfectivo.ventanaDias * MS_POR_DIA);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  }, [hoyVipISO, criterioVipEfectivo.ventanaDias]);
+
   /* ---- Perfil 360° por jugador: LTV interconectado + insumos crudos del CHS ---- */
   const perfiles = useMemo(() => {
     const hoyISOStr = hoyISO();
@@ -44782,10 +44890,10 @@ function DirectorioJugadoresCRM({
             const esBar = productosPorId[item.producto_id]?.categoria === 'Cafetería/Bar';
             if (esBar) {
               gastoBar += subtotal;
-              if (ts && ts >= hace90) gastoBarReciente += subtotal;
+              if (ts && ts >= hace30) gastoBarReciente += subtotal; // App-115: 30 días
             } else {
               gastoProShop += subtotal;
-              if (ts && ts >= hace90) gastoProShopReciente += subtotal;
+              if (ts && ts >= hace30) gastoProShopReciente += subtotal; // App-115: 30 días
             }
           });
         });
@@ -44930,6 +45038,19 @@ function DirectorioJugadoresCRM({
             const torneo = (torneos || []).find((t) => t.id === p.torneo_id);
             const f = torneo?.fecha_inicio ? new Date(`${torneo.fecha_inicio}T12:00:00`) : p.created_at ? new Date(p.created_at) : null;
             return f && f >= hace180;
+          }).length;
+
+        // App-115 — Participación en Comunidad: mismo conteo, últimos 30 días.
+        const eventosTorneoRetaUltimos30Dias =
+          inscripcionesValidas.filter((i) => {
+            const reta = (retas || []).find((r) => r.id === i.reta_id);
+            const f = reta?.fecha ? new Date(`${reta.fecha}T12:00:00`) : i.created_at ? new Date(i.created_at) : null;
+            return f && f >= hace30;
+          }).length +
+          participacionesPagadas.filter((p) => {
+            const torneo = (torneos || []).find((t) => t.id === p.torneo_id);
+            const f = torneo?.fecha_inicio ? new Date(`${torneo.fecha_inicio}T12:00:00`) : p.created_at ? new Date(p.created_at) : null;
+            return f && f >= hace30;
           }).length;
 
         // Retas realmente jugadas (inscripción asistida cuya fecha ya pasó).
@@ -45407,6 +45528,31 @@ function DirectorioJugadoresCRM({
           }),
         ].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
 
+        // App-115 — Estatus VIP HÍBRIDO. Gasto y visitas dentro de la
+        // ventana configurada, con las MISMAS fuentes que ya alimentan el
+        // Gasto Total Histórico (reservas cobradas, Smart POS, Retas/Torneos
+        // pagados, Academia cobrada) y la actividad del Score — sin
+        // consultas nuevas a Supabase. Manual (`vip_manual`) manda.
+        const enVentanaVip = (f) => !!f && f >= desdeVentanaVipISO && f <= hoyISOStr;
+        const fechaDeTs = (v) => (v ? String(v).slice(0, 10) : null);
+        const gastoVentanaVip =
+          propiasActivas.filter((r) => esCobroConfirmado(r) && enVentanaVip(r.fecha)).reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0) +
+          comprasPOS.filter((c) => enVentanaVip(c.fecha)).reduce((acc, c) => acc + (Number(c.subtotal) || 0), 0) +
+          inscripcionesValidas
+            .filter((i) => enVentanaVip((retas || []).find((r) => r.id === i.reta_id)?.fecha || fechaDeTs(i.created_at)))
+            .reduce((acc, i) => acc + (Number(i.monto) || 0), 0) +
+          participacionesPagadas
+            .filter((pp) => enVentanaVip((torneos || []).find((t) => t.id === pp.torneo_id)?.fecha_inicio || fechaDeTs(pp.created_at)))
+            .reduce((acc, pp) => acc + (Number(pp.monto) || 0), 0) +
+          alumnosDeJ.filter((a) => esCobroConfirmado(a) && enVentanaVip(fechaDeTs(a.created_at))).reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
+        const visitasVentanaVip = new Set([
+          ...fechasEventos.filter(enVentanaVip),
+          ...historialAcademia.filter((h) => h.asistio && enVentanaVip(h.fecha)).map((h) => h.fecha),
+        ]).size;
+        const vipManual = j.vip_manual === true ? true : j.vip_manual === false ? false : null;
+        const vipAutomatico = cumpleCriterioVipAutomatico(criterioVipEfectivo, { gasto: gastoVentanaVip, visitas: visitasVentanaVip });
+        const esVip = vipManual !== null ? vipManual : vipAutomatico;
+
         const perfilBase = {
           id: j.id,
           nombre: j.nombre || 'Jugador',
@@ -45451,6 +45597,7 @@ function DirectorioJugadoresCRM({
           partidosMes,
           partidosUltimoMes,
           eventosTorneoRetaUltimos6Meses,
+          eventosTorneoRetaUltimos30Dias,
           asistenciasClaseUltimos6Meses,
           inscripcionesClasePagadasUltimos6Meses,
           totalEventosConfiabilidad,
@@ -45475,9 +45622,18 @@ function DirectorioJugadoresCRM({
           visitasConsolidadas,
           ticketPromedioVisita,
           historialConfiabilidad,
+          // App-115 — VIP híbrido
+          esVip,
+          vipManual,
+          vipAutomatico,
+          vipOrigen: vipManual === true ? 'manual' : esVip ? 'automatico' : null,
+          vipManualPor: j.vip_manual_por || null,
+          vipManualEn: j.vip_manual_en || null,
+          gastoVentanaVip,
+          visitasVentanaVip,
         };
 
-        return { ...perfilBase, chs: calcularCHS(perfilBase), segmento: segmentoPorLTV(ltvTotal) };
+        return { ...perfilBase, chs: calcularCHS(perfilBase), segmento: segmentoJugador(ltvTotal, esVip) };
       })
       .sort((a, b) => b.ltvTotal - a.ltvTotal);
   }, [
@@ -45506,6 +45662,8 @@ function DirectorioJugadoresCRM({
     metaFrecuenciaRetas,
     metaFrecuenciaTorneos,
     metaFrecuenciaClases,
+    criterioVipEfectivo,
+    desdeVentanaVipISO,
   ]);
 
   // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): reporta hacia
@@ -45704,7 +45862,8 @@ function DirectorioJugadoresCRM({
     const ltvClubTotal = perfiles.reduce((acc, p) => acc + p.ltvTotal, 0);
     const enRiesgo = perfiles.filter((p) => p.chs.enRiesgo).length;
     const vip = perfiles.filter((p) => p.segmento === 'VIP').length;
-    return { totalJugadores: perfiles.length, ltvClubTotal, enRiesgo, vip };
+    const vipManuales = perfiles.filter((p) => p.vipOrigen === 'manual').length;
+    return { totalJugadores: perfiles.length, ltvClubTotal, enRiesgo, vip, vipManuales };
   }, [perfiles]);
 
   const jugadorSeleccionado = jugadorSeleccionadoId ? perfiles.find((p) => p.id === jugadorSeleccionadoId) || null : null;
@@ -45733,7 +45892,10 @@ function DirectorioJugadoresCRM({
           icon={Crown}
           etiqueta="Jugadores VIP"
           valor={String(resumen.vip)}
-          sub={permisos?.puedeVerMontos !== false ? `Gasto Total ≥ ${formatoMoneda(UMBRAL_LTV_VIP)}` : 'Por nivel de gasto histórico'}
+          // App-115: criterio activo del club (automático reciente) + VIP manuales.
+          sub={`${textoCriterioVip(criterioVipEfectivo, { conMontos: permisos?.puedeVerMontos !== false })}${
+            resumen.vipManuales > 0 ? ` · ${resumen.vipManuales} manual${resumen.vipManuales === 1 ? '' : 'es'}` : ''
+          }`}
           tono="amber"
         />
         <MetricCard
@@ -45832,6 +45994,10 @@ function DirectorioJugadoresCRM({
           recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
           recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
           premiosFrecuencia={premiosFrecuencia}
+          criterioVip={criterioVip}
+          onGuardarCriterioVip={onGuardarCriterioVip}
+          guardandoCriterioVip={guardandoCriterioVip}
+          onActualizarVipManualJugador={onActualizarVipManualJugador}
           onCargarPenalizacionAComanda={onCargarPenalizacionAComanda}
           onCortesiaOtorgada={(resultado) => {
             // FIX DE SEGURIDAD CRÍTICO (Reset Inmediato del Progreso): la
@@ -46417,6 +46583,15 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos, diaHoy }) {
   // Al día siguiente `esCumple` es false y la tarjeta vuelve sola al diseño
   // estándar — no hay nada guardado que limpiar.
   const esCumple = esCumpleanosHoy(perfil.fechaNacimiento, diaHoy);
+  // App-115: cortesías YA disponibles (100% de la meta) — gasto y frecuencia.
+  const cortesiasListas = [
+    perfil.cortesiaProShop?.lista && 'Pro-Shop',
+    perfil.cortesiaBar?.lista && 'Restaurante/Bar',
+    perfil.cortesiaFrecuenciaReservas?.lista && 'Reservas',
+    perfil.cortesiaFrecuenciaRetas?.lista && 'Retas',
+    perfil.cortesiaFrecuenciaTorneos?.lista && 'Torneos',
+    perfil.cortesiaFrecuenciaClases?.lista && 'Clases',
+  ].filter(Boolean);
 
   const tarjeta = (
     <button
@@ -46445,8 +46620,15 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos, diaHoy }) {
         <div className="flex shrink-0 flex-col items-end gap-1">
           <span
             className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${metaSeg.bg} ${metaSeg.color} ${metaSeg.ring}`}
+            data-testid="segmento-jugador"
           >
             <SegIcon size={11} /> {perfil.segmento}
+            {/* App-115: VIP designado a mano (patrocinador, socio…). */}
+            {perfil.vipOrigen === 'manual' && (
+              <span className="ml-0.5 rounded-full bg-amber-400/20 px-1.5 text-[9px] font-black uppercase tracking-wide" data-testid="vip-manual">
+                Manual
+              </span>
+            )}
           </span>
           {perfil.categoria && (
             <span
@@ -46467,10 +46649,24 @@ function TarjetaJugadorCRM({ perfil, onVerDetalle, permisos, diaHoy }) {
         </div>
       </div>
 
-      {perfil.chs.enRiesgo && (
-        <span className="inline-flex w-fit items-center gap-1 rounded-full bg-rose-400/10 px-2 py-0.5 text-[10px] font-bold text-rose-400 ring-1 ring-rose-400/30">
-          <ShieldAlert size={11} /> En Riesgo de Abandono
-        </span>
+      {(perfil.chs.enRiesgo || cortesiasListas.length > 0) && (
+        <div className="flex flex-wrap gap-1">
+          {perfil.chs.enRiesgo && (
+            <span className="inline-flex w-fit items-center gap-1 rounded-full bg-rose-400/10 px-2 py-0.5 text-[10px] font-bold text-rose-400 ring-1 ring-rose-400/30">
+              <ShieldAlert size={11} /> En Riesgo de Abandono
+            </span>
+          )}
+          {/* App-115: cortesía lista para canjear, sin abrir la Vista 360°. */}
+          {cortesiasListas.map((c) => (
+            <span
+              key={c}
+              className="inline-flex w-fit items-center gap-1 rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600 ring-1 ring-emerald-400/30"
+              data-testid="cortesia-disponible"
+            >
+              <span aria-hidden="true">🎁</span> Cortesía {c} disponible
+            </span>
+          ))}
+        </div>
       )}
 
       <div className="flex items-center justify-between">
@@ -47235,6 +47431,71 @@ function FichaDeportivaCRM({ perfil, onGuardar }) {
   );
 }
 
+// App-115 — Estatus VIP del jugador en la Vista 360°: por qué es (o no) VIP
+// y, para Owner/Manager, el control manual de 3 posiciones:
+//   Automático (manda el criterio del club) · VIP manual · Sin VIP.
+function ControlVipJugador({ perfil, criterio, puedeGestionar = false, mostrarMontos = true, onCambiar }) {
+  const [guardando, setGuardando] = useState(false);
+  const c = normalizarCriterioVip(criterio);
+  const actual = perfil.vipManual === true ? 'vip' : perfil.vipManual === false ? 'sin' : 'auto';
+  let estado;
+  if (perfil.vipManual === true) {
+    estado = `VIP manual${perfil.vipManualPor ? ` · por ${perfil.vipManualPor}` : ''}${perfil.vipManualEn ? ` · ${formatoFechaCorta(String(perfil.vipManualEn).slice(0, 10))}` : ''}`;
+  } else if (perfil.vipManual === false) {
+    estado = 'VIP retirado manualmente — no se evalúa con el criterio automático';
+  } else if (perfil.vipAutomatico) {
+    estado = `VIP automático: cumple ${textoCriterioVip(c, { conMontos: mostrarMontos })}`;
+  } else {
+    estado = c.automatico ? `No cumple el criterio VIP (${textoCriterioVip(c, { conMontos: mostrarMontos })})` : 'VIP automático desactivado — solo VIP manuales';
+  }
+  async function cambiar(opcion) {
+    if (!puedeGestionar || guardando || opcion === actual) return;
+    setGuardando(true);
+    await onCambiar?.(perfil.id, opcion === 'vip' ? true : opcion === 'sin' ? false : null, perfil.nombre);
+    setGuardando(false);
+  }
+  const opciones = [
+    { value: 'auto', label: 'Automático' },
+    { value: 'vip', label: 'VIP manual' },
+    { value: 'sin', label: 'Sin VIP' },
+  ];
+  return (
+    <div className="rounded-xl border border-amber-300/50 bg-amber-400/5 px-3 py-2.5" data-testid="control-vip">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 text-xs font-black text-slate-900">
+            <Crown size={13} className="text-amber-500" /> Estatus VIP
+          </p>
+          <p className="mt-0.5 text-[11px] text-slate-600" data-testid="estado-vip">{estado}</p>
+          <p className="mt-0.5 text-[10px] text-slate-500" data-testid="metricas-vip">
+            Últimos {c.ventanaDias} días: {mostrarMontos ? `${formatoMoneda(perfil.gastoVentanaVip || 0)} · ` : ''}
+            {perfil.visitasVentanaVip || 0} visita{perfil.visitasVentanaVip === 1 ? '' : 's'}
+          </p>
+        </div>
+        {puedeGestionar && (
+          <div className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-white p-0.5" role="group" aria-label="Estatus VIP">
+            {opciones.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                aria-pressed={actual === o.value}
+                disabled={guardando}
+                onClick={() => cambiar(o.value)}
+                data-testid={`vip-opcion-${o.value}`}
+                className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition disabled:opacity-60 ${
+                  actual === o.value ? 'bg-amber-400 text-slate-950' : 'text-slate-500 hover:bg-slate-100'
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ModalPerfilJugadorCRM({
   perfil,
   diaHoy,
@@ -47262,6 +47523,10 @@ function ModalPerfilJugadorCRM({
   recompensaTipoFrecuenciaClases,
   recompensaValorFrecuenciaClases,
   premiosFrecuencia,
+  criterioVip = null,
+  onGuardarCriterioVip,
+  guardandoCriterioVip = false,
+  onActualizarVipManualJugador,
   onCargarPenalizacionAComanda,
 }) {
   const mostrarToast = useToast();
@@ -47648,6 +47913,7 @@ function ModalPerfilJugadorCRM({
                 className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${meta.bg} ${meta.color} ${meta.ring}`}
               >
                 <Icon size={13} /> Segmento {perfil.segmento}
+                {perfil.vipOrigen === 'manual' && <span className="ml-0.5 rounded-full bg-amber-400/20 px-1.5 text-[10px] font-black uppercase">Manual</span>}
               </span>
             );
           })()}
@@ -47662,6 +47928,15 @@ function ModalPerfilJugadorCRM({
             </span>
           )}
         </div>
+
+        {/* App-115 — Estatus VIP híbrido: motivo + control manual (Owner/Manager). */}
+        <ControlVipJugador
+          perfil={perfil}
+          criterio={criterioVip}
+          puedeGestionar={permisos?.puedeGestionarVip === true}
+          mostrarMontos={permisos?.puedeVerMontos !== false}
+          onCambiar={onActualizarVipManualJugador}
+        />
 
         {/* Motor de Gestión de Penalizaciones Pendientes (v74), Parte 3 —
             "Adeudos Pendientes de Cobro": reusa tal cual
@@ -47959,6 +48234,10 @@ function ModuloJugadores({
   recompensaTipoFrecuenciaClases,
   recompensaValorFrecuenciaClases,
   premiosFrecuencia,
+  criterioVip = null,
+  onGuardarCriterioVip,
+  guardandoCriterioVip = false,
+  onActualizarVipManualJugador,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
   onCargarPenalizacionAComanda,
@@ -48048,6 +48327,10 @@ function ModuloJugadores({
           recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
           recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
           premiosFrecuencia={premiosFrecuencia}
+          criterioVip={criterioVip}
+          onGuardarCriterioVip={onGuardarCriterioVip}
+          guardandoCriterioVip={guardandoCriterioVip}
+          onActualizarVipManualJugador={onActualizarVipManualJugador}
           onGuardarCortesiasFrecuencia={onGuardarCortesiasFrecuencia}
           guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
           onCargarPenalizacionAComanda={onCargarPenalizacionAComanda}
@@ -49298,6 +49581,10 @@ function ModuloConfiguracionClub({
   recompensaTipoFrecuenciaClases,
   recompensaValorFrecuenciaClases,
   premiosFrecuencia,
+  criterioVip = null,
+  onGuardarCriterioVip,
+  guardandoCriterioVip = false,
+  onActualizarVipManualJugador,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
   tarifasHorarios,
@@ -49481,6 +49768,10 @@ function ModuloConfiguracionClub({
           recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
           recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
           premiosFrecuencia={premiosFrecuencia}
+          criterioVip={criterioVip}
+          onGuardarCriterioVip={onGuardarCriterioVip}
+          guardandoCriterioVip={guardandoCriterioVip}
+          onActualizarVipManualJugador={onActualizarVipManualJugador}
           onGuardarCortesiasFrecuencia={onGuardarCortesiasFrecuencia}
           guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
           onRegistrarGuardadoModulo={registrarGuardadoModulo}
@@ -53035,6 +53326,124 @@ function SeccionTarifasFranjas({
 // (`ModalMetasCortesia`, `onGuardarMetasCortesia` → `guardarMetasCortesia`
 // en `AppInterno`, misma tabla `configuracion_club`) — solo cambió DE DÓNDE
 // se dispara el modal.
+// App-115 — Configuración del Club → Jugadores & Fidelización → Criterio VIP.
+function TarjetaCriterioVip({ criterio, onGuardar, guardando = false }) {
+  const actual = normalizarCriterioVip(criterio);
+  const [borrador, setBorrador] = useState(actual);
+  const [error, setError] = useState('');
+  const claveActual = JSON.stringify(actual);
+  useEffect(() => {
+    setBorrador(JSON.parse(claveActual));
+  }, [claveActual]);
+  const cambiar = (campo, valor) => setBorrador((b) => ({ ...b, [campo]: valor }));
+  const sinCambios = JSON.stringify(normalizarCriterioVip(borrador)) === claveActual;
+  async function guardar() {
+    setError('');
+    const gasto = Number(borrador.gastoMinimo);
+    const visitas = Number(borrador.visitasMinimas);
+    if (!Number.isFinite(gasto) || gasto < 0 || !Number.isFinite(visitas) || visitas < 0 || !Number.isInteger(visitas)) {
+      setError('Gasto mínimo y visitas mínimas deben ser números positivos (visitas en enteros).');
+      return;
+    }
+    if (borrador.automatico && gasto === 0 && visitas === 0) {
+      setError('Define al menos un umbral (gasto o visitas) o apaga el VIP automático.');
+      return;
+    }
+    await onGuardar?.(normalizarCriterioVip(borrador));
+  }
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="tarjeta-criterio-vip">
+      <div className="mb-1 flex items-center gap-2">
+        <Crown size={16} className="text-amber-500" />
+        <h3 className="text-sm font-black text-slate-900">Criterio VIP</h3>
+      </div>
+      <p className="mb-3 text-xs text-slate-500">
+        Un jugador es VIP automático si cumple este criterio con su actividad RECIENTE (quien ya no viene deja de serlo solo).
+        Owner y Manager pueden además marcar o quitar el VIP a mano desde la Vista 360° de cualquier jugador.
+      </p>
+
+      <button
+        type="button"
+        onClick={() => cambiar('automatico', !borrador.automatico)}
+        data-testid="vip-switch-automatico"
+        className={`mb-3 flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition ${
+          borrador.automatico ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-slate-100'
+        }`}
+      >
+        <span className="flex items-center gap-2">
+          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${borrador.automatico ? 'bg-orange-500' : 'bg-slate-400'}`} />
+          <span className={`text-xs font-bold ${borrador.automatico ? 'text-orange-700' : 'text-slate-600'}`}>
+            VIP automático: {borrador.automatico ? 'Activado' : 'Desactivado (solo VIP manuales)'}
+          </span>
+        </span>
+        <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${borrador.automatico ? 'bg-orange-500' : 'bg-slate-300'}`}>
+          <span
+            className={`inline-block transform rounded-full bg-white shadow transition ${borrador.automatico ? 'translate-x-6' : 'translate-x-1'}`}
+            style={{ height: '1.125rem', width: '1.125rem' }}
+          />
+        </span>
+      </button>
+
+      {borrador.automatico && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Campo label="Ventana de evaluación">
+            <select value={borrador.ventanaDias} onChange={(e) => cambiar('ventanaDias', Number(e.target.value))} className={inputClase} data-testid="vip-ventana">
+              {VENTANAS_VIP_DIAS.map((d) => (
+                <option key={d} value={d}>
+                  Últimos {d} días
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Combinar umbrales">
+            <select value={borrador.combinacion} onChange={(e) => cambiar('combinacion', e.target.value)} className={inputClase} data-testid="vip-combinacion">
+              {COMBINACIONES_VIP.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Gasto mínimo en la ventana (MXN · 0 = no se exige)">
+            <input
+              type="number"
+              min="0"
+              step="100"
+              value={borrador.gastoMinimo}
+              onChange={(e) => cambiar('gastoMinimo', e.target.value)}
+              className={inputClase}
+              data-testid="vip-gasto"
+            />
+          </Campo>
+          <Campo label="Visitas mínimas en la ventana (0 = no se exige)">
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={borrador.visitasMinimas}
+              onChange={(e) => cambiar('visitasMinimas', e.target.value)}
+              className={inputClase}
+              data-testid="vip-visitas"
+            />
+          </Campo>
+        </div>
+      )}
+
+      <p className="mt-3 rounded-lg bg-amber-400/10 px-3 py-2 text-[11px] font-semibold text-amber-800" data-testid="vip-resumen">
+        <Crown size={11} className="mr-1 inline" /> VIP = {textoCriterioVip(normalizarCriterioVip(borrador))} + VIP manuales.
+        Visita = día con partido (reserva, reta o torneo) o clase asistida.
+      </p>
+      {error && <p className="mt-2 text-xs font-semibold text-rose-500">{error}</p>}
+      <div className="mt-3 flex justify-end">
+        <BotonPrimario onClick={guardar} disabled={guardando || sinCambios} data-testid="vip-guardar">
+          {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+          Guardar criterio VIP
+        </BotonPrimario>
+      </div>
+    </div>
+  );
+}
+
 function SeccionJugadoresFidelizacion({
   productos,
   variantesPorProducto,
@@ -53059,6 +53468,10 @@ function SeccionJugadoresFidelizacion({
   recompensaTipoFrecuenciaClases,
   recompensaValorFrecuenciaClases,
   premiosFrecuencia,
+  criterioVip = null,
+  onGuardarCriterioVip,
+  guardandoCriterioVip = false,
+  onActualizarVipManualJugador,
   onGuardarCortesiasFrecuencia,
   guardandoCortesiasFrecuencia,
   onRegistrarGuardadoModulo,
@@ -53120,6 +53533,9 @@ function SeccionJugadoresFidelizacion({
 
   return (
     <div className="space-y-4">
+      {/* App-115 — Criterio VIP automático (configurable) + recordatorio del VIP manual. */}
+      <TarjetaCriterioVip criterio={criterioVip} onGuardar={onGuardarCriterioVip} guardando={guardandoCriterioVip} />
+
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="mb-1 flex items-center gap-2">
           <Gift size={16} className="text-orange-500" />
@@ -64871,6 +65287,9 @@ function AppInterno({ clubInicial } = {}) {
   const premiosFrecuenciaRef = useRef(premiosFrecuencia);
   premiosFrecuenciaRef.current = premiosFrecuencia;
   const [guardandoCortesiasFrecuencia, setGuardandoCortesiasFrecuencia] = useState(false);
+  // App-115 — Criterio VIP automático del club (configuracion_club, v126).
+  const [criterioVip, setCriterioVip] = useState(() => leerCriterioVipLocal());
+  const [guardandoCriterioVip, setGuardandoCriterioVip] = useState(false);
 
   // Configuración del Club → "Portal & Tienda Web" → Add-ons (módulo nuevo):
   // misma fila de `configuracion_club`, mismo criterio de flujo
@@ -65200,6 +65619,57 @@ function AppInterno({ clubInicial } = {}) {
   // el Expediente Deportivo del Coach escribe las mismas columnas (ver
   // `guardarEvaluacionJugador`). Solo se mandan los campos presentes en
   // `cambios`, así editar uno nunca borra el otro.
+  // App-115 — VIP manual (excepción humana) de UN jugador: `valor` true =
+  // VIP manual, false = VIP retirado manualmente, null = vuelve al criterio
+  // automático. Optimista + reversión si Supabase falla (mismo patrón que
+  // `actualizarFichaDeportivaJugador`), y deja rastro en la auditoría.
+  const actualizarVipManualJugador = useCallback(
+    async (jugadorId, valor, nombreJugador) => {
+      if (jugadorId == null) return { ok: false };
+      if (permisos?.puedeGestionarVip !== true) return { ok: false, error: new Error('Solo Owner o Manager pueden cambiar el estatus VIP.') };
+      const vipManual = valor === true ? true : valor === false ? false : null;
+      const payload = {
+        vip_manual: vipManual,
+        vip_manual_por: vipManual === null ? null : operador?.nombre || null,
+        vip_manual_en: vipManual === null ? null : new Date().toISOString(),
+      };
+      let anterior = null;
+      setJugadoresPorId((prev) => {
+        anterior = prev[jugadorId] || null;
+        return { ...prev, [jugadorId]: { ...(prev[jugadorId] || { id: jugadorId }), ...payload } };
+      });
+      try {
+        const { error: errUpdate } = await supabase.from('jugadores').update(payload).eq('id', jugadorId);
+        if (errUpdate) throw errUpdate;
+      } catch (err) {
+        console.error('[CRM] No se pudo guardar el estatus VIP manual:', err);
+        if (anterior) setJugadoresPorId((prev) => ({ ...prev, [jugadorId]: anterior }));
+        mostrarToast({
+          titulo: 'No se pudo cambiar el estatus VIP',
+          detalle: esErrorColumnaInexistente(err)
+            ? 'Falta correr la migración v126 (columnas vip_manual) en Supabase.'
+            : detalleErrorSupabase(err) || 'Revisa tu conexión e inténtalo de nuevo.',
+          tono: 'error',
+        });
+        return { ok: false, error: err };
+      }
+      registrarEventoAuditoria('vip_manual', {
+        jugador: nombreJugador || `Jugador #${jugadorId}`,
+        jugador_id: String(jugadorId),
+        estatus: vipManual === true ? 'VIP manual' : vipManual === false ? 'VIP retirado' : 'Automático',
+      });
+      mostrarToast({
+        titulo: vipManual === true ? 'Marcado como VIP' : vipManual === false ? 'VIP retirado' : 'VIP en automático',
+        detalle:
+          vipManual === null
+            ? `${nombreJugador || 'El jugador'} vuelve a evaluarse con el criterio VIP del club.`
+            : `${nombreJugador || 'El jugador'} · se conserva aunque no cumpla el criterio automático.`,
+      });
+      return { ok: true };
+    },
+    [permisos, operador, mostrarToast, registrarEventoAuditoria]
+  );
+
   const actualizarFichaDeportivaJugador = useCallback(async (jugadorId, cambios = {}) => {
     const payload = {};
     if ('categoria' in cambios) payload.categoria = cambios.categoria || null;
@@ -65611,6 +66081,14 @@ function AppInterno({ clubInicial } = {}) {
               clases: frecuencia.clases.premio,
             });
             guardarCortesiasFrecuenciaLocal(frecuencia);
+          }
+        }
+        // App-115 — Criterio VIP (v126): mismo `select('*')`, sin consulta nueva.
+        {
+          const vip = criterioVipDesdeFila(data);
+          if (vip) {
+            setCriterioVip(vip);
+            guardarCriterioVipLocal(vip);
           }
         }
         // Configuración del Club → Add-ons (módulo nuevo) — mismo
@@ -66181,6 +66659,47 @@ function AppInterno({ clubInicial } = {}) {
       return true;
     },
     [mostrarToast, cortesiasFrecuenciaActivas, cortesiasFrecuenciaActivadasDesde]
+  );
+
+  // App-115 — Guarda el Criterio VIP automático en `configuracion_club`
+  // (columnas `vip_*`, v126). Mismo patrón que `guardarCortesiasFrecuencia`:
+  // estado + respaldo local de inmediato, Supabase con aviso si falla.
+  const guardarCriterioVip = useCallback(
+    async (nuevoCriterio) => {
+      const criterio = normalizarCriterioVip(nuevoCriterio);
+      setGuardandoCriterioVip(true);
+      setCriterioVip(criterio);
+      guardarCriterioVipLocal(criterio);
+      let ok = false;
+      try {
+        if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
+        const { error } = await supabase
+          .from('configuracion_club')
+          .update({
+            vip_auto_activo: criterio.automatico,
+            vip_ventana_dias: criterio.ventanaDias,
+            vip_gasto_minimo: criterio.gastoMinimo,
+            vip_visitas_minimas: criterio.visitasMinimas,
+            vip_combinacion: criterio.combinacion,
+          })
+          .eq('id', CLUB_ACTIVO_ID);
+        if (error) throw error;
+        ok = true;
+      } catch (err) {
+        console.warn('[Jugadores & Fidelización] No se pudo guardar el Criterio VIP en Supabase — quedó en este navegador.', err);
+        mostrarToast({
+          titulo: 'Criterio VIP guardado solo en este navegador',
+          detalle: esErrorColumnaInexistente(err)
+            ? 'Falta correr la migración v126 en Supabase para que el criterio aplique en todos los equipos.'
+            : 'No se pudo guardar en Supabase. Vuelve a intentarlo.',
+          tono: 'error',
+        });
+      }
+      setGuardandoCriterioVip(false);
+      if (ok) mostrarToast({ titulo: 'Criterio VIP actualizado', detalle: textoCriterioVip(criterio) });
+      return ok;
+    },
+    [mostrarToast]
   );
 
   // Guarda Nombre/Logo del Club: SIEMPRE actualiza el estado en vivo y el
@@ -68473,6 +68992,10 @@ function AppInterno({ clubInicial } = {}) {
       recompensaTipoFrecuenciaClases,
       recompensaValorFrecuenciaClases,
       premiosFrecuencia,
+      criterioVip,
+      onGuardarCriterioVip: guardarCriterioVip,
+      guardandoCriterioVip,
+      onActualizarVipManualJugador: actualizarVipManualJugador,
       onGuardarCortesiasFrecuencia: guardarCortesiasFrecuencia,
       guardandoCortesiasFrecuencia,
       tarifasHorarios,
@@ -68802,6 +69325,10 @@ function AppInterno({ clubInicial } = {}) {
                 recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
                 recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
                 premiosFrecuencia={premiosFrecuencia}
+                criterioVip={criterioVip}
+                onGuardarCriterioVip={guardarCriterioVip}
+                guardandoCriterioVip={guardandoCriterioVip}
+                onActualizarVipManualJugador={actualizarVipManualJugador}
                 onGuardarCortesiasFrecuencia={guardarCortesiasFrecuencia}
                 guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
                 onCargarPenalizacionAComanda={enviarPenalizacionAPOS}
@@ -68981,6 +69508,10 @@ function AppInterno({ clubInicial } = {}) {
                 recompensaTipoFrecuenciaClases={recompensaTipoFrecuenciaClases}
                 recompensaValorFrecuenciaClases={recompensaValorFrecuenciaClases}
                 premiosFrecuencia={premiosFrecuencia}
+                criterioVip={criterioVip}
+                onGuardarCriterioVip={guardarCriterioVip}
+                guardandoCriterioVip={guardandoCriterioVip}
+                onActualizarVipManualJugador={actualizarVipManualJugador}
                 onGuardarCortesiasFrecuencia={guardarCortesiasFrecuencia}
                 guardandoCortesiasFrecuencia={guardandoCortesiasFrecuencia}
                 tarifasHorarios={tarifasHorarios}
