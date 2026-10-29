@@ -2040,7 +2040,7 @@ const ESTATUS_META = {
 const ROLES = [
   { value: 'owner', label: 'Owner', descripcion: 'Acceso total e incondicional.', icon: Crown, color: 'text-amber-300', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30' },
   { value: 'manager', label: 'Manager', descripcion: 'Gestión de reservas, aprobación de cortes y supervisión de POS.', icon: UserCog, color: 'text-sky-300', bg: 'bg-sky-400/10', ring: 'ring-sky-400/30' },
-  { value: 'recepcion', label: 'Recepción/Caja', descripcion: 'Agendar reservas, check-in, cobro en POS/Split Bill y flujos de inscripción de Torneos y Academia.', icon: Users, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
+  { value: 'recepcion', label: 'Recepción/Caja', descripcion: 'Agendar reservas, check-in, cobro en POS/Split Bill, Torneos & Retas (Mesa de Control) y flujos de inscripción de Academia.', icon: Users, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
   { value: 'bar', label: 'Restaurante/Bar', descripcion: 'Comandas y venta en Smart POS; inventario de alimentos/bebidas en solo lectura, sin precios ni costos.', icon: Coffee, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
   { value: 'coach', label: 'Coach', descripcion: 'Academia & Clínicas, Torneos & Retas y Parrilla Operativa en modo solo lectura.', icon: Award, color: 'text-fuchsia-300', bg: 'bg-fuchsia-400/10', ring: 'ring-fuchsia-400/30' },
   {
@@ -2180,14 +2180,13 @@ const PERMISOS_POR_ROL = {
   },
   recepcion: {
     // "Recepción/Caja": Parrilla Operativa, Smart POS, Jugadores
-    // (Directorio) y Academia (flujos de inscripción) — SIN montos en
-    // Analytics, SIN Contabilidad, SIN ERP. El módulo "Torneos & Retas" se
-    // oculta por completo (no está en esta lista): Recepción sigue pudiendo
-    // inscribir/cobrar una Reta o Torneo desde el panel "Inscripción
-    // Torneo/Reta" de Smart POS (gated por 'pos', no por 'torneos'), solo
-    // deja de ver la pantalla dedicada con Mesa de Control/gestión de
-    // eventos, que no le corresponde.
-    modulos: ['parrilla', 'pos', 'academia', 'jugadores'],
+    // (Directorio), Academia (flujos de inscripción) y — App-119 — Torneos &
+    // Retas: Recepción opera en tiempo real la Mesa de Control (Detalle de
+    // Reta, Tolerancia de Inscripción, Coach / Invitado de emergencia y
+    // Cancelación por cuarteto incompleto). SIN montos en Analytics (en la
+    // Mesa de Control ve conteos, no el Desglose Financiero, por
+    // `puedeVerMontos: false`), SIN Contabilidad, SIN ERP.
+    modulos: ['parrilla', 'pos', 'academia', 'jugadores', 'torneos'],
     puedeCancelarReservas: true,
     puedeReprogramarReservas: true,
     puedeAplicarDescuentoManual: false,
@@ -3595,7 +3594,13 @@ function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', 
       animate="animate"
       exit="exit"
       transition={{ duration: 0.2, ease: 'easeOut' }}
+      // App-118 — la capa oscura arranca DEBAJO de la barra superior del
+      // Panel (`--qb-alto-header`, lo publica `TopHeader`): el logo y el
+      // perfil quedan siempre sólidos y visibles. Sin barra (Portal de
+      // Jugadores, Kiosko) la variable vale 0 y todo queda igual que antes.
+      style={{ top: 'var(--qb-alto-header, 0px)' }}
       className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm"
+      data-modal-fondo=""
     >
       <motion.div
         variants={VARIANTES_TARJETA_MODAL}
@@ -3603,7 +3608,8 @@ function ModalShell({ titulo, subtitulo, onClose, children, ancho = 'max-w-lg', 
         animate="animate"
         exit="exit"
         transition={{ duration: 0.2, ease: 'easeOut' }}
-        className={`relative w-full ${ancho} max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl`}
+        style={{ maxHeight: 'calc(100vh - var(--qb-alto-header, 0px) - 2rem)' }}
+        className={`relative w-full ${ancho} overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl`}
       >
         <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur">
           <div className="flex items-start gap-3">
@@ -5450,6 +5456,28 @@ function TopHeader({
   // `localStorage` y alterna la clase `dark` en `<html>`, así que este
   // componente no necesita nada más que llamarlo y renderizar el botón.
   const [temaClubOS, alternarTemaClubOS] = useTemaClubOS();
+  // App-118 — Publica la altura real de esta barra en `--qb-alto-header`
+  // para que la capa oscura de los modales (`ModalShell`) empiece justo
+  // debajo y nunca la cubra. Se recalcula si la barra cambia de alto
+  // (responsive) y vuelve a 0 al desmontarse.
+  const headerRef = useRef(null);
+  useEffect(() => {
+    const el = headerRef.current;
+    const raiz = document.documentElement;
+    if (!el || !raiz) return undefined;
+    const aplicar = () => raiz.style.setProperty('--qb-alto-header', `${Math.max(0, Math.ceil(el.getBoundingClientRect().bottom))}px`);
+    aplicar();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(aplicar) : null;
+    ro?.observe(el);
+    window.addEventListener('resize', aplicar);
+    window.addEventListener('scroll', aplicar, { passive: true });
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', aplicar);
+      window.removeEventListener('scroll', aplicar);
+      raiz.style.setProperty('--qb-alto-header', '0px');
+    };
+  }, []);
 
   useEffect(() => {
     if (!menuColaboradorAbierto) return;
@@ -5462,7 +5490,7 @@ function TopHeader({
 
   return (
     <>
-    <header className="sticky top-0 z-20 grid grid-cols-3 items-center gap-2 border-b border-slate-200 bg-slate-50/95 px-3 py-2 backdrop-blur sm:px-6">
+    <header ref={headerRef} data-qb-header="" className="sticky top-0 z-20 grid grid-cols-3 items-center gap-2 border-b border-slate-200 bg-slate-50/95 px-3 py-2 backdrop-blur sm:px-6">
       {/* Izquierda: botón de menú (solo mobile/iPad — abre el Sidebar como
           drawer; en desktop el Sidebar ya está fijo/visible y este botón se
           oculta) + Reloj en tiempo real + Toggle de Modo Oscuro/Claro (justo
@@ -9662,11 +9690,11 @@ function ModalDetalleRetaParrilla({
   const nombresCanchas = nombresCanchasDeReta(reta, canchas) || 'Por confirmar';
   const concluida = reta.archivado === true || eventoYaTermino(reta.fecha, reta.hora_fin, ahoraMs);
   const iniciada = !concluida && eventoYaInicio(reta.fecha, reta.hora_inicio, ahoraMs);
-  // Gracia de Entrada (App-117): solo Recepción / Administración, y solo
+  // Tolerancia de Inscripción (App-117): solo Recepción / Administración, y solo
   // mientras corre la ventana — fuera de ella todo sigue igual que antes.
-  const enGraciaRescate =
-    !soloLectura && rescate.puedeOperar && estadoRescateReta(reta, ocupados, ahoraMs, rescate.graciaMinutos).enGracia;
-  const puedeInscribir = (!soloLectura && !completa && !concluida && !iniciada) || enGraciaRescate;
+  const enToleranciaRescate =
+    !soloLectura && rescate.puedeOperar && estadoRescateReta(reta, ocupados, ahoraMs, rescate.toleranciaInscripcionMinutos).enTolerancia;
+  const puedeInscribir = (!soloLectura && !completa && !concluida && !iniciada) || enToleranciaRescate;
   const inscritosReta = useMemo(() => (inscripciones || []).filter((i) => mismoId(i.reta_id, reta?.id)), [inscripciones, reta?.id]);
 
   if (invitando) {
@@ -31873,7 +31901,7 @@ const TIPOS_EVENTO_AUDITORIA = {
   },
   // App-117 — Plan de Rescate de Retas (v127).
   reta_inscripcion_gracia: {
-    label: 'Reta · inscripción en gracia de entrada',
+    label: 'Reta · inscripción en tolerancia',
     icon: Timer,
     color: 'text-orange-400',
     bg: 'bg-orange-400/10',
@@ -32435,34 +32463,36 @@ function resumenCuposReta(reta, inscripciones) {
 // exclusiva de Recepción / Administración, para Retas "En curso" con lugares
 // libres. NO toca el flujo normal: inscripción, cobro, bloqueo por horario y
 // cancelación individual siguen exactamente igual. Solo agrega:
-//   1) Gracia de Entrada (configurable, default 15 min desde `hora_inicio`):
+//   1) Tolerancia de Inscripción (configurable, default 15 min desde `hora_inicio`):
 //      inscribir de último momento o un Coach / Invitado de emergencia.
-//   2) Cancelación por Cuarteto Incompleto (después de la gracia): RPC
+//   2) Cancelación por Cuarteto Incompleto (después de la tolerancia): RPC
 //      atómica `fn_reta_cancelar_incompleta` → libera la Parrilla, reembolsa
 //      al Wallet a quien ya pagó y archiva la Reta.
 // El Portal no cambia: sigue ocultando las Retas iniciadas y, con v127, la
 // base rechaza cualquier inscripción tardía que no venga de la administración.
 // =============================================================================
-const GRACIA_RETAS_DEFAULT = 15;
-const LS_KEY_GRACIA_RETAS = 'smashpadel_retas_gracia_min_v1';
+const TOLERANCIA_INSCRIPCION_RETAS_DEFAULT = 15;
+// La llave de localStorage y la columna `configuracion_club.retas_gracia_minutos`
+// (v127) conservan su nombre original para no perder lo ya guardado.
+const LS_KEY_TOLERANCIA_INSCRIPCION_RETAS = 'smashpadel_retas_gracia_min_v1';
 const ROLES_RESCATE_RETAS = ['owner', 'manager', 'recepcion'];
 
-function normalizarGraciaRetas(valor) {
+function normalizarToleranciaInscripcionRetas(valor) {
   const n = Math.round(Number(valor));
-  if (!Number.isFinite(n)) return GRACIA_RETAS_DEFAULT;
+  if (!Number.isFinite(n)) return TOLERANCIA_INSCRIPCION_RETAS_DEFAULT;
   return Math.min(60, Math.max(0, n));
 }
-function leerGraciaRetasLocal() {
+function leerToleranciaInscripcionRetasLocal() {
   try {
-    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_GRACIA_RETAS));
-    return crudo == null ? GRACIA_RETAS_DEFAULT : normalizarGraciaRetas(crudo);
+    const crudo = localStorage.getItem(claveLocalPorClub(LS_KEY_TOLERANCIA_INSCRIPCION_RETAS));
+    return crudo == null ? TOLERANCIA_INSCRIPCION_RETAS_DEFAULT : normalizarToleranciaInscripcionRetas(crudo);
   } catch (_e) {
-    return GRACIA_RETAS_DEFAULT;
+    return TOLERANCIA_INSCRIPCION_RETAS_DEFAULT;
   }
 }
-function guardarGraciaRetasLocal(minutos) {
+function guardarToleranciaInscripcionRetasLocal(minutos) {
   try {
-    localStorage.setItem(claveLocalPorClub(LS_KEY_GRACIA_RETAS), String(normalizarGraciaRetas(minutos)));
+    localStorage.setItem(claveLocalPorClub(LS_KEY_TOLERANCIA_INSCRIPCION_RETAS), String(normalizarToleranciaInscripcionRetas(minutos)));
   } catch (_e) {
     /* sin localStorage: queda aplicado solo en esta sesión */
   }
@@ -32470,9 +32500,9 @@ function guardarGraciaRetasLocal(minutos) {
 
 // Contexto del Plan de Rescate (lo provee `AppInterno`). Fuera del Panel (o
 // para roles sin permiso) `puedeOperar` es `false` y nada de esto se pinta.
-const RescateRetasContext = React.createContext({ graciaMinutos: GRACIA_RETAS_DEFAULT, puedeOperar: false });
+const RescateRetasContext = React.createContext({ toleranciaInscripcionMinutos: TOLERANCIA_INSCRIPCION_RETAS_DEFAULT, puedeOperar: false });
 function useRescateRetas() {
-  return React.useContext(RescateRetasContext) || { graciaMinutos: GRACIA_RETAS_DEFAULT, puedeOperar: false };
+  return React.useContext(RescateRetasContext) || { toleranciaInscripcionMinutos: TOLERANCIA_INSCRIPCION_RETAS_DEFAULT, puedeOperar: false };
 }
 
 // ¿La Reta fue cancelada por el Plan de Rescate? (`cancelada_en`, v127).
@@ -32498,26 +32528,26 @@ function claseEstadoPagoInscripcion(fila) {
 }
 
 // Estado de rescate de una Reta en este instante.
-//   enGracia               → ventana [inicio, inicio + gracia) con lugares libres.
-//   puedeCancelarIncompleta → pasó la gracia, sigue incompleta y es el mismo día.
-function estadoRescateReta(reta, ocupados, ahoraMs, graciaMinutos) {
-  const base = { enGracia: false, minutosRestantes: 0, puedeCancelarIncompleta: false, cancelada: false, finGraciaMs: null };
+//   enTolerancia            → ventana [inicio, inicio + tolerancia) con lugares libres.
+//   puedeCancelarIncompleta → pasó la tolerancia, sigue incompleta y es el mismo día.
+function estadoRescateReta(reta, ocupados, ahoraMs, toleranciaInscripcionMinutos) {
+  const base = { enTolerancia: false, minutosRestantes: 0, puedeCancelarIncompleta: false, cancelada: false, finToleranciaMs: null };
   if (!reta || reta._local) return base;
   const cancelada = retaCanceladaPorRescate(reta);
   const inicioMs = timestampEvento(reta.fecha, reta.hora_inicio);
   if (inicioMs === null) return { ...base, cancelada };
-  const gracia = normalizarGraciaRetas(graciaMinutos);
-  const finGraciaMs = inicioMs + gracia * 60000;
+  const tolerancia = normalizarToleranciaInscripcionRetas(toleranciaInscripcionMinutos);
+  const finToleranciaMs = inicioMs + tolerancia * 60000;
   const finDiaMs = timestampEvento(reta.fecha, '23:59');
   const incompleta = Number(ocupados) < CUPOS_RETA;
   const vigente = !cancelada && reta.archivado !== true && incompleta;
-  const enGracia = vigente && ahoraMs >= inicioMs && ahoraMs < finGraciaMs && !eventoYaTermino(reta.fecha, reta.hora_fin, ahoraMs);
+  const enTolerancia = vigente && ahoraMs >= inicioMs && ahoraMs < finToleranciaMs && !eventoYaTermino(reta.fecha, reta.hora_fin, ahoraMs);
   return {
-    enGracia,
-    minutosRestantes: enGracia ? Math.max(1, Math.ceil((finGraciaMs - ahoraMs) / 60000)) : 0,
-    puedeCancelarIncompleta: vigente && ahoraMs >= finGraciaMs && (finDiaMs === null || ahoraMs < finDiaMs + 60000),
+    enTolerancia,
+    minutosRestantes: enTolerancia ? Math.max(1, Math.ceil((finToleranciaMs - ahoraMs) / 60000)) : 0,
+    puedeCancelarIncompleta: vigente && ahoraMs >= finToleranciaMs && (finDiaMs === null || ahoraMs < finDiaMs + 60000),
     cancelada,
-    finGraciaMs,
+    finToleranciaMs,
   };
 }
 
@@ -32525,7 +32555,7 @@ function estadoRescateReta(reta, ocupados, ahoraMs, graciaMinutos) {
 function mensajeErrorRescateReta(error) {
   const msg = String(error?.message || '');
   if (esErrorRpcInexistente(error)) return 'Falta correr la migración v127 (Plan de Rescate de Retas) en Supabase.';
-  if (msg.includes('en_gracia')) return 'La gracia de entrada sigue corriendo: todavía se puede completar el cuarteto.';
+  if (msg.includes('en_gracia')) return 'La tolerancia de inscripción sigue corriendo: todavía se puede completar el cuarteto.';
   if (msg.includes('reta_completa')) return 'La Reta ya tiene sus 4 jugadores; no se puede cancelar por cuarteto incompleto.';
   if (msg.includes('pago_en_proceso')) return `${error?.details || 'Un jugador está pagando en línea.'} Espera unos minutos y vuelve a intentarlo.`;
   if (msg.includes('sin_permiso') || error?.code === '42501') return 'Solo la administración del club puede cancelar una Reta.';
@@ -32559,13 +32589,13 @@ function PanelRescateReta({ reta, inscritos, ahoraMs, onInscribirUltimoMomento, 
   const [confirmando, setConfirmando] = useState(false);
   const activos = useMemo(() => (inscritos || []).filter(inscripcionOcupaLugar), [inscritos]);
   if (!ctx.puedeOperar || soloLectura || !reta || reta._local) return null;
-  const est = estadoRescateReta(reta, activos.length, ahoraMs ?? Date.now(), ctx.graciaMinutos);
+  const est = estadoRescateReta(reta, activos.length, ahoraMs ?? Date.now(), ctx.toleranciaInscripcionMinutos);
 
-  if (est.enGracia) {
+  if (est.enTolerancia) {
     return (
-      <div data-rescate="gracia" className="mt-2 rounded-xl border border-orange-400/40 bg-orange-400/10 p-2.5">
+      <div data-rescate="tolerancia" className="mt-2 rounded-xl border border-orange-400/40 bg-orange-400/10 p-2.5">
         <p className="flex items-center gap-1.5 text-[11px] font-black text-orange-500">
-          <Timer size={13} /> Gracia de entrada · quedan {est.minutosRestantes} min
+          <Timer size={13} /> Tolerancia de inscripción · quedan {est.minutosRestantes} min
         </p>
         <p className="mt-0.5 text-[10px] leading-snug text-slate-500">Solo Recepción / Administración. El Portal sigue cerrado para esta Reta.</p>
         <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
@@ -32628,6 +32658,74 @@ function InsigniaRetaCancelada({ reta }) {
           {reta.cancelada_por ? ` · por ${reta.cancelada_por}` : ''}
         </p>
       )}
+    </div>
+  );
+}
+
+// App-118 — "Detalle de Reta" dentro de la Mesa de Control (Torneos & Retas):
+// estado en vivo de la Reta elegida en el selector + el Plan de Rescate.
+// Todos los roles con acceso ven el detalle; las acciones de rescate solo
+// Recepción / Gerencia / Dueño (`PanelRescateReta` se auto-oculta).
+function DetalleRetaMesaControl({ reta, inscritos, nombreCanchas, ahoraMs, onInscribirUltimoMomento, onInvitadoEmergencia }) {
+  const confirmados = (inscritos || []).filter(inscripcionOcupaLugar);
+  const ocupados = confirmados.length;
+  const completa = ocupados >= CUPOS_RETA;
+  const cancelada = retaCanceladaPorRescate(reta);
+  const concluida = reta.archivado === true || eventoYaTermino(reta.fecha, reta.hora_fin, ahoraMs);
+  const iniciada = !concluida && eventoYaInicio(reta.fecha, reta.hora_inicio, ahoraMs);
+  return (
+    <div data-rescate="mesa-detalle" className="rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Detalle de Reta</p>
+          <h3 className="flex items-center gap-1.5 truncate text-sm font-black text-slate-900">
+            <Swords size={14} className="shrink-0 text-fuchsia-400" /> {reta.nombre || `Reta ${ramaDeReta(reta)}`}
+          </h3>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {nombreCanchas} · {formatoFechaLarga(reta.fecha)} · {formatoHora12(reta.hora_inicio)}–{formatoHora12(reta.hora_fin)}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span
+            className={`rounded-full px-2.5 py-0.5 text-[11px] font-black ring-1 ${
+              completa ? 'bg-rose-400/10 text-rose-500 ring-rose-400/30' : 'bg-emerald-400/10 text-emerald-500 ring-emerald-400/30'
+            }`}
+          >
+            {completa ? 'Completa' : 'Abierta'} · {ocupados}/{CUPOS_RETA}
+          </span>
+          {iniciada && !cancelada && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-500 ring-1 ring-amber-400/30">
+              <Lock size={10} /> En curso
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+        {Array.from({ length: CUPOS_RETA }).map((_, idx) => {
+          const j = confirmados[idx];
+          return j ? (
+            <div key={j.id || idx} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs">
+              <span className="flex min-w-0 items-center gap-1.5 font-semibold text-slate-800">
+                <CheckCircle2 size={12} className="shrink-0 text-emerald-500" />
+                <span className="truncate">{j.nombre || 'Jugador'}</span>
+              </span>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${claseEstadoPagoInscripcion(j)}`}>{etiquetaEstadoPagoInscripcion(j)}</span>
+            </div>
+          ) : (
+            <div key={`libre-${idx}`} className="flex items-center gap-1.5 rounded-lg border border-dashed border-slate-300 px-2.5 py-1.5 text-xs text-slate-400">
+              <Users size={12} /> Lugar disponible
+            </div>
+          );
+        })}
+      </div>
+      <InsigniaRetaCancelada reta={reta} />
+      <PanelRescateReta
+        reta={reta}
+        inscritos={inscritos}
+        ahoraMs={ahoraMs}
+        onInscribirUltimoMomento={onInscribirUltimoMomento}
+        onInvitadoEmergencia={onInvitadoEmergencia}
+      />
     </div>
   );
 }
@@ -32739,8 +32837,8 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
     if (guardando) return;
     if (!nombre.trim()) return setError('Indica el nombre del Coach o invitado.');
     if (ajuste === 'dividido' && jugadoresQuePagan === 0) return setError('No hay jugadores entre quienes dividir: elige otra opción.');
-    const est = estadoRescateReta(reta, activos.length, Date.now(), ctx.graciaMinutos);
-    if (!est.enGracia) return setError('La gracia de entrada ya terminó o la Reta se completó.');
+    const est = estadoRescateReta(reta, activos.length, Date.now(), ctx.toleranciaInscripcionMinutos);
+    if (!est.enTolerancia) return setError('La tolerancia de inscripción ya terminó o la Reta se completó.');
     setGuardando(true);
     setError('');
     const estadoPago = esCortesia ? 'cortesia' : 'pendiente';
@@ -32862,32 +32960,33 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
   );
 }
 
-// Configuración del Club → Reservas & Academia: minutos de Gracia de Entrada.
-function TarjetaGraciaRetas() {
+// Configuración del Club → Reservas & Academia: minutos de Tolerancia de Inscripción.
+function TarjetaToleranciaInscripcionRetas() {
   const ctx = useRescateRetas();
-  const [valor, setValor] = useState(String(ctx.graciaMinutos ?? GRACIA_RETAS_DEFAULT));
+  const [valor, setValor] = useState(String(ctx.toleranciaInscripcionMinutos ?? TOLERANCIA_INSCRIPCION_RETAS_DEFAULT));
   useEffect(() => {
-    setValor(String(ctx.graciaMinutos ?? GRACIA_RETAS_DEFAULT));
-  }, [ctx.graciaMinutos]);
-  if (!ctx.guardarGracia) return null;
-  const n = normalizarGraciaRetas(valor);
-  const cambio = n !== normalizarGraciaRetas(ctx.graciaMinutos);
+    setValor(String(ctx.toleranciaInscripcionMinutos ?? TOLERANCIA_INSCRIPCION_RETAS_DEFAULT));
+  }, [ctx.toleranciaInscripcionMinutos]);
+  if (!ctx.guardarToleranciaInscripcion) return null;
+  const n = normalizarToleranciaInscripcionRetas(valor);
+  const cambio = n !== normalizarToleranciaInscripcionRetas(ctx.toleranciaInscripcionMinutos);
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-rescate="config-gracia">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-rescate="config-tolerancia">
       <div className="mb-1 flex items-center gap-2">
         <Timer size={16} className="text-orange-500" />
-        <h3 className="text-sm font-black text-slate-900">Retas: Gracia de Entrada</h3>
+        <h3 className="text-sm font-black text-slate-900">Retas: Tolerancia de Inscripción</h3>
       </div>
       <p className="mb-3 text-xs text-slate-500">
-        Minutos después de la hora de inicio en los que Recepción todavía puede completar una Reta incompleta (último
-        momento o Coach / Invitado). Al terminar, si sigue incompleta, se puede cancelar con reembolso al Wallet.
+        Ventana, en minutos a partir de la hora de inicio, en la que Recepción todavía puede completar una Reta
+        incompleta (jugador de último momento o Coach / Invitado de emergencia). El Portal de Jugadores permanece
+        cerrado. Al vencer, si la Reta sigue incompleta, se puede cancelar con reembolso al Wallet.
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <Campo label="Minutos (0–60)">
           <input type="number" min="0" max="60" value={valor} onChange={(e) => setValor(e.target.value)} className={`${inputClase} w-28`} />
         </Campo>
-        <BotonPrimario onClick={() => ctx.guardarGracia(n)} disabled={!ctx.puedeEditarGracia || !cambio || ctx.guardandoGracia}>
-          {ctx.guardandoGracia ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+        <BotonPrimario onClick={() => ctx.guardarToleranciaInscripcion(n)} disabled={!ctx.puedeEditarToleranciaInscripcion || !cambio || ctx.guardandoToleranciaInscripcion}>
+          {ctx.guardandoToleranciaInscripcion ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
           Guardar
         </BotonPrimario>
       </div>
@@ -33214,7 +33313,7 @@ function TarjetaReta({
   // Generación Masiva (lote): { indice, total, clase } cuando la reta forma
   // parte de una sesión creada en lote (`lote_id`, migracion_v103).
   lote,
-  // App-117 — Plan de Rescate: Coach / Invitado de emergencia (Gracia de Entrada).
+  // App-117 — Plan de Rescate: Coach / Invitado de emergencia (Tolerancia de Inscripción).
   onInvitadoEmergencia,
 }) {
   const confirmados = inscritos.filter(inscripcionOcupaLugar);
@@ -33451,8 +33550,8 @@ function TarjetaReta({
         </BotonPrimario>
       )}
 
-      {/* App-117 — Plan de Rescate (solo Recepción / Administración): Gracia de
-          Entrada o "Cancelar Reta por Incompleta". El botón "En curso /
+      {/* App-117 — Plan de Rescate (solo Recepción / Administración): Tolerancia
+          de Inscripción o "Cancelar Reta por Incompleta". El botón "En curso /
           Bloqueada" de arriba se queda tal cual. */}
       <PanelRescateReta
         reta={reta}
@@ -34287,8 +34386,8 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
 function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClose, onInscrito }) {
   const toast = useToast();
   // App-117 — Plan de Rescate: si la Reta ya empezó, esta inscripción solo
-  // pudo abrirse desde la Gracia de Entrada (Recepción) — se marca
-  // `ingreso_rescate: 'gracia'` (columna opcional, v127) y queda en auditoría.
+  // pudo abrirse desde la Tolerancia de Inscripción (Recepción) — se marca
+  // `ingreso_rescate: 'gracia'` (valor fijo de la columna v127) y queda en auditoría.
   // Antes de la hora de inicio el payload es exactamente el de siempre.
   const rescateRetas = useRescateRetas();
   const [nombre, setNombre] = useState('');
@@ -34320,9 +34419,9 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
     // repetido puede fusionarse por accidente con otro cliente.
     const claveTelInscripcion = claveTelefono(telefono);
     if (!claveTelInscripcion) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio & CRM.');
-    const esIngresoGracia =
+    const esIngresoTolerancia =
       eventoYaInicio(reta?.fecha, reta?.hora_inicio) &&
-      estadoRescateReta(reta, CUPOS_RETA - lugaresDisponibles, Date.now(), rescateRetas.graciaMinutos).enGracia;
+      estadoRescateReta(reta, CUPOS_RETA - lugaresDisponibles, Date.now(), rescateRetas.toleranciaInscripcionMinutos).enTolerancia;
     setGuardando(true);
     setError('');
 
@@ -34354,7 +34453,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       // columnas opcionales igual que `metodo_pago` en su momento.
       monto_efectivo: estadoPago === 'pagado' && metodoPago === 'mixto' ? Number(montoEfectivoMixto) || 0 : null,
       monto_tarjeta: estadoPago === 'pagado' && metodoPago === 'mixto' ? Number(montoTarjetaMixto) || 0 : null,
-      ...(esIngresoGracia ? { ingreso_rescate: 'gracia' } : {}),
+      ...(esIngresoTolerancia ? { ingreso_rescate: 'gracia' } : {}),
     });
 
     let inscripcionCreada = null;
@@ -34372,7 +34471,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
       'metodo_pago',
       'monto_efectivo',
       'monto_tarjeta',
-      ...(esIngresoGracia ? ['ingreso_rescate'] : []),
+      ...(esIngresoTolerancia ? ['ingreso_rescate'] : []),
     ]);
 
     if (!errInscripcion && data) {
@@ -34409,7 +34508,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
     // en modo local ya se avisó arriba con un toast de error explícito.
     if (!modoLocal) {
       toast({ titulo: 'Jugador inscrito', detalle: `${nombre.trim()} · ${formatoMoneda(precioDeReta(reta))}` });
-      if (esIngresoGracia) {
+      if (esIngresoTolerancia) {
         rescateRetas.registrarAuditoria?.('reta_inscripcion_gracia', {
           reta: reta.nombre,
           fecha: reta.fecha,
@@ -36806,7 +36905,18 @@ function ModalMarcadorReta({ reta, confirmados, onClose, onGuardar, guardando })
 
 /* ---------------- Mesa de Control (CRM) ---------------- */
 
-function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo, puedeVerMontos = true }) {
+function MesaDeControl({
+  retas,
+  inscripciones,
+  torneos,
+  participantesTorneo,
+  puedeVerMontos = true,
+  // App-118 — Plan de Rescate de Retas dentro de la Mesa de Control.
+  canchas = [],
+  ahoraMs,
+  onInscribirUltimoMomento,
+  onInvitadoEmergencia,
+}) {
   // Filtro superior: 'todos' | 'reta:<id>' | 'torneo:<id>'. Los 3 indicadores
   // y el directorio de abajo se recalculan sobre el evento elegido — nunca
   // se filtra en el servidor, todo viene ya cargado por el módulo principal.
@@ -36901,8 +37011,38 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo, pue
   // `resumen.jugadoresPendientesPago`).
   const directorioFiltrado = useMemo(() => {
     if (filtroDirectorio !== 'pendientes') return directorio;
-    return directorio.filter((f) => f.estadoPago != null && f.estadoPago !== 'pagado');
+    return directorio.filter((f) => f.estadoPago != null && f.estadoPago !== 'pagado' && f.estadoPago !== 'cortesia');
   }, [directorio, filtroDirectorio]);
+
+  // App-118 — Plan de Rescate en la Mesa de Control: (a) "Retas en curso"
+  // que hoy necesitan atención (dentro de la Tolerancia de Inscripción, o ya
+  // vencida y sin cuarteto) con sus acciones a la mano, y (b) "Detalle de
+  // Reta" al elegir una Reta en el selector. Solo lectura de los mismos datos
+  // del módulo — nada de esto cambia el flujo normal.
+  const rescate = useRescateRetas();
+  const ahoraMesa = ahoraMs ?? Date.now();
+  const inscritosPorRetaId = useMemo(() => {
+    const m = {};
+    (inscripciones || []).forEach((i) => {
+      const k = String(i.reta_id);
+      (m[k] = m[k] || []).push(i);
+    });
+    return m;
+  }, [inscripciones]);
+  const retaSeleccionada = tipoFiltro === 'reta' ? (retas || []).find((r) => String(r.id) === String(idFiltro)) || null : null;
+  const retasEnCurso = useMemo(() => {
+    if (!rescate.puedeOperar) return [];
+    return (retas || [])
+      .filter((r) => !r.deleted_at && !r._local)
+      .map((r) => {
+        const inscritos = inscritosPorRetaId[String(r.id)] || [];
+        const ocupados = inscritos.filter(inscripcionOcupaLugar).length;
+        return { reta: r, inscritos, ocupados, est: estadoRescateReta(r, ocupados, ahoraMesa, rescate.toleranciaInscripcionMinutos) };
+      })
+      .filter((x) => (x.est.enTolerancia || x.est.puedeCancelarIncompleta) && !(retaSeleccionada && mismoId(x.reta.id, retaSeleccionada.id)))
+      .sort((a, b) => String(a.reta.fecha).localeCompare(String(b.reta.fecha)) || String(a.reta.hora_inicio).localeCompare(String(b.reta.hora_inicio)));
+  }, [retas, inscritosPorRetaId, ahoraMesa, rescate.puedeOperar, rescate.toleranciaInscripcionMinutos, retaSeleccionada]);
+  const nombreCanchasMesa = (reta) => nombresCanchasDeReta(reta, canchas) || 'Cancha por confirmar';
 
   return (
     <div className="space-y-5">
@@ -36927,6 +37067,61 @@ function MesaDeControl({ retas, inscripciones, torneos, participantesTorneo, pue
           </select>
         </div>
       </div>
+
+      {retaSeleccionada && (
+        <DetalleRetaMesaControl
+          reta={retaSeleccionada}
+          inscritos={inscritosPorRetaId[String(retaSeleccionada.id)] || []}
+          nombreCanchas={nombreCanchasMesa(retaSeleccionada)}
+          ahoraMs={ahoraMesa}
+          onInscribirUltimoMomento={onInscribirUltimoMomento}
+          onInvitadoEmergencia={onInvitadoEmergencia}
+        />
+      )}
+
+      {retasEnCurso.length > 0 && (
+        <div data-rescate="mesa-en-curso" className="rounded-2xl border border-orange-400/30 bg-white p-4">
+          <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+            <Timer size={16} className="text-orange-500" /> Retas en curso · Tolerancia de Inscripción
+          </h3>
+          <p className="mt-0.5 text-xs text-slate-500">Retas incompletas que ya empezaron: complétalas dentro de la tolerancia o cancélalas con reembolso al Wallet.</p>
+          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {retasEnCurso.map(({ reta, inscritos, ocupados, est }) => (
+              <div key={reta.id} data-rescate-reta={String(reta.id)} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEventoFiltro(`reta:${reta.id}`)}
+                    className="min-w-0 text-left"
+                    title="Ver el detalle de esta Reta"
+                  >
+                    <span className="flex items-center gap-1.5 truncate text-sm font-black text-slate-900 hover:text-orange-500">
+                      <Swords size={13} className="shrink-0 text-fuchsia-400" /> {reta.nombre || `Reta ${ramaDeReta(reta)}`}
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-slate-500">
+                      {nombreCanchasMesa(reta)} · {formatoHora12(reta.hora_inicio)}–{formatoHora12(reta.hora_fin)}
+                    </span>
+                  </button>
+                  <span
+                    className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
+                      est.enTolerancia ? 'bg-orange-400/10 text-orange-500 ring-orange-400/30' : 'bg-rose-400/10 text-rose-500 ring-rose-400/30'
+                    }`}
+                  >
+                    {ocupados}/{CUPOS_RETA} · {est.enTolerancia ? `${est.minutosRestantes} min` : 'Sin cuarteto'}
+                  </span>
+                </div>
+                <PanelRescateReta
+                  reta={reta}
+                  inscritos={inscritos}
+                  ahoraMs={ahoraMesa}
+                  onInscribirUltimoMomento={onInscribirUltimoMomento}
+                  onInvitadoEmergencia={onInvitadoEmergencia}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className={`grid grid-cols-1 gap-3 ${puedeVerMontos ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
         {puedeVerMontos && (
@@ -38764,6 +38959,10 @@ function ModuloTorneosRetas({
           torneos={torneos}
           participantesTorneo={participantesTorneo}
           puedeVerMontos={permisos?.puedeVerMontos !== false}
+          canchas={canchas}
+          ahoraMs={ahoraMsRetas}
+          onInscribirUltimoMomento={setRetaParaInscribir}
+          onInvitadoEmergencia={setRetaParaInvitado}
         />
       )}
       </TransicionPestana>
@@ -55123,8 +55322,8 @@ function SeccionReservasAcademia({
         )}
       </div>
 
-      {/* App-117 — Plan de Rescate de Retas: minutos de Gracia de Entrada. */}
-      {!modoOnboarding && <TarjetaGraciaRetas />}
+      {/* App-117 — Plan de Rescate de Retas: minutos de Tolerancia de Inscripción. */}
+      {!modoOnboarding && <TarjetaToleranciaInscripcionRetas />}
 
       {modalRangosHorario && (
         <ModalRangosHorarioClases
@@ -65899,9 +66098,9 @@ function AppInterno({ clubInicial } = {}) {
   // App-115 — Criterio VIP automático del club (configuracion_club, v126).
   const [criterioVip, setCriterioVip] = useState(() => leerCriterioVipLocal());
   const [guardandoCriterioVip, setGuardandoCriterioVip] = useState(false);
-  // App-117 — Plan de Rescate de Retas: minutos de Gracia de Entrada (v127).
-  const [graciaRetasMinutos, setGraciaRetasMinutos] = useState(() => leerGraciaRetasLocal());
-  const [guardandoGraciaRetas, setGuardandoGraciaRetas] = useState(false);
+  // App-117 — Plan de Rescate de Retas: minutos de Tolerancia de Inscripción (v127).
+  const [toleranciaInscripcionRetasMinutos, setToleranciaInscripcionRetasMinutos] = useState(() => leerToleranciaInscripcionRetasLocal());
+  const [guardandoToleranciaInscripcionRetas, setGuardandoToleranciaInscripcionRetas] = useState(false);
 
   // Configuración del Club → "Portal & Tienda Web" → Add-ons (módulo nuevo):
   // misma fila de `configuracion_club`, mismo criterio de flujo
@@ -66703,11 +66902,11 @@ function AppInterno({ clubInicial } = {}) {
             guardarCriterioVipLocal(vip);
           }
         }
-        // App-117 — Gracia de Entrada de Retas (v127): mismo `select('*')`.
+        // App-117 — Tolerancia de Inscripción de Retas (v127): mismo `select('*')`.
         if (data.retas_gracia_minutos != null) {
-          const gracia = normalizarGraciaRetas(data.retas_gracia_minutos);
-          setGraciaRetasMinutos(gracia);
-          guardarGraciaRetasLocal(gracia);
+          const tolerancia = normalizarToleranciaInscripcionRetas(data.retas_gracia_minutos);
+          setToleranciaInscripcionRetasMinutos(tolerancia);
+          guardarToleranciaInscripcionRetasLocal(tolerancia);
         }
         // Configuración del Club → Add-ons (módulo nuevo) — mismo
         // `select('*')` de arriba, sin consulta nueva: en un proyecto que
@@ -67320,36 +67519,39 @@ function AppInterno({ clubInicial } = {}) {
     [mostrarToast]
   );
 
-  // App-117 — Plan de Rescate de Retas: guarda los minutos de Gracia de
-  // Entrada (`configuracion_club.retas_gracia_minutos`, v127). Mismo patrón
+  // App-117 — Plan de Rescate de Retas: guarda los minutos de Tolerancia de
+  // Inscripción (`configuracion_club.retas_gracia_minutos`, v127). Mismo patrón
   // que `guardarCriterioVip`.
-  const guardarGraciaRetas = useCallback(
+  const guardarToleranciaInscripcionRetas = useCallback(
     async (minutos) => {
-      const gracia = normalizarGraciaRetas(minutos);
-      setGuardandoGraciaRetas(true);
-      setGraciaRetasMinutos(gracia);
-      guardarGraciaRetasLocal(gracia);
+      const minutosTolerancia = normalizarToleranciaInscripcionRetas(minutos);
+      setGuardandoToleranciaInscripcionRetas(true);
+      setToleranciaInscripcionRetasMinutos(minutosTolerancia);
+      guardarToleranciaInscripcionRetasLocal(minutosTolerancia);
       let ok = false;
       try {
         if (!CLUB_ACTIVO_ID) throw new Error('No hay un club activo en esta sesión.');
-        const { error } = await supabase.from('configuracion_club').update({ retas_gracia_minutos: gracia }).eq('id', CLUB_ACTIVO_ID);
+        const { error } = await supabase.from('configuracion_club').update({ retas_gracia_minutos: minutosTolerancia }).eq('id', CLUB_ACTIVO_ID);
         if (error) throw error;
         ok = true;
       } catch (err) {
-        console.warn('[Retas] No se pudo guardar la Gracia de Entrada en Supabase — quedó en este navegador.', err);
+        console.warn('[Retas] No se pudo guardar la Tolerancia de Inscripción en Supabase — quedó en este navegador.', err);
         mostrarToast({
-          titulo: 'Gracia de entrada guardada solo en este navegador',
+          titulo: 'Tolerancia de inscripción guardada solo en este navegador',
           detalle: esErrorColumnaInexistente(err)
             ? 'Falta correr la migración v127 (Plan de Rescate de Retas) en Supabase.'
             : 'No se pudo guardar en Supabase. Vuelve a intentarlo.',
           tono: 'error',
         });
       }
-      setGuardandoGraciaRetas(false);
+      setGuardandoToleranciaInscripcionRetas(false);
       if (ok) {
         mostrarToast({
-          titulo: 'Gracia de entrada actualizada',
-          detalle: gracia > 0 ? `Recepción tendrá ${gracia} min para completar una Reta en curso.` : 'Sin gracia: las Retas se bloquean al iniciar.',
+          titulo: 'Tolerancia de inscripción actualizada',
+          detalle:
+            minutosTolerancia > 0
+              ? `Recepción tendrá ${minutosTolerancia} min después del inicio para completar una Reta en curso.`
+              : 'Sin tolerancia: las Retas se bloquean al iniciar.',
         });
       }
       return ok;
@@ -69650,16 +69852,16 @@ function AppInterno({ clubInicial } = {}) {
   const coachesRescateRetas = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
   const rescateRetasCtx = useMemo(
     () => ({
-      graciaMinutos: graciaRetasMinutos,
-      guardarGracia: guardarGraciaRetas,
-      guardandoGracia: guardandoGraciaRetas,
-      puedeEditarGracia: operador?.rol === 'owner' || operador?.rol === 'manager',
+      toleranciaInscripcionMinutos: toleranciaInscripcionRetasMinutos,
+      guardarToleranciaInscripcion: guardarToleranciaInscripcionRetas,
+      guardandoToleranciaInscripcion: guardandoToleranciaInscripcionRetas,
+      puedeEditarToleranciaInscripcion: operador?.rol === 'owner' || operador?.rol === 'manager',
       puedeOperar: ROLES_RESCATE_RETAS.includes(operador?.rol),
       cancelarRetaIncompleta,
       registrarAuditoria: registrarEventoAuditoria,
       coaches: coachesRescateRetas,
     }),
-    [graciaRetasMinutos, guardarGraciaRetas, guardandoGraciaRetas, operador?.rol, cancelarRetaIncompleta, registrarEventoAuditoria, coachesRescateRetas]
+    [toleranciaInscripcionRetasMinutos, guardarToleranciaInscripcionRetas, guardandoToleranciaInscripcionRetas, operador?.rol, cancelarRetaIncompleta, registrarEventoAuditoria, coachesRescateRetas]
   );
 
   let contenido;
@@ -69813,7 +70015,12 @@ function AppInterno({ clubInicial } = {}) {
   } else {
   contenido = (
     <ToastContext.Provider value={mostrarToast}>
-      <div className="flex min-h-screen w-full min-w-0 overflow-x-hidden bg-slate-50 text-slate-900">
+      {/* App-118 — `overflow-x: clip` (en vez de `hidden`) recorta igual el
+          desbordamiento horizontal pero NO crea un contenedor de scroll, así
+          que la barra superior (`sticky top-0`) se queda fija arriba al
+          desplazarse, como fue diseñada. Navegadores sin `clip` ignoran el
+          estilo y usan la clase `overflow-x-hidden` de respaldo. */}
+      <div className="flex min-h-screen w-full min-w-0 overflow-x-hidden bg-slate-50 text-slate-900" style={{ overflowX: 'clip' }}>
         <Sidebar
           operador={operador}
           turno={turno}
