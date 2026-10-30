@@ -3346,15 +3346,32 @@ function inscripcionActivaParaUnicidad(fila, tipo) {
   return tipo === 'clase' ? fila.estado !== 'baja' : inscripcionOcupaLugar(fila);
 }
 
+// App-121 — Categoría de Torneo normalizada (idéntica a `fn__categoria_norm`,
+// v129): sin acentos, ª/º = a/o, minúsculas, espacios colapsados.
+function claveCategoriaTorneo(categoria) {
+  return claveNombre(String(categoria || '').replace(/ª/g, 'a').replace(/º/g, 'o'));
+}
+
 // Primera inscripción ACTIVA de `filas` que sea la misma persona que
-// `candidato` ({ jugador_id, telefono, nombre }), o null.
+// `candidato` ({ jugador_id, telefono, nombre }), o null. En Torneos la
+// sesión es la CATEGORÍA (v129): `candidato.categoria` debe venir (null/''
+// = torneo sin categorías) y solo choca con la misma categoría.
 function buscarInscripcionDuplicada(filas, candidato, tipo = 'reta') {
-  return (filas || []).find((f) => inscripcionActivaParaUnicidad(f, tipo) && mismaPersonaInscripcion(f, candidato)) || null;
+  const categoriaCandidato = tipo === 'torneo' ? claveCategoriaTorneo(candidato?.categoria) : null;
+  return (
+    (filas || []).find(
+      (f) =>
+        inscripcionActivaParaUnicidad(f, tipo) &&
+        (tipo !== 'torneo' || claveCategoriaTorneo(f.categoria) === categoriaCandidato) &&
+        mismaPersonaInscripcion(f, candidato)
+    ) || null
+  );
 }
 
 const DONDE_INSCRIPCION = { reta: 'esta Reta', torneo: 'este Torneo', clase: 'esta Clase' };
-function textoInscripcionDuplicada(nombre, tipo = 'reta') {
-  return `${(nombre || '').trim() || 'Esta persona'} ya está inscrito(a) en ${DONDE_INSCRIPCION[tipo] || 'esta actividad'}.`;
+function textoInscripcionDuplicada(nombre, tipo = 'reta', categoria = null) {
+  const enCategoria = tipo === 'torneo' && String(categoria || '').trim() ? ` (categoría ${String(categoria).trim()})` : '';
+  return `${(nombre || '').trim() || 'Esta persona'} ya está inscrito(a) en ${DONDE_INSCRIPCION[tipo] || 'esta actividad'}${enCategoria}.`;
 }
 // Errores del servidor (v128 / v127) → texto claro, o null si es otro error.
 function esErrorInscripcionDuplicada(error) {
@@ -3385,14 +3402,14 @@ function claseVisibleEnPortal(clase) {
 
 // Switch Pública / Privada de los modales "Abrir Reta" y "Nueva Clase".
 // Cualquier operador que pueda crear la actividad puede elegirlo.
-function SelectorVisibilidadPortal({ publica, onChange, entidad = 'actividad' }) {
+function SelectorVisibilidadPortal({ publica, onChange, entidad = 'actividad', disabled = false, etiqueta = 'Visibilidad en el Portal' }) {
   const opciones = [
     { valor: true, titulo: 'Pública', detalle: 'Visible e inscribible en el Portal de Jugadores', Icono: Eye },
     { valor: false, titulo: 'Privada', detalle: 'Oculta del Portal · solo la gestiona el club', Icono: EyeOff },
   ];
   return (
     <div data-visibilidad-portal={publica ? 'publica' : 'privada'}>
-      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Visibilidad en el Portal</span>
+      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">{etiqueta}</span>
       <div role="radiogroup" aria-label={`Visibilidad de la ${entidad} en el Portal`} className="grid grid-cols-2 gap-2">
         {opciones.map(({ valor, titulo, detalle, Icono }) => {
           const activo = publica === valor;
@@ -3403,8 +3420,11 @@ function SelectorVisibilidadPortal({ publica, onChange, entidad = 'actividad' })
               role="radio"
               aria-checked={activo}
               data-opcion-visibilidad={valor ? 'publica' : 'privada'}
-              onClick={() => onChange(valor)}
-              className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-left transition ${
+              disabled={disabled}
+              onClick={() => {
+                if (!activo) onChange(valor);
+              }}
+              className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
                 activo
                   ? valor
                     ? 'border-emerald-400/60 bg-emerald-400/10'
@@ -9952,6 +9972,9 @@ function ModalDetalleRetaParrilla({
             })}
           </div>
         </div>
+
+        {/* App-121 — Visibilidad Pública / Privada editable. */}
+        {!soloLectura && <ControlVisibilidadReta reta={reta} />}
 
         {/* App-117 — Plan de Rescate (solo Recepción / Administración). */}
         <PanelRescateReta
@@ -32054,6 +32077,14 @@ const TIPOS_EVENTO_AUDITORIA = {
         d?.reembolsados ?? 0
       } jugador(es)${d?.reembolso_manual ? ` · ${d.reembolso_manual} reembolso(s) manual(es)` : ''}. Motivo: ${d?.motivo || 'Falta de cuarteto'}.`,
   },
+  // App-121 — cambio de visibilidad Pública/Privada de una Reta o Clase.
+  visibilidad_actividad: {
+    label: 'Visibilidad en el Portal',
+    icon: Eye,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    detalleTexto: (d) => `${d?.tipo || 'Actividad'} "${d?.nombre || '—'}"${d?.fecha ? ` (${formatoFechaLarga(d.fecha)})` : ''} → ${d?.visibilidad || '—'}.`,
+  },
   // App-115 — Estatus VIP manual de un jugador (Vista 360°).
   vip_manual: {
     label: 'Estatus VIP manual',
@@ -32789,6 +32820,29 @@ function InsigniaRetaCancelada({ reta }) {
   );
 }
 
+// App-121 — Visibilidad editable de una Reta ya creada (Detalle de Reta en la
+// Mesa de Control y en la Parrilla). Solo Recepción / Gerencia / Dueño; una
+// Reta cancelada ya no se publica.
+function ControlVisibilidadReta({ reta }) {
+  const ctx = useRescateRetas();
+  const [guardando, setGuardando] = useState(false);
+  if (!ctx.puedeEditarVisibilidad || !ctx.cambiarVisibilidadReta || !reta || retaCanceladaPorRescate(reta)) return null;
+  return (
+    <div className="mt-3" data-control-visibilidad="reta">
+      <SelectorVisibilidadPortal
+        publica={retaVisibleEnPortal(reta)}
+        disabled={guardando}
+        entidad="Reta"
+        onChange={async (publica) => {
+          setGuardando(true);
+          await ctx.cambiarVisibilidadReta(reta, publica);
+          setGuardando(false);
+        }}
+      />
+    </div>
+  );
+}
+
 // App-118 — "Detalle de Reta" dentro de la Mesa de Control (Torneos & Retas):
 // estado en vivo de la Reta elegida en el selector + el Plan de Rescate.
 // Todos los roles con acceso ven el detalle; las acciones de rescate solo
@@ -32847,6 +32901,7 @@ function DetalleRetaMesaControl({ reta, inscritos, nombreCanchas, ahoraMs, onIns
         })}
       </div>
       <InsigniaRetaCancelada reta={reta} />
+      <ControlVisibilidadReta reta={reta} />
       <PanelRescateReta
         reta={reta}
         inscritos={inscritos}
@@ -33445,6 +33500,11 @@ function TarjetaReta({
 }) {
   const confirmados = inscritos.filter(inscripcionOcupaLugar);
   const retaCancelada = retaCanceladaPorRescate(reta);
+  // App-121 — cambiar Pública / Privada desde la propia tarjeta.
+  const ctxRetas = useRescateRetas();
+  const [cambiandoVisibilidad, setCambiandoVisibilidad] = useState(false);
+  const puedeCambiarVisibilidad = Boolean(ctxRetas.puedeEditarVisibilidad && ctxRetas.cambiarVisibilidadReta) && !retaCancelada;
+  const esPublica = retaVisibleEnPortal(reta);
   const lugaresDisponibles = Math.max(0, CUPOS_RETA - confirmados.length);
   const completa = lugaresDisponibles === 0;
   const archivado = reta.archivado === true;
@@ -33742,6 +33802,23 @@ function TarjetaReta({
             )}
             {archivado ? 'Restaurar' : 'Archivar'}
           </button>
+          )}
+          {puedeCambiarVisibilidad && (
+            <button
+              type="button"
+              data-cambiar-visibilidad={esPublica ? 'a-privada' : 'a-publica'}
+              onClick={async () => {
+                setCambiandoVisibilidad(true);
+                await ctxRetas.cambiarVisibilidadReta(reta, !esPublica);
+                setCambiandoVisibilidad(false);
+              }}
+              disabled={cambiandoVisibilidad}
+              title={esPublica ? 'Ocultar del Portal de Jugadores (solo gestión interna)' : 'Publicar en el Portal de Jugadores'}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition hover:border-sky-400/40 hover:text-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {cambiandoVisibilidad ? <Loader2 size={12} className="animate-spin" /> : esPublica ? <EyeOff size={12} /> : <Eye size={12} />}
+              {esPublica ? 'Hacer Privada' : 'Hacer Pública'}
+            </button>
           )}
           {/* "Eliminar Reta": borra la Reta y libera la cancha en la Parrilla.
               A diferencia de "Eliminar Definitivamente" (abajo), NO exige que
@@ -35751,16 +35828,22 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
   // por teléfono normalizado (siempre presente, es obligatorio en este
   // mismo formulario) y, de respaldo, por `jugador_id` cuando la fila viene
   // vinculada al directorio.
+  // App-121 — la unicidad es POR CATEGORÍA (v129): solo cuentan los
+  // inscritos activos de la categoría elegida en este formulario, así un
+  // jugador puede jugar 5ª y 4ª Fuerza del mismo torneo.
   const clavesInscritas = useMemo(() => {
     const telefonos = new Set();
     const jugadorIds = new Set();
-    (participantesExistentes || []).filter(inscripcionOcupaLugar).forEach((p) => {
+    const categoriaElegida = claveCategoriaTorneo(categoria);
+    (participantesExistentes || [])
+      .filter((p) => inscripcionOcupaLugar(p) && claveCategoriaTorneo(p.categoria) === categoriaElegida)
+      .forEach((p) => {
       const tel = claveTelefono(p.telefono);
       if (tel) telefonos.add(tel);
       if (p.jugador_id != null) jugadorIds.add(String(p.jugador_id));
-    });
+      });
     return { telefonos, jugadorIds };
-  }, [participantesExistentes]);
+  }, [participantesExistentes, categoria]);
 
   // Directorio filtrado para el autocompletado (requerimiento 1): un
   // jugador que ya está inscrito en ESTE torneo simplemente no aparece como
@@ -35798,10 +35881,13 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
     const yaInscrito =
       clavesInscritas.telefonos.has(claveTelParticipante) ||
       (jugadorSeleccionadoId != null && clavesInscritas.jugadorIds.has(String(jugadorSeleccionadoId))) ||
-      Boolean(buscarInscripcionDuplicada(participantesExistentes, { telefono, nombre }, 'torneo'));
+      Boolean(buscarInscripcionDuplicada(participantesExistentes, { telefono, nombre, categoria }, 'torneo'));
     if (yaInscrito) {
-      toast({ titulo: 'El jugador ya se encuentra inscrito en este torneo', tono: 'aviso' });
-      return setError('El jugador ya se encuentra inscrito en este torneo.');
+      const aviso = categoria
+        ? `El jugador ya se encuentra inscrito en la categoría ${categoria} de este torneo.`
+        : 'El jugador ya se encuentra inscrito en este torneo.';
+      toast({ titulo: 'Inscripción duplicada', detalle: aviso, tono: 'aviso' });
+      return setError(aviso);
     }
     setGuardando(true);
     setError('');
@@ -35931,7 +36017,7 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
   return (
     <ModalShell titulo="Agregar Participante" subtitulo={torneo.nombre} onClose={onClose} icon={UserPlus} ancho="max-w-md">
       <div className="space-y-4">
-        <Campo label="Nombre" hint="Busca en el directorio del club o escribe uno nuevo. Los jugadores ya inscritos en este torneo no aparecen aquí.">
+        <Campo label="Nombre" hint="Busca en el directorio del club o escribe uno nuevo. Los jugadores ya inscritos en esta categoría del torneo no aparecen aquí.">
           <SelectorJugadorRegistrado
             jugadores={jugadoresDisponibles}
             nombre={nombre}
@@ -41646,8 +41732,13 @@ function ModalDetalleClase({
   // Clase" desde cualquiera de las dos parrillas abre EXACTAMENTE el mismo
   // panel, sin un clic intermedio extra en este segundo caso.
   abrirCancelacionInicial,
+  // App-121 — Visibilidad Pública / Privada editable (Recepción / Gerencia / Dueño).
+  onCambiarVisibilidad,
 }) {
   const toast = useToast();
+  const [cambiandoVisibilidadClase, setCambiandoVisibilidadClase] = useState(false);
+  const puedeCambiarVisibilidadClase =
+    typeof onCambiarVisibilidad === 'function' && ROLES_RESCATE_RETAS.includes(permisos?.rol) && clase?.estado !== 'cancelada';
   // FIX (buscador "Agregar alumno"): las cuentas eliminadas/anonimizadas no
   // deben ofrecerse para inscribir a nadie — ver `esJugadorEliminado`.
   const directorioJugadores = useMemo(
@@ -42280,7 +42371,24 @@ function ModalDetalleClase({
           <span className="flex items-center gap-1">
             <Users size={12} /> {alumnosActivos.length}/{clase.capacidad_maxima} cupos
           </span>
+          {!claseVisibleEnPortal(clase) && <InsigniaActividadPrivada />}
         </div>
+
+        {/* App-121 — Visibilidad en el Portal, editable en cualquier momento. */}
+        {puedeCambiarVisibilidadClase && !mostrarCancelacionClase && (
+          <div data-control-visibilidad="clase">
+            <SelectorVisibilidadPortal
+              publica={claseVisibleEnPortal(clase)}
+              disabled={cambiandoVisibilidadClase}
+              entidad="Clase"
+              onChange={async (publica) => {
+                setCambiandoVisibilidadClase(true);
+                await onCambiarVisibilidad(publica);
+                setCambiandoVisibilidadClase(false);
+              }}
+            />
+          </div>
+        )}
 
         {/* Unificación de Interfaz (Plan Integral de Cancelaciones, Parte 2):
             se eliminó la pestaña "Ajustes" — "Editar" y "Cancelar Clase"
@@ -44800,6 +44908,38 @@ function ModuloAcademiaClinicas({
     return { error: null };
   }
 
+  // App-121 — Visibilidad Pública / Privada de la clase seleccionada
+  // (`academia_clases.visible_portal`, v128). A diferencia de la edición
+  // general, aquí SÍ se espera a Supabase: si la columna no existe, no se
+  // finge el cambio (el Portal seguiría mostrando lo contrario).
+  async function cambiarVisibilidadClase(publica) {
+    const clase = claseSeleccionada;
+    if (!clase) return { ok: false };
+    if (!clase._local) {
+      const { error } = await supabase.from('academia_clases').update({ visible_portal: publica }).eq('id', clase.id);
+      if (error) {
+        toast({
+          titulo: 'No se pudo cambiar la visibilidad',
+          detalle: esErrorColumnaInexistente(error) ? 'Falta correr la migración v128 en Supabase.' : error.message || 'Inténtalo de nuevo.',
+          tono: 'error',
+        });
+        return { ok: false, error };
+      }
+    }
+    onAcademiaClaseActualizada({ ...clase, visible_portal: publica });
+    onRegistrarAuditoria?.('visibilidad_actividad', {
+      tipo: 'Clase',
+      nombre: clase.nombre,
+      fecha: clase.fecha,
+      visibilidad: publica ? 'Pública' : 'Privada',
+    });
+    toast({
+      titulo: publica ? 'Clase publicada en el Portal' : 'La clase ahora es Privada',
+      detalle: publica ? `${clase.nombre} ya se ve y acepta inscripciones en el Portal.` : `${clase.nombre} se ocultó del Portal; solo la gestiona el club.`,
+    });
+    return { ok: true };
+  }
+
   async function eliminarClaseSeleccionada() {
     if (!claseSeleccionada) return { error: new Error('Sin clase seleccionada.') };
     const sesionesDeClase = academiaSesiones.filter((s) => s.clase_id === claseSeleccionada.id && s.estado !== 'cancelada');
@@ -45490,6 +45630,7 @@ function ModuloAcademiaClinicas({
           onRegistrarAuditoria={onRegistrarAuditoria}
           configClub={configClub}
           abrirCancelacionInicial={abrirCancelacionAlEntrar}
+          onCambiarVisibilidad={cambiarVisibilidadClase}
         />
       )}
 
@@ -59306,17 +59447,21 @@ function PortalPublicoJugadores({ clubSlug }) {
       const filas = academiaAlumnosPortal.filter((a) => a.clase_id === ev.id);
       return buscarInscripcionDuplicada(filas, yo, 'clase') ? 'Ya estás inscrito(a) en esta Clase.' : null;
     }
+    // App-121 — Torneos: la sesión es la categoría (v129).
     const filasTorneo = participantesPorTorneo[ev.id] || [];
-    if (buscarInscripcionDuplicada(filasTorneo, yo, 'torneo')) return 'Ya estás inscrito(a) en este Torneo.';
+    const categoriaFlujo = flujo.categoria || null;
+    const enCategoria = categoriaFlujo ? ` en la categoría ${categoriaFlujo}` : '';
+    if (buscarInscripcionDuplicada(filasTorneo, { ...yo, categoria: categoriaFlujo }, 'torneo')) return `Ya estás inscrito(a)${enCategoria} de este Torneo.`;
     const pareja = flujo.pareja;
     if (flujo.tipo === 'torneo' && pareja && (pareja.modo === 'nueva' || pareja.modo === 'registrada') && pareja.nombre) {
       const candidatoPareja = {
         jugador_id: pareja.modo === 'registrada' ? pareja.jugadorId || null : null,
         telefono: pareja.telefono || null,
         nombre: pareja.nombre,
+        categoria: categoriaFlujo,
       };
       const dupPareja = buscarInscripcionDuplicada(filasTorneo, candidatoPareja, 'torneo');
-      if (dupPareja) return `${pareja.nombre} ya está inscrito(a) en este Torneo — elige otra pareja o únete a la suya.`;
+      if (dupPareja) return `${pareja.nombre} ya está inscrito(a)${enCategoria} de este Torneo — elige otra pareja o únete a la suya.`;
     }
     return null;
   }
@@ -62846,12 +62991,19 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
   // `migracion_v15_jugador_id_torneos_retas.sql`) que el resto del módulo.
   const esUnoMismo = (p) =>
     (jugador?.id && p.jugador_id === jugador.id) || (jugador?.telefono && claveTelefono(p.telefono) === claveTelefono(jugador.telefono));
-  const miInscripcion = (participantes || []).find(
+  // App-121 — un jugador puede tener lugar en VARIAS categorías del mismo
+  // torneo (v129). `misInscripciones` las junta todas; `miInscripcion` es la
+  // de la categoría que se está viendo (o la primera, para arrancar en ella).
+  const misInscripciones = (participantes || []).filter(
     (p) =>
       esUnoMismo(p) ||
       (jugador?.id && p.pareja_jugador_id === jugador.id) ||
       (jugador?.telefono && claveTelefono(parejaTelefonoDeParticipante(p)) === claveTelefono(jugador.telefono))
   );
+  const [categoria, setCategoria] = useState(() => (tieneCategorias ? misInscripciones[0]?.categoria || '' : null));
+  const miInscripcion =
+    (tieneCategorias && misInscripciones.find((p) => claveCategoriaTorneo(p.categoria) === claveCategoriaTorneo(categoria))) ||
+    misInscripciones[0];
   const soyTitularDeMiInscripcion = miInscripcion ? esUnoMismo(miInscripcion) : false;
   // Lectura tolerante a alias (`parejaConfirmadaDeParticipante`/
   // `parejaNombreDeParticipante`): responde igual sin importar cuál alias de
@@ -62863,7 +63015,6 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
   const parejaYaConfirmada = miInscripcion ? parejaConfirmadaDeParticipante(miInscripcion) : false;
   const nombreDeMiPareja = miInscripcion ? (soyTitularDeMiInscripcion ? parejaNombreDeParticipante(miInscripcion) : miInscripcion.nombre) : null;
 
-  const [categoria, setCategoria] = useState(() => (tieneCategorias ? miInscripcion?.categoria || '' : null));
   const [modoPareja, setModoPareja] = useState('ninguna'); // 'registrada' | 'nueva' | 'ninguna' | 'unirme'
   const [busqueda, setBusqueda] = useState('');
   const [resultados, setResultados] = useState([]);
@@ -62926,7 +63077,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
   // esto en `true` ya no tiene sentido ofrecer "Unirme" a alguien más ni
   // volver a registrarse "Sin pareja" — el jugador ya tiene un lugar (y, si
   // `parejaYaConfirmada`, ya tiene pareja) en esta categoría.
-  const yaInscritoEnEstaCategoria = !!miInscripcion && (!tieneCategorias || (miInscripcion.categoria || '') === categoria);
+  const yaInscritoEnEstaCategoria = !!miInscripcion && (!tieneCategorias || claveCategoriaTorneo(miInscripcion.categoria) === claveCategoriaTorneo(categoria));
 
   // "Horario de partido" del resumen (refinamiento UX) — busca, entre los
   // partidos YA generados del cuadro (`torneo_partidos`, cargado de solo
@@ -67820,6 +67971,39 @@ function AppInterno({ clubInicial } = {}) {
     [mostrarToast]
   );
 
+  // App-121 — Cambiar la visibilidad (Pública / Privada) de una Reta ya
+  // creada — `retas.visible_portal` (v128). Lo usan la tarjeta, el Detalle
+  // de la Mesa de Control y el de la Parrilla (vía `RescateRetasContext`).
+  const cambiarVisibilidadReta = useCallback(
+    async (reta, publica) => {
+      if (!reta?.id) return { ok: false };
+      if (!reta._local) {
+        const { error } = await supabase.from('retas').update({ visible_portal: publica }).eq('id', reta.id);
+        if (error) {
+          mostrarToast({
+            titulo: 'No se pudo cambiar la visibilidad',
+            detalle: esErrorColumnaInexistente(error) ? 'Falta correr la migración v128 en Supabase.' : error.message || 'Inténtalo de nuevo.',
+            tono: 'error',
+          });
+          return { ok: false, error };
+        }
+      }
+      setRetas((prev) => prev.map((r) => (mismoId(r.id, reta.id) ? { ...r, visible_portal: publica } : r)));
+      registrarEventoAuditoria('visibilidad_actividad', {
+        tipo: 'Reta',
+        nombre: reta.nombre,
+        fecha: reta.fecha,
+        visibilidad: publica ? 'Pública' : 'Privada',
+      });
+      mostrarToast({
+        titulo: publica ? 'Reta publicada en el Portal' : 'La Reta ahora es Privada',
+        detalle: publica ? `${reta.nombre || 'Reta'} ya se ve y acepta inscripciones en el Portal.` : `${reta.nombre || 'Reta'} se ocultó del Portal; solo la gestiona el club.`,
+      });
+      return { ok: true };
+    },
+    [mostrarToast, registrarEventoAuditoria]
+  );
+
   // App-117 — "Cancelar Reta por Incompleta / Falta de Cuarteto": todo en UNA
   // transacción del servidor (`fn_reta_cancelar_incompleta`, v127) — libera
   // los bloqueos de la Parrilla, reembolsa al Wallet a quien ya pagó (con su
@@ -70121,8 +70305,20 @@ function AppInterno({ clubInicial } = {}) {
       cancelarRetaIncompleta,
       registrarAuditoria: registrarEventoAuditoria,
       coaches: coachesRescateRetas,
+      // App-121 — Recepción / Gerencia / Dueño pueden cambiar la visibilidad.
+      puedeEditarVisibilidad: ROLES_RESCATE_RETAS.includes(operador?.rol),
+      cambiarVisibilidadReta,
     }),
-    [toleranciaInscripcionRetasMinutos, guardarToleranciaInscripcionRetas, guardandoToleranciaInscripcionRetas, operador?.rol, cancelarRetaIncompleta, registrarEventoAuditoria, coachesRescateRetas]
+    [
+      toleranciaInscripcionRetasMinutos,
+      guardarToleranciaInscripcionRetas,
+      guardandoToleranciaInscripcionRetas,
+      operador?.rol,
+      cancelarRetaIncompleta,
+      registrarEventoAuditoria,
+      coachesRescateRetas,
+      cambiarVisibilidadReta,
+    ]
   );
 
   let contenido;
