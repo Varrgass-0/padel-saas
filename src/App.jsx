@@ -12298,15 +12298,34 @@ function participanteSplitVacio() {
 // (las transferidas por absorción quedan fuera, ver más abajo) — cada
 // llamador decide qué hacer con esas filas (`registrarVenta` para el
 // carrito, `liquidarCuentaDividida` para Reservas/Cuentas Abiertas).
-function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jugadores, onRegistrarAuditoria }) {
-  const [numJugadores, setNumJugadores] = useState(2);
+function ModalDividirCuenta({
+  total,
+  onClose,
+  onFinalizar,
+  registrandoVenta,
+  jugadores,
+  onRegistrarAuditoria,
+  // App-122 — opcionales (Cuota de Coach / Invitado dividida, Plan de Rescate
+  // de Retas): número de jugadores sugerido, filas ya identificadas con los
+  // jugadores de la Reta, y el concepto que se está cobrando. Sin ellos el
+  // modal es exactamente el de siempre (2 jugadores, filas vacías).
+  numJugadoresInicial = 2,
+  participantesIniciales = null,
+  concepto = null,
+}) {
+  const nInicial = Math.min(4, Math.max(2, Number(numJugadoresInicial) || 2));
+  const filaInicial = (i) => {
+    const p = Array.isArray(participantesIniciales) ? participantesIniciales[i] : null;
+    return p ? { ...participanteSplitVacio(), ...p } : participanteSplitVacio();
+  };
+  const [numJugadores, setNumJugadores] = useState(nInicial);
   const partes = useMemo(() => repartirCentavos(total, numJugadores), [total, numJugadores]);
-  const [pagos, setPagos] = useState(() => Array.from({ length: 2 }, () => null)); // null | { metodo, cambio? }
+  const [pagos, setPagos] = useState(() => Array.from({ length: nInicial }, () => null)); // null | { metodo, cambio? }
   // Asignación de Jugadores (mejora): un participante por fila —
   // `{ modo: 'buscar' | 'nuevo', jugadorId, nombre, telefono }`. Vive
   // aparte de `pagos` porque se captura ANTES de cobrar esa fila, pero se
   // manda junto con el pago al finalizar — ver `onFinalizar` abajo.
-  const [participantes, setParticipantes] = useState(() => Array.from({ length: 2 }, participanteSplitVacio));
+  const [participantes, setParticipantes] = useState(() => Array.from({ length: nInicial }, (_, i) => filaInicial(i)));
   // Absorber / Transferir consumo (mejora — en 2 clics: Origen → Destino):
   // `transferidoA[i]` es `null` (el jugador `i` sigue pagando lo suyo), un
   // número (el índice de OTRO jugador que absorbió toda su parte), o
@@ -12317,13 +12336,13 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
   // (`montoEfectivo`, abajo) — no hay estado de "a medio elegir" más allá de
   // `origenAbsorcion` (qué jugador se está reasignando ahora mismo, mientras
   // se escoge el destino).
-  const [transferidoA, setTransferidoA] = useState(() => Array.from({ length: 2 }, () => null));
+  const [transferidoA, setTransferidoA] = useState(() => Array.from({ length: nInicial }, () => null));
   const [mostrarAbsorcion, setMostrarAbsorcion] = useState(false);
   const [origenAbsorcion, setOrigenAbsorcion] = useState(null);
 
   useEffect(() => {
     setPagos(Array.from({ length: numJugadores }, () => null));
-    setParticipantes(Array.from({ length: numJugadores }, participanteSplitVacio));
+    setParticipantes(Array.from({ length: numJugadores }, (_, i) => filaInicial(i)));
     setTransferidoA(Array.from({ length: numJugadores }, () => null));
     setMostrarAbsorcion(false);
     setOrigenAbsorcion(null);
@@ -12421,6 +12440,11 @@ function ModalDividirCuenta({ total, onClose, onFinalizar, registrandoVenta, jug
   return (
     <ModalShell titulo="Dividir Cuenta" subtitulo={`Total: ${formatoMoneda(total)}`} onClose={onClose} icon={Divide} ancho="max-w-lg">
       <div className="space-y-4">
+        {concepto && (
+          <p data-concepto-split="" className="rounded-lg bg-sky-400/10 px-3 py-2 text-xs font-bold text-sky-700 ring-1 ring-sky-400/30">
+            {concepto}
+          </p>
+        )}
         <div>
           <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">¿Entre cuántos jugadores?</span>
           <div className="grid grid-cols-3 gap-2">
@@ -14398,6 +14422,8 @@ function InscripcionesEventoPanel({
   busqueda,
   onBuscar,
   onCobrar,
+  // App-122 — "Dividir Cuenta" para la Cuota de Coach / Invitado dividida.
+  onDividir,
   cobrandoClave,
   onCancelar,
   cancelandoClave,
@@ -14448,8 +14474,16 @@ function InscripcionesEventoPanel({
             </thead>
             <tbody>
               {filas.map((f) => (
-                <tr key={f.clave} className="border-b border-slate-200/70 last:border-0">
-                  <td className="px-3 py-2.5 font-bold text-slate-900">{f.nombre}</td>
+                <tr key={f.clave} className="border-b border-slate-200/70 last:border-0" data-fila-inscripcion={f.clave}>
+                  <td className="px-3 py-2.5 font-bold text-slate-900">
+                    {f.concepto ? (
+                      <span data-concepto-cuota="" className="block max-w-xs whitespace-normal leading-snug">
+                        {f.concepto}
+                      </span>
+                    ) : (
+                      f.nombre
+                    )}
+                  </td>
                   <td className="px-3 py-2.5 text-slate-600">{f.origen}</td>
                   <td className="px-3 py-2.5 text-slate-500">
                     {f.telefono && <span className="mr-2">{f.telefono}</span>}
@@ -14468,6 +14502,26 @@ function InscripcionesEventoPanel({
                           POS, que solo cobra. `onCancelar`/`cancelandoClave`
                           se conservan en las props por compatibilidad, pero
                           ya no se usan para renderizar nada aquí. */}
+                      {f.cuotaDividida && onDividir ? (
+                        <>
+                          <BotonSecundario
+                            onClick={() => onCobrar(f)}
+                            disabled={cobrandoClave === f.clave}
+                            className="px-2.5 py-1.5 text-[11px]"
+                            title="Un solo pago por el total"
+                          >
+                            <DollarSign size={13} /> Cobrar completo
+                          </BotonSecundario>
+                          <BotonPrimario
+                            onClick={() => onDividir(f)}
+                            disabled={cobrandoClave === f.clave}
+                            className="px-3 py-1.5 text-[11px]"
+                          >
+                            {cobrandoClave === f.clave ? <Loader2 size={13} className="animate-spin" /> : <Divide size={13} />}
+                            Dividir Cuenta
+                          </BotonPrimario>
+                        </>
+                      ) : (
                       <BotonPrimario
                         onClick={() => onCobrar(f)}
                         disabled={cobrandoClave === f.clave || cancelandoClave === f.clave}
@@ -14476,6 +14530,7 @@ function InscripcionesEventoPanel({
                         {cobrandoClave === f.clave ? <Loader2 size={13} className="animate-spin" /> : <DollarSign size={13} />}
                         Cobrar
                       </BotonPrimario>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -14505,7 +14560,7 @@ function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando, onCambiar
   return (
     <ModalShell
       titulo="Cobrar Inscripción"
-      subtitulo={`${fila.nombre} · ${fila.origen} · ${formatoMoneda(fila.monto)}`}
+      subtitulo={fila.concepto ? `${fila.concepto} · ${formatoMoneda(fila.monto)}` : `${fila.nombre} · ${fila.origen} · ${formatoMoneda(fila.monto)}`}
       onClose={onClose}
       icon={Trophy}
       ancho="max-w-sm"
@@ -17602,6 +17657,9 @@ function ModuloSmartPOS({
   const [busquedaInscripcion, setBusquedaInscripcion] = useState('');
   const [inscripcionACobrar, setInscripcionACobrar] = useState(null);
   const [cobrandoInscripcionId, setCobrandoInscripcionId] = useState(null);
+  // App-122 — Cuota de Coach / Invitado (Plan de Rescate) que se cobra con el
+  // modal nativo "Dividir Cuenta" entre los jugadores de la Reta.
+  const [inscripcionADividir, setInscripcionADividir] = useState(null);
   // Cancelación de Inscripciones con Motivo Obligatorio (Control Interno):
   // misma pareja de estados que `inscripcionACobrar`/`cobrandoInscripcionId`,
   // ahora para el flujo de "Cancelar" (ver `cancelarInscripcionEvento`, justo
@@ -17639,6 +17697,13 @@ function ModuloSmartPOS({
       .filter((i) => i.estado !== 'cancelado' && i.estado !== 'retenido' && esPendiente(estadoPagoInscripcion(i)))
       .map((i) => {
         const reta = retasPorId.get(i.reta_id);
+        // App-122 — Cuota de Coach / Invitado "Dividir entre los jugadores"
+        // (Plan de Rescate): concepto descriptivo y los jugadores de la Reta
+        // ya listos para el modal nativo "Dividir Cuenta".
+        const cuotaDividida = esCuotaRescateDividida(i);
+        const pagadores = cuotaDividida
+          ? jugadoresQuePaganCuotaReta((inscripciones || []).filter((x) => mismoId(x.reta_id, i.reta_id)), i.id)
+          : [];
         return {
           clave: `reta:${i.id}`,
           tabla: 'reta_inscripciones',
@@ -17650,6 +17715,14 @@ function ModuloSmartPOS({
           monto: Number(i.monto) || 0,
           origen: reta ? `Reta · ${formatoFechaLarga(reta.fecha)} · ${formatoHora12(reta.hora_inicio)}` : 'Reta Abierta',
           canchaId: reta?.cancha_id || null,
+          ...(cuotaDividida
+            ? {
+                cuotaDividida: true,
+                concepto: conceptoCuotaRescate(i, reta, empleados),
+                participantesSplit: participantesSplitDeInscripciones(pagadores),
+                numJugadoresSplit: Math.min(4, Math.max(2, pagadores.length)),
+              }
+            : {}),
         };
       });
 
@@ -17751,14 +17824,14 @@ function ModuloSmartPOS({
       });
 
     return [...filasRetas, ...filasTorneos, ...filasAcademia];
-  }, [retas, torneos, inscripciones, participantesTorneo, academiaClases, academiaAlumnos, configClub]);
+  }, [retas, torneos, inscripciones, participantesTorneo, academiaClases, academiaAlumnos, configClub, empleados]);
 
   const loadingInscripcionesEvento = Boolean(loadingInscripciones) || Boolean(loadingParticipantes) || Boolean(loadingAcademiaAlumnos);
 
   const inscripcionesEventoFiltradas = useMemo(() => {
     const q = busquedaInscripcion.trim().toLowerCase();
     if (!q) return inscripcionesEventoPendientes;
-    return inscripcionesEventoPendientes.filter((f) => f.nombre?.toLowerCase().includes(q));
+    return inscripcionesEventoPendientes.filter((f) => f.nombre?.toLowerCase().includes(q) || f.concepto?.toLowerCase().includes(q));
   }, [inscripcionesEventoPendientes, busquedaInscripcion]);
 
   // Notificaciones Adaptativas — clic en una alerta del Centro de Alertas
@@ -17784,7 +17857,9 @@ function ModuloSmartPOS({
         (f) => f.tabla === pagoAAbrirEnPOS.tabla && f.id === pagoAAbrirEnPOS.inscripcionId
       );
       if (fila) {
-        setInscripcionACobrar(fila);
+        // App-122 — Cuota de Coach / Invitado dividida → "Dividir Cuenta".
+        if (pagoAAbrirEnPOS.dividir && fila.cuotaDividida) setInscripcionADividir(fila);
+        else setInscripcionACobrar(fila);
       } else {
         mostrarToast({
           titulo: 'Ya no está pendiente',
@@ -17991,7 +18066,13 @@ function ModuloSmartPOS({
         // [Jugador] (...)") — repetirlo aquí con `(${fila.nombre})` se veía
         // duplicado ("... (Jugador) (Jugador)"). Reta/Torneo no lo incluyen,
         // así que ahí se sigue agregando aparte, como siempre.
-        nombre: fila.tabla === 'academia_alumnos' ? `Inscripción — ${fila.origen}` : `Inscripción — ${fila.origen} (${fila.nombre})`,
+        // App-122 — la Cuota de Coach / Invitado dividida lleva su concepto
+        // descriptivo también si se cobra completa en un solo pago.
+        nombre: fila.concepto
+          ? fila.concepto
+          : fila.tabla === 'academia_alumnos'
+          ? `Inscripción — ${fila.origen}`
+          : `Inscripción — ${fila.origen} (${fila.nombre})`,
         precio: fila.monto,
         cantidad: 1,
         subtotal: fila.monto,
@@ -18050,6 +18131,142 @@ function ModuloSmartPOS({
         mixto: metodoPago === 'mixto' ? mixto || null : null,
       });
     }
+  }
+
+  // App-122 — Cobro DIVIDIDO de una inscripción (Cuota de Coach / Invitado de
+  // emergencia, Plan de Rescate de Retas) desde el modal nativo "Dividir
+  // Cuenta": la inscripción queda pagada una sola vez (su `monto` completo es
+  // el ingreso, como siempre) y cada jugador recibe su propio comprobante en
+  // `ventas` con su parte y su método — los renglones son `inscripcion_evento`,
+  // así que el P&L no los suma dos veces (`montoVentaSinInscripciones`) y el
+  // arqueo de caja ve cada método real.
+  async function cobrarInscripcionDividida(fila, pagosDivididos) {
+    if (!fila || !Array.isArray(pagosDivididos) || pagosDivididos.length === 0) return { ok: false };
+    setCobrandoInscripcionId(fila.clave);
+    const concepto = fila.concepto || `Inscripción — ${fila.origen} (${fila.nombre})`;
+    const camposPago = { estado_pago: 'pagado', estatus_pago: 'pagado', metodo_pago: 'dividido' };
+    if (!fila.esLocal) {
+      const { error: errEstado } = await actualizarConColumnasOpcionales(fila.tabla, fila.id, camposPago, ['estatus_pago', 'metodo_pago']);
+      if (errEstado) {
+        setCobrandoInscripcionId(null);
+        mostrarToast({ titulo: 'No se pudo registrar el cobro', detalle: errEstado.message || 'Inténtalo de nuevo.', tono: 'error' });
+        return { ok: false };
+      }
+    }
+    if (fila.tabla === 'reta_inscripciones') {
+      setInscripciones((prev) =>
+        prev.map((i) => {
+          if (i.id !== fila.id) return i;
+          const actualizado = { ...i, estado_pago: 'pagado', metodo_pago: 'dividido' };
+          if (actualizado._local) guardarRegistroLocal(LS_KEY_RETA_INSCRIPCIONES_LOCAL, actualizado);
+          return actualizado;
+        })
+      );
+    }
+
+    const canchaIdParaVenta = fila.canchaId && (canchas || []).some((c) => c.id === fila.canchaId) ? fila.canchaId : null;
+    const splitBillGrupoId = idGrupoSplitBill();
+    const ticketsIndividuales = [];
+    let fallidas = 0;
+    for (let i = 0; i < pagosDivididos.length; i++) {
+      const p = pagosDivididos[i];
+      if (!(p.monto > 0)) continue;
+      let jugadorIdParticipante = p.jugadorId || null;
+      if (!jugadorIdParticipante && (p.jugadorNombre?.trim() || p.jugadorTelefono?.trim())) {
+        try {
+          jugadorIdParticipante = await resolverJugadorId(p.jugadorNombre, { telefono: p.jugadorTelefono, directorio: directorioJugadoresCRM });
+        } catch (_e) {
+          jugadorIdParticipante = null;
+        }
+      }
+      const nombreJugador = (p.jugadorNombre || '').trim() || `Jugador ${i + 1}`;
+      const items = [
+        {
+          tipo: 'inscripcion_evento',
+          producto_id: null,
+          cancha_id: fila.canchaId,
+          nombre: `${concepto} · Parte ${i + 1}/${pagosDivididos.length}`,
+          precio: p.monto,
+          cantidad: 1,
+          subtotal: p.monto,
+        },
+      ];
+      const { data, error } = await supabase
+        .from('ventas')
+        .insert(
+          withClubId({
+            total: p.monto,
+            metodo_pago: p.metodo || 'dividido',
+            turno: turno?.valor || null,
+            operador: operador?.nombre || null,
+            reserva_id: null,
+            cancha_id: canchaIdParaVenta,
+            detalles: {
+              items,
+              pagos_divididos: null,
+              mixto: p.metodo === 'mixto' ? p.mixto || null : null,
+              jugador_id: jugadorIdParticipante,
+              jugador_nombre: nombreJugador,
+              split_bill: true,
+              split_bill_parte: i + 1,
+              split_bill_total_partes: pagosDivididos.length,
+              split_bill_grupo_id: splitBillGrupoId,
+              inscripcion_tabla: fila.tabla,
+              inscripcion_id: fila.id,
+              concepto,
+            },
+            estado_pago: 'pagado',
+          })
+        )
+        .select()
+        .single();
+      if (error) {
+        fallidas += 1;
+        console.warn('[Smart POS] Cuota dividida: no se pudo generar el comprobante de una parte.', error);
+      }
+      ticketsIndividuales.push({
+        folio: (data?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+        ventaId: data?.id ?? null,
+        jugadorNombre: nombreJugador,
+        jugadorId: jugadorIdParticipante,
+        items,
+        total: p.monto,
+        metodoPago: p.metodo,
+        cambio: p.cambio || 0,
+        mixto: p.metodo === 'mixto' ? p.mixto || null : null,
+      });
+    }
+
+    setCobrandoInscripcionId(null);
+    setInscripcionADividir(null);
+    onRegistrarAuditoria?.('cobro_cuota_dividida', {
+      concepto,
+      total: fila.monto,
+      partes: pagosDivididos.length,
+      jugadores: ticketsIndividuales.map((t) => t.jugadorNombre).join(', '),
+    });
+    mostrarToast({
+      titulo: 'Cuota cobrada y dividida',
+      detalle: `${concepto} · ${formatoMoneda(fila.monto)} entre ${pagosDivididos.length} jugadores${fallidas ? ` · ${fallidas} comprobante(s) sin guardar` : ''}`,
+      tono: fallidas ? 'aviso' : 'ok',
+    });
+    if (ticketsIndividuales.length > 0) {
+      setVentaFinalizada({
+        folio: ticketsIndividuales[0].folio,
+        ventaId: ticketsIndividuales[0].ventaId ?? null,
+        fecha: hoyISO(),
+        horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+        operadorNombre: operador?.nombre || 'Operador',
+        turnoLabel: turno?.label || '',
+        items: [{ tipo: 'inscripcion_evento', nombre: concepto, precio: fila.monto, cantidad: 1, subtotal: fila.monto }],
+        total: fila.monto,
+        metodoPago: 'dividido',
+        pagosDivididos,
+        ticketsIndividuales,
+        cambio: pagosDivididos.reduce((acc, p) => acc + (p.cambio || 0), 0),
+      });
+    }
+    return { ok: true };
   }
 
   // Cancelación y Liberación de Cupo (Control Interno) — cancela una
@@ -19359,6 +19576,7 @@ function ModuloSmartPOS({
               busqueda={busquedaInscripcion}
               onBuscar={setBusquedaInscripcion}
               onCobrar={setInscripcionACobrar}
+              onDividir={setInscripcionADividir}
               cobrandoClave={cobrandoInscripcionId}
               onCancelar={setInscripcionACancelar}
               cancelandoClave={cancelandoInscripcionId}
@@ -19732,6 +19950,21 @@ function ModuloSmartPOS({
             setGrupoParaDividir({ grupo, items, total: totalGrupo });
             setGrupoALiquidar(null);
           }}
+        />
+      )}
+
+      {/* App-122 — Cuota de Coach / Invitado: "Dividir Cuenta" nativo. */}
+      {inscripcionADividir && (
+        <ModalDividirCuenta
+          total={inscripcionADividir.monto}
+          numJugadoresInicial={inscripcionADividir.numJugadoresSplit || 2}
+          participantesIniciales={inscripcionADividir.participantesSplit || null}
+          concepto={inscripcionADividir.concepto || null}
+          registrandoVenta={cobrandoInscripcionId === inscripcionADividir.clave}
+          jugadores={directorioJugadoresCRM}
+          onRegistrarAuditoria={onRegistrarAuditoria}
+          onClose={() => setInscripcionADividir(null)}
+          onFinalizar={(pagosDivididos) => cobrarInscripcionDividida(inscripcionADividir, pagosDivididos)}
         />
       )}
 
@@ -32077,6 +32310,14 @@ const TIPOS_EVENTO_AUDITORIA = {
         d?.reembolsados ?? 0
       } jugador(es)${d?.reembolso_manual ? ` · ${d.reembolso_manual} reembolso(s) manual(es)` : ''}. Motivo: ${d?.motivo || 'Falta de cuarteto'}.`,
   },
+  // App-122 — Cuota de Coach / Invitado (Plan de Rescate) cobrada con "Dividir Cuenta".
+  cobro_cuota_dividida: {
+    label: 'Cuota dividida entre jugadores',
+    icon: Divide,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    detalleTexto: (d) => `${d?.concepto || 'Cuota'} · ${formatoMoneda(d?.total)} entre ${d?.partes ?? '—'} jugadores (${d?.jugadores || '—'}).`,
+  },
   // App-121 — cambio de visibilidad Pública/Privada de una Reta o Clase.
   visibilidad_actividad: {
     label: 'Visibilidad en el Portal',
@@ -32986,40 +33227,88 @@ function ModalCancelarRetaIncompleta({ reta, inscritosActivos, onClose }) {
   );
 }
 
-// Coach / Invitado de emergencia — ajuste de pago al vuelo:
-//   club_absorbe     → $0, `estado_pago 'cortesia'` (no es ingreso ni adeudo).
-//   dividido         → precio del lugar, pendiente; Recepción lo cobra en
-//                      Smart POS dividido entre los jugadores de la Reta.
-//   tarifa_especial  → monto capturado, pendiente (0 = cortesía).
+// Coach / Invitado de emergencia — ajuste de pago al vuelo (App-122: solo 2
+// opciones, sin "Tarifa especial"):
+//   club_absorbe → $0, `estado_pago 'cortesia'` (no es ingreso ni adeudo).
+//   dividido     → precio del lugar, pendiente; se cobra en el modal nativo
+//                  "Dividir Cuenta" del Smart POS entre los jugadores de la
+//                  Reta (se abre en cuanto se agrega, si el operador tiene
+//                  Smart POS). Concepto en POS: `conceptoCuotaRescate`.
+// Filas con `ajuste_pago_rescate = 'tarifa_especial'` creadas antes de
+// App-122 siguen cobrándose normal en Smart POS (no se tocan).
 const OPCIONES_AJUSTE_INVITADO_RETA = [
-  { value: 'club_absorbe', label: 'El club absorbe el lugar', detalle: 'Cortesía · no genera ingreso ni adeudo' },
+  { value: 'club_absorbe', label: 'El club absorbe el lugar', detalle: 'Cortesía $0 · no genera ingreso ni adeudo' },
   { value: 'dividido', label: 'Dividir entre los jugadores', detalle: 'Se cobra en Smart POS con Dividir Cuenta' },
-  { value: 'tarifa_especial', label: 'Tarifa especial', detalle: 'Monto acordado, se cobra en Smart POS' },
 ];
+const MIN_JUGADORES_DIVIDIR_CUOTA = 2; // "Dividir Cuenta" del POS reparte entre 2–4.
+
+function esCuotaRescateDividida(fila) {
+  return fila?.ingreso_rescate === 'invitado_emergencia' && fila?.ajuste_pago_rescate === 'dividido';
+}
+
+// Jugadores de la Reta entre quienes se divide la cuota del Coach/Invitado:
+// lugares activos, sin cortesías ni otros invitados de emergencia.
+function jugadoresQuePaganCuotaReta(inscritosReta, excluirId = null) {
+  return (inscritosReta || []).filter(
+    (i) =>
+      inscripcionOcupaLugar(i) &&
+      !esInscripcionCortesia(i) &&
+      i.ingreso_rescate !== 'invitado_emergencia' &&
+      (excluirId == null || !mismoId(i.id, excluirId))
+  );
+}
+
+// Concepto del cargo en Smart POS (tabla de pendientes, modal y ticket):
+// "Cuota de Coach (Leo) — Reta Mixta 4ª (Dividida)". "Coach" si el nombre es
+// un coach activo del club; si no, "Invitado".
+function conceptoCuotaRescate(fila, reta, empleados = []) {
+  const nombre = (fila?.nombre || '').trim() || 'Invitado';
+  const esCoach = (empleados || []).some((e) => e?.rol === 'coach' && e?.activo !== false && claveNombre(e.nombre) === claveNombre(nombre));
+  const nombreReta = (reta?.nombre || '').trim();
+  const etiquetaReta = !nombreReta ? 'Reta' : /^reta\b/i.test(nombreReta) ? nombreReta : `Reta ${nombreReta}`;
+  return `Cuota de ${esCoach ? 'Coach' : 'Invitado'} (${nombre}) — ${etiquetaReta} (Dividida)`;
+}
+
+// Filas pre-identificadas para `ModalDividirCuenta` (mismo formato que
+// `participanteSplitVacio`): del directorio → chip; con teléfono → "Nuevo
+// Jugador" ya capturado (al finalizar, `resolverJugadorId` lo encuentra por
+// teléfono); solo nombre → buscador con el nombre escrito.
+function participantesSplitDeInscripciones(inscripciones) {
+  return (inscripciones || []).map((i) => {
+    const telefono = claveTelefono(i.telefono == null ? '' : String(i.telefono)) || '';
+    if (i.jugador_id != null && i.jugador_id !== '') return { modo: 'buscar', jugadorId: i.jugador_id, nombre: i.nombre || '', telefono };
+    if (telefono) return { modo: 'nuevo', jugadorId: null, nombre: i.nombre || '', telefono };
+    return { modo: 'buscar', jugadorId: null, nombre: i.nombre || '', telefono: '' };
+  });
+}
 
 function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
   const ctx = useRescateRetas();
   const toast = useToast();
   const precio = precioDeReta(reta);
   const activos = useMemo(() => (inscritos || []).filter(inscripcionOcupaLugar), [inscritos]);
-  const jugadoresQuePagan = activos.filter((i) => !esInscripcionCortesia(i)).length;
+  const jugadoresQuePagan = jugadoresQuePaganCuotaReta(activos).length;
+  const puedeDividir = jugadoresQuePagan >= MIN_JUGADORES_DIVIDIR_CUOTA && precio > 0;
   const [nombre, setNombre] = useState('');
   const [telefono, setTelefono] = useState('');
   const [ajuste, setAjuste] = useState('club_absorbe');
-  const [tarifa, setTarifa] = useState(String(precio || 0));
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
   const coaches = Array.isArray(ctx.coaches) ? ctx.coaches : [];
 
-  const montoTarifa = Math.max(0, Math.round((Number(tarifa) || 0) * 100) / 100);
-  const monto = ajuste === 'club_absorbe' ? 0 : ajuste === 'dividido' ? precio : montoTarifa;
-  const esCortesia = monto <= 0;
+  const esCortesia = ajuste === 'club_absorbe';
+  const monto = esCortesia ? 0 : precio;
   const cuotaPorJugador = jugadoresQuePagan > 0 ? Math.round((precio / jugadoresQuePagan) * 100) / 100 : 0;
+  // Al dividir, el alta abre directo "Dividir Cuenta" en Smart POS (si este
+  // operador tiene el módulo); si no, queda pendiente en Smart POS.
+  const abrePOS = !esCortesia && typeof ctx.abrirCobroInscripcionEnPOS === 'function' && ctx.puedeAbrirPOS === true;
 
   async function guardar() {
     if (guardando) return;
     if (!nombre.trim()) return setError('Indica el nombre del Coach o invitado.');
-    if (ajuste === 'dividido' && jugadoresQuePagan === 0) return setError('No hay jugadores entre quienes dividir: elige otra opción.');
+    if (ajuste === 'dividido' && !puedeDividir) {
+      return setError('Para dividir se necesitan al menos 2 jugadores que paguen: elige "El club absorbe el lugar".');
+    }
     const est = estadoRescateReta(reta, activos.length, Date.now(), ctx.toleranciaInscripcionMinutos);
     if (!est.enTolerancia) return setError('La tolerancia de inscripción ya terminó o la Reta se completó.');
     // App-120 — Inscripción Única (misma regla que v128).
@@ -33037,7 +33326,7 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
       estatus_pago: estadoPago,
       estado: 'confirmado',
       ingreso_rescate: 'invitado_emergencia',
-      ajuste_pago_rescate: esCortesia ? 'club_absorbe' : ajuste,
+      ajuste_pago_rescate: ajuste,
     });
     const opcionales = ['telefono', 'estado_pago', 'estatus_pago', 'estado', 'ingreso_rescate', 'ajuste_pago_rescate'];
     let { data, error: err } = await insertarConColumnasOpcionales('reta_inscripciones', payload, opcionales);
@@ -33058,19 +33347,22 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
       fecha: reta.fecha,
       hora: reta.hora_inicio,
       invitado: nombre.trim(),
-      ajuste: esCortesia ? 'club_absorbe' : ajuste,
+      ajuste,
       monto,
     });
     toast({
       titulo: 'Invitado de emergencia agregado',
       detalle: esCortesia
         ? `${nombre.trim()} · el club absorbe el lugar (cortesía).`
-        : ajuste === 'dividido'
-        ? `${nombre.trim()} · ${formatoMoneda(precio)} pendiente: ${formatoMoneda(cuotaPorJugador)} por jugador en Smart POS.`
-        : `${nombre.trim()} · tarifa especial ${formatoMoneda(monto)} pendiente en Smart POS.`,
+        : abrePOS
+        ? `${nombre.trim()} · ${formatoMoneda(precio)} — abriendo "Dividir Cuenta" en Smart POS.`
+        : `${nombre.trim()} · ${formatoMoneda(precio)} pendiente en Smart POS (Dividir Cuenta): ${formatoMoneda(cuotaPorJugador)} por jugador.`,
     });
     onInscrito?.(data);
     onClose();
+    if (abrePOS && data?.id != null && !data._local) {
+      ctx.abrirCobroInscripcionEnPOS({ tabla: 'reta_inscripciones', inscripcionId: data.id, dividir: true });
+    }
   }
 
   return (
@@ -33100,41 +33392,51 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
           <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="10 dígitos" />
         </Campo>
         <div className="space-y-1.5" role="radiogroup" aria-label="Ajuste de pago">
-          {OPCIONES_AJUSTE_INVITADO_RETA.map((op) => (
-            <label
-              key={op.value}
-              className={`flex cursor-pointer items-start gap-2 rounded-xl border px-3 py-2 text-xs transition ${
-                ajuste === op.value ? 'border-orange-400 bg-orange-400/10' : 'border-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              <input type="radio" name="ajuste-invitado" value={op.value} checked={ajuste === op.value} onChange={() => setAjuste(op.value)} className="mt-0.5" />
-              <span className="min-w-0">
-                <span className="block font-black text-slate-800">{op.label}</span>
-                <span className="block text-[11px] text-slate-500">
-                  {op.value === 'dividido'
-                    ? jugadoresQuePagan > 0
-                      ? `${formatoMoneda(precio)} ÷ ${jugadoresQuePagan} = ${formatoMoneda(cuotaPorJugador)} por jugador · ${op.detalle}`
-                      : 'No hay jugadores entre quienes dividir'
-                    : op.detalle}
+          {OPCIONES_AJUSTE_INVITADO_RETA.map((op) => {
+            const deshabilitada = op.value === 'dividido' && !puedeDividir;
+            return (
+              <label
+                key={op.value}
+                className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-xs transition ${
+                  deshabilitada ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                } ${ajuste === op.value ? 'border-orange-400 bg-orange-400/10' : 'border-slate-200 hover:bg-slate-50'}`}
+              >
+                <input
+                  type="radio"
+                  name="ajuste-invitado"
+                  value={op.value}
+                  checked={ajuste === op.value}
+                  disabled={deshabilitada}
+                  onChange={() => setAjuste(op.value)}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0">
+                  <span className="block font-black text-slate-800">{op.label}</span>
+                  <span className="block text-[11px] text-slate-500">
+                    {op.value === 'dividido'
+                      ? puedeDividir
+                        ? `${formatoMoneda(precio)} ÷ ${jugadoresQuePagan} = ${formatoMoneda(cuotaPorJugador)} por jugador · ${op.detalle}`
+                        : 'Se necesitan al menos 2 jugadores que paguen para dividir'
+                      : op.detalle}
+                  </span>
                 </span>
-              </span>
-            </label>
-          ))}
+              </label>
+            );
+          })}
         </div>
-        {ajuste === 'tarifa_especial' && (
-          <Campo label="Tarifa especial (MXN)">
-            <input type="number" min="0" step="1" value={tarifa} onChange={(e) => setTarifa(e.target.value)} className={inputClase} />
-          </Campo>
-        )}
         <p className="rounded-lg bg-slate-50 px-2.5 py-2 text-[11px] text-slate-500">
-          {esCortesia ? 'Quedará como Cortesía ($0).' : `Quedará pendiente de cobro: ${formatoMoneda(monto)}.`}
+          {esCortesia
+            ? 'Quedará como Cortesía ($0).'
+            : `Quedará en Smart POS como "${conceptoCuotaRescate({ nombre: nombre || 'Coach' }, reta, coaches)}" por ${formatoMoneda(precio)}${
+                abrePOS ? ' y se abrirá "Dividir Cuenta" para cobrarla.' : '.'
+              }`}
         </p>
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={guardar} disabled={guardando}>
-            {guardando ? <Loader2 size={15} className="animate-spin" /> : <UserCheck size={15} />}
-            Agregar a la Reta
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : esCortesia ? <UserCheck size={15} /> : <Divide size={15} />}
+            {esCortesia ? 'Agregar a la Reta' : abrePOS ? 'Agregar y Dividir Cuenta' : 'Agregar a la Reta'}
           </BotonPrimario>
         </div>
       </div>
@@ -70308,6 +70610,14 @@ function AppInterno({ clubInicial } = {}) {
       // App-121 — Recepción / Gerencia / Dueño pueden cambiar la visibilidad.
       puedeEditarVisibilidad: ROLES_RESCATE_RETAS.includes(operador?.rol),
       cambiarVisibilidadReta,
+      // App-122 — Coach / Invitado "Dividir entre los jugadores": salta a
+      // Smart POS y abre su "Dividir Cuenta" nativo sobre esa inscripción
+      // (mismo canal que usan las alertas: `pagoAAbrirEnPOS`).
+      puedeAbrirPOS: permisos.modulos.has('pos'),
+      abrirCobroInscripcionEnPOS: ({ tabla, inscripcionId, dividir = false }) => {
+        setModuloActivo('pos');
+        setPagoAAbrirEnPOS({ tabla, inscripcionId, dividir });
+      },
     }),
     [
       toleranciaInscripcionRetasMinutos,
@@ -70318,6 +70628,7 @@ function AppInterno({ clubInicial } = {}) {
       registrarEventoAuditoria,
       coachesRescateRetas,
       cambiarVisibilidadReta,
+      permisos,
     ]
   );
 
