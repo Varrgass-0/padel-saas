@@ -3313,6 +3313,131 @@ function inscripcionOcupaLugar(fila) {
   return fila?.estado !== 'cancelado' && fila?.estado !== 'retenido';
 }
 
+// =============================================================================
+// App-120 — INSCRIPCIÓN ÚNICA (Retas, Torneos y Clases) + VISIBILIDAD PORTAL
+// -----------------------------------------------------------------------------
+// Una persona no puede ocupar dos lugares activos en la misma sesión. El
+// candado real vive en la base (trigger `fn_inscripcion_unica_visibilidad`,
+// v128); estas funciones son su espejo exacto en el cliente para avisar ANTES
+// de escribir. "Misma persona":
+//   a) ambos con jugador_id → mismo jugador_id
+//   b) si no, ambos con teléfono → mismos últimos 10 dígitos
+//   c) si alguno no trae ni jugador_id ni teléfono → mismo nombre normalizado
+// =============================================================================
+function mismaPersonaInscripcion(a, b) {
+  if (!a || !b) return false;
+  const ja = a.jugador_id != null && String(a.jugador_id).trim() !== '' ? String(a.jugador_id) : null;
+  const jb = b.jugador_id != null && String(b.jugador_id).trim() !== '' ? String(b.jugador_id) : null;
+  if (ja && jb) return ja === jb;
+  const ta = claveTelefono(a.telefono == null ? '' : String(a.telefono));
+  const tb = claveTelefono(b.telefono == null ? '' : String(b.telefono));
+  if (ta && tb) return ta === tb;
+  if ((!ja && !ta) || (!jb && !tb)) {
+    const na = claveNombre(a.nombre);
+    return Boolean(na) && na === claveNombre(b.nombre);
+  }
+  return false;
+}
+
+// ¿La fila ocupa un lugar? Retas/Torneos: no cancelada/retenida · Clases: no
+// 'baja'. Una retención de pago en línea ya expirada no cuenta.
+function inscripcionActivaParaUnicidad(fila, tipo) {
+  if (!fila || fila.pago_en_linea_estado === 'expirado') return false;
+  return tipo === 'clase' ? fila.estado !== 'baja' : inscripcionOcupaLugar(fila);
+}
+
+// Primera inscripción ACTIVA de `filas` que sea la misma persona que
+// `candidato` ({ jugador_id, telefono, nombre }), o null.
+function buscarInscripcionDuplicada(filas, candidato, tipo = 'reta') {
+  return (filas || []).find((f) => inscripcionActivaParaUnicidad(f, tipo) && mismaPersonaInscripcion(f, candidato)) || null;
+}
+
+const DONDE_INSCRIPCION = { reta: 'esta Reta', torneo: 'este Torneo', clase: 'esta Clase' };
+function textoInscripcionDuplicada(nombre, tipo = 'reta') {
+  return `${(nombre || '').trim() || 'Esta persona'} ya está inscrito(a) en ${DONDE_INSCRIPCION[tipo] || 'esta actividad'}.`;
+}
+// Errores del servidor (v128 / v127) → texto claro, o null si es otro error.
+function esErrorInscripcionDuplicada(error) {
+  return /ya_inscrito/.test(String(error?.message || ''));
+}
+function mensajeErrorInscripcion(error, { nombre = '', tipo = 'reta', portal = false } = {}) {
+  const msg = String(error?.message || '');
+  if (/ya_inscrito/.test(msg)) {
+    return error?.details || (portal ? `Ya tienes un lugar en ${DONDE_INSCRIPCION[tipo] || 'esta actividad'}.` : textoInscripcionDuplicada(nombre, tipo));
+  }
+  if (/evento_no_disponible/.test(msg)) return 'Esta actividad es privada o ya no está disponible en el Portal.';
+  if (/reta_iniciada/.test(msg)) return 'La Reta ya comenzó: pide ayuda en recepción.';
+  if (/reta_cancelada/.test(msg)) return 'La Reta fue cancelada.';
+  return null;
+}
+
+// Visibilidad en el Portal de Jugadores (v128). Retas: `visible_portal`
+// (default true). Clases: `visible_portal`; si viene NULL (clases creadas
+// antes de v128) manda la regla de siempre — Grupal pública, Privada oculta.
+function retaVisibleEnPortal(reta) {
+  return reta?.visible_portal !== false;
+}
+function claseVisibleEnPortal(clase) {
+  if (clase?.visible_portal === true) return true;
+  if (clase?.visible_portal === false) return false;
+  return clase?.tipo_clase !== 'privada';
+}
+
+// Switch Pública / Privada de los modales "Abrir Reta" y "Nueva Clase".
+// Cualquier operador que pueda crear la actividad puede elegirlo.
+function SelectorVisibilidadPortal({ publica, onChange, entidad = 'actividad' }) {
+  const opciones = [
+    { valor: true, titulo: 'Pública', detalle: 'Visible e inscribible en el Portal de Jugadores', Icono: Eye },
+    { valor: false, titulo: 'Privada', detalle: 'Oculta del Portal · solo la gestiona el club', Icono: EyeOff },
+  ];
+  return (
+    <div data-visibilidad-portal={publica ? 'publica' : 'privada'}>
+      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Visibilidad en el Portal</span>
+      <div role="radiogroup" aria-label={`Visibilidad de la ${entidad} en el Portal`} className="grid grid-cols-2 gap-2">
+        {opciones.map(({ valor, titulo, detalle, Icono }) => {
+          const activo = publica === valor;
+          return (
+            <button
+              key={titulo}
+              type="button"
+              role="radio"
+              aria-checked={activo}
+              data-opcion-visibilidad={valor ? 'publica' : 'privada'}
+              onClick={() => onChange(valor)}
+              className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-left transition ${
+                activo
+                  ? valor
+                    ? 'border-emerald-400/60 bg-emerald-400/10'
+                    : 'border-orange-400/60 bg-orange-400/10'
+                  : 'border-slate-300 bg-slate-100 hover:border-slate-400'
+              }`}
+            >
+              <Icono size={15} className={`mt-0.5 shrink-0 ${activo ? (valor ? 'text-emerald-500' : 'text-orange-500') : 'text-slate-400'}`} />
+              <span className="min-w-0">
+                <span className={`block text-xs font-black ${activo ? 'text-slate-900' : 'text-slate-600'}`}>{titulo}</span>
+                <span className="block text-[10px] leading-snug text-slate-500">{detalle}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Insignia "Privada" para tarjetas/detalles del Panel.
+function InsigniaActividadPrivada({ className = '' }) {
+  return (
+    <span
+      data-insignia-privada=""
+      title="Privada: oculta del Portal de Jugadores, la gestiona el club"
+      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-800/5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-600 ring-1 ring-slate-400/40 ${className}`}
+    >
+      <EyeOff size={9} /> Privada
+    </span>
+  );
+}
+
 // Lectura TOLERANTE A ALIAS de los datos de "pareja" en
 // `torneo_participantes` — mismo criterio que `estadoPagoInscripcion` de
 // arriba, aplicado a los pares de columnas que `inscribirseATorneo`/
@@ -9714,6 +9839,7 @@ function ModalDetalleRetaParrilla({
         reta={reta}
         lugaresDisponibles={disponibles}
         jugadores={jugadores}
+        inscritosReta={inscritosReta}
         onClose={() => setInscribiendo(false)}
         onInscrito={(inscripcion) => onInscripcionCreada?.(inscripcion)}
       />
@@ -9741,6 +9867,7 @@ function ModalDetalleRetaParrilla({
               <Lock size={10} /> En curso
             </span>
           )}
+          {!retaVisibleEnPortal(reta) && <InsigniaActividadPrivada />}
         </div>
         <InsigniaRetaCancelada reta={reta} />
 
@@ -32698,6 +32825,7 @@ function DetalleRetaMesaControl({ reta, inscritos, nombreCanchas, ahoraMs, onIns
               <Lock size={10} /> En curso
             </span>
           )}
+          {!retaVisibleEnPortal(reta) && <InsigniaActividadPrivada />}
         </div>
       </div>
       <div className="mt-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
@@ -32839,6 +32967,9 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
     if (ajuste === 'dividido' && jugadoresQuePagan === 0) return setError('No hay jugadores entre quienes dividir: elige otra opción.');
     const est = estadoRescateReta(reta, activos.length, Date.now(), ctx.toleranciaInscripcionMinutos);
     if (!est.enTolerancia) return setError('La tolerancia de inscripción ya terminó o la Reta se completó.');
+    // App-120 — Inscripción Única (misma regla que v128).
+    const duplicadoInvitado = buscarInscripcionDuplicada(inscritos, { telefono, nombre }, 'reta');
+    if (duplicadoInvitado) return setError(textoInscripcionDuplicada(duplicadoInvitado.nombre || nombre, 'reta'));
     setGuardando(true);
     setError('');
     const estadoPago = esCortesia ? 'cortesia' : 'pendiente';
@@ -32864,11 +32995,7 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
     }
     setGuardando(false);
     if (err || !data) {
-      setError(
-        /reta_cancelada/.test(err?.message || '')
-          ? 'La Reta ya fue cancelada.'
-          : `No se pudo guardar en Supabase: ${err?.message || 'error desconocido'}`
-      );
+      setError(mensajeErrorInscripcion(err, { nombre, tipo: 'reta' }) || `No se pudo guardar en Supabase: ${err?.message || 'error desconocido'}`);
       return;
     }
     ctx.registrarAuditoria?.('reta_invitado_emergencia', {
@@ -33445,6 +33572,8 @@ function TarjetaReta({
               <Lock size={9} /> En curso / Bloqueada
             </span>
           )}
+          {/* App-120 — Reta Privada: no aparece en el Portal de Jugadores. */}
+          {!retaVisibleEnPortal(reta) && <InsigniaActividadPrivada />}
           {reta._local && (
             <button
               type="button"
@@ -33688,7 +33817,7 @@ function nuevoIdLoteRetas() {
 }
 
 // Mismo payload (con todos los alias de columna) que ya usaba "Abrir Reta".
-function payloadNuevaReta({ nombre, canchaIds, fecha, horaInicio, horaFin, nivel, rama, precio, loteId = null }) {
+function payloadNuevaReta({ nombre, canchaIds, fecha, horaInicio, horaFin, nivel, rama, precio, loteId = null, visiblePortal = true }) {
   const monto = Number(precio) || 0;
   const payload = {
     nombre,
@@ -33707,12 +33836,14 @@ function payloadNuevaReta({ nombre, canchaIds, fecha, horaInicio, horaFin, nivel
     precio: monto,
     costo: monto,
     estado: 'abierta',
+    // App-120 — switch Pública / Privada (v128, columna opcional).
+    visible_portal: visiblePortal !== false,
   };
   if (loteId) payload.lote_id = loteId;
   return withClubId(payload);
 }
 
-const COLUMNAS_OPCIONALES_RETA = ['categoria', 'nivel', 'precio_inscripcion', 'costo_inscripcion', 'precio_persona', 'precio_individual', 'precio', 'costo', 'cancha_ids', 'lote_id'];
+const COLUMNAS_OPCIONALES_RETA = ['categoria', 'nivel', 'precio_inscripcion', 'costo_inscripcion', 'precio_persona', 'precio_individual', 'precio', 'costo', 'cancha_ids', 'lote_id', 'visible_portal'];
 
 // INSERT de una reta en Supabase + su(s) bloqueo(s) en la Parrilla — misma
 // secuencia que la reta individual de siempre. Devuelve `{ reta, bloqueos,
@@ -33886,6 +34017,20 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
   const [nivel, setNivel] = useState('');
   const [rama, setRama] = useState(RAMAS_JUEGO[0]);
   const [precio, setPrecio] = useState('150');
+  // App-120 — Pública (Portal) o Privada (solo interna). Default: Pública,
+  // igual que todas las retas de siempre.
+  const [publica, setPublica] = useState(true);
+  // Sin la migración v128 la columna `visible_portal` no existe y la reta
+  // quedaría pública: se avisa en vez de fallar en silencio.
+  const avisarPrivadaSinMigracion = (retaGuardada) => {
+    if (!publica && retaGuardada && !retaGuardada._local && retaGuardada.visible_portal === undefined) {
+      toast({
+        titulo: 'La Reta quedó visible en el Portal',
+        detalle: 'Falta correr la migración v128 en Supabase para guardar retas privadas.',
+        tono: 'aviso',
+      });
+    }
+  };
   // La Tolerancia de Cancelación de Retas vive centralizada en Configuración
   // del Club → "Reservas & Academia" (ver `SeccionReservasAcademia`).
   const config = configClub || CONFIG_CLUB_DEFAULT;
@@ -34004,6 +34149,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
       nivel,
       rama,
       precio,
+      visiblePortal: publica,
     });
     const r = await crearRetaConBloqueos({
       payloadReta,
@@ -34040,7 +34186,11 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
       }
     } else {
       const sufijoCanchas = canchaIdsSeleccionadas.length > 1 ? ` · ${canchaIdsSeleccionadas.length} canchas` : '';
-      toast({ titulo: 'Reta Abierta creada', detalle: `${formatoFechaLarga(fecha)} · ${formatoHora12(tramo.inicio)}${sufijoCanchas}` });
+      toast({
+        titulo: publica ? 'Reta Abierta creada' : 'Reta Privada creada',
+        detalle: `${formatoFechaLarga(fecha)} · ${formatoHora12(tramo.inicio)}${sufijoCanchas}${publica ? '' : ' · oculta del Portal'}`,
+      });
+      avisarPrivadaSinMigracion(retaCreada);
     }
     setGuardando(false);
     onCreada(retaCreada, bloqueos);
@@ -34086,6 +34236,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
             rama: c.rama,
             precio: c.precio,
             loteId,
+            visiblePortal: publica,
           }),
           canchaIds: [c.canchaId],
           fecha,
@@ -34108,9 +34259,10 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
 
     if (creadas.length > 0) {
       toast({
-        titulo: `Se crearon ${creadas.length} ${creadas.length === 1 ? 'reta' : 'retas'} independientes`,
-        detalle: `${nombreBase} · ${formatoFechaLarga(fecha)} · ${creadas.length * CUPOS_RETA} lugares de inscripción`,
+        titulo: `Se crearon ${creadas.length} ${creadas.length === 1 ? 'reta' : 'retas'} ${publica ? 'independientes' : 'privadas'}`,
+        detalle: `${nombreBase} · ${formatoFechaLarga(fecha)} · ${creadas.length * CUPOS_RETA} lugares de inscripción${publica ? '' : ' · ocultas del Portal'}`,
       });
+      avisarPrivadaSinMigracion(creadas[0].reta);
     }
     if (fallidas.length > 0) {
       const primerError = fallidas[0].error;
@@ -34335,6 +34487,8 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
           <input type="number" min="0" value={precio} onChange={(e) => setPrecio(e.target.value)} className={inputClase} />
         </Campo>
 
+        <SelectorVisibilidadPortal publica={publica} onChange={setPublica} entidad="Reta" />
+
         {esLoteMultiple && (
           <p className="flex items-start gap-1.5 rounded-lg bg-sky-400/10 px-3 py-2 text-xs font-semibold text-sky-700 ring-1 ring-sky-400/20">
             <Layers size={13} className="mt-0.5 shrink-0" />
@@ -34383,7 +34537,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
   );
 }
 
-function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClose, onInscrito }) {
+function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscritosReta = [], onClose, onInscrito }) {
   const toast = useToast();
   // App-117 — Plan de Rescate: si la Reta ya empezó, esta inscripción solo
   // pudo abrirse desde la Tolerancia de Inscripción (Recepción) — se marca
@@ -34419,6 +34573,14 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
     // repetido puede fusionarse por accidente con otro cliente.
     const claveTelInscripcion = claveTelefono(telefono);
     if (!claveTelInscripcion) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio & CRM.');
+    // App-120 — Inscripción Única: misma regla que la base (v128), con los
+    // mismos datos que viajan en el INSERT (teléfono + nombre).
+    const duplicadoReta = buscarInscripcionDuplicada(inscritosReta, { telefono, nombre }, 'reta');
+    if (duplicadoReta) {
+      const aviso = textoInscripcionDuplicada(duplicadoReta.nombre || nombre, 'reta');
+      toast({ titulo: 'Inscripción duplicada', detalle: aviso, tono: 'aviso' });
+      return setError(aviso);
+    }
     const esIngresoTolerancia =
       eventoYaInicio(reta?.fecha, reta?.hora_inicio) &&
       estadoRescateReta(reta, CUPOS_RETA - lugaresDisponibles, Date.now(), rescateRetas.toleranciaInscripcionMinutos).enTolerancia;
@@ -34476,6 +34638,13 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], onClo
 
     if (!errInscripcion && data) {
       inscripcionCreada = data;
+    } else if (mensajeErrorInscripcion(errInscripcion)) {
+      // App-120 — rechazo de negocio del servidor (p. ej. ya inscrito desde
+      // otra pantalla un segundo antes): se avisa y NO se guarda en local.
+      const aviso = mensajeErrorInscripcion(errInscripcion, { nombre, tipo: 'reta' });
+      setGuardando(false);
+      toast({ titulo: 'No se pudo inscribir', detalle: aviso, tono: 'aviso' });
+      return setError(aviso);
     } else {
       // FALLA REAL del INSERT — misma "Tolerancia total a fallos" que el
       // resto del módulo (nunca bloquea al operador con una alerta roja),
@@ -35624,9 +35793,12 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
     // por el autocompletado, que ya lo habría excluido) como, de respaldo,
     // a quien sí lo seleccionó del directorio pero por algún motivo su
     // teléfono no calzó exacto (`jugadorSeleccionadoId` contra `jugador_id`).
+    // App-120 — además, la regla única de v128 (incluye filas sin teléfono
+    // registradas por nombre).
     const yaInscrito =
       clavesInscritas.telefonos.has(claveTelParticipante) ||
-      (jugadorSeleccionadoId != null && clavesInscritas.jugadorIds.has(String(jugadorSeleccionadoId)));
+      (jugadorSeleccionadoId != null && clavesInscritas.jugadorIds.has(String(jugadorSeleccionadoId))) ||
+      Boolean(buscarInscripcionDuplicada(participantesExistentes, { telefono, nombre }, 'torneo'));
     if (yaInscrito) {
       toast({ titulo: 'El jugador ya se encuentra inscrito en este torneo', tono: 'aviso' });
       return setError('El jugador ya se encuentra inscrito en este torneo.');
@@ -35729,6 +35901,12 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
     ]);
     if (!errParticipante && data) {
       participanteCreado = data;
+    } else if (mensajeErrorInscripcion(errParticipante)) {
+      // App-120 — rechazo de negocio del servidor (v128): aviso claro, sin modo local.
+      const aviso = mensajeErrorInscripcion(errParticipante, { nombre, tipo: 'torneo' });
+      setGuardando(false);
+      toast({ titulo: 'No se pudo agregar al participante', detalle: aviso, tono: 'aviso' });
+      return setError(aviso);
     } else {
       console.error('[Torneos & Retas] No se pudo guardar el participante en Supabase.', errParticipante);
       modoLocal = true;
@@ -38993,6 +39171,7 @@ function ModuloTorneosRetas({
             CUPOS_RETA - (inscripcionesPorReta[retaParaInscribir.id] || []).filter(inscripcionOcupaLugar).length
           )}
           jugadores={jugadoresDirectorio}
+          inscritosReta={inscripcionesPorReta[retaParaInscribir.id] || []}
           onClose={() => setRetaParaInscribir(null)}
           onInscrito={(inscripcion) => {
             setInscripciones((prev) => [...prev, inscripcion]);
@@ -40745,6 +40924,11 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
 
   const coachNombre = coachEmpleadoId ? coachesDisponibles.find((c) => c.id === coachEmpleadoId)?.nombre || '' : coachNombreLibre.trim();
   const esPrivada = tipoClase === 'privada';
+  // App-120 — Visibilidad en el Portal (switch Pública / Privada). Mientras
+  // el operador no lo toque, sigue al tipo de clase con el comportamiento de
+  // siempre: Grupal = Pública, Privada = Privada.
+  const [visibilidadElegida, setVisibilidadElegida] = useState(null);
+  const publicaEnPortal = visibilidadElegida ?? !esPrivada;
   const capacidadEfectiva = esPrivada ? '1' : capacidad;
   // Título/nombre resultante de una Clase Privada: "Clase Privada - [Nombre
   // del Alumno]", autocompletado al elegir/escribir el alumno — el operador
@@ -40794,7 +40978,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
         .map((a, i) => ({ ...a, cupo: i + 1, nombre: (a.nombre || '').trim(), telefono: (a.telefono || '').trim() }))
         .filter((a) => a.nombre);
       if (alumnosAInscribir.length === 0) {
-        return setError('Agrega al menos un alumno o cambia a "Clase Abierta (para el Portal)".');
+        return setError(`Agrega al menos un alumno o cambia a "${publicaEnPortal ? 'Clase Abierta (para el Portal)' : 'Clase Abierta (sin alumnos aún)'}".`);
       }
       const vistosId = new Set();
       const vistosTel = new Set();
@@ -40849,11 +41033,14 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
       // automático de Activas/Cronograma/Portal en cuanto fecha+hora_fin ya
       // quedó en el pasado.
       fecha,
+      // App-120 — switch Pública / Privada (v128, columna opcional).
+      visible_portal: publicaEnPortal,
     });
 
     let claseCreada = null;
     let modoLocal = false;
     const { data, error: errClase } = await insertarConColumnasOpcionales('academia_clases', payloadClase, [
+      'visible_portal',
       'tipo_clase',
       'coach_empleado_id',
       'coach_nombre',
@@ -40963,7 +41150,10 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
           'jugador_id',
           'telefono',
         ]);
-        if (errAlumno || !alumnoCreado) {
+        if (errAlumno && mensajeErrorInscripcion(errAlumno)) {
+          // App-120 — la base rechazó un duplicado: no se crea copia local.
+          toast({ titulo: 'Alumno omitido', detalle: mensajeErrorInscripcion(errAlumno, { nombre: a.nombre, tipo: 'clase' }), tono: 'aviso' });
+        } else if (errAlumno || !alumnoCreado) {
           console.warn('[Academia & Clínicas] Clase grupal creada, pero no se pudo inscribir a un alumno.', errAlumno);
           onAlumnoAgregado?.({ ...payloadAlumno, id: idLocal('academia_alumno'), _local: true });
         } else {
@@ -40986,6 +41176,15 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     }
 
     setGuardando(false);
+    if (!modoLocal && claseCreada.visible_portal === undefined && publicaEnPortal === esPrivada) {
+      // Sin v128 la columna no existe: la clase sigue la regla por tipo, que
+      // no es lo que el operador eligió — se avisa en vez de fallar en silencio.
+      toast({
+        titulo: publicaEnPortal ? 'La clase no se publicó en el Portal' : 'La clase quedó visible en el Portal',
+        detalle: 'Falta correr la migración v128 en Supabase para guardar la visibilidad de las clases.',
+        tono: 'aviso',
+      });
+    }
     if (!modoLocal) {
       toast({
         titulo: 'Clase creada',
@@ -41048,6 +41247,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
             ))}
           </div>
         </Campo>
+        <SelectorVisibilidadPortal publica={publicaEnPortal} onChange={setVisibilidadElegida} entidad="Clase" />
         <div className="grid grid-cols-2 gap-4">
           <Campo label="Nivel">
             <select value={nivel} onChange={(e) => setNivel(e.target.value)} className={inputClase}>
@@ -41208,7 +41408,8 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
             <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1" role="radiogroup" aria-label="Modo de inscripción de la clase">
               {[
                 { valor: 'inscribir', texto: 'Inscribir Jugadores Ahora', Icono: UserPlus },
-                { valor: 'abierta', texto: 'Clase Abierta (para el Portal)', Icono: Users },
+                // App-120 — si la clase es Privada no se anuncia "para el Portal".
+                { valor: 'abierta', texto: publicaEnPortal ? 'Clase Abierta (para el Portal)' : 'Clase Abierta (sin alumnos aún)', Icono: Users },
               ].map(({ valor, texto, Icono }) => (
                 <button
                   key={valor}
@@ -41336,6 +41537,8 @@ function TarjetaClaseAcademia({
             >
               {cupos}/{clase.capacidad_maxima} cupos
             </span>
+            {/* App-120 — Visibilidad: oculta del Portal de Jugadores. */}
+            {!claseVisibleEnPortal(clase) && <InsigniaActividadPrivada />}
             {archivado && (
               <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
                 <Archive size={9} /> Archivada
@@ -41529,8 +41732,21 @@ function ModalDetalleClase({
     if (mixtoInvalidoAlta) {
       return toast({ titulo: 'El Efectivo + Tarjeta debe sumar exactamente el monto a cobrar.', tono: 'aviso' });
     }
+    // App-120 — Inscripción Única (misma regla que v128): antes de tocar el
+    // CRM y otra vez con el jugador ya resuelto.
+    const avisarDuplicadoClase = (dup) => {
+      const aviso = textoInscripcionDuplicada(dup.nombre || nombreAlumno, 'clase');
+      toast({ titulo: 'Inscripción duplicada', detalle: aviso, tono: 'aviso' });
+    };
+    const dupAntes = buscarInscripcionDuplicada(alumnosActivos, { jugador_id: jugadorSeleccionadoId, telefono: telefonoAlumno, nombre: nombreAlumno }, 'clase');
+    if (dupAntes) return avisarDuplicadoClase(dupAntes);
     setGuardandoAlta(true);
     const jugadorId = jugadorSeleccionadoId || (await resolverJugadorId(nombreAlumno, { telefono: telefonoAlumno, directorio: directorioJugadores }));
+    const dupDespues = buscarInscripcionDuplicada(alumnosActivos, { jugador_id: jugadorId, telefono: telefonoAlumno, nombre: nombreAlumno }, 'clase');
+    if (dupDespues) {
+      setGuardandoAlta(false);
+      return avisarDuplicadoClase(dupDespues);
+    }
 
     // Sistema de Membresías por Créditos: si este jugador YA tiene una
     // membresía vigente (en ESTA clase o en cualquier otra del club), su
@@ -41577,6 +41793,10 @@ function ModalDetalleClase({
       'monto_tarjeta',
     ]);
     setGuardandoAlta(false);
+    if (error && mensajeErrorInscripcion(error)) {
+      // App-120 — rechazo de negocio del servidor (v128): aviso claro, sin modo local.
+      return toast({ titulo: 'No se pudo inscribir', detalle: mensajeErrorInscripcion(error, { nombre: nombreAlumno, tipo: 'clase' }), tono: 'aviso' });
+    }
     if (error || !data) {
       const alumnoLocal = { ...payload, id: idLocal('academia_alumno'), _local: true };
       toast({
@@ -57782,6 +58002,8 @@ function PortalPublicoJugadores({ clubSlug }) {
           !r.deleted_at &&
           r.archivado !== true &&
           (r.estado || 'abierta') !== 'cancelada' &&
+          // App-120 — una Reta Privada solo la gestiona el club (v128).
+          retaVisibleEnPortal(r) &&
           !eventoYaInicio(r.fecha, r.hora_inicio, tickPortal)
       ),
     [retas, tickPortal]
@@ -58479,9 +58701,9 @@ function PortalPublicoJugadores({ clubSlug }) {
       console.error('[Portal] Error detallado Supabase (inscripción a Reta):', err);
       mostrarToast({
         titulo: 'No se pudo completar tu inscripción',
-        detalle: esErrorPermisoRLS(err)
-          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
-          : 'Intenta de nuevo o pide ayuda en recepción.',
+        detalle:
+          mensajeErrorInscripcion(err, { portal: true }) ||
+          (esErrorPermisoRLS(err) ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.' : 'Intenta de nuevo o pide ayuda en recepción.'),
         tono: 'error',
       });
     }
@@ -58571,7 +58793,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         console.error('[Portal] Error detallado Supabase (inscripción con créditos):', err);
         mostrarToast({
           titulo: 'No se pudo completar tu inscripción',
-          detalle: 'Intenta de nuevo o pide ayuda en recepción.',
+          detalle: mensajeErrorInscripcion(err, { tipo: 'clase', portal: true }) || 'Intenta de nuevo o pide ayuda en recepción.',
           tono: 'error',
         });
       }
@@ -58660,7 +58882,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       console.error('[Portal] Error detallado Supabase (inscripción a Clase de Academia):', err);
       mostrarToast({
         titulo: 'No se pudo completar tu inscripción',
-        detalle: 'Intenta de nuevo o pide ayuda en recepción.',
+        detalle: mensajeErrorInscripcion(err, { tipo: 'clase', portal: true }) || 'Intenta de nuevo o pide ayuda en recepción.',
         tono: 'error',
       });
     }
@@ -58903,9 +59125,9 @@ function PortalPublicoJugadores({ clubSlug }) {
       console.error('[Portal] Error detallado Supabase (inscripción a Torneo):', err);
       mostrarToast({
         titulo: 'No se pudo completar tu inscripción',
-        detalle: esErrorPermisoRLS(err)
-          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
-          : 'Intenta de nuevo o pide ayuda en recepción.',
+        detalle:
+          mensajeErrorInscripcion(err, { tipo: 'torneo', portal: true }) ||
+          (esErrorPermisoRLS(err) ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.' : 'Intenta de nuevo o pide ayuda en recepción.'),
         tono: 'error',
       });
       return { ok: false, error: err };
@@ -59055,9 +59277,9 @@ function PortalPublicoJugadores({ clubSlug }) {
       console.error('[Portal] Error detallado Supabase (unirse como pareja):', err);
       mostrarToast({
         titulo: 'No se pudo completar tu unión',
-        detalle: esErrorPermisoRLS(err)
-          ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
-          : 'Intenta de nuevo o pide ayuda en recepción.',
+        detalle:
+          mensajeErrorInscripcion(err, { tipo: 'torneo', portal: true }) ||
+          (esErrorPermisoRLS(err) ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.' : 'Intenta de nuevo o pide ayuda en recepción.'),
         tono: 'error',
       });
     }
@@ -59070,6 +59292,35 @@ function PortalPublicoJugadores({ clubSlug }) {
   // para proyectos sin la migración v15/`jugador_id`). Un jugador no
   // identificado (`jugador` null) nunca "ya está inscrito" en nada — el
   // Portal no tiene forma de saber quién es todavía.
+  // App-120 — Inscripción Única (espejo de v128): antes de cobrar o inscribir,
+  // ¿el jugador (o la pareja que trae) ya ocupa un lugar en esa sesión?
+  // Devuelve el aviso o null.
+  function validarInscripcionUnicaPortal(flujo) {
+    if (!jugador || !flujo?.evento) return null;
+    const yo = { jugador_id: jugador.id, telefono: jugador.telefono, nombre: jugador.nombre };
+    const ev = flujo.evento;
+    if (flujo.tipo === 'reta') {
+      return buscarInscripcionDuplicada(inscripcionesPorReta[ev.id] || [], yo, 'reta') ? 'Ya tienes un lugar en esta Reta.' : null;
+    }
+    if (flujo.tipo === 'academia') {
+      const filas = academiaAlumnosPortal.filter((a) => a.clase_id === ev.id);
+      return buscarInscripcionDuplicada(filas, yo, 'clase') ? 'Ya estás inscrito(a) en esta Clase.' : null;
+    }
+    const filasTorneo = participantesPorTorneo[ev.id] || [];
+    if (buscarInscripcionDuplicada(filasTorneo, yo, 'torneo')) return 'Ya estás inscrito(a) en este Torneo.';
+    const pareja = flujo.pareja;
+    if (flujo.tipo === 'torneo' && pareja && (pareja.modo === 'nueva' || pareja.modo === 'registrada') && pareja.nombre) {
+      const candidatoPareja = {
+        jugador_id: pareja.modo === 'registrada' ? pareja.jugadorId || null : null,
+        telefono: pareja.telefono || null,
+        nombre: pareja.nombre,
+      };
+      const dupPareja = buscarInscripcionDuplicada(filasTorneo, candidatoPareja, 'torneo');
+      if (dupPareja) return `${pareja.nombre} ya está inscrito(a) en este Torneo — elige otra pareja o únete a la suya.`;
+    }
+    return null;
+  }
+
   function esMiRegistro(fila) {
     if (!jugador || !fila) return false;
     return (jugador.id && fila.jugador_id === jugador.id) || (jugador.telefono && claveTelefono(fila.telefono) === claveTelefono(jugador.telefono));
@@ -61407,7 +61658,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                     </div>
                   )}
 
-                  {academiaClasesPortalVisibles.filter((c) => c.estado !== 'cancelada' && c.tipo_clase !== 'privada').length === 0 && (
+                  {academiaClasesPortalVisibles.filter((c) => c.estado !== 'cancelada' && claseVisibleEnPortal(c)).length === 0 && (
                     <p className="py-10 text-center text-sm text-slate-500">Este club todavía no publicó clases grupales — vuelve pronto o pide una clase privada arriba.</p>
                   )}
                   {academiaClasesPortalVisibles
@@ -61416,7 +61667,10 @@ function PortalPublicoJugadores({ clubSlug }) {
                     // general (refinamiento UX, item 2). El Filtro por Hora
                     // y Archivado (`archivado`/`claseYaInicioHoy`) ya se
                     // aplicó al armar `academiaClasesPortalVisibles`.
-                    .filter((c) => c.estado !== 'cancelada' && c.tipo_clase !== 'privada')
+                    // App-120 — manda el switch Pública/Privada de la clase
+                    // (`claseVisibleEnPortal`); sin switch (clases previas a
+                    // v128) sigue la regla de siempre: solo Grupales.
+                    .filter((c) => c.estado !== 'cancelada' && claseVisibleEnPortal(c))
                     .map((c) => {
                       const inscritosActivos = academiaAlumnosPortal.filter((a) => a.clase_id === c.id && a.estado !== 'baja').length;
                       const cupos = Math.max(0, c.capacidad_maxima - inscritosActivos);
@@ -61773,6 +62027,13 @@ function PortalPublicoJugadores({ clubSlug }) {
             aceptaPagoEnLinea={pagosEnLineaClub && !(flujoPago.tipo === 'academia' && jugador && buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id))}
             tieneSesionPortal={Boolean(jugador?.portalToken)}
             onConfirmar={async (metodo) => {
+              // App-120 — Inscripción Única: se valida ANTES de cualquier cobro.
+              const avisoInscripcionUnica = validarInscripcionUnicaPortal(flujoPago);
+              if (avisoInscripcionUnica) {
+                mostrarToast({ titulo: 'Inscripción duplicada', detalle: avisoInscripcionUnica, tono: 'aviso' });
+                setFlujoPago(null);
+                return;
+              }
               if (metodo === 'en_linea') {
                 // Si no se pudo iniciar, el modal sigue abierto para reintentar
                 // o elegir "Pagar en el club".
