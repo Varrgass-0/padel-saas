@@ -215,13 +215,15 @@ export function calcularPrecioReserva(horaInicio: string, duracionMinutos: numbe
 }
 
 // -----------------------------------------------------------------------------
-// Promoción de Segunda Hora (App-123/124, migraciones v130 + v131) — réplica
+// Promoción de Segunda Hora (App-123/124/125, migraciones v130–v132) — réplica
 // EXACTA de App.jsx (`promoSegundaHoraDelClub` / `cotizarReservaConPromo`).
 // • Solo la 2ª hora consecutiva (minutos 60–120) lleva el descuento; 1 h /
 //   1.5 h a precio normal; 3 h o más: no se acumula, la 3ª en adelante normal.
 // • Solo en las canchas participantes (vacío = todas) y si la reserva
 //   COMPLETA cae dentro de la ventana Hora Inicio–Hora Fin (sin ventana =
 //   todo el horario del club).
+// • Solo en los días de la semana elegidos (vacío = todos), según la fecha de
+//   la reserva (0 = domingo … 6 = sábado).
 // -----------------------------------------------------------------------------
 export const PROMO_SEGUNDA_HORA_MIN_DURACION = 120;
 
@@ -231,6 +233,7 @@ export interface PromoSegundaHora {
   canchaIds: string[];
   horaInicio: string | null;
   horaFin: string | null;
+  dias: number[];
 }
 
 export interface DesgloseSegundaHora {
@@ -262,6 +265,27 @@ export function normalizarCanchasPromoSegundaHora(valor: unknown): string[] {
   return Array.from(new Set(ids));
 }
 
+/** Días 0–6 (0 = domingo), sin repetidos y ordenados; ninguno o los 7 = todos ([]). */
+export function normalizarDiasPromoSegundaHora(valor: unknown): number[] {
+  if (!Array.isArray(valor)) return [];
+  const dias = Array.from(
+    new Set(
+      valor
+        .map((d) => (d === null || d === undefined || String(d).trim() === '' ? NaN : Number(d)))
+        .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6),
+    ),
+  ).sort((a, b) => a - b);
+  return dias.length === 7 ? [] : dias;
+}
+
+/** Día de la semana de 'YYYY-MM-DD' (0 = domingo) sin depender de la zona; `null` si no es válida. */
+export function diaSemanaPromoDeFecha(fecha: unknown): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(fecha || ''));
+  if (!m) return null;
+  const dia = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12)).getUTCDay();
+  return Number.isInteger(dia) ? dia : null;
+}
+
 /** 'HH:MM' (acepta 'HH:MM:SS'); una hora FIN '00:00' = medianoche ('24:00'). */
 export function normalizarHoraPromoSegundaHora(valor: unknown, esFin = false): string | null {
   if (valor === null || valor === undefined || String(valor).trim() === '') return null;
@@ -290,13 +314,23 @@ export function promoSegundaHoraDelClub(fuente: Fila | PromoSegundaHora | null |
     f?.promoSegundaHoraHoraInicio ?? f?.promo_segunda_hora_hora_inicio ?? f?.horaInicio,
     f?.promoSegundaHoraHoraFin ?? f?.promo_segunda_hora_hora_fin ?? f?.horaFin,
   );
+  const dias = normalizarDiasPromoSegundaHora(f?.promoSegundaHoraDias ?? f?.promo_segunda_hora_dias ?? f?.dias);
   return {
     activa: activaCruda === true && porcentaje !== null,
     porcentaje: porcentaje ?? 0,
     canchaIds,
     horaInicio: ventana ? ventana.horaInicio : null,
     horaFin: ventana ? ventana.horaFin : null,
+    dias,
   };
+}
+
+/** ¿La fecha de la reserva cae en uno de los días de la promo? */
+export function promoSegundaHoraCubreDia(promo: Fila | PromoSegundaHora | null | undefined, fecha: unknown): boolean {
+  const p = promoSegundaHoraDelClub(promo);
+  if (p.dias.length === 0) return true;
+  const dia = diaSemanaPromoDeFecha(fecha);
+  return dia !== null && p.dias.includes(dia);
 }
 
 /** ¿La promo está activa y participa esta cancha? */
@@ -320,6 +354,7 @@ export function cotizarReservaConPromo(
   precioBase: number,
   promo: Fila | PromoSegundaHora | null | undefined,
   canchaId: unknown = null,
+  fecha: unknown = null,
 ): CotizacionReservaConPromo {
   const cotizacion = cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase);
   const config = promoSegundaHoraDelClub(promo);
@@ -331,7 +366,8 @@ export function cotizarReservaConPromo(
     inicioMin === null ||
     cotizacion.tramos.length === 0 ||
     !promoSegundaHoraAplicaACancha(config, canchaId) ||
-    !promoSegundaHoraCubreHorario(config, inicioMin, inicioMin + duracion)
+    !promoSegundaHoraCubreHorario(config, inicioMin, inicioMin + duracion) ||
+    !promoSegundaHoraCubreDia(config, fecha)
   ) {
     return { ...cotizacion, segundaHora: null };
   }
@@ -385,7 +421,7 @@ export function diaSemanaDeFecha(fecha: string): number {
 
 /**
  * Cotización completa del bloque, igual que `cotizacionDelBloque` del Portal:
- * prorrateo por tramos + Promoción de Segunda Hora del club (App-123; canchas y horario App-124).
+ * prorrateo por tramos + Promoción de Segunda Hora del club (App-123; canchas y horario App-124; días App-125).
  */
 export function cotizacionCancha(opciones: {
   cancha: Fila;
@@ -398,7 +434,7 @@ export function cotizacionCancha(opciones: {
   const { cancha, club, tarifas, fecha, horaInicio, duracionMin } = opciones;
   const tarifasHabilitadas = club?.tarifas_habilitadas !== false;
   const delDia = tarifasHabilitadas ? tarifasActivasDelDia(tarifas, diaSemanaDeFecha(fecha), { fecha, canchaId: cancha?.id ?? null }) : [];
-  return cotizarReservaConPromo(horaInicio, duracionMin, delDia, precioPorHoraDeCancha(cancha), promoSegundaHoraDelClub(club), cancha?.id ?? null);
+  return cotizarReservaConPromo(horaInicio, duracionMin, delDia, precioPorHoraDeCancha(cancha), promoSegundaHoraDelClub(club), cancha?.id ?? null, fecha);
 }
 
 /** Precio del bloque (lo que se cobra), igual que `cotizacionDelBloque(...).total` del Portal. */
