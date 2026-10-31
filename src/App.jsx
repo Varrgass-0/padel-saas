@@ -2602,14 +2602,20 @@ function promoVisibleParaJugador(cotizacion) {
   );
 }
 
-// --- Promoción de Segunda Hora (App-123, migración v130) — MISMA lógica,
-// línea por línea, que `portal-checkout/logica.ts` (el servidor recalcula el
-// cobro en línea con estas mismas funciones).
-// Regla: en una reserva de 2 horas o más en la misma cancha, la SEGUNDA
-// hora (minutos 60–120 del bloque) se cobra con el % de descuento del club.
-// La 1ª hora y la 3ª en adelante se cobran normal. Reservas de menos de 2
-// horas (1 h, 1.5 h) nunca llevan la promoción. El % se aplica sobre lo que
-// cuesta esa hora con su tarifa vigente (prorrateo de `cotizarReserva`).
+// --- Promoción de Segunda Hora (App-123/124, migraciones v130 + v131) —
+// MISMA lógica, línea por línea, que `portal-checkout/logica.ts` (el servidor
+// recalcula el cobro en línea con estas mismas funciones).
+// Regla:
+//   • El descuento aplica EXCLUSIVAMENTE a la 2ª hora consecutiva (minutos
+//     60–120 del bloque) de una reserva en la misma cancha.
+//   • 1 h / 1.5 h → precio normal. 2 h → Hora 1 normal + Hora 2 con −X %.
+//     3 h o más → el descuento NO se acumula: solo la 2ª hora lo lleva y la
+//     3ª en adelante se cobra a precio regular.
+//   • App-124: solo en las CANCHAS participantes (vacío = todas) y si la
+//     reserva COMPLETA cae dentro de la ventana Hora Inicio–Hora Fin
+//     (sin ventana = todo el horario del club).
+//   • El % se aplica sobre lo que cuesta esa hora con su tarifa vigente
+//     (prorrateo de `cotizarReserva`).
 const PROMO_SEGUNDA_HORA_MIN_DURACION = 120;
 function normalizarPorcentajePromoSegundaHora(valor) {
   if (valor === null || valor === undefined || valor === '') return null;
@@ -2617,19 +2623,90 @@ function normalizarPorcentajePromoSegundaHora(valor) {
   if (!Number.isFinite(n) || n <= 0 || n > 100) return null;
   return Math.round(n * 100) / 100;
 }
-// Acepta la config del Panel (camelCase) o la fila de `configuracion_club`
-// (snake_case, Portal y servidor). Activa solo con switch ON + % válido.
+// Canchas participantes como texto, sin vacíos ni repetidos ([] = todas).
+function normalizarCanchasPromoSegundaHora(valor) {
+  if (!Array.isArray(valor)) return [];
+  const ids = valor.filter((c) => c !== null && c !== undefined && String(c).trim() !== '').map((c) => String(c).trim());
+  return Array.from(new Set(ids));
+}
+// 'HH:MM' (acepta 'HH:MM:SS' de Postgres). Una hora FIN '00:00' = medianoche
+// ('24:00'). `null` si viene vacía o inválida.
+function normalizarHoraPromoSegundaHora(valor, esFin = false) {
+  if (valor === null || valor === undefined || String(valor).trim() === '') return null;
+  const min = parseHoraAMinutos(valor);
+  if (min === null || min < 0 || min > 24 * 60) return null;
+  return minutosAHora(esFin && min === 0 ? 24 * 60 : min);
+}
+// Ventana válida solo si trae ambas horas y Inicio < Fin; si no, `null`
+// (= todo el horario del club).
+function ventanaPromoSegundaHora(horaInicio, horaFin) {
+  const desde = normalizarHoraPromoSegundaHora(horaInicio);
+  const hasta = normalizarHoraPromoSegundaHora(horaFin, true);
+  if (!desde || !hasta || parseHoraAMinutos(desde) >= parseHoraAMinutos(hasta)) return null;
+  return { horaInicio: desde, horaFin: hasta };
+}
+// Acepta la config del Panel (camelCase), la fila de `configuracion_club`
+// (snake_case, Portal y servidor) o su propio resultado (idempotente).
+// Activa solo con switch ON + % válido.
 function promoSegundaHoraDelClub(fuente) {
-  // También acepta su propio resultado ({ activa, porcentaje }) — idempotente.
   const activaCruda = fuente?.promoSegundaHoraActiva ?? fuente?.promo_segunda_hora_activa ?? fuente?.activa;
   const porcentaje = normalizarPorcentajePromoSegundaHora(
     fuente?.promoSegundaHoraPorcentaje ?? fuente?.promo_segunda_hora_porcentaje ?? fuente?.porcentaje
   );
-  return { activa: activaCruda === true && porcentaje !== null, porcentaje: porcentaje ?? 0 };
+  const canchaIds = normalizarCanchasPromoSegundaHora(fuente?.promoSegundaHoraCanchaIds ?? fuente?.promo_segunda_hora_cancha_ids ?? fuente?.canchaIds);
+  const ventana = ventanaPromoSegundaHora(
+    fuente?.promoSegundaHoraHoraInicio ?? fuente?.promo_segunda_hora_hora_inicio ?? fuente?.horaInicio,
+    fuente?.promoSegundaHoraHoraFin ?? fuente?.promo_segunda_hora_hora_fin ?? fuente?.horaFin
+  );
+  return {
+    activa: activaCruda === true && porcentaje !== null,
+    porcentaje: porcentaje ?? 0,
+    canchaIds,
+    horaInicio: ventana ? ventana.horaInicio : null,
+    horaFin: ventana ? ventana.horaFin : null,
+  };
+}
+// ¿La promo está activa y participa ESTA cancha? (insignia del Portal).
+function promoSegundaHoraAplicaACancha(promo, canchaId) {
+  const p = promoSegundaHoraDelClub(promo);
+  if (!p.activa) return false;
+  return p.canchaIds.length === 0 || (canchaId !== null && canchaId !== undefined && p.canchaIds.includes(String(canchaId)));
+}
+// ¿La reserva [inicioMin, finMin] cae COMPLETA dentro de la ventana?
+function promoSegundaHoraCubreHorario(promo, inicioMin, finMin) {
+  const p = promoSegundaHoraDelClub(promo);
+  if (!p.horaInicio || !p.horaFin) return true;
+  return inicioMin >= parseHoraAMinutos(p.horaInicio) && finMin <= parseHoraAMinutos(p.horaFin);
 }
 function etiquetaPromoSegundaHora(porcentaje) {
   const pct = Number(porcentaje) || 0;
   return `2ª hora −${pct % 1 === 0 ? pct : pct.toFixed(2)}%`;
+}
+// "7:00 am – 4:00 pm" · "Todo el día" (fin '24:00' = "12:00 am").
+function textoVentanaPromoSegundaHora(promo) {
+  const p = promoSegundaHoraDelClub(promo);
+  if (!p.horaInicio || !p.horaFin) return 'Todo el día';
+  const fin = parseHoraAMinutos(p.horaFin) === 24 * 60 ? '12:00 am' : formatoHora12(p.horaFin);
+  return `${formatoHora12(p.horaInicio)} – ${fin}`;
+}
+// Campos camelCase de la promo para `configClub` (estado del Panel, caché
+// local y `guardarConfigClub`) — siempre normalizados.
+const LLAVES_CONFIG_PROMO_SEGUNDA_HORA = [
+  'promoSegundaHoraActiva',
+  'promoSegundaHoraPorcentaje',
+  'promoSegundaHoraCanchaIds',
+  'promoSegundaHoraHoraInicio',
+  'promoSegundaHoraHoraFin',
+];
+function configPromoSegundaHora(fuente) {
+  const p = promoSegundaHoraDelClub(fuente);
+  return {
+    promoSegundaHoraActiva: p.activa,
+    promoSegundaHoraPorcentaje: p.porcentaje > 0 ? p.porcentaje : null,
+    promoSegundaHoraCanchaIds: p.canchaIds,
+    promoSegundaHoraHoraInicio: p.horaInicio,
+    promoSegundaHoraHoraFin: p.horaFin,
+  };
 }
 // `cotizarReserva` + Promoción de Segunda Hora. Sin promo aplicable devuelve
 // la cotización tal cual (`segundaHora: null`). Con promo:
@@ -2637,12 +2714,21 @@ function etiquetaPromoSegundaHora(porcentaje) {
 //   totalSinPromo  → sin ninguna promoción (precio tachado del Portal)
 //   segundaHora    → { porcentaje, hora1, hora2, descuento, hora2ConDescuento,
 //                      horasRestantes, minutosRestantes, totalAntesDescuento }
-function cotizarReservaConPromo(horaInicio, duracionMinutos, listaTarifas, precioBase, promo) {
+// `canchaId` (App-124): la cancha de la reserva — sin ella, una promo
+// limitada a ciertas canchas nunca aplica.
+function cotizarReservaConPromo(horaInicio, duracionMinutos, listaTarifas, precioBase, promo, canchaId = null) {
   const cotizacion = cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase);
   const config = promoSegundaHoraDelClub(promo);
   const duracion = Number(duracionMinutos) > 0 ? Number(duracionMinutos) : 60;
   const inicioMin = parseHoraAMinutos(horaInicio);
-  if (!config.activa || duracion < PROMO_SEGUNDA_HORA_MIN_DURACION || inicioMin === null || cotizacion.tramos.length === 0) {
+  if (
+    !config.activa ||
+    duracion < PROMO_SEGUNDA_HORA_MIN_DURACION ||
+    inicioMin === null ||
+    cotizacion.tramos.length === 0 ||
+    !promoSegundaHoraAplicaACancha(config, canchaId) ||
+    !promoSegundaHoraCubreHorario(config, inicioMin, inicioMin + duracion)
+  ) {
     return { ...cotizacion, segundaHora: null };
   }
   const redondear = (n) => Math.round(n * 100) / 100;
@@ -4492,6 +4578,11 @@ const CONFIG_CLUB_DEFAULT = {
   // un club que nunca la activa cobra exactamente como siempre.
   promoSegundaHoraActiva: false,
   promoSegundaHoraPorcentaje: null,
+  // App-124 (v131): canchas participantes ([] = todas) y ventana horaria
+  // (null = todo el horario del club).
+  promoSegundaHoraCanchaIds: [],
+  promoSegundaHoraHoraInicio: null,
+  promoSegundaHoraHoraFin: null,
 };
 
 // ============================================================================
@@ -4825,8 +4916,7 @@ function leerConfigClubLocal() {
       academiaHorasValidacionMinimo:
         normalizarHorasValidacionMinimo(parsed.academiaHorasValidacionMinimo) ?? CONFIG_CLUB_DEFAULT.academiaHorasValidacionMinimo,
       // Promoción de Segunda Hora (v130) — caché local.
-      promoSegundaHoraActiva: parsed.promoSegundaHoraActiva === true,
-      promoSegundaHoraPorcentaje: normalizarPorcentajePromoSegundaHora(parsed.promoSegundaHoraPorcentaje),
+      ...configPromoSegundaHora(parsed),
     };
   } catch (_e) {
     return { ...CONFIG_CLUB_DEFAULT };
@@ -8758,7 +8848,7 @@ function ModalNuevaReserva({
   // prorrateo por tramos cuando el bloque (60/90/120 min) cruza franjas.
   // App-123: + Promoción de Segunda Hora (misma función que el Portal y el servidor).
   function cotizacionDelBloque(hora) {
-    return cotizarReservaConPromo(hora, duracionMin, tarifasDelDia, precioPorHora, promoSegundaHora);
+    return cotizarReservaConPromo(hora, duracionMin, tarifasDelDia, precioPorHora, promoSegundaHora, canchaSeleccionada?.id ?? null);
   }
   function precioDelBloque(hora) {
     return cotizacionDelBloque(hora).total;
@@ -51125,6 +51215,10 @@ function normalizarFilaClub(fila, tabla) {
     // `undefined` y la promoción queda apagada.
     promo_segunda_hora_activa: fila.promo_segunda_hora_activa === true,
     promo_segunda_hora_porcentaje: normalizarPorcentajePromoSegundaHora(fila.promo_segunda_hora_porcentaje),
+    // App-124 (v131): canchas participantes y ventana horaria.
+    promo_segunda_hora_cancha_ids: normalizarCanchasPromoSegundaHora(fila.promo_segunda_hora_cancha_ids),
+    promo_segunda_hora_hora_inicio: fila.promo_segunda_hora_hora_inicio ?? null,
+    promo_segunda_hora_hora_fin: fila.promo_segunda_hora_hora_fin ?? null,
     _tabla: tabla,
   };
 }
@@ -51434,6 +51528,7 @@ function ModuloConfiguracionClub({
           onEliminarTarifaHorario={onEliminarTarifaHorario}
           modoOnboarding={modoOnboarding}
           onRegistrarGuardadoModulo={registrarGuardadoModulo}
+          canchasClub={canchasClub}
         />
       ) : tab === 'wallet' ? (
         <SeccionWallet jugadoresPorId={jugadoresPorId} empleados={empleados} operador={operador} permisos={permisos} />
@@ -55373,6 +55468,9 @@ function SeccionReservasAcademia({
   onEliminarTarifaHorario,
   modoOnboarding = false,
   onRegistrarGuardadoModulo,
+  // App-124 — canchas del club para "Canchas participantes" de la Promoción
+  // de Segunda Hora.
+  canchasClub = [],
 }) {
   const [modalRangosHorario, setModalRangosHorario] = useState(false);
   // Franjas Horarias de Clase Suelta (migracion_v88) — mismo CRUD de
@@ -55455,19 +55553,43 @@ function SeccionReservasAcademia({
     });
   }
 
-  // Promoción de Segunda Hora (App-123, v130) — switch ON/OFF que guarda al
-  // tocarlo + % de descuento con botón propio (mismo patrón que Tolerancia).
-  // Se reenvía `config` completo: `guardarConfigClub` escribe el objeto
-  // entero y así nada más se pisa.
+  // Promoción de Segunda Hora (App-123 / App-124) — switch ON/OFF que guarda
+  // al tocarlo + % de descuento, canchas participantes y ventana horaria con
+  // un botón "Guardar promoción". Se reenvía `config` completo:
+  // `guardarConfigClub` escribe el objeto entero y así nada más se pisa.
+  const canchasPromo = useMemo(() => (Array.isArray(canchasClub) ? canchasClub : []).filter((c) => c && c.activa !== false), [canchasClub]);
+  const horaParaInput = (h) => (h ? (parseHoraAMinutos(h) === 24 * 60 ? '00:00' : String(h).slice(0, 5)) : '');
   const [promoActiva, setPromoActiva] = useState(config.promoSegundaHoraActiva === true);
   const [promoPorcentaje, setPromoPorcentaje] = useState(
     config.promoSegundaHoraPorcentaje != null ? String(config.promoSegundaHoraPorcentaje) : ''
   );
+  const [promoCanchas, setPromoCanchas] = useState(() => normalizarCanchasPromoSegundaHora(config.promoSegundaHoraCanchaIds)); // [] = todas
+  const [promoHoraInicio, setPromoHoraInicio] = useState(() => horaParaInput(config.promoSegundaHoraHoraInicio));
+  const [promoHoraFin, setPromoHoraFin] = useState(() => horaParaInput(config.promoSegundaHoraHoraFin));
   const [errorPromo, setErrorPromo] = useState('');
   useEffect(() => {
     setPromoActiva(config.promoSegundaHoraActiva === true);
     setPromoPorcentaje(config.promoSegundaHoraPorcentaje != null ? String(config.promoSegundaHoraPorcentaje) : '');
-  }, [config.promoSegundaHoraActiva, config.promoSegundaHoraPorcentaje]);
+    setPromoCanchas(normalizarCanchasPromoSegundaHora(config.promoSegundaHoraCanchaIds));
+    setPromoHoraInicio(horaParaInput(config.promoSegundaHoraHoraInicio));
+    setPromoHoraFin(horaParaInput(config.promoSegundaHoraHoraFin));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    config.promoSegundaHoraActiva,
+    config.promoSegundaHoraPorcentaje,
+    config.promoSegundaHoraCanchaIds,
+    config.promoSegundaHoraHoraInicio,
+    config.promoSegundaHoraHoraFin,
+  ]);
+  function alternarCanchaPromo(id) {
+    const clave = String(id);
+    setErrorPromo('');
+    setPromoCanchas((prev) => {
+      const siguiente = prev.includes(clave) ? prev.filter((c) => c !== clave) : [...prev, clave];
+      // Sin ninguna marcada = "Todas las canchas"; todas marcadas, igual.
+      return siguiente.length >= canchasPromo.length ? [] : siguiente;
+    });
+  }
   async function guardarPromoSegundaHora(activa) {
     const porcentaje = normalizarPorcentajePromoSegundaHora(promoPorcentaje);
     if (promoPorcentaje !== '' && porcentaje === null) {
@@ -55478,8 +55600,30 @@ function SeccionReservasAcademia({
       setErrorPromo('Captura el % de descuento antes de activar la promoción.');
       return false;
     }
+    const conInicio = promoHoraInicio !== '';
+    const conFin = promoHoraFin !== '';
+    if (conInicio !== conFin) {
+      setErrorPromo('Captura Hora Inicio y Hora Fin, o deja ambas vacías para todo el horario del club.');
+      return false;
+    }
+    const ventana = conInicio ? ventanaPromoSegundaHora(promoHoraInicio, promoHoraFin) : null;
+    if (conInicio && !ventana) {
+      setErrorPromo('La Hora Fin debe ser posterior a la Hora Inicio.');
+      return false;
+    }
+    if (conInicio && parseHoraAMinutos(ventana.horaFin) - parseHoraAMinutos(ventana.horaInicio) < PROMO_SEGUNDA_HORA_MIN_DURACION) {
+      setErrorPromo('El horario debe cubrir al menos 2 horas para que quepa una reserva con promoción.');
+      return false;
+    }
     setErrorPromo('');
-    await onGuardarConfigClub?.({ ...config, promoSegundaHoraActiva: activa, promoSegundaHoraPorcentaje: porcentaje });
+    await onGuardarConfigClub?.({
+      ...config,
+      promoSegundaHoraActiva: activa,
+      promoSegundaHoraPorcentaje: porcentaje,
+      promoSegundaHoraCanchaIds: promoCanchas,
+      promoSegundaHoraHoraInicio: ventana ? ventana.horaInicio : null,
+      promoSegundaHoraHoraFin: ventana ? ventana.horaFin : null,
+    });
     return true;
   }
   async function alternarPromoSegundaHora() {
@@ -55488,6 +55632,14 @@ function SeccionReservasAcademia({
     if (ok) setPromoActiva(nuevo);
   }
   const porcentajePromoVista = normalizarPorcentajePromoSegundaHora(promoPorcentaje);
+  const resumenAlcancePromo = (() => {
+    const nombres =
+      promoCanchas.length === 0
+        ? 'Todas las canchas'
+        : promoCanchas.map((id) => canchasPromo.find((c) => String(c.id) === id)?.nombre || `Cancha ${id}`).join(', ');
+    const ventana = ventanaPromoSegundaHora(promoHoraInicio, promoHoraFin);
+    return `${nombres} · ${ventana ? textoVentanaPromoSegundaHora({ horaInicio: ventana.horaInicio, horaFin: ventana.horaFin }) : 'Todo el horario del club'}`;
+  })();
 
   // Políticas y Tolerancia de Cancelación (nuevo bloque) — centraliza en
   // Configuración del Club lo que antes SOLO existía por Reta individual
@@ -56046,10 +56198,18 @@ function SeccionReservasAcademia({
             <Percent size={16} className="text-orange-500" />
             <h3 className="text-sm font-black text-slate-900">Promoción de Segunda Hora</h3>
           </div>
-          <p className="mb-3 text-xs text-slate-500">
-            En reservas de 2 horas o más en la misma cancha, la segunda hora se cobra con descuento. La primera hora y
-            la tercera en adelante se cobran a precio regular. Aplica en el Portal de Jugadores y en Recepción.
-          </p>
+          <div className="mb-3 space-y-1 rounded-xl bg-slate-50 px-3 py-2.5 text-xs text-slate-600" data-testid="reglas-promo-segunda-hora">
+            <p className="font-bold text-slate-700">
+              El descuento aplica exclusivamente a la 2ª hora consecutiva de una reserva de 2 horas en la misma cancha.
+            </p>
+            <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-slate-500">
+              <li>1 hora (o 1.5 horas): precio normal, sin promoción.</li>
+              <li>2 horas: Hora 1 a precio normal + Hora 2 con el % de descuento.</li>
+              <li>3 horas o más: el descuento no se acumula ni aplica a las horas posteriores — solo la 2ª hora lo lleva.</li>
+              <li>Solo en las canchas participantes y si la reserva completa cae dentro del horario de la promoción.</li>
+            </ul>
+            <p className="text-[11px] text-slate-500">Funciona igual en el Portal de Jugadores (incluido el pago en línea) y en Recepción.</p>
+          </div>
 
           <button
             type="button"
@@ -56076,7 +56236,7 @@ function SeccionReservasAcademia({
             </span>
           </button>
 
-          <div className="flex flex-wrap items-end gap-3">
+          <div className="space-y-3.5">
             <label className="block">
               <span className="mb-1 block text-xs font-bold text-slate-700">Porcentaje de descuento (2ª hora)</span>
               <span className="relative block w-36">
@@ -56098,10 +56258,104 @@ function SeccionReservasAcademia({
                 <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-bold text-slate-400">%</span>
               </span>
             </label>
-            <BotonPrimario onClick={() => guardarPromoSegundaHora(promoActiva)} disabled={guardandoConfigClub} data-testid="guardar-promo-segunda-hora">
-              {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-              Guardar descuento
-            </BotonPrimario>
+
+            <div>
+              <p className="mb-1.5 text-xs font-bold text-slate-700">Canchas participantes</p>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Canchas participantes">
+                <button
+                  type="button"
+                  aria-pressed={promoCanchas.length === 0}
+                  data-testid="promo-todas-canchas"
+                  onClick={() => {
+                    setPromoCanchas([]);
+                    setErrorPromo('');
+                  }}
+                  className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition ${
+                    promoCanchas.length === 0 ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+                  }`}
+                >
+                  Todas las canchas
+                </button>
+                {canchasPromo.map((c) => {
+                  const marcada = promoCanchas.includes(String(c.id));
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      aria-pressed={marcada}
+                      data-testid={`promo-cancha-${c.id}`}
+                      onClick={() => alternarCanchaPromo(c.id)}
+                      className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition ${
+                        marcada ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+                      }`}
+                    >
+                      {c.nombre || `Cancha ${c.id}`}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-1.5 text-xs font-bold text-slate-700">Horario de la promoción</p>
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-semibold text-slate-500">Hora Inicio</span>
+                  <input
+                    type="time"
+                    step="1800"
+                    value={promoHoraInicio}
+                    onChange={(e) => {
+                      setPromoHoraInicio(e.target.value);
+                      setErrorPromo('');
+                    }}
+                    className={`${inputClase} w-36`}
+                    data-testid="promo-hora-inicio"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-semibold text-slate-500">Hora Fin</span>
+                  <input
+                    type="time"
+                    step="1800"
+                    value={promoHoraFin}
+                    onChange={(e) => {
+                      setPromoHoraFin(e.target.value);
+                      setErrorPromo('');
+                    }}
+                    className={`${inputClase} w-36`}
+                    data-testid="promo-hora-fin"
+                  />
+                </label>
+                {(promoHoraInicio || promoHoraFin) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPromoHoraInicio('');
+                      setPromoHoraFin('');
+                      setErrorPromo('');
+                    }}
+                    className="pb-2.5 text-[11px] font-bold text-slate-500 hover:text-orange-500"
+                    data-testid="promo-horario-limpiar"
+                  >
+                    Todo el horario del club
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Vacío = todo el horario del club. La reserva completa debe caer dentro del horario (ej. 07:00–16:00: 2:00–4:00 pm sí, 3:00–5:00 pm no).
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-[11px] font-semibold text-slate-600" data-testid="alcance-promo-segunda-hora">
+                Aplica en: {resumenAlcancePromo}
+              </p>
+              <BotonPrimario onClick={() => guardarPromoSegundaHora(promoActiva)} disabled={guardandoConfigClub} data-testid="guardar-promo-segunda-hora">
+                {guardandoConfigClub ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                Guardar promoción
+              </BotonPrimario>
+            </div>
           </div>
           {errorPromo && <p className="mt-2 text-xs font-semibold text-rose-500">{errorPromo}</p>}
           {porcentajePromoVista !== null && (
@@ -58066,6 +58320,8 @@ function PortalPublicoJugadores({ clubSlug }) {
   const [temaPortal, alternarTemaPortal] = useTemaClubOS();
 
   const [club, setClub] = useState(null);
+  // App-124 — Promoción de Segunda Hora del club (insignia en las tarjetas de canchas).
+  const promoSegundaHoraPortal = useMemo(() => promoSegundaHoraDelClub(club), [club]);
   const [cargandoClub, setCargandoClub] = useState(true);
   const [jugador, setJugador] = useState(null);
 
@@ -61979,12 +62235,19 @@ function PortalPublicoJugadores({ clubSlug }) {
                   {canchasActivas.map((c) => {
                     const estado = estadoActualCancha(c, reservas);
                     const meta = ESTATUS_META[estado];
-                    return (
+                    // App-124 — cancha participante de la Promoción de Segunda Hora.
+                    const conPromo2h = promoSegundaHoraAplicaACancha(promoSegundaHoraPortal, c.id);
+                    const tarjetaCancha = (
                       <button
                         key={c.id}
                         type="button"
                         onClick={() => abrirReservaCancha(c)}
-                        className="group overflow-hidden rounded-2xl border border-slate-200 bg-white/50 text-left backdrop-blur-sm transition hover:border-orange-400/30 hover:bg-white/70"
+                        data-testid={`tarjeta-cancha-${c.id}`}
+                        className={
+                          conPromo2h
+                            ? 'group flex h-full w-full flex-col overflow-hidden rounded-[14px] bg-white text-left transition hover:brightness-[0.98]'
+                            : 'group flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/50 text-left backdrop-blur-sm transition hover:border-orange-400/30 hover:bg-white/70'
+                        }
                       >
                         <div className="relative h-28 w-full bg-slate-100">
                           <img
@@ -61998,6 +62261,14 @@ function PortalPublicoJugadores({ clubSlug }) {
                           />
                           {/* Tipo de cancha (columna `tipo`): Indoor = techada, Outdoor = al aire libre. */}
                           {normalizarTipoCancha(c.tipo) && <BadgeTipoCancha tipo={c.tipo} sobreImagen className="absolute left-2.5 top-2.5 shadow-sm" />}
+                          {conPromo2h && (
+                            <span
+                              className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-lime-400 via-emerald-400 to-amber-300 px-2.5 py-1 text-[11px] font-black text-slate-900 shadow-md shadow-lime-500/40 ring-1 ring-white/70"
+                              data-testid="badge-promo-cancha"
+                            >
+                              <Sparkles size={12} /> 2ª hora −{promoSegundaHoraPortal.porcentaje % 1 === 0 ? promoSegundaHoraPortal.porcentaje : promoSegundaHoraPortal.porcentaje.toFixed(2)}%
+                            </span>
+                          )}
                         </div>
                         <div className="p-3.5">
                           <div className="flex items-center justify-between gap-2">
@@ -62010,8 +62281,30 @@ function PortalPublicoJugadores({ clubSlug }) {
                               Reservar <ChevronRight size={13} />
                             </span>
                           </div>
+                          {conPromo2h && (
+                            <p className="mt-2 rounded-lg bg-lime-400/15 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 ring-1 ring-lime-400/40" data-testid="leyenda-promo-cancha">
+                              Reserva 2 horas y la 2ª hora tiene {promoSegundaHoraPortal.porcentaje % 1 === 0 ? promoSegundaHoraPortal.porcentaje : promoSegundaHoraPortal.porcentaje.toFixed(2)}% de descuento ·{' '}
+                              {textoVentanaPromoSegundaHora(promoSegundaHoraPortal)}
+                            </p>
+                          )}
                         </div>
                       </button>
+                    );
+                    if (!conPromo2h) return tarjetaCancha;
+                    // Marco brillante animado (mismo recurso que la tarjeta de
+                    // cumpleaños del Directorio), en tonos lima/esmeralda.
+                    return (
+                      <motion.div
+                        key={c.id}
+                        initial={{ scale: 0.98, opacity: 0.85 }}
+                        animate={{ scale: 1, opacity: 1, backgroundPosition: ['0% 50%', '100% 50%', '0% 50%'] }}
+                        transition={{ scale: { duration: 0.3 }, opacity: { duration: 0.3 }, backgroundPosition: { duration: 5, repeat: Infinity, ease: 'linear' } }}
+                        style={{ backgroundImage: 'linear-gradient(120deg, #a3e635, #34d399, #fbbf24, #a3e635, #34d399)', backgroundSize: '300% 300%' }}
+                        className="rounded-2xl p-[2px] shadow-lg shadow-lime-400/40"
+                        data-testid={`marco-promo-cancha-${c.id}`}
+                      >
+                        {tarjetaCancha}
+                      </motion.div>
                     );
                   })}
                   </div>
@@ -65772,7 +66065,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   // App-123: + Promoción de Segunda Hora del club (mismo cálculo que el servidor).
   const promoSegundaHora = useMemo(() => promoSegundaHoraDelClub(club), [club]);
   function cotizacionDelBloque(hora) {
-    return cotizarReservaConPromo(hora, Math.round(duracionHoras * 60), tarifasDelDia, precioBaseEfectivo, promoSegundaHora);
+    return cotizarReservaConPromo(hora, Math.round(duracionHoras * 60), tarifasDelDia, precioBaseEfectivo, promoSegundaHora, cancha?.id ?? null);
   }
   function precioDelBloque(hora) {
     return cotizacionDelBloque(hora).total;
@@ -66021,8 +66314,11 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                         ? 'cursor-not-allowed border-slate-200 bg-slate-200/60 text-slate-400'
                         : seleccionado
                         ? 'border-2 border-orange-500 ring-2 ring-orange-500/30 bg-white text-slate-900 font-semibold'
+                        : cotizacionSlot.segundaHora
+                        ? 'border-lime-400 bg-white text-slate-900 font-semibold shadow-[0_0_0_2px_rgba(163,230,53,0.35),0_0_14px_rgba(163,230,53,0.45)] hover:border-orange-400/50'
                         : 'border-slate-200 bg-white text-slate-900 font-semibold hover:border-orange-400/50'
                     }`}
+                    data-promo-segunda-hora={!bloqueado && cotizacionSlot.segundaHora ? '' : undefined}
                   >
                     <span className={`text-[11px] font-bold ${bloqueado ? 'line-through' : ''}`}>
                       {formatoHora12(f.horaInicio)}
@@ -66912,16 +67208,16 @@ function AppInterno({ clubInicial } = {}) {
   // Promoción de Segunda Hora (v130) — mismo patrón de espejo en ref: solo la
   // tarjeta de la promoción manda estas llaves; cualquier otro guardado de
   // Configuración del Club conserva el valor vigente.
-  const promoSegundaHoraRef = useRef({
-    promoSegundaHoraActiva: configClub?.promoSegundaHoraActiva === true,
-    promoSegundaHoraPorcentaje: normalizarPorcentajePromoSegundaHora(configClub?.promoSegundaHoraPorcentaje),
-  });
+  const promoSegundaHoraRef = useRef(configPromoSegundaHora(configClub));
   useEffect(() => {
-    promoSegundaHoraRef.current = {
-      promoSegundaHoraActiva: configClub?.promoSegundaHoraActiva === true,
-      promoSegundaHoraPorcentaje: normalizarPorcentajePromoSegundaHora(configClub?.promoSegundaHoraPorcentaje),
-    };
-  }, [configClub?.promoSegundaHoraActiva, configClub?.promoSegundaHoraPorcentaje]);
+    promoSegundaHoraRef.current = configPromoSegundaHora(configClub);
+  }, [
+    configClub?.promoSegundaHoraActiva,
+    configClub?.promoSegundaHoraPorcentaje,
+    configClub?.promoSegundaHoraCanchaIds,
+    configClub?.promoSegundaHoraHoraInicio,
+    configClub?.promoSegundaHoraHoraFin,
+  ]);
 
   // Interactive Onboarding Canvas (migracion_v66) — semilla desde
   // `clubInicial` (fix urgente de condición de carrera, ver `ClubAuthGate`):
@@ -67829,16 +68125,20 @@ function AppInterno({ clubInicial } = {}) {
               data.academia_horas_validacion_minimo === undefined
                 ? tarifasGrupalesRef.current.academiaHorasValidacionMinimo
                 : horasValidacionMinimoDelClub(data),
-            // Promoción de Segunda Hora (v130) — proyecto sin la migración
-            // (`undefined`) conserva el valor local.
-            promoSegundaHoraActiva:
-              data.promo_segunda_hora_activa === undefined
-                ? promoSegundaHoraRef.current.promoSegundaHoraActiva
-                : data.promo_segunda_hora_activa === true,
-            promoSegundaHoraPorcentaje:
-              data.promo_segunda_hora_porcentaje === undefined
-                ? promoSegundaHoraRef.current.promoSegundaHoraPorcentaje
-                : normalizarPorcentajePromoSegundaHora(data.promo_segunda_hora_porcentaje),
+            // Promoción de Segunda Hora (v130 + v131) — columna que el
+            // proyecto aún no tiene (`undefined`) conserva el valor local.
+            ...configPromoSegundaHora({
+              promoSegundaHoraActiva:
+                data.promo_segunda_hora_activa === undefined ? promoSegundaHoraRef.current.promoSegundaHoraActiva : data.promo_segunda_hora_activa === true,
+              promoSegundaHoraPorcentaje:
+                data.promo_segunda_hora_porcentaje === undefined ? promoSegundaHoraRef.current.promoSegundaHoraPorcentaje : data.promo_segunda_hora_porcentaje,
+              promoSegundaHoraCanchaIds:
+                data.promo_segunda_hora_cancha_ids === undefined ? promoSegundaHoraRef.current.promoSegundaHoraCanchaIds : data.promo_segunda_hora_cancha_ids,
+              promoSegundaHoraHoraInicio:
+                data.promo_segunda_hora_hora_inicio === undefined ? promoSegundaHoraRef.current.promoSegundaHoraHoraInicio : data.promo_segunda_hora_hora_inicio,
+              promoSegundaHoraHoraFin:
+                data.promo_segunda_hora_hora_fin === undefined ? promoSegundaHoraRef.current.promoSegundaHoraHoraFin : data.promo_segunda_hora_hora_fin,
+            }),
           };
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
@@ -68779,15 +69079,13 @@ function AppInterno({ clubInicial } = {}) {
           'academiaHorasValidacionMinimo' in nuevaConfig
             ? horasValidacionMinimoDelClub(nuevaConfig)
             : tarifasGrupalesRef.current.academiaHorasValidacionMinimo,
-        // Promoción de Segunda Hora (v130) — solo cambia si el caller manda la llave.
-        promoSegundaHoraActiva:
-          'promoSegundaHoraActiva' in nuevaConfig
-            ? nuevaConfig.promoSegundaHoraActiva === true
-            : promoSegundaHoraRef.current.promoSegundaHoraActiva,
-        promoSegundaHoraPorcentaje:
-          'promoSegundaHoraPorcentaje' in nuevaConfig
-            ? normalizarPorcentajePromoSegundaHora(nuevaConfig.promoSegundaHoraPorcentaje)
-            : promoSegundaHoraRef.current.promoSegundaHoraPorcentaje,
+        // Promoción de Segunda Hora (v130 + v131) — cada llave solo cambia si
+        // el caller la manda; si no, se conserva el valor vigente (ref).
+        ...configPromoSegundaHora(
+          Object.fromEntries(
+            LLAVES_CONFIG_PROMO_SEGUNDA_HORA.map((k) => [k, k in nuevaConfig ? nuevaConfig[k] : promoSegundaHoraRef.current[k]])
+          )
+        ),
       };
       // v130: nunca encendida sin % (CHECK de la base) — sin % válido queda OFF.
       if (limpia.promoSegundaHoraPorcentaje === null) limpia.promoSegundaHoraActiva = false;
@@ -68823,6 +69121,10 @@ function AppInterno({ clubInicial } = {}) {
           academia_horas_validacion_minimo: limpia.academiaHorasValidacionMinimo,
           promo_segunda_hora_activa: limpia.promoSegundaHoraActiva,
           promo_segunda_hora_porcentaje: limpia.promoSegundaHoraPorcentaje,
+          // v131: NULL = todas las canchas / todo el horario.
+          promo_segunda_hora_cancha_ids: limpia.promoSegundaHoraCanchaIds.length > 0 ? limpia.promoSegundaHoraCanchaIds : null,
+          promo_segunda_hora_hora_inicio: limpia.promoSegundaHoraHoraInicio,
+          promo_segunda_hora_hora_fin: limpia.promoSegundaHoraHoraFin,
         };
         // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo
         // (como antes de este cambio): `hora_apertura`/`hora_cierre`/
@@ -68856,6 +69158,9 @@ function AppInterno({ clubInicial } = {}) {
           'academia_horas_validacion_minimo',
           'promo_segunda_hora_activa',
           'promo_segunda_hora_porcentaje',
+          'promo_segunda_hora_cancha_ids',
+          'promo_segunda_hora_hora_inicio',
+          'promo_segunda_hora_hora_fin',
         ]);
         if (error) throw error;
         setConfiguracionClubId(CLUB_ACTIVO_ID);
