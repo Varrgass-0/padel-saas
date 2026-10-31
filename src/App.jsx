@@ -2741,6 +2741,16 @@ function textoDiasPromoSegundaHora(promo) {
     .map(([a, b]) => (a === b ? ETIQUETAS_DIA_PROMO[ORDEN_DIAS_PROMO[a]] : `${ETIQUETAS_DIA_PROMO[ORDEN_DIAS_PROMO[a]]}-${ETIQUETAS_DIA_PROMO[ORDEN_DIAS_PROMO[b]]}`))
     .join(', ');
 }
+// Distintivo del Portal (App-127): la promo está activa, participa la cancha
+// y `fecha` (hoy) es uno de los días configurados.
+function promoSegundaHoraVigenteEnCancha(promo, canchaId, fecha) {
+  return promoSegundaHoraAplicaACancha(promo, canchaId) && promoSegundaHoraCubreDia(promo, fecha);
+}
+// Leyenda de la tarjeta del Portal: "De 7:00 a.m. - 11:00 a.m." · "Todo el día".
+function textoHorarioTarjetaPromoSegundaHora(promo) {
+  const p = promoSegundaHoraDelClub(promo);
+  return p.horaInicio && p.horaFin ? `De ${textoVentanaPromoSegundaHora(p)}` : 'Todo el día';
+}
 // Campos camelCase de la promo para `configClub` (estado del Panel, caché
 // local y `guardarConfigClub`) — siempre normalizados.
 const LLAVES_CONFIG_PROMO_SEGUNDA_HORA = [
@@ -8615,9 +8625,6 @@ function PrecioSlotTarifa({ cotizacion, seleccionado = false, vista = 'staff' })
   if (!cotizacion) return null;
   if (vista === 'jugador') {
     const promo = promoVisibleParaJugador(cotizacion);
-    // App-126: la Promoción de Segunda Hora se señala en ámbar/naranja suave
-    // (las promos de Tarifas conservan su verde).
-    const promo2h = promo && !!cotizacion.segundaHora;
     return (
       <span className="flex max-w-full flex-col items-center leading-tight" data-testid="precio-slot">
         {promo && (
@@ -8625,17 +8632,12 @@ function PrecioSlotTarifa({ cotizacion, seleccionado = false, vista = 'staff' })
             {formatoMoneda(cotizacion.totalSinPromo)}
           </span>
         )}
-        <span
-          className={`text-[10px] font-black ${promo2h ? 'text-orange-600' : promo ? 'text-emerald-600' : seleccionado ? 'text-orange-500' : 'text-slate-500'}`}
-          data-testid="precio-final"
-        >
+        <span className={`text-[10px] font-black ${promo ? 'text-emerald-600' : seleccionado ? 'text-orange-500' : 'text-slate-500'}`} data-testid="precio-final">
           {formatoMoneda(cotizacion.total)}
         </span>
         {promo && (
           <span
-            className={`mt-0.5 max-w-full truncate rounded-full px-1.5 py-px text-[8px] font-bold ${
-              promo2h ? 'bg-orange-500/15 text-orange-700 ring-1 ring-orange-400/40' : 'bg-emerald-400/15 text-emerald-700'
-            }`}
+            className="mt-0.5 max-w-full truncate rounded-full bg-emerald-400/15 px-1.5 py-px text-[8px] font-bold text-emerald-700"
             title={nombresReglasCotizacion(cotizacion, true)}
             data-testid="badge-tarifa"
           >
@@ -62362,8 +62364,10 @@ function PortalPublicoJugadores({ clubSlug }) {
                   {canchasActivas.map((c) => {
                     const estado = estadoActualCancha(c, reservas);
                     const meta = ESTATUS_META[estado];
-                    // App-124 — cancha participante de la Promoción de Segunda Hora.
-                    const conPromo2h = promoSegundaHoraAplicaACancha(promoSegundaHoraPortal, c.id);
+                    // App-124/127 — cancha participante de la Promoción de Segunda
+                    // Hora y HOY es uno de los días configurados (fuera de esos
+                    // días no se muestra el distintivo).
+                    const conPromo2h = promoSegundaHoraVigenteEnCancha(promoSegundaHoraPortal, c.id, hoyISO());
                     const tarjetaCancha = (
                       <button
                         key={c.id}
@@ -62390,7 +62394,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                           {normalizarTipoCancha(c.tipo) && <BadgeTipoCancha tipo={c.tipo} sobreImagen className="absolute left-2.5 top-2.5 shadow-sm" />}
                           {conPromo2h && (
                             <span
-                              className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-orange-500 px-2.5 py-1 text-[11px] font-black text-white shadow-md shadow-orange-500/50"
+                              className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-lime-400 via-emerald-400 to-amber-300 px-2.5 py-1 text-[11px] font-black text-slate-900 shadow-md shadow-lime-500/40 ring-1 ring-white/70"
                               data-testid="badge-promo-cancha"
                             >
                               <Sparkles size={12} /> 2ª hora −{promoSegundaHoraPortal.porcentaje % 1 === 0 ? promoSegundaHoraPortal.porcentaje : promoSegundaHoraPortal.porcentaje.toFixed(2)}%
@@ -62408,24 +62412,25 @@ function PortalPublicoJugadores({ clubSlug }) {
                               Reservar <ChevronRight size={13} />
                             </span>
                           </div>
+                          {conPromo2h && (
+                            <p className="mt-1.5 flex items-center gap-1 text-[11px] font-bold text-emerald-700" data-testid="horario-promo-cancha">
+                              <Clock size={11} /> {textoHorarioTarjetaPromoSegundaHora(promoSegundaHoraPortal)}
+                            </p>
+                          )}
                         </div>
                       </button>
                     );
                     if (!conPromo2h) return tarjetaCancha;
-                    // Marco iluminado en Naranja QLUBOS sólido (`orange-500`) con
-                    // resplandor que pulsa suavemente (mismo recurso de marco
-                    // de 2px que la tarjeta de cumpleaños del Directorio).
+                    // Marco brillante animado en verde lima (mismo recurso que
+                    // la tarjeta de cumpleaños del Directorio).
                     return (
                       <motion.div
                         key={c.id}
                         initial={{ scale: 0.98, opacity: 0.85 }}
-                        animate={{
-                          scale: 1,
-                          opacity: 1,
-                          boxShadow: ['0 0 10px 0 rgba(249,115,22,0.35)', '0 0 22px 3px rgba(249,115,22,0.6)', '0 0 10px 0 rgba(249,115,22,0.35)'],
-                        }}
-                        transition={{ scale: { duration: 0.3 }, opacity: { duration: 0.3 }, boxShadow: { duration: 2.4, repeat: Infinity, ease: 'easeInOut' } }}
-                        className="rounded-2xl bg-orange-500 p-[2px]"
+                        animate={{ scale: 1, opacity: 1, backgroundPosition: ['0% 50%', '100% 50%', '0% 50%'] }}
+                        transition={{ scale: { duration: 0.3 }, opacity: { duration: 0.3 }, backgroundPosition: { duration: 5, repeat: Infinity, ease: 'linear' } }}
+                        style={{ backgroundImage: 'linear-gradient(120deg, #a3e635, #34d399, #fbbf24, #a3e635, #34d399)', backgroundSize: '300% 300%' }}
+                        className="rounded-2xl p-[2px] shadow-lg shadow-lime-400/40"
                         data-testid={`marco-promo-cancha-${c.id}`}
                       >
                         {tarjetaCancha}
@@ -66440,7 +66445,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                         : seleccionado
                         ? 'border-2 border-orange-500 ring-2 ring-orange-500/30 bg-white text-slate-900 font-semibold'
                         : cotizacionSlot.segundaHora
-                        ? 'border-orange-300 bg-orange-400/10 text-slate-900 font-semibold hover:border-orange-400'
+                        ? 'border-lime-400 bg-white text-slate-900 font-semibold shadow-[0_0_0_2px_rgba(163,230,53,0.35),0_0_14px_rgba(163,230,53,0.45)] hover:border-orange-400/50'
                         : 'border-slate-200 bg-white text-slate-900 font-semibold hover:border-orange-400/50'
                     }`}
                     data-promo-segunda-hora={!bloqueado && cotizacionSlot.segundaHora ? '' : undefined}
@@ -69294,6 +69299,26 @@ function AppInterno({ clubInicial } = {}) {
         ]);
         if (error) throw error;
         setConfiguracionClubId(CLUB_ACTIVO_ID);
+        // App-127 — si la promo tiene canchas, días u horario pero el
+        // proyecto no corrió v131/v132, esas columnas se descartaron arriba
+        // en silencio y el Portal y el cobro en línea aplicarían la promo
+        // SIN esos límites. Se avisa en vez de dejarlo pasar.
+        const promoConLimites =
+          limpia.promoSegundaHoraActiva &&
+          (limpia.promoSegundaHoraDias.length > 0 || limpia.promoSegundaHoraCanchaIds.length > 0 || limpia.promoSegundaHoraHoraInicio);
+        if (promoConLimites) {
+          const faltaColumna = async (columna) => {
+            const { error: errColumna } = await supabase.from('configuracion_club').select(columna).eq('id', CLUB_ACTIVO_ID).maybeSingle();
+            return !!errColumna && esErrorColumnaInexistente(errColumna);
+          };
+          let aviso = null;
+          if (await faltaColumna('promo_segunda_hora_cancha_ids')) {
+            aviso = 'Faltan las migraciones v131 y v132: canchas, días y horario no se guardaron y la promoción aplicaría sin esos límites.';
+          } else if (limpia.promoSegundaHoraDias.length > 0 && (await faltaColumna('promo_segunda_hora_dias'))) {
+            aviso = 'Falta correr la migración v132: los días de la semana no se guardaron y la promoción aplicaría todos los días.';
+          }
+          if (aviso) mostrarToast({ titulo: 'Promoción de Segunda Hora sin guardar completa', detalle: aviso, tono: 'error' });
+        }
       } catch (err) {
         // Sincronización Silenciosa: el nombre/logo ya se aplicó de forma
         // optimista arriba — si Supabase no lo acepta todavía (columnas sin
