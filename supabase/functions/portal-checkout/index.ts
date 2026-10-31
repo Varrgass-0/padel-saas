@@ -43,7 +43,7 @@ import {
   ahoraEnZona,
   type ArticuloCobrado,
   centavos,
-  costoCancha,
+  cotizacionCancha,
   cotizarArticulos,
   CUPOS_RETA,
   cuentaConectadaActiva,
@@ -182,7 +182,9 @@ async function planReserva(ctx: Contexto): Promise<Plan> {
     if (!errT && Array.isArray(filasTarifas)) tarifas = filasTarifas;
   }
   const fecha = String(cuerpo.fecha);
-  const costo = costoCancha({ cancha: cancha!, club, tarifas, fecha, horaInicio: validacion.horaInicio!, duracionMin: Number(cuerpo.duracion_minutos) });
+  // Precio con prorrateo de tarifas + Promoción de Segunda Hora (App-123).
+  const cotizacion = cotizacionCancha({ cancha: cancha!, club, tarifas, fecha, horaInicio: validacion.horaInicio!, duracionMin: Number(cuerpo.duracion_minutos) });
+  const costo = cotizacion.total;
 
   // Quick Sell: mismos artículos curados que ofrece el modal de reserva.
   let items: ArticuloCobrado[] = [];
@@ -201,6 +203,10 @@ async function planReserva(ctx: Contexto): Promise<Plan> {
     detalle: {
       monto_cancha: costo,
       monto_addons: subtotalArticulos,
+      // App-123 — rastro de la Promoción de Segunda Hora (null si no aplicó).
+      promo_segunda_hora: cotizacion.segundaHora
+        ? { porcentaje: cotizacion.segundaHora.porcentaje, descuento: cotizacion.segundaHora.descuento, total_sin_promo: cotizacion.segundaHora.totalAntesDescuento }
+        : null,
       cancha_id: cancha!.id,
       fecha,
       hora_inicio: validacion.horaInicio,
@@ -240,7 +246,9 @@ async function planReserva(ctx: Contexto): Promise<Plan> {
     lineas: [
       {
         nombre: `Reserva ${nombreCancha}`,
-        descripcion: `${String(club.nombre ?? 'Club')} · ${fecha} · ${validacion.horaInicio}–${validacion.horaFin}`,
+        descripcion: `${String(club.nombre ?? 'Club')} · ${fecha} · ${validacion.horaInicio}–${validacion.horaFin}${
+          cotizacion.segundaHora ? ` · Promo 2ª hora −${cotizacion.segundaHora.porcentaje}%` : ''
+        }`,
         centavos: centavos(costo),
         cantidad: 1,
       },

@@ -214,6 +214,96 @@ export function calcularPrecioReserva(horaInicio: string, duracionMinutos: numbe
   return cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase).total;
 }
 
+// -----------------------------------------------------------------------------
+// Promoción de Segunda Hora (App-123, migración v130) — réplica EXACTA de
+// App.jsx (`promoSegundaHoraDelClub` / `cotizarReservaConPromo`).
+// En una reserva de 2 h o más, los minutos 60–120 del bloque se cobran con el
+// % de descuento del club; la 1ª hora y la 3ª en adelante, a precio regular.
+// -----------------------------------------------------------------------------
+export const PROMO_SEGUNDA_HORA_MIN_DURACION = 120;
+
+export interface PromoSegundaHora {
+  activa: boolean;
+  porcentaje: number;
+}
+
+export interface DesgloseSegundaHora {
+  porcentaje: number;
+  hora1: number;
+  hora2: number;
+  descuento: number;
+  hora2ConDescuento: number;
+  minutosRestantes: number;
+  horasRestantes: number;
+  totalAntesDescuento: number;
+}
+
+export interface CotizacionReservaConPromo extends CotizacionReserva {
+  segundaHora: DesgloseSegundaHora | null;
+}
+
+export function normalizarPorcentajePromoSegundaHora(valor: unknown): number | null {
+  if (valor === null || valor === undefined || valor === '') return null;
+  const n = Number(valor);
+  if (!Number.isFinite(n) || n <= 0 || n > 100) return null;
+  return Math.round(n * 100) / 100;
+}
+
+/** Fila de `configuracion_club` (o config camelCase) → promoción vigente. */
+export function promoSegundaHoraDelClub(fuente: Fila | PromoSegundaHora | null | undefined): PromoSegundaHora {
+  const f = fuente as Fila | null | undefined;
+  // También acepta su propio resultado ({ activa, porcentaje }) — idempotente.
+  const activaCruda = f?.promoSegundaHoraActiva ?? f?.promo_segunda_hora_activa ?? f?.activa;
+  const porcentaje = normalizarPorcentajePromoSegundaHora(
+    f?.promoSegundaHoraPorcentaje ?? f?.promo_segunda_hora_porcentaje ?? f?.porcentaje
+  );
+  return { activa: activaCruda === true && porcentaje !== null, porcentaje: porcentaje ?? 0 };
+}
+
+export function cotizarReservaConPromo(
+  horaInicio: string,
+  duracionMinutos: number,
+  listaTarifas: Fila[],
+  precioBase: number,
+  promo: Fila | PromoSegundaHora | null | undefined,
+): CotizacionReservaConPromo {
+  const cotizacion = cotizarReserva(horaInicio, duracionMinutos, listaTarifas, precioBase);
+  const config = promoSegundaHoraDelClub(promo);
+  const duracion = Number(duracionMinutos) > 0 ? Number(duracionMinutos) : 60;
+  const inicioMin = parseHoraAMinutos(horaInicio);
+  if (!config.activa || duracion < PROMO_SEGUNDA_HORA_MIN_DURACION || inicioMin === null || cotizacion.tramos.length === 0) {
+    return { ...cotizacion, segundaHora: null };
+  }
+  const redondear = (n: number) => Math.round(n * 100) / 100;
+  const costoEntre = (desde: number, hasta: number) =>
+    redondear(
+      cotizacion.tramos.reduce((acc, tr) => {
+        const minutos = Math.min(tr.hasta, hasta) - Math.max(tr.desde, desde);
+        return minutos > 0 ? acc + tr.precioHora * (minutos / 60) : acc;
+      }, 0),
+    );
+  const hora1 = costoEntre(inicioMin, inicioMin + 60);
+  const hora2 = costoEntre(inicioMin + 60, inicioMin + 120);
+  const descuento = redondear(hora2 * (config.porcentaje / 100));
+  if (!(descuento > 0)) return { ...cotizacion, segundaHora: null };
+  const total = redondear(cotizacion.total - descuento);
+  return {
+    ...cotizacion,
+    total,
+    totalSinPromo: redondear(cotizacion.totalSinPromo),
+    segundaHora: {
+      porcentaje: config.porcentaje,
+      hora1,
+      hora2,
+      descuento,
+      hora2ConDescuento: redondear(hora2 - descuento),
+      minutosRestantes: duracion - 120,
+      horasRestantes: redondear(Math.max(0, cotizacion.total - hora1 - hora2)),
+      totalAntesDescuento: cotizacion.total,
+    },
+  };
+}
+
 /** Duración base del bloque del club (`duracion_reserva_minutos`). */
 export function duracionBaseDelClub(club: Fila): number {
   const cruda = Number(club?.duracion_reserva_minutos);
@@ -232,7 +322,25 @@ export function diaSemanaDeFecha(fecha: string): number {
   return new Date(Date.UTC(y, m - 1, d, 12)).getUTCDay();
 }
 
-/** Precio del bloque, igual que `cotizacionDelBloque` del Portal (prorrateo por tramos). */
+/**
+ * Cotización completa del bloque, igual que `cotizacionDelBloque` del Portal:
+ * prorrateo por tramos + Promoción de Segunda Hora del club (App-123).
+ */
+export function cotizacionCancha(opciones: {
+  cancha: Fila;
+  club: Fila;
+  tarifas: Fila[];
+  fecha: string;
+  horaInicio: string;
+  duracionMin: number;
+}): CotizacionReservaConPromo {
+  const { cancha, club, tarifas, fecha, horaInicio, duracionMin } = opciones;
+  const tarifasHabilitadas = club?.tarifas_habilitadas !== false;
+  const delDia = tarifasHabilitadas ? tarifasActivasDelDia(tarifas, diaSemanaDeFecha(fecha), { fecha, canchaId: cancha?.id ?? null }) : [];
+  return cotizarReservaConPromo(horaInicio, duracionMin, delDia, precioPorHoraDeCancha(cancha), promoSegundaHoraDelClub(club));
+}
+
+/** Precio del bloque (lo que se cobra), igual que `cotizacionDelBloque(...).total` del Portal. */
 export function costoCancha(opciones: {
   cancha: Fila;
   club: Fila;
@@ -241,10 +349,7 @@ export function costoCancha(opciones: {
   horaInicio: string;
   duracionMin: number;
 }): number {
-  const { cancha, club, tarifas, fecha, horaInicio, duracionMin } = opciones;
-  const tarifasHabilitadas = club?.tarifas_habilitadas !== false;
-  const delDia = tarifasHabilitadas ? tarifasActivasDelDia(tarifas, diaSemanaDeFecha(fecha), { fecha, canchaId: cancha?.id ?? null }) : [];
-  return calcularPrecioReserva(horaInicio, duracionMin, delDia, precioPorHoraDeCancha(cancha));
+  return cotizacionCancha(opciones).total;
 }
 
 /** Fecha y minutos actuales en la zona del club. */
