@@ -2741,16 +2741,6 @@ function textoDiasPromoSegundaHora(promo) {
     .map(([a, b]) => (a === b ? ETIQUETAS_DIA_PROMO[ORDEN_DIAS_PROMO[a]] : `${ETIQUETAS_DIA_PROMO[ORDEN_DIAS_PROMO[a]]}-${ETIQUETAS_DIA_PROMO[ORDEN_DIAS_PROMO[b]]}`))
     .join(', ');
 }
-// Leyenda corta de la tarjeta del Portal:
-// "Reserva 2 horas y obtén 50% de descuento en la 2ª · Lun-Mar · 8:00 a.m. - 12:00 p.m."
-function textoLeyendaPromoSegundaHora(promo) {
-  const p = promoSegundaHoraDelClub(promo);
-  const pct = p.porcentaje % 1 === 0 ? p.porcentaje : p.porcentaje.toFixed(2);
-  const partes = [`Reserva 2 horas y obtén ${pct}% de descuento en la 2ª`];
-  if (p.dias.length > 0) partes.push(textoDiasPromoSegundaHora(p));
-  if (p.horaInicio && p.horaFin) partes.push(textoVentanaPromoSegundaHora(p));
-  return partes.join(' · ');
-}
 // Campos camelCase de la promo para `configClub` (estado del Panel, caché
 // local y `guardarConfigClub`) — siempre normalizados.
 const LLAVES_CONFIG_PROMO_SEGUNDA_HORA = [
@@ -8625,6 +8615,9 @@ function PrecioSlotTarifa({ cotizacion, seleccionado = false, vista = 'staff' })
   if (!cotizacion) return null;
   if (vista === 'jugador') {
     const promo = promoVisibleParaJugador(cotizacion);
+    // App-126: la Promoción de Segunda Hora se señala en ámbar/naranja suave
+    // (las promos de Tarifas conservan su verde).
+    const promo2h = promo && !!cotizacion.segundaHora;
     return (
       <span className="flex max-w-full flex-col items-center leading-tight" data-testid="precio-slot">
         {promo && (
@@ -8632,12 +8625,17 @@ function PrecioSlotTarifa({ cotizacion, seleccionado = false, vista = 'staff' })
             {formatoMoneda(cotizacion.totalSinPromo)}
           </span>
         )}
-        <span className={`text-[10px] font-black ${promo ? 'text-emerald-600' : seleccionado ? 'text-orange-500' : 'text-slate-500'}`} data-testid="precio-final">
+        <span
+          className={`text-[10px] font-black ${promo2h ? 'text-orange-600' : promo ? 'text-emerald-600' : seleccionado ? 'text-orange-500' : 'text-slate-500'}`}
+          data-testid="precio-final"
+        >
           {formatoMoneda(cotizacion.total)}
         </span>
         {promo && (
           <span
-            className="mt-0.5 max-w-full truncate rounded-full bg-emerald-400/15 px-1.5 py-px text-[8px] font-bold text-emerald-700"
+            className={`mt-0.5 max-w-full truncate rounded-full px-1.5 py-px text-[8px] font-bold ${
+              promo2h ? 'bg-orange-500/15 text-orange-700 ring-1 ring-orange-400/40' : 'bg-emerald-400/15 text-emerald-700'
+            }`}
             title={nombresReglasCotizacion(cotizacion, true)}
             data-testid="badge-tarifa"
           >
@@ -55655,11 +55653,13 @@ function SeccionReservasAcademia({
     config.promoSegundaHoraHoraFin,
     config.promoSegundaHoraDias,
   ]);
-  // Horas en punto para los selectores (App-125): Inicio 00:00–23:00 y Fin
-  // 01:00–24:00 (medianoche). Un valor viejo con minutos se conserva como
-  // opción para no perderlo en silencio.
+  // Horas en punto para los selectores (App-125/126): sin madrugada —
+  // Inicio 06:00–23:00 y Fin 07:00–24:00 (medianoche). Un valor guardado
+  // fuera de la lista se conserva como opción para no perderlo en silencio.
   const opcionesHoraPromo = (esFin) => {
-    const horas = Array.from({ length: 24 }, (_, i) => minutosAHora((esFin ? i + 1 : i) * 60));
+    const desde = esFin ? 7 : 6;
+    const hasta = esFin ? 24 : 23;
+    const horas = Array.from({ length: hasta - desde + 1 }, (_, i) => minutosAHora((desde + i) * 60));
     const actual = esFin ? promoHoraFin : promoHoraInicio;
     if (actual && !horas.includes(actual)) horas.push(actual);
     return horas.sort((a, b) => parseHoraAMinutos(a) - parseHoraAMinutos(b));
@@ -62390,7 +62390,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                           {normalizarTipoCancha(c.tipo) && <BadgeTipoCancha tipo={c.tipo} sobreImagen className="absolute left-2.5 top-2.5 shadow-sm" />}
                           {conPromo2h && (
                             <span
-                              className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-slate-950 via-slate-900 to-orange-500 px-2.5 py-1 text-[11px] font-black text-white shadow-md shadow-orange-500/40 ring-1 ring-orange-400/80"
+                              className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-orange-500 px-2.5 py-1 text-[11px] font-black text-white shadow-md shadow-orange-500/50"
                               data-testid="badge-promo-cancha"
                             >
                               <Sparkles size={12} /> 2ª hora −{promoSegundaHoraPortal.porcentaje % 1 === 0 ? promoSegundaHoraPortal.porcentaje : promoSegundaHoraPortal.porcentaje.toFixed(2)}%
@@ -62408,25 +62408,24 @@ function PortalPublicoJugadores({ clubSlug }) {
                               Reservar <ChevronRight size={13} />
                             </span>
                           </div>
-                          {conPromo2h && (
-                            <p className="mt-2 rounded-lg bg-slate-950 px-2.5 py-1.5 text-[11px] font-bold text-orange-300 ring-1 ring-orange-500/50" data-testid="leyenda-promo-cancha">
-                              {textoLeyendaPromoSegundaHora(promoSegundaHoraPortal)}
-                            </p>
-                          )}
                         </div>
                       </button>
                     );
                     if (!conPromo2h) return tarjetaCancha;
-                    // Marco brillante animado (mismo recurso que la tarjeta de
-                    // cumpleaños del Directorio), en naranja y negro QLUBOS.
+                    // Marco iluminado en Naranja QLUBOS sólido (`orange-500`) con
+                    // resplandor que pulsa suavemente (mismo recurso de marco
+                    // de 2px que la tarjeta de cumpleaños del Directorio).
                     return (
                       <motion.div
                         key={c.id}
                         initial={{ scale: 0.98, opacity: 0.85 }}
-                        animate={{ scale: 1, opacity: 1, backgroundPosition: ['0% 50%', '100% 50%', '0% 50%'] }}
-                        transition={{ scale: { duration: 0.3 }, opacity: { duration: 0.3 }, backgroundPosition: { duration: 5, repeat: Infinity, ease: 'linear' } }}
-                        style={{ backgroundImage: 'linear-gradient(120deg, #f97316, #0b0f19, #fb923c, #0b0f19, #f97316)', backgroundSize: '300% 300%' }}
-                        className="rounded-2xl p-[2px] shadow-lg shadow-orange-500/40"
+                        animate={{
+                          scale: 1,
+                          opacity: 1,
+                          boxShadow: ['0 0 10px 0 rgba(249,115,22,0.35)', '0 0 22px 3px rgba(249,115,22,0.6)', '0 0 10px 0 rgba(249,115,22,0.35)'],
+                        }}
+                        transition={{ scale: { duration: 0.3 }, opacity: { duration: 0.3 }, boxShadow: { duration: 2.4, repeat: Infinity, ease: 'easeInOut' } }}
+                        className="rounded-2xl bg-orange-500 p-[2px]"
                         data-testid={`marco-promo-cancha-${c.id}`}
                       >
                         {tarjetaCancha}
@@ -66441,7 +66440,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                         : seleccionado
                         ? 'border-2 border-orange-500 ring-2 ring-orange-500/30 bg-white text-slate-900 font-semibold'
                         : cotizacionSlot.segundaHora
-                        ? 'border-lime-400 bg-white text-slate-900 font-semibold shadow-[0_0_0_2px_rgba(163,230,53,0.35),0_0_14px_rgba(163,230,53,0.45)] hover:border-orange-400/50'
+                        ? 'border-orange-300 bg-orange-400/10 text-slate-900 font-semibold hover:border-orange-400'
                         : 'border-slate-200 bg-white text-slate-900 font-semibold hover:border-orange-400/50'
                     }`}
                     data-promo-segunda-hora={!bloqueado && cotizacionSlot.segundaHora ? '' : undefined}
