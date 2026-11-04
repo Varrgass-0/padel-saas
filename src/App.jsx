@@ -52652,7 +52652,9 @@ function limiteCanchasDelPlan(planCanchas) {
   if (planCanchas === '1-3') return 3;
   if (planCanchas === '4-7') return 7;
   if (planCanchas === '8-12') return 12;
-  return null;
+  // App-132: mismos rangos escritos de otra forma ("1 – 3", "1 a 3") o el
+  // objeto del plan completo → resolutor único (`maximoCanchasDelPlan`).
+  return maximoCanchasDelPlan(planCanchas);
 }
 
 function formatoPrecioPlanOnboarding(precio) {
@@ -53499,12 +53501,43 @@ const VARIANTES_IMPACTO_ENTRADA = {
 
 // Máximo de canchas del plan elegido ('1-3' → 3, '4-7' → 7, '8-12' → 12), o
 // `null` si no hay plan/tope numérico (ej. período de prueba sin plan).
-function maximoCanchasDelPlan(planSeleccionado) {
-  const texto = String(planSeleccionado?.canchas ?? '');
-  const rango = texto.match(/(\d+)\s*[-–]\s*(\d+)/);
-  if (rango) return Number(rango[2]);
+// App-132 — resolutor ÚNICO y tolerante a la forma del plan (catálogo de
+// `billing_precios`, intención de sessionStorage, suscripción o espejo
+// legado de `configuracion_club`). Orden: tope explícito del catálogo
+// (`maxCanchas` / `max_canchas`) → rango de canchas en cualquier formato
+// ("1-3", "1 – 3", "1 a 3", "hasta 3") → clave del plan (inicial/club/pro) →
+// nombre visible ("1 – 3 Canchas"). Así un plan que llega sin `canchas` (ej.
+// solo con `clave`) ya no queda "sin límite". Solo LEE el plan: no toca
+// Stripe, ni metadatos de la suscripción, ni el flujo de cambio de plan.
+const MAXIMO_CANCHAS_POR_CLAVE_PLAN = { inicial: 3, club: 7, pro: 12 };
+
+function topeCanchasDeTexto(valor) {
+  if (valor == null || valor === '') return null;
+  if (typeof valor === 'number') return Number.isFinite(valor) && valor > 0 ? Math.floor(valor) : null;
+  const texto = String(valor).toLowerCase();
+  const rango = texto.match(/(\d+)\s*(?:[-–—]|al|a|hasta)\s*(\d+)/);
+  if (rango) return Number(rango[2]) > 0 ? Number(rango[2]) : null;
+  const hasta = texto.match(/hasta\s*(\d+)/);
+  if (hasta) return Number(hasta[1]) > 0 ? Number(hasta[1]) : null;
+  if (/^\s*\d+\s*$/.test(texto)) return Number(texto) > 0 ? Number(texto) : null;
   return null;
 }
+
+function maximoCanchasDelPlan(planSeleccionado) {
+  if (planSeleccionado == null) return null;
+  if (typeof planSeleccionado !== 'object') return topeCanchasDeTexto(planSeleccionado);
+  const explicito = Number(planSeleccionado.maxCanchas ?? planSeleccionado.max_canchas);
+  if (Number.isFinite(explicito) && explicito > 0) return Math.floor(explicito);
+  const porRango = topeCanchasDeTexto(planSeleccionado.canchas ?? planSeleccionado.plan_canchas);
+  if (porRango != null) return porRango;
+  const clave = String(planSeleccionado.clave ?? planSeleccionado.plan_clave ?? '')
+    .trim()
+    .toLowerCase();
+  if (MAXIMO_CANCHAS_POR_CLAVE_PLAN[clave]) return MAXIMO_CANCHAS_POR_CLAVE_PLAN[clave];
+  return topeCanchasDeTexto(planSeleccionado.nombre);
+}
+
+const MENSAJE_LIMITE_CANCHAS_PLAN = 'Has alcanzado el límite de tu plan actual. Para agregar más canchas, cambia a un plan superior.';
 
 function canchaABorrador(c) {
   const precio = Number(c.precio_por_hora);
@@ -53522,6 +53555,10 @@ function ModalCanchaOnboarding({ cancha, nombresEnUso, nombreSugerido, onGuardar
   const [tipo, setTipo] = useState(cancha?.tipo || 'Outdoor');
   const [precio, setPrecio] = useState(cancha?.precio > 0 ? String(cancha.precio) : '');
   const [error, setError] = useState('');
+  // App-132: un solo envío por apertura del modal — un doble clic o Enter
+  // repetido (mientras el modal hace su animación de salida) ya no puede
+  // agregar dos canchas de golpe y saltarse el tope del plan.
+  const enviadoRef = useRef(false);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -53532,6 +53569,7 @@ function ModalCanchaOnboarding({ cancha, nombresEnUso, nombreSugerido, onGuardar
   }, [onClose]);
 
   function guardar() {
+    if (enviadoRef.current) return;
     const limpio = nombre.trim();
     if (!limpio) return setError('Ponle un nombre a la cancha (ej. "Cancha 1").');
     if (nombresEnUso.some((n) => n.trim().toLowerCase() === limpio.toLowerCase())) {
@@ -53539,6 +53577,7 @@ function ModalCanchaOnboarding({ cancha, nombresEnUso, nombreSugerido, onGuardar
     }
     const precioNum = Number(precio);
     if (!precio || !Number.isFinite(precioNum) || precioNum <= 0) return setError('Escribe el precio por hora (mayor a $0).');
+    enviadoRef.current = true;
     onGuardar({ nombre: limpio, tipo, precio: precioNum });
   }
 
@@ -53653,13 +53692,23 @@ function ModalCanchaOnboarding({ cancha, nombresEnUso, nombreSugerido, onGuardar
   );
 }
 
-function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guardando, onContinuar, onAtras }) {
-  const [borrador, setBorrador] = useState(() => (Array.isArray(canchas) ? canchas.map(canchaABorrador) : []));
+function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guardando, onContinuar, onAtras, onCambiarPlan = null, borradorInicial = null, onCambioBorrador = null }) {
+  // App-132: `borradorInicial` = lo que el dueño llevaba antes de ir a
+  // "Cambiar a un plan superior" (el Wizard lo conserva) — al volver con el
+  // plan nuevo no pierde las canchas que ya había capturado.
+  const [borrador, setBorrador] = useState(() =>
+    Array.isArray(borradorInicial) ? borradorInicial : Array.isArray(canchas) ? canchas.map(canchaABorrador) : []
+  );
   // `modal`: null | { modo: 'nueva' } | { modo: 'editar', clave }
   const [modal, setModal] = useState(null);
   const [error, setError] = useState('');
-  const tocadoRef = useRef(false);
+  const tocadoRef = useRef(Array.isArray(borradorInicial));
   const contadorRef = useRef(0);
+
+  useEffect(() => {
+    if (tocadoRef.current) onCambioBorrador?.(borrador);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [borrador]);
 
   // Si las canchas del club llegan de Supabase DESPUÉS de montar esta pantalla
   // (la carga inicial todavía no había respondido) y el dueño aún no ha
@@ -53695,7 +53744,11 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
       setBorrador((prev) => prev.map((b) => (b.clave === canchaEnEdicion.clave ? { ...b, ...datos } : b)));
     } else if (!limiteAlcanzado) {
       contadorRef.current += 1;
-      setBorrador((prev) => [...prev, { clave: `nueva-${Date.now()}-${contadorRef.current}`, id: null, ...datos }]);
+      const nueva = { clave: `nueva-${Date.now()}-${contadorRef.current}`, id: null, ...datos };
+      // App-132: el tope se revalida contra el estado MÁS RECIENTE (no el
+      // del render en que se abrió el modal) — ninguna secuencia de clics
+      // puede dejar el borrador por encima del máximo del plan.
+      setBorrador((prev) => (maximoPlan !== null && prev.length >= maximoPlan ? prev : [...prev, nueva]));
     }
     setModal(null);
   }
@@ -53828,6 +53881,8 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
               }}
               disabled={limiteAlcanzado}
               aria-disabled={limiteAlcanzado}
+              data-testid="onb-agregar-cancha"
+              title={limiteAlcanzado ? MENSAJE_LIMITE_CANCHAS_PLAN : undefined}
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: limiteAlcanzado ? 0.55 : 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.15 } }}
@@ -53849,15 +53904,30 @@ function PantallaCanchasOnboarding({ nombreClub, planSeleccionado, canchas, guar
 
         <AnimatePresence initial={false}>
           {maximoPlan !== null && limiteAlcanzado && (
-            <motion.p
+            <motion.div
               key="limite-plan"
+              role="status"
+              data-testid="onb-limite-plan"
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
-              className="mt-5 text-center text-sm font-semibold text-slate-500"
+              className="mx-auto mt-5 flex max-w-xl flex-col items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-center"
             >
-              Has alcanzado el límite de {maximoPlan} canchas de tu plan
-            </motion.p>
+              <p className="text-sm font-semibold text-amber-800">{MENSAJE_LIMITE_CANCHAS_PLAN}</p>
+              <p className="text-xs font-medium text-amber-700/80">
+                Tu plan incluye hasta {maximoPlan} {maximoPlan === 1 ? 'cancha' : 'canchas'}.
+              </p>
+              {onCambiarPlan && (
+                <button
+                  type="button"
+                  data-testid="onb-cambiar-plan-superior"
+                  onClick={onCambiarPlan}
+                  className="mt-0.5 inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-800 transition hover:bg-amber-100"
+                >
+                  Cambiar a un plan superior <ArrowRight size={13} />
+                </button>
+              )}
+            </motion.div>
           )}
         </AnimatePresence>
 
@@ -53927,6 +53997,9 @@ function OnboardingCanvasClub({
 }) {
   const [etapa, setEtapa] = useState(etapaInicial); // 'kickoff' | 'plan' | 'canchas' | 'setup' | 'confirmacion'
   const etapaPrevia = omitirPlan ? 'kickoff' : 'plan';
+  // App-132: borrador de "Configuración de Canchas" aún NO guardado — se
+  // conserva si el dueño va a "Cambiar a un plan superior" y regresa.
+  const borradorCanchasRef = useRef(null);
   const [direccion, setDireccion] = useState(1); // 1 = avanzar (Siguiente), -1 = retroceder (Atrás)
 
   function irA(nuevaEtapa, direction) {
@@ -53972,9 +54045,19 @@ function OnboardingCanvasClub({
         canchas={canchas}
         guardando={guardandoCanchas}
         onAtras={() => irA(etapaPrevia, -1)}
+        onCambiarPlan={omitirPlan ? null : () => irA('plan', -1)}
+        borradorInicial={borradorCanchasRef.current}
+        onCambioBorrador={(b) => {
+          borradorCanchasRef.current = b;
+        }}
         onContinuar={async (borrador) => {
           const ok = await onGuardarCanchas?.(borrador);
-          if (ok !== false) irA('setup', 1);
+          if (ok !== false) {
+            // Ya quedó en Supabase: al volver a esta etapa se parte de las
+            // canchas guardadas (con su `id`), nunca de un borrador viejo.
+            borradorCanchasRef.current = null;
+            irA('setup', 1);
+          }
         }}
       />
     );
@@ -68056,7 +68139,7 @@ function AppInterno({ clubInicial } = {}) {
   // Límite Rígido de Canchas por Plan (Refactor Onboarding v67, item 4) —
   // tope numérico derivado del plan vigente (`null` = sin límite, ver
   // `limiteCanchasDelPlan`). Se reenvía tal cual a `ModuloParrillaOperativa`.
-  const limiteCanchasPlan = useMemo(() => limiteCanchasDelPlan(planClubSeleccionado?.canchas), [planClubSeleccionado]);
+  const limiteCanchasPlan = useMemo(() => maximoCanchasDelPlan(planClubSeleccionado), [planClubSeleccionado]);
 
   // Rangos de Horario Habilitados para Clases (migracion_v30) — misma fila
   // de `configuracion_club`, guardado/cargado por separado del nombre/logo
@@ -70502,7 +70585,7 @@ function AppInterno({ clubInicial } = {}) {
         const lista = Array.isArray(borrador) ? borrador : [];
         const maximoPlanCanchas = maximoCanchasDelPlan(planOnboardingClub);
         if (maximoPlanCanchas !== null && lista.length > maximoPlanCanchas) {
-          throw new Error(`Tu plan permite hasta ${maximoPlanCanchas} canchas.`);
+          throw new Error(`Tu plan permite hasta ${maximoPlanCanchas} canchas. Para agregar más canchas, cambia a un plan superior.`);
         }
         const idsEnBorrador = new Set(lista.filter((b) => b.id != null).map((b) => String(b.id)));
 
