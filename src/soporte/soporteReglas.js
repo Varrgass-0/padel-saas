@@ -13,6 +13,11 @@ export const ANTICIPACION_CANCELACION_HORAS = 2;
 export const PENALIZACION_CANCELACION_TARDIA = 0.5;
 export const MINUTOS_MINIMOS_PARA_AGENDAR = 30;
 export const VENTANA_APERTURA_SALA_MIN = 15;
+// Historial de reuniones: el enlace de Meet de una cita que sigue en su
+// horario (p. ej. la cita original de una reunión Reagendada) funciona desde
+// 15 min antes hasta la misma tolerancia de "No asistió" (10 min después del
+// inicio) — un solo criterio para Próximas citas e Historial.
+export const VENTANA_CIERRE_MEET_HISTORIAL_MIN = TOLERANCIA_MINUTOS;
  
 // Mismo criterio que fn_soporte_minutos_plan (SQL): se toma el número mayor
 // del rango ('1-3' → 3) y se asigna la bolsa.
@@ -52,6 +57,30 @@ export function estadoSalaCita(cita, ahora = new Date()) {
   if (t < inicio - VENTANA_APERTURA_SALA_MIN * 60_000) return 'pronto';
   if (t <= inicio + TOLERANCIA_MINUTOS * 60_000) return 'abierta';
   return 'vencida';
+}
+ 
+// Enlace de Meet en el Historial de reuniones:
+//   'sin_enlace'    → la cita no tiene enlace de Meet ("—").
+//   'oculto'        → Cancelada / Cancelación tardía: no se muestra nada.
+//   'finalizado'    → Completada / No asistió: deshabilitado para siempre.
+//   'pronto'        → aún no abre (falta más de 15 min para el inicio).
+//   'activo'        → dentro de la ventana [inicio − 15 min, inicio + 10 min]
+//                     (misma tolerancia de "No asistió" que Próximas citas).
+//   'expirado'      → la ventana ya pasó: deshabilitado.
+// Las citas 'agendada' (solo aparecen en la vista del SuperAdmin) conservan
+// el enlace activo, igual que antes.
+export function estadoMeetHistorial(ticket, ahora = new Date()) {
+  const estado = ticket?.estado;
+  if (estado === 'cancelada' || estado === 'cancelada_tardia') return 'oculto';
+  if (!urlSeguraHttp(ticket?.meet_url)) return 'sin_enlace';
+  if (estado === 'completada' || estado === 'no_show') return 'finalizado';
+  if (estado === 'agendada') return 'activo';
+  const inicio = ticket?.inicio ? new Date(ticket.inicio).getTime() : NaN;
+  if (!Number.isFinite(inicio)) return 'expirado';
+  const t = new Date(ahora).getTime();
+  if (t < inicio - VENTANA_APERTURA_SALA_MIN * 60_000) return 'pronto';
+  if (t <= inicio + VENTANA_CIERRE_MEET_HISTORIAL_MIN * 60_000) return 'activo';
+  return 'expirado';
 }
  
 // Lectura de la bolsa tal como la devuelve fn_soporte_bolsa_actual.
@@ -122,7 +151,7 @@ export const ESTADOS_TICKET = {
   completada: { label: 'Completada', clase: 'bg-emerald-400/10 text-emerald-500 ring-emerald-400/30' },
   cancelada: { label: 'Cancelada', clase: 'bg-slate-400/10 text-slate-500 ring-slate-400/30' },
   cancelada_tardia: { label: 'Cancelación tardía', clase: 'bg-amber-400/10 text-amber-500 ring-amber-400/30' },
-  no_show: { label: 'No asistió (No-Show)', clase: 'bg-rose-500/10 text-rose-500 ring-rose-500/30' },
+  no_show: { label: 'No asistió', clase: 'bg-rose-500/10 text-rose-500 ring-rose-500/30' },
   // v101: la cita original de una reunión reagendada en Cal.com.
   reagendada: { label: 'Reagendada', clase: 'bg-violet-400/10 text-violet-500 ring-violet-400/30' },
 };

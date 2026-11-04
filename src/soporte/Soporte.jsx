@@ -31,6 +31,7 @@ import {
   formatoMXN,
   resumenBolsa,
   urlSeguraHttp,
+  estadoMeetHistorial,
   conceptoReunion,
   conciliarRetenido,
   extraerReservaCal,
@@ -159,7 +160,51 @@ function Dato({ etiqueta, valor }) {
   );
 }
 
-export function TablaHistorialSoporte({ tickets, onAjustar }) {
+// Celda "Meet" del historial — reglas en `estadoMeetHistorial`.
+function CeldaMeetHistorial({ ticket, ahora }) {
+  const estado = estadoMeetHistorial(ticket, ahora);
+  if (estado === 'oculto') return null;
+  if (estado === 'sin_enlace') return <span className="text-slate-400">—</span>;
+  if (estado === 'activo') {
+    return (
+      <a
+        href={urlSeguraHttp(ticket.meet_url)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 font-bold text-orange-500 hover:underline"
+        data-meet-historial="activo"
+      >
+        Abrir <ExternalLink size={11} />
+      </a>
+    );
+  }
+  const texto = estado === 'pronto' ? 'Se habilita 15 min antes' : 'Expirado';
+  const titulo =
+    estado === 'pronto'
+      ? 'El enlace se habilita 15 minutos antes de la hora de inicio.'
+      : 'La reunión ya pasó: el enlace de la videollamada ya no está disponible.';
+  return (
+    <span
+      aria-disabled="true"
+      title={titulo}
+      className="inline-flex cursor-not-allowed items-center gap-1 font-semibold text-slate-400"
+      data-meet-historial={estado}
+    >
+      <Lock size={11} /> {texto}
+    </span>
+  );
+}
+
+export function TablaHistorialSoporte({ tickets, onAjustar, ahora: ahoraExterno = null }) {
+  // Reloj propio cuando quien la usa no pasa `ahora` (p. ej. el panel del
+  // SuperAdmin): la ventana del enlace de Meet se reevalúa sola cada 30 s.
+  const [ahoraLocal, setAhoraLocal] = useState(() => new Date());
+  useEffect(() => {
+    if (ahoraExterno) return undefined;
+    const id = setInterval(() => setAhoraLocal(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, [ahoraExterno]);
+  const ahora = ahoraExterno || ahoraLocal;
   if (!tickets?.length) {
     return (
       <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
@@ -182,7 +227,6 @@ export function TablaHistorialSoporte({ tickets, onAjustar }) {
         </thead>
         <tbody className="divide-y divide-slate-200">
           {tickets.map((t) => {
-            const meet = urlSeguraHttp(t.meet_url);
             return (
               <tr key={t.id} className="text-slate-700">
                 <td className="whitespace-nowrap px-4 py-2.5 text-xs">{formatoFechaHora(t.inicio || t.creado_en)}</td>
@@ -200,13 +244,7 @@ export function TablaHistorialSoporte({ tickets, onAjustar }) {
                   <BadgeEstadoTicket estado={t.estado} />
                 </td>
                 <td className="px-4 py-2.5 text-xs">
-                  {meet ? (
-                    <a href={meet} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-bold text-orange-500 hover:underline">
-                      Abrir <ExternalLink size={11} />
-                    </a>
-                  ) : (
-                    <span className="text-slate-400">—</span>
-                  )}
+                  <CeldaMeetHistorial ticket={t} ahora={ahora} />
                 </td>
                 {onAjustar && (
                   <td className="px-4 py-2.5 text-right">
@@ -1020,7 +1058,7 @@ export default function Soporte({ clubId, nombreClub, nombreUsuario, puedeGestio
 
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Historial de reuniones</p>
-        {cargando && tickets.length === 0 ? <div className="h-32 animate-pulse rounded-2xl border border-slate-200 bg-slate-100" /> : <TablaHistorialSoporte tickets={historial} />}
+        {cargando && tickets.length === 0 ? <div className="h-32 animate-pulse rounded-2xl border border-slate-200 bg-slate-100" /> : <TablaHistorialSoporte tickets={historial} ahora={ahora} />}
       </div>
 
       {ajustes.length > 0 && (
