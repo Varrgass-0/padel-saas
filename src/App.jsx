@@ -1205,6 +1205,8 @@ const CSS_LAYOUT_QLUBOS = `
 html.qb-modal-abierto { overflow: hidden !important; }
 html.qb-modal-abierto body { padding-right: var(--qb-ancho-scrollbar, 0px); }
 [data-modal-fondo], .fixed.inset-0[class*="backdrop-blur"] { overscroll-behavior: contain; }
+/* App-130 — la cabecera del menú lateral mide lo mismo que la barra superior. */
+.qb-sidebar-cabecera { height: var(--qb-altura-header, 63px); min-height: 3.5rem; box-sizing: border-box; }
 @media (min-width: 1024px) {
   .qb-sidebar {
     background-color: var(--color-slate-50, #f8fafc) !important;
@@ -5687,7 +5689,15 @@ function Sidebar({
           abierto ? 'translate-x-0' : '-translate-x-full'
         } ${colapsado ? 'lg:w-[76px]' : 'lg:w-64'}`}
       >
-        <div className={`flex items-center gap-2.5 border-b border-slate-200 px-5 py-5 ${colapsado ? 'lg:justify-center lg:px-0' : ''}`}>
+        {/* App-130 — Cabecera del menú alineada con la barra superior: mismo
+            alto exacto que `TopHeader` (`--qb-altura-header`, que la propia
+            barra publica), así su línea inferior queda al mismo nivel, con el
+            menú desplegado o colapsado. Respaldo de 63 px si la variable aún
+            no se publicó. */}
+        <div
+          className={`qb-sidebar-cabecera flex shrink-0 items-center gap-2.5 border-b border-slate-200 px-5 ${colapsado ? 'lg:justify-center lg:px-0' : ''}`}
+          data-testid="sidebar-cabecera"
+        >
           <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-orange-400 font-black text-slate-950">
             {configClubActual.logoUrl ? (
               <img
@@ -5989,7 +5999,12 @@ function TopHeader({
     const el = headerRef.current;
     const raiz = document.documentElement;
     if (!el || !raiz) return undefined;
-    const aplicar = () => raiz.style.setProperty('--qb-alto-header', `${Math.max(0, Math.ceil(el.getBoundingClientRect().bottom))}px`);
+    const aplicar = () => {
+      raiz.style.setProperty('--qb-alto-header', `${Math.max(0, Math.ceil(el.getBoundingClientRect().bottom))}px`);
+      // App-130 — alto propio de la barra (no depende del scroll): lo usa la
+      // cabecera del menú lateral para quedar exactamente al mismo nivel.
+      raiz.style.setProperty('--qb-altura-header', `${Math.max(0, Math.round(el.getBoundingClientRect().height))}px`);
+    };
     aplicar();
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(aplicar) : null;
     ro?.observe(el);
@@ -6000,6 +6015,7 @@ function TopHeader({
       window.removeEventListener('resize', aplicar);
       window.removeEventListener('scroll', aplicar);
       raiz.style.setProperty('--qb-alto-header', '0px');
+      raiz.style.removeProperty('--qb-altura-header');
     };
   }, []);
 
