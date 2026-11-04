@@ -2648,6 +2648,61 @@ function diaSemanaPromoDeFecha(fecha) {
   const dia = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12)).getUTCDay();
   return Number.isInteger(dia) ? dia : null;
 }
+// --- Días de Apertura del Club (App-128, migración v133) — MISMA lógica que
+// `portal-checkout/logica.ts` y que el trigger `fn_reservas_dia_apertura`.
+// `configuracion_club.dias_apertura` (0 = domingo … 6 = sábado). Ninguno o
+// los 7 = el club abre todos los días (comportamiento de siempre).
+const NOMBRES_DIA_PLURAL = ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'];
+function diasAperturaDelClub(fuente) {
+  return normalizarDiasPromoSegundaHora(fuente?.diasApertura ?? fuente?.dias_apertura);
+}
+// ¿El club abre en esta fecha 'YYYY-MM-DD'? Fecha inválida → no se bloquea
+// aquí (cada formulario ya valida la fecha por su cuenta).
+function clubAbreEnFecha(fuente, fecha) {
+  const dias = diasAperturaDelClub(fuente);
+  if (dias.length === 0) return true;
+  const dia = diaSemanaPromoDeFecha(fecha);
+  return dia === null || dias.includes(dia);
+}
+function mensajeClubCerrado(fecha) {
+  const dia = diaSemanaPromoDeFecha(fecha);
+  return `El club está cerrado los ${dia === null ? 'días no laborables' : NOMBRES_DIA_PLURAL[dia]}.`;
+}
+// Primera fecha desde `desde` (incluida) en que el club abre — máx. 7 días.
+function proximaFechaAbiertaClub(fuente, desde) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(desde || ''));
+  if (!m) return desde;
+  for (let i = 0; i < 7; i += 1) {
+    const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + i, 12));
+    const iso = `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+    if (clubAbreEnFecha(fuente, iso)) return iso;
+  }
+  return desde;
+}
+// "Abre todos los días" · "Abre Lun-Sáb" (mismo formato corto que la promo).
+function textoDiasAperturaClub(fuente) {
+  const dias = diasAperturaDelClub(fuente);
+  return dias.length === 0 ? 'Abre todos los días' : `Abre ${textoDiasPromoSegundaHora({ dias })}`;
+}
+
+// --- Días de los "Horarios Habilitados para Clases" (App-128) — cada bloque
+// de `rangos_horario_clases` puede traer `dias` (0 = domingo … 6 = sábado;
+// vacío/ausente = todos los días, como hasta hoy).
+function diasDeRangoClase(rango) {
+  return normalizarDiasPromoSegundaHora(rango?.dias);
+}
+// Bloques que aplican en la fecha dada (sin fecha → todos).
+function rangosClaseDelDia(rangos, fecha) {
+  const lista = Array.isArray(rangos) ? rangos : [];
+  if (!fecha) return lista;
+  const dia = diaSemanaPromoDeFecha(fecha);
+  if (dia === null) return lista;
+  return lista.filter((r) => {
+    const dias = diasDeRangoClase(r);
+    return dias.length === 0 || dias.includes(dia);
+  });
+}
+
 // 'HH:MM' (acepta 'HH:MM:SS' de Postgres). Una hora FIN '00:00' = medianoche
 // ('24:00'). `null` si viene vacía o inválida.
 function normalizarHoraPromoSegundaHora(valor, esFin = false) {
@@ -4651,6 +4706,9 @@ const CONFIG_CLUB_DEFAULT = {
   promoSegundaHoraHoraFin: null,
   // App-125 (v132): días de la semana (0 = domingo … 6 = sábado; [] = todos).
   promoSegundaHoraDias: [],
+  // App-128 (v133): días de apertura del club (0 = domingo … 6 = sábado;
+  // [] = todos los días, comportamiento de siempre).
+  diasApertura: [],
 };
 
 // ============================================================================
@@ -4985,6 +5043,7 @@ function leerConfigClubLocal() {
         normalizarHorasValidacionMinimo(parsed.academiaHorasValidacionMinimo) ?? CONFIG_CLUB_DEFAULT.academiaHorasValidacionMinimo,
       // Promoción de Segunda Hora (v130) — caché local.
       ...configPromoSegundaHora(parsed),
+      diasApertura: diasAperturaDelClub(parsed),
     };
   } catch (_e) {
     return { ...CONFIG_CLUB_DEFAULT };
@@ -7098,7 +7157,9 @@ function sumarMeses(anio, mes, delta) {
 //     `estado`; Academia & Clínicas: clases grupales/privadas por
 //     `tipo_clase`) — así un solo componente cubre los 2 lugares que pidió
 //     el club sin duplicar la cuadrícula ni la lógica de navegación.
-function CalendarioMensual({ anio, mes, onCambiarMes, onDiaClick, eventosPorDia, tiposLeyenda, fechaHoy }) {
+// `esDiaCerrado` (opcional, App-128): marca "Cerrado" los días en que el club
+// no abre — el día sigue siendo clicable para consultar lo que ya exista.
+function CalendarioMensual({ anio, mes, onCambiarMes, onDiaClick, eventosPorDia, tiposLeyenda, fechaHoy, esDiaCerrado = null }) {
   const celdas = useMemo(() => {
     const primerDia = new Date(anio, mes, 1);
     const offsetInicio = primerDia.getDay(); // 0 = domingo
@@ -7156,16 +7217,19 @@ function CalendarioMensual({ anio, mes, onCambiarMes, onDiaClick, eventosPorDia,
           const eventos = eventosPorDia?.[fechaCelda];
           const esHoy = fechaCelda === fechaHoy;
           const hayEventos = eventos && Object.values(eventos).some((n) => n > 0);
+          const cerrado = typeof esDiaCerrado === 'function' && esDiaCerrado(fechaCelda);
           return (
             <button
               key={fechaCelda}
               type="button"
               onClick={() => onDiaClick(fechaCelda)}
+              data-dia-cerrado={cerrado ? '' : undefined}
               className={`flex min-h-[64px] flex-col items-start gap-1 rounded-xl border p-1.5 text-left transition hover:border-orange-400/60 hover:bg-orange-400/5 sm:min-h-[78px] ${
-                esHoy ? 'border-orange-400 bg-orange-400/10' : 'border-slate-200 bg-slate-50'
+                esHoy ? 'border-orange-400 bg-orange-400/10' : cerrado ? 'border-slate-200 bg-slate-200/60' : 'border-slate-200 bg-slate-50'
               }`}
             >
-              <span className={`text-[11px] font-black ${esHoy ? 'text-orange-600' : 'text-slate-700'}`}>{dia}</span>
+              <span className={`text-[11px] font-black ${esHoy ? 'text-orange-600' : cerrado ? 'text-slate-400' : 'text-slate-700'}`}>{dia}</span>
+              {cerrado && <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Cerrado</span>}
               {hayEventos && (
                 <div className="flex flex-wrap gap-1">
                   {tiposLeyenda.map((t) => {
@@ -8723,6 +8787,32 @@ function ResumenTarifaAplicada({ cotizacion, precioHoraBase, vista = 'staff' }) 
   );
 }
 
+// App-128 — Aviso de "club cerrado" en los selectores de horario (Nueva
+// Reserva, Portal: Reservar Cancha / Solicitar Clase) con atajo al próximo
+// día en que el club abre.
+function AvisoClubCerrado({ fecha, onIrAFecha }) {
+  return (
+    <div
+      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2.5 text-xs font-semibold text-slate-600"
+      data-testid="aviso-club-cerrado"
+    >
+      <span className="flex items-center gap-1.5">
+        <Lock size={13} className="shrink-0 text-slate-500" /> {mensajeClubCerrado(fecha)} Elige otra fecha.
+      </span>
+      {onIrAFecha && (
+        <button
+          type="button"
+          onClick={onIrAFecha}
+          className="rounded-full border border-orange-400/50 bg-white px-2.5 py-1 text-[11px] font-bold text-orange-600 hover:bg-orange-400/10"
+          data-testid="ir-proximo-dia-abierto"
+        >
+          Ir al próximo día abierto
+        </button>
+      )}
+    </div>
+  );
+}
+
 // App-123 — Desglose de la Promoción de Segunda Hora (Portal y Panel):
 // Hora 1, Hora 2 con su descuento, horas siguientes a precio regular y total.
 function textoHorasRestantesPromo(minutos) {
@@ -8796,6 +8886,8 @@ function ModalNuevaReserva({
   // App-123 — Promoción de Segunda Hora ({ activa, porcentaje }); sin ella
   // el precio es exactamente el de siempre.
   promoSegundaHora = null,
+  // App-128 — Días de Apertura del Club (0 = domingo … 6; [] = todos).
+  diasApertura = [],
 }) {
   const toast = useToast();
   const canchasDisponibles = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
@@ -8844,12 +8936,14 @@ function ModalNuevaReserva({
 
   /* ---- Parrilla de bloques (misma fuente que el Portal) ---- */
   const pasoGridMin = Math.min(duracionReservaMinutos, duracionMin);
+  // App-128: día cerrado → sin horarios (y la base rechaza el INSERT).
+  const clubCerradoEseDia = !clubAbreEnFecha({ diasApertura }, fecha);
   const franjasBase = useMemo(
     () =>
-      canchaSeleccionada
+      canchaSeleccionada && !clubCerradoEseDia
         ? franjasDelDiaConEstado(canchaSeleccionada.id, fecha, duracionHoras, reservas || [], academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin)
         : [],
-    [canchaSeleccionada, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin]
+    [canchaSeleccionada, clubCerradoEseDia, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin]
   );
   const esHoy = fecha === hoyISO();
   const franjas = useMemo(() => {
@@ -8955,6 +9049,7 @@ function ModalNuevaReserva({
     setIntentoGuardar(true);
     if (!canchaSeleccionada) return setError('Selecciona una cancha.');
     if (!fecha || fecha < hoyISO()) return setError('Elige una fecha de hoy en adelante.');
+    if (clubCerradoEseDia) return setError(`${mensajeClubCerrado(fecha)} Elige otra fecha.`);
     if (!horaInicio || !horaFin) return setError('Elige un horario libre en la parrilla.');
     if (!jugador.trim()) return setError('Escribe el nombre del jugador.');
     if (!telefonoValido) return setError('El teléfono debe tener 10 dígitos.');
@@ -9122,7 +9217,9 @@ function ModalNuevaReserva({
               </button>
             ))}
           </div>
-          {franjas.length === 0 ? (
+          {clubCerradoEseDia ? (
+            <AvisoClubCerrado fecha={fecha} onIrAFecha={() => setFecha(proximaFechaAbiertaClub({ diasApertura }, fecha))} />
+          ) : franjas.length === 0 ? (
             <p className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-500">
               No hay horarios para {duracionHoras}h ese día dentro del horario de operación del club.
             </p>
@@ -10520,6 +10617,9 @@ function ModuloParrillaOperativa({
 
   /* ---------------- Filtros de la grilla ---------------- */
 
+  // Días de Apertura del Club (App-128, v133).
+  const clubCerradoEnFecha = !clubAbreEnFecha(configClub, fechaSeleccionada);
+
   const canchasFiltradas = useMemo(() => {
     return canchas.filter((c) => {
       if (busqueda.trim() && !c.nombre?.toLowerCase().includes(busqueda.trim().toLowerCase())) return false;
@@ -10587,6 +10687,20 @@ function ModuloParrillaOperativa({
         soloLectura={permisos?.soloLecturaParrilla === true}
       />
 
+      {/* Días de Apertura (App-128): día cerrado → aviso y sin alta de
+          reservas desde la cuadrícula (la base también lo rechaza). */}
+      {clubCerradoEnFecha && vista !== 'calendario' && (
+        <div
+          className="flex items-start gap-2 rounded-xl border border-slate-300 bg-slate-100 px-3.5 py-2.5 text-xs font-semibold text-slate-600"
+          data-testid="aviso-club-cerrado-parrilla"
+        >
+          <Lock size={14} className="mt-0.5 shrink-0 text-slate-500" />
+          <span>
+            {mensajeClubCerrado(fechaSeleccionada)} No se pueden crear reservas ni actividades el {formatoFechaLarga(fechaSeleccionada)}.
+          </span>
+        </div>
+      )}
+
       <TransicionPestana activeKey={vista}>
       {loading ? (
         <SkeletonGrid />
@@ -10622,6 +10736,7 @@ function ModuloParrillaOperativa({
           eventosPorDia={eventosPorDiaParrilla}
           tiposLeyenda={LEYENDA_CALENDARIO_PARRILLA}
           fechaHoy={hoyISO()}
+          esDiaCerrado={(f) => !clubAbreEnFecha(configClub, f)}
         />
       ) : vista === 'dia' ? (
         <div className="space-y-4">
@@ -10652,7 +10767,7 @@ function ModuloParrillaOperativa({
             reservas={reservas}
             fechaSeleccionada={fechaSeleccionada}
             onSlotClick={
-              permisos?.soloLecturaParrilla === true
+              permisos?.soloLecturaParrilla === true || clubCerradoEnFecha
                 ? undefined
                 : (cancha, hora) => setModalNuevaReserva({ cancha, hora, fecha: fechaSeleccionada })
             }
@@ -10717,6 +10832,7 @@ function ModuloParrillaOperativa({
           tarifasHorarios={tarifasHorarios}
           tarifasHabilitadas={configClub?.tarifasHabilitadas !== false}
           promoSegundaHora={promoSegundaHoraDelClub(configClub)}
+          diasApertura={diasAperturaDelClub(configClub)}
           onCreada={(reserva, cancha) => {
             upsertReserva(reserva);
             onReservaParaCobro?.(reserva, cancha);
@@ -34771,6 +34887,8 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
   function validarBase() {
     if (canchaIdsSeleccionadas.length === 0) return 'Selecciona al menos una cancha.';
     if (!fecha || !horaInicio || !horaFin) return 'Completa fecha y horario.';
+    // App-128 — Días de Apertura del Club.
+    if (!clubAbreEnFecha(configClub, fecha)) return `${mensajeClubCerrado(fecha)} Elige otra fecha para la reta.`;
     const ini = parseHoraAMinutos(horaInicio);
     const fin = parseHoraAMinutos(horaFin);
     if (ini === null || fin === null || fin <= ini) return 'La hora de fin debe ser posterior a la de inicio.';
@@ -34907,6 +35025,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
   // ---- Lote: una reta independiente por celda activa ----
   async function guardarLote() {
     if (celdasActivas.length === 0) return setError('Activa al menos un bloque en la matriz.');
+    if (!clubAbreEnFecha(configClub, fecha)) return setError(`${mensajeClubCerrado(fecha)} Elige otra fecha para las retas.`);
     // Revalidación contra la Parrilla al momento de guardar (pudo cambiar).
     const conflictos = celdasActivas.filter((c) => haySolapeEnCancha(reservas, c.canchaId, fecha, c.inicio, c.fin));
     if (conflictos.length > 0) {
@@ -35677,7 +35796,7 @@ function TarjetaTorneo({
   );
 }
 
-function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onGuardarFormatoJuegoCustom, onClose, onCreado }) {
+function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onGuardarFormatoJuegoCustom, onClose, onCreado, configClub = null }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
 
@@ -35769,6 +35888,10 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
 
     for (const b of bloqueos) {
       if (!b.canchaId || !b.fecha || !b.horaInicio || !b.horaFin) continue;
+      // App-128 — Días de Apertura del Club: no se bloquea cancha un día cerrado.
+      if (!clubAbreEnFecha(configClub, b.fecha)) {
+        return setError(`Bloqueo del ${formatoFechaLarga(b.fecha)}: ${mensajeClubCerrado(b.fecha)} Cambia la fecha del bloqueo.`);
+      }
       const ini = parseHoraAMinutos(b.horaInicio);
       const fin = parseHoraAMinutos(b.horaFin);
       if (ini === null || fin === null || fin <= ini) {
@@ -39912,6 +40035,7 @@ function ModuloTorneosRetas({
           torneos={torneos}
           formatosJuegoCustom={formatosJuegoCustom}
           onGuardarFormatoJuegoCustom={onGuardarFormatoJuegoCustom}
+          configClub={configClub}
           onClose={() => setModalNuevoTorneo(false)}
           onCreado={(torneo) => {
             setTorneos((prev) => [...prev, torneo]);
@@ -41427,7 +41551,7 @@ async function generarSesionesClase({ clase, reservasExistentes = [] }) {
 // Privada / Personalizada — selector de alumno del directorio (en vez del
 // nombre libre), alta automática como primer inscrito (cupo 1/1) en
 // `academia_alumnos`, y notificación al jugador (`crearNotificacionJugador`).
-function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen, configClub, permisos, tarifasHorarios }) {
+function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen, configClub, permisos, tarifasHorarios, rangosHorarioClases = [] }) {
   const toast = useToast();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
@@ -41639,6 +41763,21 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     });
 
   const coachNombre = coachEmpleadoId ? coachesDisponibles.find((c) => c.id === coachEmpleadoId)?.nombre || '' : coachNombreLibre.trim();
+  // App-128 — Días de Apertura + "Horarios Habilitados para Clases" del día.
+  const clubCerradoEseDia = !clubAbreEnFecha(configClub, fecha);
+  const hayRangosClase = Array.isArray(rangosHorarioClases) && rangosHorarioClases.length > 0;
+  const bloquesClaseDelDia = useMemo(() => rangosClaseDelDia(rangosHorarioClases, fecha), [rangosHorarioClases, fecha]);
+  const bloquesDeEsteHorario = hayRangosClase ? rangosDeHorarioParaHora(horaInicio, horaFin, rangosHorarioClases, fecha) : [];
+  const horarioFueraDeBloques = hayRangosClase && bloquesDeEsteHorario.length === 0;
+  // Coaches que el club asignó a este horario ('' = todos los coaches).
+  const coachesAsignadosHorario = Array.from(new Set(bloquesDeEsteHorario.map((r) => r?.coachAsignado || '')));
+  const horarioAbiertoATodos = coachesAsignadosHorario.includes('');
+  const coachNoAsignadoAlHorario =
+    !!coachNombre &&
+    !horarioFueraDeBloques &&
+    hayRangosClase &&
+    !horarioAbiertoATodos &&
+    !coachesAsignadosHorario.some((n) => claveNombre(n) === claveNombre(coachNombre));
   const esPrivada = tipoClase === 'privada';
   // App-120 — Visibilidad en el Portal (switch Pública / Privada). Mientras
   // el operador no lo toque, sigue al tipo de clase con el comportamiento de
@@ -41664,6 +41803,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     }
     if (!canchaId) return setError('Selecciona una cancha.');
     if (!fecha) return setError('Elige la fecha de la sesión.');
+    if (clubCerradoEseDia) return setError(`${mensajeClubCerrado(fecha)} Elige otra fecha para la clase.`);
     if (!coachNombre) return setError('Indica el Coach (elige uno del directorio o escribe su nombre).');
     const ini = parseHoraAMinutos(horaInicio);
     const fin = parseHoraAMinutos(horaFin);
@@ -41994,6 +42134,9 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
               {coachesDisponibles.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.nombre}
+                  {hayRangosClase && !horarioAbiertoATodos && coachesAsignadosHorario.some((n) => claveNombre(n) === claveNombre(c.nombre))
+                    ? ' · asignado a este horario'
+                    : ''}
                 </option>
               ))}
               <option value="">Otro (escribir nombre)…</option>
@@ -42040,6 +42183,37 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
           <p className="flex items-start gap-1.5 rounded-lg bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-900 ring-1 ring-amber-300">
             <AlertTriangle size={13} className="mt-0.5 shrink-0" /> Ese horario ya pasó. Elige una hora futura para programar la clase.
           </p>
+        )}
+        {/* App-128 — Días de Apertura + Horarios Habilitados para Clases del día. */}
+        {clubCerradoEseDia ? (
+          <p className="flex items-start gap-1.5 rounded-lg bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 ring-1 ring-rose-200" data-testid="clase-club-cerrado">
+            <Lock size={13} className="mt-0.5 shrink-0" /> {mensajeClubCerrado(fecha)} No se pueden programar clases ese día.
+          </p>
+        ) : (
+          hayRangosClase && (
+            <div className="space-y-1.5 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-900 ring-1 ring-sky-200" data-testid="horarios-clase-del-dia">
+              <p className="font-bold">
+                Horarios habilitados los {NOMBRES_DIA_PLURAL[diaSemanaPromoDeFecha(fecha)] ?? 'días elegidos'}:{' '}
+                <span className="font-semibold">
+                  {bloquesClaseDelDia.length === 0
+                    ? 'ninguno'
+                    : bloquesClaseDelDia.map((r) => `${r.desde}–${r.hasta} (${r.coachAsignado || 'todos los coaches'})`).join(' · ')}
+                </span>
+              </p>
+              {horarioFueraDeBloques && (
+                <p className="flex items-start gap-1.5 font-semibold text-amber-800" data-testid="clase-fuera-de-horario">
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" /> Este horario está fuera de los Horarios Habilitados para Clases de ese
+                  día. Puedes crearla, pero el Portal no ofrece clases en ese horario.
+                </p>
+              )}
+              {coachNoAsignadoAlHorario && (
+                <p className="flex items-start gap-1.5 font-semibold text-amber-800" data-testid="clase-coach-no-asignado">
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {coachNombre} no está asignado a este horario (asignado:{' '}
+                  {coachesAsignadosHorario.join(', ')}).
+                </p>
+              )}
+            </div>
+          )
         )}
         <div className="grid grid-cols-3 gap-4">
           <Campo label="Capacidad máxima">
@@ -44724,12 +44898,22 @@ const OPCIONES_HORA_COMPLETA_ACADEMIA = (() => {
 // junta TODOS los bloques que apliquen a esa hora, nunca solo el primero.
 function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardando }) {
   const [lista, setLista] = useState(() =>
-    Array.isArray(rangos) ? rangos.map((r, i) => ({ coachAsignado: '', ...r, _key: `r${i}-${Date.now()}` })) : []
+    Array.isArray(rangos) ? rangos.map((r, i) => ({ coachAsignado: '', ...r, dias: diasDeRangoClase(r), _key: `r${i}-${Date.now()}` })) : []
   );
   const [error, setError] = useState('');
 
   function agregarBloque() {
-    setLista((prev) => [...prev, { _key: `nuevo-${Date.now()}-${prev.length}`, etiqueta: '', desde: '07:00', hasta: '10:00', coachAsignado: '' }]);
+    setLista((prev) => [...prev, { _key: `nuevo-${Date.now()}-${prev.length}`, etiqueta: '', desde: '07:00', hasta: '10:00', coachAsignado: '', dias: [] }]);
+  }
+  // App-128 — días de la semana del bloque ([] = todos los días).
+  function alternarDiaBloque(key, dia) {
+    setLista((prev) =>
+      prev.map((r) => {
+        if (r._key !== key) return r;
+        const dias = diasDeRangoClase(r);
+        return { ...r, dias: normalizarDiasPromoSegundaHora(dias.includes(dia) ? dias.filter((d) => d !== dia) : [...dias, dia]) };
+      })
+    );
   }
   function actualizarBloque(key, campo, valor) {
     setLista((prev) => prev.map((r) => (r._key === key ? { ...r, [campo]: valor } : r)));
@@ -44756,6 +44940,8 @@ function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardan
       desde: r.desde,
       hasta: r.hasta,
       coachAsignado: r.coachAsignado || '',
+      // App-128: días de la semana del bloque ([] = todos los días).
+      dias: diasDeRangoClase(r),
     }));
     await onGuardar?.(limpios);
     onClose();
@@ -44847,6 +45033,38 @@ function ModalRangosHorarioClases({ rangos, coaches, onClose, onGuardar, guardan
                     ))}
                   </select>
                 </label>
+                {/* App-128 — Días de la semana en que aplica el bloque. */}
+                <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Días del bloque" data-testid="dias-bloque-clase">
+                  <span className="mr-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Días</span>
+                  <button
+                    type="button"
+                    aria-pressed={diasDeRangoClase(r).length === 0}
+                    onClick={() => actualizarBloque(r._key, 'dias', [])}
+                    className={`rounded-full border px-2 py-0.5 text-[10px] font-bold transition ${
+                      diasDeRangoClase(r).length === 0 ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+                    }`}
+                  >
+                    Todos
+                  </button>
+                  {ORDEN_DIAS_PROMO.map((d) => {
+                    const marcado = diasDeRangoClase(r).includes(d);
+                    return (
+                      <button
+                        key={d}
+                        type="button"
+                        aria-pressed={marcado}
+                        title={DIAS_SEMANA_ACADEMIA.find((x) => x.indice === d)?.label}
+                        data-testid={`bloque-dia-${d}`}
+                        onClick={() => alternarDiaBloque(r._key, d)}
+                        className={`rounded-full border px-2 py-0.5 text-[10px] font-bold transition ${
+                          marcado ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+                        }`}
+                      >
+                        {ETIQUETAS_DIA_PROMO[d]}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             ))}
           </div>
@@ -46215,6 +46433,7 @@ function ModuloAcademiaClinicas({
           configClub={configClub}
           permisos={permisos}
           tarifasHorarios={tarifasHorarios}
+          rangosHorarioClases={rangosHorarioClases}
           onClose={() => {
             setModalNuevaClase(false);
             setCeldaParaNuevaClase(null);
@@ -51289,6 +51508,8 @@ function normalizarFilaClub(fila, tabla) {
     promo_segunda_hora_hora_fin: fila.promo_segunda_hora_hora_fin ?? null,
     // App-125 (v132): días de la semana.
     promo_segunda_hora_dias: normalizarDiasPromoSegundaHora(fila.promo_segunda_hora_dias),
+    // App-128 (v133): días de apertura del club ([] = todos).
+    dias_apertura: diasAperturaDelClub(fila),
     _tabla: tabla,
   };
 }
@@ -53702,6 +53923,16 @@ function SeccionGeneralClub({
   const config = configClub || CONFIG_CLUB_DEFAULT;
   const [horaApertura, setHoraApertura] = useState(config.horaApertura || CONFIG_CLUB_DEFAULT.horaApertura);
   const [horaCierre, setHoraCierre] = useState(config.horaCierre || CONFIG_CLUB_DEFAULT.horaCierre);
+  // Días de Apertura del Club (App-128, v133) — [] = todos los días.
+  const [diasApertura, setDiasApertura] = useState(() => diasAperturaDelClub(config));
+  useEffect(() => {
+    setDiasApertura(diasAperturaDelClub(config));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.diasApertura]);
+  function alternarDiaApertura(dia) {
+    setError('');
+    setDiasApertura((prev) => normalizarDiasPromoSegundaHora(prev.includes(dia) ? prev.filter((d) => d !== dia) : [...prev, dia]));
+  }
   const [error, setError] = useState('');
   // Teléfono de Contacto del Club / Recepción (migracion_v87) — tarjeta con
   // su PROPIO guardado independiente (`onGuardarTelefonoContacto`, un update
@@ -53762,6 +53993,7 @@ function SeccionGeneralClub({
       nombreAdministrador: config.nombreAdministrador,
       horaApertura,
       horaCierre,
+      diasApertura,
       // Duración de Bloques/Turnos (migracion_v42) — este bloque no las
       // edita, se reenvían TAL CUAL para no pisarlas (`guardarConfigClub`
       // escribe el objeto completo en cada guardado).
@@ -53827,6 +54059,7 @@ function SeccionGeneralClub({
       nombreAdministrador: nombreAdministrador.trim(),
       horaApertura,
       horaCierre,
+      diasApertura,
       duracionReservaMinutos: config.duracionReservaMinutos,
       duracionClaseMinutos: config.duracionClaseMinutos,
       tarifasHabilitadas: config.tarifasHabilitadas !== false,
@@ -53904,6 +54137,53 @@ function SeccionGeneralClub({
           Define el rango de operación del club — reemplaza el límite fijo en la Parrilla Operativa, el Cronograma de
           Academia y los selectores de hora de "Solicitar Clase"/"Nueva Reserva"/reservas del Portal.
         </p>
+
+        {/* Días de Apertura (App-128, v133): los días cerrados quedan
+            bloqueados en la Parrilla, el Portal (reservas y "Solicitar
+            Clase"), Academia, Retas y Torneos — y en la base de datos. */}
+        <div className="mb-4" data-testid="dias-apertura-club">
+          <p className="mb-1.5 text-xs font-bold text-slate-700">Días de apertura</p>
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Días de apertura del club">
+            <button
+              type="button"
+              aria-pressed={diasApertura.length === 0}
+              data-testid="apertura-todos-dias"
+              onClick={() => {
+                setDiasApertura([]);
+                setError('');
+              }}
+              className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition ${
+                diasApertura.length === 0 ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+              }`}
+            >
+              Todos los días
+            </button>
+            {DIAS_SEMANA_ACADEMIA.map((d) => {
+              const marcado = diasApertura.includes(d.indice);
+              return (
+                <button
+                  key={d.indice}
+                  type="button"
+                  aria-pressed={marcado}
+                  data-testid={`apertura-dia-${d.indice}`}
+                  onClick={() => alternarDiaApertura(d.indice)}
+                  className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition ${
+                    marcado ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+                  }`}
+                >
+                  {d.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1.5 text-[11px] text-slate-500" data-testid="resumen-dias-apertura">
+            {diasApertura.length === 0
+              ? 'El club abre todos los días.'
+              : `${textoDiasAperturaClub({ diasApertura })}. Cerrado: ${textoDiasPromoSegundaHora({
+                  dias: [0, 1, 2, 3, 4, 5, 6].filter((d) => !diasApertura.includes(d)),
+                })} — no se podrán crear reservas, clases, retas ni torneos esos días.`}
+          </p>
+        </div>
 
         <div className="grid grid-cols-2 gap-4">
           <Campo label="Hora de Apertura">
@@ -56190,8 +56470,9 @@ function SeccionReservasAcademia({
           <h3 className="text-sm font-black text-slate-900">Horarios Habilitados para Clases</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
-          Bloques de horario (ej. 07:00–10:00) en los que el Portal permite "Solicitar Clase" — con coach asignado
-          opcional por bloque. Sin bloques configurados, no hay restricción de horario.
+          Bloques de horario (ej. 07:00–10:00) y días de la semana en los que el Portal permite "Solicitar Clase" — con
+          coach asignado opcional por bloque. También guían "Nueva Clase" en Academia. Sin bloques configurados, no hay
+          restricción de horario.
         </p>
 
         <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
@@ -56207,6 +56488,20 @@ function SeccionReservasAcademia({
             <Clock size={13} /> Editar Horarios
           </BotonSecundario>
         </div>
+        {/* App-128 — Resumen de bloques con sus días y coach. */}
+        {totalBloques > 0 && (
+          <ul className="mt-2.5 space-y-1" data-testid="resumen-bloques-clase">
+            {(rangosHorarioClases || []).map((r, i) => (
+              <li key={`${r.desde}-${r.hasta}-${i}`} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-600">
+                <span className="font-black text-slate-800">
+                  {r.desde}–{r.hasta}
+                </span>
+                <span>· {textoDiasPromoSegundaHora({ dias: diasDeRangoClase(r) })}</span>
+                <span>· {r.coachAsignado ? `Coach ${r.coachAsignado}` : 'Todos los coaches'}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* Duración de Bloques/Turnos (migracion_v42) — impacta el cálculo
@@ -57463,9 +57758,12 @@ const ESTILO_OCUPACION_SLOT = {
 // Clínicas → "Horarios Habilitados")? Un arreglo vacío/sin configurar
 // significa "sin restricción" (comportamiento previo a esta función) — así
 // un club que nunca configuró nada no ve su Portal repentinamente bloqueado.
-function horaDentroDeRangosClase(horaInicio, horaFin, rangos) {
-  const lista = Array.isArray(rangos) ? rangos : [];
-  if (lista.length === 0) return true;
+// App-128: con `fecha`, solo cuentan los bloques que aplican ese día de la
+// semana — si el club configuró bloques pero ninguno aplica ese día, no hay
+// clases ese día.
+function horaDentroDeRangosClase(horaInicio, horaFin, rangos, fecha = null) {
+  if (!Array.isArray(rangos) || rangos.length === 0) return true;
+  const lista = rangosClaseDelDia(rangos, fecha);
   const ini = parseHoraAMinutos(horaInicio);
   const fin = parseHoraAMinutos(horaFin);
   if (ini === null || fin === null) return false;
@@ -57487,8 +57785,8 @@ function horaDentroDeRangosClase(horaInicio, horaFin, rangos) {
 // traslapados con coaches distintos (ej. Agustín Tapia y Tolito Aguirre,
 // ambos 14:00–16:00), el segundo coach quedaba invisible para el Portal.
 // Ahora se devuelven todos, sin ocultar a ninguno.
-function rangosDeHorarioParaHora(horaInicio, horaFin, rangos) {
-  const lista = Array.isArray(rangos) ? rangos : [];
+function rangosDeHorarioParaHora(horaInicio, horaFin, rangos, fecha = null) {
+  const lista = rangosClaseDelDia(rangos, fecha);
   const ini = parseHoraAMinutos(horaInicio);
   const fin = parseHoraAMinutos(horaFin);
   if (ini === null || fin === null) return [];
@@ -64604,7 +64902,8 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   // ellas desde el catálogo (con su modal de políticas de grupo mínimo).
   const tipo = 'privada';
   const [nivel, setNivel] = useState(NIVELES_ACADEMIA[0]);
-  const [fecha, setFecha] = useState(hoyISO());
+  // App-128: si hoy el club no abre, arranca en el próximo día abierto.
+  const [fecha, setFecha] = useState(() => proximaFechaAbiertaClub(club, hoyISO()));
   const [horaInicio, setHoraInicio] = useState('');
   // Coach Preferido (item 3) — '' = "Cualquiera disponible". La lista de
   // opciones sale de los coaches que YA dan alguna clase en el catálogo del
@@ -64621,11 +64920,15 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   // `coachAsignado` — item 1, nuevo) aunque todavía no tengan ninguna clase
   // creada — así el jugador puede elegir un coach recién asignado a un
   // bloque sin esperar a que exista una clase suya en el sistema.
+  // App-128: los coaches asignados a "Horarios Habilitados" solo se ofrecen
+  // si su bloque aplica en el día de la semana de la fecha elegida.
   const coachesDelClub = useMemo(() => {
     const desdeClases = (academiaClases || []).map((c) => c.coach_nombre);
-    const desdeRangos = (rangosHorario || []).map((r) => r?.coachAsignado);
+    const desdeRangos = rangosClaseDelDia(rangosHorario, fecha).map((r) => r?.coachAsignado);
     return Array.from(new Set([...desdeClases, ...desdeRangos].filter(Boolean))).sort();
-  }, [academiaClases, rangosHorario]);
+  }, [academiaClases, rangosHorario, fecha]);
+  // App-128 — Días de Apertura del Club.
+  const clubCerradoEseDia = !clubAbreEnFecha(club, fecha);
 
   // Horas completas del día — Horario de Operación del Club (item 4,
   // `minutosOperacionDelClub`), mismo rango que "Reservar Cancha". Respaldo a
@@ -64663,12 +64966,14 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   // disponible) SIN IMPORTAR si hay cancha libre, y ni se calcula el estado
   // agregado (no hace falta: de cualquier forma no será seleccionable).
   const slots = useMemo(() => {
+    if (clubCerradoEseDia) return [];
     const ahoraMin = minutosAhora();
     return horasDelDia.map((m) => {
       const hIni = minutosAHora(m);
       const hFin = minutosAHora(m + duracionClaseMinutos);
       const pasado = esHoy && m < ahoraMin;
-      if (!horaDentroDeRangosClase(hIni, hFin, rangosHorario)) {
+      // App-128: solo los bloques que aplican en el día de la semana elegido.
+      if (!horaDentroDeRangosClase(hIni, hFin, rangosHorario, fecha)) {
         return { horaInicio: hIni, horaFin: hFin, pasado, tipo: 'fuera_horario', coachesNombres: [] };
       }
       // Selección de Coach por Bloque (item 1): los bloques que cubren esta
@@ -64678,12 +64983,17 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       // arreglo a `estadoOcupacionAgregado` para sugerirlos (item 2) y, si el
       // jugador pidió un coach distinto, para bloquear el slot (item 3).
       const coachesDelBloque = Array.from(
-        new Set(rangosDeHorarioParaHora(hIni, hFin, rangosHorario).map((r) => r?.coachAsignado).filter(Boolean))
+        new Set(rangosDeHorarioParaHora(hIni, hFin, rangosHorario, fecha).map((r) => r?.coachAsignado).filter(Boolean))
       );
       const estado = estadoOcupacionAgregado(canchasActivas, fecha, hIni, hFin, reservas, academiaClases, coachPreferido, coachesDelBloque);
       return { horaInicio: hIni, horaFin: hFin, pasado, ...estado };
     });
-  }, [horasDelDia, canchasActivas, fecha, reservas, academiaClases, esHoy, rangosHorario, coachPreferido, duracionClaseMinutos]);
+  }, [clubCerradoEseDia, horasDelDia, canchasActivas, fecha, reservas, academiaClases, esHoy, rangosHorario, coachPreferido, duracionClaseMinutos]);
+  // Si el coach elegido no da clases el día seleccionado, vuelve a "Cualquiera".
+  useEffect(() => {
+    if (coachPreferido && !coachesDelClub.includes(coachPreferido)) setCoachPreferido('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coachesDelClub]);
 
   // Filtrado de Horas Pasadas (item 4): si la hora seleccionada deja de ser
   // elegible (cambió la fecha, o ya pasó/se ocupó), se limpia sola en vez
@@ -64726,6 +65036,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
     setError('');
     if (!tipoPagoDeseado) return setError(`Elige una opción: ${tituloTarjetaClase} o Plan Mensual de Academia.`);
     if (fecha < hoyISO()) return setError('Elige una fecha a partir de hoy.');
+    if (clubCerradoEseDia) return setError(`${mensajeClubCerrado(fecha)} Elige otra fecha.`);
     if (!horaInicio) return setError('Elige un horario disponible en la cuadrícula.');
     setEnviando(true);
     const slotElegido = slots.find((s) => s.horaInicio === horaInicio);
@@ -64895,6 +65206,12 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               : 'Blanco = disponible (con el coach del turno, si tiene uno asignado), gris = no disponible (sin cancha libre, clase o torneo/reta). Borde naranja = tu horario elegido.'
           }
         >
+          {clubCerradoEseDia && <AvisoClubCerrado fecha={fecha} onIrAFecha={() => setFecha(proximaFechaAbiertaClub(club, fecha))} />}
+          {!clubCerradoEseDia && Array.isArray(rangosHorario) && rangosHorario.length > 0 && rangosClaseDelDia(rangosHorario, fecha).length === 0 && (
+            <p className="mb-2 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600" data-testid="sin-horarios-clase-dia">
+              No hay horarios de clase habilitados los {NOMBRES_DIA_PLURAL[diaSemanaPromoDeFecha(fecha)] ?? 'días elegidos'} — prueba otro día.
+            </p>
+          )}
           <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
             {slots.map((s) => {
               const estilo = ESTILO_OCUPACION_SLOT[s.tipo] || ESTILO_OCUPACION_SLOT.disponible;
@@ -66025,7 +66342,8 @@ const TURNOS_RESERVA_PORTAL = [
 // completo: fecha/hora/duración → add-ons opcionales → método de pago →
 // identificación (si hace falta) → confirmar.
 function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, productosAddOns, variantesPorProducto, saldoWallet, tarifasHorarios, onClose, onConfirmar, aceptaPagoEnLinea = false }) {
-  const [fecha, setFecha] = useState(hoyISO());
+  // App-128: si hoy el club no abre, arranca en el próximo día abierto.
+  const [fecha, setFecha] = useState(() => proximaFechaAbiertaClub(club, hoyISO()));
   const [turnoFiltro, setTurnoFiltro] = useState('todos');
   // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
   // Academia", migracion_v42, corrección de consistencia): la duración de
@@ -66122,9 +66440,12 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   // cada hora — `Math.min` corrige ese caso sin tocar ningún otro (nunca
   // amplía el paso, solo lo puede volver más fino).
   const pasoGridMin = Math.min(duracionReservaMinutos, Math.round(duracionHoras * 60));
+  // App-128 — Días de Apertura: día cerrado → sin horarios.
+  const clubCerradoEseDia = !clubAbreEnFecha(club, fecha);
   const franjasBase = useMemo(
-    () => franjasDelDiaConEstado(cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin),
-    [cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin]
+    () =>
+      clubCerradoEseDia ? [] : franjasDelDiaConEstado(cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin),
+    [clubCerradoEseDia, cancha.id, fecha, duracionHoras, reservas, academiaClases, horaAperturaMin, horaCierreMin, pasoGridMin]
   );
   // OPTIMIZACIÓN DE HORARIOS: cuando la fecha elegida es HOY, cualquier
   // franja cuya hora de inicio ya pasó se marca `pasado` (distinto de
@@ -66263,6 +66584,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
     // valor tecleado a mano (o un navegador que ignore `min`) igual podría
     // colarse hasta aquí — última barrera antes de mandar la reserva.
     if (fecha < hoyISO()) return setError('No puedes reservar en una fecha anterior a hoy.');
+    if (clubCerradoEseDia) return setError(`${mensajeClubCerrado(fecha)} Elige otra fecha.`);
     if (!horaInicio) return setError('No hay horarios disponibles para esa fecha/duración — elige otra.');
     if (!jugador) return setError('Inicia sesión para reservar.');
     if (!puedeConfirmarPago) return setError('Completa los datos de la tarjeta para continuar.');
@@ -66396,7 +66718,9 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
               </button>
             ))}
           </div>
-          {franjas.length === 0 ? (
+          {clubCerradoEseDia ? (
+            <AvisoClubCerrado fecha={fecha} onIrAFecha={() => setFecha(proximaFechaAbiertaClub(club, fecha))} />
+          ) : franjas.length === 0 ? (
             <p className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-400">
               No hay horarios disponibles ese día para {duracionHoras}h — prueba otra fecha o duración.
             </p>
@@ -67338,6 +67662,12 @@ function AppInterno({ clubInicial } = {}) {
   // Promoción de Segunda Hora (v130) — mismo patrón de espejo en ref: solo la
   // tarjeta de la promoción manda estas llaves; cualquier otro guardado de
   // Configuración del Club conserva el valor vigente.
+  // Días de Apertura del Club (App-128, v133) — mismo patrón de espejo en ref:
+  // solo la tarjeta "Horario de Apertura y Cierre" manda la llave.
+  const diasAperturaRef = useRef(diasAperturaDelClub(configClub));
+  useEffect(() => {
+    diasAperturaRef.current = diasAperturaDelClub(configClub);
+  }, [configClub?.diasApertura]);
   const promoSegundaHoraRef = useRef(configPromoSegundaHora(configClub));
   useEffect(() => {
     promoSegundaHoraRef.current = configPromoSegundaHora(configClub);
@@ -68161,7 +68491,8 @@ function AppInterno({ clubInicial } = {}) {
           data.academia_precio_grupal_3 != null ||
           data.academia_precio_grupal_4 != null ||
           data.academia_horas_validacion_minimo != null ||
-          data.promo_segunda_hora_activa != null
+          data.promo_segunda_hora_activa != null ||
+          data.dias_apertura != null
         ) {
           const nuevaConfig = {
             nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
@@ -68271,6 +68602,8 @@ function AppInterno({ clubInicial } = {}) {
                 data.promo_segunda_hora_hora_fin === undefined ? promoSegundaHoraRef.current.promoSegundaHoraHoraFin : data.promo_segunda_hora_hora_fin,
               promoSegundaHoraDias: data.promo_segunda_hora_dias === undefined ? promoSegundaHoraRef.current.promoSegundaHoraDias : data.promo_segunda_hora_dias,
             }),
+            // Días de Apertura (v133) — sin la columna conserva el valor local.
+            diasApertura: data.dias_apertura === undefined ? diasAperturaRef.current : diasAperturaDelClub(data),
           };
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
@@ -69218,6 +69551,8 @@ function AppInterno({ clubInicial } = {}) {
             LLAVES_CONFIG_PROMO_SEGUNDA_HORA.map((k) => [k, k in nuevaConfig ? nuevaConfig[k] : promoSegundaHoraRef.current[k]])
           )
         ),
+        // Días de Apertura (v133) — solo cambia si el caller manda la llave.
+        diasApertura: 'diasApertura' in nuevaConfig ? diasAperturaDelClub(nuevaConfig) : diasAperturaRef.current,
       };
       // v130: nunca encendida sin % (CHECK de la base) — sin % válido queda OFF.
       if (limpia.promoSegundaHoraPorcentaje === null) limpia.promoSegundaHoraActiva = false;
@@ -69259,6 +69594,8 @@ function AppInterno({ clubInicial } = {}) {
           promo_segunda_hora_hora_fin: limpia.promoSegundaHoraHoraFin,
           // v132: NULL = todos los días.
           promo_segunda_hora_dias: limpia.promoSegundaHoraDias.length > 0 ? limpia.promoSegundaHoraDias : null,
+          // v133: NULL = abre todos los días.
+          dias_apertura: limpia.diasApertura.length > 0 ? limpia.diasApertura : null,
         };
         // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo
         // (como antes de este cambio): `hora_apertura`/`hora_cierre`/
@@ -69296,6 +69633,7 @@ function AppInterno({ clubInicial } = {}) {
           'promo_segunda_hora_hora_inicio',
           'promo_segunda_hora_hora_fin',
           'promo_segunda_hora_dias',
+          'dias_apertura',
         ]);
         if (error) throw error;
         setConfiguracionClubId(CLUB_ACTIVO_ID);
@@ -69318,6 +69656,17 @@ function AppInterno({ clubInicial } = {}) {
             aviso = 'Falta correr la migración v132: los días de la semana no se guardaron y la promoción aplicaría todos los días.';
           }
           if (aviso) mostrarToast({ titulo: 'Promoción de Segunda Hora sin guardar completa', detalle: aviso, tono: 'error' });
+        }
+        // App-128 — mismo aviso para los Días de Apertura (v133).
+        if (limpia.diasApertura.length > 0) {
+          const { error: errDias } = await supabase.from('configuracion_club').select('dias_apertura').eq('id', CLUB_ACTIVO_ID).maybeSingle();
+          if (errDias && esErrorColumnaInexistente(errDias)) {
+            mostrarToast({
+              titulo: 'Días de apertura sin guardar',
+              detalle: 'Falta correr la migración v133: los días de apertura solo se guardaron en este navegador; el Portal seguiría abierto todos los días.',
+              tono: 'error',
+            });
+          }
         }
       } catch (err) {
         // Sincronización Silenciosa: el nombre/logo ya se aplicó de forma

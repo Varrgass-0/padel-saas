@@ -286,6 +286,30 @@ export function diaSemanaPromoDeFecha(fecha: unknown): number | null {
   return Number.isInteger(dia) ? dia : null;
 }
 
+// -----------------------------------------------------------------------------
+// Días de Apertura del Club (App-128, migración v133) — réplica EXACTA de
+// App.jsx (`diasAperturaDelClub` / `clubAbreEnFecha`) y del trigger
+// `fn_reservas_dia_apertura`. 0 = domingo … 6 = sábado; [] = todos los días.
+// -----------------------------------------------------------------------------
+const NOMBRES_DIA_PLURAL = ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'];
+
+export function diasAperturaDelClub(fuente: Fila | null | undefined): number[] {
+  return normalizarDiasPromoSegundaHora(fuente?.diasApertura ?? fuente?.dias_apertura);
+}
+
+/** ¿El club abre en esta fecha 'YYYY-MM-DD'? Fecha inválida → no se bloquea aquí. */
+export function clubAbreEnFecha(fuente: Fila | null | undefined, fecha: unknown): boolean {
+  const dias = diasAperturaDelClub(fuente);
+  if (dias.length === 0) return true;
+  const dia = diaSemanaPromoDeFecha(fecha);
+  return dia === null || dias.includes(dia);
+}
+
+export function mensajeClubCerrado(fecha: unknown): string {
+  const dia = diaSemanaPromoDeFecha(fecha);
+  return `El club está cerrado los ${dia === null ? 'días no laborables' : NOMBRES_DIA_PLURAL[dia]}.`;
+}
+
 /** 'HH:MM' (acepta 'HH:MM:SS'); una hora FIN '00:00' = medianoche ('24:00'). */
 export function normalizarHoraPromoSegundaHora(valor: unknown, esFin = false): string | null {
   if (valor === null || valor === undefined || String(valor).trim() === '') return null;
@@ -503,6 +527,10 @@ export function validarSolicitudReserva(opciones: {
   const aperturaMin = apertura !== null ? apertura : HORA_INICIO_MIN;
   const cierreMin = cierre !== null && cierre > aperturaMin ? cierre : HORA_FIN_MIN;
   if (inicio < aperturaMin || fin > cierreMin) return { ok: false, codigo: 'fuera_de_horario', error: 'Ese horario está fuera del horario del club.' };
+  // App-128 — Días de Apertura del Club (v133).
+  if (!clubAbreEnFecha(club, fecha)) {
+    return { ok: false, codigo: 'club_cerrado', error: mensajeClubCerrado(fecha) };
+  }
   const zona = typeof club?.zona_horaria === 'string' && club.zona_horaria ? club.zona_horaria : 'America/Mexico_City';
   const hoy = ahoraEnZona(zona, opciones.ahora);
   if (fecha < hoy.fecha || (fecha === hoy.fecha && inicio <= hoy.minutos)) {
@@ -837,6 +865,8 @@ export function errorDeRetencion(mensaje: string): { codigo: string; error: stri
     cupo_lleno: 'Ya no hay lugares disponibles.',
     pareja_completa: 'Esa pareja ya se completó.',
     evento_no_disponible: 'Ese evento ya no está disponible.',
+    // App-128 — trigger `fn_reservas_dia_apertura` (v133).
+    club_cerrado: 'El club está cerrado ese día. Elige otra fecha.',
   };
   for (const codigo of Object.keys(mapa)) {
     if (mensaje.includes(codigo)) return { codigo, error: mapa[codigo] };
