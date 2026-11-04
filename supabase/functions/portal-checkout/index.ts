@@ -49,6 +49,7 @@ import {
   cuentaConectadaActiva,
   errorDeRetencion,
   esTipoPagoPortal,
+  etiquetaPromoSegundaHora,
   esTokenPortal,
   eventoYaInicio,
   filaActiva,
@@ -205,7 +206,14 @@ async function planReserva(ctx: Contexto): Promise<Plan> {
       monto_addons: subtotalArticulos,
       // App-123 — rastro de la Promoción de Segunda Hora (null si no aplicó).
       promo_segunda_hora: cotizacion.segundaHora
-        ? { porcentaje: cotizacion.segundaHora.porcentaje, descuento: cotizacion.segundaHora.descuento, total_sin_promo: cotizacion.segundaHora.totalAntesDescuento }
+        ? {
+            // App-133: 'DESCUENTO_PORCENTAJE' | 'PRECIO_FIJO' (+ el precio de la 2ª hora).
+            tipo_ajuste: cotizacion.segundaHora.tipoAjuste,
+            porcentaje: cotizacion.segundaHora.porcentaje,
+            precio_fijo: cotizacion.segundaHora.precioFijo,
+            descuento: cotizacion.segundaHora.descuento,
+            total_sin_promo: cotizacion.segundaHora.totalAntesDescuento,
+          }
         : null,
       cancha_id: cancha!.id,
       fecha,
@@ -247,7 +255,7 @@ async function planReserva(ctx: Contexto): Promise<Plan> {
       {
         nombre: `Reserva ${nombreCancha}`,
         descripcion: `${String(club.nombre ?? 'Club')} · ${fecha} · ${validacion.horaInicio}–${validacion.horaFin}${
-          cotizacion.segundaHora ? ` · Promo 2ª hora −${cotizacion.segundaHora.porcentaje}%` : ''
+          cotizacion.segundaHora ? ` · Promo ${etiquetaPromoSegundaHora(cotizacion.segundaHora)}` : ''
         }`,
         centavos: centavos(costo),
         cantidad: 1,

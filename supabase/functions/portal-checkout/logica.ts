@@ -224,12 +224,19 @@ export function calcularPrecioReserva(horaInicio: string, duracionMinutos: numbe
 //   todo el horario del club).
 // • Solo en los días de la semana elegidos (vacío = todos), según la fecha de
 //   la reserva (0 = domingo … 6 = sábado).
+// • App-133 (v135): tipo de ajuste de la 2ª hora — '% de descuento' (como
+//   siempre) o 'Precio fijo por hora' (la 2ª hora cuesta exactamente ese
+//   monto; si no la abarata, no aplica).
 // -----------------------------------------------------------------------------
 export const PROMO_SEGUNDA_HORA_MIN_DURACION = 120;
 
 export interface PromoSegundaHora {
   activa: boolean;
+  /** App-133 (v135): 'DESCUENTO_PORCENTAJE' (default, como siempre) | 'PRECIO_FIJO'. */
+  tipoAjuste: string;
   porcentaje: number;
+  /** App-133 (v135): precio en MXN de la 2ª hora completa (solo con 'PRECIO_FIJO'). */
+  precioFijo: number | null;
   canchaIds: string[];
   horaInicio: string | null;
   horaFin: string | null;
@@ -237,7 +244,10 @@ export interface PromoSegundaHora {
 }
 
 export interface DesgloseSegundaHora {
+  tipoAjuste: string;
+  /** Con 'PRECIO_FIJO' = % equivalente del ahorro (solo informativo). */
   porcentaje: number;
+  precioFijo: number | null;
   hora1: number;
   hora2: number;
   descuento: number;
@@ -249,6 +259,19 @@ export interface DesgloseSegundaHora {
 
 export interface CotizacionReservaConPromo extends CotizacionReserva {
   segundaHora: DesgloseSegundaHora | null;
+}
+
+/** App-133 (v135): tipo de ajuste de la 2ª hora (vacío/desconocido = % de descuento). */
+export function normalizarTipoAjustePromoSegundaHora(valor: unknown): string {
+  return String(valor ?? '').trim().toUpperCase() === TIPO_AJUSTE_PRECIO_FIJO ? TIPO_AJUSTE_PRECIO_FIJO : TIPO_AJUSTE_DESCUENTO;
+}
+
+/** App-133 (v135): precio fijo de la 2ª hora en MXN (0 < $ ≤ 1,000,000; 2 decimales). */
+export function normalizarPrecioFijoPromoSegundaHora(valor: unknown): number | null {
+  if (valor === null || valor === undefined || valor === '') return null;
+  const n = Number(valor);
+  if (!Number.isFinite(n) || n <= 0 || n > 1000000) return null;
+  return Math.round(n * 100) / 100;
 }
 
 export function normalizarPorcentajePromoSegundaHora(valor: unknown): number | null {
@@ -378,9 +401,14 @@ export function promoSegundaHoraDelClub(fuente: Fila | PromoSegundaHora | null |
     f?.promoSegundaHoraHoraFin ?? f?.promo_segunda_hora_hora_fin ?? f?.horaFin,
   );
   const dias = normalizarDiasPromoSegundaHora(f?.promoSegundaHoraDias ?? f?.promo_segunda_hora_dias ?? f?.dias);
+  const tipoAjuste = normalizarTipoAjustePromoSegundaHora(f?.promoSegundaHoraTipoAjuste ?? f?.promo_segunda_hora_tipo_ajuste ?? f?.tipoAjuste);
+  const precioFijo = normalizarPrecioFijoPromoSegundaHora(f?.promoSegundaHoraPrecioFijo ?? f?.promo_segunda_hora_precio_fijo ?? f?.precioFijo);
+  const valorValido = tipoAjuste === TIPO_AJUSTE_PRECIO_FIJO ? precioFijo !== null : porcentaje !== null;
   return {
-    activa: activaCruda === true && porcentaje !== null,
+    activa: activaCruda === true && valorValido,
+    tipoAjuste,
     porcentaje: porcentaje ?? 0,
+    precioFijo,
     canchaIds,
     horaInicio: ventana ? ventana.horaInicio : null,
     horaFin: ventana ? ventana.horaFin : null,
@@ -444,7 +472,11 @@ export function cotizarReservaConPromo(
     );
   const hora1 = costoEntre(inicioMin, inicioMin + 60);
   const hora2 = costoEntre(inicioMin + 60, inicioMin + 120);
-  const descuento = redondear(hora2 * (config.porcentaje / 100));
+  // App-133: % → rebaja sobre lo que cuesta la 2ª hora; precio fijo → la 2ª
+  // hora cuesta exactamente ese monto. Nunca encarece: si el precio fijo es
+  // igual o mayor que la 2ª hora, la promoción no aplica.
+  const esPrecioFijo = config.tipoAjuste === TIPO_AJUSTE_PRECIO_FIJO;
+  const descuento = esPrecioFijo ? redondear(hora2 - (config.precioFijo ?? hora2)) : redondear(hora2 * (config.porcentaje / 100));
   if (!(descuento > 0)) return { ...cotizacion, segundaHora: null };
   const total = redondear(cotizacion.total - descuento);
   return {
@@ -452,7 +484,9 @@ export function cotizarReservaConPromo(
     total,
     totalSinPromo: redondear(cotizacion.totalSinPromo),
     segundaHora: {
-      porcentaje: config.porcentaje,
+      tipoAjuste: config.tipoAjuste,
+      porcentaje: esPrecioFijo ? redondear((descuento / hora2) * 100) : config.porcentaje,
+      precioFijo: esPrecioFijo ? config.precioFijo : null,
       hora1,
       hora2,
       descuento,
@@ -462,6 +496,19 @@ export function cotizarReservaConPromo(
       totalAntesDescuento: cotizacion.total,
     },
   };
+}
+
+/**
+ * App-133 — Texto corto de la promo ("2ª hora −50%" / "2ª hora a $350"),
+ * igual que `etiquetaPromoSegundaHora` de App.jsx. Acepta la config o el desglose.
+ */
+export function etiquetaPromoSegundaHora(promo: { tipoAjuste?: string; porcentaje?: number; precioFijo?: number | null } | number | null | undefined): string {
+  if (promo !== null && typeof promo === 'object' && normalizarTipoAjustePromoSegundaHora(promo.tipoAjuste) === TIPO_AJUSTE_PRECIO_FIJO) {
+    const precio = Number(promo.precioFijo) || 0;
+    return `2ª hora a $${precio.toLocaleString('es-MX', { minimumFractionDigits: precio % 1 === 0 ? 0 : 2, maximumFractionDigits: 2 })}`;
+  }
+  const pct = Number(typeof promo === 'object' && promo !== null ? promo.porcentaje : promo) || 0;
+  return `2ª hora −${pct % 1 === 0 ? pct : pct.toFixed(2)}%`;
 }
 
 /** Duración base del bloque del club (`duracion_reserva_minutos`). */
