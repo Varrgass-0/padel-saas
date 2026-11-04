@@ -1190,6 +1190,79 @@ html.dark [class~="hover:text-slate-500"]:hover { color: #94a3b8; }
 html.dark [class~="placeholder-slate-400"]::placeholder { color: #64748b; }
 `;
 
+// App-129 — Reglas globales de layout (Modo Claro y Oscuro):
+// 1) Con cualquier modal abierto (`html.qb-modal-abierto`, ver
+//    `useBloqueoScrollFondoGlobal`) el fondo no se desplaza: la barra
+//    superior y el menú lateral quedan inmóviles. Solo <html> (no <body>)
+//    recibe `overflow: hidden`, así la barra superior `sticky` conserva su
+//    lugar. El ancho de la barra de scroll se compensa para que nada
+//    "brinque" al abrir/cerrar.
+// 2) Menú lateral continuo en escritorio: mismo fondo que el contenido, sin
+//    la línea divisoria vertical y fijo a la vista (su lista de módulos
+//    tiene scroll propio). En móvil sigue siendo un panel deslizable con su
+//    borde.
+const CSS_LAYOUT_QLUBOS = `
+html.qb-modal-abierto { overflow: hidden !important; }
+html.qb-modal-abierto body { padding-right: var(--qb-ancho-scrollbar, 0px); }
+[data-modal-fondo], .fixed.inset-0[class*="backdrop-blur"] { overscroll-behavior: contain; }
+@media (min-width: 1024px) {
+  .qb-sidebar {
+    background-color: var(--color-slate-50, #f8fafc) !important;
+    border-right-color: transparent !important;
+    /* Fijo a la vista: el logo y los módulos no se van con el scroll. */
+    position: sticky !important;
+    top: 0;
+    height: 100vh;
+    align-self: flex-start;
+  }
+  html.dark .qb-sidebar { background-color: #0b1329 !important; }
+}
+`;
+
+// Selector de "hay un modal abierto": la capa de `ModalShell`
+// (`data-modal-fondo`) y cualquier capa flotante de pantalla completa con
+// desenfoque (modales propios del Panel, Soporte, Admin QLUBOS).
+const SELECTOR_MODAL_ABIERTO = '[data-modal-fondo], .fixed.inset-0[class*="backdrop-blur"]';
+
+// Bloqueo GLOBAL del scroll de fondo: observa el DOM y, mientras exista al
+// menos un modal, agrega `qb-modal-abierto` a <html>. Un solo punto para
+// toda la app (Panel, Portal y módulos en archivos aparte), sin tocar cada
+// modal por separado.
+function useBloqueoScrollFondoGlobal() {
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return undefined;
+    const raiz = document.documentElement;
+    let pendiente = 0;
+    let bloqueado = false;
+    const evaluar = () => {
+      pendiente = 0;
+      const hayModal = !!document.querySelector(SELECTOR_MODAL_ABIERTO);
+      if (hayModal === bloqueado) return;
+      bloqueado = hayModal;
+      if (hayModal) {
+        const anchoScrollbar = Math.max(0, window.innerWidth - raiz.clientWidth);
+        raiz.style.setProperty('--qb-ancho-scrollbar', `${anchoScrollbar}px`);
+        raiz.classList.add('qb-modal-abierto');
+      } else {
+        raiz.classList.remove('qb-modal-abierto');
+        raiz.style.removeProperty('--qb-ancho-scrollbar');
+      }
+    };
+    const programar = () => {
+      if (!pendiente) pendiente = window.requestAnimationFrame(evaluar);
+    };
+    const observador = new MutationObserver(programar);
+    observador.observe(document.body, { childList: true, subtree: true });
+    evaluar();
+    return () => {
+      observador.disconnect();
+      if (pendiente) window.cancelAnimationFrame(pendiente);
+      raiz.classList.remove('qb-modal-abierto');
+      raiz.style.removeProperty('--qb-ancho-scrollbar');
+    };
+  }, []);
+}
+
 /* ============================================================================
  * LOGO OFICIAL DE QLUB OS — COMPONENTE LOCAL PERMANENTE
  * ==========================================================================*/
@@ -5610,7 +5683,7 @@ function Sidebar({
         <div className="fixed inset-0 z-30 bg-slate-950/70 lg:hidden" onClick={onCerrar} />
       )}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white transition-all lg:static lg:z-auto lg:translate-x-0 ${
+        className={`qb-sidebar fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white transition-all lg:static lg:z-auto lg:translate-x-0 ${
           abierto ? 'translate-x-0' : '-translate-x-full'
         } ${colapsado ? 'lg:w-[76px]' : 'lg:w-64'}`}
       >
@@ -53131,7 +53204,7 @@ function PantallaBloqueoSuscripcion({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] overflow-y-auto bg-[#f8fafc]" data-testid="pantalla-bloqueo-suscripcion">
+    <div className="fixed inset-0 z-[100] overflow-y-auto bg-[#f8fafc]" data-testid="pantalla-bloqueo-suscripcion" data-modal-fondo="">
       <div className="relative flex min-h-full flex-col items-center px-4 py-10">
         <FondoGlowQlubOS />
         <div className="relative z-10 w-full max-w-4xl">
@@ -74215,6 +74288,8 @@ function VistaTicketDigital({ ventaId }) {
 const PATRON_RUTA_PORTAL = /^\/canchas\/([a-z0-9-]+)\/?$/i;
 
 export default function App() {
+  // App-129 — el fondo no se desplaza mientras haya un modal abierto.
+  useBloqueoScrollFondoGlobal();
   const ruta = usarRutaActual();
   const matchPortal = ruta.match(PATRON_RUTA_PORTAL);
   // Marco Legal (migracion_v61) — ruta pública `/legales`, sin contexto de
@@ -74241,7 +74316,8 @@ export default function App() {
           cuanto el operador activa el Modo Oscuro desde el Toggle del
           Header (`BotonTemaClubOS`, ver `TopHeader`). */}
       <style>{`html, body, #root { background-color: #f8fafc; overscroll-behavior: none; }
-${CSS_MODO_OSCURO_CLUBOS}`}</style>
+${CSS_MODO_OSCURO_CLUBOS}
+${CSS_LAYOUT_QLUBOS}`}</style>
       {esRutaLegales ? (
         <VistaLegales />
       ) : matchTicket ? (
