@@ -287,6 +287,45 @@ export function diaSemanaPromoDeFecha(fecha: unknown): number | null {
 }
 
 // -----------------------------------------------------------------------------
+// Horarios especiales por día (App-131, migración v134) — réplica EXACTA de
+// App.jsx (`normalizarHorariosPorDia` / `horarioEspecialDelDia`).
+// configuracion_club.horarios_por_dia: [{ dia: 0..6, apertura: 'HH:MM', cierre: 'HH:MM' }]
+// -----------------------------------------------------------------------------
+export interface HorarioDia {
+  dia: number;
+  apertura: string;
+  cierre: string;
+}
+
+export function normalizarHorariosPorDia(valor: unknown): HorarioDia[] {
+  const lista = Array.isArray(valor) ? valor : [];
+  const porDia = new Map<number, HorarioDia>();
+  lista.forEach((h: Fila) => {
+    const dia = h?.dia === null || h?.dia === undefined || h?.dia === '' ? NaN : Number(h.dia);
+    if (!Number.isInteger(dia) || dia < 0 || dia > 6 || porDia.has(dia)) return;
+    const apertura = parseHoraAMinutos(h?.apertura);
+    let cierre = parseHoraAMinutos(h?.cierre);
+    if (apertura === null || cierre === null) return;
+    if (cierre === 0) cierre = 24 * 60;
+    if (apertura < 0 || cierre > 24 * 60 || cierre <= apertura) return;
+    porDia.set(dia, { dia, apertura: minutosAHora(apertura), cierre: minutosAHora(cierre) });
+  });
+  return [1, 2, 3, 4, 5, 6, 0].filter((d) => porDia.has(d)).map((d) => porDia.get(d)!);
+}
+
+export function horariosPorDiaDelClub(fuente: Fila | null | undefined): HorarioDia[] {
+  return normalizarHorariosPorDia(fuente?.horariosPorDia ?? fuente?.horarios_por_dia);
+}
+
+/** Horario especial del día de la semana de `fecha` ('YYYY-MM-DD'), o null. */
+export function horarioEspecialDelDia(fuente: Fila | null | undefined, fecha: unknown): HorarioDia | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(fecha || ''));
+  if (!m) return null;
+  const dia = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12)).getUTCDay();
+  return horariosPorDiaDelClub(fuente).find((h) => h.dia === dia) || null;
+}
+
+// -----------------------------------------------------------------------------
 // Días de Apertura del Club (App-128, migración v133) — réplica EXACTA de
 // App.jsx (`diasAperturaDelClub` / `clubAbreEnFecha`) y del trigger
 // `fn_reservas_dia_apertura`. 0 = domingo … 6 = sábado; [] = todos los días.
@@ -522,8 +561,10 @@ export function validarSolicitudReserva(opciones: {
     return { ok: false, codigo: 'duracion_no_permitida', error: 'Esa duración no está disponible en este club.' };
   }
   const fin = inicio + duracion;
-  const apertura = parseHoraAMinutos(club?.hora_apertura);
-  const cierre = parseHoraAMinutos(club?.hora_cierre);
+  // App-131 — horario especial del día de la semana (v134) o el general.
+  const especial = horarioEspecialDelDia(club, fecha);
+  const apertura = parseHoraAMinutos(especial ? especial.apertura : club?.hora_apertura);
+  const cierre = parseHoraAMinutos(especial ? especial.cierre : club?.hora_cierre);
   const aperturaMin = apertura !== null ? apertura : HORA_INICIO_MIN;
   const cierreMin = cierre !== null && cierre > aperturaMin ? cierre : HORA_FIN_MIN;
   if (inicio < aperturaMin || fin > cierreMin) return { ok: false, codigo: 'fuera_de_horario', error: 'Ese horario está fuera del horario del club.' };

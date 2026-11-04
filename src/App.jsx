@@ -1788,14 +1788,48 @@ const SLOT_PX = 56;
 // `HORA_FIN_MIN` cuando el club no los ha configurado todavía (proyecto sin
 // esta migración, o un valor inválido/vacío) — así ningún club ve su
 // Parrilla, Cronograma o selectores de hora repentinamente vacíos o rotos.
-function minutosOperacionDelClub(fuente) {
-  const aperturaCruda = fuente?.horaApertura ?? fuente?.hora_apertura;
-  const cierreCrudo = fuente?.horaCierre ?? fuente?.hora_cierre;
+// App-131 — con `fecha` ('YYYY-MM-DD'), si el club tiene un horario especial
+// para ese día de la semana (`horarios_por_dia`, v134) se usa ese; si no, el
+// horario general de siempre.
+function minutosOperacionDelClub(fuente, fecha = null) {
+  const especial = fecha ? horarioEspecialDelDia(fuente, fecha) : null;
+  const aperturaCruda = especial ? especial.apertura : fuente?.horaApertura ?? fuente?.hora_apertura;
+  const cierreCrudo = especial ? especial.cierre : fuente?.horaCierre ?? fuente?.hora_cierre;
   const apertura = parseHoraAMinutos(aperturaCruda);
   const cierre = parseHoraAMinutos(cierreCrudo);
   const aperturaMin = apertura !== null ? apertura : HORA_INICIO_MIN;
   const cierreMin = cierre !== null && cierre > aperturaMin ? cierre : HORA_FIN_MIN;
   return { aperturaMin, cierreMin };
+}
+
+// --- Horarios especiales por día (App-131, migración v134) — MISMA lógica que
+// `portal-checkout/logica.ts`. `configuracion_club.horarios_por_dia` (jsonb):
+//   [{ "dia": 0, "apertura": "08:00", "cierre": "17:00" }, …]
+// 0 = domingo … 6 = sábado; un día sin entrada usa el horario general. Cierre
+// "00:00" = medianoche ("24:00"). Entradas inválidas o repetidas se ignoran.
+function normalizarHorariosPorDia(valor) {
+  const lista = Array.isArray(valor) ? valor : [];
+  const porDia = new Map();
+  lista.forEach((h) => {
+    const dia = h?.dia === null || h?.dia === undefined || h?.dia === '' ? NaN : Number(h.dia);
+    if (!Number.isInteger(dia) || dia < 0 || dia > 6 || porDia.has(dia)) return;
+    const apertura = parseHoraAMinutos(h?.apertura);
+    let cierre = parseHoraAMinutos(h?.cierre);
+    if (apertura === null || cierre === null) return;
+    if (cierre === 0) cierre = 24 * 60;
+    if (apertura < 0 || cierre > 24 * 60 || cierre <= apertura) return;
+    porDia.set(dia, { dia, apertura: minutosAHora(apertura), cierre: minutosAHora(cierre) });
+  });
+  return [1, 2, 3, 4, 5, 6, 0].filter((d) => porDia.has(d)).map((d) => porDia.get(d));
+}
+function horariosPorDiaDelClub(fuente) {
+  return normalizarHorariosPorDia(fuente?.horariosPorDia ?? fuente?.horarios_por_dia);
+}
+function horarioEspecialDelDia(fuente, fecha) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(fecha || ''));
+  if (!m) return null;
+  const dia = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12)).getUTCDay();
+  return horariosPorDiaDelClub(fuente).find((h) => h.dia === dia) || null;
 }
 
 // Total de columnas/slots de `SLOT_MIN` minutos entre apertura y cierre —
@@ -4784,6 +4818,9 @@ const CONFIG_CLUB_DEFAULT = {
   // App-128 (v133): días de apertura del club (0 = domingo … 6 = sábado;
   // [] = todos los días, comportamiento de siempre).
   diasApertura: [],
+  // App-131 (v134): horarios especiales por día ([{ dia, apertura, cierre }];
+  // [] = todos los días con el horario general).
+  horariosPorDia: [],
 };
 
 // ============================================================================
@@ -5119,6 +5156,7 @@ function leerConfigClubLocal() {
       // Promoción de Segunda Hora (v130) — caché local.
       ...configPromoSegundaHora(parsed),
       diasApertura: diasAperturaDelClub(parsed),
+      horariosPorDia: horariosPorDiaDelClub(parsed),
     };
   } catch (_e) {
     return { ...CONFIG_CLUB_DEFAULT };
@@ -8958,8 +8996,8 @@ function ModalNuevaReserva({
   // eslint-disable-next-line no-unused-vars
   onRegistrarAuditoria,
   jugadoresPorId,
-  horaAperturaMin = HORA_INICIO_MIN,
-  horaCierreMin = HORA_FIN_MIN,
+  horaAperturaMin: horaAperturaMinGeneral = HORA_INICIO_MIN,
+  horaCierreMin: horaCierreMinGeneral = HORA_FIN_MIN,
   // Duración de Bloques/Turnos (Configuración del Club → "Reservas &
   // Academia", migracion_v42) — 60 min de respaldo si nunca se configuró.
   duracionReservaMinutos = 60,
@@ -8977,6 +9015,10 @@ function ModalNuevaReserva({
   promoSegundaHora = null,
   // App-128 — Días de Apertura del Club (0 = domingo … 6; [] = todos).
   diasApertura = [],
+  // App-131 — configuración del club (horario general + horarios especiales
+  // por día). Con ella, el horario se recalcula para la fecha elegida aquí
+  // dentro; sin ella se usan las props de arriba como siempre.
+  horarioClub = null,
 }) {
   const toast = useToast();
   const canchasDisponibles = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
@@ -8994,6 +9036,10 @@ function ModalNuevaReserva({
     const inicial = fechaInicial || hoyISO();
     return inicial < hoyISO() ? hoyISO() : inicial;
   });
+  // App-131 — horario de operación del día elegido (especial o general).
+  const operacionDelDia = horarioClub ? minutosOperacionDelClub(horarioClub, fecha) : null;
+  const horaAperturaMin = operacionDelDia ? operacionDelDia.aperturaMin : horaAperturaMinGeneral;
+  const horaCierreMin = operacionDelDia ? operacionDelDia.cierreMin : horaCierreMinGeneral;
   const [turnoFiltro, setTurnoFiltro] = useState('todos');
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
@@ -9560,7 +9606,7 @@ function DetalleReserva({
   // Selector de hora unificado (sin picker nativo): bloques de 30 min dentro
   // del Horario de Operación del club; en una reserva de HOY no se ofrecen
   // horas de inicio que ya pasaron (la actual siempre se conserva visible).
-  const operacionReprogramar = minutosOperacionDelClub(configClub);
+  const operacionReprogramar = minutosOperacionDelClub(configClub, reserva?.fecha || null);
   const esHoraPasadaReprogramar = (h) => {
     if (!reserva?.fecha || reserva.fecha !== hoyISO()) return reserva?.fecha ? reserva.fecha < hoyISO() : false;
     const m = parseHoraAMinutos(h);
@@ -10542,7 +10588,6 @@ function ModuloParrillaOperativa({
   // de este módulo dejan de usar el límite fijo 06:00–24:00 y respetan el
   // rango que el club configuró (`ModalConfigClub`), con respaldo a ese
   // mismo límite fijo si el club no ha configurado nada todavía.
-  const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(configClub);
   // Duración de Bloques/Turnos (migracion_v42) — el cálculo automático de
   // Hora Fin en "Nueva Reserva" respeta la duración que el club configuró
   // (`Configuración del Club` → "Reservas & Academia"), con respaldo a 60
@@ -10552,6 +10597,8 @@ function ModuloParrillaOperativa({
   const [busqueda, setBusqueda] = useState('');
   const [filtroEstatus, setFiltroEstatus] = useState('todos');
   const [fechaSeleccionada, setFechaSeleccionada] = useState(hoyISO());
+  // App-131 — horario del día mostrado (especial por día de la semana o general).
+  const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(configClub, fechaSeleccionada);
   // Nueva Vista de Calendario Mensual (drill-down a día): mes que se está
   // viendo en la cuadrícula (independiente de `fechaSeleccionada`, que es la
   // que usan Tarjetas/Cronograma) + el submodo 'dia', que reutiliza
@@ -10922,6 +10969,7 @@ function ModuloParrillaOperativa({
           tarifasHabilitadas={configClub?.tarifasHabilitadas !== false}
           promoSegundaHora={promoSegundaHoraDelClub(configClub)}
           diasApertura={diasAperturaDelClub(configClub)}
+          horarioClub={configClub}
           onCreada={(reserva, cancha) => {
             upsertReserva(reserva);
             onReservaParaCobro?.(reserva, cancha);
@@ -35371,7 +35419,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
             <SelectorHoraBloques
               value={horaInicio}
               onChange={setHoraInicio}
-              opciones={opcionesHoraInicio(minutosOperacionDelClub(configClub).aperturaMin, minutosOperacionDelClub(configClub).cierreMin)}
+              opciones={opcionesHoraInicio(minutosOperacionDelClub(configClub, fecha).aperturaMin, minutosOperacionDelClub(configClub, fecha).cierreMin)}
               ariaLabel="Hora de inicio"
             />
           </Campo>
@@ -35379,7 +35427,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
             <SelectorHoraBloques
               value={horaFin}
               onChange={setHoraFin}
-              opciones={opcionesHoraFin(horaInicio, minutosOperacionDelClub(configClub).cierreMin)}
+              opciones={opcionesHoraFin(horaInicio, minutosOperacionDelClub(configClub, fecha).cierreMin)}
               ariaLabel="Hora de fin"
             />
           </Campo>
@@ -41684,7 +41732,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   // Horario de Operación + Duración de Clases del club (Configuración del
   // Club → Reservas & Academia): la Hora Fin se calcula SOLA como
   // Hora Inicio + `duracionClaseMin` y nunca puede pasar de ese lapso.
-  const { aperturaMin: aperturaClaseMin, cierreMin: cierreClaseMin } = minutosOperacionDelClub(configClub);
+  const { aperturaMin: aperturaClaseMin, cierreMin: cierreClaseMin } = minutosOperacionDelClub(configClub, fecha);
   const duracionClaseMin = duracionesBloqueDelClub(configClub).claseMin;
   const finConDuracion = (inicio) => {
     const ini = parseHoraAMinutos(inicio);
@@ -45533,7 +45581,6 @@ function ModuloAcademiaClinicas({
   // Horario de Operación del Club (item 4) — el Cronograma de esta parrilla
   // usa el mismo rango configurado que la Parrilla Operativa principal, en
   // vez del límite fijo 06:00–24:00.
-  const { aperturaMin: horaAperturaMinAcademia, cierreMin: horaCierreMinAcademia } = minutosOperacionDelClub(configClub);
   const [subvista, setSubvista] = useState('operativa');
   const [modalNuevaClase, setModalNuevaClase] = useState(false);
   // Refactor (Centralización de Ajustes): "Horarios Habilitados" (botón +
@@ -45562,6 +45609,8 @@ function ModuloAcademiaClinicas({
   // Cronograma interactivo (item 1): día que se está viendo + la celda
   // (cancha/hora) sobre la que se dio clic para prellenar "Nueva Clase".
   const [fechaCronograma, setFechaCronograma] = useState(hoyISO());
+  // App-131 — horario del día del cronograma (especial por día o general).
+  const { aperturaMin: horaAperturaMinAcademia, cierreMin: horaCierreMinAcademia } = minutosOperacionDelClub(configClub, fechaCronograma);
   const [celdaParaNuevaClase, setCeldaParaNuevaClase] = useState(null); // { canchaId, fecha, horaInicio }
   // Nueva Vista de Calendario Mensual con Drill-Down a Día (Parrilla de
   // Clases): 'cronograma' = comportamiento de siempre (tarjetas + línea de
@@ -51599,6 +51648,8 @@ function normalizarFilaClub(fila, tabla) {
     promo_segunda_hora_dias: normalizarDiasPromoSegundaHora(fila.promo_segunda_hora_dias),
     // App-128 (v133): días de apertura del club ([] = todos).
     dias_apertura: diasAperturaDelClub(fila),
+    // App-131 (v134): horarios especiales por día.
+    horarios_por_dia: horariosPorDiaDelClub(fila),
     _tabla: tabla,
   };
 }
@@ -54022,6 +54073,47 @@ function SeccionGeneralClub({
     setError('');
     setDiasApertura((prev) => normalizarDiasPromoSegundaHora(prev.includes(dia) ? prev.filter((d) => d !== dia) : [...prev, dia]));
   }
+  // Horarios especiales por día (App-131, v134) — filas editables
+  // `{ _key, dia, apertura, cierre }`; los días sin fila usan el horario general.
+  const filasDesdeConfig = () => horariosPorDiaDelClub(config).map((h) => ({ ...h, _key: `hd-${h.dia}` }));
+  const [horariosEspeciales, setHorariosEspeciales] = useState(filasDesdeConfig);
+  useEffect(() => {
+    setHorariosEspeciales(filasDesdeConfig());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.horariosPorDia]);
+  const diasAbiertosOrden = [1, 2, 3, 4, 5, 6, 0].filter((d) => diasApertura.length === 0 || diasApertura.includes(d));
+  const nombreDiaLargo = (d) => (DIAS_SEMANA_ACADEMIA.find((x) => x.indice === d)?.label || '').toLowerCase();
+  const diasLibresParaEspecial = diasAbiertosOrden.filter((d) => !horariosEspeciales.some((h) => h.dia === d));
+  function agregarHorarioEspecial() {
+    const dia = diasLibresParaEspecial[0];
+    if (dia === undefined) return;
+    setError('');
+    setHorariosEspeciales((prev) => [...prev, { _key: `hd-${dia}-${Date.now()}`, dia, apertura: horaApertura, cierre: horaCierre }]);
+  }
+  function actualizarHorarioEspecial(key, campo, valor) {
+    setError('');
+    setHorariosEspeciales((prev) => prev.map((h) => (h._key === key ? { ...h, [campo]: campo === 'dia' ? Number(valor) : valor } : h)));
+  }
+  function quitarHorarioEspecial(key) {
+    setError('');
+    setHorariosEspeciales((prev) => prev.filter((h) => h._key !== key));
+  }
+  // '' = válido; si no, el mensaje de error.
+  function validarHorariosEspeciales() {
+    for (const h of horariosEspeciales) {
+      if (diasApertura.length > 0 && !diasApertura.includes(h.dia)) {
+        return `El ${nombreDiaLargo(h.dia)} está cerrado: quita su horario especial o márcalo en "Días de apertura".`;
+      }
+      const ini = parseHoraAMinutos(h.apertura);
+      const finCrudo = parseHoraAMinutos(h.cierre);
+      const fin = finCrudo === 0 ? 24 * 60 : finCrudo;
+      if (ini === null || fin === null || fin <= ini) {
+        return `El horario especial del ${nombreDiaLargo(h.dia)} necesita una Hora de Cierre posterior a la de Apertura.`;
+      }
+    }
+    return '';
+  }
+  const horariosPorDiaParaGuardar = () => horariosEspeciales.map(({ dia, apertura, cierre }) => ({ dia, apertura, cierre }));
   const [error, setError] = useState('');
   // Teléfono de Contacto del Club / Recepción (migracion_v87) — tarjeta con
   // su PROPIO guardado independiente (`onGuardarTelefonoContacto`, un update
@@ -54076,6 +54168,11 @@ function SeccionGeneralClub({
       setError('La Hora de Cierre debe ser posterior a la Hora de Apertura.');
       return;
     }
+    const errorEspeciales = validarHorariosEspeciales();
+    if (errorEspeciales) {
+      setError(errorEspeciales);
+      return;
+    }
     await onGuardarConfigClub?.({
       nombre: config.nombre,
       logoUrl: config.logoUrl,
@@ -54083,6 +54180,7 @@ function SeccionGeneralClub({
       horaApertura,
       horaCierre,
       diasApertura,
+      horariosPorDia: horariosPorDiaParaGuardar(),
       // Duración de Bloques/Turnos (migracion_v42) — este bloque no las
       // edita, se reenvían TAL CUAL para no pisarlas (`guardarConfigClub`
       // escribe el objeto completo en cada guardado).
@@ -54131,6 +54229,11 @@ function SeccionGeneralClub({
       setError('La Hora de Cierre debe ser posterior a la Hora de Apertura.');
       return false;
     }
+    const errorEspecialesTodo = validarHorariosEspeciales();
+    if (errorEspecialesTodo) {
+      setError(errorEspecialesTodo);
+      return false;
+    }
     // Teléfono de contacto (opcional): solo se valida el formato; su guardado
     // es independiente (si falla, ya se avisó con un toast y NO se bloquea
     // el avance del Onboarding).
@@ -54149,6 +54252,7 @@ function SeccionGeneralClub({
       horaApertura,
       horaCierre,
       diasApertura,
+      horariosPorDia: horariosPorDiaParaGuardar(),
       duracionReservaMinutos: config.duracionReservaMinutos,
       duracionClaseMinutos: config.duracionClaseMinutos,
       tarifasHabilitadas: config.tarifasHabilitadas !== false,
@@ -54293,6 +54397,88 @@ function SeccionGeneralClub({
               ))}
             </select>
           </Campo>
+        </div>
+
+        {/* App-131 — Horarios especiales por día (v134): excepciones al
+            horario general (ej. Domingo 08:00–17:00). Aplican en la
+            Parrilla, Nueva Reserva, Academia, Retas, el Portal y el cobro
+            en línea, según el día de la semana de la fecha elegida. */}
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/60 p-3" data-testid="horarios-especiales">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-slate-700">Horarios especiales por día</p>
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                Opcional. Los días sin horario especial usan el general ({horaApertura}–{horaCierre}).
+              </p>
+            </div>
+            <BotonSecundario
+              onClick={agregarHorarioEspecial}
+              disabled={diasLibresParaEspecial.length === 0}
+              className="shrink-0 px-3 py-1.5 text-xs"
+              data-testid="agregar-horario-especial"
+            >
+              <Plus size={13} /> Agregar día especial
+            </BotonSecundario>
+          </div>
+          {horariosEspeciales.length > 0 && (
+            <div className="mt-2.5 space-y-2">
+              {horariosEspeciales.map((h) => (
+                <div key={h._key} className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-2" data-testid="fila-horario-especial">
+                  <select
+                    value={h.dia}
+                    onChange={(e) => actualizarHorarioEspecial(h._key, 'dia', e.target.value)}
+                    className={`${inputClase} w-36`}
+                    aria-label="Día"
+                    data-testid="horario-especial-dia"
+                  >
+                    {[1, 2, 3, 4, 5, 6, 0]
+                      .filter((d) => d === h.dia || (diasAbiertosOrden.includes(d) && !horariosEspeciales.some((x) => x.dia === d)))
+                      .map((d) => (
+                        <option key={d} value={d}>
+                          {DIAS_SEMANA_ACADEMIA.find((x) => x.indice === d)?.label}
+                        </option>
+                      ))}
+                  </select>
+                  <select
+                    value={h.apertura}
+                    onChange={(e) => actualizarHorarioEspecial(h._key, 'apertura', e.target.value)}
+                    className={`${inputClase} w-28`}
+                    aria-label="Hora de apertura"
+                    data-testid="horario-especial-apertura"
+                  >
+                    {OPCIONES_HORA_COMPLETA_ACADEMIA.map((x) => (
+                      <option key={x} value={x}>
+                        {x}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-slate-500">–</span>
+                  <select
+                    value={h.cierre}
+                    onChange={(e) => actualizarHorarioEspecial(h._key, 'cierre', e.target.value)}
+                    className={`${inputClase} w-28`}
+                    aria-label="Hora de cierre"
+                    data-testid="horario-especial-cierre"
+                  >
+                    {OPCIONES_HORA_COMPLETA_ACADEMIA.map((x) => (
+                      <option key={x} value={x}>
+                        {x}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => quitarHorarioEspecial(h._key)}
+                    className="ml-auto shrink-0 rounded-md bg-rose-500/10 p-1.5 text-rose-400 hover:bg-rose-500/20"
+                    title="Quitar horario especial"
+                    data-testid="quitar-horario-especial"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {error && <p className="mt-3 text-xs font-semibold text-rose-400">{error}</p>}
@@ -65022,7 +65208,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   // Horas completas del día — Horario de Operación del Club (item 4,
   // `minutosOperacionDelClub`), mismo rango que "Reservar Cancha". Respaldo a
   // `HORA_INICIO_MIN`/`HORA_FIN_MIN` si el club no configuró nada.
-  const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(club);
+  const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(club, fecha);
   // Políticas y Tolerancia de Cancelación (Motor Unificado) — mismo
   // adaptador snake_case → camelCase que `configTolerancia` en
   // `PortalPublicoJugadores`, repetido aquí porque este modal solo recibe
@@ -66499,7 +66685,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
 
   // Horario de Operación del Club (item 4) — respaldo a
   // `HORA_INICIO_MIN`/`HORA_FIN_MIN` si el club no configuró nada.
-  const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(club);
+  const { aperturaMin: horaAperturaMin, cierreMin: horaCierreMin } = minutosOperacionDelClub(club, fecha);
 
   // Políticas y Tolerancia de Cancelación (Motor Unificado) — mismo
   // adaptador snake_case → camelCase que `configTolerancia` en
@@ -67757,6 +67943,11 @@ function AppInterno({ clubInicial } = {}) {
   useEffect(() => {
     diasAperturaRef.current = diasAperturaDelClub(configClub);
   }, [configClub?.diasApertura]);
+  // Horarios especiales por día (App-131, v134) — mismo patrón.
+  const horariosPorDiaRef = useRef(horariosPorDiaDelClub(configClub));
+  useEffect(() => {
+    horariosPorDiaRef.current = horariosPorDiaDelClub(configClub);
+  }, [configClub?.horariosPorDia]);
   const promoSegundaHoraRef = useRef(configPromoSegundaHora(configClub));
   useEffect(() => {
     promoSegundaHoraRef.current = configPromoSegundaHora(configClub);
@@ -68581,7 +68772,8 @@ function AppInterno({ clubInicial } = {}) {
           data.academia_precio_grupal_4 != null ||
           data.academia_horas_validacion_minimo != null ||
           data.promo_segunda_hora_activa != null ||
-          data.dias_apertura != null
+          data.dias_apertura != null ||
+          data.horarios_por_dia != null
         ) {
           const nuevaConfig = {
             nombre: (data.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
@@ -68693,6 +68885,8 @@ function AppInterno({ clubInicial } = {}) {
             }),
             // Días de Apertura (v133) — sin la columna conserva el valor local.
             diasApertura: data.dias_apertura === undefined ? diasAperturaRef.current : diasAperturaDelClub(data),
+            // Horarios especiales por día (v134).
+            horariosPorDia: data.horarios_por_dia === undefined ? horariosPorDiaRef.current : horariosPorDiaDelClub(data),
           };
           setConfigClub(nuevaConfig);
           guardarConfigClubLocal(nuevaConfig);
@@ -69642,6 +69836,8 @@ function AppInterno({ clubInicial } = {}) {
         ),
         // Días de Apertura (v133) — solo cambia si el caller manda la llave.
         diasApertura: 'diasApertura' in nuevaConfig ? diasAperturaDelClub(nuevaConfig) : diasAperturaRef.current,
+        // Horarios especiales por día (v134) — solo si el caller manda la llave.
+        horariosPorDia: 'horariosPorDia' in nuevaConfig ? horariosPorDiaDelClub(nuevaConfig) : horariosPorDiaRef.current,
       };
       // v130: nunca encendida sin % (CHECK de la base) — sin % válido queda OFF.
       if (limpia.promoSegundaHoraPorcentaje === null) limpia.promoSegundaHoraActiva = false;
@@ -69685,6 +69881,8 @@ function AppInterno({ clubInicial } = {}) {
           promo_segunda_hora_dias: limpia.promoSegundaHoraDias.length > 0 ? limpia.promoSegundaHoraDias : null,
           // v133: NULL = abre todos los días.
           dias_apertura: limpia.diasApertura.length > 0 ? limpia.diasApertura : null,
+          // v134: NULL = sin horarios especiales.
+          horarios_por_dia: limpia.horariosPorDia.length > 0 ? limpia.horariosPorDia : null,
         };
         // `actualizarConColumnasOpcionales` en vez de un `.update()` a pelo
         // (como antes de este cambio): `hora_apertura`/`hora_cierre`/
@@ -69723,6 +69921,7 @@ function AppInterno({ clubInicial } = {}) {
           'promo_segunda_hora_hora_fin',
           'promo_segunda_hora_dias',
           'dias_apertura',
+          'horarios_por_dia',
         ]);
         if (error) throw error;
         setConfiguracionClubId(CLUB_ACTIVO_ID);
@@ -69745,6 +69944,17 @@ function AppInterno({ clubInicial } = {}) {
             aviso = 'Falta correr la migración v132: los días de la semana no se guardaron y la promoción aplicaría todos los días.';
           }
           if (aviso) mostrarToast({ titulo: 'Promoción de Segunda Hora sin guardar completa', detalle: aviso, tono: 'error' });
+        }
+        // App-131 — mismo aviso para los horarios especiales por día (v134).
+        if (limpia.horariosPorDia.length > 0) {
+          const { error: errHorarios } = await supabase.from('configuracion_club').select('horarios_por_dia').eq('id', CLUB_ACTIVO_ID).maybeSingle();
+          if (errHorarios && esErrorColumnaInexistente(errHorarios)) {
+            mostrarToast({
+              titulo: 'Horarios especiales sin guardar',
+              detalle: 'Falta correr la migración v134: los horarios por día solo se guardaron en este navegador; el Portal seguiría usando el horario general.',
+              tono: 'error',
+            });
+          }
         }
         // App-128 — mismo aviso para los Días de Apertura (v133).
         if (limpia.diasApertura.length > 0) {
