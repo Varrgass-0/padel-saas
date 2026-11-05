@@ -8453,6 +8453,19 @@ async function cargarFoliosDeVentas(ids) {
   return mapa;
 }
 
+// App-138 — Desglose del pago en efectivo (lo que entregó el cliente y el
+// cambio). Se guarda en `ventas.detalles` (jsonb, sin migración) al cobrar,
+// para el ticket, el Historial y el Log. Solo aplica cuando hubo efectivo:
+// 'efectivo' (recibido = total + cambio) o la parte en efectivo de
+// 'mixto'/'wallet_mixto'. Para cualquier otro método devuelve {}.
+function desgloseEfectivoVenta(metodo, total, cambio, mixto) {
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const c = Math.max(0, r2(cambio));
+  if (metodo === 'efectivo') return { efectivo_recibido: r2(r2(total) + c), cambio: c };
+  if ((metodo === 'mixto' || metodo === 'wallet_mixto') && Number(mixto?.efectivo) > 0) return { efectivo_recibido: r2(r2(mixto.efectivo) + c), cambio: c };
+  return {};
+}
+
 // Folio para mostrar: el consecutivo del club si existe, si no el respaldo.
 function textoFolioVenta(infoFolio, respaldo) {
   return infoFolio?.folio != null ? String(infoFolio.folio) : respaldo || 'S/F';
@@ -13799,7 +13812,7 @@ function ModalCaja({ onClose }) {
               >
                 <EyeOff size={16} className="text-orange-500" />
                 <span className="text-sm font-black text-slate-900">Cierre del día</span>
-                <span className="text-[11px] text-slate-500">Al terminar la jornada · arqueo ciego</span>
+                <span className="text-[11px] text-slate-500">Al terminar la jornada · Cierre de día</span>
               </button>
               {esGerencia && (
                 <button
@@ -15644,6 +15657,8 @@ function ModalTicket({ venta, onClose, nombreClub }) {
         metodoPago: parteActiva.metodoPago,
         cambio: parteActiva.cambio,
         mixto: parteActiva.mixto,
+        efectivoRecibido: parteActiva.efectivoRecibido,
+        sinDesgloseEfectivo: parteActiva.sinDesgloseEfectivo,
         jugadorNombre: parteActiva.jugadorNombre,
       }
     : {
@@ -15654,8 +15669,20 @@ function ModalTicket({ venta, onClose, nombreClub }) {
         metodoPago: venta.metodoPago,
         cambio: venta.cambio,
         mixto: venta.mixto,
+        efectivoRecibido: venta.efectivoRecibido,
+        sinDesgloseEfectivo: venta.sinDesgloseEfectivo,
         jugadorNombre: null,
       };
+  // App-138 — Efectivo recibido y cambio (solo si hubo efectivo). Un ticket
+  // reabierto del Historial de una venta vieja (sin el dato guardado) no lo
+  // inventa: conserva solo la línea de cambio de antes.
+  const efectivoTicket =
+    vista.efectivoRecibido != null
+      ? { efectivo_recibido: Number(vista.efectivoRecibido) || 0, cambio: Number(vista.cambio) || 0 }
+      : vista.sinDesgloseEfectivo
+      ? {}
+      : desgloseEfectivoVenta(vista.metodoPago, vista.total, vista.cambio, vista.mixto);
+  const hayDesgloseEfectivo = efectivoTicket.efectivo_recibido != null;
   // Folio consecutivo del club (migracion_v99) con respaldo al id corto.
   const infoFolio = vista.ventaId != null ? foliosClub.get(String(vista.ventaId)) : null;
   const folioVisible = textoFolioVenta(infoFolio, vista.folio);
@@ -15797,11 +15824,28 @@ function ModalTicket({ venta, onClose, nombreClub }) {
           </div>
         )}
 
-        {vista.cambio > 0 && (
-          <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-2 text-slate-600">
-            <span>Cambio entregado</span>
-            <span className="font-bold">{formatoMoneda(vista.cambio)}</span>
+        {hayDesgloseEfectivo ? (
+          <div className="space-y-0.5 border-t border-dashed border-slate-300 pt-2 text-slate-600" data-testid="ticket-desglose-efectivo">
+            <div className="flex items-center justify-between">
+              <span>Efectivo recibido</span>
+              <span className="font-bold" data-testid="ticket-efectivo-recibido">
+                {formatoMoneda(efectivoTicket.efectivo_recibido)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>Cambio</span>
+              <span className="font-bold" data-testid="ticket-cambio">
+                {formatoMoneda(efectivoTicket.cambio)}
+              </span>
+            </div>
           </div>
+        ) : (
+          vista.cambio > 0 && (
+            <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-2 text-slate-600">
+              <span>Cambio entregado</span>
+              <span className="font-bold">{formatoMoneda(vista.cambio)}</span>
+            </div>
+          )
         )}
 
         <PieFiscalTicket fiscal={datosFiscales} folio={folioVisible} />
@@ -18399,6 +18443,7 @@ function ModuloSmartPOS({
             // Pago Mixto (item 1): desglose Efectivo/Tarjeta de la cuota de
             // ESTE jugador — jsonb puro, sin migración.
             mixto: metodo === 'mixto' ? mixto || null : null,
+            ...desgloseEfectivoVenta(metodo, total, cambio, mixto),
             // Trazabilidad de Operadores (item 2): quién cerró/cobró esta
             // cuota — mismo criterio que `liquidarCuenta`/`liquidarCuentaDividida`.
             cerrado_por_operador_id: operador?.id || null,
@@ -19251,6 +19296,7 @@ function ModuloSmartPOS({
           monto_addons: montoAddonsFinal,
           wallet_aplicado: Number(grupo.reserva.saldo_wallet_aplicado) || 0,
           mixto: metodoPago === 'mixto' || metodoPago === 'wallet_mixto' ? mixto || null : null,
+          ...desgloseEfectivoVenta(metodoPago, totalCobrado, cambio, mixto),
           cerrado_por_operador_id: operador?.id || null,
           cerrado_por_operador_nombre: operador?.nombre || null,
           // Wallet como método de cobro AHORA, al liquidar (item 2) — distinto
@@ -19596,6 +19642,7 @@ function ModuloSmartPOS({
           ...(kdsEstadoPrevio ? { kds_estado: kdsEstadoPrevio } : {}),
           // Pago Mixto (item 1) por participante.
           mixto: p.metodo === 'mixto' ? p.mixto || null : null,
+          ...desgloseEfectivoVenta(p.metodo, p.monto, p.cambio, p.mixto),
           // Trazabilidad de Operadores (item 2): quién cerró/dividió la
           // cuenta — el operador con sesión activa ahora mismo, igual en las
           // N filas nuevas (una por participante) que nacen de este split.
@@ -20182,6 +20229,7 @@ function ModuloSmartPOS({
               items: itemsComprobante,
               pagos_divididos: null,
               mixto: metodoPago === 'mixto' ? mixto || null : null,
+              ...desgloseEfectivoVenta(metodoPago, fila.monto, cambio, mixto),
               inscripcion_ref: fila?.tabla && fila?.id != null ? { tabla: fila.tabla, id: String(fila.id) } : undefined,
             },
             estado_pago: 'pagado',
@@ -20296,6 +20344,7 @@ function ModuloSmartPOS({
               items,
               pagos_divididos: null,
               mixto: p.metodo === 'mixto' ? p.mixto || null : null,
+              ...desgloseEfectivoVenta(p.metodo, p.monto, p.cambio, p.mixto),
               jugador_id: jugadorIdParticipante,
               jugador_nombre: nombreJugador,
               split_bill: true,
@@ -21013,6 +21062,7 @@ function ModuloSmartPOS({
             // nunca requiere migración (ver `calcularMontoTeoricoEfectivo`
             // para cómo Arqueo lee este campo de vuelta).
             mixto: p.metodo === 'mixto' ? p.mixto || null : null,
+            ...desgloseEfectivoVenta(p.metodo, p.monto, p.cambio, p.mixto),
           },
           estado_pago: estadoPago,
         });
@@ -21070,6 +21120,7 @@ function ModuloSmartPOS({
           // (Wallet + complemento, nuevo migracion_v56: `mixto.wallet` trae
           // la parte cubierta con Wallet, ver `PasosDeCobro`).
           mixto: metodoPagoParaVenta === 'mixto' || metodoPagoParaVenta === 'wallet_mixto' ? mixto : null,
+          ...desgloseEfectivoVenta(metodoPagoParaVenta, total, cambio, mixto),
           // Wallet como método de cobro (nuevo, migracion_v56) — auditoría de
           // A QUIÉN se le cobró vía Wallet en esta venta. El descuento de
           // saldo YA ocurrió de forma atómica dentro de `PasosDeCobro`
@@ -27167,6 +27218,9 @@ function ventaAFormatoTicket(venta) {
     pagosDivididos: Array.isArray(d.pagos_divididos) && d.pagos_divididos.length > 0 ? d.pagos_divididos : null,
     cambio: Number(d.cambio) || 0,
     mixto: d.mixto || null,
+    // App-138 — desglose de efectivo guardado al cobrar (ventas nuevas).
+    efectivoRecibido: d.efectivo_recibido != null ? Number(d.efectivo_recibido) : null,
+    sinDesgloseEfectivo: d.efectivo_recibido == null,
   };
 }
 
@@ -34707,6 +34761,8 @@ const TIPOS_EVENTO_AUDITORIA = {
           { etiqueta: 'Monto cobrado', valor: dineroLog(d?.total) },
           { etiqueta: 'Método de pago', valor: d?.metodo_texto },
           { etiqueta: 'Desglose del pago', valor: d?.desglose_pago },
+          { etiqueta: 'Efectivo recibido', valor: d?.efectivo_recibido != null ? dineroLog(d.efectivo_recibido) : null },
+          { etiqueta: 'Cambio entregado', valor: d?.efectivo_recibido != null ? dineroLog(d?.cambio ?? 0) : null },
           { etiqueta: 'Folio', valor: d?.folio },
           { etiqueta: 'Canal', valor: d?.canal },
           { etiqueta: 'Cancha', valor: d?.cancha },
@@ -35573,10 +35629,16 @@ function eventoLogDesdeVenta(venta, opciones) {
       metodo: metodo,
       metodo_texto: esCortesia ? 'Cortesía' : metodo ? etiquetaMetodoPagoVenta(metodo) : pendiente ? null : 'No especificado',
       desglose_pago: desglosePagoVentaLog(venta),
+      // App-138 — efectivo entregado por el cliente y cambio devuelto.
+      efectivo_recibido: d.efectivo_recibido != null ? Number(d.efectivo_recibido) : null,
+      cambio: d.efectivo_recibido != null ? Number(d.cambio) || 0 : null,
       cliente: clienteDeVenta(venta),
       articulos,
       articulos_resumen: nombres.length ? `${nombres.slice(0, 2).join(', ')}${nombres.length > 2 ? ` y ${nombres.length - 2} más` : ''}` : null,
-      folio: local ? null : String(venta.id || '').slice(0, 8).toUpperCase() || null,
+      // App-138 — folio CONSECUTIVO DEL CLUB (`ventas_folios`, v99), el mismo
+      // del Historial de Tickets. Antes se mostraba el id interno de la venta
+      // (global de la base). Sin folio de club (local / sin v99) no se muestra.
+      folio: local || venta._folio_club == null ? null : `#${venta._folio_club}`,
       canal: esWeb ? 'Portal de Jugadores (en línea)' : 'Mostrador (Smart POS)',
       cancha: venta.cancha_id != null ? nombreCancha?.(venta.cancha_id) || null : null,
       turno: valorLog(venta.turno) ? capitalizarLog(venta.turno) : null,
@@ -71226,7 +71288,11 @@ function AppInterno({ clubInicial } = {}) {
     try {
       const { data, error } = await consultarVentasEnRango(desde, hasta);
       if (error) return { data: [], error: esErrorTablaInexistente(error) ? null : error };
-      return { data: data || [], error: null };
+      // App-138 — folio consecutivo del club para cada venta (solo lectura de
+      // `ventas_folios`, filtrado por club). Sin v99 el mapa llega vacío.
+      const filas = data || [];
+      const folios = await cargarFoliosDeVentas(filas.map((v) => v?.id));
+      return { data: filas.map((v) => (folios.has(String(v?.id)) ? { ...v, _folio_club: folios.get(String(v.id)).folio } : v)), error: null };
     } catch (err) {
       return { data: [], error: err };
     }
@@ -78243,6 +78309,18 @@ function VistaTicketDigital({ ventaId }) {
                     ? 'Wallet + complemento'
                     : etiquetaMetodoPagoInscripcion(ticket.metodo_pago) || ticket.metodo_pago}
                 </span>
+              </div>
+            )}
+            {ticket.efectivo_recibido != null && (
+              <div className="space-y-0.5 text-slate-500" data-testid="ticket-digital-efectivo">
+                <div className="flex items-center justify-between">
+                  <span>Efectivo recibido</span>
+                  <span className="font-bold">{formatoMoneda(Number(ticket.efectivo_recibido) || 0)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Cambio</span>
+                  <span className="font-bold">{formatoMoneda(Number(ticket.cambio) || 0)}</span>
+                </div>
               </div>
             )}
             <PieFiscalTicket fiscal={ticket.fiscal || null} folio={ticket.folio} />
