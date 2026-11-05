@@ -13598,56 +13598,93 @@ function ChipEstadoCaja({ sesion }) {
 }
 
 // Botón + aviso de Smart POS (solo si el módulo está configurado).
+// App-135b — una sola sesión por día: el botón cambia según el estado de la
+// caja de ESTA terminal.
+//   • Cerrada / sin caja → botón de acción «Abrir caja» (o «Elegir caja»).
+//   • Abierta → se transforma en el indicador verde «Caja abierta»; da acceso
+//     al cierre del día (y a Movimientos / Corte en vivo si es gerencia).
+//   • Corte sellado sin retiro → indicador ámbar «Retiro pendiente».
+// Cambiar de operador (cambio de turno) NO toca la sesión: sigue abierta.
+function estadoBotonCajaPOS(caja) {
+  if (!caja?.cajaTerminal) return 'sin_caja';
+  const sesion = caja.cajaTerminal.sesion;
+  if (!sesion) return 'cerrada';
+  return sesion.estado === 'en_cierre' ? 'pendiente_retiro' : 'abierta';
+}
 function BotonCajaPOS() {
   const caja = useCaja();
   const [abierto, setAbierto] = useState(false);
   if (!caja?.configurada || !caja.puedeOperar) return null;
-  const sesion = caja.cajaTerminal?.sesion || null;
+  const estado = estadoBotonCajaPOS(caja);
+  const nombre = caja.cajaTerminal?.nombre || 'Caja';
+  const base = 'inline-flex items-center gap-2 whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-bold transition';
+  const boton =
+    estado === 'abierta' ? (
+      <button
+        type="button"
+        onClick={() => setAbierto(true)}
+        data-testid="boton-caja-pos"
+        data-estado-caja="abierta"
+        title={`${nombre} abierta desde ${caja.cajaTerminal.sesion.abierta_en ? new Date(caja.cajaTerminal.sesion.abierta_en).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : 'hoy'} · toca para ver o hacer el cierre del día`}
+        className={`${base} border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100`}
+      >
+        <span className="relative flex h-2.5 w-2.5" aria-hidden="true">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+        </span>
+        Caja abierta · {nombre}
+      </button>
+    ) : estado === 'pendiente_retiro' ? (
+      <button
+        type="button"
+        onClick={() => setAbierto(true)}
+        data-testid="boton-caja-pos"
+        data-estado-caja="pendiente_retiro"
+        className={`${base} border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100`}
+      >
+        <Lock size={15} /> Retiro pendiente · {nombre}
+      </button>
+    ) : (
+      <BotonPrimario onClick={() => setAbierto(true)} className="whitespace-nowrap" data-testid="boton-caja-pos" data-estado-caja={estado}>
+        <Wallet size={15} /> {estado === 'sin_caja' ? 'Elegir caja' : `Abrir caja · ${nombre}`}
+      </BotonPrimario>
+    );
   return (
     <>
-      <BotonSecundario onClick={() => setAbierto(true)} className="whitespace-nowrap" data-testid="boton-caja-pos">
-        <Wallet size={15} /> {caja.cajaTerminal ? caja.cajaTerminal.nombre : 'Caja'}
-        <span
-          className={`ml-1 h-2 w-2 rounded-full ${sesion?.estado === 'abierta' ? 'bg-emerald-500' : sesion?.estado === 'en_cierre' ? 'bg-amber-500' : 'bg-slate-400'}`}
-          aria-hidden="true"
-        />
-      </BotonSecundario>
+      {boton}
       <AnimatePresence>{abierto && <ModalCaja onClose={() => setAbierto(false)} />}</AnimatePresence>
     </>
   );
 }
 
+// Aviso informativo (sin botón propio: la acción es el botón de Caja de
+// arriba). Desaparece en cuanto la caja está abierta.
 function AvisoCajaPOS() {
   const caja = useCaja();
-  const [abierto, setAbierto] = useState(false);
   if (!caja?.configurada || !caja.puedeOperar) return null;
-  const sesion = caja.cajaTerminal?.sesion || null;
-  if (sesion?.estado === 'abierta') return null;
+  const estado = estadoBotonCajaPOS(caja);
+  if (estado === 'abierta') return null;
   const nombre = caja.cajaTerminal?.nombre;
-  const texto = !caja.cajaTerminal
-    ? 'Esta terminal todavía no tiene una caja asignada.'
-    : sesion?.estado === 'en_cierre'
-    ? `${nombre}: el corte está sellado y pendiente del retiro de gerencia.`
-    : `${nombre} está cerrada. Abre la caja contando el fondo para iniciar el día.`;
+  const esGerencia = ROLES_CAJA_GERENCIA.includes(rolCanonicoCaja(caja.operador?.rol));
+  const texto =
+    estado === 'sin_caja'
+      ? 'Esta terminal todavía no tiene una caja asignada. Toca «Elegir caja».'
+      : estado === 'pendiente_retiro'
+      ? `${nombre}: el corte del día está sellado y pendiente del retiro de gerencia${esGerencia ? '. Toca «Retiro pendiente» para registrarlo.' : '. Un gerente o el dueño debe autorizarlo con su PIN.'}`
+      : `${nombre} está cerrada. Toca «Abrir caja» y cuenta el fondo para iniciar el día.`;
   return (
-    <>
-      <div
-        className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-semibold ${
-          caja.efectivoBloqueado ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'
-        }`}
-        data-testid="aviso-caja-pos"
-      >
-        <span className="flex items-center gap-2">
-          <AlertTriangle size={14} className="shrink-0" />
-          {texto}
-          {caja.efectivoBloqueado ? ' El cobro en efectivo está bloqueado hasta abrirla.' : ''}
-        </span>
-        <button type="button" onClick={() => setAbierto(true)} className="rounded-lg bg-white px-3 py-1.5 text-[11px] font-black text-slate-800 ring-1 ring-slate-200 hover:bg-slate-50">
-          {sesion?.estado === 'en_cierre' ? 'Ver corte' : caja.cajaTerminal ? 'Abrir caja' : 'Elegir caja'}
-        </button>
-      </div>
-      <AnimatePresence>{abierto && <ModalCaja onClose={() => setAbierto(false)} />}</AnimatePresence>
-    </>
+    <div
+      className={`flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-semibold ${
+        caja.efectivoBloqueado ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'
+      }`}
+      data-testid="aviso-caja-pos"
+    >
+      <AlertTriangle size={14} className="shrink-0" />
+      <span>
+        {texto}
+        {caja.efectivoBloqueado ? ' El cobro en efectivo está bloqueado hasta abrirla.' : ''}
+      </span>
+    </div>
   );
 }
 
@@ -13666,8 +13703,19 @@ function ModalCaja({ onClose }) {
   }, [cajaSel?.id, sesion?.id, sesion?.estado]);
   if (!caja) return null;
   const activas = (caja.cajas || []).filter((c) => c.activa !== false);
+  const subtitulo = !cajaSel
+    ? 'Elige la caja que opera esta terminal'
+    : resultadoCierre
+    ? `${cajaSel.nombre} · cierre del día`
+    : !sesion
+    ? `${cajaSel.nombre} · apertura del día`
+    : sesion.estado === 'en_cierre'
+    ? `${cajaSel.nombre} · retiro de ganancia pendiente`
+    : vista === 'cerrar'
+    ? `${cajaSel.nombre} · cierre del día (arqueo ciego)`
+    : `${cajaSel.nombre} · abierta`;
   return (
-    <ModalShell titulo="Caja" subtitulo="Apertura, arqueo ciego y retiro de ganancia" onClose={onClose} icon={Wallet} ancho="max-w-2xl">
+    <ModalShell titulo="Caja" subtitulo={subtitulo} onClose={onClose} icon={Wallet} ancho="max-w-2xl">
       <div className="space-y-4" data-testid="modal-caja">
         <div>
           <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Esta terminal opera la caja</p>
@@ -13733,10 +13781,13 @@ function ModalCaja({ onClose }) {
         ) : (
           <div className="space-y-3" data-testid="caja-abierta">
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800">
-              <p className="text-sm font-black">{cajaSel.nombre} abierta</p>
+              <p className="text-sm font-black">{cajaSel.nombre} abierta · sesión del día</p>
               <p className="mt-0.5">
-                Desde {sesion.abierta_en ? new Date(sesion.abierta_en).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : '—'} · abrió{' '}
+                Desde {sesion.abierta_en ? new Date(sesion.abierta_en).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : 'hoy'} · abrió{' '}
                 {sesion.abierta_por_nombre || 'Operador'} · fondo contado {formatoMoneda(sesion.fondo_contado)}
+              </p>
+              <p className="mt-1.5 font-semibold" data-testid="caja-sesion-continua">
+                Todos los cobros del día se acumulan aquí. Los cambios de turno no cierran la caja: el siguiente operador sigue cobrando en esta misma sesión.
               </p>
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -13747,8 +13798,8 @@ function ModalCaja({ onClose }) {
                 className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-left transition hover:border-orange-400/50"
               >
                 <EyeOff size={16} className="text-orange-500" />
-                <span className="text-sm font-black text-slate-900">Cerrar caja</span>
-                <span className="text-[11px] text-slate-500">Arqueo ciego billete por billete</span>
+                <span className="text-sm font-black text-slate-900">Cierre del día</span>
+                <span className="text-[11px] text-slate-500">Al terminar la jornada · arqueo ciego</span>
               </button>
               {esGerencia && (
                 <button
@@ -13837,7 +13888,7 @@ function PanelAperturaCaja({ cajaSel, onAbierta }) {
           </p>
         </div>
       </div>
-      <p className="text-[11px] text-slate-500">Cuenta físicamente el fondo de la gaveta. En la apertura sí ves el fondo esperado (no es el arqueo).</p>
+      <p className="text-[11px] text-slate-500">Cuenta el flote físico (billetes y monedas) y captúralo aquí. La caja quedará abierta todo el día, también entre cambios de turno. En la apertura sí ves el fondo esperado (no es el arqueo).</p>
       <ContadorDenominacionesCaja valor={conteo} onChange={setConteo} testid="contador-apertura" />
       {pideNota && contado > 0 && (
         <Campo label="Nota (obligatoria: el fondo no coincide)">
@@ -13896,9 +13947,13 @@ function PanelCierreCiegoCaja({ cajaSel, onVolver, onSellado }) {
   return (
     <div className="space-y-4" data-testid="panel-cierre-caja">
       <EnlaceAtrasWizard onClick={onVolver}>Volver</EnlaceAtrasWizard>
+      <p className="rounded-xl bg-slate-50 px-3.5 py-2.5 text-xs text-slate-600 ring-1 ring-slate-200" data-testid="aviso-cierre-fin-dia">
+        <span className="font-bold text-slate-800">Haz el cierre solo al terminar la jornada.</span> Si solo cambias de turno, no cierres: la caja sigue abierta para el
+        siguiente operador. Después del cierre, el retiro de la ganancia lo registra únicamente un Gerente o el Dueño.
+      </p>
       <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-800 ring-1 ring-amber-200">
         <EyeOff size={14} className="mt-0.5 shrink-0" />
-        Arqueo ciego: cuenta TODO el efectivo de la gaveta (incluido el fondo) billete por billete. El sistema no te mostrará el esperado; al sellar, el conteo ya no se puede cambiar.
+        Arqueo ciego del día: cuenta TODO el efectivo físico de la caja (incluido el flote) billete por billete y captúralo aquí. El sistema no te mostrará el esperado; al sellar, el conteo ya no se puede cambiar.
       </div>
       <ContadorDenominacionesCaja valor={conteo} onChange={(v) => { setConteo(v); setConfirmar(false); }} testid="contador-cierre" />
       <Campo label="Nota (opcional)">
@@ -13907,7 +13962,7 @@ function PanelCierreCiegoCaja({ cajaSel, onVolver, onSellado }) {
       <AutorizacionPinCaja empleados={caja.empleados} operador={caja.operador} roles={ROLES_CAJA_OPERAR} valor={auth} onChange={(v) => { setAuth(v); setConfirmar(false); }} etiqueta="Cuenta y sella" testid="auth-cierre" />
       {confirmar && (
         <p className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-slate-50" data-testid="confirmar-sellado">
-          ¿Sellar el conteo de {formatoMoneda(contado)}? Después ya no se puede modificar. Toca «Sellar conteo» de nuevo para confirmar.
+          ¿Sellar el conteo de {formatoMoneda(contado)} y cerrar la caja del día? Después ya no se puede modificar. Toca «Sellar conteo» de nuevo para confirmar.
         </p>
       )}
       {error && (
@@ -13969,12 +14024,43 @@ function ResultadoCierreCaja({ resultado, caja: cajaSel, onRetirado }) {
           {formatoMoneda(resultado.desglose.ingresos)} − gastos {formatoMoneda(resultado.desglose.gastos)} − retiros {formatoMoneda(resultado.desglose.retiros)}
         </p>
       )}
-      <FormRetiroGananciaCaja
+      <RetiroGananciaConPermisoCaja
         cierreId={resultado.cierre_id}
         contado={Number(resultado.contado) || 0}
         resultado={resultado.mostrar_diferencia ? resultado.resultado : null}
         onRetirado={onRetirado}
       />
+    </div>
+  );
+}
+
+// El retiro de la ganancia es SOLO de Gerente o Dueño (lo valida además la
+// RPC con su PIN). Si quien está fichado es gerencia, ve el formulario de
+// una vez; si es Recepción, el corte queda «Pendiente de autorización por
+// gerencia» y solo se despliega el formulario si un gerente/dueño presente
+// decide autorizarlo ahí mismo con su PIN.
+function RetiroGananciaConPermisoCaja({ cierreId, contado, resultado, onRetirado }) {
+  const caja = useCaja();
+  const esGerencia = ROLES_CAJA_GERENCIA.includes(rolCanonicoCaja(caja?.operador?.rol));
+  const [autorizarAhora, setAutorizarAhora] = useState(false);
+  if (esGerencia || autorizarAhora) return <FormRetiroGananciaCaja cierreId={cierreId} contado={contado} resultado={resultado} onRetirado={onRetirado} />;
+  return (
+    <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-800" data-testid="retiro-pendiente-gerencia">
+      <p className="flex items-center gap-2 text-sm font-black">
+        <Lock size={14} /> Pendiente de autorización por gerencia
+      </p>
+      <p>
+        Tu cierre quedó registrado. El retiro de la ganancia y el fondo para mañana los registra únicamente un Gerente o el Dueño. Ya puedes cerrar esta
+        ventana.
+      </p>
+      <button
+        type="button"
+        onClick={() => setAutorizarAhora(true)}
+        className="rounded-lg bg-white px-3 py-1.5 text-[11px] font-black text-slate-800 ring-1 ring-amber-200 hover:bg-amber-100"
+        data-testid="boton-gerencia-autoriza-ahora"
+      >
+        Un Gerente o el Dueño está aquí: autorizar ahora
+      </button>
     </div>
   );
 }
@@ -14003,12 +14089,12 @@ function PanelRetiroPendienteCaja({ cajaSel, onRetirado }) {
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
         <p className="text-sm font-black">Corte sellado · pendiente de retiro por gerencia</p>
         <p className="mt-0.5">
-          {cierre ? `Contó ${cierre.contado_por_nombre || 'el operador'}: ${formatoMoneda(cierre.monto_reportado_efectivo)}.` : 'Cargando el corte…'} Un gerente o el dueño autoriza
-          el retiro con su PIN; después se podrá abrir de nuevo esta caja.
+          {cierre ? `Contó ${cierre.contado_por_nombre || 'el operador'}: ${formatoMoneda(cierre.monto_reportado_efectivo)}.` : 'Cargando el corte…'} Solo un Gerente o el
+          Dueño registra el retiro con su PIN; después se podrá abrir de nuevo esta caja para el siguiente día.
         </p>
       </div>
       {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
-      {cierre && <FormRetiroGananciaCaja cierreId={String(cierre.id)} contado={Number(cierre.monto_reportado_efectivo) || 0} resultado={null} onRetirado={onRetirado} />}
+      {cierre && <RetiroGananciaConPermisoCaja cierreId={String(cierre.id)} contado={Number(cierre.monto_reportado_efectivo) || 0} resultado={null} onRetirado={onRetirado} />}
     </div>
   );
 }
@@ -14067,7 +14153,7 @@ function FormRetiroGananciaCaja({ cierreId, contado, resultado, onRetirado }) {
         </Campo>
       </div>
       <p className={`text-xs font-bold ${queda < fondoFijo ? 'text-rose-600' : 'text-emerald-700'}`} data-testid="retiro-queda">
-        Queda en la gaveta para mañana: {formatoMoneda(queda)}
+        Queda como fondo para mañana: {formatoMoneda(queda)}
         {queda < fondoFijo ? ` (fondo incompleto: faltan ${formatoMoneda(fondoFijo - queda)})` : ''}
       </p>
       {(resultado === 'sobrante' || resultado === 'faltante') && (
@@ -14318,7 +14404,7 @@ function PanelCorteEnVivoCaja({ cajaSel, onVolver }) {
             </div>
           ))}
           <div className="flex justify-between bg-slate-900 px-3.5 py-2.5 text-sm font-black text-slate-50">
-            <span>Esperado en la gaveta</span>
+            <span>Esperado en caja</span>
             <span>{formatoMoneda(calculo.esperado)}</span>
           </div>
         </div>
