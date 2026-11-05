@@ -12196,6 +12196,9 @@ function PasosDeCobro({
 }) {
   const [paso, setPaso] = useState('elegir'); // 'elegir' | 'efectivo' | 'confirmarTerminal' | 'mixto' | 'wallet'
   const [metodo, setMetodo] = useState(null);
+  // App-135 — el dueño activó "bloquear efectivo sin caja abierta" y la caja
+  // de esta terminal no está abierta. Apagado/sin módulo: siempre `false`.
+  const efectivoBloqueadoCaja = useBloqueoEfectivoCaja();
   const [efectivoRecibido, setEfectivoRecibido] = useState('');
   // Pago Mixto (Efectivo + Tarjeta, item 1): dos montos independientes que
   // deben sumar EXACTO el total del ticket — la comparación se hace en
@@ -12258,7 +12261,7 @@ function PasosDeCobro({
     walletPersona &&
     (walletMontoRestante <= 0 ||
       walletMetodoComplemento === 'tarjeta' ||
-      (walletMetodoComplemento === 'efectivo' && Number(walletEfectivoComplemento) >= walletMontoRestante));
+      (walletMetodoComplemento === 'efectivo' && !efectivoBloqueadoCaja && Number(walletEfectivoComplemento) >= walletMontoRestante));
 
   async function confirmarWallet() {
     if (!walletPersona) return;
@@ -12315,6 +12318,7 @@ function PasosDeCobro({
   }
 
   function elegir(m) {
+    if (efectivoBloqueadoCaja && esMetodoConEfectivoCaja(m)) return;
     setMetodo(m);
     if (m === 'efectivo') setPaso('efectivo');
     else if (m === 'mixto') setPaso('mixto');
@@ -12567,7 +12571,9 @@ function PasosDeCobro({
                       key={c.value}
                       type="button"
                       onClick={() => setWalletMetodoComplemento(c.value)}
-                      className={`rounded-lg border px-3 py-2 text-xs font-bold transition ${
+                      disabled={efectivoBloqueadoCaja && c.value === 'efectivo'}
+                      title={efectivoBloqueadoCaja && c.value === 'efectivo' ? MENSAJE_EFECTIVO_BLOQUEADO_CAJA : undefined}
+                      className={`rounded-lg border px-3 py-2 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
                         walletMetodoComplemento === c.value
                           ? 'border-orange-400 bg-orange-400/10 text-orange-700'
                           : 'border-slate-300 bg-white text-slate-600 hover:border-orange-400/40'
@@ -12643,11 +12649,15 @@ function PasosDeCobro({
     <div className={`grid gap-1.5 ${compacto ? 'grid-cols-3' : ''}`}>
       {metodosMostrados.map((m) => {
         const Icon = m.icon;
+        const bloqueadoCaja = efectivoBloqueadoCaja && esMetodoConEfectivoCaja(m.value);
         return compacto ? (
           <button
             key={m.value}
             onClick={() => elegir(m.value)}
-            className="flex flex-col items-center gap-1 rounded-lg border border-slate-300 bg-white py-2 text-[10px] font-bold text-slate-600 transition hover:border-orange-400/40 hover:text-orange-400"
+            disabled={bloqueadoCaja || undefined}
+            title={bloqueadoCaja ? MENSAJE_EFECTIVO_BLOQUEADO_CAJA : undefined}
+            data-metodo-cobro={m.value}
+            className="flex flex-col items-center gap-1 rounded-lg border border-slate-300 bg-white py-2 text-[10px] font-bold text-slate-600 transition hover:border-orange-400/40 hover:text-orange-400 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Icon size={14} />
             {m.label}
@@ -12656,7 +12666,10 @@ function PasosDeCobro({
           <button
             key={m.value}
             onClick={() => elegir(m.value)}
-            className="flex w-full items-center gap-3 rounded-xl border border-slate-300 bg-slate-100 px-4 py-3 text-left transition hover:border-orange-400/40 hover:bg-slate-200"
+            disabled={bloqueadoCaja || undefined}
+            title={bloqueadoCaja ? MENSAJE_EFECTIVO_BLOQUEADO_CAJA : undefined}
+            data-metodo-cobro={m.value}
+            className="flex w-full items-center gap-3 rounded-xl border border-slate-300 bg-slate-100 px-4 py-3 text-left transition hover:border-orange-400/40 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-orange-400/10 text-orange-400">
               <Icon size={17} />
@@ -12665,6 +12678,11 @@ function PasosDeCobro({
           </button>
         );
       })}
+      {efectivoBloqueadoCaja && (
+        <p className={`${compacto ? 'col-span-3' : ''} text-[11px] font-semibold text-rose-600`} data-testid="efectivo-bloqueado-caja">
+          {MENSAJE_EFECTIVO_BLOQUEADO_CAJA}
+        </p>
+      )}
       {onCancelar}
     </div>
   );
@@ -13322,6 +13340,1353 @@ function ModalArqueo({ operador, turno, onClose, onGuardarCierre }) {
 // ModuloSmartPOS): regresa unidades de un producto al stock desde el propio
 // mostrador, sin tener que salir a ERP & Inventario. Gateado por
 // `permisos.puedeRegistrarDevolucionPOS`.
+/* ============================================================================
+ * App-135 — MÓDULO FORMAL DE CONTROL DE EFECTIVO (Fase 1 · migración v137)
+ * Apertura con fondo fijo contado por denominación · Arqueo ciego sellado en
+ * el servidor · Retiro de ganancia dejando el fondo · Movimientos de caja
+ * chica / retiros (solo Gerente y Dueño) · Multicaja.
+ *
+ * Reglas de oro:
+ *   • TODO lo que mueve dinero pasa por las RPC `fn_caja_*` (v137), que
+ *     validan en el servidor dueño del club + empleado + PIN + rol. La App
+ *     solo pinta y manda lo capturado; nunca calcula el esperado.
+ *   • El módulo solo aparece si v137 existe Y el dueño configuró su fondo
+ *     fijo y al menos una caja. Sin eso, Smart POS se ve y cobra EXACTAMENTE
+ *     igual que antes.
+ *   • No hay "modo local" para dinero: si el servidor no responde, no se abre
+ *     ni se cierra caja (se avisa).
+ *   • El conteo de cierre es CIEGO: el esperado nunca está en pantalla ni en
+ *     memoria del navegador antes de sellar.
+ * ==========================================================================*/
+const DENOMINACIONES_CAJA_MXN = [
+  { clave: 'b1000', valor: 1000, tipo: 'billete', etiqueta: '$1,000' },
+  { clave: 'b500', valor: 500, tipo: 'billete', etiqueta: '$500' },
+  { clave: 'b200', valor: 200, tipo: 'billete', etiqueta: '$200' },
+  { clave: 'b100', valor: 100, tipo: 'billete', etiqueta: '$100' },
+  { clave: 'b50', valor: 50, tipo: 'billete', etiqueta: '$50' },
+  { clave: 'b20', valor: 20, tipo: 'billete', etiqueta: '$20' },
+  { clave: 'm20', valor: 20, tipo: 'moneda', etiqueta: '$20' },
+  { clave: 'm10', valor: 10, tipo: 'moneda', etiqueta: '$10' },
+  { clave: 'm5', valor: 5, tipo: 'moneda', etiqueta: '$5' },
+  { clave: 'm2', valor: 2, tipo: 'moneda', etiqueta: '$2' },
+  { clave: 'm1', valor: 1, tipo: 'moneda', etiqueta: '$1' },
+  { clave: 'm0_50', valor: 0.5, tipo: 'moneda', etiqueta: '50¢' },
+];
+const ROLES_CAJA_OPERAR = ['owner', 'manager', 'recepcion'];
+const ROLES_CAJA_GERENCIA = ['owner', 'manager'];
+const DESTINOS_RETIRO_CAJA = ['Caja fuerte', 'Depósito bancario', 'Entregado al dueño', 'Otro'];
+const CATEGORIAS_GASTO_CAJA = ['Insumos', 'Limpieza', 'Mantenimiento', 'Papelería', 'Propinas', 'Otros'];
+const LS_KEY_CAJA_TERMINAL = 'qlubos_caja_terminal_v1';
+const ETIQUETAS_RESULTADO_CAJA = {
+  cuadra: { label: 'Cuadra', clase: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+  dentro_tolerancia: { label: 'Dentro de tolerancia', clase: 'bg-sky-50 text-sky-700 ring-sky-200' },
+  sobrante: { label: 'Sobrante', clase: 'bg-amber-50 text-amber-700 ring-amber-200' },
+  faltante: { label: 'Faltante', clase: 'bg-rose-50 text-rose-700 ring-rose-200' },
+};
+const MENSAJE_EFECTIVO_BLOQUEADO_CAJA = 'El cobro en efectivo está bloqueado: abre la caja de esta terminal primero.';
+
+function rolCanonicoCaja(rol) {
+  return ROL_LEGACY_A_CANONICO[rol] || rol || '';
+}
+function esMetodoConEfectivoCaja(metodo) {
+  return metodo === 'efectivo' || metodo === 'mixto';
+}
+function totalDenominacionesCaja(conteo) {
+  return (
+    Math.round(
+      DENOMINACIONES_CAJA_MXN.reduce((acc, d) => acc + (Number.isInteger(Number(conteo?.[d.clave])) ? Number(conteo[d.clave]) : 0) * d.valor, 0) * 100
+    ) / 100
+  );
+}
+// Solo cantidades enteras > 0 (lo que viaja a la RPC; el servidor recalcula el total).
+function denominacionesParaEnviarCaja(conteo) {
+  const limpio = {};
+  DENOMINACIONES_CAJA_MXN.forEach((d) => {
+    const n = Number(conteo?.[d.clave]);
+    if (Number.isInteger(n) && n > 0) limpio[d.clave] = n;
+  });
+  return limpio;
+}
+function leerCajaTerminalLocal() {
+  try {
+    return window.localStorage.getItem(claveLocalPorClub(LS_KEY_CAJA_TERMINAL)) || null;
+  } catch (_e) {
+    return null;
+  }
+}
+function guardarCajaTerminalLocal(id) {
+  try {
+    if (id) window.localStorage.setItem(claveLocalPorClub(LS_KEY_CAJA_TERMINAL), String(id));
+    else window.localStorage.removeItem(claveLocalPorClub(LS_KEY_CAJA_TERMINAL));
+  } catch (_e) {
+    /* sin storage: la terminal vuelve a elegir su caja */
+  }
+}
+// Multicaja: la terminal declara su caja en cada petición (`x-qlubos-caja`)
+// para que el trigger de `ventas` asigne cada cobro a ESA caja. Si el
+// cliente de Supabase no expone sus encabezados, el servidor usa su regla
+// de respaldo (la única caja abierta o la primera por orden).
+function fijarCajaEnPeticionesSupabase(cajaId) {
+  try {
+    const encabezados = supabase?.rest?.headers;
+    if (!encabezados || typeof encabezados !== 'object') return;
+    if (typeof encabezados.set === 'function' && typeof encabezados.delete === 'function') {
+      // supabase-js recientes: `Headers`.
+      if (cajaId) encabezados.set('x-qlubos-caja', String(cajaId));
+      else encabezados.delete('x-qlubos-caja');
+    } else if (cajaId) encabezados['x-qlubos-caja'] = String(cajaId);
+    else delete encabezados['x-qlubos-caja'];
+  } catch (_e) {
+    /* respaldo del servidor */
+  }
+}
+const MENSAJES_CODIGO_CAJA = {
+  pin_invalido: 'PIN incorrecto.',
+  pin_bloqueado: 'Demasiados PIN incorrectos. Espera 10 minutos.',
+  rol_no_autorizado: 'Tu rol no puede realizar esta operación de caja.',
+  empleado_invalido: 'Elige al empleado que autoriza.',
+  no_autorizado: 'Esta sesión no pertenece al club.',
+  sin_modulo: 'Falta correr la migración v137 en Supabase.',
+};
+async function rpcCaja(nombre, args) {
+  try {
+    const { data, error } = await supabase.rpc(nombre, args);
+    if (error) {
+      const sinModulo = /could not find the function|does not exist|PGRST202/i.test(`${error.code || ''} ${error.message || ''}`);
+      return { ok: false, codigo: sinModulo ? 'sin_modulo' : 'error', mensaje: sinModulo ? MENSAJES_CODIGO_CAJA.sin_modulo : error.message || 'No se pudo conectar con el servidor.' };
+    }
+    if (!data || typeof data !== 'object') return { ok: false, codigo: 'error', mensaje: 'Respuesta inesperada del servidor.' };
+    if (data.ok === false && !data.mensaje) return { ...data, mensaje: MENSAJES_CODIGO_CAJA[data.codigo] || 'No se pudo completar la operación.' };
+    return data;
+  } catch (err) {
+    return { ok: false, codigo: 'error', mensaje: err?.message || 'Sin conexión con el servidor. No se registró nada.' };
+  }
+}
+
+const CajaContext = React.createContext(null);
+function useCaja() {
+  return React.useContext(CajaContext);
+}
+// ¿El dueño activó el bloqueo y la caja de esta terminal NO está abierta?
+function useBloqueoEfectivoCaja() {
+  const caja = React.useContext(CajaContext);
+  return Boolean(caja?.efectivoBloqueado);
+}
+
+// Contador billete por billete (apertura y cierre). `ocultarTotal` no se usa
+// en el cierre: lo contado SÍ se ve (es lo que tiene en la mano), lo que
+// nunca se ve es el esperado.
+function ContadorDenominacionesCaja({ valor, onChange, deshabilitado = false, testid = 'contador-denominaciones' }) {
+  const fijar = (clave, n) => {
+    const limpio = Math.max(0, Math.min(100000, Math.floor(Number(n) || 0)));
+    onChange({ ...valor, [clave]: limpio });
+  };
+  const total = totalDenominacionesCaja(valor);
+  const grupo = (tipo) => DENOMINACIONES_CAJA_MXN.filter((d) => d.tipo === tipo);
+  const fila = (d) => {
+    const n = Number(valor?.[d.clave]) || 0;
+    return (
+      <div key={d.clave} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5" data-testid={`denominacion-${d.clave}`}>
+        <span className={`w-14 shrink-0 text-xs font-black ${d.tipo === 'billete' ? 'text-emerald-700' : 'text-amber-700'}`}>{d.etiqueta}</span>
+        <button
+          type="button"
+          aria-label={`Quitar ${d.etiqueta}`}
+          disabled={deshabilitado || n === 0}
+          onClick={() => fijar(d.clave, n - 1)}
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-slate-50 text-slate-600 transition hover:bg-slate-100 disabled:opacity-40"
+        >
+          <Minus size={13} />
+        </button>
+        <input
+          type="number"
+          inputMode="numeric"
+          min="0"
+          step="1"
+          value={n === 0 ? '' : String(n)}
+          placeholder="0"
+          disabled={deshabilitado}
+          onChange={(e) => fijar(d.clave, e.target.value)}
+          aria-label={`Cantidad de ${d.tipo === 'billete' ? 'billetes' : 'monedas'} de ${d.etiqueta}`}
+          className="h-8 w-16 rounded-md border border-slate-300 bg-white px-2 text-center text-sm font-bold text-slate-900 outline-none focus:border-orange-400 focus:ring-1 focus:ring-orange-400"
+        />
+        <button
+          type="button"
+          aria-label={`Agregar ${d.etiqueta}`}
+          disabled={deshabilitado}
+          onClick={() => fijar(d.clave, n + 1)}
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-slate-50 text-slate-600 transition hover:bg-slate-100 disabled:opacity-40"
+        >
+          <Plus size={13} />
+        </button>
+        <span className="ml-auto text-xs font-semibold text-slate-500">{formatoMoneda(n * d.valor)}</span>
+      </div>
+    );
+  };
+  return (
+    <div className="space-y-3" data-testid={testid}>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Billetes</p>
+          {grupo('billete').map(fila)}
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Monedas</p>
+          {grupo('moneda').map(fila)}
+        </div>
+      </div>
+      <div className="flex items-center justify-between rounded-xl bg-slate-900 px-4 py-2.5 text-slate-50">
+        <span className="text-xs font-bold uppercase tracking-wide">Total contado</span>
+        <span className="text-lg font-black" data-testid={`${testid}-total`}>
+          {formatoMoneda(total)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Quién autoriza + su PIN (lo valida el servidor). Por defecto el operador
+// fichado si su rol puede; si no, se elige a un gerente/dueño del directorio.
+// `onChange` recibe SIEMPRE una función `(valorPrevio) => nuevoValor` (se
+// pasa tal cual a un `setState`), así teclear rápido nunca pisa otro campo.
+function AutorizacionPinCaja({ empleados, operador, roles, valor, onChange, etiqueta = 'Autoriza', testid = 'autorizacion-caja' }) {
+  const elegibles = useMemo(
+    () => (empleados || []).filter((e) => e && e.activo !== false && roles.includes(rolCanonicoCaja(e.rol)) && !String(e.id).startsWith('local-')),
+    [empleados, roles]
+  );
+  useEffect(() => {
+    if (valor.empleadoId && elegibles.some((e) => String(e.id) === String(valor.empleadoId))) return;
+    const propio = operador?.id != null && elegibles.find((e) => String(e.id) === String(operador.id));
+    const sugerido = propio || (elegibles.length === 1 ? elegibles[0] : null);
+    // Actualización funcional: nunca pisa un PIN que ya se haya tecleado.
+    if (sugerido) onChange((v) => (v?.empleadoId && elegibles.some((e) => String(e.id) === String(v.empleadoId)) ? v : { ...(v || {}), empleadoId: String(sugerido.id) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elegibles, operador?.id]);
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_8rem]" data-testid={testid}>
+      <Campo label={etiqueta}>
+        <select value={valor.empleadoId || ''} onChange={(e) => { const id = e.target.value; onChange((v) => ({ ...(v || {}), empleadoId: id })); }} className={inputClase} data-testid={`${testid}-empleado`}>
+          <option value="">Elige quién autoriza…</option>
+          {elegibles.map((e) => (
+            <option key={e.id} value={String(e.id)}>
+              {e.nombre} · {ROLES_POR_VALOR[rolCanonicoCaja(e.rol)]?.label || e.rol}
+            </option>
+          ))}
+        </select>
+      </Campo>
+      <Campo label="PIN">
+        <input
+          type="password"
+          inputMode="numeric"
+          autoComplete="off"
+          maxLength={8}
+          value={valor.pin || ''}
+          onChange={(e) => { const pin = e.target.value.replace(/\D/g, '').slice(0, 8); onChange((v) => ({ ...(v || {}), pin })); }}
+          className={`${inputClase} tracking-[0.4em]`}
+          placeholder="••••"
+          data-testid={`${testid}-pin`}
+        />
+      </Campo>
+    </div>
+  );
+}
+
+function ChipEstadoCaja({ sesion }) {
+  if (!sesion) return <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-500 ring-1 ring-slate-200">Cerrada</span>;
+  if (sesion.estado === 'en_cierre')
+    return <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-700 ring-1 ring-amber-200">Pendiente de retiro</span>;
+  return <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-700 ring-1 ring-emerald-200">Abierta</span>;
+}
+
+// Botón + aviso de Smart POS (solo si el módulo está configurado).
+function BotonCajaPOS() {
+  const caja = useCaja();
+  const [abierto, setAbierto] = useState(false);
+  if (!caja?.configurada || !caja.puedeOperar) return null;
+  const sesion = caja.cajaTerminal?.sesion || null;
+  return (
+    <>
+      <BotonSecundario onClick={() => setAbierto(true)} className="whitespace-nowrap" data-testid="boton-caja-pos">
+        <Wallet size={15} /> {caja.cajaTerminal ? caja.cajaTerminal.nombre : 'Caja'}
+        <span
+          className={`ml-1 h-2 w-2 rounded-full ${sesion?.estado === 'abierta' ? 'bg-emerald-500' : sesion?.estado === 'en_cierre' ? 'bg-amber-500' : 'bg-slate-400'}`}
+          aria-hidden="true"
+        />
+      </BotonSecundario>
+      <AnimatePresence>{abierto && <ModalCaja onClose={() => setAbierto(false)} />}</AnimatePresence>
+    </>
+  );
+}
+
+function AvisoCajaPOS() {
+  const caja = useCaja();
+  const [abierto, setAbierto] = useState(false);
+  if (!caja?.configurada || !caja.puedeOperar) return null;
+  const sesion = caja.cajaTerminal?.sesion || null;
+  if (sesion?.estado === 'abierta') return null;
+  const nombre = caja.cajaTerminal?.nombre;
+  const texto = !caja.cajaTerminal
+    ? 'Esta terminal todavía no tiene una caja asignada.'
+    : sesion?.estado === 'en_cierre'
+    ? `${nombre}: el corte está sellado y pendiente del retiro de gerencia.`
+    : `${nombre} está cerrada. Abre la caja contando el fondo para iniciar el día.`;
+  return (
+    <>
+      <div
+        className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-semibold ${
+          caja.efectivoBloqueado ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'
+        }`}
+        data-testid="aviso-caja-pos"
+      >
+        <span className="flex items-center gap-2">
+          <AlertTriangle size={14} className="shrink-0" />
+          {texto}
+          {caja.efectivoBloqueado ? ' El cobro en efectivo está bloqueado hasta abrirla.' : ''}
+        </span>
+        <button type="button" onClick={() => setAbierto(true)} className="rounded-lg bg-white px-3 py-1.5 text-[11px] font-black text-slate-800 ring-1 ring-slate-200 hover:bg-slate-50">
+          {sesion?.estado === 'en_cierre' ? 'Ver corte' : caja.cajaTerminal ? 'Abrir caja' : 'Elegir caja'}
+        </button>
+      </div>
+      <AnimatePresence>{abierto && <ModalCaja onClose={() => setAbierto(false)} />}</AnimatePresence>
+    </>
+  );
+}
+
+// Modal principal de Caja: selector de caja de la terminal + Apertura /
+// Operación / Cierre ciego / Retiro según el estado de la sesión.
+function ModalCaja({ onClose }) {
+  const caja = useCaja();
+  const toast = useToast();
+  const [vista, setVista] = useState('inicio'); // 'inicio' | 'cerrar' | 'movimientos' | 'vivo'
+  const [resultadoCierre, setResultadoCierre] = useState(null);
+  const cajaSel = caja?.cajaTerminal || null;
+  const sesion = cajaSel?.sesion || null;
+  const esGerencia = ROLES_CAJA_GERENCIA.includes(rolCanonicoCaja(caja?.operador?.rol));
+  useEffect(() => {
+    setVista('inicio');
+  }, [cajaSel?.id, sesion?.id, sesion?.estado]);
+  if (!caja) return null;
+  const activas = (caja.cajas || []).filter((c) => c.activa !== false);
+  return (
+    <ModalShell titulo="Caja" subtitulo="Apertura, arqueo ciego y retiro de ganancia" onClose={onClose} icon={Wallet} ancho="max-w-2xl">
+      <div className="space-y-4" data-testid="modal-caja">
+        <div>
+          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Esta terminal opera la caja</p>
+          <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Caja de esta terminal">
+            {activas.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                role="radio"
+                aria-checked={cajaSel?.id === c.id}
+                onClick={() => {
+                  setResultadoCierre(null);
+                  caja.elegirCajaTerminal(c.id);
+                }}
+                data-testid={`elegir-caja-${c.nombre}`}
+                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                  cajaSel?.id === c.id ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-white text-slate-600 hover:border-orange-400/40'
+                }`}
+              >
+                {c.nombre} <ChipEstadoCaja sesion={c.sesion} />
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {!cajaSel ? (
+          <p className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-500">Elige la caja que opera esta terminal.</p>
+        ) : resultadoCierre ? (
+          <ResultadoCierreCaja
+            resultado={resultadoCierre}
+            caja={cajaSel}
+            onRetirado={async () => {
+              setResultadoCierre(null);
+              await caja.recargar();
+            }}
+          />
+        ) : !sesion ? (
+          <PanelAperturaCaja
+            cajaSel={cajaSel}
+            onAbierta={async (r) => {
+              toast({
+                titulo: `${cajaSel.nombre} abierta`,
+                detalle: `Fondo contado ${formatoMoneda(r.fondo_contado)}${Number(r.diferencia) !== 0 ? ` · diferencia ${formatoMoneda(r.diferencia)}` : ''}`,
+              });
+              await caja.recargar();
+            }}
+          />
+        ) : sesion.estado === 'en_cierre' ? (
+          <PanelRetiroPendienteCaja cajaSel={cajaSel} onRetirado={() => caja.recargar()} />
+        ) : vista === 'cerrar' ? (
+          <PanelCierreCiegoCaja
+            cajaSel={cajaSel}
+            onVolver={() => setVista('inicio')}
+            onSellado={async (r) => {
+              setResultadoCierre(r);
+              await caja.recargar();
+            }}
+          />
+        ) : vista === 'movimientos' ? (
+          <PanelMovimientosCaja cajaSel={cajaSel} onVolver={() => setVista('inicio')} />
+        ) : vista === 'vivo' ? (
+          <PanelCorteEnVivoCaja cajaSel={cajaSel} onVolver={() => setVista('inicio')} />
+        ) : (
+          <div className="space-y-3" data-testid="caja-abierta">
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800">
+              <p className="text-sm font-black">{cajaSel.nombre} abierta</p>
+              <p className="mt-0.5">
+                Desde {sesion.abierta_en ? new Date(sesion.abierta_en).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : '—'} · abrió{' '}
+                {sesion.abierta_por_nombre || 'Operador'} · fondo contado {formatoMoneda(sesion.fondo_contado)}
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <button
+                type="button"
+                onClick={() => setVista('cerrar')}
+                data-testid="caja-ir-cerrar"
+                className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-left transition hover:border-orange-400/50"
+              >
+                <EyeOff size={16} className="text-orange-500" />
+                <span className="text-sm font-black text-slate-900">Cerrar caja</span>
+                <span className="text-[11px] text-slate-500">Arqueo ciego billete por billete</span>
+              </button>
+              {esGerencia && (
+                <button
+                  type="button"
+                  onClick={() => setVista('movimientos')}
+                  data-testid="caja-ir-movimientos"
+                  className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-left transition hover:border-orange-400/50"
+                >
+                  <ArrowRightLeft size={16} className="text-orange-500" />
+                  <span className="text-sm font-black text-slate-900">Movimientos</span>
+                  <span className="text-[11px] text-slate-500">Caja chica, retiros y reposiciones</span>
+                </button>
+              )}
+              {esGerencia && (
+                <button
+                  type="button"
+                  onClick={() => setVista('vivo')}
+                  data-testid="caja-ir-vivo"
+                  className="flex flex-col items-start gap-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-left transition hover:border-orange-400/50"
+                >
+                  <Calculator size={16} className="text-orange-500" />
+                  <span className="text-sm font-black text-slate-900">Corte en vivo</span>
+                  <span className="text-[11px] text-slate-500">Esperado hasta este momento</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
+function PanelAperturaCaja({ cajaSel, onAbierta }) {
+  const caja = useCaja();
+  const [conteo, setConteo] = useState({});
+  const [nota, setNota] = useState('');
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  const fondoFijo = Number(caja.config?.fondo_fijo) || 0;
+  const heredado = cajaSel.fondo_heredado != null ? Number(cajaSel.fondo_heredado) : null;
+  const esperado = heredado != null ? heredado : fondoFijo;
+  const contado = totalDenominacionesCaja(conteo);
+  const diferencia = Math.round((contado - esperado) * 100) / 100;
+  const tolerancia = Number(caja.config?.tolerancia_diferencia) || 0;
+  const pideNota = Math.abs(diferencia) > tolerancia;
+  async function abrir() {
+    setError('');
+    if (contado <= 0) return setError('Cuenta el fondo billete por billete antes de abrir.');
+    if (pideNota && !nota.trim()) return setError('El fondo no coincide con lo esperado: escribe una nota para continuar.');
+    if (!auth.empleadoId || !auth.pin) return setError('Elige quién abre y escribe su PIN.');
+    setEnviando(true);
+    const r = await rpcCaja('fn_caja_abrir', {
+      p_club_id: Number(CLUB_ACTIVO_ID),
+      p_caja_id: cajaSel.id,
+      p_denominaciones: denominacionesParaEnviarCaja(conteo),
+      p_nota: nota.trim() || null,
+      p_empleado_id: auth.empleadoId,
+      p_pin: auth.pin,
+    });
+    setEnviando(false);
+    if (!r.ok) {
+      setAuth((a) => ({ ...a, pin: '' }));
+      return setError(r.mensaje);
+    }
+    await onAbierta(r);
+  }
+  return (
+    <div className="space-y-4" data-testid="panel-apertura-caja">
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-xl bg-slate-50 px-2 py-2 ring-1 ring-slate-200">
+          <p className="text-[10px] font-bold uppercase text-slate-400">{heredado != null ? 'Fondo que dejó el cierre' : 'Fondo fijo'}</p>
+          <p className="text-sm font-black text-slate-900" data-testid="apertura-esperado">
+            {formatoMoneda(esperado)}
+          </p>
+        </div>
+        <div className="rounded-xl bg-slate-50 px-2 py-2 ring-1 ring-slate-200">
+          <p className="text-[10px] font-bold uppercase text-slate-400">Contado</p>
+          <p className="text-sm font-black text-slate-900">{formatoMoneda(contado)}</p>
+        </div>
+        <div className={`rounded-xl px-2 py-2 ring-1 ${diferencia === 0 ? 'bg-emerald-50 ring-emerald-200' : 'bg-amber-50 ring-amber-200'}`}>
+          <p className="text-[10px] font-bold uppercase text-slate-400">{diferencia > 0 ? 'Sobran' : diferencia < 0 ? 'Faltan' : 'Diferencia'}</p>
+          <p className={`text-sm font-black ${diferencia === 0 ? 'text-emerald-700' : 'text-amber-700'}`} data-testid="apertura-diferencia">
+            {formatoMoneda(Math.abs(diferencia))}
+          </p>
+        </div>
+      </div>
+      <p className="text-[11px] text-slate-500">Cuenta físicamente el fondo de la gaveta. En la apertura sí ves el fondo esperado (no es el arqueo).</p>
+      <ContadorDenominacionesCaja valor={conteo} onChange={setConteo} testid="contador-apertura" />
+      {pideNota && contado > 0 && (
+        <Campo label="Nota (obligatoria: el fondo no coincide)">
+          <input value={nota} onChange={(e) => setNota(e.target.value)} className={inputClase} placeholder="Ej. faltaron $50 de cambio" data-testid="apertura-nota" />
+        </Campo>
+      )}
+      <AutorizacionPinCaja empleados={caja.empleados} operador={caja.operador} roles={ROLES_CAJA_OPERAR} valor={auth} onChange={setAuth} etiqueta="Abre la caja" testid="auth-apertura" />
+      {error && (
+        <p className="text-xs font-semibold text-rose-500" data-testid="error-caja">
+          {error}
+        </p>
+      )}
+      <div className="flex justify-end">
+        <BotonPrimario onClick={abrir} disabled={enviando} data-testid="boton-abrir-caja">
+          {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />} Abrir {cajaSel.nombre}
+        </BotonPrimario>
+      </div>
+    </div>
+  );
+}
+
+function PanelCierreCiegoCaja({ cajaSel, onVolver, onSellado }) {
+  const caja = useCaja();
+  const [conteo, setConteo] = useState({});
+  const [nota, setNota] = useState('');
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [confirmar, setConfirmar] = useState(false);
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  const contado = totalDenominacionesCaja(conteo);
+  async function sellar() {
+    setError('');
+    if (!auth.empleadoId || !auth.pin) return setError('Elige quién cuenta y escribe su PIN.');
+    if (!confirmar) {
+      setConfirmar(true);
+      return undefined;
+    }
+    setEnviando(true);
+    const r = await rpcCaja('fn_caja_cerrar', {
+      p_club_id: Number(CLUB_ACTIVO_ID),
+      p_sesion_id: cajaSel.sesion.id,
+      p_denominaciones: denominacionesParaEnviarCaja(conteo),
+      p_nota: nota.trim() || null,
+      p_empleado_id: auth.empleadoId,
+      p_pin: auth.pin,
+    });
+    setEnviando(false);
+    setConfirmar(false);
+    if (!r.ok) {
+      setAuth((a) => ({ ...a, pin: '' }));
+      return setError(r.mensaje);
+    }
+    await onSellado(r);
+    return undefined;
+  }
+  return (
+    <div className="space-y-4" data-testid="panel-cierre-caja">
+      <EnlaceAtrasWizard onClick={onVolver}>Volver</EnlaceAtrasWizard>
+      <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-800 ring-1 ring-amber-200">
+        <EyeOff size={14} className="mt-0.5 shrink-0" />
+        Arqueo ciego: cuenta TODO el efectivo de la gaveta (incluido el fondo) billete por billete. El sistema no te mostrará el esperado; al sellar, el conteo ya no se puede cambiar.
+      </div>
+      <ContadorDenominacionesCaja valor={conteo} onChange={(v) => { setConteo(v); setConfirmar(false); }} testid="contador-cierre" />
+      <Campo label="Nota (opcional)">
+        <input value={nota} onChange={(e) => setNota(e.target.value)} className={inputClase} placeholder="Ej. un billete de $500 roto" />
+      </Campo>
+      <AutorizacionPinCaja empleados={caja.empleados} operador={caja.operador} roles={ROLES_CAJA_OPERAR} valor={auth} onChange={(v) => { setAuth(v); setConfirmar(false); }} etiqueta="Cuenta y sella" testid="auth-cierre" />
+      {confirmar && (
+        <p className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-slate-50" data-testid="confirmar-sellado">
+          ¿Sellar el conteo de {formatoMoneda(contado)}? Después ya no se puede modificar. Toca «Sellar conteo» de nuevo para confirmar.
+        </p>
+      )}
+      {error && (
+        <p className="text-xs font-semibold text-rose-500" data-testid="error-caja">
+          {error}
+        </p>
+      )}
+      <div className="flex justify-end">
+        <BotonPrimario onClick={sellar} disabled={enviando} data-testid="boton-sellar-conteo">
+          {enviando ? <Loader2 size={15} className="animate-spin" /> : <Lock size={15} />} Sellar conteo
+        </BotonPrimario>
+      </div>
+    </div>
+  );
+}
+
+function ResumenDiferenciaCaja({ contado, esperado, diferencia, resultado }) {
+  const meta = ETIQUETAS_RESULTADO_CAJA[resultado] || null;
+  return (
+    <div className="grid grid-cols-3 gap-2 text-center" data-testid="resumen-diferencia-caja">
+      <div className="rounded-xl bg-slate-50 px-2 py-2 ring-1 ring-slate-200">
+        <p className="text-[10px] font-bold uppercase text-slate-400">Contado</p>
+        <p className="text-sm font-black text-slate-900">{formatoMoneda(contado)}</p>
+      </div>
+      <div className="rounded-xl bg-slate-50 px-2 py-2 ring-1 ring-slate-200">
+        <p className="text-[10px] font-bold uppercase text-slate-400">Esperado</p>
+        <p className="text-sm font-black text-slate-900" data-testid="cierre-esperado">
+          {formatoMoneda(esperado)}
+        </p>
+      </div>
+      <div className={`rounded-xl px-2 py-2 ring-1 ${meta?.clase || 'bg-slate-50 ring-slate-200'}`}>
+        <p className="text-[10px] font-bold uppercase opacity-80">{meta?.label || 'Diferencia'}</p>
+        <p className="text-sm font-black" data-testid="cierre-diferencia">
+          {Number(diferencia) > 0 ? '+' : Number(diferencia) < 0 ? '−' : ''}
+          {formatoMoneda(Math.abs(Number(diferencia) || 0))}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ResultadoCierreCaja({ resultado, caja: cajaSel, onRetirado }) {
+  return (
+    <div className="space-y-4" data-testid="resultado-cierre-caja">
+      <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+        <p className="text-sm font-black text-slate-900">Conteo sellado · {cajaSel.nombre}</p>
+        <p className="text-[11px] text-slate-500">Quedó guardado en el servidor y en el Log de Actividad.</p>
+      </div>
+      {resultado.mostrar_diferencia ? (
+        <ResumenDiferenciaCaja contado={resultado.contado} esperado={resultado.esperado} diferencia={resultado.diferencia} resultado={resultado.resultado} />
+      ) : (
+        <p className="rounded-xl bg-slate-50 px-4 py-3 text-xs font-semibold text-slate-600 ring-1 ring-slate-200" data-testid="diferencia-confidencial">
+          Contaste {formatoMoneda(resultado.contado)}. La diferencia contra el sistema es confidencial y la revisará gerencia.
+        </p>
+      )}
+      {resultado.desglose && (
+        <p className="text-[11px] text-slate-500" data-testid="cierre-desglose">
+          Fondo {formatoMoneda(resultado.desglose.fondo)} + ventas en efectivo {formatoMoneda(resultado.desglose.ventas_efectivo)} + ingresos{' '}
+          {formatoMoneda(resultado.desglose.ingresos)} − gastos {formatoMoneda(resultado.desglose.gastos)} − retiros {formatoMoneda(resultado.desglose.retiros)}
+        </p>
+      )}
+      <FormRetiroGananciaCaja
+        cierreId={resultado.cierre_id}
+        contado={Number(resultado.contado) || 0}
+        resultado={resultado.mostrar_diferencia ? resultado.resultado : null}
+        onRetirado={onRetirado}
+      />
+    </div>
+  );
+}
+
+function PanelRetiroPendienteCaja({ cajaSel, onRetirado }) {
+  const [cierre, setCierre] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const { data, error: err } = await supabase
+        .from('cierres_caja')
+        .select('id, monto_reportado_efectivo, contado_por_nombre, created_at')
+        .eq('id', cajaSel.sesion.cierre_id)
+        .maybeSingle();
+      if (!vivo) return;
+      if (err || !data) setError('No se pudo leer el corte sellado. Revisa tu conexión.');
+      else setCierre(data);
+    })();
+    return () => {
+      vivo = false;
+    };
+  }, [cajaSel.sesion.cierre_id]);
+  return (
+    <div className="space-y-4" data-testid="panel-retiro-pendiente">
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+        <p className="text-sm font-black">Corte sellado · pendiente de retiro por gerencia</p>
+        <p className="mt-0.5">
+          {cierre ? `Contó ${cierre.contado_por_nombre || 'el operador'}: ${formatoMoneda(cierre.monto_reportado_efectivo)}.` : 'Cargando el corte…'} Un gerente o el dueño autoriza
+          el retiro con su PIN; después se podrá abrir de nuevo esta caja.
+        </p>
+      </div>
+      {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
+      {cierre && <FormRetiroGananciaCaja cierreId={String(cierre.id)} contado={Number(cierre.monto_reportado_efectivo) || 0} resultado={null} onRetirado={onRetirado} />}
+    </div>
+  );
+}
+
+function FormRetiroGananciaCaja({ cierreId, contado, resultado, onRetirado }) {
+  const caja = useCaja();
+  const toast = useToast();
+  const fondoFijo = Number(caja.config?.fondo_fijo) || 0;
+  const maximo = Math.max(0, Math.round((contado - fondoFijo) * 100) / 100);
+  const [monto, setMonto] = useState(String(maximo));
+  const [destino, setDestino] = useState(DESTINOS_RETIRO_CAJA[0]);
+  const [nota, setNota] = useState('');
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  const montoNum = Math.round((Number(monto) || 0) * 100) / 100;
+  const queda = Math.round((contado - montoNum) * 100) / 100;
+  async function retirar() {
+    setError('');
+    if (!(montoNum >= 0) || montoNum > maximo) return setError(`El retiro debe ser entre $0 y ${formatoMoneda(maximo)} para dejar el fondo fijo.`);
+    if (!auth.empleadoId || !auth.pin) return setError('Un gerente o el dueño debe autorizar con su PIN.');
+    setEnviando(true);
+    const r = await rpcCaja('fn_caja_retirar_ganancia', {
+      p_club_id: Number(CLUB_ACTIVO_ID),
+      p_cierre_id: String(cierreId),
+      p_monto: montoNum,
+      p_destino: montoNum > 0 ? destino : null,
+      p_nota: nota.trim() || null,
+      p_empleado_id: auth.empleadoId,
+      p_pin: auth.pin,
+    });
+    setEnviando(false);
+    if (!r.ok) {
+      setAuth((a) => ({ ...a, pin: '' }));
+      return setError(r.mensaje);
+    }
+    toast({ titulo: 'Caja cerrada', detalle: `Retiro ${formatoMoneda(r.retiro)} · quedan ${formatoMoneda(r.fondo_siguiente)} de fondo para mañana.` });
+    await onRetirado?.();
+    return undefined;
+  }
+  return (
+    <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4" data-testid="form-retiro-ganancia">
+      <p className="text-xs font-black uppercase tracking-wide text-slate-500">Retiro de ganancia (Gerente / Dueño)</p>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <Campo label={`Monto a retirar (máx. ${formatoMoneda(maximo)})`}>
+          <input type="number" min="0" step="0.5" value={monto} onChange={(e) => setMonto(e.target.value)} className={inputClase} data-testid="retiro-monto" />
+        </Campo>
+        <Campo label="Destino">
+          <select value={destino} onChange={(e) => setDestino(e.target.value)} className={inputClase} data-testid="retiro-destino">
+            {DESTINOS_RETIRO_CAJA.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </Campo>
+      </div>
+      <p className={`text-xs font-bold ${queda < fondoFijo ? 'text-rose-600' : 'text-emerald-700'}`} data-testid="retiro-queda">
+        Queda en la gaveta para mañana: {formatoMoneda(queda)}
+        {queda < fondoFijo ? ` (fondo incompleto: faltan ${formatoMoneda(fondoFijo - queda)})` : ''}
+      </p>
+      {(resultado === 'sobrante' || resultado === 'faltante') && (
+        <Campo label="Explicación de la diferencia">
+          <input value={nota} onChange={(e) => setNota(e.target.value)} className={inputClase} placeholder="Se aclarará con el cajero…" data-testid="retiro-nota" />
+        </Campo>
+      )}
+      <AutorizacionPinCaja empleados={caja.empleados} operador={caja.operador} roles={ROLES_CAJA_GERENCIA} valor={auth} onChange={setAuth} etiqueta="Autoriza el retiro" testid="auth-retiro" />
+      {error && (
+        <p className="text-xs font-semibold text-rose-500" data-testid="error-retiro">
+          {error}
+        </p>
+      )}
+      <div className="flex justify-end">
+        <BotonPrimario onClick={retirar} disabled={enviando} data-testid="boton-retirar-ganancia">
+          {enviando ? <Loader2 size={15} className="animate-spin" /> : <Banknote size={15} />} Retirar y cerrar caja
+        </BotonPrimario>
+      </div>
+    </div>
+  );
+}
+
+function PanelMovimientosCaja({ cajaSel, onVolver }) {
+  const caja = useCaja();
+  const toast = useToast();
+  const [tipo, setTipo] = useState('gasto');
+  const [monto, setMonto] = useState('');
+  const [concepto, setConcepto] = useState('');
+  const [categoria, setCategoria] = useState(CATEGORIAS_GASTO_CAJA[0]);
+  const [destino, setDestino] = useState(DESTINOS_RETIRO_CAJA[0]);
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  const [movimientos, setMovimientos] = useState([]);
+  const [anulando, setAnulando] = useState(null); // { id, motivo }
+  const cargar = useCallback(async () => {
+    const { data } = await supabase.from('caja_movimientos').select('*').eq('sesion_id', cajaSel.sesion.id).order('created_at', { ascending: false });
+    setMovimientos(Array.isArray(data) ? data : []);
+  }, [cajaSel.sesion.id]);
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
+  async function registrar() {
+    setError('');
+    const n = Math.round((Number(monto) || 0) * 100) / 100;
+    if (!(n > 0)) return setError('Captura un monto mayor a $0.');
+    if (!concepto.trim()) return setError('Describe el movimiento.');
+    if (!auth.empleadoId || !auth.pin) return setError('Un gerente o el dueño debe autorizar con su PIN.');
+    setEnviando(true);
+    const r = await rpcCaja('fn_caja_movimiento', {
+      p_club_id: Number(CLUB_ACTIVO_ID),
+      p_sesion_id: cajaSel.sesion.id,
+      p_tipo: tipo,
+      p_monto: n,
+      p_concepto: concepto.trim(),
+      p_categoria: tipo === 'gasto' ? categoria : null,
+      p_destino: tipo === 'retiro' ? destino : null,
+      p_empleado_id: auth.empleadoId,
+      p_pin: auth.pin,
+    });
+    setEnviando(false);
+    setAuth((a) => ({ ...a, pin: '' }));
+    if (!r.ok) return setError(r.mensaje);
+    toast({
+      titulo: tipo === 'gasto' ? 'Gasto de caja chica registrado' : tipo === 'retiro' ? 'Retiro registrado' : 'Reposición registrada',
+      detalle: `${concepto.trim()} · ${formatoMoneda(n)}${r.espejo_contable_error ? ' · no se pudo crear el egreso en Contabilidad, captúralo a mano' : ''}`,
+      tono: r.espejo_contable_error ? 'aviso' : undefined,
+    });
+    setMonto('');
+    setConcepto('');
+    cargar();
+    return undefined;
+  }
+  async function anular() {
+    if (!anulando?.motivo?.trim()) return setError('Escribe el motivo de la anulación.');
+    if (!auth.empleadoId || !auth.pin) return setError('Un gerente o el dueño debe autorizar con su PIN.');
+    setEnviando(true);
+    const r = await rpcCaja('fn_caja_anular_movimiento', {
+      p_club_id: Number(CLUB_ACTIVO_ID),
+      p_movimiento_id: anulando.id,
+      p_motivo: anulando.motivo.trim(),
+      p_empleado_id: auth.empleadoId,
+      p_pin: auth.pin,
+    });
+    setEnviando(false);
+    setAuth((a) => ({ ...a, pin: '' }));
+    if (!r.ok) return setError(r.mensaje);
+    setAnulando(null);
+    toast({ titulo: 'Movimiento anulado' });
+    cargar();
+    return undefined;
+  }
+  const TIPOS = [
+    { value: 'gasto', label: 'Gasto de caja chica' },
+    { value: 'retiro', label: 'Retiro (sangría)' },
+    { value: 'reposicion', label: 'Reposición de fondo' },
+  ];
+  const ETIQUETA_TIPO_MOV = { gasto: 'Gasto', retiro: 'Retiro', reposicion: 'Reposición', ingreso_inscripcion: 'Inscripción en efectivo', retiro_cierre: 'Retiro de ganancia' };
+  return (
+    <div className="space-y-4" data-testid="panel-movimientos-caja">
+      <EnlaceAtrasWizard onClick={onVolver}>Volver</EnlaceAtrasWizard>
+      <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Tipo de movimiento">
+        {TIPOS.map((t) => (
+          <button
+            key={t.value}
+            type="button"
+            role="radio"
+            aria-checked={tipo === t.value}
+            onClick={() => setTipo(t.value)}
+            data-testid={`mov-tipo-${t.value}`}
+            className={`rounded-lg border px-2 py-2 text-[11px] font-bold transition ${
+              tipo === t.value ? 'border-orange-400 bg-orange-400/10 text-orange-700' : 'border-slate-300 bg-slate-100 text-slate-500 hover:border-orange-400/40'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <Campo label="Monto (MXN)">
+          <input type="number" min="0" step="0.5" value={monto} onChange={(e) => setMonto(e.target.value)} className={inputClase} data-testid="mov-monto" />
+        </Campo>
+        {tipo === 'gasto' ? (
+          <Campo label="Categoría">
+            <select value={categoria} onChange={(e) => setCategoria(e.target.value)} className={inputClase}>
+              {CATEGORIAS_GASTO_CAJA.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        ) : tipo === 'retiro' ? (
+          <Campo label="Destino">
+            <select value={destino} onChange={(e) => setDestino(e.target.value)} className={inputClase}>
+              {DESTINOS_RETIRO_CAJA.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </Campo>
+        ) : (
+          <div />
+        )}
+      </div>
+      <Campo label="Concepto" hint={tipo === 'gasto' ? 'Se crea su egreso en Contabilidad (categoría «Caja chica», efectivo).' : undefined}>
+        <input value={concepto} onChange={(e) => setConcepto(e.target.value)} className={inputClase} placeholder={tipo === 'gasto' ? 'Ej. Bolsa de hielo' : 'Ej. Sangría a caja fuerte'} data-testid="mov-concepto" />
+      </Campo>
+      {anulando && (
+        <Campo label="Motivo de la anulación">
+          <input value={anulando.motivo} onChange={(e) => setAnulando({ ...anulando, motivo: e.target.value })} className={inputClase} data-testid="mov-motivo-anulacion" />
+        </Campo>
+      )}
+      <AutorizacionPinCaja empleados={caja.empleados} operador={caja.operador} roles={ROLES_CAJA_GERENCIA} valor={auth} onChange={setAuth} etiqueta="Autoriza (Gerente / Dueño)" testid="auth-mov" />
+      {error && (
+        <p className="text-xs font-semibold text-rose-500" data-testid="error-caja">
+          {error}
+        </p>
+      )}
+      <div className="flex justify-end gap-2">
+        {anulando ? (
+          <>
+            <BotonSecundario onClick={() => setAnulando(null)}>Cancelar</BotonSecundario>
+            <BotonPrimario onClick={anular} disabled={enviando} data-testid="boton-confirmar-anulacion">
+              <Ban size={15} /> Anular movimiento
+            </BotonPrimario>
+          </>
+        ) : (
+          <BotonPrimario onClick={registrar} disabled={enviando} data-testid="boton-registrar-movimiento">
+            {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />} Registrar
+          </BotonPrimario>
+        )}
+      </div>
+      <div>
+        <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Movimientos de esta caja</p>
+        {movimientos.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-slate-300 px-4 py-4 text-center text-xs text-slate-500">Sin movimientos todavía.</p>
+        ) : (
+          <div className="divide-y divide-slate-100 rounded-xl border border-slate-200" data-testid="lista-movimientos-caja">
+            {movimientos.map((m) => (
+              <div key={m.id} className={`flex items-center justify-between gap-2 px-3 py-2 text-xs ${m.anulado ? 'opacity-50' : ''}`}>
+                <span className="min-w-0">
+                  <span className="font-bold text-slate-800">{ETIQUETA_TIPO_MOV[m.tipo] || m.tipo}</span>
+                  <span className="text-slate-500"> · {m.concepto || '—'}</span>
+                  <span className="block text-[10px] text-slate-400">
+                    {m.autorizado_por_nombre}
+                    {m.anulado ? ` · anulado: ${m.anulado_motivo}` : ''}
+                  </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className={`font-black ${Number(m.signo) > 0 ? 'text-emerald-700' : 'text-rose-600'} ${m.anulado ? 'line-through' : ''}`}>
+                    {Number(m.signo) > 0 ? '+' : '−'}
+                    {formatoMoneda(m.monto)}
+                  </span>
+                  {!m.anulado && ['gasto', 'retiro', 'reposicion'].includes(m.tipo) && (
+                    <button type="button" onClick={() => setAnulando({ id: m.id, motivo: '' })} className="text-[10px] font-bold text-rose-500 hover:underline">
+                      Anular
+                    </button>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PanelCorteEnVivoCaja({ cajaSel, onVolver }) {
+  const caja = useCaja();
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [calculo, setCalculo] = useState(null);
+  const [error, setError] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  async function consultar() {
+    setError('');
+    if (!auth.empleadoId || !auth.pin) return setError('Autoriza con el PIN de un gerente o del dueño.');
+    setEnviando(true);
+    const r = await rpcCaja('fn_caja_resumen_en_vivo', { p_club_id: Number(CLUB_ACTIVO_ID), p_sesion_id: cajaSel.sesion.id, p_empleado_id: auth.empleadoId, p_pin: auth.pin });
+    setEnviando(false);
+    setAuth((a) => ({ ...a, pin: '' }));
+    if (!r.ok) return setError(r.mensaje);
+    setCalculo(r.calculo);
+    return undefined;
+  }
+  const filas = calculo
+    ? [
+        ['Fondo inicial', calculo.fondo, ''],
+        ['Ventas en efectivo', calculo.ventas_efectivo, '+'],
+        ['Inscripciones y reposiciones', calculo.ingresos, '+'],
+        ['Gastos de caja chica', calculo.gastos, '−'],
+        ['Retiros', calculo.retiros, '−'],
+      ]
+    : [];
+  return (
+    <div className="space-y-4" data-testid="panel-vivo-caja">
+      <EnlaceAtrasWizard onClick={onVolver}>Volver</EnlaceAtrasWizard>
+      {calculo ? (
+        <div className="divide-y divide-slate-100 rounded-xl border border-slate-200" data-testid="corte-en-vivo">
+          {filas.map(([l, v, s]) => (
+            <div key={l} className="flex justify-between px-3.5 py-2 text-xs">
+              <span className="text-slate-600">{l}</span>
+              <span className="font-bold text-slate-800">
+                {s} {formatoMoneda(v)}
+              </span>
+            </div>
+          ))}
+          <div className="flex justify-between bg-slate-900 px-3.5 py-2.5 text-sm font-black text-slate-50">
+            <span>Esperado en la gaveta</span>
+            <span>{formatoMoneda(calculo.esperado)}</span>
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="text-xs text-slate-500">Solo gerencia: el esperado se muestra con PIN y nunca en la pantalla de quien cierra.</p>
+          <AutorizacionPinCaja empleados={caja.empleados} operador={caja.operador} roles={ROLES_CAJA_GERENCIA} valor={auth} onChange={setAuth} etiqueta="Consulta (Gerente / Dueño)" testid="auth-vivo" />
+          {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
+          <div className="flex justify-end">
+            <BotonPrimario onClick={consultar} disabled={enviando} data-testid="boton-ver-vivo">
+              <Eye size={15} /> Ver corte en vivo
+            </BotonPrimario>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- Control & Seguridad → "Caja y Cortes" ---------------------------------
+function ConfiguracionCajaCard() {
+  const caja = useCaja();
+  const toast = useToast();
+  const cfg = caja?.config || {};
+  const [fondo, setFondo] = useState(cfg.fondo_fijo != null ? String(cfg.fondo_fijo) : '');
+  const [tolerancia, setTolerancia] = useState(cfg.tolerancia_diferencia != null ? String(cfg.tolerancia_diferencia) : '0');
+  const [exigir, setExigir] = useState(cfg.exigir_apertura === true);
+  const [mostrar, setMostrar] = useState(cfg.mostrar_diferencia_recepcion !== false);
+  const [nuevaCaja, setNuevaCaja] = useState('');
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    setFondo(cfg.fondo_fijo != null ? String(cfg.fondo_fijo) : '');
+    setTolerancia(cfg.tolerancia_diferencia != null ? String(cfg.tolerancia_diferencia) : '0');
+    setExigir(cfg.exigir_apertura === true);
+    setMostrar(cfg.mostrar_diferencia_recepcion !== false);
+  }, [cfg.fondo_fijo, cfg.tolerancia_diferencia, cfg.exigir_apertura, cfg.mostrar_diferencia_recepcion]);
+  if (!caja?.disponible) return null;
+  const esDueno = rolCanonicoCaja(caja.operador?.rol) === 'owner';
+  async function conPin(fn) {
+    setError('');
+    if (!auth.empleadoId || !auth.pin) return setError('Confirma con el PIN del dueño.');
+    setEnviando(true);
+    const r = await fn();
+    setEnviando(false);
+    setAuth((a) => ({ ...a, pin: '' }));
+    if (!r.ok) return setError(r.mensaje);
+    await caja.recargar();
+    return r;
+  }
+  async function guardarConfig() {
+    const n = Number(fondo);
+    if (fondo === '' || !Number.isFinite(n) || n < 0) return setError('Captura el fondo fijo (MXN).');
+    const r = await conPin(() =>
+      rpcCaja('fn_caja_guardar_configuracion', {
+        p_club_id: Number(CLUB_ACTIVO_ID),
+        p_fondo_fijo: n,
+        p_tolerancia: Number(tolerancia) || 0,
+        p_exigir_apertura: exigir,
+        p_mostrar_diferencia_recepcion: mostrar,
+        p_empleado_id: auth.empleadoId,
+        p_pin: auth.pin,
+      })
+    );
+    if (r?.ok) toast({ titulo: 'Configuración de caja guardada', detalle: `Fondo fijo ${formatoMoneda(n)}` });
+    return undefined;
+  }
+  async function guardarCaja(c, cambios) {
+    const r = await conPin(() =>
+      rpcCaja('fn_caja_guardar_caja', {
+        p_club_id: Number(CLUB_ACTIVO_ID),
+        p_caja_id: c?.id || null,
+        p_nombre: cambios.nombre,
+        p_activa: cambios.activa,
+        p_orden: cambios.orden ?? c?.orden ?? (caja.cajas || []).length,
+        p_empleado_id: auth.empleadoId,
+        p_pin: auth.pin,
+      })
+    );
+    if (r?.ok) {
+      toast({ titulo: c ? 'Caja actualizada' : 'Caja creada', detalle: cambios.nombre });
+      if (!c) setNuevaCaja('');
+    }
+    return undefined;
+  }
+  return (
+    <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4" data-testid="config-caja">
+      <div className="flex items-center gap-2">
+        <Settings2 size={16} className="text-orange-500" />
+        <h3 className="text-sm font-black text-slate-900">Configuración de caja</h3>
+        {!esDueno && <span className="text-[11px] text-slate-500">· solo el dueño puede cambiarla</span>}
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Campo label="Fondo fijo de apertura (MXN)">
+          <input type="number" min="0" step="50" value={fondo} onChange={(e) => setFondo(e.target.value)} className={inputClase} disabled={!esDueno} data-testid="config-fondo" />
+        </Campo>
+        <Campo label="Tolerancia de diferencia (MXN)" hint="Diferencias hasta este monto no requieren explicación.">
+          <input type="number" min="0" step="1" value={tolerancia} onChange={(e) => setTolerancia(e.target.value)} className={inputClase} disabled={!esDueno} data-testid="config-tolerancia" />
+        </Campo>
+      </div>
+      <label className="flex items-start gap-2 text-xs text-slate-700">
+        <input type="checkbox" checked={exigir} onChange={(e) => setExigir(e.target.checked)} disabled={!esDueno} className="mt-0.5" data-testid="config-exigir" />
+        <span>
+          <span className="font-bold">Bloquear el cobro en efectivo si la caja de la terminal no está abierta.</span> Apagado: solo se muestra un aviso.
+        </span>
+      </label>
+      <label className="flex items-start gap-2 text-xs text-slate-700">
+        <input type="checkbox" checked={mostrar} onChange={(e) => setMostrar(e.target.checked)} disabled={!esDueno} className="mt-0.5" data-testid="config-mostrar" />
+        <span>
+          <span className="font-bold">Recepción ve el sobrante/faltante después de sellar su conteo.</span> Apagado: la diferencia solo la ve gerencia.
+        </span>
+      </label>
+      <div>
+        <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Cajas del club</p>
+        <div className="space-y-1.5" data-testid="lista-cajas">
+          {(caja.cajas || []).map((c) => (
+            <div key={c.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs">
+              <span className="flex items-center gap-2 font-bold text-slate-800">
+                {c.nombre} <ChipEstadoCaja sesion={c.sesion} />
+                {c.activa === false && <span className="text-[10px] font-bold uppercase text-slate-400">Desactivada</span>}
+              </span>
+              {esDueno && (
+                <button
+                  type="button"
+                  onClick={() => guardarCaja(c, { nombre: c.nombre, activa: c.activa === false })}
+                  disabled={enviando}
+                  className="text-[11px] font-bold text-orange-500 hover:underline"
+                >
+                  {c.activa === false ? 'Activar' : 'Desactivar'}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {esDueno && (
+          <div className="mt-2 flex gap-2">
+            <input value={nuevaCaja} onChange={(e) => setNuevaCaja(e.target.value)} className={inputClase} placeholder="Nueva caja (ej. Barra)" maxLength={40} data-testid="nueva-caja-nombre" />
+            <BotonSecundario onClick={() => nuevaCaja.trim() && guardarCaja(null, { nombre: nuevaCaja.trim(), activa: true })} disabled={enviando || !nuevaCaja.trim()} data-testid="boton-agregar-caja">
+              <Plus size={14} /> Agregar
+            </BotonSecundario>
+          </div>
+        )}
+      </div>
+      {esDueno && (
+        <>
+          <AutorizacionPinCaja empleados={caja.empleados} operador={caja.operador} roles={['owner']} valor={auth} onChange={setAuth} etiqueta="Confirma el dueño" testid="auth-config" />
+          {error && (
+            <p className="text-xs font-semibold text-rose-500" data-testid="error-config-caja">
+              {error}
+            </p>
+          )}
+          <div className="flex justify-end">
+            <BotonPrimario onClick={guardarConfig} disabled={enviando} data-testid="boton-guardar-config-caja">
+              {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />} Guardar configuración
+            </BotonPrimario>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TarjetaSesionCaja({ sesion, cierre, movimientos, onAprobar }) {
+  const gastos = movimientos.filter((m) => m.tipo === 'gasto' && !m.anulado).reduce((a, m) => a + Number(m.monto || 0), 0);
+  const retiros = movimientos.filter((m) => m.tipo === 'retiro' && !m.anulado).reduce((a, m) => a + Number(m.monto || 0), 0);
+  const meta = ETIQUETAS_RESULTADO_CAJA[cierre?.resultado] || null;
+  const fmt = (t) => (t ? new Date(t).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
+  return (
+    <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3.5" data-testid="tarjeta-sesion-caja">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-2 text-sm font-black text-slate-900">
+          {sesion.caja_nombre} · {sesion.fecha_operacion ? formatoFechaLarga(String(sesion.fecha_operacion).slice(0, 10)) : ''}
+          <ChipEstadoCaja sesion={sesion.estado === 'cerrada' ? null : sesion} />
+          {sesion.estado === 'cerrada' && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-500">Cerrada</span>}
+        </p>
+        {meta && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ring-1 ${meta.clase}`}>{meta.label}</span>}
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-600 sm:grid-cols-4">
+        <p>
+          <span className="block font-bold uppercase text-slate-400">Apertura</span>
+          {sesion.abierta_por_nombre} · {fmt(sesion.abierta_en)}
+          <span className="block">
+            Fondo {formatoMoneda(sesion.fondo_contado)}
+            {Number(sesion.diferencia_apertura) !== 0 && sesion.diferencia_apertura != null ? ` (${Number(sesion.diferencia_apertura) > 0 ? '+' : '−'}${formatoMoneda(Math.abs(Number(sesion.diferencia_apertura)))})` : ''}
+          </span>
+        </p>
+        <p>
+          <span className="block font-bold uppercase text-slate-400">Movimientos</span>
+          Gastos {formatoMoneda(gastos)}
+          <span className="block">Retiros {formatoMoneda(retiros)}</span>
+        </p>
+        <p>
+          <span className="block font-bold uppercase text-slate-400">Cierre</span>
+          {cierre ? (
+            <>
+              Contado {formatoMoneda(cierre.monto_reportado_efectivo)} · esperado {formatoMoneda(cierre.monto_teorico_efectivo)}
+              <span className={`block font-bold ${Number(cierre.diferencia) < 0 ? 'text-rose-600' : Number(cierre.diferencia) > 0 ? 'text-amber-600' : 'text-emerald-700'}`}>
+                Diferencia {Number(cierre.diferencia) > 0 ? '+' : Number(cierre.diferencia) < 0 ? '−' : ''}
+                {formatoMoneda(Math.abs(Number(cierre.diferencia) || 0))} · {cierre.contado_por_nombre}
+              </span>
+            </>
+          ) : (
+            'Sin cerrar'
+          )}
+        </p>
+        <p>
+          <span className="block font-bold uppercase text-slate-400">Retiro</span>
+          {cierre?.retiro_ganancia != null ? (
+            <>
+              {formatoMoneda(cierre.retiro_ganancia)} · {cierre.retiro_destino || '—'}
+              <span className="block">Queda {formatoMoneda(cierre.fondo_siguiente)} · {cierre.retirado_por_nombre}</span>
+            </>
+          ) : cierre ? (
+            'Pendiente de gerencia'
+          ) : (
+            '—'
+          )}
+        </p>
+      </div>
+      {cierre?.nota_diferencia && <p className="text-[11px] text-slate-500">Nota: {cierre.nota_diferencia}</p>}
+      {cierre && (
+        <div className="flex justify-end">
+          {cierre.aprobado ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase text-emerald-700">
+              <CheckCircle2 size={11} /> Aprobado · {cierre.aprobado_por_nombre || ''}
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onAprobar(cierre)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-orange-400/40 bg-orange-400/10 px-2.5 py-1.5 text-[11px] font-bold text-orange-600 hover:bg-orange-400/20"
+              data-testid="boton-aprobar-corte"
+            >
+              <CheckCircle2 size={12} /> Aprobar corte
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModalAprobarCorteCaja({ cierre, onClose, onAprobado }) {
+  const caja = useCaja();
+  const [nota, setNota] = useState(cierre.nota_diferencia || '');
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [error, setError] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const requiereNota = (cierre.resultado === 'sobrante' || cierre.resultado === 'faltante') && !cierre.nota_diferencia;
+  async function aprobar() {
+    setError('');
+    if (requiereNota && !nota.trim()) return setError('Explica la diferencia antes de aprobar.');
+    if (!auth.empleadoId || !auth.pin) return setError('Autoriza con el PIN de un gerente o del dueño.');
+    setEnviando(true);
+    const r = await rpcCaja('fn_caja_aprobar_corte', { p_club_id: Number(CLUB_ACTIVO_ID), p_cierre_id: String(cierre.id), p_nota: nota.trim() || null, p_empleado_id: auth.empleadoId, p_pin: auth.pin });
+    setEnviando(false);
+    setAuth((a) => ({ ...a, pin: '' }));
+    if (!r.ok) return setError(r.mensaje);
+    await onAprobado();
+    return undefined;
+  }
+  return (
+    <ModalShell titulo="Aprobar corte" subtitulo={`${cierre.caja_nombre || 'Caja'} · ${formatoMoneda(cierre.monto_reportado_efectivo)} contado`} onClose={onClose} icon={CheckCircle2}>
+      <div className="space-y-3" data-testid="modal-aprobar-corte">
+        <ResumenDiferenciaCaja contado={cierre.monto_reportado_efectivo} esperado={cierre.monto_teorico_efectivo} diferencia={cierre.diferencia} resultado={cierre.resultado} />
+        <Campo label={requiereNota ? 'Explicación de la diferencia (obligatoria)' : 'Nota (opcional)'}>
+          <input value={nota} onChange={(e) => setNota(e.target.value)} className={inputClase} data-testid="aprobar-nota" />
+        </Campo>
+        <AutorizacionPinCaja empleados={caja.empleados} operador={caja.operador} roles={ROLES_CAJA_GERENCIA} valor={auth} onChange={setAuth} etiqueta="Aprueba" testid="auth-aprobar" />
+        {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          <BotonPrimario onClick={aprobar} disabled={enviando} data-testid="boton-confirmar-aprobacion">
+            <CheckCircle2 size={15} /> Aprobar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function PanelCajaCortes({ cierresAnteriores, puedeAprobarAnteriores, onAprobarAnterior }) {
+  const caja = useCaja();
+  const [datos, setDatos] = useState({ sesiones: [], cierres: [], movimientos: [] });
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+  const [aprobando, setAprobando] = useState(null);
+  const cargar = useCallback(async () => {
+    setCargando(true);
+    setError('');
+    const { data: sesiones, error: e1 } = await conClubId(supabase.from('caja_sesiones').select('*')).order('abierta_en', { ascending: false }).limit(60);
+    if (e1) {
+      setError(e1.message || 'No se pudieron cargar las sesiones de caja.');
+      setCargando(false);
+      return;
+    }
+    const ids = (sesiones || []).map((s) => s.id);
+    let cierres = [];
+    let movimientos = [];
+    if (ids.length > 0) {
+      const r2 = await supabase.from('cierres_caja').select('*').in('sesion_id', ids);
+      cierres = r2.data || [];
+      const r3 = await supabase.from('caja_movimientos').select('*').in('sesion_id', ids);
+      movimientos = r3.data || [];
+    }
+    setDatos({ sesiones: sesiones || [], cierres, movimientos });
+    setCargando(false);
+  }, []);
+  useEffect(() => {
+    cargar();
+  }, [cargar, caja?.version]);
+  const anteriores = (cierresAnteriores || []).filter((c) => !c.sesion_id);
+  return (
+    <div className="space-y-4" data-testid="panel-caja-cortes">
+      <ConfiguracionCajaCard />
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sesiones y cortes de caja</p>
+          <button type="button" onClick={cargar} className="inline-flex items-center gap-1 text-[11px] font-bold text-orange-500 hover:underline">
+            <RefreshCw size={12} /> Actualizar
+          </button>
+        </div>
+        {error && <ErrorBanner mensaje={error} onReintentar={cargar} />}
+        {cargando ? (
+          <SkeletonGrid />
+        ) : datos.sesiones.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
+            Todavía no hay aperturas de caja. Se abren desde Smart POS → botón «Caja».
+          </p>
+        ) : (
+          datos.sesiones.map((s) => (
+            <TarjetaSesionCaja
+              key={s.id}
+              sesion={s}
+              cierre={datos.cierres.find((c) => String(c.sesion_id) === String(s.id)) || null}
+              movimientos={datos.movimientos.filter((m) => String(m.sesion_id) === String(s.id))}
+              onAprobar={setAprobando}
+            />
+          ))
+        )}
+      </div>
+      {anteriores.length > 0 && (
+        <details className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <summary className="cursor-pointer text-xs font-bold text-slate-600">Arqueos de la versión anterior ({anteriores.length})</summary>
+          <div className="mt-2 space-y-2">
+            {anteriores.map((c) => (
+              <FilaCierreCaja key={c.id} cierre={c} puedeAprobar={puedeAprobarAnteriores} onAprobar={onAprobarAnterior} />
+            ))}
+          </div>
+        </details>
+      )}
+      <AnimatePresence>
+        {aprobando && (
+          <ModalAprobarCorteCaja
+            cierre={aprobando}
+            onClose={() => setAprobando(null)}
+            onAprobado={async () => {
+              setAprobando(null);
+              await cargar();
+            }}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function ModalDevolucionPOS({ productos, onClose, onRegistrar }) {
   const productosDisponibles = useMemo(() => productos.filter((p) => p.activo !== false), [productos]);
   const [productoId, setProductoId] = useState(productosDisponibles[0]?.id || '');
@@ -18734,7 +20099,14 @@ function ModuloSmartPOS({
             operador: operador?.nombre || null,
             reserva_id: null,
             cancha_id: canchaIdParaVenta,
-            detalles: { items: itemsComprobante, pagos_divididos: null, mixto: metodoPago === 'mixto' ? mixto || null : null },
+            // App-135 — `inscripcion_ref`: la caja (v137) ya contó este
+            // efectivo al marcarse pagada la inscripción; así no lo cuenta 2 veces.
+            detalles: {
+              items: itemsComprobante,
+              pagos_divididos: null,
+              mixto: metodoPago === 'mixto' ? mixto || null : null,
+              inscripcion_ref: fila?.tabla && fila?.id != null ? { tabla: fila.tabla, id: String(fila.id) } : undefined,
+            },
             estado_pago: 'pagado',
           })
         )
@@ -20148,9 +21520,14 @@ function ModuloSmartPOS({
                 <Calculator size={15} /> Cerrar Turno / Arqueo
               </BotonSecundario>
             )}
+            {/* App-135 — Caja (v137). Sin módulo configurado no pinta nada. */}
+            <BotonCajaPOS />
           </div>
         )}
+        {vistaPOS !== 'vender' && <BotonCajaPOS />}
       </div>
+
+      <AvisoCajaPOS />
 
       <TransicionPestana activeKey={vistaPOS}>
       {vistaPOS === 'cuentas' ? (
@@ -33065,6 +34442,38 @@ const TIPOS_EVENTO_AUDITORIA = {
       });
     },
   },
+  // App-135 — Configuración de caja (fondo fijo, tolerancia, bloqueo) y
+  // alta/edición de cajas. Antes ➔ después por ajuste.
+  caja_configuracion: {
+    label: 'Configuración de caja',
+    categoria: 'auditoria',
+    icon: Wallet,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) => {
+      const antes = d?.antes && typeof d.antes === 'object' ? d.antes : {};
+      const despues = d?.despues && typeof d.despues === 'object' ? d.despues : {};
+      const siNo = (v) => (v === true ? 'Sí' : v === false ? 'No' : v);
+      const campos =
+        d?.accion === 'configuracion'
+          ? [
+              { k: 'fondo_fijo', campo: 'Fondo fijo', fmt: dineroLog },
+              { k: 'tolerancia', campo: 'Tolerancia', fmt: dineroLog },
+              { k: 'exigir_apertura', campo: 'Bloquear efectivo sin caja abierta', fmt: siNo },
+              { k: 'mostrar_diferencia_recepcion', campo: 'Recepción ve la diferencia', fmt: siNo },
+            ]
+          : [
+              { k: 'nombre', campo: 'Nombre', fmt: (v) => v },
+              { k: 'activa', campo: 'Activa', fmt: siNo },
+            ];
+      const cambios = campos
+        .filter((c) => d?.antes == null || String(antes[c.k]) !== String(despues[c.k]))
+        .map((c) => ({ campo: c.campo, antes: d?.antes == null ? null : c.fmt(antes[c.k]), despues: c.fmt(despues[c.k]) }));
+      const resumen =
+        d?.accion === 'caja_creada' ? `Creó la caja ${d?.caja || ''}` : d?.accion === 'caja_editada' ? `Editó la caja ${d?.caja || ''}` : 'Actualizó la configuración de caja';
+      return armarPresentacionLog({ resumen, cambios, datos: [{ etiqueta: 'Caja', valor: d?.accion === 'configuracion' ? null : d?.caja }] });
+    },
+  },
   tarifa_horario_guardada: {
     label: 'Tarifa / franja horaria',
     categoria: 'auditoria',
@@ -33425,6 +34834,162 @@ const TIPOS_EVENTO_AUDITORIA = {
           { etiqueta: 'Monto contado', valor: dineroLog(d?.montoReportado) },
           { etiqueta: 'Monto teórico', valor: dineroLog(d?.montoTeorico) },
           { etiqueta: 'Resultado', valor: dif !== 0 ? `${tipoDif} de ${formatoMoneda(Math.abs(dif))}` : tipoDif },
+        ],
+      });
+    },
+  },
+  // App-135 — Módulo de Caja (v137). Los escribe el SERVIDOR (RPC fn_caja_*).
+  caja_apertura: {
+    label: 'Apertura de caja',
+    categoria: 'caja',
+    icon: Wallet,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) => {
+      const dif = Number(d?.diferencia) || 0;
+      return armarPresentacionLog({
+        resumen: unirLog([unirLog(['Abrió', d?.caja], ' '), dineroLog(d?.fondo_contado) ? `fondo ${dineroLog(d.fondo_contado)}` : null, dif !== 0 ? `${dif > 0 ? 'sobran' : 'faltan'} ${formatoMoneda(Math.abs(dif))}` : null]),
+        datos: [
+          { etiqueta: 'Caja', valor: d?.caja },
+          { etiqueta: 'Fondo contado', valor: dineroLog(d?.fondo_contado) },
+          { etiqueta: 'Fondo esperado', valor: dineroLog(d?.fondo_esperado) },
+          { etiqueta: 'Diferencia', valor: dif !== 0 ? `${dif > 0 ? 'Sobrante' : 'Faltante'} de ${formatoMoneda(Math.abs(dif))}` : 'Sin diferencia' },
+          { etiqueta: 'Nota', valor: d?.nota },
+        ],
+      });
+    },
+  },
+  caja_gasto: {
+    label: 'Gasto de caja chica',
+    categoria: 'caja',
+    icon: Receipt,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([d?.concepto || 'Gasto', dineroLog(d?.monto), d?.caja]),
+        datos: [
+          { etiqueta: 'Caja', valor: d?.caja },
+          { etiqueta: 'Monto', valor: dineroLog(d?.monto) },
+          { etiqueta: 'Concepto', valor: d?.concepto },
+          { etiqueta: 'Categoría', valor: d?.categoria },
+          { etiqueta: 'Egreso en Contabilidad', valor: d?.egreso_contable ? 'Creado (Caja chica · efectivo)' : d?.egreso_contable_error ? 'No se pudo crear — capturarlo a mano' : null },
+        ],
+      }),
+  },
+  caja_retiro: {
+    label: 'Retiro de caja',
+    categoria: 'caja',
+    icon: Banknote,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([d?.concepto || 'Retiro', dineroLog(d?.monto), d?.destino]),
+        datos: [
+          { etiqueta: 'Caja', valor: d?.caja },
+          { etiqueta: 'Monto', valor: dineroLog(d?.monto) },
+          { etiqueta: 'Concepto', valor: d?.concepto },
+          { etiqueta: 'Destino', valor: d?.destino },
+        ],
+      }),
+  },
+  caja_reposicion: {
+    label: 'Reposición de fondo',
+    categoria: 'caja',
+    icon: Plus,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([d?.concepto || 'Reposición', dineroLog(d?.monto), d?.caja]),
+        datos: [
+          { etiqueta: 'Caja', valor: d?.caja },
+          { etiqueta: 'Monto', valor: dineroLog(d?.monto) },
+          { etiqueta: 'Concepto', valor: d?.concepto },
+        ],
+      }),
+  },
+  caja_movimiento_anulado: {
+    label: 'Movimiento de caja anulado',
+    categoria: 'caja',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) => {
+      const tipos = { gasto: 'Gasto', retiro: 'Retiro', reposicion: 'Reposición' };
+      return armarPresentacionLog({
+        resumen: unirLog([unirLog([tipos[d?.tipo] || 'Movimiento', 'anulado'], ' '), d?.concepto, dineroLog(d?.monto)]),
+        datos: [
+          { etiqueta: 'Tipo', valor: tipos[d?.tipo] || d?.tipo },
+          { etiqueta: 'Monto', valor: dineroLog(d?.monto) },
+          { etiqueta: 'Concepto', valor: d?.concepto },
+          { etiqueta: 'Motivo', valor: d?.motivo },
+        ],
+      });
+    },
+  },
+  caja_cierre: {
+    label: 'Cierre de caja (arqueo ciego)',
+    categoria: 'caja',
+    icon: Lock,
+    color: 'text-orange-400',
+    bg: 'bg-orange-400/10',
+    presentar: (d) => {
+      const dif = Number(d?.diferencia) || 0;
+      const etiqueta = ETIQUETAS_RESULTADO_CAJA[d?.resultado]?.label || (dif > 0 ? 'Sobrante' : dif < 0 ? 'Faltante' : 'Cuadra');
+      const g = d?.desglose && typeof d.desglose === 'object' ? d.desglose : null;
+      return armarPresentacionLog({
+        resumen: unirLog([unirLog(['Cerró', d?.caja], ' '), dineroLog(d?.contado) ? `contado ${dineroLog(d.contado)}` : null, dif !== 0 ? `${etiqueta.toLowerCase()} ${formatoMoneda(Math.abs(dif))}` : etiqueta.toLowerCase()]),
+        datos: [
+          { etiqueta: 'Caja', valor: d?.caja },
+          { etiqueta: 'Contado', valor: dineroLog(d?.contado) },
+          { etiqueta: 'Esperado (servidor)', valor: dineroLog(d?.esperado) },
+          { etiqueta: 'Resultado', valor: dif !== 0 ? `${etiqueta} de ${formatoMoneda(Math.abs(dif))}` : etiqueta },
+          { etiqueta: 'Fondo inicial', valor: g ? dineroLog(g.fondo) : null },
+          { etiqueta: 'Ventas en efectivo', valor: g ? dineroLog(g.ventas_efectivo) : null },
+          { etiqueta: 'Inscripciones / reposiciones', valor: g ? dineroLog(g.ingresos) : null },
+          { etiqueta: 'Gastos', valor: g ? dineroLog(g.gastos) : null },
+          { etiqueta: 'Retiros', valor: g ? dineroLog(g.retiros) : null },
+          { etiqueta: 'Nota', valor: d?.nota },
+        ],
+      });
+    },
+  },
+  caja_retiro_ganancia: {
+    label: 'Retiro de ganancia',
+    categoria: 'caja',
+    icon: Banknote,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([unirLog(['Retiró', dineroLog(d?.retiro) || formatoMoneda(0)], ' '), d?.destino, dineroLog(d?.fondo_siguiente) ? `quedan ${dineroLog(d.fondo_siguiente)}` : null]),
+        datos: [
+          { etiqueta: 'Caja', valor: d?.caja },
+          { etiqueta: 'Contado al cierre', valor: dineroLog(d?.contado) },
+          { etiqueta: 'Retiro', valor: dineroLog(d?.retiro) },
+          { etiqueta: 'Destino', valor: d?.destino },
+          { etiqueta: 'Fondo para la siguiente apertura', valor: dineroLog(d?.fondo_siguiente) },
+          { etiqueta: 'Fondo fijo', valor: dineroLog(d?.fondo_fijo) },
+        ],
+      }),
+  },
+  caja_corte_aprobado: {
+    label: 'Corte de caja aprobado',
+    categoria: 'caja',
+    icon: CheckCircle2,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) => {
+      const dif = Number(d?.diferencia) || 0;
+      const etiqueta = ETIQUETAS_RESULTADO_CAJA[d?.resultado]?.label || null;
+      return armarPresentacionLog({
+        resumen: unirLog(['Corte aprobado', d?.caja, etiqueta ? (dif !== 0 ? `${etiqueta.toLowerCase()} ${formatoMoneda(Math.abs(dif))}` : etiqueta.toLowerCase()) : null]),
+        datos: [
+          { etiqueta: 'Caja', valor: d?.caja },
+          { etiqueta: 'Resultado', valor: etiqueta ? (dif !== 0 ? `${etiqueta} de ${formatoMoneda(Math.abs(dif))}` : etiqueta) : null },
+          { etiqueta: 'Nota', valor: d?.nota },
         ],
       });
     },
@@ -36709,6 +38274,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
 
 function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscritosReta = [], onClose, onInscrito }) {
   const toast = useToast();
+  const efectivoBloqueadoCaja = useBloqueoEfectivoCaja(); // App-135 (v137): false sin módulo/bloqueo
   // App-117 — Plan de Rescate: si la Reta ya empezó, esta inscripción solo
   // pudo abrirse desde la Tolerancia de Inscripción (Recepción) — se marca
   // `ingreso_rescate: 'gracia'` (valor fijo de la columna v127) y queda en auditoría.
@@ -36737,6 +38303,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscr
   async function guardar() {
     if (!nombre.trim()) return setError('Indica el nombre del jugador.');
     if (mixtoInvalido) return setError('El Efectivo + Tarjeta debe sumar exactamente el monto de la inscripción.');
+    if (efectivoBloqueadoCaja && estadoPago === 'pagado' && esMetodoConEfectivoCaja(metodoPago)) return setError(MENSAJE_EFECTIVO_BLOQUEADO_CAJA);
     // CRM & Guardado de Teléfono: obligatorio desde este formulario, igual
     // que en Smart POS — es el identificador único del cliente
     // (`resolverJugadorId`), así que sin teléfono un jugador con nombre
@@ -36910,11 +38477,16 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscr
             <Campo label="Método de Pago">
               <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
                 {METODOS_PAGO_POS.map((m) => (
-                  <option key={m.value} value={m.value}>
+                  <option key={m.value} value={m.value} disabled={(efectivoBloqueadoCaja && esMetodoConEfectivoCaja(m.value)) || undefined}>
                     {m.label}
                   </option>
                 ))}
               </select>
+              {efectivoBloqueadoCaja && esMetodoConEfectivoCaja(metodoPago) && (
+                <p className="mt-1 text-[11px] font-semibold text-rose-600" data-testid="efectivo-bloqueado-caja">
+                  {MENSAJE_EFECTIVO_BLOQUEADO_CAJA}
+                </p>
+              )}
             </Campo>
             {metodoPago === 'mixto' && (
               <CampoPagoMixto
@@ -37894,6 +39466,7 @@ function ModalGestionTorneo({
 
 function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesExistentes = [], onClose, onAgregado }) {
   const toast = useToast();
+  const efectivoBloqueadoCaja = useBloqueoEfectivoCaja(); // App-135 (v137): false sin módulo/bloqueo
   const [nombre, setNombre] = useState('');
   const [telefono, setTelefono] = useState('');
   // Fecha de Nacimiento (reemplaza el campo "Correo" de este formulario,
@@ -37976,6 +39549,7 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
   async function guardar() {
     if (!nombre.trim()) return setError('Indica el nombre del participante.');
     if (mixtoInvalido) return setError('El Efectivo + Tarjeta debe sumar exactamente el monto de la inscripción.');
+    if (efectivoBloqueadoCaja && estadoPago === 'pagado' && esMetodoConEfectivoCaja(metodoPago)) return setError(MENSAJE_EFECTIVO_BLOQUEADO_CAJA);
     // CRM & Guardado de Teléfono: obligatorio, igual que en Smart POS — es el
     // identificador único del cliente (`resolverJugadorId`).
     const claveTelParticipante = claveTelefono(telefono);
@@ -38183,11 +39757,16 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
             <Campo label="Método de Pago">
               <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
                 {METODOS_PAGO_POS.map((m) => (
-                  <option key={m.value} value={m.value}>
+                  <option key={m.value} value={m.value} disabled={(efectivoBloqueadoCaja && esMetodoConEfectivoCaja(m.value)) || undefined}>
                     {m.label}
                   </option>
                 ))}
               </select>
+              {efectivoBloqueadoCaja && esMetodoConEfectivoCaja(metodoPago) && (
+                <p className="mt-1 text-[11px] font-semibold text-rose-600" data-testid="efectivo-bloqueado-caja">
+                  {MENSAJE_EFECTIVO_BLOQUEADO_CAJA}
+                </p>
+              )}
             </Campo>
             {metodoPago === 'mixto' && (
               <CampoPagoMixto
@@ -43967,6 +45546,7 @@ function ModalDetalleClase({
   const [telefonoAlumno, setTelefonoAlumno] = useState('');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
   const [tipoPago, setTipoPago] = useState('mensualidad');
+  const efectivoBloqueadoCaja = useBloqueoEfectivoCaja(); // App-135 (v137): false sin módulo/bloqueo
   const [estadoPagoAlta, setEstadoPagoAlta] = useState('pendiente');
   // Método de Pago (item 1, migracion_v32) — solo aplica si se registra YA
   // pagado aquí mismo (si queda "Pendiente", se cobra después en Smart POS;
@@ -44018,6 +45598,9 @@ function ModalDetalleClase({
     }
     if (mixtoInvalidoAlta) {
       return toast({ titulo: 'El Efectivo + Tarjeta debe sumar exactamente el monto a cobrar.', tono: 'aviso' });
+    }
+    if (efectivoBloqueadoCaja && !membresiaActivaPreview && estadoPagoAlta === 'pagado' && esMetodoConEfectivoCaja(metodoPago)) {
+      return toast({ titulo: 'Caja cerrada', detalle: MENSAJE_EFECTIVO_BLOQUEADO_CAJA, tono: 'aviso' });
     }
     // App-120 — Inscripción Única (misma regla que v128): antes de tocar el
     // CRM y otra vez con el jugador ya resuelto.
@@ -44897,11 +46480,16 @@ function ModalDetalleClase({
                     <Campo label="Método de Pago">
                       <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className={inputClase}>
                         {METODOS_PAGO_POS.map((m) => (
-                          <option key={m.value} value={m.value}>
+                          <option key={m.value} value={m.value} disabled={(efectivoBloqueadoCaja && esMetodoConEfectivoCaja(m.value)) || undefined}>
                             {m.label}
                           </option>
                         ))}
                       </select>
+                      {efectivoBloqueadoCaja && esMetodoConEfectivoCaja(metodoPago) && (
+                        <p className="mt-1 text-[11px] font-semibold text-rose-600" data-testid="efectivo-bloqueado-caja">
+                          {MENSAJE_EFECTIVO_BLOQUEADO_CAJA}
+                        </p>
+                      )}
                     </Campo>
                     {metodoPago === 'mixto' && (
                       <CampoPagoMixto
@@ -52634,7 +54222,10 @@ function ModuloControlSeguridad({
   consultarVentasLog = null,
   canchas = [],
 }) {
-  const [subvista, setSubvista] = useState('empleados'); // 'empleados' | 'cortes' | 'log'
+  const [subvista, setSubvista] = useState('empleados'); // 'empleados' | 'cortes' | 'caja' | 'log'
+  // App-135 — "Caja y Cortes" (v137): solo aparece si la migración existe.
+  const cajaModulo = useCaja();
+  const cajaModuloDisponible = Boolean(cajaModulo?.disponible);
   // App-134 — pestaña del Log y evento abierto en el modal de detalle.
   const [categoriaLog, setCategoriaLog] = useState('auditoria'); // 'auditoria' | 'caja' | 'canchas'
   const [eventoDetalle, setEventoDetalle] = useState(null);
@@ -52831,6 +54422,7 @@ function ModuloControlSeguridad({
   const SUBVISTAS = [
     { value: 'empleados', label: 'Empleados', icon: Users },
     ...(SHOW_BETA_POS_CIERRE_ARQUEO ? [{ value: 'cortes', label: 'Cortes de Caja', icon: Calculator }] : []),
+    ...(cajaModuloDisponible ? [{ value: 'caja', label: 'Caja y Cortes', icon: Wallet }] : []),
     { value: 'log', label: 'Log de Actividad', icon: History },
   ];
 
@@ -52937,6 +54529,14 @@ function ModuloControlSeguridad({
             </div>
           )}
         </div>
+      )}
+
+      {subvista === 'caja' && cajaModuloDisponible && (
+        <PanelCajaCortes
+          cierresAnteriores={cierresCaja}
+          puedeAprobarAnteriores={Boolean(permisos?.puedeAprobarCorteCaja)}
+          onAprobarAnterior={aprobarCierreCaja}
+        />
       )}
 
       {subvista === 'log' && (
@@ -74029,6 +75629,67 @@ function AppInterno({ clubInicial } = {}) {
     cambiarPlan: cambiarPlanSuscripcion,
   };
 
+  // App-135 — Módulo de Caja (v137). Solo LEE el estado (qué cajas hay y si
+  // están abiertas, nunca montos de ventas); toda operación de dinero la
+  // hacen los componentes vía `rpcCaja` → RPC SECURITY DEFINER con PIN. Sin
+  // v137 o sin configurar, `disponible`/`configurada` quedan en false y
+  // Smart POS, inscripciones y Control & Seguridad se ven y cobran igual que
+  // antes (cero cambios).
+  const [cajaEstado, setCajaEstado] = useState(null);
+  const [cajaTerminalId, setCajaTerminalId] = useState(() => leerCajaTerminalLocal());
+  const [versionCaja, setVersionCaja] = useState(0);
+  const cargarEstadoCaja = useCallback(async () => {
+    const r = await rpcCaja('fn_caja_estado', { p_club_id: Number(CLUB_ACTIVO_ID) });
+    setCajaEstado(r && r.ok ? r : { ok: false, codigo: r?.codigo || 'error' });
+    setVersionCaja((v) => v + 1);
+    return r;
+  }, []);
+  useEffect(() => {
+    if (!hayColaboradorFichado) return undefined;
+    cargarEstadoCaja();
+    const alEnfocar = () => cargarEstadoCaja();
+    const intervalo = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') cargarEstadoCaja();
+    }, 60000);
+    window.addEventListener('focus', alEnfocar);
+    return () => {
+      clearInterval(intervalo);
+      window.removeEventListener('focus', alEnfocar);
+    };
+  }, [hayColaboradorFichado, cargarEstadoCaja]);
+  const elegirCajaTerminal = useCallback((id) => {
+    guardarCajaTerminalLocal(id || null);
+    setCajaTerminalId(id ? String(id) : null);
+  }, []);
+  const cajaCtx = useMemo(() => {
+    const disponible = Boolean(cajaEstado?.ok);
+    const cajas = disponible && Array.isArray(cajaEstado.cajas) ? cajaEstado.cajas : [];
+    const activas = cajas.filter((c) => c && c.activa !== false);
+    const configurada = disponible && cajaEstado.configurada === true && activas.length > 0;
+    const cajaTerminal = configurada
+      ? activas.find((c) => String(c.id) === String(cajaTerminalId)) || (activas.length === 1 ? activas[0] : null)
+      : null;
+    const config = disponible ? cajaEstado.config || {} : {};
+    return {
+      disponible,
+      configurada,
+      puedeOperar: ROLES_CAJA_OPERAR.includes(rolCanonicoCaja(operador?.rol)),
+      config,
+      cajas,
+      cajaTerminal,
+      elegirCajaTerminal,
+      recargar: cargarEstadoCaja,
+      efectivoBloqueado: Boolean(configurada && config.exigir_apertura === true && cajaTerminal?.sesion?.estado !== 'abierta'),
+      operador,
+      empleados,
+      version: versionCaja,
+    };
+  }, [cajaEstado, cajaTerminalId, elegirCajaTerminal, cargarEstadoCaja, operador, empleados, versionCaja]);
+  const idCajaTerminal = cajaCtx.cajaTerminal?.id || null;
+  useEffect(() => {
+    fijarCajaEnPeticionesSupabase(idCajaTerminal);
+  }, [idCajaTerminal]);
+
   // App-117 — Plan de Rescate de Retas: lo consumen `TarjetaReta`, el Detalle
   // de Reta de la Parrilla, `ModalInscribirJugador` y Configuración.
   const coachesRescateRetas = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
@@ -74688,6 +76349,7 @@ function AppInterno({ clubInicial } = {}) {
     <BillingClubContext.Provider value={billingClubCtx}>
       <RescateRetasContext.Provider value={rescateRetasCtx}>
       <AuditoriaLogContext.Provider value={registrarEventoAuditoria}>
+      <CajaContext.Provider value={cajaCtx}>
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={faseEntrada}
@@ -74700,6 +76362,7 @@ function AppInterno({ clubInicial } = {}) {
           {contenido}
         </motion.div>
       </AnimatePresence>
+      </CajaContext.Provider>
       </AuditoriaLogContext.Provider>
       </RescateRetasContext.Provider>
       {confirmacionPagoBilling && (
