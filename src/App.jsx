@@ -15044,6 +15044,12 @@ function ModalNuevoProducto({
   function quitarImagen(idx) {
     setImagenes((prev) => prev.filter((_, i) => i !== idx));
   }
+  // App-139 — «Eliminar todas las imágenes» (con confirmación en 2 pasos).
+  const [confirmarQuitarTodas, setConfirmarQuitarTodas] = useState(false);
+  function quitarTodasLasImagenes() {
+    setImagenes([]);
+    setConfirmarQuitarTodas(false);
+  }
   function moverImagenAPortada(idx) {
     setImagenes((prev) => {
       if (idx <= 0 || idx >= prev.length) return prev;
@@ -15154,7 +15160,11 @@ function ModalNuevoProducto({
     // lo último que tenían). `imagenes` (arreglo nuevo) SIEMPRE se escribe
     // tal cual quedó en pantalla, vacío incluido — es la fuente de verdad de
     // la Galería del Portal.
-    if (imagen) campos.imagen_url = imagen;
+    // App-139 — sincronía total con la galería: si se eliminaron TODAS las
+    // fotos, la portada vieja (`imagen_url`) también se limpia; así POS,
+    // Inventario, Kardex y el Portal no siguen mostrando una foto que el
+    // admin ya quitó (vuelven a la imagen de referencia por categoría).
+    campos.imagen_url = imagen || null;
     campos.imagenes = imagenes;
 
     // Blindaje de Seguridad — Editar Producto desde Smart POS: con el
@@ -15490,56 +15500,95 @@ function ModalNuevoProducto({
           </label>
         )}
 
-        <div className="space-y-2">
-          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Imágenes del producto {imagenes.length > 0 && `(${imagenes.length})`}
-          </span>
+        <div className="space-y-2" data-testid="seccion-imagenes-producto">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Imágenes del producto {imagenes.length > 0 && `(${imagenes.length})`}
+            </span>
+            {/* App-139 — acción global: limpiar toda la galería (2 pasos). */}
+            {imagenes.length > 0 &&
+              (confirmarQuitarTodas ? (
+                <span className="flex items-center gap-1.5 text-[11px]" data-testid="confirmar-eliminar-todas">
+                  <span className="font-semibold text-rose-500">¿Eliminar {imagenes.length === 1 ? 'la imagen' : `las ${imagenes.length} imágenes`}?</span>
+                  <button
+                    type="button"
+                    onClick={quitarTodasLasImagenes}
+                    className="rounded-md bg-rose-500 px-2 py-1 font-bold text-white transition hover:bg-rose-400"
+                    data-testid="boton-confirmar-eliminar-todas"
+                  >
+                    Sí, eliminar
+                  </button>
+                  <button type="button" onClick={() => setConfirmarQuitarTodas(false)} className="px-1 py-1 font-semibold text-slate-500 hover:text-slate-800">
+                    Cancelar
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmarQuitarTodas(true)}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-500 hover:underline"
+                  data-testid="boton-eliminar-todas-imagenes"
+                >
+                  <Trash2 size={12} /> Eliminar todas las imágenes
+                </button>
+              ))}
+          </div>
           <p className="text-[11px] text-slate-500">
-            Sube una o varias fotos — ideal para ropa y accesorios con varios ángulos. La primera es la portada: se
-            usa como miniatura en POS, Inventario y el carrito del Portal.
+            Sube una o varias fotos. La marcada como «Portada» se usa como miniatura en POS, Inventario y el Portal; usa «Hacer portada» para
+            cambiarla o el bote de basura para quitar una foto. Los cambios se aplican al guardar el producto.
           </p>
-          {/* Múltiples Imágenes (mejora): cada "Subir archivo" AGREGA una
-              miniatura más a la galería de abajo — nunca reemplaza a las
-              anteriores (ver `onImagenSubida`). Subida limpia por archivo,
-              ÚNICAMENTE — se quitó el campo de pegar una URL/link de texto. */}
+          {/* Múltiples Imágenes: cada "Subir archivo" AGREGA una miniatura
+              más a la galería (ver `onImagenSubida`). Subida limpia por
+              archivo, ÚNICAMENTE — sin campo de URL/link de texto. */}
           <SelectorArchivoImagen carpeta="productos" onSubida={onImagenSubida} />
           {imagenes.length > 0 ? (
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+            // App-139 — controles SIEMPRE visibles (antes solo aparecían con
+            // el mouse encima: en iPad/celular no había forma de usarlos).
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" data-testid="galeria-imagenes-producto">
               {imagenes.map((url, idx) => (
-                <div key={`${url}-${idx}`} className="group relative h-20 overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
+                <div
+                  key={`${url}-${idx}`}
+                  className={`relative h-28 overflow-hidden rounded-lg border bg-slate-100 ${idx === 0 ? 'border-orange-400 ring-2 ring-orange-400/40' : 'border-slate-200'}`}
+                  data-testid="imagen-producto"
+                  data-portada={idx === 0 ? 'si' : 'no'}
+                  data-url={url}
+                >
                   <img
                     src={urlSegura(url) || undefined}
-                    alt={`Imagen ${idx + 1}`}
+                    alt={idx === 0 ? 'Portada del producto' : `Imagen ${idx + 1}`}
                     className="h-full w-full object-cover"
                     onError={(e) => {
                       e.currentTarget.style.display = 'none';
                     }}
                   />
                   {idx === 0 && (
-                    <span className="absolute left-1 top-1 rounded bg-orange-400 px-1.5 py-0.5 text-[9px] font-black text-slate-950">
-                      Portada
+                    <span
+                      className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded bg-orange-400 px-1.5 py-0.5 text-[10px] font-black text-slate-950 shadow"
+                      data-testid="badge-portada"
+                    >
+                      <Star size={10} className="fill-current" /> Portada
                     </span>
                   )}
-                  <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 bg-slate-950/60 px-1 py-1 opacity-0 transition group-hover:opacity-100">
-                    {idx !== 0 && (
-                      <button
-                        type="button"
-                        onClick={() => moverImagenAPortada(idx)}
-                        title="Usar como portada"
-                        className="rounded bg-white/90 p-1 text-slate-700 hover:bg-white"
-                      >
-                        <Star size={11} />
-                      </button>
-                    )}
+                  <button
+                    type="button"
+                    onClick={() => quitarImagen(idx)}
+                    title="Eliminar esta imagen"
+                    aria-label={`Eliminar imagen ${idx + 1}`}
+                    className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-white/95 text-rose-500 shadow ring-1 ring-slate-200 transition hover:bg-rose-50"
+                    data-testid="boton-quitar-imagen"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                  {idx !== 0 && (
                     <button
                       type="button"
-                      onClick={() => quitarImagen(idx)}
-                      title="Quitar imagen"
-                      className="rounded bg-white/90 p-1 text-rose-500 hover:bg-white"
+                      onClick={() => moverImagenAPortada(idx)}
+                      className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-slate-950/70 py-1.5 text-[10px] font-bold text-white transition hover:bg-slate-950/85"
+                      data-testid="boton-hacer-portada"
                     >
-                      <Trash2 size={11} />
+                      <Star size={10} /> Hacer portada
                     </button>
-                  </div>
+                  )}
                 </div>
               ))}
             </div>
