@@ -9289,6 +9289,17 @@ function ModalNuevaReserva({
     }
 
     const reservaCreada = { ...data, jugador_nombre: data.jugador_nombre || nombreJugador };
+    // App-134 — Canchas y Eventos: quién creó la reserva y para quién.
+    onRegistrarAuditoria?.('reserva_creada', {
+      reserva_id: data?.id != null ? String(data.id) : null,
+      jugador: nombreJugador,
+      cancha: canchaSeleccionada.nombre || null,
+      fecha,
+      hora_inicio: horaInicio,
+      hora_fin: horaFin,
+      monto: montoAutomatico ?? 0,
+      estado_pago: 'pendiente',
+    });
     toast({
       titulo: 'Reserva creada — cóbrala en Smart POS',
       detalle: `${canchaSeleccionada.nombre || 'Cancha'} · ${formatoHora12(horaInicio)} · ${formatoMoneda(montoAutomatico ?? 0)}`,
@@ -9715,6 +9726,7 @@ function DetalleReserva({
     toast({ titulo: 'Reserva reprogramada', detalle: `${formatoHora12(nuevaHoraInicio)} – ${formatoHora12(nuevaHoraFin)}` });
     onRegistrarAuditoria?.('modificacion_horario', {
       jugador: reserva.jugador_nombre,
+      fecha: reserva.fecha || null,
       canchaAntes: cancha?.nombre,
       horaAntes: `${formatoHora12(reserva.hora_inicio)}–${formatoHora12(reserva.hora_fin)}`,
       canchaDespues: cancha?.nombre,
@@ -32858,215 +32870,1312 @@ function guardarOperadorActivoLocal(operador) {
   }
 }
 
-// Catálogo de tipos de evento del Log de Actividad — los 4 que pide el
-// control interno (cancelaciones, descuentos, devoluciones/ediciones de
-// precio en POS, modificación de horarios/canchas) más un par de eventos que
-// ya vivían en el sistema (arqueo de caja) y ahora también quedan
-// auditados. `detalleTexto` arma la línea legible de cada evento a partir de
-// su `detalle` jsonb, para no repetir esa lógica en cada vista del Log.
+// Catálogo de tipos de evento del Log de Actividad.
+// App-134 — Log de Actividad en 3 pestañas (Auditoría General · Caja y
+// Recepción · Canchas y Eventos) + detalle en modal:
+//   • `categoria`: pestaña donde vive el evento ('auditoria' | 'caja' | 'canchas').
+//   • `presentar(detalle)`: { resumen, cambios, involucrados, datos } — la
+//     línea del renglón y el contenido del modal. Solo incluye lo que SÍ
+//     existe: nunca "—", "→ —" ni "Jugador → ." cuando falta un dato.
+//   • `detalleTexto(detalle)`: el mismo `resumen` (compatibilidad con el
+//     buscador y con cualquier lector previo del catálogo).
+// Los eventos que ya se guardaban NO cambian de forma: el detalle se lee tal
+// como siempre llegó; los nuevos campos (antes/después, sesión, etc.) son
+// opcionales y solo enriquecen la vista cuando existen.
+
+// Valor "útil" para el Log: texto recortado, número finito o booleano;
+// `null` para vacíos, guiones/flechas sueltos y "undefined"/"null".
+function valorLog(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'object') return null;
+  const s = String(v).trim();
+  if (!s || /^[\s—–\-.·→➔>|]+$/.test(s) || s === 'undefined' || s === 'null' || s === 'NaN') return null;
+  return s;
+}
+function unirLog(partes, separador = ' · ') {
+  return (partes || [])
+    .map(valorLog)
+    .filter((x) => x !== null && x !== false && x !== true)
+    .map(String)
+    .join(separador);
+}
+function dineroLog(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? formatoMoneda(n) : null;
+}
+function fechaLog(f) {
+  const s = valorLog(f);
+  if (s === null) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return formatoFechaLarga(String(s));
+  if (/^\d{4}-\d{2}-\d{2}T/.test(String(s))) {
+    const d = new Date(String(s));
+    return Number.isNaN(d.getTime()) ? null : d.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' });
+  }
+  return String(s);
+}
+// '10:00' / '10:00:00' → '10:00 am'; un texto ya formateado se respeta.
+function horaLog(h) {
+  const s = valorLog(h);
+  if (s === null) return null;
+  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(String(s))) {
+    const t = formatoHora12(String(s));
+    return t === '—' ? null : t;
+  }
+  return String(s);
+}
+function rangoHorasLog(ini, fin) {
+  const a = horaLog(ini);
+  const b = horaLog(fin);
+  if (a && b) return `${a} – ${b}`;
+  return a || b || null;
+}
+function capitalizarLog(s) {
+  const v = valorLog(s);
+  if (v === null) return null;
+  const t = String(v);
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+function rolLegibleLog(rol) {
+  const v = typeof rol === 'string' ? valorLog(rol) : null;
+  if (v === null) return null;
+  return ROLES_POR_VALOR[String(v)]?.label || capitalizarLog(v);
+}
+function minutosLegiblesLog(min) {
+  const n = Number(min);
+  if (!Number.isFinite(n) || n < 0) return null;
+  if (n < 1) return 'menos de 1 min';
+  const h = Math.floor(n / 60);
+  const m = Math.round(n % 60);
+  if (h === 0) return `${m} min`;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+// Normaliza el resultado de `presentar`: quita renglones sin dato.
+function armarPresentacionLog({ resumen = '', cambios = [], involucrados = [], datos = [] } = {}) {
+  return {
+    resumen: valorLog(resumen) === null ? '' : String(resumen).trim(),
+    cambios: (cambios || [])
+      .map((c) => ({ campo: valorLog(c?.campo) ?? 'Dato', antes: valorLog(c?.antes), despues: valorLog(c?.despues) }))
+      .filter((c) => c.antes !== null || c.despues !== null)
+      .map((c) => ({ ...c, antes: c.antes === null ? null : String(c.antes), despues: c.despues === null ? null : String(c.despues) })),
+    involucrados: (involucrados || [])
+      .map((i) => ({ etiqueta: valorLog(i?.etiqueta) ?? 'Involucrado', nombre: valorLog(i?.nombre) }))
+      .filter((i) => i.nombre !== null && !/^(sin nombre|sin cliente|jugador|participante|invitado)$/i.test(String(i.nombre)))
+      .map((i) => ({ ...i, nombre: String(i.nombre) })),
+    datos: (datos || [])
+      .map((d) => ({ etiqueta: valorLog(d?.etiqueta) ?? 'Dato', valor: typeof d?.valor === 'boolean' ? (d.valor ? 'Sí' : 'No') : valorLog(d?.valor) }))
+      .filter((d) => d.valor !== null)
+      .map((d) => ({ ...d, valor: String(d.valor) })),
+  };
+}
+// "Nombre: A | Precio/hr: 500" → { Nombre: 'A', 'Precio/hr': '500' }
+function paresCampoValorLog(texto) {
+  const pares = {};
+  String(texto || '')
+    .split('|')
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .forEach((p) => {
+      const i = p.indexOf(':');
+      if (i > 0) pares[p.slice(0, i).trim()] = p.slice(i + 1).trim();
+    });
+  return pares;
+}
+// Lista de cambios guardada por los eventos nuevos: [{ campo, antes, despues }].
+function cambiosGuardadosLog(lista) {
+  return Array.isArray(lista) ? lista.filter((c) => c && typeof c === 'object').map((c) => ({ campo: c.campo, antes: c.antes, despues: c.despues })) : [];
+}
+function nombreJugadorLog(n) {
+  const v = valorLog(n);
+  return v === null || /^(jugador|sin nombre)$/i.test(String(v)) ? null : String(v);
+}
+const ETIQUETAS_MOTIVO_CIERRE_SESION = {
+  cambio_operador: 'Cambio de operador en la terminal',
+  cierre_colaborador: 'Cierre de sesión del colaborador',
+  cierre_club: 'Cierre de sesión del club (Master)',
+};
+const ETIQUETAS_AJUSTE_INVITADO_RETA = {
+  club_absorbe: 'El club absorbe el lugar',
+  dividido: 'Dividido entre los jugadores',
+  tarifa_especial: 'Tarifa especial',
+};
+
 const TIPOS_EVENTO_AUDITORIA = {
-  cancelacion_reserva: {
-    label: 'Cancelación de reserva',
-    icon: Ban,
-    color: 'text-rose-400',
-    bg: 'bg-rose-400/10',
-    detalleTexto: (d) => `${d?.cancha || 'Cancha'} · ${d?.fecha ? formatoFechaLarga(d.fecha) : ''} ${d?.hora || ''} — ${d?.jugador || 'Jugador'}. Motivo: ${d?.motivo || 'sin especificar'}.`,
+  // ===================== Pestaña 1 · Auditoría General =====================
+  sesion_inicio: {
+    label: 'Inicio de sesión',
+    categoria: 'auditoria',
+    icon: LogIn,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([d?.reanudada ? 'Sesión reanudada' : 'Inició sesión', d?.dispositivo_texto, d?.ip ? `IP ${d.ip}` : null]),
+        datos: [
+          { etiqueta: 'Hora de inicio', valor: fechaLog(d?.inicio) },
+          { etiqueta: 'Dispositivo', valor: d?.dispositivo },
+          { etiqueta: 'Navegador', valor: d?.navegador },
+          { etiqueta: 'Sistema', valor: d?.sistema },
+          { etiqueta: 'Pantalla', valor: d?.pantalla },
+          { etiqueta: 'Dirección IP', valor: d?.ip || 'No disponible' },
+          { etiqueta: 'Tipo', valor: d?.reanudada ? 'Sesión reanudada en esta terminal' : null },
+        ],
+      }),
   },
-  // Anulación / Cancelación con Motivo Obligatorio (Control Interno) — los 2
-  // eventos nuevos: "Cancelar Ticket / Anular Comanda" desde
-  // `ModalLiquidarCuenta` (Cuentas Abiertas/Pendientes del POS) y "Cancelar"
-  // una inscripción pendiente de cobro desde `InscripcionesEventoPanel`
-  // (Reta/Torneo/Academia). Ver `anularCuenta`/`cancelarInscripcionEvento` en
-  // `ModuloSmartPOS`.
-  anulacion_comanda: {
-    label: 'Anulación de comanda / ticket',
-    icon: Ban,
-    color: 'text-rose-400',
-    bg: 'bg-rose-400/10',
-    detalleTexto: (d) =>
-      `${d?.origen || 'Comanda'} · ${formatoMoneda(d?.total)} — ${d?.cliente || 'Sin cliente'}. Motivo: ${d?.motivo || 'sin especificar'}. Artículos anulados: ${d?.items || '—'}.${
-        d?.reserva_cancelada ? ' Reserva cancelada y cancha liberada en el Cronograma.' : ''
-      }`,
+  sesion_cierre: {
+    label: 'Cierre de sesión',
+    categoria: 'auditoria',
+    icon: LogOut,
+    color: 'text-slate-500',
+    bg: 'bg-slate-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([
+          'Cerró sesión',
+          minutosLegiblesLog(d?.duracion_min) ? `duración ${minutosLegiblesLog(d?.duracion_min)}` : null,
+          ETIQUETAS_MOTIVO_CIERRE_SESION[d?.motivo] || null,
+        ]),
+        datos: [
+          { etiqueta: 'Inicio de la sesión', valor: fechaLog(d?.inicio) },
+          { etiqueta: 'Cierre de la sesión', valor: fechaLog(d?.fin) },
+          { etiqueta: 'Duración', valor: minutosLegiblesLog(d?.duracion_min) },
+          { etiqueta: 'Motivo', valor: ETIQUETAS_MOTIVO_CIERRE_SESION[d?.motivo] || d?.motivo },
+          { etiqueta: 'Dispositivo', valor: d?.dispositivo_texto },
+          { etiqueta: 'Dirección IP', valor: d?.ip },
+        ],
+      }),
   },
-  anulacion_inscripcion: {
-    label: 'Cancelación de inscripción',
-    icon: Ban,
-    color: 'text-rose-400',
-    bg: 'bg-rose-400/10',
-    detalleTexto: (d) => `${d?.nombre || 'Participante'} — ${d?.origen || 'Inscripción'} (${formatoMoneda(d?.monto)}). Motivo: ${d?.motivo || 'sin especificar'}.`,
-  },
-  // Absorción / Reasignación de Cuentas Divididas Pendientes (Roster & Split
-  // Bill Asimétrico, Smart POS): un jugador se retira sin pagar su parte y
-  // recepción transfiere su consumo/cuota de cancha a otro jugador del
-  // roster (o a la cuenta principal/sin asignar del grupo) — ver
-  // `absorberJugadorRoster` en `ModuloSmartPOS`. El "por [Operador]" que
-  // pide el control interno ya lo cubre `evento.empleado_nombre`, que el
-  // Log de Actividad siempre muestra junto a cada evento (no hace falta
-  // repetirlo aquí en el texto).
-  absorcion_split_bill: {
-    label: 'Absorción de consumo (Split Bill)',
-    icon: ArrowRightLeft,
-    color: 'text-amber-400',
-    bg: 'bg-amber-400/10',
-    detalleTexto: (d) =>
-      `Consumo de ${d?.origen || 'un jugador'} transferido a ${d?.destino || 'otro jugador'} · ${formatoMoneda(d?.monto)}${
-        d?.cancha ? ` — ${d.cancha}` : ''
-      }.`,
-  },
-  // App-117 — Plan de Rescate de Retas (v127).
-  reta_inscripcion_gracia: {
-    label: 'Reta · inscripción en tolerancia',
-    icon: Timer,
-    color: 'text-orange-400',
-    bg: 'bg-orange-400/10',
-    detalleTexto: (d) => `${d?.jugador || 'Jugador'} → ${d?.reta || 'Reta'} (${d?.fecha ? formatoFechaLarga(d.fecha) : ''} ${d?.hora || ''}) · ${d?.estado_pago || '—'}.`,
-  },
-  reta_invitado_emergencia: {
-    label: 'Reta · Coach / Invitado de emergencia',
-    icon: UserCheck,
+  config_club_actualizada: {
+    label: 'Configuración del club',
+    categoria: 'auditoria',
+    icon: Settings2,
     color: 'text-sky-400',
     bg: 'bg-sky-400/10',
-    detalleTexto: (d) =>
-      `${d?.invitado || 'Invitado'} → ${d?.reta || 'Reta'} · ${
-        d?.ajuste === 'club_absorbe' ? 'el club absorbe el lugar' : d?.ajuste === 'dividido' ? 'dividido entre los jugadores' : 'tarifa especial'
-      } (${formatoMoneda(d?.monto)}).`,
+    presentar: (d) => {
+      const cambios = cambiosGuardadosLog(d?.cambios);
+      const campos = cambios.map((c) => c.campo).filter(Boolean);
+      return armarPresentacionLog({
+        resumen: campos.length
+          ? `Actualizó ${campos.slice(0, 3).join(', ')}${campos.length > 3 ? ` y ${campos.length - 3} más` : ''}`
+          : 'Actualizó la configuración del club',
+        cambios,
+        datos: [{ etiqueta: 'Sección', valor: d?.seccion }],
+      });
+    },
   },
-  reta_cancelada_incompleta: {
-    label: 'Reta cancelada · cuarteto incompleto',
-    icon: Ban,
+  tarifa_horario_guardada: {
+    label: 'Tarifa / franja horaria',
+    categoria: 'auditoria',
+    icon: Tag,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([d?.accion === 'creada' ? `Creó la franja «${valorLog(d?.nombre) || 'sin nombre'}»` : `Editó la franja «${valorLog(d?.nombre) || 'sin nombre'}»`, d?.horario, d?.ajuste]),
+        cambios: cambiosGuardadosLog(d?.cambios),
+        datos: [
+          { etiqueta: 'Módulo', valor: d?.modulo === 'academia' ? 'Academia (clase suelta)' : 'Canchas' },
+          { etiqueta: 'Horario', valor: d?.horario },
+          { etiqueta: 'Días', valor: d?.dias },
+          { etiqueta: 'Ajuste', valor: d?.ajuste },
+          { etiqueta: 'Canchas', valor: d?.canchas },
+          { etiqueta: 'Vigencia', valor: d?.vigencia },
+        ],
+      }),
+  },
+  tarifa_horario_eliminada: {
+    label: 'Franja horaria eliminada',
+    categoria: 'auditoria',
+    icon: Trash2,
     color: 'text-rose-400',
     bg: 'bg-rose-400/10',
-    detalleTexto: (d) =>
-      `${d?.reta || 'Reta'} (${d?.fecha ? formatoFechaLarga(d.fecha) : ''} ${d?.hora || ''}) — ${formatoMoneda(d?.total_reembolsado)} al Wallet de ${
-        d?.reembolsados ?? 0
-      } jugador(es)${d?.reembolso_manual ? ` · ${d.reembolso_manual} reembolso(s) manual(es)` : ''}. Motivo: ${d?.motivo || 'Falta de cuarteto'}.`,
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([`Eliminó la franja «${valorLog(d?.nombre) || 'sin nombre'}»`, d?.horario, d?.ajuste]),
+        datos: [
+          { etiqueta: 'Horario', valor: d?.horario },
+          { etiqueta: 'Ajuste', valor: d?.ajuste },
+        ],
+      }),
   },
-  // App-122 — Cuota de Coach / Invitado (Plan de Rescate) cobrada con "Dividir Cuenta".
-  cobro_cuota_dividida: {
-    label: 'Cuota dividida entre jugadores',
-    icon: Divide,
+  horarios_clases_actualizados: {
+    label: 'Horarios habilitados para clases',
+    categoria: 'auditoria',
+    icon: CalendarClock,
     color: 'text-sky-400',
     bg: 'bg-sky-400/10',
-    detalleTexto: (d) => `${d?.concepto || 'Cuota'} · ${formatoMoneda(d?.total)} entre ${d?.partes ?? '—'} jugadores (${d?.jugadores || '—'}).`,
-  },
-  // App-121 — cambio de visibilidad Pública/Privada de una Reta o Clase.
-  visibilidad_actividad: {
-    label: 'Visibilidad en el Portal',
-    icon: Eye,
-    color: 'text-sky-400',
-    bg: 'bg-sky-400/10',
-    detalleTexto: (d) => `${d?.tipo || 'Actividad'} "${d?.nombre || '—'}"${d?.fecha ? ` (${formatoFechaLarga(d.fecha)})` : ''} → ${d?.visibilidad || '—'}.`,
-  },
-  // App-115 — Estatus VIP manual de un jugador (Vista 360°).
-  vip_manual: {
-    label: 'Estatus VIP manual',
-    icon: Crown,
-    color: 'text-amber-400',
-    bg: 'bg-amber-400/10',
-    detalleTexto: (d) => `${d?.jugador || 'Jugador'} → ${d?.estatus || '—'}.`,
-  },
-  descuento_manual: {
-    label: 'Descuento / precio manual',
-    icon: Percent,
-    color: 'text-amber-400',
-    bg: 'bg-amber-400/10',
-    detalleTexto: (d) =>
-      `${d?.origen || 'Reserva'} — automático ${formatoMoneda(d?.montoAutomatico)} → final ${formatoMoneda(d?.montoFinal)} (${formatoMoneda(d?.diferencia)}).`,
-  },
-  descuento_pos: {
-    label: 'Descuento aplicado en POS',
-    icon: Percent,
-    color: 'text-amber-400',
-    bg: 'bg-amber-400/10',
-    detalleTexto: (d) => `${d?.motivo || 'Descuento'} — ${formatoMoneda(d?.montoDescuento)} sobre un total de ${formatoMoneda(d?.totalAntes)}.`,
-  },
-  edicion_precio_pos: {
-    label: 'Edición de precio en POS',
-    icon: Pencil,
-    color: 'text-sky-400',
-    bg: 'bg-sky-400/10',
-    detalleTexto: (d) => `${d?.producto || 'Artículo'} — precio de lista ${formatoMoneda(d?.precioOriginal)} → ${formatoMoneda(d?.precioNuevo)}.`,
-  },
-  devolucion_pos: {
-    label: 'Devolución en POS',
-    icon: RefreshCw,
-    color: 'text-orange-400',
-    bg: 'bg-orange-400/10',
-    detalleTexto: (d) => `${d?.producto || 'Artículo'} × ${d?.cantidad || 0} — ${d?.motivo || 'sin motivo especificado'}.`,
-  },
-  modificacion_horario: {
-    label: 'Modificación de horario/cancha de una reserva',
-    icon: CalendarRange,
-    color: 'text-violet-400',
-    bg: 'bg-violet-400/10',
-    detalleTexto: (d) => `${d?.jugador || 'Jugador'} — ${d?.canchaAntes || ''} ${d?.horaAntes || ''} → ${d?.canchaDespues || ''} ${d?.horaDespues || ''}.`,
-  },
-  modificacion_cancha: {
-    label: 'Modificación de estatus de cancha',
-    icon: Wrench,
-    color: 'text-violet-400',
-    bg: 'bg-violet-400/10',
-    detalleTexto: (d) => `${d?.cancha || 'Cancha'} — ${d?.antes || '—'} → ${d?.despues || '—'}.`,
-  },
-  arqueo_caja: {
-    label: 'Arqueo de caja',
-    icon: Calculator,
-    color: 'text-orange-400',
-    bg: 'bg-orange-400/10',
-    detalleTexto: (d) =>
-      `Turno ${d?.turno || ''} — contado ${formatoMoneda(d?.montoReportado)} vs. teórico ${formatoMoneda(d?.montoTeorico)} (${
-        Number(d?.diferencia) > 0 ? 'sobrante' : Number(d?.diferencia) < 0 ? 'faltante' : 'sin diferencia'
-      } ${formatoMoneda(Math.abs(Number(d?.diferencia) || 0))}).`,
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog(['Actualizó los horarios habilitados para clases', Number.isFinite(Number(d?.bloques)) ? `${d.bloques} bloque(s)` : null]),
+        cambios: [{ campo: 'Bloques', antes: d?.antes, despues: d?.despues }],
+      }),
   },
   empleado_creado: {
     label: 'Alta de empleado',
+    categoria: 'auditoria',
     icon: UserPlus,
     color: 'text-emerald-400',
     bg: 'bg-emerald-400/10',
-    detalleTexto: (d) => `${d?.nombre || 'Empleado'} — rol ${ROLES_POR_VALOR[d?.rol]?.label || d?.rol || ''}.`,
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.nombre) ? `Alta de ${d.nombre}` : 'Alta de empleado', rolLegibleLog(d?.rol) ? `rol ${rolLegibleLog(d?.rol)}` : null]),
+        involucrados: [{ etiqueta: 'Empleado', nombre: d?.nombre }],
+        datos: [{ etiqueta: 'Rol asignado', valor: rolLegibleLog(d?.rol) }],
+      }),
   },
   empleado_editado: {
     label: 'Edición de empleado',
+    categoria: 'auditoria',
     icon: Pencil,
     color: 'text-sky-400',
     bg: 'bg-sky-400/10',
-    detalleTexto: (d) => `${d?.nombre || 'Empleado'} — ${d?.cambios || 'datos actualizados'}.`,
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.nombre) ? `Editó a ${d.nombre}` : 'Edición de empleado', d?.cambios]),
+        cambios: cambiosGuardadosLog(d?.cambios_detalle),
+        involucrados: [{ etiqueta: 'Empleado', nombre: d?.nombre }],
+        datos: Array.isArray(d?.cambios_detalle) && d.cambios_detalle.length ? [] : [{ etiqueta: 'Cambios', valor: d?.cambios }],
+      }),
   },
   // Cambio de PIN / contraseña de un colaborador (Kiosko o modal "Editar
   // Empleado"). NUNCA se guarda el PIN en el detalle — solo qué pasó.
   cambio_pin: {
     label: 'Cambio de PIN / contraseña',
+    categoria: 'auditoria',
     icon: KeyRound,
     color: 'text-sky-400',
     bg: 'bg-sky-400/10',
-    detalleTexto: (d) =>
-      `${d?.nombre || 'Empleado'} — PIN ${d?.accion || 'actualizado'}${d?.origen ? ` (${d.origen})` : ''}.`,
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([unirLog([d?.nombre, d?.accion || 'actualizó el PIN'], ' '), d?.origen ? `por ${d.origen}` : null]),
+        involucrados: [{ etiqueta: 'Empleado', nombre: d?.nombre }],
+        datos: [
+          { etiqueta: 'Acción', valor: capitalizarLog(d?.accion) },
+          { etiqueta: 'Realizado por', valor: capitalizarLog(d?.origen) },
+        ],
+      }),
   },
   empleado_eliminado: {
     label: 'Baja de operador',
+    categoria: 'auditoria',
     icon: UserX,
     color: 'text-rose-400',
     bg: 'bg-rose-400/10',
-    detalleTexto: (d) => `${d?.nombre || 'Operador'} — rol ${ROLES_POR_VALOR[d?.rol]?.label || d?.rol || ''} eliminado del directorio.`,
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.nombre) ? `Baja de ${d.nombre}` : 'Baja de operador', rolLegibleLog(d?.rol) ? `rol ${rolLegibleLog(d?.rol)}` : null]),
+        involucrados: [{ etiqueta: 'Empleado', nombre: d?.nombre }],
+        datos: [{ etiqueta: 'Rol', valor: rolLegibleLog(d?.rol) }],
+      }),
   },
-  // Cancelación / Anulación de Compras (Devoluciones de Proveedor,
-  // Contabilidad & Compras) — ver `cancelarCompra` en
-  // `ModuloContabilidadCompras`. `d.nota_inventario` ya trae el resumen de
-  // qué pasó con el inventario (stock revertido, producto desactivado, o
-  // nada que revertir), calculado ahí mismo para no duplicar esa lógica
-  // aquí.
-  cancelacion_compra: {
-    label: 'Cancelación de compra',
+  // App-115 — Estatus VIP manual de un jugador (Vista 360°).
+  vip_manual: {
+    label: 'Estatus VIP manual',
+    categoria: 'auditoria',
+    icon: Crown,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([nombreJugadorLog(d?.jugador), d?.estatus], ': ') || 'Cambio de estatus VIP',
+        cambios: [{ campo: 'Estatus VIP', antes: d?.estatus_anterior, despues: d?.estatus }],
+        involucrados: [{ etiqueta: 'Jugador', nombre: nombreJugadorLog(d?.jugador) }],
+      }),
+  },
+  eliminacion_club: {
+    label: 'Solicitud de eliminación del club',
+    categoria: 'auditoria',
     icon: Ban,
     color: 'text-rose-400',
     bg: 'bg-rose-400/10',
-    detalleTexto: (d) =>
-      `${d?.concepto || 'Compra'} — ${formatoMoneda(d?.monto)}. Motivo: ${d?.motivo || 'sin especificar'}. ${d?.nota_inventario || ''}`,
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog(['Solicitó eliminar el club', d?.club, d?.motivo]),
+        datos: [
+          { etiqueta: 'Club', valor: d?.club },
+          { etiqueta: 'Motivo', valor: d?.motivo },
+          { etiqueta: 'Comentario', valor: d?.comentario },
+        ],
+      }),
+  },
+
+  // ================= Pestaña 2 · Caja y Recepción (Transacciones) ==========
+  // `cobro_venta` / `venta_pendiente` / `canje_cortesia` NO se escriben en
+  // `log_actividad`: se arman al vuelo desde la tabla `ventas` (fuente de
+  // verdad de cada cobro) — ver `eventoLogDesdeVenta`. Cero escrituras nuevas
+  // en el flujo de cobro.
+  cobro_venta: {
+    label: 'Cobro / venta',
+    categoria: 'caja',
+    soloLectura: true,
+    icon: Receipt,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([dineroLog(d?.total), d?.metodo_texto, d?.cliente, d?.articulos_resumen]),
+        involucrados: [{ etiqueta: 'Cliente', nombre: d?.cliente }],
+        datos: [
+          { etiqueta: 'Monto cobrado', valor: dineroLog(d?.total) },
+          { etiqueta: 'Método de pago', valor: d?.metodo_texto },
+          { etiqueta: 'Desglose del pago', valor: d?.desglose_pago },
+          { etiqueta: 'Folio', valor: d?.folio },
+          { etiqueta: 'Canal', valor: d?.canal },
+          { etiqueta: 'Cancha', valor: d?.cancha },
+          { etiqueta: 'Turno', valor: d?.turno },
+          { etiqueta: 'Cuenta dividida', valor: d?.split_texto },
+          { etiqueta: 'Nota', valor: d?.nota },
+        ],
+      }),
+  },
+  venta_pendiente: {
+    label: 'Cargo a cuenta abierta',
+    categoria: 'caja',
+    soloLectura: true,
+    icon: Wallet,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([dineroLog(d?.total), 'pendiente de cobro', d?.cliente, d?.articulos_resumen]),
+        involucrados: [{ etiqueta: 'Cliente', nombre: d?.cliente }],
+        datos: [
+          { etiqueta: 'Monto pendiente', valor: dineroLog(d?.total) },
+          { etiqueta: 'Folio', valor: d?.folio },
+          { etiqueta: 'Canal', valor: d?.canal },
+          { etiqueta: 'Cancha', valor: d?.cancha },
+          { etiqueta: 'Nota', valor: d?.nota },
+        ],
+      }),
+  },
+  canje_cortesia: {
+    label: 'Canje de cortesía',
+    categoria: 'caja',
+    soloLectura: true,
+    icon: Gift,
+    color: 'text-violet-400',
+    bg: 'bg-violet-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog(['Cortesía entregada', d?.articulos_resumen, d?.cliente]),
+        involucrados: [{ etiqueta: 'Jugador', nombre: d?.cliente }],
+        datos: [
+          { etiqueta: 'Monto', valor: dineroLog(d?.total ?? 0) },
+          { etiqueta: 'Motivo', valor: d?.nota },
+          { etiqueta: 'Folio', valor: d?.folio },
+        ],
+      }),
+  },
+  // Anulación / Cancelación con Motivo Obligatorio (Control Interno):
+  // "Cancelar Ticket / Anular Comanda" desde `ModalLiquidarCuenta` y
+  // "Cancelar" una inscripción pendiente desde `InscripcionesEventoPanel`.
+  anulacion_comanda: {
+    label: 'Anulación de comanda / ticket',
+    categoria: 'caja',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog(['Ticket anulado', d?.origen, dineroLog(d?.total), nombreJugadorLog(d?.cliente)]),
+        involucrados: [{ etiqueta: 'Cliente', nombre: nombreJugadorLog(d?.cliente) }],
+        datos: [
+          { etiqueta: 'Monto anulado', valor: dineroLog(d?.total) },
+          { etiqueta: 'Origen', valor: d?.origen },
+          { etiqueta: 'Motivo', valor: d?.motivo },
+          { etiqueta: 'Artículos anulados', valor: d?.items },
+          { etiqueta: 'Reserva', valor: d?.reserva_cancelada ? 'Cancelada y cancha liberada en el Cronograma' : null },
+        ],
+      }),
+  },
+  anulacion_inscripcion: {
+    label: 'Cancelación de inscripción',
+    categoria: 'caja',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog(['Inscripción cancelada', nombreJugadorLog(d?.nombre), d?.origen, dineroLog(d?.monto)]),
+        involucrados: [{ etiqueta: 'Participante', nombre: nombreJugadorLog(d?.nombre) }],
+        datos: [
+          { etiqueta: 'Actividad', valor: d?.origen },
+          { etiqueta: 'Monto', valor: dineroLog(d?.monto) },
+          { etiqueta: 'Motivo', valor: d?.motivo },
+        ],
+      }),
+  },
+  // Absorción / Reasignación de Cuentas Divididas Pendientes (Split Bill).
+  absorcion_split_bill: {
+    label: 'Absorción de consumo (Split Bill)',
+    categoria: 'caja',
+    icon: ArrowRightLeft,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([
+          valorLog(d?.origen) && valorLog(d?.destino) ? `Consumo de ${d.origen} transferido a ${d.destino}` : 'Consumo transferido entre jugadores',
+          dineroLog(d?.monto),
+          d?.cancha,
+        ]),
+        cambios: [{ campo: 'Responsable del pago', antes: d?.origen, despues: d?.destino }],
+        involucrados: [
+          { etiqueta: 'Jugador que se retira', nombre: d?.origen },
+          { etiqueta: 'Absorbe el consumo', nombre: d?.destinos || d?.destino },
+        ],
+        datos: [
+          { etiqueta: 'Monto transferido', valor: dineroLog(d?.monto) },
+          { etiqueta: 'Cancha', valor: d?.cancha },
+        ],
+      }),
+  },
+  // App-122 — Cuota de Coach / Invitado cobrada con "Dividir Cuenta".
+  cobro_cuota_dividida: {
+    label: 'Cuota dividida entre jugadores',
+    categoria: 'caja',
+    icon: Divide,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([d?.concepto || 'Cuota', dineroLog(d?.total), Number(d?.partes) > 0 ? `entre ${d.partes} jugadores` : null]),
+        involucrados: String(d?.jugadores || '')
+          .split(',')
+          .map((n) => ({ etiqueta: 'Jugador', nombre: n.trim() })),
+        datos: [
+          { etiqueta: 'Total', valor: dineroLog(d?.total) },
+          { etiqueta: 'Partes', valor: d?.partes },
+        ],
+      }),
+  },
+  descuento_manual: {
+    label: 'Descuento / precio manual',
+    categoria: 'caja',
+    icon: Percent,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([d?.origen || 'Reserva', dineroLog(d?.montoFinal) ? `cobrado en ${dineroLog(d?.montoFinal)}` : null]),
+        cambios: [{ campo: 'Monto', antes: dineroLog(d?.montoAutomatico), despues: dineroLog(d?.montoFinal) }],
+        datos: [{ etiqueta: 'Diferencia', valor: dineroLog(d?.diferencia) }],
+      }),
+  },
+  descuento_pos: {
+    label: 'Descuento aplicado en POS',
+    categoria: 'caja',
+    icon: Percent,
+    color: 'text-amber-400',
+    bg: 'bg-amber-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([d?.motivo || 'Descuento', dineroLog(d?.montoDescuento) ? `−${dineroLog(d?.montoDescuento)}` : null, dineroLog(d?.totalAntes) ? `sobre ${dineroLog(d?.totalAntes)}` : null]),
+        datos: [
+          { etiqueta: 'Descuento', valor: dineroLog(d?.montoDescuento) },
+          { etiqueta: 'Total antes del descuento', valor: dineroLog(d?.totalAntes) },
+          { etiqueta: 'Motivo', valor: d?.motivo },
+        ],
+      }),
+  },
+  edicion_precio_pos: {
+    label: 'Edición de precio en POS',
+    categoria: 'caja',
+    icon: Pencil,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([d?.producto || 'Artículo', dineroLog(d?.precioOriginal) && dineroLog(d?.precioNuevo) ? `${dineroLog(d.precioOriginal)} ➔ ${dineroLog(d.precioNuevo)}` : null]),
+        cambios: [{ campo: 'Precio', antes: dineroLog(d?.precioOriginal), despues: dineroLog(d?.precioNuevo) }],
+        datos: [{ etiqueta: 'Artículo', valor: d?.producto }],
+      }),
+  },
+  devolucion_pos: {
+    label: 'Devolución en POS',
+    categoria: 'caja',
+    icon: RefreshCw,
+    color: 'text-orange-400',
+    bg: 'bg-orange-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([unirLog([d?.producto || 'Artículo', Number(d?.cantidad) > 0 ? `× ${d.cantidad}` : null], ' '), d?.motivo]),
+        datos: [
+          { etiqueta: 'Artículo', valor: d?.producto },
+          { etiqueta: 'Cantidad', valor: d?.cantidad },
+          { etiqueta: 'Motivo', valor: d?.motivo },
+        ],
+      }),
+  },
+  arqueo_caja: {
+    label: 'Arqueo de caja',
+    categoria: 'caja',
+    icon: Calculator,
+    color: 'text-orange-400',
+    bg: 'bg-orange-400/10',
+    presentar: (d) => {
+      const dif = Number(d?.diferencia) || 0;
+      const tipoDif = dif > 0 ? 'Sobrante' : dif < 0 ? 'Faltante' : 'Sin diferencia';
+      return armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.turno) ? `Turno ${d.turno}` : 'Arqueo', dineroLog(d?.montoReportado) ? `contado ${dineroLog(d.montoReportado)}` : null, dif !== 0 ? `${tipoDif.toLowerCase()} ${formatoMoneda(Math.abs(dif))}` : 'sin diferencia']),
+        datos: [
+          { etiqueta: 'Turno', valor: d?.turno },
+          { etiqueta: 'Monto contado', valor: dineroLog(d?.montoReportado) },
+          { etiqueta: 'Monto teórico', valor: dineroLog(d?.montoTeorico) },
+          { etiqueta: 'Resultado', valor: dif !== 0 ? `${tipoDif} de ${formatoMoneda(Math.abs(dif))}` : tipoDif },
+        ],
+      });
+    },
+  },
+  // Cancelación / Anulación de Compras (Contabilidad & Compras).
+  cancelacion_compra: {
+    label: 'Cancelación de compra',
+    categoria: 'caja',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog(['Compra cancelada', d?.concepto, dineroLog(d?.monto)]),
+        datos: [
+          { etiqueta: 'Concepto', valor: d?.concepto },
+          { etiqueta: 'Monto', valor: dineroLog(d?.monto) },
+          { etiqueta: 'Motivo', valor: d?.motivo },
+          { etiqueta: 'Inventario', valor: d?.nota_inventario },
+        ],
+      }),
+  },
+
+  // ================= Pestaña 3 · Canchas y Eventos =========================
+  reserva_creada: {
+    label: 'Nueva reserva',
+    categoria: 'canchas',
+    icon: CalendarClock,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([nombreJugadorLog(d?.jugador) ? `Reserva de ${d.jugador}` : 'Nueva reserva', d?.cancha, fechaLog(d?.fecha), rangoHorasLog(d?.hora_inicio, d?.hora_fin)]),
+        involucrados: [{ etiqueta: 'Jugador', nombre: nombreJugadorLog(d?.jugador) }],
+        datos: [
+          { etiqueta: 'Cancha', valor: d?.cancha },
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Horario', valor: rangoHorasLog(d?.hora_inicio, d?.hora_fin) },
+          { etiqueta: 'Monto', valor: dineroLog(d?.monto) },
+          { etiqueta: 'Estado de pago', valor: capitalizarLog(d?.estado_pago) },
+        ],
+      }),
+  },
+  modificacion_horario: {
+    label: 'Reserva reagendada',
+    categoria: 'canchas',
+    icon: CalendarRange,
+    color: 'text-violet-400',
+    bg: 'bg-violet-400/10',
+    presentar: (d) => {
+      const mismaCancha = valorLog(d?.canchaAntes) !== null && String(d.canchaAntes) === String(d?.canchaDespues ?? '');
+      return armarPresentacionLog({
+        resumen: unirLog([
+          nombreJugadorLog(d?.jugador) ? `Reserva de ${d.jugador} reagendada` : 'Reserva reagendada',
+          mismaCancha ? d.canchaAntes : null,
+          valorLog(d?.horaAntes) && valorLog(d?.horaDespues) ? `${d.horaAntes} ➔ ${d.horaDespues}` : null,
+        ]),
+        cambios: [
+          ...(mismaCancha ? [] : [{ campo: 'Cancha', antes: d?.canchaAntes, despues: d?.canchaDespues }]),
+          { campo: 'Fecha', antes: fechaLog(d?.fechaAntes), despues: fechaLog(d?.fechaDespues) },
+          { campo: 'Horario', antes: d?.horaAntes, despues: d?.horaDespues },
+        ],
+        involucrados: [{ etiqueta: 'Jugador', nombre: nombreJugadorLog(d?.jugador) }],
+        datos: [
+          { etiqueta: 'Cancha', valor: mismaCancha ? d.canchaAntes : null },
+          { etiqueta: 'Fecha', valor: valorLog(d?.fechaAntes) ? null : fechaLog(d?.fecha) },
+        ],
+      });
+    },
+  },
+  cancelacion_reserva: {
+    label: 'Cancelación de reserva',
+    categoria: 'canchas',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([nombreJugadorLog(d?.jugador) ? `Reserva de ${d.jugador} cancelada` : 'Reserva cancelada', d?.cancha, fechaLog(d?.fecha), d?.hora]),
+        cambios: [{ campo: 'Estado', antes: 'Reservada', despues: 'Cancelada' }],
+        involucrados: [{ etiqueta: 'Jugador', nombre: nombreJugadorLog(d?.jugador) }],
+        datos: [
+          { etiqueta: 'Cancha', valor: d?.cancha },
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Horario', valor: d?.hora },
+          { etiqueta: 'Motivo', valor: d?.motivo },
+        ],
+      }),
+  },
+  modificacion_cancha: {
+    label: 'Modificación de cancha',
+    categoria: 'canchas',
+    icon: Wrench,
+    color: 'text-violet-400',
+    bg: 'bg-violet-400/10',
+    presentar: (d) => {
+      const antes = paresCampoValorLog(d?.antes);
+      const despues = paresCampoValorLog(d?.despues);
+      const campos = [...new Set([...Object.keys(antes), ...Object.keys(despues)])];
+      const cambios = campos.length ? campos.map((c) => ({ campo: c, antes: antes[c], despues: despues[c] })) : [{ campo: 'Estatus', antes: d?.antes, despues: d?.despues }];
+      return armarPresentacionLog({
+        resumen: unirLog([d?.cancha || 'Cancha', campos.length ? `actualizó ${campos.join(', ').toLowerCase()}` : valorLog(d?.antes) && valorLog(d?.despues) ? `${d.antes} ➔ ${d.despues}` : null]),
+        cambios,
+        datos: [{ etiqueta: 'Cancha', valor: d?.cancha }],
+      });
+    },
+  },
+  clase_creada: {
+    label: 'Nueva clase',
+    categoria: 'canchas',
+    icon: GraduationCap,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.clase) ? `Clase «${d.clase}»` : 'Nueva clase', d?.cancha, fechaLog(d?.fecha), rangoHorasLog(d?.hora_inicio, d?.hora_fin)]),
+        involucrados: [{ etiqueta: 'Coach', nombre: d?.coach }],
+        datos: [
+          { etiqueta: 'Cancha', valor: d?.cancha },
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Horario', valor: rangoHorasLog(d?.hora_inicio, d?.hora_fin) },
+          { etiqueta: 'Sesiones creadas', valor: Number(d?.sesiones) > 1 ? d.sesiones : null },
+          { etiqueta: 'Cupo', valor: d?.cupo },
+          { etiqueta: 'Precio', valor: dineroLog(d?.precio) },
+        ],
+      }),
+  },
+  clase_editada: {
+    label: 'Clase modificada',
+    categoria: 'canchas',
+    icon: Pencil,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) => {
+      const cambios = cambiosGuardadosLog(d?.cambios);
+      return armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.clase) ? `Clase «${d.clase}»` : 'Clase modificada', cambios.length ? `actualizó ${cambios.map((c) => String(c.campo).toLowerCase()).join(', ')}` : null]),
+        cambios,
+        datos: [{ etiqueta: 'Fecha', valor: fechaLog(d?.fecha) }],
+      });
+    },
+  },
+  clase_eliminada: {
+    label: 'Clase eliminada',
+    categoria: 'canchas',
+    icon: Trash2,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.clase) ? `Eliminó la clase «${d.clase}»` : 'Clase eliminada', fechaLog(d?.fecha), horaLog(d?.hora_inicio)]),
+        datos: [
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Horario', valor: rangoHorasLog(d?.hora_inicio, d?.hora_fin) },
+        ],
+      }),
+  },
+  cancelacion_clase: {
+    label: 'Clase cancelada',
+    categoria: 'canchas',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.clase) ? `Canceló la clase «${d.clase}»` : 'Clase cancelada', Number(d?.alumnosAfectados) > 0 ? `${d.alumnosAfectados} alumno(s) avisados` : null]),
+        cambios: [{ campo: 'Estado', antes: 'Programada', despues: 'Cancelada' }],
+        datos: [
+          { etiqueta: 'Motivo', valor: d?.motivo },
+          { etiqueta: 'Alumnos afectados', valor: d?.alumnosAfectados },
+          { etiqueta: 'Reembolsos a Wallet', valor: d?.reembolsos },
+          { etiqueta: 'Adeudos cancelados', valor: d?.adeudos },
+        ],
+      }),
+  },
+  torneo_creado: {
+    label: 'Nuevo torneo',
+    categoria: 'canchas',
+    icon: Trophy,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.torneo) ? `Torneo «${d.torneo}»` : 'Nuevo torneo', fechaLog(d?.fecha), d?.formato]),
+        datos: [
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Formato', valor: d?.formato },
+          { etiqueta: 'Categorías', valor: d?.categorias },
+          { etiqueta: 'Inscripción', valor: dineroLog(d?.precio) },
+          { etiqueta: 'Canchas bloqueadas', valor: d?.bloqueos },
+        ],
+      }),
+  },
+  torneo_finalizado: {
+    label: 'Torneo finalizado',
+    categoria: 'canchas',
+    icon: Trophy,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.torneo) ? `Finalizó el torneo «${d.torneo}»` : 'Torneo finalizado', fechaLog(d?.fecha)]),
+        cambios: [{ campo: 'Estado', antes: d?.estado_anterior, despues: 'Finalizado' }],
+      }),
+  },
+  torneo_eliminado: {
+    label: 'Torneo eliminado',
+    categoria: 'canchas',
+    icon: Trash2,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.torneo) ? `Eliminó el torneo «${d.torneo}»` : 'Torneo eliminado', fechaLog(d?.fecha)]),
+        datos: [{ etiqueta: 'Fecha', valor: fechaLog(d?.fecha) }],
+      }),
+  },
+  reta_creada: {
+    label: 'Nueva reta',
+    categoria: 'canchas',
+    icon: Swords,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([
+          Number(d?.cantidad) > 1 ? `${d.cantidad} retas «${valorLog(d?.reta) || 'Reta'}»` : valorLog(d?.reta) ? `Reta «${d.reta}»` : 'Nueva reta',
+          d?.canchas,
+          fechaLog(d?.fecha),
+          rangoHorasLog(d?.hora_inicio, d?.hora_fin),
+        ]),
+        datos: [
+          { etiqueta: 'Canchas', valor: d?.canchas },
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Horario', valor: rangoHorasLog(d?.hora_inicio, d?.hora_fin) },
+          { etiqueta: 'Nivel', valor: d?.nivel },
+          { etiqueta: 'Rama', valor: d?.rama },
+          { etiqueta: 'Precio por jugador', valor: dineroLog(d?.precio) },
+          { etiqueta: 'Retas creadas', valor: Number(d?.cantidad) > 1 ? d.cantidad : null },
+        ],
+      }),
+  },
+  reta_editada: {
+    label: 'Reta modificada',
+    categoria: 'canchas',
+    icon: Pencil,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) => {
+      const cambios = cambiosGuardadosLog(d?.cambios);
+      return armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.reta) ? `Reta «${d.reta}»` : 'Reta modificada', cambios.length ? `actualizó ${cambios.map((c) => String(c.campo).toLowerCase()).join(', ')}` : null]),
+        cambios,
+        datos: [{ etiqueta: 'Fecha', valor: fechaLog(d?.fecha) }],
+      });
+    },
+  },
+  reta_eliminada: {
+    label: 'Reta eliminada',
+    categoria: 'canchas',
+    icon: Trash2,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.reta) ? `Eliminó la reta «${d.reta}»` : 'Reta eliminada', fechaLog(d?.fecha), horaLog(d?.hora_inicio)]),
+        datos: [
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Hora', valor: horaLog(d?.hora_inicio) },
+          { etiqueta: 'Inscritos al eliminarla', valor: d?.inscritos },
+        ],
+      }),
+  },
+  actividad_archivada: {
+    label: 'Actividad archivada',
+    categoria: 'canchas',
+    icon: Archive,
+    color: 'text-slate-500',
+    bg: 'bg-slate-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([`${d?.archivada === false ? 'Restauró' : 'Archivó'} ${String(d?.tipo || 'actividad').toLowerCase()}`, valorLog(d?.nombre) ? `«${d.nombre}»` : null]),
+        cambios: [{ campo: 'Estado', antes: d?.archivada === false ? 'Archivada' : 'Activa', despues: d?.archivada === false ? 'Activa' : 'Archivada' }],
+      }),
+  },
+  // App-117 — Plan de Rescate de Retas (v127).
+  reta_inscripcion_gracia: {
+    label: 'Reta · inscripción en tolerancia',
+    categoria: 'canchas',
+    icon: Timer,
+    color: 'text-orange-400',
+    bg: 'bg-orange-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([
+          nombreJugadorLog(d?.jugador) ? `${d.jugador} inscrito a ${valorLog(d?.reta) ? `«${d.reta}»` : 'la reta'}` : `Inscripción a ${valorLog(d?.reta) ? `«${d.reta}»` : 'la reta'}`,
+          fechaLog(d?.fecha),
+          horaLog(d?.hora),
+          capitalizarLog(d?.estado_pago),
+        ]),
+        involucrados: [{ etiqueta: 'Jugador', nombre: nombreJugadorLog(d?.jugador) }],
+        datos: [
+          { etiqueta: 'Reta', valor: d?.reta },
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Hora', valor: horaLog(d?.hora) },
+          { etiqueta: 'Estado de pago', valor: capitalizarLog(d?.estado_pago) },
+        ],
+      }),
+  },
+  reta_invitado_emergencia: {
+    label: 'Reta · Coach / Invitado de emergencia',
+    categoria: 'canchas',
+    icon: UserCheck,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([
+          valorLog(d?.invitado) ? `${d.invitado} se sumó a ${valorLog(d?.reta) ? `«${d.reta}»` : 'la reta'}` : 'Invitado de emergencia',
+          ETIQUETAS_AJUSTE_INVITADO_RETA[d?.ajuste] || ETIQUETAS_AJUSTE_INVITADO_RETA.tarifa_especial,
+          dineroLog(d?.monto),
+        ]),
+        involucrados: [{ etiqueta: 'Coach / Invitado', nombre: d?.invitado }],
+        datos: [
+          { etiqueta: 'Reta', valor: d?.reta },
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Hora', valor: horaLog(d?.hora) },
+          { etiqueta: 'Ajuste', valor: ETIQUETAS_AJUSTE_INVITADO_RETA[d?.ajuste] || ETIQUETAS_AJUSTE_INVITADO_RETA.tarifa_especial },
+          { etiqueta: 'Monto', valor: dineroLog(d?.monto) },
+        ],
+      }),
+  },
+  reta_cancelada_incompleta: {
+    label: 'Reta cancelada · cuarteto incompleto',
+    categoria: 'canchas',
+    icon: Ban,
+    color: 'text-rose-400',
+    bg: 'bg-rose-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog([valorLog(d?.reta) ? `Reta «${d.reta}» cancelada` : 'Reta cancelada', fechaLog(d?.fecha), horaLog(d?.hora), dineroLog(d?.total_reembolsado) ? `${dineroLog(d.total_reembolsado)} reembolsados` : null]),
+        cambios: [{ campo: 'Estado', antes: 'Abierta', despues: 'Cancelada' }],
+        datos: [
+          { etiqueta: 'Motivo', valor: d?.motivo || 'Falta de cuarteto' },
+          { etiqueta: 'Jugadores inscritos', valor: d?.ocupados },
+          { etiqueta: 'Reembolsado al Wallet', valor: dineroLog(d?.total_reembolsado) ? `${dineroLog(d.total_reembolsado)} a ${d?.reembolsados ?? 0} jugador(es)` : null },
+          { etiqueta: 'Reembolsos manuales', valor: Number(d?.reembolso_manual) > 0 ? d.reembolso_manual : null },
+          { etiqueta: 'Canchas liberadas', valor: Number(d?.bloqueos_liberados) > 0 ? d.bloqueos_liberados : null },
+        ],
+      }),
+  },
+  // App-121 — cambio de visibilidad Pública/Privada de una Reta o Clase.
+  visibilidad_actividad: {
+    label: 'Visibilidad en el Portal',
+    categoria: 'canchas',
+    icon: Eye,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) => {
+      const nueva = valorLog(d?.visibilidad);
+      const anterior = nueva === 'Pública' ? 'Privada' : nueva === 'Privada' ? 'Pública' : null;
+      return armarPresentacionLog({
+        resumen: unirLog([
+          valorLog(d?.nombre) ? `${d?.tipo || 'Actividad'} «${d.nombre}»` : d?.tipo || 'Actividad',
+          fechaLog(d?.fecha),
+          nueva ? `ahora ${String(nueva).toLowerCase()}` : null,
+        ]),
+        cambios: [{ campo: 'Visibilidad', antes: anterior, despues: nueva }],
+        datos: [
+          { etiqueta: 'Tipo', valor: d?.tipo },
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+        ],
+      });
+    },
   },
 };
 
+// `detalleTexto` (compatibilidad): la misma línea limpia que el renglón.
+Object.values(TIPOS_EVENTO_AUDITORIA).forEach((meta) => {
+  if (typeof meta.presentar === 'function' && typeof meta.detalleTexto !== 'function') {
+    meta.detalleTexto = (d) => {
+      try {
+        return meta.presentar(d || {}).resumen;
+      } catch (_e) {
+        return '';
+      }
+    };
+  }
+});
+
 function etiquetaTipoEvento(tipo) {
-  return TIPOS_EVENTO_AUDITORIA[tipo]?.label || tipo || 'Evento';
+  return TIPOS_EVENTO_AUDITORIA[tipo]?.label || capitalizarLog(String(tipo || 'Evento').replace(/_/g, ' ')) || 'Evento';
+}
+
+// Pestañas del Log de Actividad (App-134).
+const CATEGORIAS_LOG_ACTIVIDAD = [
+  { value: 'auditoria', label: 'Auditoría General', sub: 'Configuración, horarios, empleados y sesiones', icon: ShieldCheck },
+  { value: 'caja', label: 'Caja y Recepción', sub: 'Cobros, ventas, cancelaciones, devoluciones y cortesías', icon: Banknote },
+  { value: 'canchas', label: 'Canchas y Eventos', sub: 'Reservas, clases, torneos y retas', icon: CalendarRange },
+];
+
+// Pestaña de un evento. Un tipo que no esté en el catálogo (eventos viejos o
+// de otras versiones) se acomoda por su nombre; si no se reconoce, va a
+// Auditoría General — nunca desaparece del Log.
+function categoriaEventoLog(evento) {
+  const meta = TIPOS_EVENTO_AUDITORIA[evento?.tipo];
+  if (meta?.categoria) return meta.categoria;
+  const t = String(evento?.tipo || '').toLowerCase();
+  if (/(venta|cobro|pago|pos|caja|compra|cortesia|devolucion|descuento|ticket|comanda|wallet|split)/.test(t)) return 'caja';
+  if (/(reserva|clase|torneo|reta|cancha|academia|inscripcion|evento)/.test(t)) return 'canchas';
+  return 'auditoria';
+}
+
+// "monto_total" → "Monto total" · "canchaAntes" → "Cancha antes".
+function etiquetaCampoLog(clave) {
+  const s = String(clave || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .trim()
+    .toLowerCase();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Dato';
+}
+const CLAVES_INTERNAS_LOG = /(^|_)(id|ids|uuid|club_id|sesion_id)$|^_|^empleado_id$/i;
+
+// Presentación final de CUALQUIER evento: catálogo si lo conoce; si no, una
+// lista limpia de los datos primitivos de su `detalle`. Nunca lanza.
+function presentarEventoLog(evento) {
+  const meta = TIPOS_EVENTO_AUDITORIA[evento?.tipo];
+  const d = evento?.detalle && typeof evento.detalle === 'object' ? evento.detalle : {};
+  try {
+    if (meta?.presentar) {
+      const p = meta.presentar(d);
+      return { ...p, resumen: p.resumen || meta.label };
+    }
+  } catch (_e) {
+    /* detalle con forma inesperada → genérico */
+  }
+  const datos = Object.entries(d)
+    .filter(([k, v]) => !CLAVES_INTERNAS_LOG.test(k) && valorLog(v) !== null)
+    .slice(0, 12)
+    .map(([k, v]) => ({ etiqueta: etiquetaCampoLog(k), valor: /monto|total|precio|importe/i.test(k) ? dineroLog(v) : typeof v === 'boolean' ? v : /fecha/i.test(k) ? fechaLog(v) : v }));
+  const p = armarPresentacionLog({ datos });
+  return { ...p, resumen: unirLog(p.datos.slice(0, 3).map((x) => x.valor)) || etiquetaTipoEvento(evento?.tipo) };
+}
+
+// ---------------------------------------------------------------------------
+// App-134 — Pestaña "Caja y Recepción": cobros armados desde `ventas` (solo
+// lectura, la tabla que ya escribe cada flujo de cobro). Así el rastro de
+// dinero (quién cobró, cuánto y con qué método) sale de la MISMA fuente que
+// usan el Arqueo y Contabilidad, sin agregar escrituras a ningún cobro.
+// ---------------------------------------------------------------------------
+function desglosePagoVentaLog(venta) {
+  const d = venta?.detalles || {};
+  const partes = [];
+  if (d.mixto && typeof d.mixto === 'object') {
+    Object.entries(d.mixto).forEach(([k, v]) => {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0 && !/cambio/i.test(k)) partes.push(`${etiquetaMetodoPagoVenta(k) || capitalizarLog(k)} ${formatoMoneda(n)}`);
+    });
+  }
+  if (Array.isArray(d.pagos_divididos) && d.pagos_divididos.length > 0) {
+    d.pagos_divididos.forEach((p, i) => {
+      const quien = valorLog(p?.jugadorNombre || p?.nombre) || `Parte ${i + 1}`;
+      partes.push(unirLog([`${quien}: ${dineroLog(p?.monto) || ''}`, valorLog(p?.metodo) ? etiquetaMetodoPagoVenta(p.metodo) : null], ' · '));
+    });
+  }
+  return partes.length ? partes.join(' | ') : null;
+}
+
+function eventoLogDesdeVenta(venta, opciones) {
+  if (!venta) return null;
+  const nombreCancha = opciones?.nombreCancha;
+  const rolDeOperador = opciones?.rolDeOperador;
+  const d = venta.detalles && typeof venta.detalles === 'object' ? venta.detalles : {};
+  const metodo = valorLog(venta.metodo_pago);
+  const total = Number(venta.total) || 0;
+  const esCortesia = /cortes/i.test(String(metodo || '')) || (total === 0 && /cortes[ií]a/i.test(String(d.nota || '')));
+  const pendiente = String(venta.estado_pago || '').toLowerCase() === 'pendiente';
+  const tipo = esCortesia ? 'canje_cortesia' : pendiente ? 'venta_pendiente' : 'cobro_venta';
+  const items = Array.isArray(d.items) ? d.items : [];
+  const articulos = items.map((it) => {
+    const { nombre, extras } = textoArticuloVenta(it);
+    const cantidad = Number(it?.cantidad) || 1;
+    const subtotal = Number(it?.subtotal);
+    return {
+      nombre: extras.length ? `${nombre} (${extras.join(', ')})` : nombre,
+      cantidad,
+      subtotal: Number.isFinite(subtotal) ? subtotal : (Number(it?.precio) || 0) * cantidad,
+    };
+  });
+  const nombres = articulos.map((a) => (a.cantidad > 1 ? `${a.nombre} ×${a.cantidad}` : a.nombre));
+  const esWeb = venta.origen === ORIGEN_VENTA_WEB;
+  const operadorNombre = valorLog(venta.operador) || (esWeb ? 'Portal de Jugadores' : 'Operador');
+  const local = String(venta.id || '').startsWith('local-');
+  return {
+    id: `venta-${venta.id}`,
+    _origen: 'ventas',
+    tipo,
+    created_at: venta.created_at || venta.fecha || null,
+    empleado_nombre: operadorNombre,
+    empleado_rol: esWeb && !valorLog(venta.operador) ? null : rolDeOperador?.(operadorNombre) || null,
+    detalle: {
+      total,
+      metodo: metodo,
+      metodo_texto: esCortesia ? 'Cortesía' : metodo ? etiquetaMetodoPagoVenta(metodo) : pendiente ? null : 'No especificado',
+      desglose_pago: desglosePagoVentaLog(venta),
+      cliente: clienteDeVenta(venta),
+      articulos,
+      articulos_resumen: nombres.length ? `${nombres.slice(0, 2).join(', ')}${nombres.length > 2 ? ` y ${nombres.length - 2} más` : ''}` : null,
+      folio: local ? null : String(venta.id || '').slice(0, 8).toUpperCase() || null,
+      canal: esWeb ? 'Portal de Jugadores (en línea)' : 'Mostrador (Smart POS)',
+      cancha: venta.cancha_id != null ? nombreCancha?.(venta.cancha_id) || null : null,
+      turno: valorLog(venta.turno) ? capitalizarLog(venta.turno) : null,
+      split_texto: d.split_bill && Number(d.split_bill_total_partes) > 1 ? `Parte ${d.split_bill_parte} de ${d.split_bill_total_partes}` : null,
+      nota: valorLog(d.nota),
+      estado_pago: venta.estado_pago || null,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// App-134 — Control de sesiones de operadores (Pestaña "Auditoría General").
+// Cada vez que cambia QUIÉN está fichado en esta terminal se registra
+// `sesion_cierre` del anterior y `sesion_inicio` del nuevo, con dispositivo
+// e IP. La sesión en curso vive en localStorage (por club) solo para poder
+// calcular la duración al cerrarla; un refresh NO es un inicio nuevo.
+// ---------------------------------------------------------------------------
+const LS_KEY_SESION_OPERADOR_LOG = 'qlubos_sesion_operador_log_v1';
+function leerSesionOperadorLog() {
+  try {
+    const crudo = window.localStorage.getItem(claveLocalPorClub(LS_KEY_SESION_OPERADOR_LOG));
+    const v = crudo ? JSON.parse(crudo) : null;
+    return v && typeof v === 'object' && v.empleado_id != null ? v : null;
+  } catch (_e) {
+    return null;
+  }
+}
+function guardarSesionOperadorLog(sesion) {
+  try {
+    if (sesion) window.localStorage.setItem(claveLocalPorClub(LS_KEY_SESION_OPERADOR_LOG), JSON.stringify(sesion));
+    else window.localStorage.removeItem(claveLocalPorClub(LS_KEY_SESION_OPERADOR_LOG));
+  } catch (_e) {
+    /* sin storage: la sesión igual se registra, solo sin duración */
+  }
+}
+function nuevoIdSesionLog() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  } catch (_e) {
+    /* respaldo abajo */
+  }
+  return `ses-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+// Dispositivo legible a partir del navegador (sin librerías ni huellas).
+function describirDispositivoLog() {
+  if (typeof navigator === 'undefined') return {};
+  const ua = String(navigator.userAgent || '');
+  const tactilMac = /Macintosh/.test(ua) && Number(navigator.maxTouchPoints) > 1;
+  const sistema = /iPad/.test(ua) || tactilMac
+    ? 'iPadOS'
+    : /iPhone|iPod/.test(ua)
+    ? 'iOS'
+    : /Android/.test(ua)
+    ? 'Android'
+    : /CrOS/.test(ua)
+    ? 'ChromeOS'
+    : /Windows/.test(ua)
+    ? 'Windows'
+    : /Mac OS X|Macintosh/.test(ua)
+    ? 'macOS'
+    : /Linux/.test(ua)
+    ? 'Linux'
+    : null;
+  const navegador = /Edg\//.test(ua)
+    ? 'Edge'
+    : /OPR\//.test(ua)
+    ? 'Opera'
+    : /SamsungBrowser/.test(ua)
+    ? 'Samsung Internet'
+    : /Firefox\/|FxiOS/.test(ua)
+    ? 'Firefox'
+    : /Chrome\/|CriOS/.test(ua)
+    ? 'Chrome'
+    : /Safari\//.test(ua)
+    ? 'Safari'
+    : null;
+  const dispositivo = sistema === 'iPadOS' || (/Android/.test(ua) && !/Mobile/.test(ua)) || /Tablet/.test(ua) ? 'Tablet' : /Mobi|iPhone|iPod/.test(ua) ? 'Celular' : 'Computadora';
+  let pantalla = null;
+  try {
+    if (typeof window !== 'undefined' && window.screen?.width) pantalla = `${window.screen.width} × ${window.screen.height}`;
+  } catch (_e) {
+    pantalla = null;
+  }
+  return {
+    dispositivo,
+    navegador,
+    sistema,
+    pantalla,
+    dispositivo_texto: unirLog([dispositivo, unirLog([navegador, sistema ? `en ${sistema}` : null], ' ')]),
+    agente: ua.slice(0, 250) || null,
+  };
+}
+// IP pública de la terminal: la reporta el servidor (`fn_ip_cliente`, v136)
+// a partir del encabezado del proxy de Supabase. Sin la migración, o si
+// tarda más de 4 s, la sesión se registra igual con "IP no disponible".
+let _ipClienteLogCache = { valor: undefined, promesa: null };
+async function obtenerIpClienteLog() {
+  if (_ipClienteLogCache.valor !== undefined) return _ipClienteLogCache.valor;
+  if (_ipClienteLogCache.promesa) return _ipClienteLogCache.promesa;
+  const promesa = (async () => {
+    try {
+      const limite = new Promise((resolver) => setTimeout(() => resolver({ data: null, error: { message: 'timeout' } }), 4000));
+      const { data, error } = await Promise.race([supabase.rpc('fn_ip_cliente'), limite]);
+      const ip = !error && typeof data === 'string' && /^[0-9a-fA-F:.]{3,45}$/.test(data.trim()) ? data.trim() : null;
+      if (!error) _ipClienteLogCache = { valor: ip, promesa: null };
+      else _ipClienteLogCache = { valor: undefined, promesa: null };
+      return ip;
+    } catch (_e) {
+      _ipClienteLogCache = { valor: undefined, promesa: null };
+      return null;
+    }
+  })();
+  _ipClienteLogCache = { ..._ipClienteLogCache, promesa };
+  return promesa;
+}
+
+// Diferencias de Configuración del Club para la Auditoría General
+// (`config_club_actualizada`): solo lo que de verdad cambió, en texto legible.
+function textoHorariosPorDiaLog(lista) {
+  const arr = Array.isArray(lista) ? lista : [];
+  if (arr.length === 0) return 'Sin horarios especiales';
+  return [...arr]
+    .sort((a, b) => ORDEN_DIAS_PROMO.indexOf(Number(a?.dia)) - ORDEN_DIAS_PROMO.indexOf(Number(b?.dia)))
+    .map((h) => `${ETIQUETAS_DIA_PROMO[Number(h?.dia)] || '?'} ${h?.apertura || ''}–${h?.cierre || ''}`)
+    .join(', ');
+}
+function siNoLog(v) {
+  return v === true ? 'Activado' : v === false ? 'Desactivado' : null;
+}
+const CAMPOS_CONFIG_CLUB_LOG = [
+  { k: 'nombre', l: 'Nombre del club' },
+  { k: 'logoUrl', l: 'Logo', f: (v) => (v ? 'Con logo' : 'Sin logo') },
+  { k: 'nombreAdministrador', l: 'Nombre del administrador' },
+  { k: 'horaApertura', l: 'Hora de apertura', f: horaLog },
+  { k: 'horaCierre', l: 'Hora de cierre', f: horaLog },
+  { k: 'diasApertura', l: 'Días de apertura', f: (v) => textoDiasAperturaClub({ diasApertura: v }) },
+  { k: 'horariosPorDia', l: 'Horarios especiales por día', f: textoHorariosPorDiaLog },
+  { k: 'duracionReservaMinutos', l: 'Duración de reservas', f: (v) => (Number(v) > 0 ? `${v} min` : null) },
+  { k: 'duracionClaseMinutos', l: 'Duración de clases', f: (v) => (Number(v) > 0 ? `${v} min` : null) },
+  { k: 'tarifasHabilitadas', l: 'Tarifas y franjas horarias', f: siNoLog },
+  { k: 'toleranciaCancelacionMaster', l: 'Políticas de cancelación', f: siNoLog },
+  { k: 'toleranciaReservasEnabled', l: 'Tolerancia de cancelación · Reservas', f: siNoLog },
+  { k: 'toleranciaReservasHoras', l: 'Horas de tolerancia · Reservas', f: (v) => (v == null ? null : `${v} h`) },
+  { k: 'toleranciaTorneosEnabled', l: 'Tolerancia de cancelación · Torneos', f: siNoLog },
+  { k: 'toleranciaTorneosHoras', l: 'Horas de tolerancia · Torneos', f: (v) => (v == null ? null : `${v} h`) },
+  { k: 'toleranciaRetasEnabled', l: 'Tolerancia de cancelación · Retas', f: siNoLog },
+  { k: 'toleranciaRetasHoras', l: 'Horas de tolerancia · Retas', f: (v) => (v == null ? null : `${v} h`) },
+  { k: 'toleranciaAcademiaEnabled', l: 'Tolerancia de cancelación · Academia', f: siNoLog },
+  { k: 'toleranciaAcademiaHoras', l: 'Horas de tolerancia · Academia', f: (v) => (v == null ? null : `${v} h`) },
+  { k: 'academiaPrecioBaseClaseSuelta', l: 'Precio de clase suelta', f: dineroLog },
+  { k: 'academiaPrecioBaseMensualidad', l: 'Precio de mensualidad', f: dineroLog },
+  { k: 'academiaClasesIncluidasMensualidad', l: 'Clases incluidas en la mensualidad' },
+  { k: 'academiaPrecioGrupal2', l: 'Tarifa grupal (2 personas)', f: dineroLog },
+  { k: 'academiaPrecioGrupal3', l: 'Tarifa grupal (3 personas)', f: dineroLog },
+  { k: 'academiaPrecioGrupal4', l: 'Tarifa grupal (4 personas)', f: dineroLog },
+  { k: 'academiaHorasValidacionMinimo', l: 'Validación de mínimo de alumnos', f: (v) => (v == null ? null : `${v} h antes`) },
+  { k: 'promoSegundaHoraActiva', l: 'Promoción de Segunda Hora', f: siNoLog },
+  {
+    k: 'promoSegundaHoraTipoAjuste',
+    l: 'Promo 2ª hora · tipo de ajuste',
+    f: (v) => (normalizarTipoAjustePromoSegundaHora(v) === TIPO_AJUSTE_PRECIO_FIJO ? 'Precio fijo por hora' : '% de descuento'),
+  },
+  { k: 'promoSegundaHoraPorcentaje', l: 'Promo 2ª hora · porcentaje', f: (v) => (v == null ? null : `${v}%`) },
+  { k: 'promoSegundaHoraPrecioFijo', l: 'Promo 2ª hora · precio fijo', f: dineroLog },
+  { k: 'promoSegundaHoraCanchaIds', l: 'Promo 2ª hora · canchas', f: (v) => (Array.isArray(v) && v.length ? `${v.length} cancha(s)` : 'Todas las canchas') },
+  { k: 'promoSegundaHoraDias', l: 'Promo 2ª hora · días', f: (v) => textoDiasPromoSegundaHora({ dias: v }) },
+  {
+    k: 'promoSegundaHoraHoraInicio',
+    l: 'Promo 2ª hora · horario',
+    par: 'promoSegundaHoraHoraFin',
+    f: (ini, fin) => (ini && fin ? textoVentanaPromoSegundaHora({ horaInicio: ini, horaFin: fin }) : 'Todo el horario del club'),
+  },
+];
+function diferenciasConfigClubLog(antes, despues) {
+  if (!antes || !despues) return [];
+  const cambios = [];
+  CAMPOS_CONFIG_CLUB_LOG.forEach((c) => {
+    const a = c.par ? [antes[c.k] ?? null, antes[c.par] ?? null] : antes[c.k] ?? null;
+    const b = c.par ? [despues[c.k] ?? null, despues[c.par] ?? null] : despues[c.k] ?? null;
+    if (JSON.stringify(a) === JSON.stringify(b)) return;
+    try {
+      const fa = c.f ? (c.par ? c.f(...a) : c.f(a)) : a;
+      const fb = c.f ? (c.par ? c.f(...b) : c.f(b)) : b;
+      if (String(fa ?? '') === String(fb ?? '')) return;
+      cambios.push({ campo: c.l, antes: valorLog(fa) === null ? 'Sin definir' : String(fa), despues: valorLog(fb) === null ? 'Sin definir' : String(fb) });
+    } catch (_e) {
+      /* un formateador nunca debe romper el guardado */
+    }
+  });
+  return cambios;
+}
+
+// Campos de una clase de Academia en texto (Canchas y Eventos · clase_editada).
+const CAMPOS_CLASE_LOG = [
+  { k: 'nombre', l: 'Nombre' },
+  { k: 'nivel', l: 'Nivel' },
+  { k: 'tipo_clase', l: 'Tipo de clase' },
+  { k: 'coach_nombre', l: 'Coach' },
+  { k: 'fecha', l: 'Fecha', f: fechaLog },
+  { k: 'hora_inicio', l: 'Hora de inicio', f: horaLog },
+  { k: 'hora_fin', l: 'Hora de fin', f: horaLog },
+  { k: 'capacidad_maxima', l: 'Cupo' },
+  { k: 'minimo_participantes', l: 'Mínimo de alumnos' },
+  { k: 'precio_clase_suelta', l: 'Precio clase suelta', f: dineroLog },
+  { k: 'precio_mensualidad', l: 'Precio mensualidad', f: dineroLog },
+];
+function cambiosClaseLog(anterior, cambios, nombreCancha) {
+  const lista = [];
+  CAMPOS_CLASE_LOG.forEach((c) => {
+    if (!(c.k in (cambios || {}))) return;
+    const a = c.f ? c.f(anterior?.[c.k]) : valorLog(anterior?.[c.k]);
+    const b = c.f ? c.f(cambios[c.k]) : valorLog(cambios[c.k]);
+    if (String(a ?? '') !== String(b ?? '')) lista.push({ campo: c.l, antes: a, despues: b });
+  });
+  if ('cancha_id' in (cambios || {}) && String(anterior?.cancha_id ?? '') !== String(cambios.cancha_id ?? '')) {
+    lista.push({ campo: 'Cancha', antes: nombreCancha?.(anterior?.cancha_id) || null, despues: nombreCancha?.(cambios.cancha_id) || null });
+  }
+  return lista;
+}
+
+// Franja horaria (`tarifas_horarios`) en texto para la Auditoría General.
+function resumenTarifaLog(t) {
+  if (!t) return {};
+  const dias = Array.isArray(t.dias_semana) ? t.dias_semana : [];
+  const desde = t.vigencia_desde ? String(t.vigencia_desde).slice(0, 10) : null;
+  const hasta = t.vigencia_hasta ? String(t.vigencia_hasta).slice(0, 10) : null;
+  let ajuste = null;
+  try {
+    ajuste = String(t.modulo || '').toLowerCase() === 'academia' ? `${formatoMoneda(Number(t.precio_hora) || 0)}/clase` : etiquetaAjusteRegla(t);
+  } catch (_e) {
+    ajuste = null;
+  }
+  return {
+    Nombre: valorLog(t.nombre),
+    Horario: rangoHorasLog(t.hora_inicio, t.hora_fin),
+    Días: dias.length === 0 || dias.length === 7 ? 'Todos los días' : textoDiasPromoSegundaHora({ dias }),
+    Ajuste: ajuste,
+    Canchas: Array.isArray(t.cancha_ids) && t.cancha_ids.length > 0 ? `${t.cancha_ids.length} cancha(s)` : 'Todas las canchas',
+    Vigencia: desde || hasta ? `${desde ? formatoFechaLarga(desde) : 'Sin inicio'} – ${hasta ? formatoFechaLarga(hasta) : 'Sin fin'}` : 'Permanente',
+    Estado: t.activo === false ? 'Apagada' : 'Activa',
+  };
 }
 
 // Valor literal que Postgres rechazó en un 22P02 ('invalid input syntax for
@@ -33530,6 +34639,23 @@ function guardarToleranciaInscripcionRetasLocal(minutos) {
 
 // Contexto del Plan de Rescate (lo provee `AppInterno`). Fuera del Panel (o
 // para roles sin permiso) `puedeOperar` es `false` y nada de esto se pinta.
+// App-134 — registrar un evento en el Log de Actividad desde cualquier
+// pantalla del Panel (altas de clases/torneos/retas…). Fuera del Panel
+// (Portal, Kiosko) vale `null` y no se registra nada.
+const AuditoriaLogContext = React.createContext(null);
+function useRegistrarAuditoriaLog() {
+  const registrar = React.useContext(AuditoriaLogContext);
+  return useCallback(
+    (tipo, detalle) => {
+      try {
+        if (typeof registrar === 'function') registrar(tipo, detalle);
+      } catch (err) {
+        console.warn('[Auditoría] No se pudo registrar el evento.', err);
+      }
+    },
+    [registrar]
+  );
+}
 const RescateRetasContext = React.createContext({ toleranciaInscripcionMinutos: TOLERANCIA_INSCRIPCION_RETAS_DEFAULT, puedeOperar: false });
 function useRescateRetas() {
   return React.useContext(RescateRetasContext) || { toleranciaInscripcionMinutos: TOLERANCIA_INSCRIPCION_RETAS_DEFAULT, puedeOperar: false };
@@ -35009,6 +36135,7 @@ function MatrizPrevisualizacionRetas({ bloques, canchasLote, celdas, onToggle, o
 
 function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
   const toast = useToast();
+  const registrarAuditoriaLog = useRegistrarAuditoriaLog();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   // Multiselección de Canchas al Abrir Reta: el operador puede marcar una,
   // varias o TODAS las canchas activas. Arranca con la primera cancha activa
@@ -35208,6 +36335,20 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
       avisarPrivadaSinMigracion(retaCreada);
     }
     setGuardando(false);
+    // App-134 — Canchas y Eventos: alta de la reta.
+    registrarAuditoriaLog('reta_creada', {
+      reta_id: retaCreada?.id != null ? String(retaCreada.id) : null,
+      reta: nombreFinal,
+      canchas: canchaIdsSeleccionadas.map((id) => canchasActivas.find((c) => c.id === id)?.nombre || `Cancha ${id}`).join(', '),
+      fecha,
+      hora_inicio: tramo.inicio,
+      hora_fin: tramo.fin,
+      nivel: nivel || null,
+      rama: rama || null,
+      precio: Number(precio) || null,
+      visibilidad: publica ? 'Pública' : 'Privada',
+      solo_local: retaCreada?._local ? true : undefined,
+    });
     onCreada(retaCreada, bloqueos);
     onClose();
   }
@@ -35274,6 +36415,19 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
       .forEach((r) => onCreada(r.reta, r.bloqueos));
 
     if (creadas.length > 0) {
+      // App-134 — un solo evento para todo el lote.
+      const horas = creadas.map((r) => String(r.reta?.hora_inicio || '')).filter(Boolean).sort();
+      const finales = creadas.map((r) => String(r.reta?.hora_fin || '')).filter(Boolean).sort();
+      registrarAuditoriaLog('reta_creada', {
+        reta: nombreBase,
+        cantidad: creadas.length,
+        lote_id: loteId,
+        canchas: [...new Set(creadas.map((r) => canchasActivas.find((c) => mismoId(c.id, r.reta?.cancha_id ?? r.reta?.cancha_ids?.[0]))?.nombre).filter(Boolean))].join(', ') || null,
+        fecha,
+        hora_inicio: horas[0] || null,
+        hora_fin: finales[finales.length - 1] || null,
+        visibilidad: publica ? 'Pública' : 'Privada',
+      });
       toast({
         titulo: `Se crearon ${creadas.length} ${creadas.length === 1 ? 'reta' : 'retas'} ${publica ? 'independientes' : 'privadas'}`,
         detalle: `${nombreBase} · ${formatoFechaLarga(fecha)} · ${creadas.length * CUPOS_RETA} lugares de inscripción${publica ? '' : ' · ocultas del Portal'}`,
@@ -35988,6 +37142,7 @@ function TarjetaTorneo({
 
 function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onGuardarFormatoJuegoCustom, onClose, onCreado, configClub = null }) {
   const toast = useToast();
+  const registrarAuditoriaLog = useRegistrarAuditoriaLog();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
 
   const [nombre, setNombre] = useState('');
@@ -36247,6 +37402,17 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
     if (!modoLocal) {
       toast({ titulo: 'Torneo creado', detalle: `${nombre.trim()} · ${bloqueosCreados.length} horario(s) bloqueado(s)` });
     }
+    // App-134 — Canchas y Eventos: alta del torneo.
+    registrarAuditoriaLog('torneo_creado', {
+      torneo_id: torneoCreado?.id != null ? String(torneoCreado.id) : null,
+      torneo: nombre.trim(),
+      fecha: fechaInicio,
+      formato: formato || null,
+      categorias: Array.isArray(categorias) ? categorias.map((c) => (typeof c === 'string' ? c : c?.nombre)).filter(Boolean).join(', ') || null : null,
+      precio: Number(precio) || null,
+      bloqueos: bloqueosCreados.length || null,
+      solo_local: modoLocal ? true : undefined,
+    });
     onCreado(torneoCreado);
     onClose();
   }
@@ -38488,6 +39654,7 @@ function ModuloTorneosRetas({
   onGuardarFormatoJuegoCustom,
   configClub,
 }) {
+  const registrarAuditoriaLog = useRegistrarAuditoriaLog(); // App-134
   const mostrarToast = useToast();
   const [subvista, setSubvista] = useState('retas'); // 'retas' | 'torneos' | 'control'
   // Selector de Jugadores Registrados: directorio completo del CRM,
@@ -38959,6 +40126,7 @@ function ModuloTorneosRetas({
       }
     }
     setActualizandoArchivoId(null);
+    registrarAuditoriaLog('actividad_archivada', { tipo: 'Torneo', nombre: torneo.nombre, archivada: archivar });
     mostrarToast({
       titulo: archivar ? 'Torneo archivado' : 'Torneo restaurado',
       detalle: archivar ? `${torneo.nombre} ya no aparece en Activos.` : `${torneo.nombre} vuelve a Activos.`,
@@ -38995,6 +40163,7 @@ function ModuloTorneosRetas({
       }
     }
     setEliminandoVisualTorneoId(null);
+    registrarAuditoriaLog('torneo_eliminado', { torneo_id: String(torneo.id), torneo: torneo.nombre, fecha: torneo.fecha_inicio || null, motivo: motivoLimpio || null });
     mostrarToast({
       titulo: 'Torneo eliminado',
       detalle: `${torneo.nombre} ya no aparece en la interfaz — sus participantes y pagos se conservan para reportes.`,
@@ -39040,6 +40209,7 @@ function ModuloTorneosRetas({
     }
     setTorneos((prev) => prev.filter((t) => t.id !== torneo.id));
     setEliminandoTorneoId(null);
+    registrarAuditoriaLog('torneo_eliminado', { torneo_id: String(torneo.id), torneo: torneo.nombre, fecha: torneo.fecha_inicio || null, definitivo: true });
     mostrarToast({ titulo: 'Torneo eliminado', detalle: `${torneo.nombre} se eliminó definitivamente.` });
   }
 
@@ -39084,6 +40254,7 @@ function ModuloTorneosRetas({
     try {
       const { error } = await supabase.from('retas').update({ nombre: nuevoNombre }).eq('id', reta.id);
       if (error) throw error;
+      registrarAuditoriaLog('reta_editada', { reta_id: String(reta.id), reta: nuevoNombre, fecha: reta.fecha || null, cambios: [{ campo: 'Nombre', antes: reta.nombre, despues: nuevoNombre }] });
       mostrarToast({ titulo: 'Reta renombrada', detalle: nuevoNombre });
     } catch (err) {
       console.warn('[Torneos & Retas] No se pudo renombrar la Reta en Supabase.', err);
@@ -39115,6 +40286,7 @@ function ModuloTorneosRetas({
       }
     }
     setActualizandoArchivoRetaId(null);
+    registrarAuditoriaLog('actividad_archivada', { tipo: 'Reta', nombre: reta.nombre, archivada: archivar });
     mostrarToast({
       titulo: archivar ? 'Reta archivada' : 'Reta restaurada',
       detalle: archivar ? `${reta.nombre} ya no aparece en Activas.` : `${reta.nombre} vuelve a Activas.`,
@@ -39186,6 +40358,14 @@ function ModuloTorneosRetas({
     }
     onRefrescarParrilla?.();
     setEliminandoVisualRetaId(null);
+    registrarAuditoriaLog('reta_eliminada', {
+      reta_id: String(reta.id),
+      reta: reta.nombre,
+      fecha: reta.fecha || null,
+      hora_inicio: reta.hora_inicio || null,
+      inscritos: (inscripcionesPorReta[reta.id] || []).length || null,
+      motivo: motivoLimpio || null,
+    });
     if (motivoLimpio) console.info(`[Torneos & Retas] Reta "${reta.nombre}" eliminada. Motivo: ${motivoLimpio}`);
 
     if (errorBloqueos) {
@@ -39246,6 +40426,7 @@ function ModuloTorneosRetas({
     }
     setRetas((prev) => prev.filter((r) => r.id !== reta.id));
     setEliminandoRetaId(null);
+    registrarAuditoriaLog('reta_eliminada', { reta_id: String(reta.id), reta: reta.nombre, fecha: reta.fecha || null, hora_inicio: reta.hora_inicio || null });
     mostrarToast({ titulo: 'Reta eliminada', detalle: `${reta.nombre} se eliminó definitivamente.` });
   }
 
@@ -39952,6 +41133,12 @@ function ModuloTorneosRetas({
         console.warn('[Torneos & Retas] No se pudo marcar el torneo como finalizado en Supabase — se aplica solo local.', err);
       }
     }
+    registrarAuditoriaLog('torneo_finalizado', {
+      torneo_id: String(torneoGestionVivo.id),
+      torneo: torneoGestionVivo.nombre,
+      fecha: torneoGestionVivo.fecha_inicio || null,
+      estado_anterior: capitalizarLog(torneoGestionVivo.estado) || null,
+    });
     setTorneos((prev) =>
       prev.map((t) => {
         if (t.id !== torneoGestionVivo.id) return t;
@@ -41743,6 +42930,7 @@ async function generarSesionesClase({ clase, reservasExistentes = [] }) {
 // `academia_alumnos`, y notificación al jugador (`crearNotificacionJugador`).
 function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen, configClub, permisos, tarifasHorarios, rangosHorarioClases = [] }) {
   const toast = useToast();
+  const registrarAuditoriaLog = useRegistrarAuditoriaLog();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   const coachesDisponibles = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
   // FIX (buscador de inscripción, Alumno de Clase Privada): las cuentas
@@ -42241,6 +43429,20 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
           : `${claseCreada.nombre} · ${formatoFechaLarga(fecha)} ${formatoHora12(horaInicio)}`,
       });
     }
+    // App-134 — Canchas y Eventos: alta de la clase.
+    registrarAuditoriaLog('clase_creada', {
+      clase_id: claseCreada?.id != null ? String(claseCreada.id) : null,
+      clase: claseCreada?.nombre || nombreEfectivo.trim(),
+      coach: coachNombre || null,
+      cancha: canchasActivas.find((c) => mismoId(c.id, canchaId))?.nombre || null,
+      fecha,
+      hora_inicio: horaInicio,
+      hora_fin: horaFin,
+      cupo: Number(capacidadEfectiva) || null,
+      precio: Number(precioClaseSuelta) || null,
+      inscritos: esPrivada ? (modoLocal ? 0 : 1) : inscritosGrupo || null,
+      solo_local: modoLocal ? true : undefined,
+    });
     onCreada(claseCreada, sesionesCreadas);
     onClose();
   }
@@ -45943,6 +47145,20 @@ function ModuloAcademiaClinicas({
       const { error } = await actualizarConColumnasOpcionales('academia_clases', claseSeleccionada.id, cambios, ['coach_empleado_id']);
       if (error) console.warn('[Academia & Clínicas] No se pudo editar la clase en Supabase, se aplicó solo local.', error);
     }
+    // App-134 — Canchas y Eventos: qué cambió de la clase (antes ➔ después).
+    try {
+      const cambiosLog = cambiosClaseLog(claseSeleccionada, cambios, (id) => (canchas || []).find((c) => mismoId(c.id, id))?.nombre || null);
+      if (cambiosLog.length > 0) {
+        onRegistrarAuditoria?.('clase_editada', {
+          clase_id: String(claseSeleccionada.id),
+          clase: claseSeleccionada.nombre,
+          fecha: claseSeleccionada.fecha || null,
+          cambios: cambiosLog,
+        });
+      }
+    } catch (err) {
+      console.warn('[Auditoría] No se pudo registrar la edición de la clase.', err);
+    }
     onAcademiaClaseActualizada({ ...claseSeleccionada, ...cambios });
     return { error: null };
   }
@@ -46012,6 +47228,14 @@ function ModuloAcademiaClinicas({
       if (error) console.warn('[Academia & Clínicas] No se pudo marcar la clase como cancelada en Supabase, se aplicó solo local.', error);
     }
     onAcademiaClaseActualizada({ ...claseSeleccionada, estado: 'cancelada' });
+    onRegistrarAuditoria?.('clase_eliminada', {
+      clase_id: String(claseSeleccionada.id),
+      clase: claseSeleccionada.nombre,
+      fecha: claseSeleccionada.fecha || null,
+      hora_inicio: claseSeleccionada.hora_inicio || null,
+      hora_fin: claseSeleccionada.hora_fin || null,
+      sesiones_liberadas: sesionesDeClase.length,
+    });
     return { error: null };
   }
 
@@ -46085,6 +47309,14 @@ function ModuloAcademiaClinicas({
     }
     setAcademiaSesiones((prev) => prev.filter((s) => s.clase_id !== clase.id));
     onAcademiaClaseEliminada?.(clase.id);
+    onRegistrarAuditoria?.('clase_eliminada', {
+      clase_id: String(clase.id),
+      clase: clase.nombre,
+      fecha: clase.fecha || null,
+      hora_inicio: clase.hora_inicio || null,
+      hora_fin: clase.hora_fin || null,
+      definitiva: true,
+    });
     toast({
       titulo: 'Clase eliminada definitivamente',
       detalle: `${clase.nombre} se borró de Supabase junto con su sesión, alumnos y asistencia.`,
@@ -46118,6 +47350,7 @@ function ModuloAcademiaClinicas({
       }
     }
     setActualizandoArchivoClaseId(null);
+    onRegistrarAuditoria?.('actividad_archivada', { tipo: 'Clase', nombre: clase.nombre, archivada: archivar });
     toast({
       titulo: archivar ? 'Clase archivada' : 'Clase restaurada',
       detalle: archivar ? `${clase.nombre} ya no aparece en Activas.` : `${clase.nombre} vuelve a Activas.`,
@@ -51189,16 +52422,27 @@ function BuscadorEmpleadoLog({ empleados, nombresEnLog, seleccionado, onSeleccio
   );
 }
 
-// Fila del Log de Actividad: un renglón por evento, usando el catálogo
-// `TIPOS_EVENTO_AUDITORIA` (icono/color/texto) para no repetir esa lógica.
-function FilaLogActividad({ evento }) {
+// Fila del Log de Actividad (App-134): un renglón por evento con su línea
+// limpia (`presentarEventoLog`) — clic / Enter abre el detalle completo.
+function FilaLogActividad({ evento, onAbrir }) {
   const meta = TIPOS_EVENTO_AUDITORIA[evento.tipo];
   const Icon = meta?.icon || Info;
-  const fechaHora = evento.created_at
-    ? new Date(evento.created_at).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })
-    : '';
+  const fechaHora = evento.created_at ? new Date(evento.created_at).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : '';
+  let resumen = '';
+  try {
+    resumen = presentarEventoLog(evento).resumen;
+  } catch (_e) {
+    resumen = '';
+  }
+  const rol = rolLegibleLog(evento.empleado_rol);
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+    <button
+      type="button"
+      onClick={() => onAbrir?.(evento)}
+      data-testid="fila-log"
+      data-tipo-evento={evento.tipo}
+      className="group flex w-full items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-left transition hover:border-orange-400/50 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"
+    >
       <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${meta?.bg || 'bg-slate-100'}`}>
         <Icon size={14} className={meta?.color || 'text-slate-500'} />
       </div>
@@ -51207,12 +52451,161 @@ function FilaLogActividad({ evento }) {
           <p className="text-xs font-bold text-slate-900">{etiquetaTipoEvento(evento.tipo)}</p>
           <p className="text-[10px] text-slate-500">{fechaHora}</p>
         </div>
-        <p className="mt-0.5 text-[11px] text-slate-500">{meta?.detalleTexto?.(evento.detalle) || ''}</p>
-        <p className="mt-1 text-[10px] font-semibold text-slate-400">
-          {evento.empleado_nombre || 'Operador'} · {ROLES_POR_VALOR[evento.empleado_rol]?.label || evento.empleado_rol || ''}
-        </p>
+        {resumen && (
+          <p className="mt-0.5 line-clamp-2 text-[11px] text-slate-500" data-testid="resumen-log">
+            {resumen}
+          </p>
+        )}
+        <p className="mt-1 text-[10px] font-semibold text-slate-400">{unirLog([evento.empleado_nombre || 'Operador', rol])}</p>
       </div>
-    </div>
+      <ChevronRight size={15} className="mt-2 shrink-0 text-slate-300 transition group-hover:text-orange-400" aria-hidden="true" />
+    </button>
+  );
+}
+
+// Detalle de un evento del Log (App-134): operador, fecha y hora exacta,
+// acción, antes ➔ después, involucrados y datos — solo lo que existe.
+function ModalDetalleEventoLog({ evento, sesionRelacionada, empleados, onClose }) {
+  const meta = TIPOS_EVENTO_AUDITORIA[evento.tipo];
+  const categoria = CATEGORIAS_LOG_ACTIVIDAD.find((c) => c.value === categoriaEventoLog(evento));
+  let p = { resumen: '', cambios: [], involucrados: [], datos: [] };
+  try {
+    p = presentarEventoLog(evento);
+  } catch (_e) {
+    /* nunca rompe el modal */
+  }
+  const rolDirectorio = (empleados || []).find((e) => normalizarBusquedaLog(e.nombre) === normalizarBusquedaLog(evento.empleado_nombre))?.rol;
+  const rol = rolLegibleLog(evento.empleado_rol || rolDirectorio);
+  const fecha = evento.created_at ? new Date(evento.created_at) : null;
+  const fechaTexto =
+    fecha && !Number.isNaN(fecha.getTime())
+      ? capitalizarLog(
+          fecha.toLocaleString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        )
+      : 'Sin fecha registrada';
+  const articulos = Array.isArray(evento.detalle?.articulos) ? evento.detalle.articulos : [];
+  const datosSesion = [];
+  if (evento.tipo === 'sesion_inicio') {
+    if (sesionRelacionada) {
+      const d = sesionRelacionada.detalle || {};
+      datosSesion.push({ etiqueta: 'Cierre de sesión', valor: fechaLog(d.fin || sesionRelacionada.created_at) });
+      if (minutosLegiblesLog(d.duracion_min)) datosSesion.push({ etiqueta: 'Duración', valor: minutosLegiblesLog(d.duracion_min) });
+      if (ETIQUETAS_MOTIVO_CIERRE_SESION[d.motivo]) datosSesion.push({ etiqueta: 'Motivo del cierre', valor: ETIQUETAS_MOTIVO_CIERRE_SESION[d.motivo] });
+    } else {
+      datosSesion.push({ etiqueta: 'Cierre de sesión', valor: 'Sin cierre registrado (sigue activa o se cerró el navegador)' });
+    }
+  }
+  const datos = [...p.datos, ...datosSesion];
+  const Icon = meta?.icon || Info;
+  return (
+    <ModalShell titulo={etiquetaTipoEvento(evento.tipo)} subtitulo={categoria ? `${categoria.label} · Log de Actividad` : 'Log de Actividad'} onClose={onClose} icon={Icon} ancho="max-w-xl">
+      <div className="space-y-4" data-testid="modal-detalle-log">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Operador responsable</p>
+            <p className="mt-1 text-sm font-black text-slate-900" data-testid="detalle-log-operador">
+              {evento.empleado_nombre || 'Operador'}
+            </p>
+            {rol && (
+              <p className="text-[11px] font-semibold text-slate-500" data-testid="detalle-log-rol">
+                {rol}
+              </p>
+            )}
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Fecha y hora exacta</p>
+            <p className="mt-1 text-sm font-bold text-slate-900" data-testid="detalle-log-fecha">
+              {fechaTexto}
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Acción realizada</p>
+          <p className="mt-1 text-sm font-semibold text-slate-800" data-testid="detalle-log-accion">
+            {p.resumen || etiquetaTipoEvento(evento.tipo)}
+          </p>
+        </div>
+
+        {p.cambios.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Datos previos vs. nuevos</p>
+            <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200" data-testid="detalle-log-cambios">
+              {p.cambios.map((c, i) => (
+                <div key={`${c.campo}-${i}`} className="grid grid-cols-1 gap-1 px-3.5 py-2.5 sm:grid-cols-[9rem_1fr] sm:items-center" data-testid="detalle-log-cambio">
+                  <p className="text-[11px] font-bold text-slate-500">{c.campo}</p>
+                  <p className="flex flex-wrap items-center gap-1.5 text-xs">
+                    {c.antes !== null ? (
+                      <span className="rounded-md bg-rose-50 px-2 py-0.5 font-semibold text-rose-700 line-through decoration-rose-300">{c.antes}</span>
+                    ) : (
+                      <span className="text-[11px] font-semibold text-slate-400">Nuevo valor</span>
+                    )}
+                    <ArrowRight size={13} className="text-slate-400" aria-label="cambió a" />
+                    <span className="rounded-md bg-emerald-50 px-2 py-0.5 font-bold text-emerald-700">{c.despues !== null ? c.despues : 'Sin valor'}</span>
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {p.involucrados.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Involucrados</p>
+            <div className="flex flex-wrap gap-1.5" data-testid="detalle-log-involucrados">
+              {p.involucrados.map((inv, i) => (
+                <span key={`${inv.nombre}-${i}`} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px]">
+                  <User size={11} className="text-slate-400" />
+                  <span className="font-semibold text-slate-500">{inv.etiqueta}:</span>
+                  <span className="font-bold text-slate-800">{inv.nombre}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {articulos.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Artículos</p>
+            <div className="divide-y divide-slate-100 rounded-xl border border-slate-200" data-testid="detalle-log-articulos">
+              {articulos.map((a, i) => (
+                <div key={`${a.nombre}-${i}`} className="flex items-center justify-between gap-3 px-3.5 py-2 text-xs">
+                  <span className="min-w-0 truncate text-slate-700">
+                    <span className="font-bold text-slate-900">{a.cantidad}×</span> {a.nombre}
+                  </span>
+                  <span className="shrink-0 font-semibold text-slate-700">{formatoMoneda(a.subtotal)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {datos.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Detalles</p>
+            <dl className="grid grid-cols-1 gap-x-4 gap-y-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 sm:grid-cols-2" data-testid="detalle-log-datos">
+              {datos.map((d, i) => (
+                <div key={`${d.etiqueta}-${i}`} className="min-w-0">
+                  <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{d.etiqueta}</dt>
+                  <dd className="break-words text-xs font-semibold text-slate-800">{d.valor}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        )}
+
+        <p className="text-[10px] text-slate-400">
+          {evento._origen === 'ventas'
+            ? 'Fuente: registro de cobros (ventas). Solo lectura.'
+            : evento._local
+            ? 'Guardado solo en este dispositivo (no llegó a Supabase).'
+            : 'Fuente: Log de Actividad. Los registros de auditoría no se pueden editar.'}
+        </p>
+        <div className="flex justify-end">
+          <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -51236,8 +52629,19 @@ function ModuloControlSeguridad({
   errorLogActividad,
   cargarLogActividad,
   consultarLogActividadRango,
+  // App-134 — cobros de `ventas` (pestaña Caja y Recepción) y canchas para
+  // mostrar su nombre. Ambos opcionales: sin ellos el Log sigue igual.
+  consultarVentasLog = null,
+  canchas = [],
 }) {
   const [subvista, setSubvista] = useState('empleados'); // 'empleados' | 'cortes' | 'log'
+  // App-134 — pestaña del Log y evento abierto en el modal de detalle.
+  const [categoriaLog, setCategoriaLog] = useState('auditoria'); // 'auditoria' | 'caja' | 'canchas'
+  const [eventoDetalle, setEventoDetalle] = useState(null);
+  const [ventasLog, setVentasLog] = useState([]);
+  const [cargandoVentasLog, setCargandoVentasLog] = useState(false);
+  const [errorVentasLog, setErrorVentasLog] = useState('');
+  const [reintentoVentasLog, setReintentoVentasLog] = useState(0);
   const [modalEmpleado, setModalEmpleado] = useState(null); // null = cerrado, {} = alta, {...} = edición
   const [filtroTipoLog, setFiltroTipoLog] = useState('todos');
   const [busquedaLog, setBusquedaLog] = useState('');
@@ -51291,6 +52695,84 @@ function ModuloControlSeguridad({
     return [...mapa.values()].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
   }, [rangoLog, logRango, logActividad]);
 
+  // App-134 — Caja y Recepción: los cobros salen de `ventas` (mismo rango de
+  // fechas que el Log; sin rango = últimos 30 días). Solo se consultan al
+  // abrir esa pestaña.
+  const pestanaCajaVisible = subvista === 'log' && categoriaLog === 'caja';
+  useEffect(() => {
+    if (!pestanaCajaVisible || !consultarVentasLog) return undefined;
+    let cancelado = false;
+    setCargandoVentasLog(true);
+    setErrorVentasLog('');
+    (async () => {
+      const { data, error } = await consultarVentasLog(rangoLog);
+      if (cancelado) return;
+      if (error) setErrorVentasLog(error.message || 'No se pudieron consultar los cobros de ese periodo.');
+      setVentasLog(Array.isArray(data) ? data : []);
+      setCargandoVentasLog(false);
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [pestanaCajaVisible, rangoLog, consultarVentasLog, reintentoVentasLog]);
+
+  const eventosVentasLog = useMemo(() => {
+    const nombreCancha = (id) => (canchas || []).find((c) => mismoId(c.id, id))?.nombre || null;
+    const rolPorNombre = new Map((empleados || []).map((e) => [normalizarBusquedaLog(e.nombre), e.rol]));
+    const rolDeOperador = (nombre) => rolPorNombre.get(normalizarBusquedaLog(nombre)) || null;
+    return ventasLog
+      .map((v) => {
+        try {
+          return eventoLogDesdeVenta(v, { nombreCancha, rolDeOperador });
+        } catch (_e) {
+          return null;
+        }
+      })
+      .filter((ev) => ev && (!rangoLog || eventoEnRangoLog(ev.created_at, rangoLog)));
+  }, [ventasLog, canchas, empleados, rangoLog]);
+
+  // Todos los eventos con su pestaña (los cobros de `ventas` solo cuentan en
+  // Caja y Recepción cuando ya se consultaron).
+  const eventosLogCompletos = useMemo(() => {
+    const base = [...baseLog, ...eventosVentasLog];
+    return base.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+  }, [baseLog, eventosVentasLog]);
+  const conteoPorCategoriaLog = useMemo(() => {
+    const conteo = { auditoria: 0, caja: 0, canchas: 0 };
+    eventosLogCompletos.forEach((ev) => {
+      const c = categoriaEventoLog(ev);
+      conteo[c] = (conteo[c] || 0) + 1;
+    });
+    return conteo;
+  }, [eventosLogCompletos]);
+  // Tipos que se ofrecen en el selector de la pestaña activa: los del
+  // catálogo de esa pestaña + cualquier tipo desconocido que aparezca en ella.
+  const tiposDePestanaLog = useMemo(() => {
+    const tipos = Object.entries(TIPOS_EVENTO_AUDITORIA)
+      .filter(([, meta]) => meta.categoria === categoriaLog)
+      .map(([key, meta]) => ({ value: key, label: meta.label }));
+    const conocidos = new Set(tipos.map((t) => t.value));
+    eventosLogCompletos.forEach((ev) => {
+      if (ev?.tipo && !conocidos.has(ev.tipo) && categoriaEventoLog(ev) === categoriaLog) {
+        conocidos.add(ev.tipo);
+        tipos.push({ value: ev.tipo, label: etiquetaTipoEvento(ev.tipo) });
+      }
+    });
+    return tipos.sort((a, b) => a.label.localeCompare(b.label, 'es'));
+  }, [eventosLogCompletos, categoriaLog]);
+  // Sesión "pareja" de un inicio (mismo `sesion_id`) para el detalle.
+  const cierrePorSesionLog = useMemo(() => {
+    const mapa = new Map();
+    eventosLogCompletos.forEach((ev) => {
+      if (ev.tipo === 'sesion_cierre' && ev.detalle?.sesion_id) mapa.set(String(ev.detalle.sesion_id), ev);
+    });
+    return mapa;
+  }, [eventosLogCompletos]);
+  function cambiarCategoriaLog(nueva) {
+    setCategoriaLog(nueva);
+    setFiltroTipoLog('todos');
+  }
+
   // Nombres que aparecen en el Log (incluye operadores ya dados de baja) para
   // el autocompletado del buscador.
   const nombresEnLog = useMemo(() => {
@@ -51315,13 +52797,15 @@ function ModuloControlSeguridad({
 
   const logFiltrado = useMemo(() => {
     const q = normalizarBusquedaLog(busquedaLog);
-    return baseLog.filter((ev) => {
+    return eventosLogCompletos.filter((ev) => {
+      if (categoriaEventoLog(ev) !== categoriaLog) return false;
       if (filtroTipoLog !== 'todos' && ev.tipo !== filtroTipoLog) return false;
       if (!eventoDeEmpleadoLog(ev, empleadoLog)) return false;
       if (q) {
         let detalle = '';
         try {
-          detalle = TIPOS_EVENTO_AUDITORIA[ev.tipo]?.detalleTexto?.(ev.detalle) || '';
+          const p = presentarEventoLog(ev);
+          detalle = [p.resumen, ...p.involucrados.map((i) => i.nombre), ...p.datos.map((d) => d.valor), ...p.cambios.map((c) => `${c.antes || ''} ${c.despues || ''}`)].join(' ');
         } catch (err) {
           detalle = '';
         }
@@ -51330,7 +52814,7 @@ function ModuloControlSeguridad({
       }
       return true;
     });
-  }, [baseLog, filtroTipoLog, busquedaLog, empleadoLog]);
+  }, [eventosLogCompletos, categoriaLog, filtroTipoLog, busquedaLog, empleadoLog]);
 
   const hayFiltrosLog = filtroTipoLog !== 'todos' || Boolean(busquedaLog.trim()) || Boolean(empleadoLog) || Boolean(rangoLog);
   function limpiarFiltrosLog() {
@@ -51375,7 +52859,7 @@ function ModuloControlSeguridad({
             tono="amber"
           />
         )}
-        <MetricCard icon={History} etiqueta="Eventos en el Log" valor={logActividad.length} sub="Cancelaciones, descuentos, ediciones..." tono="violet" />
+        <MetricCard icon={History} etiqueta="Eventos en el Log" valor={logActividad.length} sub="Auditoría, caja y agenda" tono="violet" />
       </div>
 
       <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
@@ -51461,6 +52945,41 @@ function ModuloControlSeguridad({
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               Log de Actividad / Historial Auditable
             </p>
+            {/* App-134 — 3 pestañas: Auditoría General · Caja y Recepción ·
+                Canchas y Eventos. Cada renglón abre su detalle completo. */}
+            <div role="tablist" aria-label="Secciones del Log de Actividad" className="grid grid-cols-1 gap-2 sm:grid-cols-3" data-testid="pestanas-log">
+              {CATEGORIAS_LOG_ACTIVIDAD.map((cat) => {
+                const IconCat = cat.icon;
+                const activa = categoriaLog === cat.value;
+                const total = conteoPorCategoriaLog[cat.value] || 0;
+                return (
+                  <button
+                    key={cat.value}
+                    type="button"
+                    role="tab"
+                    aria-selected={activa}
+                    data-testid={`pestana-log-${cat.value}`}
+                    onClick={() => cambiarCategoriaLog(cat.value)}
+                    className={`flex items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition ${
+                      activa ? 'border-orange-400 bg-orange-400/10 ring-1 ring-orange-400/40' : 'border-slate-200 bg-slate-50 hover:border-orange-400/40'
+                    }`}
+                  >
+                    <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${activa ? 'bg-orange-400 text-slate-950' : 'bg-slate-200/70 text-slate-500'}`}>
+                      <IconCat size={15} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center justify-between gap-2">
+                        <span className={`text-xs font-black ${activa ? 'text-orange-700' : 'text-slate-800'}`}>{cat.label}</span>
+                        {(cat.value !== 'caja' || ventasLog.length > 0 || total > 0) && (
+                          <span className="rounded-full bg-white px-1.5 py-px text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">{total}</span>
+                        )}
+                      </span>
+                      <span className="block truncate text-[10px] font-medium text-slate-500">{cat.sub}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
             <div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
               <BuscadorEmpleadoLog
                 empleados={empleados}
@@ -51470,11 +52989,11 @@ function ModuloControlSeguridad({
                 texto={busquedaLog}
                 onTexto={setBusquedaLog}
               />
-              <select value={filtroTipoLog} onChange={(e) => setFiltroTipoLog(e.target.value)} className={`${inputClase} lg:w-56`}>
+              <select value={filtroTipoLog} onChange={(e) => setFiltroTipoLog(e.target.value)} className={`${inputClase} lg:w-56`} data-testid="filtro-tipo-log">
                 <option value="todos">Todos los eventos</option>
-                {Object.entries(TIPOS_EVENTO_AUDITORIA).map(([key, meta]) => (
-                  <option key={key} value={key}>
-                    {meta.label}
+                {tiposDePestanaLog.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
                   </option>
                 ))}
               </select>
@@ -51495,24 +53014,46 @@ function ModuloControlSeguridad({
           </div>
           {errorRango && <ErrorBanner mensaje={errorRango} onReintentar={() => setReintentoRango((n) => n + 1)} />}
           {errorLogActividad && <ErrorBanner mensaje={errorLogActividad} onReintentar={() => cargarLogActividad()} />}
-          {loadingLogActividad || cargandoRango ? (
+          {categoriaLog === 'caja' && errorVentasLog && <ErrorBanner mensaje={errorVentasLog} onReintentar={() => setReintentoVentasLog((n) => n + 1)} />}
+          {categoriaLog === 'caja' && !rangoLog && (
+            <p className="text-[11px] text-slate-500" data-testid="nota-caja-log">
+              Cobros y ventas de los últimos 30 días. Usa el filtro Día / Mes para revisar otro periodo.
+            </p>
+          )}
+          {loadingLogActividad || cargandoRango || (categoriaLog === 'caja' && cargandoVentasLog) ? (
             <SkeletonGrid />
           ) : logFiltrado.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500">
+            <p className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500" data-testid="log-vacio">
               {hayFiltrosLog
                 ? 'Sin eventos que coincidan con los filtros elegidos.'
-                : 'Sin eventos que coincidan. Cancelaciones, descuentos, ediciones de precio y cambios de horario/cancha aparecen aquí automáticamente.'}
+                : categoriaLog === 'auditoria'
+                ? 'Sin eventos todavía. Inicios y cierres de sesión, cambios de configuración y de horarios, y altas o bajas de empleados aparecen aquí automáticamente.'
+                : categoriaLog === 'caja'
+                ? 'Sin movimientos de caja en este periodo. Cobros, ventas, cancelaciones de tickets, devoluciones y cortesías aparecen aquí automáticamente.'
+                : 'Sin movimientos de agenda todavía. Reservas creadas, reagendadas o canceladas, y altas o cambios de clases, torneos y retas aparecen aquí automáticamente.'}
             </p>
           ) : (
             <div className="space-y-2">
               {logFiltrado.map((ev) => (
-                <FilaLogActividad key={ev.id} evento={ev} />
+                <FilaLogActividad key={ev.id} evento={ev} onAbrir={setEventoDetalle} />
               ))}
             </div>
           )}
         </div>
       )}
       </TransicionPestana>
+
+      <AnimatePresence>
+        {eventoDetalle && (
+          <ModalDetalleEventoLog
+            key={String(eventoDetalle.id)}
+            evento={eventoDetalle}
+            empleados={empleados}
+            sesionRelacionada={eventoDetalle.tipo === 'sesion_inicio' && eventoDetalle.detalle?.sesion_id ? cierrePorSesionLog.get(String(eventoDetalle.detalle.sesion_id)) || null : null}
+            onClose={() => setEventoDetalle(null)}
+          />
+        )}
+      </AnimatePresence>
 
       {modalEmpleado && (
         <ModalGestionEmpleados
@@ -67600,8 +69141,17 @@ function AppInterno({ clubInicial } = {}) {
   // `PantallaKiosko` ("Cerrar Sesión del Club (Master)"), el botón ya
   // existente dentro de `ModalOperador`, y ya NO en la barra lateral (ver
   // `cerrarSesionColaborador`, el que ahora usa ese botón).
+  // App-134: antes de salir se registra el cierre de sesión del operador
+  // fichado (Auditoría General). Máx. 1.5 s: nunca retrasa ni bloquea el
+  // cierre de sesión si la red o el Log fallan.
+  const cierreSesionMasterRef = useRef(null);
   const cerrarSesionClub = useCallback(async () => {
     setModalOperador(false);
+    try {
+      await Promise.race([Promise.resolve(cierreSesionMasterRef.current?.()), new Promise((resolver) => setTimeout(resolver, 1500))]);
+    } catch (_e) {
+      /* el cierre de sesión sigue igual */
+    }
     await supabase.auth.signOut();
   }, []);
 
@@ -67916,6 +69466,94 @@ function AppInterno({ clubInicial } = {}) {
     },
     [operador]
   );
+  // Referencia estable para los guardados que no deben cambiar de identidad
+  // (Configuración del Club, Tarifas, Horarios de clases) — App-134.
+  const registrarAuditoriaRef = useRef(registrarEventoAuditoria);
+  registrarAuditoriaRef.current = registrarEventoAuditoria;
+
+  // App-134 — Control de sesiones de operadores (Auditoría General). Se
+  // observa QUIÉN está fichado en esta terminal (`operadorRaw`): al cambiar
+  // de persona se cierra la sesión anterior y se abre la nueva. Un refresh
+  // no registra nada (la sesión en curso sigue en localStorage). Solo
+  // REGISTRA: no toca el Kiosko, los PIN ni los permisos.
+  const registrarCierreSesionOperador = useCallback(async (previo, motivo) => {
+    if (previo?.id == null) return null;
+    const sesion = leerSesionOperadorLog();
+    const mismaSesion = sesion && String(sesion.empleado_id) === String(previo.id) ? sesion : null;
+    guardarSesionOperadorLog(null);
+    const fin = new Date().toISOString();
+    const inicioMs = mismaSesion?.inicio ? Date.parse(mismaSesion.inicio) : NaN;
+    return registrarAuditoriaRef.current?.(
+      'sesion_cierre',
+      {
+        sesion_id: mismaSesion?.sesion_id || null,
+        inicio: mismaSesion?.inicio || null,
+        fin,
+        duracion_min: Number.isFinite(inicioMs) ? Math.max(0, Math.round((Date.now() - inicioMs) / 60000)) : null,
+        motivo,
+        dispositivo_texto: mismaSesion?.dispositivo_texto || describirDispositivoLog().dispositivo_texto || null,
+        ip: mismaSesion?.ip || null,
+      },
+      { id: previo.id, nombre: previo.nombre, rol: previo.rol }
+    );
+  }, []);
+  const registrarInicioSesionOperador = useCallback(async (actual, { reanudada = false } = {}) => {
+    if (actual?.id == null) return null;
+    const dispositivo = describirDispositivoLog();
+    const sesion = { sesion_id: nuevoIdSesionLog(), empleado_id: String(actual.id), inicio: new Date().toISOString(), ...dispositivo, agente: undefined };
+    guardarSesionOperadorLog(sesion);
+    const ip = await obtenerIpClienteLog();
+    if (ip) {
+      const vigente = leerSesionOperadorLog();
+      if (vigente?.sesion_id === sesion.sesion_id) guardarSesionOperadorLog({ ...vigente, ip });
+    }
+    return registrarAuditoriaRef.current?.(
+      'sesion_inicio',
+      { ...dispositivo, sesion_id: sesion.sesion_id, inicio: sesion.inicio, ip: ip || null, reanudada: reanudada || undefined },
+      { id: actual.id, nombre: actual.nombre, rol: actual.rol }
+    );
+  }, []);
+  const operadorSesionPrevioRef = useRef(operadorRaw);
+  useEffect(() => {
+    // Primer render: una sesión restaurada (refresh) sigue abierta; solo se
+    // registra como "reanudada" si no hay rastro de su inicio en esta
+    // terminal (p. ej. tras cerrar la sesión del club y volver a entrar).
+    if (operadorRaw?.id != null) {
+      const sesion = leerSesionOperadorLog();
+      if (!sesion || String(sesion.empleado_id) !== String(operadorRaw.id)) {
+        registrarInicioSesionOperador(operadorRaw, { reanudada: true }).catch(() => {});
+      }
+    }
+    // Solo al montar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    const previo = operadorSesionPrevioRef.current;
+    operadorSesionPrevioRef.current = operadorRaw;
+    const idPrevio = previo?.id != null ? String(previo.id) : null;
+    const idActual = operadorRaw?.id != null ? String(operadorRaw.id) : null;
+    if (idPrevio === idActual) return;
+    (async () => {
+      if (idPrevio) await registrarCierreSesionOperador(previo, idActual ? 'cambio_operador' : 'cierre_colaborador');
+      if (idActual) await registrarInicioSesionOperador(operadorRaw);
+    })().catch((err) => console.warn('[Auditoría] No se pudo registrar el cambio de sesión.', err));
+  }, [operadorRaw, registrarCierreSesionOperador, registrarInicioSesionOperador]);
+  cierreSesionMasterRef.current = () => (operadorRaw?.id != null ? registrarCierreSesionOperador(operadorRaw, 'cierre_club') : null);
+
+  // App-134 — Cobros de la pestaña "Caja y Recepción": lectura de `ventas`
+  // por rango (la misma consulta tolerante de Contabilidad). Sin rango = los
+  // últimos 30 días. Solo lectura.
+  const consultarVentasLog = useCallback(async (rango) => {
+    const hasta = rango ? new Date(rango.hasta) : new Date(Date.now() + 60 * 1000);
+    const desde = rango ? new Date(rango.desde) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    try {
+      const { data, error } = await consultarVentasEnRango(desde, hasta);
+      if (error) return { data: [], error: esErrorTablaInexistente(error) ? null : error };
+      return { data: data || [], error: null };
+    } catch (err) {
+      return { data: [], error: err };
+    }
+  }, []);
 
   // Columnas opcionales de `empleados` (Arquitectura Flexible — ver
   // `insertarConColumnasOpcionales`/`actualizarConColumnasOpcionales`):
@@ -68036,7 +69674,17 @@ function AppInterno({ clubInicial } = {}) {
       const etiquetaCambios = Object.keys(otrosCambios)
         .map((k) => (k === 'rol' ? `rol → ${ROLES_POR_VALOR[otrosCambios.rol]?.label || otrosCambios.rol}` : k === 'activo' ? (otrosCambios.activo ? 'reactivado' : 'desactivado') : k))
         .join(', ');
-      registrarEventoAuditoria('empleado_editado', { nombre: anterior?.nombre, cambios: etiquetaCambios }, actor);
+      // App-134: además del texto de siempre, antes ➔ después por campo
+      // (nunca el PIN). Solo enriquece el detalle del Log.
+      const ETIQUETAS_CAMPO_EMPLEADO = { nombre: 'Nombre', rol: 'Rol', activo: 'Estado', email: 'Correo' };
+      const textoCampoEmpleado = (k, v) =>
+        k === 'rol' ? ROLES_POR_VALOR[v]?.label || v || null : k === 'activo' ? (v === false ? 'Inactivo' : 'Activo') : v ?? null;
+      const cambiosDetalle = Object.keys(otrosCambios).map((k) => ({
+        campo: ETIQUETAS_CAMPO_EMPLEADO[k] || etiquetaCampoLog(k),
+        antes: anterior ? textoCampoEmpleado(k, anterior[k]) : null,
+        despues: textoCampoEmpleado(k, otrosCambios[k]),
+      }));
+      registrarEventoAuditoria('empleado_editado', { nombre: anterior?.nombre, cambios: etiquetaCambios, cambios_detalle: cambiosDetalle }, actor);
     }
   }
 
@@ -68153,6 +69801,10 @@ function AppInterno({ clubInicial } = {}) {
   const [configuracionClubId, setConfiguracionClubId] = useState(null);
   const [configClub, setConfigClub] = useState(() => leerConfigClubLocal());
   const [guardandoConfigClub, setGuardandoConfigClub] = useState(false);
+  // App-134: configuración vigente antes de cada guardado, para registrar en
+  // la Auditoría General solo lo que cambió (antes ➔ después).
+  const configClubAuditoriaRef = useRef(configClub);
+  configClubAuditoriaRef.current = configClub;
   // Teléfono de Contacto del Club (migracion_v87) — espejo en un ref para que
   // `guardarConfigClub` (que REEMPLAZA todo `configClub` desde una lista
   // explícita de campos y NUNCA escribe `telefono_contacto`) lo conserve
@@ -68310,6 +69962,8 @@ function AppInterno({ clubInicial } = {}) {
   // de arriba (ver `guardarRangosHorarioClases` más abajo) para no mezclar
   // dos flujos de guardado con mensajes y semántica distintos.
   const [rangosHorarioClases, setRangosHorarioClases] = useState(() => leerRangosHorarioClasesLocal());
+  const rangosHorarioClasesAuditoriaRef = useRef(rangosHorarioClases);
+  rangosHorarioClasesAuditoriaRef.current = rangosHorarioClases;
   const [guardandoRangosHorarioClases, setGuardandoRangosHorarioClases] = useState(false);
 
   // Formatos de Juego Personalizados (Torneos → "Nuevo Torneo",
@@ -68327,6 +69981,9 @@ function AppInterno({ clubInicial } = {}) {
   // aparte (ver `cargarTarifasHorarios`/`guardarTarifaHorario`/
   // `eliminarTarifaHorario` más abajo, junto al resto de cargas de datos).
   const [tarifasHorarios, setTarifasHorarios] = useState(() => leerTarifasHorariosLocal());
+  // App-134: franjas vigentes antes de editar/eliminar (Auditoría General).
+  const tarifasHorariosAuditoriaRef = useRef(tarifasHorarios);
+  tarifasHorariosAuditoriaRef.current = tarifasHorarios;
   const [guardandoTarifaHorario, setGuardandoTarifaHorario] = useState(false);
 
   // Metas del Motor de Cortesías (Directorio & CRM, migracion_v35) — misma
@@ -69282,6 +70939,7 @@ function AppInterno({ clubInicial } = {}) {
   const guardarRangosHorarioClases = useCallback(
     async (nuevosRangos) => {
       const limpios = Array.isArray(nuevosRangos) ? nuevosRangos : [];
+      const rangosPreviosAuditoria = rangosHorarioClasesAuditoriaRef.current;
       setGuardandoRangosHorarioClases(true);
       setRangosHorarioClases(limpios);
       guardarRangosHorarioClasesLocal(limpios);
@@ -69296,6 +70954,21 @@ function AppInterno({ clubInicial } = {}) {
         // optimista arriba — si Supabase no los acepta todavía (columna sin
         // migrar, red), se reintentará solo con el próximo guardado.
         console.warn('[Academia & Clínicas] No se pudieron guardar los Horarios Habilitados en Supabase — se guardaron en modo local.', err);
+      }
+      // App-134 — Auditoría General (antes ➔ después de los bloques).
+      try {
+        const textoBloques = (lista) =>
+          (Array.isArray(lista) ? lista : [])
+            .map((r) => unirLog([rangoHorasLog(r?.desde, r?.hasta), textoDiasPromoSegundaHora({ dias: diasDeRangoClase(r) }), valorLog(r?.coachAsignado) ? `Coach ${r.coachAsignado}` : null]))
+            .filter(Boolean)
+            .join(' | ') || 'Sin bloques';
+        const antesTxt = textoBloques(rangosPreviosAuditoria);
+        const despuesTxt = textoBloques(limpios);
+        if (antesTxt !== despuesTxt) {
+          registrarAuditoriaRef.current?.('horarios_clases_actualizados', { bloques: limpios.length, antes: antesTxt, despues: despuesTxt });
+        }
+      } catch (err) {
+        console.warn('[Auditoría] No se pudieron registrar los horarios de clases.', err);
       }
       mostrarToast({ titulo: 'Horarios Habilitados actualizados', detalle: 'El Portal ya solo deja elegir horas dentro de estos bloques.' });
       setGuardandoRangosHorarioClases(false);
@@ -69499,6 +71172,29 @@ function AppInterno({ clubInicial } = {}) {
         });
         return;
       }
+      // App-134 — Auditoría General: alta o edición de la franja (antes ➔ después).
+      try {
+        const previa = editando ? (tarifasHorariosAuditoriaRef.current || []).find((t) => String(t.id) === String(idPrevio)) : null;
+        const nuevaTxt = resumenTarifaLog(limpia);
+        const previaTxt = previa ? resumenTarifaLog(previa) : null;
+        registrarAuditoriaRef.current?.('tarifa_horario_guardada', {
+          accion: editando ? 'editada' : 'creada',
+          nombre: limpia.nombre,
+          modulo: limpia.modulo,
+          horario: nuevaTxt.Horario,
+          dias: nuevaTxt['Días'],
+          ajuste: nuevaTxt.Ajuste,
+          canchas: limpia.modulo === 'academia' ? null : nuevaTxt.Canchas,
+          vigencia: limpia.modulo === 'academia' ? null : nuevaTxt.Vigencia,
+          cambios: previaTxt
+            ? Object.keys(nuevaTxt)
+                .filter((k) => String(previaTxt[k] ?? '') !== String(nuevaTxt[k] ?? ''))
+                .map((k) => ({ campo: k, antes: previaTxt[k], despues: nuevaTxt[k] }))
+            : [],
+        });
+      } catch (err) {
+        console.warn('[Auditoría] No se pudo registrar la franja horaria.', err);
+      }
       mostrarToast({
         titulo: editando ? 'Regla actualizada' : 'Regla creada',
         detalle: `${limpia.nombre} · ${formatoHora12(limpia.hora_inicio)}–${formatoHora12(limpia.hora_fin)} · ${
@@ -69529,6 +71225,12 @@ function AppInterno({ clubInicial } = {}) {
         } catch (err) {
           console.warn('[Tarifas y Franjas Horarias] No se pudo eliminar la franja en Supabase — se quitó localmente.', err);
         }
+      }
+      try {
+        const txt = resumenTarifaLog({ ...tarifa, hora_inicio: tarifa.hora_inicio ?? tarifa.horaInicio, hora_fin: tarifa.hora_fin ?? tarifa.horaFin });
+        registrarAuditoriaRef.current?.('tarifa_horario_eliminada', { nombre: tarifa.nombre || null, horario: txt.Horario, ajuste: txt.Ajuste });
+      } catch (err) {
+        console.warn('[Auditoría] No se pudo registrar la franja eliminada.', err);
       }
       mostrarToast({ titulo: 'Franja eliminada', detalle: tarifa.nombre || 'Franja horaria' });
     },
@@ -70000,6 +71702,7 @@ function AppInterno({ clubInicial } = {}) {
   // por `id = CLUB_ACTIVO_ID`, nunca un `INSERT`.
   const guardarConfigClub = useCallback(
     async (nuevaConfig) => {
+      const configPreviaAuditoria = configClubAuditoriaRef.current;
       const limpia = {
         nombre: (nuevaConfig.nombre || '').trim() || CONFIG_CLUB_DEFAULT.nombre,
         logoUrl: nuevaConfig.logoUrl || '',
@@ -70301,6 +72004,13 @@ function AppInterno({ clubInicial } = {}) {
             console.warn('[Club] No se pudo sincronizar el Nombre del Administrador hacia la fila de empleados (rol owner).', err);
           }
         })();
+      }
+      // App-134 — Auditoría General: solo los ajustes que de verdad cambiaron.
+      try {
+        const cambiosAuditoria = diferenciasConfigClubLog(configPreviaAuditoria, limpia);
+        if (cambiosAuditoria.length > 0) registrarAuditoriaRef.current?.('config_club_actualizada', { cambios: cambiosAuditoria });
+      } catch (err) {
+        console.warn('[Auditoría] No se pudo registrar el cambio de configuración.', err);
       }
       mostrarToast({ titulo: 'Club actualizado', detalle: `${limpia.nombre} — ya se ve igual en todos los dispositivos.` });
       setGuardandoConfigClub(false);
@@ -72874,6 +74584,8 @@ function AppInterno({ clubInicial } = {}) {
                 errorLogActividad={errorLogActividad}
                 cargarLogActividad={cargarLogActividad}
                 consultarLogActividadRango={consultarLogActividadRango}
+                consultarVentasLog={consultarVentasLog}
+                canchas={canchas}
               />
             ) : moduloActivo === 'soporte' && permisos.modulos.has('soporte') ? (
               <Soporte
@@ -72975,6 +74687,7 @@ function AppInterno({ clubInicial } = {}) {
   return (
     <BillingClubContext.Provider value={billingClubCtx}>
       <RescateRetasContext.Provider value={rescateRetasCtx}>
+      <AuditoriaLogContext.Provider value={registrarEventoAuditoria}>
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={faseEntrada}
@@ -72987,6 +74700,7 @@ function AppInterno({ clubInicial } = {}) {
           {contenido}
         </motion.div>
       </AnimatePresence>
+      </AuditoriaLogContext.Provider>
       </RescateRetasContext.Provider>
       {confirmacionPagoBilling && (
         <OverlayConfirmacionPagoBilling
