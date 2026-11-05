@@ -13712,7 +13712,7 @@ function ModalCaja({ onClose }) {
     : sesion.estado === 'en_cierre'
     ? `${cajaSel.nombre} · retiro de ganancia pendiente`
     : vista === 'cerrar'
-    ? `${cajaSel.nombre} · cierre del día (arqueo ciego)`
+    ? `${cajaSel.nombre} · cierre del día`
     : `${cajaSel.nombre} · abierta`;
   return (
     <ModalShell titulo="Caja" subtitulo={subtitulo} onClose={onClose} icon={Wallet} ancho="max-w-2xl">
@@ -13888,7 +13888,7 @@ function PanelAperturaCaja({ cajaSel, onAbierta }) {
           </p>
         </div>
       </div>
-      <p className="text-[11px] text-slate-500">Cuenta el flote físico (billetes y monedas) y captúralo aquí. La caja quedará abierta todo el día, también entre cambios de turno. En la apertura sí ves el fondo esperado (no es el arqueo).</p>
+      <p className="text-[11px] text-slate-500">Cuenta el fondo físico, billetes y monedas y captúralo aquí. La caja quedará abierta todo el día, incluso entre cambios de turno.</p>
       <ContadorDenominacionesCaja valor={conteo} onChange={setConteo} testid="contador-apertura" />
       {pideNota && contado > 0 && (
         <Campo label="Nota (obligatoria: el fondo no coincide)">
@@ -13953,7 +13953,7 @@ function PanelCierreCiegoCaja({ cajaSel, onVolver, onSellado }) {
       </p>
       <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-800 ring-1 ring-amber-200">
         <EyeOff size={14} className="mt-0.5 shrink-0" />
-        Arqueo ciego del día: cuenta TODO el efectivo físico de la caja (incluido el flote) billete por billete y captúralo aquí. El sistema no te mostrará el esperado; al sellar, el conteo ya no se puede cambiar.
+        Cuenta todo el efectivo físico de la caja, billetes y monedas y captura la información aquí. Al sellar el conteo ya no se puede cambiar.
       </div>
       <ContadorDenominacionesCaja valor={conteo} onChange={(v) => { setConteo(v); setConfirmar(false); }} testid="contador-cierre" />
       <Campo label="Nota (opcional)">
@@ -14035,17 +14035,16 @@ function ResultadoCierreCaja({ resultado, caja: cajaSel, onRetirado }) {
 }
 
 // El retiro de la ganancia es SOLO de Gerente o Dueño (lo valida además la
-// RPC con su PIN). Si quien está fichado es gerencia, ve el formulario de
-// una vez; si es Recepción, el corte queda «Pendiente de autorización por
-// gerencia» y solo se despliega el formulario si un gerente/dueño presente
-// decide autorizarlo ahí mismo con su PIN.
+// RPC con su PIN). Si quien está fichado es gerencia, ve el formulario; si es
+// Recepción, el corte queda «Pendiente de autorización por gerencia» SIN
+// ningún acceso al formulario desde su sesión (App-137). El Gerente o el
+// Dueño lo registra al entrar con su propia sesión en la terminal.
 function RetiroGananciaConPermisoCaja({ cierreId, contado, resultado, onRetirado }) {
   const caja = useCaja();
   const esGerencia = ROLES_CAJA_GERENCIA.includes(rolCanonicoCaja(caja?.operador?.rol));
-  const [autorizarAhora, setAutorizarAhora] = useState(false);
-  if (esGerencia || autorizarAhora) return <FormRetiroGananciaCaja cierreId={cierreId} contado={contado} resultado={resultado} onRetirado={onRetirado} />;
+  if (esGerencia) return <FormRetiroGananciaCaja cierreId={cierreId} contado={contado} resultado={resultado} onRetirado={onRetirado} />;
   return (
-    <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-800" data-testid="retiro-pendiente-gerencia">
+    <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-800" data-testid="retiro-pendiente-gerencia">
       <p className="flex items-center gap-2 text-sm font-black">
         <Lock size={14} /> Pendiente de autorización por gerencia
       </p>
@@ -14053,14 +14052,6 @@ function RetiroGananciaConPermisoCaja({ cierreId, contado, resultado, onRetirado
         Tu cierre quedó registrado. El retiro de la ganancia y el fondo para mañana los registra únicamente un Gerente o el Dueño. Ya puedes cerrar esta
         ventana.
       </p>
-      <button
-        type="button"
-        onClick={() => setAutorizarAhora(true)}
-        className="rounded-lg bg-white px-3 py-1.5 text-[11px] font-black text-slate-800 ring-1 ring-amber-200 hover:bg-amber-100"
-        data-testid="boton-gerencia-autoriza-ahora"
-      >
-        Un Gerente o el Dueño está aquí: autorizar ahora
-      </button>
     </div>
   );
 }
