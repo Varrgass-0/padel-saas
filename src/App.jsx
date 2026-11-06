@@ -34204,6 +34204,16 @@ function valorUUIDInvalidoDelError(error) {
 // `.single()` esperaba exactamente 1) aunque el dinero/registro ya quedó
 // guardado. Sin este chequeo, ese caso se veía idéntico a un INSERT
 // realmente rechazado — ver su uso en Smart POS (`registrarVenta`).
+// v143 — el trigger de Días de Apertura (v133) truena con
+// «function public.fn__club_abre_en_fecha(text, date) does not exist» cuando
+// `club_id` de esa tabla (p. ej. `retas`) no es bigint en el proyecto.
+function esErrorDiasAperturaTipoClubId(error) {
+  const msg = `${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`;
+  return /fn__club_abre_en_fecha/i.test(msg);
+}
+const MENSAJE_FALTA_V143 =
+  'Falta correr v143_dias_apertura_club_id_cualquier_tipo.sql en Supabase (Días de Apertura con club_id de otro tipo).';
+
 function esErrorPermisoRLS(error) {
   if (!error) return false;
   if (['42501', 'PGRST116'].includes(error.code)) return true;
@@ -38415,6 +38425,8 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
         titulo: 'No se pudo guardar la Reta en Supabase',
         detalle: esErrorPermisoRLS(r.error)
           ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase — esta Reta solo existe en este navegador y NO aparecerá en el Portal de Jugadores.'
+          : esErrorDiasAperturaTipoClubId(r.error)
+          ? `${MENSAJE_FALTA_V143} — esta Reta solo existe en este navegador y NO aparecerá en el Portal de Jugadores.`
           : `${r.error?.message || 'Error desconocido.'} — esta Reta solo existe en este navegador y NO aparecerá en el Portal de Jugadores.`,
         tono: 'error',
       });
@@ -38542,6 +38554,8 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
         titulo: `${fallidas.length} ${fallidas.length === 1 ? 'reta no se pudo' : 'retas no se pudieron'} crear`,
         detalle: esErrorPermisoRLS(primerError)
           ? 'Falta correr migracion_v10_rls_retas_torneos.sql en Supabase.'
+          : esErrorDiasAperturaTipoClubId(primerError)
+          ? MENSAJE_FALTA_V143
           : primerError?.message || 'Revisa tu conexión e inténtalo de nuevo.',
         tono: 'error',
       });
@@ -38809,6 +38823,9 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
   );
 }
 
+const MENSAJE_RETA_SOLO_LOCAL =
+  'Esta Reta no quedó guardada en Supabase (Modo local), así que todavía no puede recibir inscripciones. Descártala con la etiqueta «Modo local» y créala de nuevo cuando Supabase la acepte.';
+
 function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscritosReta = [], onClose, onInscrito }) {
   const toast = useToast();
   const efectivoBloqueadoCaja = useBloqueoEfectivoCaja(); // App-135 (v137): false sin módulo/bloqueo
@@ -38837,7 +38854,12 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscr
   const mixtoInvalido =
     estadoPago === 'pagado' && metodoPago === 'mixto' && !mixtoCoincideConMonto(precioDeReta(reta), montoEfectivoMixto, montoTarjetaMixto);
 
+  // v143 — una Reta en "Modo local" no existe en Supabase (su id es local):
+  // mandar esa inscripción solo podía fallar (p. ej. «invalid input syntax
+  // for type uuid»). Se avisa claro y no se intenta.
+  const retaSoloLocal = Boolean(reta?._local);
   async function guardar() {
+    if (retaSoloLocal) return setError(MENSAJE_RETA_SOLO_LOCAL);
     if (!nombre.trim()) return setError('Indica el nombre del jugador.');
     if (mixtoInvalido) return setError('El Efectivo + Tarjeta debe sumar exactamente el monto de la inscripción.');
     if (efectivoBloqueadoCaja && estadoPago === 'pagado' && esMetodoConEfectivoCaja(metodoPago)) return setError(MENSAJE_EFECTIVO_BLOQUEADO_CAJA);
@@ -38974,6 +38996,11 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscr
       ancho="max-w-md"
     >
       <div className="space-y-4">
+        {retaSoloLocal && (
+          <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-200" role="alert" data-testid="aviso-reta-solo-local">
+            {MENSAJE_RETA_SOLO_LOCAL}
+          </p>
+        )}
         <Campo label="Nombre del jugador" hint="Busca en el directorio del club o escribe uno nuevo.">
           <SelectorJugadorRegistrado
             jugadores={jugadores}
@@ -39041,7 +39068,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscr
 
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar} disabled={guardando || mixtoInvalido}>
+          <BotonPrimario onClick={guardar} disabled={guardando || mixtoInvalido || retaSoloLocal} data-testid="boton-inscribir-reta">
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <UserPlus size={15} />}
             Inscribir
           </BotonPrimario>
