@@ -58592,6 +58592,130 @@ function estadoConnectDesde(dato) {
   };
 }
 
+// v142 — Pausar / reanudar los cobros en línea del Portal SIN desvincular
+// Stripe. Lo cambia solo el Dueño con su PIN (RPC fn_club_pausar_pagos_en_linea,
+// validada en el servidor) y queda en el Log de Actividad. Mientras está en
+// pausa el Portal muestra un aviso y usa el pago en recepción; los pagos que
+// ya estaban en curso se confirman normalmente.
+function ControlPausaPagosEnLinea() {
+  const mostrarToast = useToast();
+  const caja = useCaja();
+  const [estado, setEstado] = useState({ cargando: true, disponible: false, pausados: false, en: null, por: null });
+  const [confirmando, setConfirmando] = useState(false);
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  const cargar = useCallback(async () => {
+    try {
+      // `*`: si v142 aún no corre, las columnas no existen y el switch se
+      // muestra deshabilitado (sin romper el resto de Cobros Digitales).
+      const { data, error: err } = await supabase.from('configuracion_club').select('*').eq('id', CLUB_ACTIVO_ID).maybeSingle();
+      if (err) throw err;
+      const disponible = Boolean(data) && Object.prototype.hasOwnProperty.call(data, 'pagos_en_linea_pausados');
+      setEstado({
+        cargando: false,
+        disponible,
+        pausados: disponible && data.pagos_en_linea_pausados === true,
+        en: data?.pagos_en_linea_pausados_en || null,
+        por: data?.pagos_en_linea_pausados_por || null,
+      });
+    } catch (_e) {
+      setEstado((e) => ({ ...e, cargando: false, disponible: false }));
+    }
+  }, []);
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
+  const activos = !estado.pausados;
+  async function aplicar() {
+    setError('');
+    if (!auth.empleadoId || !auth.pin) return setError('Confirma con el PIN del dueño.');
+    setEnviando(true);
+    const r = await rpcCaja('fn_club_pausar_pagos_en_linea', {
+      p_club_id: Number(CLUB_ACTIVO_ID),
+      p_pausar: activos,
+      p_empleado_id: auth.empleadoId,
+      p_pin: auth.pin,
+    });
+    setEnviando(false);
+    setAuth((a) => ({ ...a, pin: '' }));
+    if (!r.ok) return setError(r.codigo === 'sin_modulo' ? 'Falta correr la migración v142 en Supabase.' : r.mensaje);
+    setConfirmando(false);
+    setEstado((e) => ({ ...e, pausados: r.pausados === true, en: r.pausados_en || e.en, por: r.pausados_por || e.por }));
+    mostrarToast(
+      r.pausados
+        ? { titulo: 'Pagos en línea en pausa', detalle: 'Tus jugadores verán el aviso y pagarán en recepción. Tu cuenta de Stripe sigue vinculada.', tono: 'aviso' }
+        : { titulo: 'Pagos en línea reanudados', detalle: 'Tus jugadores ya pueden pagar con tarjeta en el Portal.' }
+    );
+    return undefined;
+  }
+  const fechaPausa = estado.en ? new Date(estado.en).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : null;
+  return (
+    <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3.5" data-testid="control-pausa-pagos">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-black text-slate-900">Aceptar pagos en línea en el Portal</p>
+          <p className="mt-0.5 text-xs text-slate-500" data-testid="estado-pausa-pagos">
+            {estado.cargando
+              ? 'Cargando…'
+              : !estado.disponible
+              ? 'Falta correr la migración v142 en Supabase para poder pausar los cobros en línea.'
+              : activos
+              ? 'Activos: tus jugadores pueden pagar con tarjeta desde el Portal.'
+              : `En pausa${fechaPausa ? ` desde ${fechaPausa}` : ''}${estado.por ? ` · ${estado.por}` : ''}. Tus jugadores ven un aviso y pagan en recepción; tu cuenta de Stripe sigue vinculada.`}
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={activos}
+          aria-label="Aceptar pagos en línea en el Portal"
+          disabled={estado.cargando || !estado.disponible || enviando}
+          onClick={() => {
+            setError('');
+            setConfirmando((v) => !v);
+          }}
+          data-testid="switch-pagos-en-linea"
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-40 ${
+            activos ? 'bg-emerald-500' : 'bg-slate-300'
+          }`}
+        >
+          <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${activos ? 'translate-x-5' : 'translate-x-0.5'}`} />
+        </button>
+      </div>
+      {confirmando && estado.disponible && (
+        <div className="mt-3 space-y-3 border-t border-slate-200 pt-3" data-testid="confirmar-pausa-pagos">
+          <p className={`rounded-lg px-3 py-2 text-[11px] font-semibold ring-1 ${activos ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-emerald-50 text-emerald-800 ring-emerald-200'}`}>
+            {activos
+              ? 'Al pausar, el Portal deja de ofrecer el pago con tarjeta y tus jugadores reservan o se inscriben con «Pago en recepción» (verán un aviso de pausa). Tu cuenta de Stripe NO se desvincula, y los pagos que ya estén en curso se confirman normalmente.'
+              : 'Al reanudar, tus jugadores vuelven a ver «Pagar en línea con tarjeta» en el Portal, igual que antes de la pausa.'}
+          </p>
+          <AutorizacionPinCaja
+            empleados={caja?.empleados || []}
+            operador={caja?.operador || null}
+            roles={['owner']}
+            valor={auth}
+            onChange={setAuth}
+            etiqueta="Confirma el dueño"
+            testid="auth-pausa-pagos"
+          />
+          {error && (
+            <p className="text-xs font-semibold text-rose-500" data-testid="error-pausa-pagos">
+              {error}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <BotonSecundario onClick={() => setConfirmando(false)}>Cancelar</BotonSecundario>
+            <BotonPrimario onClick={aplicar} disabled={enviando} data-testid="boton-confirmar-pausa-pagos">
+              {enviando ? <Loader2 size={15} className="animate-spin" /> : null} {activos ? 'Pausar pagos en línea' : 'Reanudar pagos en línea'}
+            </BotonPrimario>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SeccionCobrosStripeConnect({ retorno = null, onRetornoProcesado }) {
   const mostrarToast = useToast();
   const [estado, setEstado] = useState(() => estadoConnectDesde(null));
@@ -58786,7 +58910,7 @@ function SeccionCobrosStripeConnect({ retorno = null, onRetornoProcesado }) {
                   </p>
                 )}
                 {activa && (
-                  <p className="mt-1 text-xs text-slate-500">Tu cuenta puede recibir cobros. Los pagos con tarjeta en el Portal se habilitan en la siguiente actualización.</p>
+                  <p className="mt-1 text-xs text-slate-500">Tu cuenta puede recibir cobros con tarjeta desde el Portal de Jugadores.</p>
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -58817,6 +58941,7 @@ function SeccionCobrosStripeConnect({ retorno = null, onRetornoProcesado }) {
               </div>
             </div>
           )}
+          {!cargando && !error && activa && <ControlPausaPagosEnLinea />}
         </div>
       </div>
     </div>
@@ -63399,24 +63524,38 @@ function PortalPublicoJugadores({ clubSlug }) {
   // activa, "Reservar Cancha" ofrece "Pagar en línea"; si no, todo sigue con
   // "Pago Pendiente en Club" exactamente como antes.
   const [pagosEnLineaClub, setPagosEnLineaClub] = useState(false);
-  useEffect(() => {
-    if (!club?.id) return undefined;
-    let vivo = true;
-    (async () => {
-      try {
-        const { data, error } = await supabase.rpc('fn_portal_pagos_club', { p_club_id: Number(club.id), p_slug: clubSlug || null });
-        if (error) throw error;
-        const r = Array.isArray(data) ? data[0] : data;
-        if (vivo) setPagosEnLineaClub(r?.acepta_pagos_en_linea === true);
-      } catch (err) {
-        if (vivo) setPagosEnLineaClub(false);
-        if (!esErrorRpcInexistente(err)) console.warn('[Portal] No se pudo consultar si el club acepta pagos en línea.', err?.code || err?.message);
-      }
-    })();
-    return () => {
-      vivo = false;
-    };
+  // v142 — el dueño pausó los cobros en línea (Stripe sigue vinculado): el
+  // Portal usa el pago en recepción y muestra el aviso de pausa.
+  const [pagosEnLineaPausados, setPagosEnLineaPausados] = useState(false);
+  const consultarPagosEnLineaClub = useCallback(async () => {
+    if (!club?.id) return;
+    try {
+      const { data, error } = await supabase.rpc('fn_portal_pagos_club', { p_club_id: Number(club.id), p_slug: clubSlug || null });
+      if (error) throw error;
+      const r = Array.isArray(data) ? data[0] : data;
+      setPagosEnLineaClub(r?.acepta_pagos_en_linea === true);
+      setPagosEnLineaPausados(r?.pausado === true);
+    } catch (err) {
+      setPagosEnLineaClub(false);
+      setPagosEnLineaPausados(false);
+      if (!esErrorRpcInexistente(err)) console.warn('[Portal] No se pudo consultar si el club acepta pagos en línea.', err?.code || err?.message);
+    }
   }, [club, clubSlug]);
+  useEffect(() => {
+    consultarPagosEnLineaClub();
+    // v142 — al volver a la pestaña se revisa de nuevo (el club pudo pausar o
+    // reanudar mientras tanto).
+    const alVolver = () => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') consultarPagosEnLineaClub();
+    };
+    window.addEventListener('focus', alVolver);
+    return () => window.removeEventListener('focus', alVolver);
+  }, [consultarPagosEnLineaClub]);
+  // …y cada vez que se abre un resumen de pago (reserva, inscripción, Tienda).
+  const hayResumenDePagoAbierto = Boolean(flujoPago || canchaParaReservar || modalCarritoAbierto);
+  useEffect(() => {
+    if (hayResumenDePagoAbierto) consultarPagosEnLineaClub();
+  }, [hayResumenDePagoAbierto, consultarPagosEnLineaClub]);
 
   // Realtime: cualquier cambio hecho desde el mostrador (nueva reta, cupo
   // que se llena, torneo que se archiva, producto que se agota) se refleja
@@ -66390,6 +66529,14 @@ function PortalPublicoJugadores({ clubSlug }) {
       ...datos,
     });
     if (error) {
+      // v142 — el club pausó los pagos en línea después de que se abrió esta
+      // pantalla: aviso claro y se sigue con el pago en recepción.
+      if (error.codigo === 'pagos_en_linea_pausados') {
+        setPagosEnLineaClub(false);
+        setPagosEnLineaPausados(true);
+        mostrarToast({ titulo: 'Pagos en línea en pausa', detalle: MENSAJE_PAGOS_EN_LINEA_PAUSADOS, tono: 'aviso' });
+        return { ok: false, mensaje: MENSAJE_PAGOS_EN_LINEA_PAUSADOS, codigo: error.codigo };
+      }
       if (error.codigo === 'pagos_en_linea_no_disponibles') {
         setPagosEnLineaClub(false);
         const mensaje = 'Este club ya no acepta pagos en línea. Elige "Pagar en el club".';
@@ -66713,6 +66860,7 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   return (
     <ToastContext.Provider value={mostrarToast}>
+      <PagosEnLineaPausadosContext.Provider value={pagosEnLineaPausados}>
       <div className="min-h-screen bg-slate-50 text-slate-900">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-slate-50/70 px-4 py-3.5 backdrop-blur-xl">
           {/* Logo QLUBOS centrado (item 3) — mismo componente de marca
@@ -67960,6 +68108,7 @@ function PortalPublicoJugadores({ clubSlug }) {
 
         <ToastHost toasts={toasts} />
       </div>
+      </PagosEnLineaPausadosContext.Provider>
     </ToastContext.Provider>
   );
 }
@@ -69835,6 +69984,20 @@ const DATOS_TARJETA_VACIOS = { numero: '', vencimiento: '', cvv: '', nombreTitul
 // firma con los tres checkouts, sin uso. `mostrarWallet` oculta la opción cuando no hay
 // jugador identificado o su saldo es 0 — igual criterio que ya tenía cada
 // modal por separado.
+// v142 — Pausa de pagos en línea del club (Portal). El aviso se pinta en el
+// selector de método de pago, que comparten reservas, inscripciones y Tienda.
+const MENSAJE_PAGOS_EN_LINEA_PAUSADOS =
+  'Los pagos en línea de este club están temporalmente en pausa; tu lugar se apartará para realizar el pago directamente en recepción.';
+const PagosEnLineaPausadosContext = React.createContext(false);
+function AvisoPagosEnLineaPausados() {
+  return (
+    <div className="flex items-start gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2.5 text-xs font-semibold text-sky-800" role="status" data-testid="aviso-pagos-en-linea-pausados">
+      <Info size={14} className="mt-0.5 shrink-0" />
+      <span>{MENSAJE_PAGOS_EN_LINEA_PAUSADOS}</span>
+    </div>
+  );
+}
+
 function SelectorMetodoPagoPortal({
   metodo,
   onCambiarMetodo,
@@ -69858,8 +70021,12 @@ function SelectorMetodoPagoPortal({
   const claseBoton = `flex w-full items-center justify-between rounded-xl border ${
     chico ? 'px-3.5 py-2.5 text-xs' : 'px-3.5 py-3 text-sm'
   } text-left font-bold text-slate-900 transition disabled:cursor-not-allowed disabled:opacity-40`;
+  const pagosEnLineaPausados = React.useContext(PagosEnLineaPausadosContext);
   return (
     <div className="space-y-2">
+      {/* v142 — el club pausó el cobro con tarjeta: aviso explícito para que
+          el jugador no piense que es un error; continúa con recepción. */}
+      {pagosEnLineaPausados && !mostrarPagoEnLinea && <AvisoPagosEnLineaPausados />}
       {/* Beta: Wallet/Monedero y Tarjeta ocultos — solo queda pago
           presencial. `mostrarWallet` (según haya jugador/saldo) se queda
           intacto y vuelve a mandar en cuanto SHOW_BETA_PORTAL_PAGO_WALLET

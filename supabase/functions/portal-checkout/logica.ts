@@ -640,10 +640,24 @@ export function slugDelClub(fila: Fila): string {
     .replace(/^-+|-+$/g, '');
 }
 
-/** ¿El club puede cobrar en línea? (Connect activo + cuenta válida). */
-export function cuentaConectadaActiva(club: Fila): string | null {
+/** Cuenta de Stripe Connect vinculada y habilitada por Stripe (sin mirar la pausa). */
+export function cuentaConectadaVinculada(club: Fila): string | null {
   const cuenta = typeof club?.stripe_account_id === 'string' ? club.stripe_account_id : '';
   return club?.stripe_connect_enabled === true && /^acct_[A-Za-z0-9]+$/.test(cuenta) ? cuenta : null;
+}
+
+/** v142 · ¿El dueño pausó los cobros en línea del Portal? (Stripe sigue vinculado). */
+export function pagosEnLineaPausados(club: Fila): boolean {
+  return club?.pagos_en_linea_pausados === true;
+}
+
+/** Mensaje para el jugador cuando el club tiene los pagos en línea en pausa. */
+export const MENSAJE_PAGOS_EN_LINEA_PAUSADOS =
+  'Los pagos en línea de este club están temporalmente en pausa; tu lugar se apartará para realizar el pago directamente en recepción.';
+
+/** ¿El club puede cobrar en línea AHORA? (Connect activo + cuenta válida + sin pausa). */
+export function cuentaConectadaActiva(club: Fila): string | null {
+  return pagosEnLineaPausados(club) ? null : cuentaConectadaVinculada(club);
 }
 
 export function esTokenPortal(valor: unknown): valor is string {

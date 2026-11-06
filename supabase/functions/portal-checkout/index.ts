@@ -31,6 +31,8 @@
 //
 // Club sin Stripe conectado → 409 { codigo: 'pagos_en_linea_no_disponibles' }:
 // el Portal sigue con el pago presencial en recepción.
+// v142 · Club con Stripe pero en PAUSA → 409 { codigo: 'pagos_en_linea_pausados' }
+// con el aviso para el jugador; el Portal sigue con el pago en recepción.
 //
 // La confirmación (marcar pagado, ticket en ventas, descuento de inventario
 // POS + Kardex) la hace `portal-stripe-webhook` (Connect).
@@ -47,6 +49,9 @@ import {
   cotizarArticulos,
   CUPOS_RETA,
   cuentaConectadaActiva,
+  cuentaConectadaVinculada,
+  pagosEnLineaPausados,
+  MENSAJE_PAGOS_EN_LINEA_PAUSADOS,
   errorDeRetencion,
   esTipoPagoPortal,
   etiquetaPromoSegundaHora,
@@ -593,6 +598,12 @@ Deno.serve(async (req) => {
     // ---- Crear ---------------------------------------------------------------
     const slug = typeof cuerpo.slug === 'string' ? cuerpo.slug.trim().toLowerCase() : '';
     if (!slug || slug !== slugDelClub(club)) return respuestaJson(req, { error: 'El club no coincide con la dirección del Portal.' }, 400);
+    // v142 · Pausa del dueño: Stripe sigue vinculado pero no se abren cobros
+    // nuevos; el Portal muestra el aviso y sigue con el pago en recepción.
+    // (Liberar —arriba— y el webhook de confirmación NO miran la pausa.)
+    if (pagosEnLineaPausados(club) && cuentaConectadaVinculada(club)) {
+      return respuestaJson(req, { error: MENSAJE_PAGOS_EN_LINEA_PAUSADOS, codigo: 'pagos_en_linea_pausados' }, 409);
+    }
     const cuenta = cuentaConectadaActiva(club);
     if (!cuenta) {
       return respuestaJson(
