@@ -1723,6 +1723,38 @@ async function uploadMedia(file, carpeta = 'general') {
   return data.publicUrl;
 }
 
+// App-140 — Borrado DEFINITIVO en Storage de fotos de producto que ya no se
+// usan (v139). Solo rutas `productos/...` del bucket `app-media`; el servidor
+// (políticas de storage.objects) además exige que el archivo lo haya subido
+// esta misma cuenta y que NINGÚN producto/variante lo siga usando, así que
+// una foto compartida o de otro club nunca se borra. Best effort: si v139 no
+// está instalada o falla la red, no borra nada y nunca bloquea el guardado.
+function rutaStorageDeUrlMedia(url) {
+  try {
+    const u = new URL(String(url || ''));
+    const marca = `/storage/v1/object/public/${BUCKET_MEDIA}/`;
+    const i = u.pathname.indexOf(marca);
+    return i >= 0 ? decodeURIComponent(u.pathname.slice(i + marca.length)) : null;
+  } catch (_e) {
+    return null;
+  }
+}
+async function eliminarImagenesProductoStorage(urls) {
+  const rutas = [...new Set((urls || []).map(rutaStorageDeUrlMedia).filter((r) => r && /^productos\/[^/]+$/.test(r)))];
+  if (rutas.length === 0) return { borradas: 0 };
+  try {
+    const { data, error } = await supabase.storage.from(BUCKET_MEDIA).remove(rutas);
+    if (error) {
+      console.warn('[Imágenes] No se pudieron borrar del almacenamiento:', error.message || error);
+      return { borradas: 0, error };
+    }
+    return { borradas: Array.isArray(data) ? data.length : 0 };
+  } catch (err) {
+    console.warn('[Imágenes] No se pudieron borrar del almacenamiento:', err);
+    return { borradas: 0, error: err };
+  }
+}
+
 // Selector de archivo + subida a Storage reutilizable en cualquier modal que
 // necesite "Subir archivo": maneja el estado de `subiendo`/`error` y entrega
 // la URL pública final vía `onSubida(url)`. Mismo componente para logo del
@@ -13853,12 +13885,13 @@ function PanelAperturaCaja({ cajaSel, onAbierta }) {
   const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
-  const fondoFijo = Number(caja.config?.fondo_fijo) || 0;
+  // App-141 — fondo y tolerancia propios de esta caja (v140) o los generales.
+  const fondoFijo = Number(cajaSel.fondo_fijo_efectivo ?? caja.config?.fondo_fijo) || 0;
   const heredado = cajaSel.fondo_heredado != null ? Number(cajaSel.fondo_heredado) : null;
   const esperado = heredado != null ? heredado : fondoFijo;
   const contado = totalDenominacionesCaja(conteo);
   const diferencia = Math.round((contado - esperado) * 100) / 100;
-  const tolerancia = Number(caja.config?.tolerancia_diferencia) || 0;
+  const tolerancia = Number(cajaSel.tolerancia_efectiva ?? caja.config?.tolerancia_diferencia) || 0;
   const pideNota = Math.abs(diferencia) > tolerancia;
   async function abrir() {
     setError('');
@@ -14042,6 +14075,7 @@ function ResultadoCierreCaja({ resultado, caja: cajaSel, onRetirado }) {
         contado={Number(resultado.contado) || 0}
         resultado={resultado.mostrar_diferencia ? resultado.resultado : null}
         onRetirado={onRetirado}
+        fondoFijoCaja={resultado.fondo_fijo ?? cajaSel.fondo_fijo_efectivo ?? null}
       />
     </div>
   );
@@ -14052,10 +14086,10 @@ function ResultadoCierreCaja({ resultado, caja: cajaSel, onRetirado }) {
 // Recepción, el corte queda «Pendiente de autorización por gerencia» SIN
 // ningún acceso al formulario desde su sesión (App-137). El Gerente o el
 // Dueño lo registra al entrar con su propia sesión en la terminal.
-function RetiroGananciaConPermisoCaja({ cierreId, contado, resultado, onRetirado }) {
+function RetiroGananciaConPermisoCaja({ cierreId, contado, resultado, onRetirado, fondoFijoCaja = null }) {
   const caja = useCaja();
   const esGerencia = ROLES_CAJA_GERENCIA.includes(rolCanonicoCaja(caja?.operador?.rol));
-  if (esGerencia) return <FormRetiroGananciaCaja cierreId={cierreId} contado={contado} resultado={resultado} onRetirado={onRetirado} />;
+  if (esGerencia) return <FormRetiroGananciaCaja cierreId={cierreId} contado={contado} resultado={resultado} onRetirado={onRetirado} fondoFijoCaja={fondoFijoCaja} />;
   return (
     <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-800" data-testid="retiro-pendiente-gerencia">
       <p className="flex items-center gap-2 text-sm font-black">
@@ -14098,15 +14132,24 @@ function PanelRetiroPendienteCaja({ cajaSel, onRetirado }) {
         </p>
       </div>
       {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
-      {cierre && <RetiroGananciaConPermisoCaja cierreId={String(cierre.id)} contado={Number(cierre.monto_reportado_efectivo) || 0} resultado={null} onRetirado={onRetirado} />}
+      {cierre && (
+        <RetiroGananciaConPermisoCaja
+          cierreId={String(cierre.id)}
+          contado={Number(cierre.monto_reportado_efectivo) || 0}
+          resultado={null}
+          onRetirado={onRetirado}
+          fondoFijoCaja={cajaSel.fondo_fijo_efectivo ?? null}
+        />
+      )}
     </div>
   );
 }
 
-function FormRetiroGananciaCaja({ cierreId, contado, resultado, onRetirado }) {
+function FormRetiroGananciaCaja({ cierreId, contado, resultado, onRetirado, fondoFijoCaja = null }) {
   const caja = useCaja();
   const toast = useToast();
-  const fondoFijo = Number(caja.config?.fondo_fijo) || 0;
+  // App-141 — fondo de ESTA caja (v140) o el general.
+  const fondoFijo = Number(fondoFijoCaja ?? caja.config?.fondo_fijo) || 0;
   const maximo = Math.max(0, Math.round((contado - fondoFijo) * 100) / 100);
   const [monto, setMonto] = useState(String(maximo));
   const [destino, setDestino] = useState(DESTINOS_RETIRO_CAJA[0]);
@@ -14428,7 +14471,7 @@ function PanelCorteEnVivoCaja({ cajaSel, onVolver }) {
   );
 }
 
-// ---- Control & Seguridad → "Caja y Cortes" ---------------------------------
+// ---- Control & Seguridad → "Caja" ------------------------------------------
 function ConfiguracionCajaCard() {
   const caja = useCaja();
   const toast = useToast();
@@ -14503,10 +14546,10 @@ function ConfiguracionCajaCard() {
         {!esDueno && <span className="text-[11px] text-slate-500">· solo el dueño puede cambiarla</span>}
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Campo label="Fondo fijo de apertura (MXN)">
+        <Campo label="Fondo fijo general (MXN)" hint="Lo usan las cajas que no tienen un fondo propio.">
           <input type="number" min="0" step="50" value={fondo} onChange={(e) => setFondo(e.target.value)} className={inputClase} disabled={!esDueno} data-testid="config-fondo" />
         </Campo>
-        <Campo label="Tolerancia de diferencia (MXN)" hint="Diferencias hasta este monto no requieren explicación.">
+        <Campo label="Tolerancia general (MXN)" hint="Diferencias hasta este monto no requieren explicación (salvo que la caja tenga la suya).">
           <input type="number" min="0" step="1" value={tolerancia} onChange={(e) => setTolerancia(e.target.value)} className={inputClase} disabled={!esDueno} data-testid="config-tolerancia" />
         </Campo>
       </div>
@@ -14526,22 +14569,7 @@ function ConfiguracionCajaCard() {
         <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Cajas del club</p>
         <div className="space-y-1.5" data-testid="lista-cajas">
           {(caja.cajas || []).map((c) => (
-            <div key={c.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs">
-              <span className="flex items-center gap-2 font-bold text-slate-800">
-                {c.nombre} <ChipEstadoCaja sesion={c.sesion} />
-                {c.activa === false && <span className="text-[10px] font-bold uppercase text-slate-400">Desactivada</span>}
-              </span>
-              {esDueno && (
-                <button
-                  type="button"
-                  onClick={() => guardarCaja(c, { nombre: c.nombre, activa: c.activa === false })}
-                  disabled={enviando}
-                  className="text-[11px] font-bold text-orange-500 hover:underline"
-                >
-                  {c.activa === false ? 'Activar' : 'Desactivar'}
-                </button>
-              )}
-            </div>
+            <FilaCajaConfig key={c.id} cajaFila={c} esDueno={esDueno} />
           ))}
         </div>
         {esDueno && (
@@ -14567,6 +14595,207 @@ function ConfiguracionCajaCard() {
             </BotonPrimario>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// App-141 — Una caja en «Cajas del club»: fondo y tolerancia propios (o los
+// generales), y acciones del Dueño con su PIN: Editar (nombre, fondo,
+// tolerancia), Activar/Desactivar y Eliminar (solo si nunca se abrió; con
+// historial se ofrece desactivarla). Todo lo valida el servidor (v140).
+function FilaCajaConfig({ cajaFila: c, esDueno }) {
+  const caja = useCaja();
+  const toast = useToast();
+  const cfg = caja?.config || {};
+  const [accion, setAccion] = useState(null); // null | 'editar' | 'eliminar' | 'alternar'
+  const [nombre, setNombre] = useState(c.nombre);
+  const [fondo, setFondo] = useState(c.fondo_fijo != null ? String(c.fondo_fijo) : '');
+  const [tolerancia, setTolerancia] = useState(c.tolerancia_diferencia != null ? String(c.tolerancia_diferencia) : '');
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  const fondoEfectivo = c.fondo_fijo_efectivo != null ? Number(c.fondo_fijo_efectivo) : cfg.fondo_fijo != null ? Number(cfg.fondo_fijo) : null;
+  const tolEfectiva = c.tolerancia_efectiva != null ? Number(c.tolerancia_efectiva) : Number(cfg.tolerancia_diferencia) || 0;
+  const fondoPropio = c.fondo_fijo != null;
+  const tolPropia = c.tolerancia_diferencia != null;
+  function abrir(tipo) {
+    setError('');
+    setAuth((a) => ({ ...a, pin: '' }));
+    setNombre(c.nombre);
+    setFondo(c.fondo_fijo != null ? String(c.fondo_fijo) : '');
+    setTolerancia(c.tolerancia_diferencia != null ? String(c.tolerancia_diferencia) : '');
+    setAccion((actual) => (actual === tipo ? null : tipo));
+  }
+  async function ejecutar(nombreRpc, args, exito) {
+    setError('');
+    if (!auth.empleadoId || !auth.pin) return setError('Confirma con el PIN del dueño.');
+    setEnviando(true);
+    const r = await rpcCaja(nombreRpc, { p_club_id: Number(CLUB_ACTIVO_ID), ...args, p_empleado_id: auth.empleadoId, p_pin: auth.pin });
+    setEnviando(false);
+    setAuth((a) => ({ ...a, pin: '' }));
+    if (!r.ok) {
+      return setError(r.codigo === 'sin_modulo' ? 'Falta correr la migración v140 en Supabase para editar o eliminar cajas.' : r.mensaje);
+    }
+    toast(exito);
+    setAccion(null);
+    await caja.recargar();
+    return undefined;
+  }
+  function guardarParametros() {
+    const n = nombre.trim();
+    if (!n) return setError('Ponle un nombre a la caja.');
+    const f = fondo.trim() === '' ? null : Number(fondo);
+    const t = tolerancia.trim() === '' ? null : Number(tolerancia);
+    if (f !== null && (!Number.isFinite(f) || f < 0)) return setError('El fondo fijo debe ser un monto válido (o déjalo vacío para usar el general).');
+    if (t !== null && (!Number.isFinite(t) || t < 0)) return setError('La tolerancia debe ser un monto válido (o déjala vacía para usar la general).');
+    return ejecutar(
+      'fn_caja_guardar_parametros_caja',
+      { p_caja_id: c.id, p_nombre: n, p_fondo_fijo: f, p_tolerancia: t },
+      { titulo: 'Caja actualizada', detalle: `${n} · fondo ${formatoMoneda((f ?? Number(cfg.fondo_fijo)) || 0)} · tolerancia ${formatoMoneda(t ?? (Number(cfg.tolerancia_diferencia) || 0))}` }
+    );
+  }
+  const boton = 'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold transition';
+  return (
+    <div className="rounded-lg border border-slate-200 text-xs" data-testid="fila-caja" data-caja={c.nombre}>
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => esDueno && abrir('editar')}
+          disabled={!esDueno}
+          className="min-w-0 text-left disabled:cursor-default"
+          title={esDueno ? 'Editar fondo y tolerancia' : undefined}
+        >
+          <span className="flex flex-wrap items-center gap-2 font-bold text-slate-800">
+            {c.nombre} <ChipEstadoCaja sesion={c.sesion} />
+            {c.activa === false && <span className="text-[10px] font-bold uppercase text-slate-400">Desactivada</span>}
+          </span>
+          <span className="mt-0.5 block text-[11px] text-slate-500" data-testid="parametros-caja">
+            Fondo {fondoEfectivo != null ? formatoMoneda(fondoEfectivo) : 'sin definir'}
+            {fondoPropio ? '' : ' (general)'} · Tolerancia {formatoMoneda(tolEfectiva)}
+            {tolPropia ? '' : ' (general)'}
+          </span>
+        </button>
+        {esDueno && (
+          <span className="flex shrink-0 items-center gap-1">
+            <button type="button" onClick={() => abrir('editar')} className={`${boton} text-orange-600 hover:bg-orange-50`} data-testid="boton-editar-caja">
+              <Pencil size={12} /> Editar
+            </button>
+            <button type="button" onClick={() => abrir('alternar')} className={`${boton} text-slate-600 hover:bg-slate-100`} data-testid="boton-alternar-caja">
+              {c.activa === false ? 'Activar' : 'Desactivar'}
+            </button>
+            <button
+              type="button"
+              onClick={() => abrir('eliminar')}
+              aria-label={`Eliminar ${c.nombre}`}
+              title="Eliminar caja"
+              className={`${boton} text-rose-500 hover:bg-rose-50`}
+              data-testid="boton-eliminar-caja"
+            >
+              <Trash2 size={13} />
+            </button>
+          </span>
+        )}
+      </div>
+      {accion && (
+        <div className="space-y-3 border-t border-slate-200 bg-slate-50 px-3 py-3" data-testid={`panel-${accion}-caja`}>
+          {accion === 'editar' && (
+            <>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <Campo label="Nombre">
+                  <input value={nombre} onChange={(e) => setNombre(e.target.value)} maxLength={40} className={inputClase} data-testid="editar-caja-nombre" />
+                </Campo>
+                <Campo label="Fondo fijo de apertura">
+                  <input
+                    type="number"
+                    min="0"
+                    step="50"
+                    value={fondo}
+                    onChange={(e) => setFondo(e.target.value)}
+                    placeholder={cfg.fondo_fijo != null ? `General: ${formatoMoneda(cfg.fondo_fijo)}` : 'Monto'}
+                    className={inputClase}
+                    data-testid="editar-caja-fondo"
+                  />
+                </Campo>
+                <Campo label="Tolerancia de diferencia">
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={tolerancia}
+                    onChange={(e) => setTolerancia(e.target.value)}
+                    placeholder={`General: ${formatoMoneda(Number(cfg.tolerancia_diferencia) || 0)}`}
+                    className={inputClase}
+                    data-testid="editar-caja-tolerancia"
+                  />
+                </Campo>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Deja un campo vacío para usar el valor general. El fondo nuevo aplica desde la siguiente apertura y al calcular el retiro de ganancia.
+              </p>
+            </>
+          )}
+          {accion === 'alternar' && (
+            <p className="text-[11px] font-semibold text-slate-700">
+              {c.activa === false
+                ? `¿Activar «${c.nombre}»? Volverá a aparecer para elegirla en las terminales.`
+                : `¿Desactivar «${c.nombre}»? Deja de aparecer en las terminales; su historial se conserva.`}
+            </p>
+          )}
+          {accion === 'eliminar' &&
+            (c.con_historial ? (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200" data-testid="caja-con-historial">
+                «{c.nombre}» ya tiene aperturas y cortes registrados: no se puede eliminar para no perder el historial.
+                {c.activa === false ? ' Ya está desactivada.' : ' Puedes desactivarla para que deje de aparecer.'}
+              </p>
+            ) : (
+              <p className="text-[11px] font-semibold text-rose-600">
+                ¿Eliminar «{c.nombre}»? Solo se pueden eliminar cajas que nunca se abrieron (creadas por error). No se puede deshacer.
+              </p>
+            ))}
+          {!(accion === 'eliminar' && c.con_historial && c.activa === false) && (
+            <AutorizacionPinCaja empleados={caja.empleados} operador={caja.operador} roles={['owner']} valor={auth} onChange={setAuth} etiqueta="Confirma el dueño" testid="auth-caja-fila" />
+          )}
+          {error && (
+            <p className="text-xs font-semibold text-rose-500" data-testid="error-caja-fila">
+              {error}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <BotonSecundario onClick={() => setAccion(null)}>Cancelar</BotonSecundario>
+            {accion === 'editar' && (
+              <BotonPrimario onClick={guardarParametros} disabled={enviando} data-testid="boton-guardar-caja-fila">
+                {enviando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />} Guardar cambios
+              </BotonPrimario>
+            )}
+            {(accion === 'alternar' || (accion === 'eliminar' && c.con_historial && c.activa !== false)) && (
+              <BotonPrimario
+                onClick={() =>
+                  ejecutar(
+                    'fn_caja_guardar_caja',
+                    { p_caja_id: c.id, p_nombre: c.nombre, p_activa: c.activa === false, p_orden: c.orden ?? 0 },
+                    { titulo: c.activa === false ? 'Caja activada' : 'Caja desactivada', detalle: c.nombre }
+                  )
+                }
+                disabled={enviando}
+                data-testid="boton-confirmar-alternar-caja"
+              >
+                {enviando ? <Loader2 size={15} className="animate-spin" /> : null} {c.activa === false ? 'Activar caja' : 'Desactivar caja'}
+              </BotonPrimario>
+            )}
+            {accion === 'eliminar' && !c.con_historial && (
+              <button
+                type="button"
+                onClick={() => ejecutar('fn_caja_eliminar_caja', { p_caja_id: c.id }, { titulo: 'Caja eliminada', detalle: c.nombre })}
+                disabled={enviando}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-500 px-4 py-2 text-sm font-bold text-white transition hover:bg-rose-400 disabled:opacity-50"
+                data-testid="boton-confirmar-eliminar-caja"
+              >
+                {enviando ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />} Eliminar caja
+              </button>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -14967,6 +15196,26 @@ function ModalNuevoProducto({
     if (Array.isArray(producto?.imagenes) && producto.imagenes.length > 0) return producto.imagenes.filter(Boolean);
     return producto?.imagen_url ? [producto.imagen_url] : [];
   });
+  // App-140 — para borrar del Storage lo que ya no se usa: las fotos con las
+  // que abrió el modal (incluida la portada vieja `imagen_url`) y las que se
+  // subieron en esta sesión del modal.
+  const imagenesOriginalesRef = useRef(null);
+  if (imagenesOriginalesRef.current === null) {
+    imagenesOriginalesRef.current = [
+      ...(Array.isArray(producto?.imagenes) ? producto.imagenes : []),
+      ...(producto?.imagen_url ? [producto.imagen_url] : []),
+    ].filter(Boolean);
+  }
+  const subidasSesionRef = useRef([]);
+  // Cerrar SIN guardar: las fotos subidas en esta sesión nunca quedaron en el
+  // producto → se borran del Storage para que no ocupen espacio.
+  function cerrarSinGuardar() {
+    const originales = new Set(imagenesOriginalesRef.current);
+    const huerfanas = subidasSesionRef.current.filter((u) => !originales.has(u));
+    subidasSesionRef.current = [];
+    if (huerfanas.length) eliminarImagenesProductoStorage(huerfanas);
+    onClose();
+  }
   const [guardando, setGuardando] = useState(false);
   const [eliminando, setEliminando] = useState(false);
   const [confirmarEliminar, setConfirmarEliminar] = useState(false);
@@ -15039,6 +15288,7 @@ function ModalNuevoProducto({
   // veces como fotos quiera para ropa/accesorios con varios ángulos.
   function onImagenSubida(url) {
     setError('');
+    subidasSesionRef.current = [...subidasSesionRef.current, url];
     setImagenes((prev) => [...prev, url]);
   }
   function quitarImagen(idx) {
@@ -15209,6 +15459,19 @@ function ModalNuevoProducto({
     toast({ titulo: editando ? 'Producto actualizado' : 'Producto creado', detalle: `${data.nombre} ya está en el catálogo.` });
     onGuardado(data);
     upsertProducto?.(data);
+    // App-140 — ya guardado: las fotos que se quitaron (o se subieron y se
+    // descartaron) se borran DEFINITIVAMENTE del Storage. Va después del
+    // guardado a propósito: el servidor solo borra lo que ningún producto usa.
+    const finales = new Set(imagenes);
+    const descartadas = [...imagenesOriginalesRef.current, ...subidasSesionRef.current].filter((u) => !finales.has(u));
+    subidasSesionRef.current = [];
+    if (descartadas.length) {
+      eliminarImagenesProductoStorage(descartadas).then((r) => {
+        if (r.borradas > 0) {
+          toast({ titulo: r.borradas === 1 ? 'Foto eliminada del almacenamiento' : `${r.borradas} fotos eliminadas del almacenamiento`, detalle: data.nombre });
+        }
+      });
+    }
     onClose();
   }
 
@@ -15228,7 +15491,9 @@ function ModalNuevoProducto({
 
     toast({ titulo: 'Producto eliminado', detalle: `${producto.nombre} salió del catálogo.` });
     onEliminado(producto.id);
-    onClose();
+    // App-140 — fotos subidas en esta sesión que nunca se guardaron. Las del
+    // producto se conservan: es una baja lógica y se puede reactivar.
+    cerrarSinGuardar();
   }
 
   return (
@@ -15242,7 +15507,7 @@ function ModalNuevoProducto({
             : 'Nombre, foto y grupo de modificadores'
           : 'Se agrega al catálogo del POS'
       }
-      onClose={onClose}
+      onClose={cerrarSinGuardar}
       icon={editando ? Settings2 : Plus}
       ancho="max-w-lg"
     >
@@ -15535,7 +15800,7 @@ function ModalNuevoProducto({
           </div>
           <p className="text-[11px] text-slate-500">
             Sube una o varias fotos. La marcada como «Portada» se usa como miniatura en POS, Inventario y el Portal; usa «Hacer portada» para
-            cambiarla o el bote de basura para quitar una foto. Los cambios se aplican al guardar el producto.
+            cambiarla o el bote de basura para quitar una foto. Al guardar, las fotos quitadas se eliminan definitivamente del almacenamiento.
           </p>
           {/* Múltiples Imágenes: cada "Subir archivo" AGREGA una miniatura
               más a la galería (ver `onImagenSubida`). Subida limpia por
@@ -15634,7 +15899,7 @@ function ModalNuevoProducto({
               ))}
           </div>
           <div className="flex justify-end gap-2">
-            <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+            <BotonSecundario onClick={cerrarSinGuardar}>Cancelar</BotonSecundario>
             <BotonPrimario onClick={guardar} disabled={guardando}>
               {guardando ? (
                 <Loader2 size={15} className="animate-spin" />
@@ -34634,6 +34899,8 @@ const TIPOS_EVENTO_AUDITORIA = {
       const antes = d?.antes && typeof d.antes === 'object' ? d.antes : {};
       const despues = d?.despues && typeof d.despues === 'object' ? d.despues : {};
       const siNo = (v) => (v === true ? 'Sí' : v === false ? 'No' : v);
+      // App-141 — fondo/tolerancia por caja: vacío = usa el valor general.
+      const dineroOGeneral = (v) => (v === null || v === undefined || v === '' ? 'General' : dineroLog(v));
       const campos =
         d?.accion === 'configuracion'
           ? [
@@ -34642,15 +34909,42 @@ const TIPOS_EVENTO_AUDITORIA = {
               { k: 'exigir_apertura', campo: 'Bloquear efectivo sin caja abierta', fmt: siNo },
               { k: 'mostrar_diferencia_recepcion', campo: 'Recepción ve la diferencia', fmt: siNo },
             ]
+          : d?.accion === 'caja_parametros'
+          ? [
+              { k: 'nombre', campo: 'Nombre', fmt: (v) => v },
+              { k: 'fondo_fijo', campo: 'Fondo fijo', fmt: dineroOGeneral },
+              { k: 'tolerancia', campo: 'Tolerancia', fmt: dineroOGeneral },
+            ]
           : [
               { k: 'nombre', campo: 'Nombre', fmt: (v) => v },
               { k: 'activa', campo: 'Activa', fmt: siNo },
             ];
-      const cambios = campos
-        .filter((c) => d?.antes == null || String(antes[c.k]) !== String(despues[c.k]))
-        .map((c) => ({ campo: c.campo, antes: d?.antes == null ? null : c.fmt(antes[c.k]), despues: c.fmt(despues[c.k]) }));
+      const cambios =
+        d?.accion === 'caja_eliminada'
+          ? []
+          : campos
+              .filter((c) => d?.antes == null || String(antes[c.k] ?? '') !== String(despues[c.k] ?? ''))
+              .map((c) => ({ campo: c.campo, antes: d?.antes == null ? null : c.fmt(antes[c.k]), despues: c.fmt(despues[c.k]) }));
       const resumen =
-        d?.accion === 'caja_creada' ? `Creó la caja ${d?.caja || ''}` : d?.accion === 'caja_editada' ? `Editó la caja ${d?.caja || ''}` : 'Actualizó la configuración de caja';
+        d?.accion === 'caja_creada'
+          ? `Creó la caja ${d?.caja || ''}`
+          : d?.accion === 'caja_editada'
+          ? `Editó la caja ${d?.caja || ''}`
+          : d?.accion === 'caja_parametros'
+          ? `Editó fondo y tolerancia de ${d?.caja || 'la caja'}`
+          : d?.accion === 'caja_eliminada'
+          ? `Eliminó la caja ${d?.caja || ''}`
+          : 'Actualizó la configuración de caja';
+      if (d?.accion === 'caja_eliminada') {
+        return armarPresentacionLog({
+          resumen,
+          datos: [
+            { etiqueta: 'Caja', valor: d?.caja },
+            { etiqueta: 'Fondo fijo', valor: antes.fondo_fijo != null ? dineroLog(antes.fondo_fijo) : 'General' },
+            { etiqueta: 'Tolerancia', valor: antes.tolerancia != null ? dineroLog(antes.tolerancia) : 'General' },
+          ],
+        });
+      }
       return armarPresentacionLog({ resumen, cambios, datos: [{ etiqueta: 'Caja', valor: d?.accion === 'configuracion' ? null : d?.caja }] });
     },
   },
@@ -54411,7 +54705,7 @@ function ModuloControlSeguridad({
   canchas = [],
 }) {
   const [subvista, setSubvista] = useState('empleados'); // 'empleados' | 'cortes' | 'caja' | 'log'
-  // App-135 — "Caja y Cortes" (v137): solo aparece si la migración existe.
+  // App-135 — "Caja" (v137): solo aparece si la migración existe. (App-141: antes «Caja y Cortes».)
   const cajaModulo = useCaja();
   const cajaModuloDisponible = Boolean(cajaModulo?.disponible);
   // App-134 — pestaña del Log y evento abierto en el modal de detalle.
@@ -54610,7 +54904,7 @@ function ModuloControlSeguridad({
   const SUBVISTAS = [
     { value: 'empleados', label: 'Empleados', icon: Users },
     ...(SHOW_BETA_POS_CIERRE_ARQUEO ? [{ value: 'cortes', label: 'Cortes de Caja', icon: Calculator }] : []),
-    ...(cajaModuloDisponible ? [{ value: 'caja', label: 'Caja y Cortes', icon: Wallet }] : []),
+    ...(cajaModuloDisponible ? [{ value: 'caja', label: 'Caja', icon: Wallet }] : []),
     { value: 'log', label: 'Log de Actividad', icon: History },
   ];
 
@@ -54649,6 +54943,7 @@ function ModuloControlSeguridad({
             <button
               key={sv.value}
               onClick={() => setSubvista(sv.value)}
+              data-testid={`subvista-control-${sv.value}`}
               className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-bold transition ${
                 subvista === sv.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
               }`}
