@@ -65158,11 +65158,22 @@ function PortalPublicoJugadores({ clubSlug }) {
         const resumenAddons = addonsDetalle
           .map((a) => `${a?.nombre || 'Artículo'}${Number(a?.cantidad) > 1 ? ` ×${a.cantidad}` : ''}`)
           .join(' + ');
+        // App-145 — datos para "Tus Próximas Reservas": título corto (solo
+        // la cancha) + etiqueta "+N artículos", y el desglose itemizado
+        // (renta + cada artículo) en el modal de detalle. `titulo` (largo)
+        // se queda igual para el Historial.
+        const articulos = articulosQuickSellReserva(addonsDetalle);
         return {
           id: `reserva-${r.id}`,
           tipo: 'reserva',
           icon: CalendarDays,
           titulo: `Reserva de Cancha · ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}${resumenAddons ? ` + ${resumenAddons}` : ''}`,
+          tituloCorto: `Reserva de Cancha · ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}`,
+          articulos,
+          totalArticulos: articulos.reduce((t, a) => t + a.cantidad, 0),
+          montoCancha: Number(r.monto_total || 0),
+          montoArticulos:
+            r.monto_addons != null && r.monto_addons !== '' ? Number(r.monto_addons) || 0 : articulos.reduce((t, a) => t + (a.subtotal || 0), 0),
           detalle: `${formatoFechaLarga(r.fecha)}${r.hora_inicio ? ` · ${formatoHora12(r.hora_inicio)}` : ''}`,
           estadoPago: r.estado_pago,
           metodoPago: r.metodo_pago || null,
@@ -68463,8 +68474,51 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
   const esPenalizada = item.estadoActividad === 'penalizada';
 
   return (
-    <ModalShell titulo={item.titulo} subtitulo={item.detalle || 'Detalle de tu actividad'} onClose={onClose} icon={item.icon} ancho="max-w-md">
+    <ModalShell
+      titulo={item.tituloCorto || item.titulo}
+      subtitulo={
+        esReserva && item.raw?.fecha && item.horarioActual
+          ? `${formatoFechaLarga(item.raw.fecha)} · ${item.horarioActual}`
+          : item.detalle || 'Detalle de tu actividad'
+      }
+      onClose={onClose}
+      icon={item.icon}
+      ancho="max-w-md"
+    >
       <div className="space-y-3.5">
+        {/* App-145 — desglose de la reserva: renta de cancha + cada artículo de Quick Sell. */}
+        {esReserva && Array.isArray(item.articulos) && item.articulos.length > 0 && (
+          <div className="rounded-xl border border-slate-200 bg-white p-3.5 text-xs" data-testid="desglose-reserva">
+            <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-slate-400">Desglose</p>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-bold text-slate-800">Renta de cancha</p>
+                {item.horarioActual && <p className="text-[11px] text-slate-500">{item.horarioActual}</p>}
+              </div>
+              <span className="shrink-0 font-bold text-slate-800">{formatoMoneda(item.montoCancha || 0)}</span>
+            </div>
+            <div className="mt-2.5 border-t border-dashed border-slate-200 pt-2.5">
+              <p className="mb-1.5 flex items-center gap-1 text-[11px] font-bold text-slate-600">
+                <ShoppingBag size={12} /> Artículos ({item.totalArticulos})
+              </p>
+              <ul className="space-y-1.5">
+                {item.articulos.map((a, i) => (
+                  <li key={`${a.nombre}-${i}`} className="flex items-start justify-between gap-3" data-testid="desglose-articulo">
+                    <span className="min-w-0 text-slate-700">
+                      <span className="font-bold text-slate-900">{a.cantidad}×</span> {a.nombre}
+                      {a.cantidad > 1 && a.precio != null && <span className="text-slate-400"> · {formatoMoneda(a.precio)} c/u</span>}
+                    </span>
+                    <span className="shrink-0 font-semibold text-slate-800">{a.subtotal != null ? formatoMoneda(a.subtotal) : '—'}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="mt-2.5 flex items-center justify-between gap-3 border-t border-slate-200 pt-2.5">
+              <span className="font-black text-slate-900">Total</span>
+              <span className="font-black text-slate-900" data-testid="desglose-total">{formatoMoneda(item.monto)}</span>
+            </div>
+          </div>
+        )}
         <dl className="space-y-2 rounded-xl border border-slate-200 bg-slate-100/60 p-3.5 text-xs">
           <div className="flex items-center justify-between gap-2">
             <dt className="text-slate-500">Monto</dt>
@@ -70643,6 +70697,29 @@ function marcarReprogramacionVista(h) {
   }
 }
 
+// App-145 — artículos de Quick Sell guardados en `reservas.addons_detalle`
+// (Panel/Portal y portal-checkout usan el mismo shape: nombre, variante,
+// precio, cantidad, subtotal), normalizados para mostrarlos.
+function articulosQuickSellReserva(addonsDetalle) {
+  return (Array.isArray(addonsDetalle) ? addonsDetalle : [])
+    .filter((a) => a && typeof a === 'object')
+    .map((a) => {
+      const cantidad = Math.max(1, Math.round(Number(a.cantidad) || 1));
+      const precio = Number(a.precio);
+      const subtotalGuardado = Number(a.subtotal);
+      const subtotal = Number.isFinite(subtotalGuardado) && a.subtotal !== null && a.subtotal !== ''
+        ? subtotalGuardado
+        : Number.isFinite(precio) ? Math.round(precio * cantidad * 100) / 100 : null;
+      const base = String(a.nombre || 'Artículo').trim() || 'Artículo';
+      const variante = String(a.variante_nombre || '').trim();
+      const nombre = variante && !base.toLowerCase().includes(variante.toLowerCase()) ? `${base} · ${variante}` : base;
+      return { nombre, cantidad, precio: Number.isFinite(precio) ? precio : null, subtotal };
+    });
+}
+function textoArticulosExtra(n) {
+  return `+${n} ${n === 1 ? 'artículo' : 'artículos'}`;
+}
+
 function ProximasReservasPortal({ items, onAbrir }) {
   const [, setVersion] = useState(0);
   const sinVer = items.filter((h) => h.reprogramadaEn && !reprogramacionVista(h));
@@ -70677,13 +70754,14 @@ function ProximasReservasPortal({ items, onAbrir }) {
           <div
             key={h.id}
             onClick={() => abrir(h)}
+            data-testid="tarjeta-proxima-reserva"
             className={`relative cursor-pointer rounded-2xl border p-4 backdrop-blur-sm transition ${
               reprogramada
                 ? 'border-indigo-400/60 bg-indigo-400/[0.06] ring-1 ring-indigo-400/30 hover:border-indigo-500 hover:bg-indigo-400/[0.1]'
                 : 'border-orange-400/20 bg-orange-400/[0.04] hover:border-orange-400/40 hover:bg-orange-400/[0.08]'
             }`}
           >
-            <div className="flex items-start justify-between gap-2">
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 {reprogramada && (
                   <span className="mb-1.5 inline-flex items-center gap-1 rounded-full bg-indigo-600 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">
@@ -70691,10 +70769,22 @@ function ProximasReservasPortal({ items, onAbrir }) {
                     {nueva && <span className="ml-1 rounded-full bg-white/25 px-1.5 text-[9px]">Nuevo</span>}
                   </span>
                 )}
-                <p className="font-black text-slate-900">{h.titulo}</p>
-                <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
-                  <CalendarClock size={12} /> {h.detalle}
+                <p className="font-black text-slate-900" data-testid="titulo-proxima-reserva">
+                  {h.tituloCorto || h.titulo}
                 </p>
+                <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
+                  <CalendarClock size={12} /> {h.raw?.fecha ? formatoFechaLarga(h.raw.fecha) : h.detalle}
+                  {h.raw?.fecha && h.horarioActual ? ` · ${h.horarioActual}` : ''}
+                </p>
+                {h.totalArticulos > 0 && (
+                  <span
+                    className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600 ring-1 ring-slate-200"
+                    title={h.articulos.map((a) => `${a.cantidad}× ${a.nombre}`).join(', ')}
+                    data-testid="badge-articulos-reserva"
+                  >
+                    <ShoppingBag size={11} /> {textoArticulosExtra(h.totalArticulos)}
+                  </span>
+                )}
                 {reprogramada && h.horarioAnterior && (
                   <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-semibold">
                     <span className="text-slate-400 line-through">{h.horarioAnterior}</span>
@@ -70703,7 +70793,7 @@ function ProximasReservasPortal({ items, onAbrir }) {
                   </p>
                 )}
               </div>
-              <div className="flex shrink-0 flex-col items-end gap-1.5">
+              <div className="flex shrink-0 items-center gap-1.5 sm:flex-col sm:items-end">
                 <BadgeEstadoActividad estado={h.estadoActividad} />
                 {nueva && (
                   <span className="relative flex h-2.5 w-2.5" title="Cambio de horario sin revisar">
