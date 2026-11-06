@@ -21,6 +21,10 @@
 //     (+ Kardex) de los artículos comprados.
 //   • metadata.qlubos_tipo = 'reserva' (sesiones creadas con v121) →
 //     fn_portal_confirmar_pago_reserva, sin cambios.
+// v141 · Aviso al club: después de confirmar, fn_portal_asegurar_notificacion_pago
+// garantiza (idempotente) la fila en `notificaciones_club` → Realtime →
+// campana, toast y sonido en el panel. Si el aviso falla, el pago NO se
+// revierte y queda anotado en stripe_eventos.error.
 // Idempotencia: tabla `stripe_eventos` (dominio 'portal').
 // Respuestas: 400 firma inválida · 200 procesado/ignorado/duplicado/dato
 // inconsistente · 500 error transitorio (Stripe reintenta).
@@ -96,6 +100,15 @@ async function atender(req: Request): Promise<Response> {
     expirar: (args) => admin.rpc('fn_portal_expirar_reserva_en_linea', args),
     confirmarPago: (args) => admin.rpc('fn_portal_pago_confirmar', args),
     expirarPago: (args) => admin.rpc('fn_portal_pago_expirar', args),
+    // v141 · aviso garantizado al club (campana + Realtime). Sin v141 la RPC
+    // no existe: se registra como 'omitida' y el pago sigue igual.
+    asegurarNotificacion: async (args) => {
+      const res = await admin.rpc('fn_portal_asegurar_notificacion_pago', args);
+      if (res.error && (res.error.code === 'PGRST202' || /could not find the function/i.test(res.error.message ?? ''))) {
+        return { data: { estado: 'omitida: falta v141' }, error: null };
+      }
+      return res;
+    },
   });
 
   const clubNum = r.club_id && /^\d+$/.test(r.club_id) ? Number(r.club_id) : null;
@@ -103,14 +116,25 @@ async function atender(req: Request): Promise<Response> {
     .from('stripe_eventos')
     .update({
       estado: r.estado,
-      error: r.estado === 'error' ? String(r.nota ?? '').slice(0, 1000) : null,
+      // v141 · si el pago se confirmó pero el aviso al club falló, queda
+      // anotado aquí para diagnosticarlo (el evento sigue 'procesado').
+      error:
+        r.estado === 'error'
+          ? String(r.nota ?? '').slice(0, 1000)
+          : r.notificacion?.startsWith('error')
+          ? `notificación al club: ${r.notificacion}`.slice(0, 1000)
+          : null,
       club_id: clubNum,
       objeto_id: r.objeto_id ?? null,
       procesado_en: new Date().toISOString(),
     })
     .eq('event_id', evento.id);
 
-  console.log(`[portal-stripe-webhook] ${evento.type} ${evento.id} (${evento.account ?? 'plataforma'}): ${r.estado}${r.nota ? ` — ${r.nota}` : ''}`);
+  console.log(
+    `[portal-stripe-webhook] ${evento.type} ${evento.id} (${evento.account ?? 'plataforma'}): ${r.estado}${r.nota ? ` — ${r.nota}` : ''}${
+      r.notificacion ? ` · aviso al club: ${r.notificacion}` : ''
+    }`
+  );
   if (r.reintentar) return texto({ error: 'Error procesando el evento' }, 500);
   return texto({ recibido: true, estado: r.estado }, 200);
 }

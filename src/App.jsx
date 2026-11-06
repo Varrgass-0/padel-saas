@@ -2029,6 +2029,10 @@ function esOrigenPortalWeb(origen) {
 function esCanalPortalWeb(canal) {
   return canal === ORIGEN_VENTA_WEB;
 }
+// App-142 — fila retenida por un cobro en línea (Stripe) todavía sin pagar.
+function esRetencionPagoEnLinea(fila) {
+  return Boolean(fila?.pago_en_linea_id) && String(fila?.pago_en_linea_estado || '') === 'procesando';
+}
 
 // Nota de color: "En Juego" es el único estatus que bloquea la cancha EN ESTE
 // MINUTO, así que va en rojo; "Reservada" (usado solo para pintar los bloques
@@ -6406,6 +6410,57 @@ const TIPO_ALERTA_META = {
 // canales Realtime que ya mantenían `reservas`/`inscripciones`/
 // `participantesTorneo` al día antes de este Centro de Alertas) — no hace
 // falta ningún refresco adicional aquí, la interconexión ya existía.
+// App-142 — Sonido de alerta del Centro de Alertas (Web Audio, sin archivos).
+// Los navegadores solo dejan sonar audio después de una interacción del
+// usuario: `prepararAudioAlertas` (primer clic/tecla en el panel) desbloquea
+// el contexto; si aún no hay interacción el sonido se omite sin error.
+let _contextoAudioAlertas = null;
+let _ultimoSonidoAlertaMs = 0;
+function contextoAudioAlertas() {
+  try {
+    const w = typeof window !== 'undefined' ? /** @type {any} */ (window) : null;
+    const AC = w ? w.AudioContext || w.webkitAudioContext : null;
+    if (!AC) return null;
+    if (!_contextoAudioAlertas) _contextoAudioAlertas = new AC();
+    return _contextoAudioAlertas;
+  } catch (_e) {
+    return null;
+  }
+}
+function prepararAudioAlertas() {
+  const ctx = contextoAudioAlertas();
+  if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+}
+function reproducirSonidoAlerta() {
+  const ahora = Date.now();
+  if (ahora - _ultimoSonidoAlertaMs < 1200) return; // varias alertas juntas = un solo sonido
+  _ultimoSonidoAlertaMs = ahora;
+  try {
+    const w = /** @type {any} */ (window);
+    w.__qlubosSonidosAlerta = (w.__qlubosSonidosAlerta || 0) + 1;
+    const ctx = contextoAudioAlertas();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const t0 = ctx.currentTime + 0.01;
+    [880, 1318.5].forEach((frecuencia, i) => {
+      const osc = ctx.createOscillator();
+      const vol = ctx.createGain();
+      const t = t0 + i * 0.17;
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(frecuencia, t);
+      vol.gain.setValueAtTime(0.0001, t);
+      vol.gain.exponentialRampToValueAtTime(0.2, t + 0.02);
+      vol.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      osc.connect(vol);
+      vol.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.32);
+    });
+  } catch (_e) {
+    /* sin audio: la alerta visual llega igual */
+  }
+}
+
 function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJugador }) {
   const [abierto, setAbierto] = useState(false);
   const noLeidas = alertas.filter((a) => !a.leida).length;
@@ -6428,7 +6483,7 @@ function CentroAlertasClub({ alertas, onMarcarLeida, onMarcarTodasLeidas, onIrAJ
       >
         <Bell size={17} />
         {noLeidas > 0 && (
-          <span className="absolute right-0.5 top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-black text-white">
+          <span className="absolute right-0.5 top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-black text-white" data-testid="contador-alertas">
             {noLeidas > 9 ? '9+' : noLeidas}
           </span>
         )}
@@ -75097,13 +75152,25 @@ function AppInterno({ clubInicial } = {}) {
   // de lectura nunca se guardaba, así que reaparecía como no leída en cada
   // recarga/reconexión. El guard de duplicados evita doble-inserción si el
   // mismo INSERT llega más de una vez (reconexión del canal, StrictMode, etc.).
+  // App-142 — ids de alertas ya mostradas en esta sesión (Realtime, carga
+  // inicial o resincronización): una misma notificación nunca suena ni se
+  // anuncia dos veces, aunque llegue por varios caminos.
+  const idsAlertasVistasRef = useRef(new Set());
   const agregarAlertaClub = useCallback(
-    ({ tipo, titulo, jugadorId, metadata, dbId }) => {
+    ({ tipo, titulo, jugadorId, metadata, dbId, creadaEn = null, silenciosa = false }) => {
       const id = dbId != null ? `db-${dbId}` : `${tipo}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      if (idsAlertasVistasRef.current.has(id)) return;
+      idsAlertasVistasRef.current.add(id);
       setAlertasClub((prev) => {
         if (prev.some((a) => a.id === id)) return prev;
-        return [{ id, tipo, titulo, jugadorId: jugadorId || null, metadata: metadata || {}, leida: false, creadaEn: Date.now() }, ...prev].slice(0, 40);
+        return [{ id, tipo, titulo, jugadorId: jugadorId || null, metadata: metadata || {}, leida: false, creadaEn: creadaEn || Date.now() }, ...prev]
+          .sort((a, b) => b.creadaEn - a.creadaEn)
+          .slice(0, 40);
       });
+      // Notificación vieja recuperada por la resincronización: entra a la
+      // campana (y al contador) sin toast ni sonido.
+      if (silenciosa) return;
+      reproducirSonidoAlerta();
       // El encabezado del toast distingue el Motor de Cortesías (evento
       // INTERNO del club — se dispara desde Smart POS/Directorio & CRM,
       // nunca desde el Portal Público) del resto de tipos de alerta (esos sí
@@ -75119,7 +75186,9 @@ function AppInterno({ clubInicial } = {}) {
                 ? '📣 Aviso de QLUBOS'
                 : tipo === 'reabastecimiento'
                   ? '📦 Solicitud de reabastecimiento'
-                  : 'Nueva actividad del Portal Web',
+                  : metadata?.pago_en_linea
+                    ? '💳 Pago en línea recibido'
+                    : 'Nueva actividad del Portal Web',
         detalle: titulo,
       });
     },
@@ -75269,6 +75338,10 @@ function AppInterno({ clubInicial } = {}) {
       .on('postgres_changes', filtroInsert('reservas'), (payload) => {
         const fila = payload.new || {};
         if (!esCanalPortalWeb(fila.canal_origen)) return;
+        // App-142 — retención de un pago en línea (Stripe) que el jugador aún
+        // no paga: el aviso llega cuando el webhook confirma el pago
+        // (`notificaciones_club`), no antes (podría abandonar el cobro).
+        if (esRetencionPagoEnLinea(fila)) return;
         const canchaNombre = canchasRef.current.find((c) => c.id === fila.cancha_id)?.nombre || 'una cancha';
         agregarAlertaClub({
           tipo: 'reserva',
@@ -75286,6 +75359,7 @@ function AppInterno({ clubInicial } = {}) {
       .on('postgres_changes', filtroInsert('reta_inscripciones'), (payload) => {
         const fila = payload.new || {};
         if (!esCanalPortalWeb(fila.canal_origen)) return;
+        if (esRetencionPagoEnLinea(fila)) return;
         const reta = retasRef.current.find((r) => r.id === fila.reta_id);
         const nombreReta = reta ? `Reta${reta.nivel ? ` · ${reta.nivel}` : ''}${reta.rama ? ` (${reta.rama})` : ''}` : 'una Reta';
         agregarAlertaClub({
@@ -75304,6 +75378,7 @@ function AppInterno({ clubInicial } = {}) {
       .on('postgres_changes', filtroInsert('torneo_participantes'), (payload) => {
         const fila = payload.new || {};
         if (!esCanalPortalWeb(fila.canal_origen)) return;
+        if (esRetencionPagoEnLinea(fila)) return;
         const torneo = torneosRef.current.find((t) => t.id === fila.torneo_id);
         agregarAlertaClub({
           tipo: 'torneo_reta',
@@ -75336,6 +75411,7 @@ function AppInterno({ clubInicial } = {}) {
       .on('postgres_changes', filtroInsert('academia_alumnos'), (payload) => {
         const fila = payload.new || {};
         if (!esCanalPortalWeb(fila.canal_origen)) return;
+        if (esRetencionPagoEnLinea(fila)) return;
         const clase = academiaClasesRef.current.find((c) => c.id === fila.clase_id);
         agregarAlertaClub({
           tipo: 'academia',
@@ -75428,6 +75504,61 @@ function AppInterno({ clubInicial } = {}) {
   // `club_id` literal (no solo un `filter`) porque así lo pide el
   // requerimiento de ClubOS — dos clubes nunca comparten ni el nombre del
   // canal ni sus eventos.
+  // App-142 — Resincronización: si el WebSocket de Realtime se cae un
+  // momento (red, pestaña en segundo plano, reconexión), un INSERT se pierde
+  // para siempre. Cada vez que el canal (re)conecta, al volver a la pestaña
+  // y cada 45 s se consultan las no leídas y se agregan las que falten —
+  // con toast y sonido si son recientes— sin recargar la página.
+  const cargaInicialAlertasListaRef = useRef(false);
+  const sincronizarNotificacionesClub = useCallback(async () => {
+    if (!CLUB_ACTIVO_ID || !cargaInicialAlertasListaRef.current) return;
+    const { data, error } = await conClubId(supabase.from('notificaciones_club').select('*'))
+      .eq('leida', false)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (error || !Array.isArray(data)) return;
+    const ahora = Date.now();
+    data
+      .slice()
+      .reverse()
+      .forEach((fila) => {
+        if (fila?.id == null || idsAlertasVistasRef.current.has(`db-${fila.id}`)) return;
+        const creada = fila.created_at ? new Date(fila.created_at).getTime() : ahora;
+        agregarAlertaClub({
+          tipo: fila.tipo || 'notificacion',
+          titulo: fila.titulo || 'Nueva actividad del Portal Web',
+          jugadorId: fila.jugador_id || null,
+          metadata: fila.payload || {},
+          dbId: fila.id,
+          creadaEn: Number.isFinite(creada) ? creada : ahora,
+          silenciosa: Number.isFinite(creada) && ahora - creada > 15 * 60 * 1000,
+        });
+      });
+  }, [agregarAlertaClub]);
+  const sincronizarNotificacionesRef = useRef(sincronizarNotificacionesClub);
+  useEffect(() => {
+    sincronizarNotificacionesRef.current = sincronizarNotificacionesClub;
+  }, [sincronizarNotificacionesClub]);
+  useEffect(() => {
+    if (!CLUB_ACTIVO_ID) return undefined;
+    const alVolver = () => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') sincronizarNotificacionesRef.current();
+    };
+    const intervalo = setInterval(alVolver, 45000);
+    window.addEventListener('focus', alVolver);
+    document.addEventListener('visibilitychange', alVolver);
+    // Desbloquea el audio con la primera interacción (política de autoplay).
+    window.addEventListener('pointerdown', prepararAudioAlertas, { once: true });
+    window.addEventListener('keydown', prepararAudioAlertas, { once: true });
+    return () => {
+      clearInterval(intervalo);
+      window.removeEventListener('focus', alVolver);
+      document.removeEventListener('visibilitychange', alVolver);
+      window.removeEventListener('pointerdown', prepararAudioAlertas);
+      window.removeEventListener('keydown', prepararAudioAlertas);
+    };
+  }, []);
+
   useEffect(() => {
     if (!CLUB_ACTIVO_ID) return undefined;
     const canal = supabase
@@ -75453,7 +75584,11 @@ function AppInterno({ clubInicial } = {}) {
           dbId: fila.id,
         });
       })
-      .subscribe();
+      // App-142 — al (re)conectar el canal se recupera lo que haya llegado
+      // mientras estuvo desconectado.
+      .subscribe((estado) => {
+        if (estado === 'SUBSCRIBED') sincronizarNotificacionesRef.current();
+      });
     return () => {
       supabase.removeChannel(canal);
     };
@@ -75483,11 +75618,17 @@ function AppInterno({ clubInicial } = {}) {
         .order('created_at', { ascending: false })
         .limit(40);
       if (cancelado) return;
+      // App-142 — a partir de aquí la resincronización ya puede correr (lo
+      // anterior entra sin toast ni sonido: ya estaba ahí al abrir el panel).
+      cargaInicialAlertasListaRef.current = true;
       if (error) {
         if (!esErrorTablaInexistente(error)) console.warn('[ClubOS] No se pudo cargar el respaldo inicial de notificaciones del club.', error);
         return;
       }
       let filas = data || [];
+      filas.forEach((f) => {
+        if (f?.id != null) idsAlertasVistasRef.current.add(`db-${f.id}`);
+      });
       if (filas.length === 0) return;
 
       // FIX (Notificación de Cortesía Redimida — auto-limpieza de filas

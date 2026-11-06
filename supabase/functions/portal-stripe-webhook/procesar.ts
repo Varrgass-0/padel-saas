@@ -36,6 +36,15 @@ export interface DepsPortal {
   }): Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
   /** v122 · RPC fn_portal_pago_expirar. */
   expirarPago?(args: { p_pago_id: string; p_session_id: string }): Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
+  /**
+   * v141 · RPC fn_portal_asegurar_notificacion_pago: garantiza que el club
+   * tenga su aviso en `notificaciones_club` (Realtime → campana + sonido)
+   * después de confirmar el pago. Idempotente. Opcional: sin v141 no se llama.
+   */
+  asegurarNotificacion?(args: { p_pago_id: string | null; p_reserva_id: string | null }): Promise<{
+    data: unknown;
+    error: { code?: string; message?: string } | null;
+  }>;
 }
 
 export interface ResultadoPortal {
@@ -45,6 +54,25 @@ export interface ResultadoPortal {
   objeto_id?: string | null;
   /** true = error transitorio: responder 500 para que Stripe reintente. */
   reintentar?: boolean;
+  /**
+   * v141 · Estado del aviso al club: 'creada' | 'existente' | 'error: …' |
+   * 'omitida: …'. Nunca cambia `estado` (el pago ya quedó confirmado).
+   */
+  notificacion?: string;
+}
+
+/** Llama a `asegurarNotificacion` sin que un fallo afecte el resultado del pago. */
+async function asegurarAviso(deps: DepsPortal, pagoId: string | null, reservaId: string | null): Promise<string | undefined> {
+  if (!deps.asegurarNotificacion) return undefined;
+  try {
+    const { data, error } = await deps.asegurarNotificacion({ p_pago_id: pagoId, p_reserva_id: reservaId });
+    if (error) return `error: ${error.message ?? error.code ?? 'desconocido'}`;
+    const d = (data ?? {}) as Record<string, unknown>;
+    const estado = typeof d.estado === 'string' ? d.estado : 'desconocido';
+    return estado === 'error' ? `error: ${String(d.error ?? 'sin detalle')}` : estado;
+  } catch (err) {
+    return `error: ${(err as Error)?.message ?? String(err)}`;
+  }
 }
 
 function texto(v: unknown): string | null {
@@ -94,7 +122,15 @@ export async function procesarEventoPortal(evento: EventoConnectLite, deps: Deps
       const { error } = esPagoPortal
         ? await deps.confirmarPago!({ p_pago_id: pagoId!, ...comun })
         : await deps.confirmar({ p_reserva_id: reservaId!, ...comun });
-      return evaluar(error, `${etiqueta} pagado`);
+      const r = evaluar(error, `${etiqueta} pagado`);
+      // v141 · Con el pago ya confirmado, garantizar el aviso al club. Se hace
+      // aunque el pago estuviera confirmado de antes (reintento de Stripe):
+      // la RPC es idempotente y repone el aviso si se había perdido.
+      if (r.estado === 'procesado') {
+        const aviso = await asegurarAviso(deps, pagoId, reservaId);
+        if (aviso) r.notificacion = aviso;
+      }
+      return r;
     }
     case 'checkout.session.expired':
     case 'checkout.session.async_payment_failed': {
