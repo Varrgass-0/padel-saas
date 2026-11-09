@@ -65146,28 +65146,21 @@ function PortalPublicoJugadores({ clubSlug }) {
     const itemsReservas = (reservas || [])
       .filter((r) => r.jugador_id && jugador.id && r.jugador_id === jugador.id)
       .map((r) => {
-        // Desglose de Add-ons / Tienda (item 1) — cuando la reserva llevó
-        // venta cruzada de Tienda (grips, bebidas, accesorios elegidos al
-        // reservar, ver `addons_detalle` en `confirmarReservaConAddons`), el
-        // Historial cobraba el TOTAL ($790 = $700 cancha + $90 Overgrip)
-        // pero la tarjeta solo decía "Reserva de Cancha" — sin listar qué
-        // se compró junto con ella. Ahora se arma un resumen tipo
-        // "Overgrip ×1" por cada renglón y se agrega al título, ej.
-        // "Reserva Cancha 2 + Overgrip ×1".
+        // Desglose de Add-ons / Tienda (item 1): los artículos de Quick Sell
+        // elegidos al reservar (`addons_detalle`, ver
+        // `confirmarReservaConAddons`). App-146: ya no se concatenan al
+        // título (saturaba la tarjeta); se muestran como etiqueta "+N
+        // artículos" y desglosados en el modal de detalle.
         const addonsDetalle = Array.isArray(r.addons_detalle) ? r.addons_detalle : [];
-        const resumenAddons = addonsDetalle
-          .map((a) => `${a?.nombre || 'Artículo'}${Number(a?.cantidad) > 1 ? ` ×${a.cantidad}` : ''}`)
-          .join(' + ');
-        // App-145 — datos para "Tus Próximas Reservas": título corto (solo
-        // la cancha) + etiqueta "+N artículos", y el desglose itemizado
-        // (renta + cada artículo) en el modal de detalle. `titulo` (largo)
-        // se queda igual para el Historial.
+        // App-145/146 — título corto (solo la cancha) en "Tus Próximas
+        // Reservas" y en Historial + etiqueta "+N artículos", y el desglose
+        // itemizado (renta + cada artículo) en el modal de detalle.
         const articulos = articulosQuickSellReserva(addonsDetalle);
         return {
           id: `reserva-${r.id}`,
           tipo: 'reserva',
           icon: CalendarDays,
-          titulo: `Reserva de Cancha · ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}${resumenAddons ? ` + ${resumenAddons}` : ''}`,
+          titulo: `Reserva de Cancha · ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}`,
           tituloCorto: `Reserva de Cancha · ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}`,
           articulos,
           totalArticulos: articulos.reduce((t, a) => t + a.cantidad, 0),
@@ -67030,9 +67023,11 @@ function PortalPublicoJugadores({ clubSlug }) {
                       recalcular el shape de una reserva desde cero aquí. */}
                   {jugador &&
                     (() => {
-                      const misReservasProximas = (historialUnificado || []).filter(
-                        (h) => h.tipo === 'reserva' && h.activo && h.fechaEventoMs && h.fechaEventoMs > Date.now()
-                      );
+                      // App-146 — de la más cercana a la más lejana (el
+                      // Historial se ordena al revés: lo más reciente arriba).
+                      const misReservasProximas = (historialUnificado || [])
+                        .filter((h) => h.tipo === 'reserva' && h.activo && h.fechaEventoMs && h.fechaEventoMs > Date.now())
+                        .sort((a, b) => Number(a.fechaEventoMs) - Number(b.fechaEventoMs));
                       if (misReservasProximas.length === 0) return null;
                       return <ProximasReservasPortal items={misReservasProximas} onAbrir={setHistorialDetalle} />;
                     })()}
@@ -67653,8 +67648,17 @@ function PortalPublicoJugadores({ clubSlug }) {
                                     <Icon size={14} />
                                   </div>
                                   <div className="min-w-0">
-                                    <p className="truncate text-xs font-semibold text-slate-800">{h.titulo}</p>
+                                    <p className="truncate text-xs font-semibold text-slate-800" data-testid="titulo-historial">{h.titulo}</p>
                                     {h.detalle && <p className="truncate text-[10px] text-slate-500">{h.detalle}</p>}
+                                    {h.totalArticulos > 0 && (
+                                      <span
+                                        className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-px text-[10px] font-bold text-slate-600 ring-1 ring-slate-200"
+                                        title={h.articulos.map((a) => `${a.cantidad}× ${a.nombre}`).join(', ')}
+                                        data-testid="badge-articulos-historial"
+                                      >
+                                        <ShoppingBag size={10} /> {textoArticulosExtra(h.totalArticulos)}
+                                      </span>
+                                    )}
                                     <p className="text-[10px] text-slate-500">
                                       {h.metodoPago ? `${h.metodoPago} · ` : ''}
                                       {h.fechaOrden ? new Date(h.fechaOrden).toLocaleString('es-MX') : ''}
