@@ -1754,19 +1754,64 @@ function normalizarUrlMediaPublica(valor) {
   if (ruta.includes('/') && CARPETAS_MEDIA.includes(carpeta)) return urlPublicaDeRutaMedia(ruta);
   return null;
 }
-// Lista de imágenes de un producto, normalizadas y sin duplicados.
-function imagenesNormalizadasProducto(producto) {
-  const arreglo = (Array.isArray(producto?.imagenes) ? producto.imagenes : []).map(normalizarUrlMediaPublica).filter(Boolean);
-  const lista = arreglo.length > 0 ? arreglo : [normalizarUrlMediaPublica(producto?.imagen_url)].filter(Boolean);
-  return [...new Set(lista)];
+// ============================================================================
+// App-150 — FOTO DE PRODUCTO: una sola regla en TODA la app (Panel y Portal)
+// ============================================================================
+// En `public.productos` la foto puede venir en `imagen_url` (portada, texto)
+// o en `imagenes` (text[]), y en filas viejas una de las dos quedó en NULL.
+// `obtenerFotoProducto` es la ÚNICA función que decide qué foto se ve:
+//   1) `imagen_url` si trae una URL utilizable;
+//   2) si no, el primer elemento utilizable de `imagenes`;
+//   3) si no hay ninguna, null (la vista pone el marcador «Sin foto»).
+// Acepta `imagenes` como arreglo, como texto JSON ('["…"]') o como literal
+// de Postgres ('{…}'), y normaliza cada valor a la URL pública absoluta.
+function arregloImagenesCrudo(valor) {
+  if (Array.isArray(valor)) return valor;
+  if (valor == null) return [];
+  const t = String(valor).trim();
+  if (!t) return [];
+  if (t.startsWith('[')) {
+    try {
+      const j = JSON.parse(t);
+      return Array.isArray(j) ? j : [];
+    } catch (_e) {
+      return [];
+    }
+  }
+  if (t.startsWith('{') && t.endsWith('}')) {
+    return t
+      .slice(1, -1)
+      .split(',')
+      .map((x) => x.trim().replace(/^"(.*)"$/, '$1'))
+      .filter((x) => x && x.toUpperCase() !== 'NULL');
+  }
+  return [t];
 }
-// `src` seguro para cualquier miniatura de producto. App-149: con el producto
-// a la mano, la portada SIEMPRE es `imagenes[0]` (o `imagen_url` si no hay
-// arreglo) — la misma regla que la galería del Portal, así POS, Inventario y
-// la Tienda nunca muestran fotos distintas del mismo producto.
-function urlImagenProducto(valor, producto) {
-  const portada = producto ? imagenesNormalizadasProducto(producto)[0] : normalizarUrlMediaPublica(valor);
-  return urlSegura(portada) || fallbackImagenProducto(producto);
+function obtenerFotoProducto(item) {
+  const principal = normalizarUrlMediaPublica(item?.imagen_url);
+  if (principal) return principal;
+  for (const u of arregloImagenesCrudo(item?.imagenes)) {
+    const n = normalizarUrlMediaPublica(u);
+    if (n) return n;
+  }
+  return null;
+}
+// Todas las fotos del producto para galerías: la portada de
+// `obtenerFotoProducto` primero y después el resto de `imagenes`, sin repetir.
+function fotosProducto(item) {
+  const portada = obtenerFotoProducto(item);
+  const resto = arregloImagenesCrudo(item?.imagenes).map(normalizarUrlMediaPublica).filter(Boolean);
+  return [...new Set([portada, ...resto].filter(Boolean))];
+}
+// `src` listo para cualquier <img> de producto (marcador «Sin foto» si no hay).
+function srcFotoProducto(item) {
+  return urlSegura(obtenerFotoProducto(item)) || fallbackImagenProducto(item);
+}
+// Payload de imágenes para CUALQUIER insert/update: portada en `imagen_url`
+// y en `imagenes[0]` a la vez, para que nunca se desincronicen.
+function camposFotoProducto(lista) {
+  const limpias = [...new Set((lista || []).map(normalizarUrlMediaPublica).filter(Boolean))];
+  return { imagen_url: limpias[0] || null, imagenes: limpias };
 }
 // App-149 — defensa extra multi-club: solo filas del club activo (además del
 // `.eq('club_id', …)` de la consulta y de RLS).
@@ -11835,7 +11880,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
       >
         <div className="relative h-24 w-full overflow-hidden rounded-t-2xl bg-slate-100 sm:h-28">
           <img
-            src={urlImagenProducto(producto.imagen_url, producto)}
+            src={srcFotoProducto(producto)}
             onError={(e) => {
               e.currentTarget.onerror = null;
               e.currentTarget.src = fallbackImagenProducto(producto);
@@ -15368,12 +15413,10 @@ function ModalNuevoProducto({
   // `blob:` local, que se suben a Storage al guardar). Lo irrecuperable
   // (nombre de archivo suelto, ruta del dispositivo) se descarta y se avisa.
   const [imagenesIniciales] = useState(() => {
-    const crudas =
-      Array.isArray(producto?.imagenes) && producto.imagenes.filter(Boolean).length > 0
-        ? producto.imagenes.filter(Boolean)
-        : producto?.imagen_url
-        ? [producto.imagen_url]
-        : [];
+    // App-150 — misma regla que `obtenerFotoProducto`: `imagen_url` es la
+    // portada y luego el resto de `imagenes` (sin importar en cuál de las dos
+    // columnas quedó guardada la foto).
+    const crudas = [...new Set([producto?.imagen_url, ...arregloImagenesCrudo(producto?.imagenes)].map((u) => String(u ?? '').trim()).filter(Boolean))];
     const validas = [];
     let descartadas = 0;
     crudas.forEach((u) => {
@@ -15391,7 +15434,7 @@ function ModalNuevoProducto({
   const imagenesOriginalesRef = useRef(null);
   if (imagenesOriginalesRef.current === null) {
     imagenesOriginalesRef.current = [
-      ...(Array.isArray(producto?.imagenes) ? producto.imagenes : []),
+      ...arregloImagenesCrudo(producto?.imagenes),
       ...(producto?.imagen_url ? [producto.imagen_url] : []),
     ].filter(Boolean);
   }
@@ -15528,7 +15571,6 @@ function ModalNuevoProducto({
     // Las que se acaban de subir (base64/`blob:` viejas) cuentan como subidas
     // de esta sesión: si el guardado falla, se limpian al cerrar.
     subidasSesionRef.current = [...subidasSesionRef.current, ...imagenesPublicas.filter((u) => !imagenes.includes(u))];
-    const imagen = imagenesPublicas[0] || '';
 
     // FIX DEFINITIVO de variantes: el arreglo JSONB completo se arma aquí,
     // en memoria, a partir de las filas visibles en pantalla — filas vacías
@@ -15609,8 +15651,8 @@ function ModalNuevoProducto({
     // fotos, la portada vieja (`imagen_url`) también se limpia; así POS,
     // Inventario, Kardex y el Portal no siguen mostrando una foto que el
     // admin ya quitó (vuelven a la imagen de referencia por categoría).
-    campos.imagen_url = imagen || null;
-    campos.imagenes = imagenesPublicas;
+    // App-150 — portada en `imagen_url` Y en `imagenes[0]` (mismo valor).
+    Object.assign(campos, camposFotoProducto(imagenesPublicas));
 
     // Blindaje de Seguridad — Editar Producto desde Smart POS: con el
     // formulario reducido (`editando && !puedeEditarProductoCompleto`), el
@@ -15639,7 +15681,7 @@ function ModalNuevoProducto({
       ? await actualizarConColumnasOpcionales('productos', producto.id, campos, ['subcategoria', 'imagenes', 'grupo_modificador_id'])
       : await insertarConColumnasOpcionales(
           'productos',
-          { ...campos, imagen_url: imagen || null, activo: true },
+          { ...campos, activo: true },
           ['subcategoria', 'imagenes', 'grupo_modificador_id']
         );
 
@@ -24360,7 +24402,7 @@ function FilaProductoInventario({
       <td className="px-3 py-2.5">
         <div className="flex items-center gap-2.5">
           <img
-            src={urlImagenProducto(producto.imagen_url, producto)}
+            src={srcFotoProducto(producto)}
             onError={(e) => {
               e.currentTarget.onerror = null;
               e.currentTarget.src = fallbackImagenProducto(producto);
@@ -26337,7 +26379,7 @@ function TopProductosTabla({ filas, cargando }) {
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2.5">
                         <img
-                          src={f.producto ? urlImagenProducto(f.producto.imagen_url, f.producto) : fallbackImagenProducto({})}
+                          src={srcFotoProducto(f.producto)}
                           alt=""
                           className="h-8 w-8 shrink-0 rounded-lg object-cover"
                         />
@@ -29862,10 +29904,11 @@ function ModuloContabilidadCompras({
             disponible: true,
             activo: true,
             variantes: variantesJSONB,
-            imagen_url: imagenUrlNuevoProducto,
+            // App-150 — portada en `imagen_url` e `imagenes[0]` a la vez.
+            ...camposFotoProducto([imagenUrlNuevoProducto]),
             recibido: true,
           };
-          const { data, error: errProducto } = await insertarConColumnasOpcionales('productos', nuevoProductoPayload, ['recibido']);
+          const { data, error: errProducto } = await insertarConColumnasOpcionales('productos', nuevoProductoPayload, ['recibido', 'imagenes']);
           if (errProducto) throw errProducto;
           productoCreado = data;
           upsertProducto(productoCreado);
@@ -30226,13 +30269,14 @@ function ModuloContabilidadCompras({
                       },
                     ]
                   : [],
-                imagen_url: item.imagen_url_creacion || null,
+                // App-150 — portada en `imagen_url` e `imagenes[0]` a la vez.
+                ...camposFotoProducto([item.imagen_url_creacion]),
                 recibido: true,
               };
               const { data: productoCreado, error: errProducto } = await insertarConColumnasOpcionales(
                 'productos',
                 nuevoProductoPayload,
-                ['recibido']
+                ['recibido', 'imagenes']
               );
               if (!errProducto && productoCreado) {
                 upsertProducto(productoCreado);
@@ -62178,7 +62222,7 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
                 <input type="checkbox" checked={marcado} onChange={() => alternar(p.id)} className="h-4 w-4 shrink-0 accent-orange-500" />
                 <div className="h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-slate-100">
                   <img
-                    src={urlImagenProducto(p.imagen_url, p)}
+                    src={srcFotoProducto(p)}
                     onError={(e) => {
                       e.currentTarget.onerror = null;
                       e.currentTarget.src = fallbackImagenProducto(p);
@@ -67354,7 +67398,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                         >
                           <div className="h-20 w-full bg-slate-100">
                             <img
-                              src={urlImagenProducto(p.imagen_url, p)}
+                              src={srcFotoProducto(p)}
                               onError={(e) => {
                                 e.currentTarget.onerror = null;
                                 e.currentTarget.src = fallbackImagenProducto(p);
@@ -70582,7 +70626,7 @@ function ModalElegirPago({ monto, saldoWallet, concepto, politica, onClose, onCo
 function ModalGaleriaProducto({ producto, variantes, onClose, onAgregar }) {
   // App-148 — normalizadas (URL pública absoluta) y sin entradas rotas.
   const galeria = useMemo(() => {
-    const lista = imagenesNormalizadasProducto(producto);
+    const lista = fotosProducto(producto);
     return lista.length > 0 ? lista : [fallbackImagenProducto(producto)];
   }, [producto]);
   const [indice, setIndice] = useState(0);
