@@ -4953,6 +4953,23 @@ function politicaCancelacionModulo(configClub, modulo) {
 // esto porque `politicaCancelacionModulo(...).activa` era `false`), siempre
 // resuelve `dentroDeTolerancia: true` (cancelación libre) para no bloquear
 // nada por accidente.
+// App-147 — Portal de Jugadores: una vez que llegó la fecha/hora de inicio
+// del evento (reserva, torneo, reta o clase) ya no se puede cancelar desde el
+// Portal, sin importar la política de tolerancia ni si se pagó en línea, y
+// tampoco se muestra el aviso de penalización por cancelación tardía.
+function eventoYaOcurrio(fechaEventoMs) {
+  const ms = Number(fechaEventoMs);
+  return Number.isFinite(ms) && ms > 0 && Date.now() >= ms;
+}
+const MENSAJE_EVENTO_YA_OCURRIO = 'Este evento ya ocurrió, así que ya no admite cancelación.';
+function AvisoEventoYaOcurrio() {
+  return (
+    <p className="flex items-center gap-1.5 rounded-lg bg-slate-100/70 px-3 py-2 text-[11px] font-semibold text-slate-500" data-testid="aviso-evento-pasado">
+      <Clock size={12} className="shrink-0" /> {MENSAJE_EVENTO_YA_OCURRIO}
+    </p>
+  );
+}
+
 function validarToleranciaCancelacion(fechaEventoMs, toleranciaHoras) {
   const horas = Number(toleranciaHoras) || 0;
   if (!fechaEventoMs || horas <= 0) return { horasParaEvento: Infinity, dentroDeTolerancia: true };
@@ -65497,7 +65514,19 @@ function PortalPublicoJugadores({ clubSlug }) {
     return { ok: true };
   }
 
+  // App-147 — ninguna cancelación del Portal procede si el evento ya ocurrió
+  // (además de que los modales ya no ofrecen el botón).
+  function avisarSiEventoYaOcurrio(fechaEventoMs) {
+    if (!eventoYaOcurrio(fechaEventoMs)) return false;
+    mostrarToast({ titulo: 'Ya no se puede cancelar', detalle: MENSAJE_EVENTO_YA_OCURRIO, tono: 'aviso' });
+    setHistorialDetalle(null);
+    return true;
+  }
   async function cancelarInscripcionClase(alumno, clase) {
+    {
+      const claseEvento = clase || (academiaClasesPortal || []).find((c) => String(c.id) === String(alumno?.clase_id));
+      if (avisarSiEventoYaOcurrio(timestampEvento(claseEvento?.fecha, claseEvento?.hora_inicio))) return;
+    }
     if (alumno?.pago_en_linea_estado === 'procesando') {
       mostrarToast({ titulo: 'Pago en proceso', detalle: 'Tu pago en línea se está confirmando; podrás gestionarlo en cuanto Stripe lo acredite.', tono: 'aviso' });
       return;
@@ -65861,6 +65890,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   }
 
   async function cancelarReservaPortal(reserva) {
+    if (avisarSiEventoYaOcurrio(timestampEvento(reserva?.fecha, reserva?.hora_inicio))) return;
     if (reserva?.pago_en_linea_estado === 'procesando') {
       mostrarToast({ titulo: 'Pago en proceso', detalle: 'Tu pago en línea se está confirmando; podrás gestionarlo en cuanto Stripe lo acredite.', tono: 'aviso' });
       return;
@@ -65900,6 +65930,10 @@ function PortalPublicoJugadores({ clubSlug }) {
   // los dos que esté abierto — nunca dejan un modal huérfano apuntando a una
   // inscripción que ya no existe.
   async function cancelarInscripcionTorneoPortal(participante) {
+    {
+      const torneoEvento = (torneos || []).find((t) => String(t.id) === String(participante?.torneo_id));
+      if (avisarSiEventoYaOcurrio(timestampEvento(torneoEvento?.fecha_inicio, '00:00'))) return;
+    }
     if (participante?.pago_en_linea_estado === 'procesando') {
       mostrarToast({ titulo: 'Pago en proceso', detalle: 'Tu pago en línea se está confirmando; podrás gestionarlo en cuanto Stripe lo acredite.', tono: 'aviso' });
       return;
@@ -65951,6 +65985,10 @@ function PortalPublicoJugadores({ clubSlug }) {
   }
 
   async function cancelarInscripcionRetaPortal(inscripcion) {
+    {
+      const retaEvento = (retas || []).find((r) => String(r.id) === String(inscripcion?.reta_id));
+      if (avisarSiEventoYaOcurrio(timestampEvento(retaEvento?.fecha, retaEvento?.hora_inicio))) return;
+    }
     if (inscripcion?.pago_en_linea_estado === 'procesando') {
       mostrarToast({ titulo: 'Pago en proceso', detalle: 'Tu pago en línea se está confirmando; podrás gestionarlo en cuanto Stripe lo acredite.', tono: 'aviso' });
       return;
@@ -66909,8 +66947,12 @@ function PortalPublicoJugadores({ clubSlug }) {
               Panel Operativo). El logo hereda el mismo comportamiento de
               color adaptable a Modo Oscuro que `TopHeader` — es el mismo
               `<svg>`, sin ninguna clase nueva que mantener aparte. */}
-          <div className="mx-auto grid max-w-3xl grid-cols-[1fr_auto_1fr] items-center gap-2">
-            <div className="flex min-w-0 items-center gap-2.5 justify-self-start">
+          {/* App-147 — en celular el logo QLUBOS va en su propia fila (arriba,
+              centrado) y abajo club ↔ acciones; desde `sm` vuelve a las 3
+              columnas, con `minmax(0,1fr)` para que ninguna columna invada
+              el logo. Antes el nombre del club se encimaba con el logo. */}
+          <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-x-2 gap-y-2.5 sm:grid sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" data-testid="header-portal">
+            <div className="order-2 flex min-w-0 flex-1 items-center gap-2.5 sm:order-none sm:flex-none sm:justify-self-start" data-testid="header-portal-club">
               {club.logo_url ? (
                 <img src={urlSegura(club.logo_url) || undefined} alt={club.nombre} className="h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-slate-200" />
               ) : (
@@ -66920,11 +66962,11 @@ function PortalPublicoJugadores({ clubSlug }) {
               )}
               <div className="min-w-0">
                 <p className="truncate text-sm font-black leading-tight text-slate-900">{club.nombre || 'Club de Pádel'}</p>
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Portal de jugadores</p>
+                <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-slate-500">Portal de jugadores</p>
               </div>
             </div>
 
-            <div className="flex justify-center">
+            <div className="order-1 flex w-full justify-center sm:order-none sm:w-auto" data-testid="header-portal-logo">
               <LogoQlubOS className="h-5 w-auto sm:h-6" />
             </div>
 
@@ -66934,7 +66976,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                 justo a la izquierda del saludo/perfil del jugador (o del
                 botón "Identificarme" cuando todavía no se ha identificado),
                 dentro del mismo grupo de la derecha del header. */}
-            <div className="flex items-center justify-self-end gap-1.5">
+            <div className="order-3 ml-auto flex shrink-0 items-center justify-self-end gap-1.5 sm:order-none sm:ml-0" data-testid="header-portal-acciones">
               <BotonTemaClubOS tema={temaPortal} onAlternar={alternarTemaPortal} />
               {jugador ? (
                 // FIX: este botón abría "Mi Perfil" cerrando la sesión de
@@ -68460,7 +68502,10 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
   const montoEnLinea = item.raw?.pago_en_linea_monto ?? item.monto;
   const eventoIniciado = Boolean(item.fechaEventoMs) && Date.now() >= Number(item.fechaEventoMs);
   const cancelacionSinReembolso = pagadoEnLinea && !dentroDeTolerancia;
-  const puedeCancelar = !!item.raw && item.activo !== false && !pagoEnProceso && (dentroDeTolerancia || (pagadoEnLinea && !eventoIniciado));
+  // App-147 — evento ya ocurrido: sin cancelación ni aviso de penalización.
+  const yaOcurrio = !!item.raw && item.activo !== false && eventoYaOcurrio(item.fechaEventoMs);
+  const puedeCancelar =
+    !!item.raw && item.activo !== false && !yaOcurrio && !pagoEnProceso && (dentroDeTolerancia || (pagadoEnLinea && !eventoIniciado));
 
   async function cancelar() {
     if (!puedeCancelar) return;
@@ -68563,6 +68608,8 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
                 : `Esta reserva/inscripción ya está cancelada — el horario/cupo quedó liberado.`}
             </p>
           </div>
+        ) : yaOcurrio ? (
+          <AvisoEventoYaOcurrio />
         ) : pagoEnProceso ? (
           <p className="rounded-lg bg-sky-50 px-3 py-2 text-[11px] text-sky-800 ring-1 ring-sky-200">
             Tu pago en línea se está procesando. En cuanto Stripe lo confirme, tu {esReserva ? 'reserva' : 'inscripción'} quedará pagada.
@@ -68642,7 +68689,7 @@ function ModalDetalleHistorialPortal({ item, configTolerancia, onClose, onCancel
         )}
 
         <div className="flex justify-end pt-1">
-          <BotonSecundario onClick={onClose}>{item.raw && !yaResuelto && !puedeCancelar ? 'Entendido / Cerrar' : 'Cerrar'}</BotonSecundario>
+          <BotonSecundario onClick={onClose}>{item.raw && !yaResuelto && !yaOcurrio && !puedeCancelar ? 'Entendido / Cerrar' : 'Cerrar'}</BotonSecundario>
         </div>
       </div>
     </ModalShell>
@@ -69115,6 +69162,8 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
                 caso se sigue gestionando por recepción). */}
             {soyTitularDeMiInscripcion && (() => {
               const fechaTorneoMs = timestampEvento(torneo?.fecha_inicio, '00:00');
+              // App-147 — torneo ya iniciado: sin cancelación ni aviso de penalización.
+              if (eventoYaOcurrio(fechaTorneoMs)) return <AvisoEventoYaOcurrio />;
               const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaTorneoMs, politica?.activa ? politica.horas : 0);
               if (!dentroDeTolerancia) {
                 return (
@@ -69760,7 +69809,9 @@ function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancela
     fechaClaseMs,
     politica?.activa ? politica.horas : 0
   );
-  const puedeCancelar = dentroDeTolerancia;
+  // App-147 — clase ya ocurrida: sin cancelación ni aviso de penalización.
+  const yaOcurrio = eventoYaOcurrio(fechaClaseMs);
+  const puedeCancelar = dentroDeTolerancia && !yaOcurrio;
 
   async function cancelar() {
     if (!puedeCancelar) return;
@@ -69829,7 +69880,8 @@ function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancela
           </div>
         </dl>
 
-        {!puedeCancelar && (
+        {yaOcurrio && <AvisoEventoYaOcurrio />}
+        {!puedeCancelar && !yaOcurrio && (
           // Claridad en Modal Fuera de Tiempo (Parte 2) — misma redacción
           // estructurada que `ModalDetalleHistorialPortal`: la clase SIGUE
           // activa, sin botón de auto-cancelación en este estado.
@@ -69883,7 +69935,7 @@ function ModalResumenClase({ clase, alumno, cancha, politica, onClose, onCancela
         ) : null}
 
         <div className="flex justify-end pt-1">
-          <BotonSecundario onClick={onClose}>{puedeCancelar ? 'Cerrar' : 'Entendido / Cerrar'}</BotonSecundario>
+          <BotonSecundario onClick={onClose}>{puedeCancelar || yaOcurrio ? 'Cerrar' : 'Entendido / Cerrar'}</BotonSecundario>
         </div>
       </div>
     </ModalShell>
@@ -69907,7 +69959,9 @@ function ModalResumenReta({ reta, cancha, inscritos, jugador, politica, onClose,
   const [cancelando, setCancelando] = useState(false);
   const fechaRetaMs = timestampEvento(reta?.fecha, reta?.hora_inicio);
   const { dentroDeTolerancia } = validarToleranciaCancelacion(fechaRetaMs, politica?.activa ? politica.horas : 0);
-  const puedeCancelar = !!miInscripcion && dentroDeTolerancia;
+  // App-147 — reta ya ocurrida: sin cancelación ni aviso de penalización.
+  const yaOcurrio = eventoYaOcurrio(fechaRetaMs);
+  const puedeCancelar = !!miInscripcion && dentroDeTolerancia && !yaOcurrio;
 
   async function cancelar() {
     if (!puedeCancelar) return;
@@ -69984,7 +70038,8 @@ function ModalResumenReta({ reta, cancha, inscritos, jugador, politica, onClose,
           </div>
         </div>
 
-        {miInscripcion && !puedeCancelar && (
+        {miInscripcion && yaOcurrio && <AvisoEventoYaOcurrio />}
+        {miInscripcion && !puedeCancelar && !yaOcurrio && (
           <>
             <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3 my-2 font-medium">
               <p className="mb-1 font-semibold">Cancelación fuera de tolerancia</p>
@@ -70035,7 +70090,7 @@ function ModalResumenReta({ reta, cancha, inscritos, jugador, politica, onClose,
         ) : null}
 
         <div className="flex justify-end pt-1">
-          <BotonSecundario onClick={onClose}>{miInscripcion && !puedeCancelar ? 'Entendido / Cerrar' : 'Cerrar'}</BotonSecundario>
+          <BotonSecundario onClick={onClose}>{miInscripcion && !puedeCancelar && !yaOcurrio ? 'Entendido / Cerrar' : 'Cerrar'}</BotonSecundario>
         </div>
       </div>
     </ModalShell>
@@ -71109,7 +71164,10 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
             </span>
           </div>
         )}
-        <div className="grid grid-cols-2 gap-3">
+        {/* App-147 — en celular Fecha y Duración van una debajo de la otra
+            (antes 2 columnas fijas: el selector de fecha se encimaba con el
+            de duración); desde `sm`, lado a lado sin desbordarse. */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="reserva-fecha-duracion">
           <Campo label="Fecha">
             <input
               type="date"
@@ -71127,7 +71185,8 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
               // un clic en cualquier parte del recuadro abre el picker
               // nativo, no solo el icono de calendario.
               onClick={(e) => e.target.showPicker && e.target.showPicker()}
-              className={`${inputClase} cursor-pointer`}
+              className={`${inputClase} min-w-0 cursor-pointer`}
+              data-testid="reserva-fecha"
             />
             {/* DATEPICKER — accesos rápidos: un click para hoy/mañana sin
                 tener que abrir el calendario nativo. */}
@@ -71170,7 +71229,8 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 setHoraInicio('');
               }}
               disabled={duracionesPermitidas.length <= 1}
-              className={`${inputClase} disabled:cursor-not-allowed disabled:opacity-70`}
+              className={`${inputClase} min-w-0 disabled:cursor-not-allowed disabled:opacity-70`}
+              data-testid="reserva-duracion"
             >
               {duracionesPermitidas.map((d) => (
                 <option key={d.horas} value={d.horas}>
