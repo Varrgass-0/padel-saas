@@ -1701,16 +1701,113 @@ function extensionArchivo(file) {
   return porTipo && /^[a-z0-9]{1,8}$/i.test(porTipo) ? porTipo.toLowerCase() : 'jpg';
 }
 
+// App-148 — MIME real del archivo; algunos iPad/Safari entregan `file.type`
+// vacío: se deduce de la extensión (solo jpg/jpeg/png/webp).
+const MIME_POR_EXTENSION_IMAGEN = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+function mimeImagenDeArchivo(file) {
+  const tipo = String(file?.type || '').toLowerCase();
+  if (tipo) return tipo;
+  return MIME_POR_EXTENSION_IMAGEN[extensionArchivo(file)] || '';
+}
+
+// App-148 — URL PÚBLICA ABSOLUTA de un archivo del bucket `app-media` a
+// partir de su ruta ("productos/123.jpg").
+function urlPublicaDeRutaMedia(ruta) {
+  const limpia = String(ruta || '').replace(/^\/+/, '');
+  if (!limpia) return null;
+  try {
+    const { data } = supabase.storage.from(BUCKET_MEDIA).getPublicUrl(limpia);
+    return data?.publicUrl && /^https:\/\//i.test(data.publicUrl) ? data.publicUrl : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+// App-148 — Normaliza cualquier valor de imagen guardado (de cualquier época
+// o dispositivo) a algo que cargue en CUALQUIER dispositivo:
+//   • https://…/storage/v1/object/public/app-media/… → tal cual.
+//   • URL firmada/autenticada de nuestro bucket (caduca) → su URL pública.
+//   • Ruta del bucket guardada sin dominio ("productos/x.jpg",
+//     "app-media/productos/x.jpg", "/storage/v1/object/public/app-media/…")
+//     → URL pública completa.
+//   • `data:image/…;base64` (versiones viejas) → tal cual (carga en todos
+//     lados; al guardar el producto se sube a Storage).
+//   • `blob:`/`file:`/rutas del dispositivo o un nombre de archivo suelto
+//     ("IMG_1234.JPG") → null: solo existían en el aparato que lo subió.
+const CARPETAS_MEDIA = ['productos', 'canchas', 'club', 'empleados', 'jugadores', 'general'];
+function normalizarUrlMediaPublica(valor) {
+  let v = String(valor ?? '').trim();
+  if (!v) return null;
+  if (/^data:image\/(png|jpe?g|gif|webp|avif|bmp|svg\+xml);base64,/i.test(v)) return v;
+  if (/^(blob|file|content|ph|assets-library|capacitor|data):/i.test(v)) return null;
+  if (v.startsWith('//')) v = `https:${v}`;
+  if (/^http:\/\/[^/]*supabase\.(co|in)\//i.test(v)) v = v.replace(/^http:/i, 'https:');
+  if (/^https?:\/\//i.test(v)) {
+    const m = /\/storage\/v1\/object\/(sign|authenticated)\/([^/?#]+)\/([^?#]+)/i.exec(v);
+    if (m && m[2] === BUCKET_MEDIA) return urlPublicaDeRutaMedia(decodeURIComponent(m[3])) || v;
+    return v;
+  }
+  let ruta = v.split(/[?#]/)[0].replace(/^\/+/, '');
+  ruta = ruta.replace(/^storage\/v1\/object\/(public|sign|authenticated)\//i, '');
+  if (ruta.toLowerCase().startsWith(`${BUCKET_MEDIA}/`)) ruta = ruta.slice(BUCKET_MEDIA.length + 1);
+  const carpeta = ruta.split('/')[0].toLowerCase();
+  if (ruta.includes('/') && CARPETAS_MEDIA.includes(carpeta)) return urlPublicaDeRutaMedia(ruta);
+  return null;
+}
+// Lista de imágenes de un producto, normalizadas y sin duplicados.
+function imagenesNormalizadasProducto(producto) {
+  const arreglo = (Array.isArray(producto?.imagenes) ? producto.imagenes : []).map(normalizarUrlMediaPublica).filter(Boolean);
+  const lista = arreglo.length > 0 ? arreglo : [normalizarUrlMediaPublica(producto?.imagen_url)].filter(Boolean);
+  return [...new Set(lista)];
+}
+// `src` seguro para cualquier miniatura de producto (con respaldo por categoría).
+function urlImagenProducto(valor, producto) {
+  return urlSegura(normalizarUrlMediaPublica(valor)) || fallbackImagenProducto(producto);
+}
+// Al GUARDAR: deja cada imagen como URL pública de Storage. Una imagen vieja en
+// base64 (o un `blob:` que todavía exista en este dispositivo) se sube al
+// bucket; lo irrecuperable se descarta. Si la subida de una base64 falla, se
+// conserva tal cual (sigue cargando en todos lados) para no perder la foto.
+async function asegurarUrlsPublicasMedia(valores, carpeta = 'productos') {
+  const salida = [];
+  for (const valor of valores || []) {
+    const crudo = String(valor ?? '').trim();
+    if (/^(data:image\/|blob:)/i.test(crudo)) {
+      try {
+        const resp = await fetch(crudo);
+        const blob = await resp.blob();
+        const tipo = MIME_IMAGEN_PERMITIDOS.includes(blob.type) ? blob.type : 'image/jpeg';
+        const ext = Object.keys(MIME_POR_EXTENSION_IMAGEN).find((k) => MIME_POR_EXTENSION_IMAGEN[k] === tipo && k !== 'jpeg') || 'jpg';
+        const archivo = new File([blob], `imagen.${ext}`, { type: tipo });
+        salida.push(await uploadMedia(archivo, carpeta));
+        continue;
+      } catch (err) {
+        if (/^data:image\//i.test(crudo)) salida.push(crudo);
+        console.warn('[Imágenes] No se pudo pasar una imagen local a Storage.', err?.message || err);
+        continue;
+      }
+    }
+    const url = normalizarUrlMediaPublica(crudo);
+    if (url) salida.push(url);
+  }
+  return [...new Set(salida)];
+}
+
 async function uploadMedia(file, carpeta = 'general') {
   if (!file) return null;
-  if (!MIME_IMAGEN_PERMITIDOS.includes(file.type)) {
+  const mime = mimeImagenDeArchivo(file);
+  if (/heic|heif/i.test(mime) || /^(heic|heif)$/i.test(extensionArchivo(file))) {
+    throw new Error('Las fotos HEIC del iPhone/iPad no se admiten — compártela o expórtala como JPG (o toma una captura) y vuelve a subirla.');
+  }
+  if (!MIME_IMAGEN_PERMITIDOS.includes(mime)) {
     throw new Error('Formato no admitido — solo se aceptan imágenes .jpg, .jpeg, .png o .webp.');
   }
-  const nombreUnico = `${carpeta}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${extensionArchivo(file)}`;
+  const ext = mime === 'image/jpeg' ? (extensionArchivo(file) === 'jpeg' ? 'jpeg' : 'jpg') : mime.split('/')[1];
+  const nombreUnico = `${carpeta}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${ext}`;
   const { error } = await supabase.storage.from(BUCKET_MEDIA).upload(nombreUnico, file, {
     cacheControl: '3600',
     upsert: false,
-    contentType: file.type || undefined,
+    contentType: mime,
   });
   if (error) {
     const msg = /bucket not found/i.test(error.message || '')
@@ -1718,9 +1815,10 @@ async function uploadMedia(file, carpeta = 'general') {
       : error.message || 'No se pudo subir la imagen.';
     throw new Error(msg);
   }
-  const { data } = supabase.storage.from(BUCKET_MEDIA).getPublicUrl(nombreUnico);
-  if (!data?.publicUrl) throw new Error('La imagen se subió pero no se pudo obtener su URL pública.');
-  return data.publicUrl;
+  // App-148 — siempre la URL pública ABSOLUTA (https://…/storage/v1/object/public/app-media/…).
+  const publica = urlPublicaDeRutaMedia(nombreUnico);
+  if (!publica) throw new Error('La imagen se subió pero no se pudo obtener su URL pública.');
+  return publica;
 }
 
 // App-140 — Borrado DEFINITIVO en Storage de fotos de producto que ya no se
@@ -11735,7 +11833,7 @@ function ProductoCard({ producto, variantes = [], onAgregar, onEditar }) {
       >
         <div className="relative h-24 w-full overflow-hidden rounded-t-2xl bg-slate-100 sm:h-28">
           <img
-            src={urlSegura(producto.imagen_url) || fallbackImagenProducto(producto)}
+            src={urlImagenProducto(producto.imagen_url, producto)}
             onError={(e) => {
               e.currentTarget.onerror = null;
               e.currentTarget.src = fallbackImagenProducto(producto);
@@ -15264,10 +15362,27 @@ function ModalNuevoProducto({
   // `imagen_url` (ver `guardar()`) para que las ~6 tarjetas/miniaturas del
   // resto de la app (POS, Inventario, Kardex, carrito del Portal) que solo
   // conocen `imagen_url` no necesiten tocarse.
-  const [imagenes, setImagenes] = useState(() => {
-    if (Array.isArray(producto?.imagenes) && producto.imagenes.length > 0) return producto.imagenes.filter(Boolean);
-    return producto?.imagen_url ? [producto.imagen_url] : [];
+  // App-148 — cada foto se normaliza a su URL pública absoluta (o base64 /
+  // `blob:` local, que se suben a Storage al guardar). Lo irrecuperable
+  // (nombre de archivo suelto, ruta del dispositivo) se descarta y se avisa.
+  const [imagenesIniciales] = useState(() => {
+    const crudas =
+      Array.isArray(producto?.imagenes) && producto.imagenes.filter(Boolean).length > 0
+        ? producto.imagenes.filter(Boolean)
+        : producto?.imagen_url
+        ? [producto.imagen_url]
+        : [];
+    const validas = [];
+    let descartadas = 0;
+    crudas.forEach((u) => {
+      const v = /^blob:/i.test(String(u).trim()) ? String(u).trim() : normalizarUrlMediaPublica(u);
+      if (v) {
+        if (!validas.includes(v)) validas.push(v);
+      } else descartadas += 1;
+    });
+    return { validas, descartadas };
   });
+  const [imagenes, setImagenes] = useState(imagenesIniciales.validas);
   // App-140 — para borrar del Storage lo que ya no se usa: las fotos con las
   // que abrió el modal (incluida la portada vieja `imagen_url`) y las que se
   // subieron en esta sesión del modal.
@@ -15405,7 +15520,13 @@ function ModalNuevoProducto({
     // que el resto de la app (tarjetas de POS/Inventario, Kardex, carrito
     // del Portal) siga mostrando una miniatura sin tener que leer el
     // arreglo nuevo.
-    const imagen = imagenes[0] || '';
+    // App-148 — se guarda SIEMPRE la URL pública completa de Supabase Storage
+    // (lo viejo en base64 / `blob:` se sube primero; ver `asegurarUrlsPublicasMedia`).
+    const imagenesPublicas = await asegurarUrlsPublicasMedia(imagenes, 'productos');
+    // Las que se acaban de subir (base64/`blob:` viejas) cuentan como subidas
+    // de esta sesión: si el guardado falla, se limpian al cerrar.
+    subidasSesionRef.current = [...subidasSesionRef.current, ...imagenesPublicas.filter((u) => !imagenes.includes(u))];
+    const imagen = imagenesPublicas[0] || '';
 
     // FIX DEFINITIVO de variantes: el arreglo JSONB completo se arma aquí,
     // en memoria, a partir de las filas visibles en pantalla — filas vacías
@@ -15487,7 +15608,7 @@ function ModalNuevoProducto({
     // Inventario, Kardex y el Portal no siguen mostrando una foto que el
     // admin ya quitó (vuelven a la imagen de referencia por categoría).
     campos.imagen_url = imagen || null;
-    campos.imagenes = imagenes;
+    campos.imagenes = imagenesPublicas;
 
     // Blindaje de Seguridad — Editar Producto desde Smart POS: con el
     // formulario reducido (`editando && !puedeEditarProductoCompleto`), el
@@ -15534,8 +15655,10 @@ function ModalNuevoProducto({
     // App-140 — ya guardado: las fotos que se quitaron (o se subieron y se
     // descartaron) se borran DEFINITIVAMENTE del Storage. Va después del
     // guardado a propósito: el servidor solo borra lo que ningún producto usa.
-    const finales = new Set(imagenes);
-    const descartadas = [...imagenesOriginalesRef.current, ...subidasSesionRef.current].filter((u) => !finales.has(u));
+    const finales = new Set(imagenesPublicas);
+    const descartadas = [...imagenesOriginalesRef.current.map(normalizarUrlMediaPublica).filter(Boolean), ...subidasSesionRef.current].filter(
+      (u) => !finales.has(u)
+    );
     subidasSesionRef.current = [];
     if (descartadas.length) {
       eliminarImagenesProductoStorage(descartadas).then((r) => {
@@ -15870,10 +15993,23 @@ function ModalNuevoProducto({
                 </button>
               ))}
           </div>
-          <p className="text-[11px] text-slate-500">
-            Sube una o varias fotos. La marcada como «Portada» se usa como miniatura en POS, Inventario y el Portal; usa «Hacer portada» para
-            cambiarla o el bote de basura para quitar una foto. Al guardar, las fotos quitadas se eliminan definitivamente del almacenamiento.
+          <p className="text-[11px] text-slate-500" data-testid="ayuda-imagenes-producto">
+            Sube una o varias fotos (Formatos: .jpg, .jpeg, .png, .webp).{' '}
+            <span className="font-semibold text-slate-600">
+              Medida ideal recomendada: 800 x 800 píxeles (proporción cuadrada) para una óptima visualización sin pixelearse en el portal.
+            </span>
           </p>
+          <p className="text-[11px] text-slate-500">
+            La marcada como «Portada» se usa como miniatura en POS, Inventario y el Portal; usa «Hacer portada» para cambiarla o el bote de
+            basura para quitar una foto. Al guardar, las fotos quitadas se eliminan definitivamente del almacenamiento.
+          </p>
+          {imagenesIniciales.descartadas > 0 && (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200" data-testid="aviso-imagenes-descartadas">
+              {imagenesIniciales.descartadas === 1 ? 'Una foto' : `${imagenesIniciales.descartadas} fotos`} de este producto se había
+              {imagenesIniciales.descartadas === 1 ? '' : 'n'} guardado con una ruta local del dispositivo y no se puede ver en otros equipos.
+              Vuelve a subirla{imagenesIniciales.descartadas === 1 ? '' : 's'} y guarda.
+            </p>
+          )}
           {/* Múltiples Imágenes: cada "Subir archivo" AGREGA una miniatura
               más a la galería (ver `onImagenSubida`). Subida limpia por
               archivo, ÚNICAMENTE — sin campo de URL/link de texto. */}
@@ -23892,7 +24028,7 @@ async function agregarVarianteNuevaEnJSONB({ productoId, nombre, precio, costoUn
       precio: precio != null && precio !== '' ? Number(precio) : null,
       stock: stockInicial != null && stockInicial !== '' ? Number(stockInicial) || 0 : 0,
       costo_unitario: costoUnitario != null && costoUnitario !== '' ? Number(costoUnitario) : null,
-      imagen_url: imagenUrl || null,
+      imagen_url: normalizarUrlMediaPublica(imagenUrl) || null, // App-148: URL pública absoluta
       activo: true,
       recibido: recibido !== false,
     };
@@ -24222,7 +24358,7 @@ function FilaProductoInventario({
       <td className="px-3 py-2.5">
         <div className="flex items-center gap-2.5">
           <img
-            src={urlSegura(producto.imagen_url) || fallbackImagenProducto(producto)}
+            src={urlImagenProducto(producto.imagen_url, producto)}
             onError={(e) => {
               e.currentTarget.onerror = null;
               e.currentTarget.src = fallbackImagenProducto(producto);
@@ -26199,7 +26335,7 @@ function TopProductosTabla({ filas, cargando }) {
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2.5">
                         <img
-                          src={f.producto ? urlSegura(f.producto.imagen_url) || fallbackImagenProducto(f.producto) : fallbackImagenProducto({})}
+                          src={f.producto ? urlImagenProducto(f.producto.imagen_url, f.producto) : fallbackImagenProducto({})}
                           alt=""
                           className="h-8 w-8 shrink-0 rounded-lg object-cover"
                         />
@@ -29697,7 +29833,7 @@ function ModuloContabilidadCompras({
             : Number(nuevoProductoForm.precio);
         const categoriaNuevoProducto = nuevoProductoForm.categoriaPOS;
         const costoUnitarioProductoPadre = nuevoProductoForm.costo === '' ? null : Number(nuevoProductoForm.costo);
-        const imagenUrlNuevoProducto = nuevoProductoForm.imagenUrl.trim() || null;
+        const imagenUrlNuevoProducto = normalizarUrlMediaPublica(nuevoProductoForm.imagenUrl) || null; // App-148: URL pública absoluta
         const nombreNuevoProducto = nuevoProductoForm.nombre.trim();
 
         let productoCreado = null;
@@ -62040,7 +62176,7 @@ function ModalSeleccionProductosAddons({ productos, seleccionadosIniciales, guar
                 <input type="checkbox" checked={marcado} onChange={() => alternar(p.id)} className="h-4 w-4 shrink-0 accent-orange-500" />
                 <div className="h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-slate-100">
                   <img
-                    src={urlSegura(p.imagen_url) || fallbackImagenProducto(p)}
+                    src={urlImagenProducto(p.imagen_url, p)}
                     onError={(e) => {
                       e.currentTarget.onerror = null;
                       e.currentTarget.src = fallbackImagenProducto(p);
@@ -67183,7 +67319,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                         >
                           <div className="h-20 w-full bg-slate-100">
                             <img
-                              src={urlSegura(p.imagen_url) || fallbackImagenProducto(p)}
+                              src={urlImagenProducto(p.imagen_url, p)}
                               onError={(e) => {
                                 e.currentTarget.onerror = null;
                                 e.currentTarget.src = fallbackImagenProducto(p);
@@ -70409,9 +70545,10 @@ function ModalElegirPago({ monto, saldoWallet, concepto, politica, onClose, onCo
 // pero inline en vez de un segundo modal encima) antes de habilitar "Agregar
 // al carrito" — así nunca se agrega un artículo de talla/color ambiguo.
 function ModalGaleriaProducto({ producto, variantes, onClose, onAgregar }) {
+  // App-148 — normalizadas (URL pública absoluta) y sin entradas rotas.
   const galeria = useMemo(() => {
-    if (Array.isArray(producto?.imagenes) && producto.imagenes.length > 0) return producto.imagenes;
-    return [producto?.imagen_url || fallbackImagenProducto(producto)];
+    const lista = imagenesNormalizadasProducto(producto);
+    return lista.length > 0 ? lista : [fallbackImagenProducto(producto)];
   }, [producto]);
   const [indice, setIndice] = useState(0);
   const listaVariantes = variantes || [];
@@ -70437,7 +70574,8 @@ function ModalGaleriaProducto({ producto, variantes, onClose, onAgregar }) {
       <div className="space-y-4">
         <div className="relative overflow-hidden rounded-2xl bg-slate-100">
           <img
-            src={urlSegura(galeria[indice]) || undefined}
+            src={urlSegura(galeria[indice]) || fallbackImagenProducto(producto)}
+            data-testid="galeria-portal-imagen"
             onError={(e) => {
               e.currentTarget.onerror = null;
               e.currentTarget.src = fallbackImagenProducto(producto);
