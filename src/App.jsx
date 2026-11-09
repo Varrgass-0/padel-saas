@@ -1760,9 +1760,20 @@ function imagenesNormalizadasProducto(producto) {
   const lista = arreglo.length > 0 ? arreglo : [normalizarUrlMediaPublica(producto?.imagen_url)].filter(Boolean);
   return [...new Set(lista)];
 }
-// `src` seguro para cualquier miniatura de producto (con respaldo por categoría).
+// `src` seguro para cualquier miniatura de producto. App-149: con el producto
+// a la mano, la portada SIEMPRE es `imagenes[0]` (o `imagen_url` si no hay
+// arreglo) — la misma regla que la galería del Portal, así POS, Inventario y
+// la Tienda nunca muestran fotos distintas del mismo producto.
 function urlImagenProducto(valor, producto) {
-  return urlSegura(normalizarUrlMediaPublica(valor)) || fallbackImagenProducto(producto);
+  const portada = producto ? imagenesNormalizadasProducto(producto)[0] : normalizarUrlMediaPublica(valor);
+  return urlSegura(portada) || fallbackImagenProducto(producto);
+}
+// App-149 — defensa extra multi-club: solo filas del club activo (además del
+// `.eq('club_id', …)` de la consulta y de RLS).
+function soloDelClubActivo(filas) {
+  const lista = Array.isArray(filas) ? filas : [];
+  if (!CLUB_ACTIVO_ID) return lista;
+  return lista.filter((f) => f && (f.club_id === undefined || (f.club_id !== null && String(f.club_id) === String(CLUB_ACTIVO_ID))));
 }
 // Al GUARDAR: deja cada imagen como URL pública de Storage. Una imagen vieja en
 // base64 (o un `blob:` que todavía exista en este dispositivo) se sube al
@@ -3394,27 +3405,14 @@ const DURACIONES_RENTA = [
   { horas: 2, label: '2 horas' },
 ];
 
-const PRODUCTO_FALLBACKS = {
-  'Pro-Shop': [
-    'https://images.unsplash.com/photo-1617083277341-f1cd0c2a1c3d?q=80&w=600&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?q=80&w=600&auto=format&fit=crop',
-  ],
-  'Cafetería/Bar': [
-    'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=600&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1509042239860-f550ce710b93?q=80&w=600&auto=format&fit=crop',
-  ],
-  Rentas: [
-    'https://images.unsplash.com/photo-1554068865-24cecd4e34b8?q=80&w=600&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1554068865-24cecd4e34b8?q=80&w=600&auto=format&fit=crop',
-  ],
-};
+// App-149 — un producto SIN foto propia muestra un marcador neutro «Sin foto»
+// (mismo en Panel y Portal). Antes se elegía una foto genérica de stock por
+// categoría (Unsplash, «aleatoria» según el id), que en la laptop parecía un
+// catálogo de relleno y no coincidía con lo que el club subió.
+const IMAGEN_PRODUCTO_SIN_FOTO = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiB2aWV3Qm94PSIwIDAgNDAwIDQwMCI+PHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MDAiIGZpbGw9IiNmMWY1ZjkiLz48ZyBmaWxsPSJub25lIiBzdHJva2U9IiM5NGEzYjgiIHN0cm9rZS13aWR0aD0iMTAiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTE0MCAxNjVoMTIwbC0xMCAxMTVIMTUweiIvPjxwYXRoIGQ9Ik0xNzAgMTY1di0xNWEzMCAzMCAwIDAgMSA2MCAwdjE1Ii8+PC9nPjx0ZXh0IHg9IjIwMCIgeT0iMzMwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0ic3lzdGVtLXVpLC1hcHBsZS1zeXN0ZW0sU2Vnb2UgVUksUm9ib3RvLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMzAiIGZvbnQtd2VpZ2h0PSI3MDAiIGZpbGw9IiM5NGEzYjgiPlNpbiBmb3RvPC90ZXh0Pjwvc3ZnPg==';
 
-function fallbackImagenProducto(producto) {
-  const lista = PRODUCTO_FALLBACKS[producto?.categoria] || PRODUCTO_FALLBACKS['Pro-Shop'];
-  const hash = String(producto?.id || '0')
-    .split('')
-    .reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-  return lista[hash % lista.length];
+function fallbackImagenProducto(_producto) {
+  return IMAGEN_PRODUCTO_SIN_FOTO;
 }
 
 /* ============================================================================
@@ -11756,17 +11754,21 @@ function SkeletonProductos() {
   );
 }
 
-function EmptyStateProductos() {
+function EmptyStateProductos({ onCrear = null }) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 py-16 text-center">
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 py-16 text-center" data-testid="catalogo-vacio">
       <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-white">
         <ShoppingBag size={24} className="text-slate-400" />
       </div>
-      <p className="text-sm font-bold text-slate-600">Todavía no tienes productos cargados</p>
+      <p className="text-sm font-bold text-slate-600">Todavía no tienes productos en tu catálogo</p>
       <p className="mt-1 max-w-sm text-xs text-slate-500">
-        Crea la tabla <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px] text-slate-600">productos</code> en
-        Supabase (nombre, categoria, precio, stock, imagen_url) y aparecerán aquí automáticamente.
+        Crea tu primer producto con «Nuevo Producto»: aparecerá al instante en Smart POS, Inventario y la Tienda del Portal de Jugadores.
       </p>
+      {onCrear && (
+        <BotonPrimario onClick={onCrear} className="mt-4">
+          <Plus size={15} /> Nuevo Producto
+        </BotonPrimario>
+      )}
     </div>
   );
 }
@@ -22396,7 +22398,7 @@ function ModuloSmartPOS({
           {loadingProductos ? (
             <SkeletonProductos />
           ) : productos.length === 0 ? (
-            <EmptyStateProductos />
+            <EmptyStateProductos onCrear={permisos?.puedeGestionarProductos !== false ? () => setModalNuevoProducto(true) : null} />
           ) : productosFiltrados.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-200 py-12 text-center text-sm text-slate-500">
                 Ningún producto coincide con el filtro.
@@ -63211,10 +63213,13 @@ async function resolverClubDelPortal(clubSlug) {
   // tan bien coincida su slug con la URL.
   const filasActivas = filas.filter((c) => !c.eliminado_en);
 
-  const club = filasActivas.find((c) => {
-    const slugFila = (c.slug || '').toLowerCase().trim();
-    return (slugFila && slugFila === slugBuscado) || slugificarClub(c.nombre || c.name) === slugBuscado;
-  });
+  // App-149 — primero el slug EXACTO; el nombre «slugificado» solo cuenta
+  // para clubes que no tienen slug propio. Antes ganaba la primera fila que
+  // empatara por cualquiera de los dos, y un club homónimo (p. ej. uno de
+  // prueba) podía robarle el Portal — y sus productos — al club real.
+  const club =
+    filasActivas.find((c) => (c.slug || '').toLowerCase().trim() === slugBuscado) ||
+    filasActivas.find((c) => !(c.slug || '').trim() && slugificarClub(c.nombre || c.name) === slugBuscado);
 
   if (!club) {
     console.error(
@@ -63658,7 +63663,8 @@ function PortalPublicoJugadores({ clubSlug }) {
       conClubId(supabase.from('retas').select('*')).order('fecha', { ascending: true }),
       conClubId(supabase.from('reta_inscripciones').select('*')),
       conClubId(supabase.from('torneo_participantes').select('*')),
-      conClubId(supabase.from('productos').select('*')),
+      // App-149 — misma consulta que el Panel: productos del club activo.
+      supabase.from('productos').select('*').eq('club_id', CLUB_ACTIVO_ID),
       conClubId(supabase.from('academia_clases').select('*')),
       conClubId(supabase.from('academia_alumnos').select('*')),
       // Solo lectura — "Horario de partido" del resumen de inscripción a
@@ -63683,7 +63689,7 @@ function PortalPublicoJugadores({ clubSlug }) {
     // JSONB `variantes` — no hay una tabla `producto_variantes` aparte que
     // consultar. `variantesPorProductoPortal` (abajo) deriva de esta misma
     // lista con `variantesDeProductoJSONB`.
-    setProductos(resProductos.data || []);
+    setProductos(soloDelClubActivo(resProductos.data));
     // Si `academia_clases`/`academia_alumnos` todavía no existen en este
     // proyecto de Supabase, `data` llega `null` — el catálogo simplemente
     // se ve vacío en vez de tronar el resto del Portal.
@@ -63691,6 +63697,13 @@ function PortalPublicoJugadores({ clubSlug }) {
     setAcademiaAlumnosPortal(resAcademiaAlumnos.data || []);
     setTarifasHorariosPortal(resTarifasHorarios.data || []);
     setCargandoDatos(false);
+  }, []);
+
+  // App-149 — solo el catálogo de productos (ligero), misma consulta que el Panel.
+  const refrescarProductosPortal = useCallback(async () => {
+    if (!CLUB_ACTIVO_ID) return;
+    const { data, error } = await supabase.from('productos').select('*').eq('club_id', CLUB_ACTIVO_ID);
+    if (!error && Array.isArray(data)) setProductos(soloDelClubActivo(data));
   }, []);
 
   useEffect(() => {
@@ -63750,14 +63763,36 @@ function PortalPublicoJugadores({ clubSlug }) {
       .on('postgres_changes', canalClubFiltro('retas'), () => cargarDatosPortal())
       .on('postgres_changes', canalClubFiltro('reta_inscripciones'), () => cargarDatosPortal())
       .on('postgres_changes', canalClubFiltro('torneo_participantes'), () => cargarDatosPortal())
-      .on('postgres_changes', canalClubFiltro('productos'), () => cargarDatosPortal())
+      .on('postgres_changes', canalClubFiltro('productos'), () => refrescarProductosPortal())
       .on('postgres_changes', canalClubFiltro('academia_clases'), () => cargarDatosPortal())
       .on('postgres_changes', canalClubFiltro('academia_alumnos'), () => cargarDatosPortal())
       .on('postgres_changes', canalClubFiltro('torneo_partidos'), () => cargarDatosPortal())
       .on('postgres_changes', canalClubFiltro('tarifas_horarios'), () => cargarDatosPortal())
       .subscribe();
     return () => supabase.removeChannel(canal);
-  }, [club, cargarDatosPortal]);
+  }, [club, cargarDatosPortal, refrescarProductosPortal]);
+
+  // App-149 — el catálogo de la Tienda se refresca aunque Realtime no llegue
+  // (tabla fuera de la publicación, WebSocket caído o sin permiso `anon` para
+  // Realtime): al volver a la pestaña, al abrir la Tienda y cada 30 s con la
+  // página visible. Una foto o precio nuevo del Panel aparece sin recargar.
+  useEffect(() => {
+    if (!club?.id) return undefined;
+    const alVolver = () => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') refrescarProductosPortal();
+    };
+    window.addEventListener('focus', alVolver);
+    document.addEventListener('visibilitychange', alVolver);
+    const intervalo = setInterval(alVolver, 30 * 1000);
+    return () => {
+      window.removeEventListener('focus', alVolver);
+      document.removeEventListener('visibilitychange', alVolver);
+      clearInterval(intervalo);
+    };
+  }, [club?.id, refrescarProductosPortal]);
+  useEffect(() => {
+    if (vista === 'tienda') refrescarProductosPortal();
+  }, [vista, refrescarProductosPortal]);
 
   // Cancelación automática por grupo mínimo (App-94, migracion_v111): el
   // Portal también dispara la validación (al abrir y cada 5 min) para que
@@ -72794,18 +72829,45 @@ function AppInterno({ clubInicial } = {}) {
 
   /* ---------------- Carga de datos (Smart POS + ERP, compartida) ---------------- */
 
+  // App-149 — ÚNICA fuente de verdad del catálogo (POS, Inventario/ERP,
+  // Analytics): `SELECT * FROM productos WHERE club_id = <club activo>` — la
+  // misma consulta que usa el Portal de Jugadores. Sin club resuelto no se
+  // consulta nada (nunca se listan productos de otro club).
   const cargarProductos = useCallback(async (opts = {}) => {
+    if (!CLUB_ACTIVO_ID) {
+      setProductos([]);
+      setLoadingProductos(false);
+      return;
+    }
     if (!opts.silencioso) setLoadingProductos(true);
     setErrorProductos('');
-    const { data, error: errProductos } = await conClubId(supabase.from('productos').select('*')).order('nombre', { ascending: true });
+    const { data, error: errProductos } = await supabase
+      .from('productos')
+      .select('*')
+      .eq('club_id', CLUB_ACTIVO_ID)
+      .order('nombre', { ascending: true });
     if (errProductos) {
       setErrorProductos(errProductos.message || 'No se pudieron cargar los productos.');
-      setProductos([]);
+      if (!opts.silencioso) setProductos([]);
     } else {
-      setProductos(data || []);
+      setProductos(soloDelClubActivo(data));
     }
     setLoadingProductos(false);
   }, []);
+
+  // App-149 — al volver a la ventana/pestaña se re-lee el catálogo (lo que se
+  // cambió desde el iPad u otra terminal aparece sin esperar el poll de 20 s).
+  useEffect(() => {
+    const alVolver = () => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') cargarProductos({ silencioso: true });
+    };
+    window.addEventListener('focus', alVolver);
+    document.addEventListener('visibilitychange', alVolver);
+    return () => {
+      window.removeEventListener('focus', alVolver);
+      document.removeEventListener('visibilitychange', alVolver);
+    };
+  }, [cargarProductos]);
 
   useEffect(() => {
     cargarProductos();
