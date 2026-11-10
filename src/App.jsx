@@ -33362,7 +33362,14 @@ function textoReglaPartido(duracion, puntoOro) {
 // motivo si no. `tipo`: 'set6' | 'set8' | 'stb'.
 function errorMarcadorSet(a, b, tipo) {
   if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return 'usa números enteros (0 o más)';
-  if (a === b) return 'no puede quedar empatado';
+  if (a === b) {
+    if (tipo === 'stb') return 'el súper tie-break no puede quedar empatado';
+    const metaEmpate = tipo === 'set8' ? 8 : 6;
+    // App-154 — el empate a 6 (8 en pro set) NO es un error: activa el
+    // tie-break; el set se cierra 7-6 / 6-7 (9-8 / 8-9) para quien lo gane.
+    if (a === metaEmpate) return `${a}-${a}: se juega tie-break — elige quién lo ganó para cerrar el set ${metaEmpate + 1}-${metaEmpate}`;
+    return `con ${a}-${a} el set no ha terminado`;
+  }
   const g = Math.max(a, b);
   const p = Math.min(a, b);
   if (tipo === 'stb') {
@@ -33376,6 +33383,43 @@ function errorMarcadorSet(a, b, tipo) {
   if (g === meta + 1 && (p === meta - 1 || p === meta)) return null;
   if (g === meta && p === meta - 1) return `con ${meta}-${meta - 1} el set no ha terminado (se juega hasta ${meta + 1}-${meta - 1} o tie-break en ${meta}-${meta})`;
   return `un set a ${meta} juegos termina ${meta}-0 a ${meta}-${meta - 2}, ${meta + 1}-${meta - 1} o ${meta + 1}-${meta} (tie-break)`;
+}
+
+// App-154 — ¿el set se definió por tie-break? (7-6 / 6-7 en sets a 6;
+// 9-8 / 8-9 en pro set a 8). `esEmpateTieBreak`: el marcador quedó en 6-6
+// (u 8-8) y falta decir quién ganó el tie-break.
+function setPorTieBreak(a, b, tipo) {
+  if (tipo === 'stb') return false;
+  const meta = tipo === 'set8' ? 8 : 6;
+  return (a === meta + 1 && b === meta) || (a === meta && b === meta + 1);
+}
+function esEmpateTieBreak(a, b, tipo) {
+  if (tipo === 'stb') return false;
+  const meta = tipo === 'set8' ? 8 : 6;
+  return a === meta && b === meta;
+}
+// Puntos del tie-break (opcionales): a 7 con 2 de diferencia (7-5, 8-6, 12-10…)
+// y los debe ganar la misma pareja que se llevó el set.
+function errorPuntosTieBreak(t1, t2, ganaP1) {
+  const v1 = String(t1 ?? '').trim();
+  const v2 = String(t2 ?? '').trim();
+  if (v1 === '' && v2 === '') return null;
+  if (v1 === '' || v2 === '') return 'captura los puntos del tie-break de las dos parejas (o déjalos vacíos)';
+  const a = Number(v1);
+  const b = Number(v2);
+  if (a === b) return 'el tie-break no puede quedar empatado';
+  const g = Math.max(a, b);
+  const p = Math.min(a, b);
+  if (g < 7) return 'el tie-break se gana con al menos 7 puntos';
+  if (g === 7 && p > 5) return 'con 6-6 en el tie-break se sigue hasta sacar 2 puntos de diferencia';
+  if (g > 7 && g - p !== 2) return 'pasando de 7, el tie-break se gana por exactamente 2 puntos (ej. 9-7)';
+  if (a > b !== ganaP1) return 'los puntos del tie-break no coinciden con quién ganó el set';
+  return null;
+}
+function textoSetMarcador(x) {
+  if (!x) return '';
+  const tb = x.tie_break;
+  return tb && tb.p1 != null && tb.p2 != null ? `${x.p1}-${x.p2} (${tb.p1}-${tb.p2})` : `${x.p1}-${x.p2}`;
 }
 
 // Evalúa el marcador completo de un partido con la regla del torneo.
@@ -33402,9 +33446,19 @@ function evaluarMarcadorTorneo(filas, regla) {
     if (vacio1 || vacio2) return { error: `${nombres[i]}: captura el marcador de las dos parejas.`, sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2 };
     const a = Number(f.p1);
     const b = Number(f.p2);
+    if (esEmpateTieBreak(a, b, tipos[i])) {
+      // Se trata como set en curso (no como error): falta el tie-break.
+      return { error: `${nombres[i]} ${a}-${b}: elige quién ganó el tie-break.`, sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2, incompleto: true, enTieBreak: i };
+    }
     const motivo = errorMarcadorSet(a, b, tipos[i]);
     if (motivo) return { error: `${nombres[i]} ${a}-${b}: ${motivo}.`, sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2 };
-    sets.push(tipos[i] === 'stb' ? { p1: a, p2: b, tipo: 'super_tie_break' } : { p1: a, p2: b });
+    let tieBreak = null;
+    if (setPorTieBreak(a, b, tipos[i])) {
+      const motivoTb = errorPuntosTieBreak(f.tb1, f.tb2, a > b);
+      if (motivoTb) return { error: `${nombres[i]} — tie-break: ${motivoTb}.`, sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2 };
+      if (String(f.tb1 ?? '').trim() !== '') tieBreak = { p1: Number(f.tb1), p2: Number(f.tb2) };
+    }
+    sets.push(tipos[i] === 'stb' ? { p1: a, p2: b, tipo: 'super_tie_break' } : tieBreak ? { p1: a, p2: b, tie_break: tieBreak } : { p1: a, p2: b });
     if (a > b) w1 += 1;
     else w2 += 1;
     if (w1 >= regla.setsParaGanar || w2 >= regla.setsParaGanar) decididoEn = i;
@@ -41103,7 +41157,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
           <p className="mt-2 text-center text-[10px] italic text-slate-500">Pase directo (bye)</p>
         ) : (
           <p className="mt-2 text-center text-[11px] font-bold text-slate-600">
-            {(partido.sets || []).map((s) => `${s.p1}-${s.p2}`).join(' · ')}
+            {(partido.sets || []).map(textoSetMarcador).join(' · ')}
           </p>
         )
       ) : (
@@ -41129,7 +41183,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
 
           {(partido.sets || []).length > 0 && (
             <p className="mt-1.5 text-center text-[11px] font-bold text-sky-700" data-testid="partido-en-juego">
-              En juego · {(partido.sets || []).map((x) => `${x.p1}-${x.p2}`).join(' · ')}
+              En juego · {(partido.sets || []).map(textoSetMarcador).join(' · ')}
             </p>
           )}
           {parejasListas && (
@@ -41191,16 +41245,19 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
   // Listas desplegables: SOLO inscritos que aún no tienen pareja asignada en
   // el torneo — ni colocados en un casillero ni con pareja confirmada en su
   // inscripción (esos se asignan con su etiqueta morada).
+  // App-154 — FIX «último jugador»: solo se ocultan los integrantes de una
+  // pareja confirmada que SIGUE disponible completa (su etiqueta morada). Si
+  // su compañero ya quedó en otro casillero, ese jugador está libre y debe
+  // aparecer en la lista (antes desaparecía de todos lados y el Jugador 2 se
+  // quedaba en «Ya no quedan jugadores disponibles»).
   const jugadoresInscritos = useMemo(() => {
     const catActual = categorias.length === 0 ? undefined : categoriaFiltro;
-    const conParejaConfirmada = new Set(
-      duplasConfirmadasTorneo(participantes, catActual).flatMap((d) => separarPareja(d).map((n) => n.trim().toLowerCase()))
-    );
+    const enEtiquetaDisponible = new Set(opcionesReasignar.flatMap((d) => separarPareja(d).map((n) => n.trim().toLowerCase())));
     return jugadoresInscritosTorneo(participantes, catActual).filter((n) => {
       const k = n.trim().toLowerCase();
-      return !colocadosEnCuadro.has(k) && !conParejaConfirmada.has(k);
+      return !colocadosEnCuadro.has(k) && !enEtiquetaDisponible.has(k);
     });
-  }, [participantes, categorias.length, categoriaFiltro, colocadosEnCuadro]);
+  }, [participantes, categorias.length, categoriaFiltro, colocadosEnCuadro, opcionesReasignar]);
 
   const columnas = useMemo(() => {
     const mapa = new Map();
@@ -41886,7 +41943,12 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAv
   const regla = useMemo(() => reglaPartidoTorneo(torneo), [torneo]);
   const setsPrevios = partido.sets || [];
   const [filas, setFilas] = useState(() =>
-    regla.sets.map((_, i) => ({ p1: setsPrevios[i]?.p1 ?? '', p2: setsPrevios[i]?.p2 ?? '' }))
+    regla.sets.map((_, i) => ({
+      p1: setsPrevios[i]?.p1 ?? '',
+      p2: setsPrevios[i]?.p2 ?? '',
+      tb1: setsPrevios[i]?.tie_break?.p1 ?? '',
+      tb2: setsPrevios[i]?.tie_break?.p2 ?? '',
+    }))
   );
   const [intentoGuardar, setIntentoGuardar] = useState(false);
   const evaluacion = useMemo(() => evaluarMarcadorTorneo(filas, regla), [filas, regla]);
@@ -41909,7 +41971,11 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAv
       const f = filas[i];
       const a = Number(f.p1);
       const b = Number(f.p2);
-      const completa = String(f.p1).trim() !== '' && String(f.p2).trim() !== '' && !errorMarcadorSet(a, b, tipo);
+      const completa =
+        String(f.p1).trim() !== '' &&
+        String(f.p2).trim() !== '' &&
+        !errorMarcadorSet(a, b, tipo) &&
+        !(setPorTieBreak(a, b, tipo) && errorPuntosTieBreak(f.tb1, f.tb2, a > b));
       if (!completa) {
         abierto = false;
         return;
@@ -41932,14 +41998,32 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAv
       const sig = prev.map((f, i) => {
         if (!sobrantes[i] || (f.p1 === '' && f.p2 === '')) return f;
         cambio = true;
-        return { p1: '', p2: '' };
+        return { p1: '', p2: '', tb1: '', tb2: '' };
       });
       return cambio ? sig : prev;
     });
   }, [sobrantes]);
 
   function actualizar(idx, campo, valor) {
-    setFilas((prev) => prev.map((f, i) => (i === idx ? { ...f, [campo]: valor.replace(/[^0-9]/g, '').slice(0, 2) } : f)));
+    setFilas((prev) =>
+      prev.map((f, i) => {
+        if (i !== idx) return f;
+        const sig = { ...f, [campo]: valor.replace(/[^0-9]/g, '').slice(0, 2) };
+        // Si el set deja de ser 7-6/6-7, los puntos del tie-break ya no aplican.
+        if ((campo === 'p1' || campo === 'p2') && !setPorTieBreak(Number(sig.p1), Number(sig.p2), regla.sets[idx])) {
+          sig.tb1 = '';
+          sig.tb2 = '';
+        }
+        return sig;
+      })
+    );
+  }
+  // App-154 — 6-6 → quien gana el tie-break cierra el set 7-6 (o 6-7).
+  function cerrarTieBreak(idx, ganaP1) {
+    const meta = regla.sets[idx] === 'set8' ? 8 : 6;
+    setFilas((prev) =>
+      prev.map((f, i) => (i === idx ? { ...f, p1: String(ganaP1 ? meta + 1 : meta), p2: String(ganaP1 ? meta : meta + 1), tb1: '', tb2: '' } : f))
+    );
   }
 
   function guardar() {
@@ -41970,7 +42054,12 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAv
   const errorFila = (i) => {
     const f = filas[i];
     if (String(f.p1).trim() === '' || String(f.p2).trim() === '') return null;
-    return errorMarcadorSet(Number(f.p1), Number(f.p2), regla.sets[i]);
+    const a = Number(f.p1);
+    const b = Number(f.p2);
+    if (esEmpateTieBreak(a, b, regla.sets[i])) return null; // se muestra el panel de tie-break
+    const err = errorMarcadorSet(a, b, regla.sets[i]);
+    if (err) return err;
+    return setPorTieBreak(a, b, regla.sets[i]) ? errorPuntosTieBreak(f.tb1, f.tb2, a > b) : null;
   };
   const ganadorTexto = evaluacion.ganador ? (evaluacion.ganador === 'pareja1' ? partido.pareja1 : partido.pareja2) : null;
 
@@ -42003,7 +42092,7 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAv
         </div>
         {!yaJugado && avanceGuardado > 0 && (
           <p className="rounded-lg bg-sky-50 px-3 py-1.5 text-[11px] font-semibold text-sky-800 ring-1 ring-sky-200" data-testid="marcador-en-juego">
-            Partido en juego · avance guardado: {(partido.sets || []).map((x) => `${x.p1}-${x.p2}`).join(' · ')}
+            Partido en juego · avance guardado: {(partido.sets || []).map(textoSetMarcador).join(' · ')}
           </p>
         )}
         {regla.sets.map((tipo, i) => {
@@ -42043,6 +42132,61 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAv
                 />
               </div>
               {err && <p className="mt-1 text-[11px] font-semibold text-rose-500">{err}</p>}
+              {activa &&
+                tipo !== 'stb' &&
+                String(filas[i].p1).trim() !== '' &&
+                String(filas[i].p2).trim() !== '' &&
+                esEmpateTieBreak(Number(filas[i].p1), Number(filas[i].p2), tipo) && (
+                  <div className="mt-1.5 rounded-lg bg-amber-50 px-3 py-2 ring-1 ring-amber-200" data-testid={`tiebreak-${i}`}>
+                    <p className="text-[11px] font-black text-amber-800">
+                      {filas[i].p1}-{filas[i].p2}: se juega tie-break (a 7 puntos, 2 de diferencia). ¿Quién lo ganó?
+                    </p>
+                    <div className="mt-1.5 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => cerrarTieBreak(i, true)}
+                        className="rounded-md bg-white px-2 py-1.5 text-[11px] font-bold text-slate-800 ring-1 ring-amber-300 hover:bg-amber-100"
+                        data-testid={`tiebreak-${i}-gana-p1`}
+                      >
+                        {partido.pareja1} → {tipo === 'set8' ? '9-8' : '7-6'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => cerrarTieBreak(i, false)}
+                        className="rounded-md bg-white px-2 py-1.5 text-[11px] font-bold text-slate-800 ring-1 ring-amber-300 hover:bg-amber-100"
+                        data-testid={`tiebreak-${i}-gana-p2`}
+                      >
+                        {partido.pareja2} → {tipo === 'set8' ? '8-9' : '6-7'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              {tipo !== 'stb' && setPorTieBreak(Number(filas[i].p1), Number(filas[i].p2), tipo) && (
+                <div className="mt-1.5 grid grid-cols-[auto_1fr_auto_1fr] items-center gap-2 text-[11px]" data-testid={`tiebreak-puntos-${i}`}>
+                  <span className="font-bold text-slate-500">Tie-break (opcional)</span>
+                  <input
+                    inputMode="numeric"
+                    value={filas[i].tb1}
+                    disabled={!activa}
+                    onChange={(e) => actualizar(i, 'tb1', e.target.value)}
+                    className={`${inputClase} py-1 text-center text-xs`}
+                    placeholder="pts"
+                    aria-label={`Puntos del tie-break — ${partido.pareja1}`}
+                    data-testid={`tb-${i}-p1`}
+                  />
+                  <span className="text-slate-400">–</span>
+                  <input
+                    inputMode="numeric"
+                    value={filas[i].tb2}
+                    disabled={!activa}
+                    onChange={(e) => actualizar(i, 'tb2', e.target.value)}
+                    className={`${inputClase} py-1 text-center text-xs`}
+                    placeholder="pts"
+                    aria-label={`Puntos del tie-break — ${partido.pareja2}`}
+                    data-testid={`tb-${i}-p2`}
+                  />
+                </div>
+              )}
             </div>
           );
         })}
@@ -43888,7 +44032,7 @@ function ModuloTorneosRetas({
     setPartidoMarcador(null);
     mostrarToast({
       titulo: 'Avance guardado',
-      detalle: `${partido.pareja1} vs ${partido.pareja2}: ${sets.map((x) => `${x.p1}-${x.p2}`).join(' · ')} — el partido sigue en juego.`,
+      detalle: `${partido.pareja1} vs ${partido.pareja2}: ${sets.map(textoSetMarcador).join(' · ')} — el partido sigue en juego.`,
     });
   }
 
