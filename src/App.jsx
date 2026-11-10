@@ -1955,7 +1955,49 @@ async function uploadMedia(file, carpeta = 'general') {
   // App-148 — siempre la URL pública ABSOLUTA (https://…/storage/v1/object/public/app-media/…).
   const publica = urlPublicaDeRutaMedia(nombreUnico);
   if (!publica) throw new Error('La imagen se subió pero no se pudo obtener su URL pública.');
+  // App-156 — antes de entregar la URL (y de que se guarde en el producto)
+  // se confirma que el archivo YA responde en su URL pública definitiva, desde
+  // cualquier dispositivo: si el Storage dice que no existe o que no es
+  // público, se avisa en ese momento en vez de guardar una foto que «luego
+  // desaparece». Un fallo de red de la verificación no bloquea la subida.
+  const verificacion = await verificarUrlPublicaMedia(publica);
+  if (verificacion === 'sin-permiso') {
+    throw new Error(`La imagen se subió, pero el bucket "${BUCKET_MEDIA}" no permite verla públicamente. En Supabase → Storage, el bucket debe ser público.`);
+  }
+  if (verificacion === 'no-existe' || verificacion === 'no-es-imagen') {
+    throw new Error('La imagen no quedó disponible en el almacenamiento. Vuelve a subirla.');
+  }
   return publica;
+}
+
+// App-156 — ¿la URL pública ya entrega la imagen? Pide solo los primeros
+// bytes (Range) sin caché. 'ok' | 'no-existe' | 'sin-permiso' | 'no-es-imagen'
+// | 'desconocido' (red, CORS o respuesta rara: no bloquea). Reintenta un par
+// de veces el «no existe» por si el Storage tarda un instante en publicarlo.
+async function verificarUrlPublicaMedia(url, intentos = 3) {
+  for (let i = 0; i < intentos; i++) {
+    let estado = 'desconocido';
+    try {
+      const resp = await fetch(url, { cache: 'no-store', headers: { Range: 'bytes=0-63' } });
+      if (resp.status === 400 || resp.status === 404) estado = 'no-existe';
+      else if (resp.status === 401 || resp.status === 403) estado = 'sin-permiso';
+      else if (resp.ok) {
+        let formato = null;
+        try {
+          const buf = await resp.arrayBuffer();
+          formato = formatoImagenDeBytes(new Uint8Array(buf.slice(0, 32)));
+        } catch (_e) {
+          formato = null;
+        }
+        estado = formato && !['jpeg', 'png', 'webp', 'gif'].includes(formato) ? 'no-es-imagen' : 'ok';
+      }
+    } catch (_e) {
+      return 'desconocido';
+    }
+    if (estado !== 'no-existe' || i === intentos - 1) return estado;
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  return 'desconocido';
 }
 
 // App-140 — Borrado DEFINITIVO en Storage de fotos de producto que ya no se
@@ -2076,7 +2118,7 @@ function MiniaturaImagenProducto({ url, alt, onDiagnostico }) {
 // entrada de imagen en todo el sistema — no existe (ni debe volver a
 // agregarse) un campo alterno de URL/link de texto ni de HTML embebido en
 // ningún formulario que use este componente.
-function SelectorArchivoImagen({ onSubida, carpeta, disabled }) {
+function SelectorArchivoImagen({ onSubida, carpeta, disabled, onCambioSubiendo }) {
   const [subiendo, setSubiendo] = useState(false);
   const [error, setError] = useState('');
 
@@ -2086,6 +2128,7 @@ function SelectorArchivoImagen({ onSubida, carpeta, disabled }) {
     if (!file) return;
     setError('');
     setSubiendo(true);
+    onCambioSubiendo?.(true); // App-156 — el formulario no guarda a media subida
     try {
       const url = await uploadMedia(file, carpeta);
       onSubida?.(url);
@@ -2093,6 +2136,7 @@ function SelectorArchivoImagen({ onSubida, carpeta, disabled }) {
       setError(err?.message || 'No se pudo subir la imagen.');
     } finally {
       setSubiendo(false);
+      onCambioSubiendo?.(false);
     }
   }
 
@@ -15603,15 +15647,20 @@ function ModalNuevoProducto({
     ].filter(Boolean);
   }
   const subidasSesionRef = useRef([]);
-  // Cerrar SIN guardar: las fotos subidas en esta sesión nunca quedaron en el
-  // producto → se borran del Storage para que no ocupen espacio.
+  // App-156 — Cerrar SIN guardar ya NO borra nada del Storage. Antes (App-140)
+  // borraba las fotos subidas en esta sesión; si el modal se cerraba mientras
+  // el guardado seguía en curso (iPad con red lenta, tocar la ✕ o Esc), el
+  // archivo se borraba justo antes de que el producto lo referenciara: la foto
+  // se veía un rato (caché del navegador) y luego «desaparecía». Una subida
+  // descartada queda como archivo suelto (ocupa poco); nunca se arriesga una
+  // foto en uso. El servidor (v145) además rechaza borrar fotos recién subidas.
+  const guardandoRef = useRef(false);
   function cerrarSinGuardar() {
-    const originales = new Set(imagenesOriginalesRef.current);
-    const huerfanas = subidasSesionRef.current.filter((u) => !originales.has(u));
     subidasSesionRef.current = [];
-    if (huerfanas.length) eliminarImagenesProductoStorage(huerfanas);
     onClose();
   }
+  const [subiendoFotos, setSubiendoFotos] = useState(0);
+  const onCambioSubiendoFoto = useCallback((activo) => setSubiendoFotos((n) => Math.max(0, n + (activo ? 1 : -1))), []);
   const [guardando, setGuardando] = useState(false);
   const [eliminando, setEliminando] = useState(false);
   const [confirmarEliminar, setConfirmarEliminar] = useState(false);
@@ -15732,6 +15781,13 @@ function ModalNuevoProducto({
       setError('Indica un precio válido.');
       return;
     }
+    // App-156 — no se guarda con una foto a medio subir (quedaría fuera del producto).
+    if (subiendoFotos > 0) {
+      setError('Espera a que termine de subir la foto antes de guardar.');
+      return;
+    }
+    if (guardandoRef.current) return;
+    guardandoRef.current = true;
     setGuardando(true);
     setError('');
 
@@ -15744,8 +15800,27 @@ function ModalNuevoProducto({
     // (lo viejo en base64 / `blob:` se sube primero; ver `asegurarUrlsPublicasMedia`).
     const imagenesPublicas = await asegurarUrlsPublicasMedia(imagenes, 'productos');
     // Las que se acaban de subir (base64/`blob:` viejas) cuentan como subidas
-    // de esta sesión: si el guardado falla, se limpian al cerrar.
+    // de esta sesión.
     subidasSesionRef.current = [...subidasSesionRef.current, ...imagenesPublicas.filter((u) => !imagenes.includes(u))];
+    // App-156 — candado anti «última escritura gana»: si mientras este modal
+    // estuvo abierto otro equipo (p. ej. el iPad de recepción) agregó fotos a
+    // este producto, se leen de Supabase y se CONSERVAN al final de la
+    // galería. Así un modal abierto desde antes nunca borra la referencia a
+    // una foto nueva. Solo se quitan las fotos que el operador quitó aquí.
+    const originalesNorm = new Set(imagenesOriginalesRef.current.map(normalizarUrlMediaPublica).filter(Boolean));
+    let conservadasDeOtroEquipo = [];
+    if (editando && producto?.id != null) {
+      try {
+        const { data: actual } = await supabase.from('productos').select('id, imagen_url, imagenes').eq('id', producto.id).maybeSingle();
+        if (actual) {
+          const enBase = [actual.imagen_url, ...arregloImagenesCrudo(actual.imagenes)].map(normalizarUrlMediaPublica).filter(Boolean);
+          conservadasDeOtroEquipo = [...new Set(enBase)].filter((u) => !originalesNorm.has(u) && !imagenesPublicas.includes(u));
+        }
+      } catch (_e) {
+        conservadasDeOtroEquipo = [];
+      }
+    }
+    if (conservadasDeOtroEquipo.length) imagenesPublicas.push(...conservadasDeOtroEquipo);
 
     // FIX DEFINITIVO de variantes: el arreglo JSONB completo se arma aquí,
     // en memoria, a partir de las filas visibles en pantalla — filas vacías
@@ -15861,6 +15936,7 @@ function ModalNuevoProducto({
         );
 
     setGuardando(false);
+    guardandoRef.current = false;
 
     if (err) {
       setError(err.message || 'No se pudo guardar el producto.');
@@ -15869,15 +15945,26 @@ function ModalNuevoProducto({
     }
 
     toast({ titulo: editando ? 'Producto actualizado' : 'Producto creado', detalle: `${data.nombre} ya está en el catálogo.` });
+    if (conservadasDeOtroEquipo.length) {
+      toast({
+        titulo: conservadasDeOtroEquipo.length === 1 ? 'Se conservó 1 foto agregada desde otro equipo' : `Se conservaron ${conservadasDeOtroEquipo.length} fotos agregadas desde otro equipo`,
+        detalle: data.nombre,
+      });
+    }
     onGuardado(data);
     upsertProducto?.(data);
-    // App-140 — ya guardado: las fotos que se quitaron (o se subieron y se
-    // descartaron) se borran DEFINITIVAMENTE del Storage. Va después del
-    // guardado a propósito: el servidor solo borra lo que ningún producto usa.
+    // App-140 / App-156 — ya guardado: SOLO las fotos que el producto tenía al
+    // abrir y que el operador quitó aquí se borran del Storage. Nunca una
+    // subida de esta sesión (puede estar recién referenciada) y nunca una URL
+    // que la fila guardada siga usando. El servidor (v139 + v145) vuelve a
+    // revisar que ningún producto la use y que no sea una subida reciente.
     const finales = new Set(imagenesPublicas);
-    const descartadas = [...imagenesOriginalesRef.current.map(normalizarUrlMediaPublica).filter(Boolean), ...subidasSesionRef.current].filter(
-      (u) => !finales.has(u)
-    );
+    const enFilaGuardada = JSON.stringify(data || {});
+    const descartadas = [...originalesNorm].filter((u) => {
+      if (finales.has(u)) return false;
+      const ruta = rutaStorageDeUrlMedia(u);
+      return !(ruta && enFilaGuardada.includes(ruta));
+    });
     subidasSesionRef.current = [];
     if (descartadas.length) {
       eliminarImagenesProductoStorage(descartadas).then((r) => {
@@ -16232,7 +16319,7 @@ function ModalNuevoProducto({
           {/* Múltiples Imágenes: cada "Subir archivo" AGREGA una miniatura
               más a la galería (ver `onImagenSubida`). Subida limpia por
               archivo, ÚNICAMENTE — sin campo de URL/link de texto. */}
-          <SelectorArchivoImagen carpeta="productos" onSubida={onImagenSubida} />
+          <SelectorArchivoImagen carpeta="productos" onSubida={onImagenSubida} onCambioSubiendo={onCambioSubiendoFoto} />
           {imagenes.length > 0 ? (
             // App-139 — controles SIEMPRE visibles (antes solo aparecían con
             // el mouse encima: en iPad/celular no había forma de usarlos).
@@ -16339,7 +16426,7 @@ function ModalNuevoProducto({
           </div>
           <div className="flex justify-end gap-2">
             <BotonSecundario onClick={cerrarSinGuardar}>Cancelar</BotonSecundario>
-            <BotonPrimario onClick={guardar} disabled={guardando}>
+            <BotonPrimario onClick={guardar} disabled={guardando || subiendoFotos > 0}>
               {guardando ? (
                 <Loader2 size={15} className="animate-spin" />
               ) : editando ? (
