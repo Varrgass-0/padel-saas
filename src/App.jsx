@@ -3793,6 +3793,11 @@ function eventoYaTermino(fechaISO, horaStr, ahoraMs = Date.now()) {
 // discreto (`ESTATUS_META.torneo_maestro`) para que no compitan
 // visualmente por carril con los partidos programados dentro de esa misma
 // franja horaria.
+function textoLimpiezaParrilla({ liberados = 0, fallidos = 0 } = {}) {
+  if (fallidos > 0) return `Se liberaron ${liberados} horario(s) de la Parrilla, pero ${fallidos} no se pudieron liberar: revísalos en la Parrilla.`;
+  return liberados > 0 ? `Se liberaron ${liberados} horario(s) de la Parrilla.` : 'No tenía horarios apartados en la Parrilla.';
+}
+
 function idsBloqueosMaestroTorneo(torneos) {
   const set = new Set();
   (torneos || []).forEach((torneo) => {
@@ -33398,23 +33403,31 @@ function esEmpateTieBreak(a, b, tipo) {
   const meta = tipo === 'set8' ? 8 : 6;
   return a === meta && b === meta;
 }
-// Puntos del tie-break (opcionales): a 7 con 2 de diferencia (7-5, 8-6, 12-10…)
-// y los debe ganar la misma pareja que se llevó el set.
-function errorPuntosTieBreak(t1, t2, ganaP1) {
+// App-155 — Puntos del tie-break: 100 % OPCIONALES e informativos. Nunca
+// bloquean guardar (avance o resultado final): el set ya quedó 7-6 / 6-7 al
+// elegir quién ganó el 6-6. Solo se GUARDAN si vienen completos y forman un
+// tie-break válido (a 7 con 2 de diferencia); si se capturaron al revés
+// respecto a quién ganó el set (ej. 7-5 para un 6-7), se acomodan solos.
+function puntosTieBreakValidos(t1, t2, ganaP1) {
+  const v1 = String(t1 ?? '').trim();
+  const v2 = String(t2 ?? '').trim();
+  if (v1 === '' || v2 === '') return null;
+  const a = Number(v1);
+  const b = Number(v2);
+  if (!Number.isInteger(a) || !Number.isInteger(b) || a === b) return null;
+  const g = Math.max(a, b);
+  const p = Math.min(a, b);
+  const valido = g === 7 ? p <= 5 : g > 7 && g - p === 2;
+  if (!valido) return null;
+  return ganaP1 ? { p1: g, p2: p } : { p1: p, p2: g };
+}
+// Nota suave (no es error) cuando los puntos capturados no se van a guardar.
+function notaPuntosTieBreak(t1, t2, ganaP1) {
   const v1 = String(t1 ?? '').trim();
   const v2 = String(t2 ?? '').trim();
   if (v1 === '' && v2 === '') return null;
-  if (v1 === '' || v2 === '') return 'captura los puntos del tie-break de las dos parejas (o déjalos vacíos)';
-  const a = Number(v1);
-  const b = Number(v2);
-  if (a === b) return 'el tie-break no puede quedar empatado';
-  const g = Math.max(a, b);
-  const p = Math.min(a, b);
-  if (g < 7) return 'el tie-break se gana con al menos 7 puntos';
-  if (g === 7 && p > 5) return 'con 6-6 en el tie-break se sigue hasta sacar 2 puntos de diferencia';
-  if (g > 7 && g - p !== 2) return 'pasando de 7, el tie-break se gana por exactamente 2 puntos (ej. 9-7)';
-  if (a > b !== ganaP1) return 'los puntos del tie-break no coinciden con quién ganó el set';
-  return null;
+  if (v1 === '' || v2 === '') return 'Puntos incompletos: no se guardarán (son opcionales).';
+  return puntosTieBreakValidos(t1, t2, ganaP1) ? null : 'Esos puntos no forman un tie-break (a 7, con 2 de diferencia): no se guardarán (son opcionales).';
 }
 function textoSetMarcador(x) {
   if (!x) return '';
@@ -33452,12 +33465,8 @@ function evaluarMarcadorTorneo(filas, regla) {
     }
     const motivo = errorMarcadorSet(a, b, tipos[i]);
     if (motivo) return { error: `${nombres[i]} ${a}-${b}: ${motivo}.`, sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2 };
-    let tieBreak = null;
-    if (setPorTieBreak(a, b, tipos[i])) {
-      const motivoTb = errorPuntosTieBreak(f.tb1, f.tb2, a > b);
-      if (motivoTb) return { error: `${nombres[i]} — tie-break: ${motivoTb}.`, sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2 };
-      if (String(f.tb1 ?? '').trim() !== '') tieBreak = { p1: Number(f.tb1), p2: Number(f.tb2) };
-    }
+    // Puntos del tie-break: opcionales, nunca bloquean (ver `puntosTieBreakValidos`).
+    const tieBreak = setPorTieBreak(a, b, tipos[i]) ? puntosTieBreakValidos(f.tb1, f.tb2, a > b) : null;
     sets.push(tipos[i] === 'stb' ? { p1: a, p2: b, tipo: 'super_tie_break' } : tieBreak ? { p1: a, p2: b, tie_break: tieBreak } : { p1: a, p2: b });
     if (a > b) w1 += 1;
     else w2 += 1;
@@ -39797,7 +39806,7 @@ function TarjetaTorneo({
 
       {confirmarEliminarVisual ? (
         <ConfirmarEliminacionVisual
-          mensaje={`¿Eliminar "${torneo.nombre}" de la interfaz? Sus participantes, pagos y puntos de Ranking se conservan intactos para reportes/Analytics — solo deja de verse aquí.`}
+          mensaje={`¿Eliminar "${torneo.nombre}" de la interfaz? Sus participantes, pagos y puntos de Ranking se conservan intactos para reportes/Analytics, y todos sus horarios apartados en la Parrilla se liberan automáticamente.`}
           eliminando={eliminandoVisual}
           onCancelar={() => setConfirmarEliminarVisual(false)}
           onConfirmar={(motivo) => onEliminarVisual?.(torneo, motivo)}
@@ -39805,7 +39814,7 @@ function TarjetaTorneo({
       ) : confirmarEliminar ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-300 bg-rose-50 p-2.5">
           <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-700">
-            ¿Eliminar "{torneo.nombre}" para siempre? No tiene participantes ni ingresos, así que esto no se puede deshacer.
+            ¿Eliminar "{torneo.nombre}" para siempre? No tiene participantes ni ingresos, así que esto no se puede deshacer. Sus horarios apartados en la Parrilla se liberan automáticamente.
           </p>
           <div className="flex shrink-0 gap-1.5">
             <button
@@ -41971,11 +41980,7 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAv
       const f = filas[i];
       const a = Number(f.p1);
       const b = Number(f.p2);
-      const completa =
-        String(f.p1).trim() !== '' &&
-        String(f.p2).trim() !== '' &&
-        !errorMarcadorSet(a, b, tipo) &&
-        !(setPorTieBreak(a, b, tipo) && errorPuntosTieBreak(f.tb1, f.tb2, a > b));
+      const completa = String(f.p1).trim() !== '' && String(f.p2).trim() !== '' && !errorMarcadorSet(a, b, tipo);
       if (!completa) {
         abierto = false;
         return;
@@ -42057,9 +42062,7 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAv
     const a = Number(f.p1);
     const b = Number(f.p2);
     if (esEmpateTieBreak(a, b, regla.sets[i])) return null; // se muestra el panel de tie-break
-    const err = errorMarcadorSet(a, b, regla.sets[i]);
-    if (err) return err;
-    return setPorTieBreak(a, b, regla.sets[i]) ? errorPuntosTieBreak(f.tb1, f.tb2, a > b) : null;
+    return errorMarcadorSet(a, b, regla.sets[i]);
   };
   const ganadorTexto = evaluacion.ganador ? (evaluacion.ganador === 'pareja1' ? partido.pareja1 : partido.pareja2) : null;
 
@@ -42187,6 +42190,13 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAv
                   />
                 </div>
               )}
+              {tipo !== 'stb' &&
+                setPorTieBreak(Number(filas[i].p1), Number(filas[i].p2), tipo) &&
+                notaPuntosTieBreak(filas[i].tb1, filas[i].tb2, Number(filas[i].p1) > Number(filas[i].p2)) && (
+                  <p className="mt-1 text-[10px] font-semibold text-slate-400" data-testid={`tb-${i}-nota`}>
+                    {notaPuntosTieBreak(filas[i].tb1, filas[i].tb2, Number(filas[i].p1) > Number(filas[i].p2))}
+                  </p>
+                )}
             </div>
           );
         })}
@@ -43169,6 +43179,75 @@ function ModuloTorneosRetas({
     mostrarToast({ titulo: 'Horario liberado', detalle: `${bloqueo.cancha_nombre} vuelve a estar disponible en la Parrilla.` });
   }
 
+  // App-155 — LIMPIEZA EN CASCADA de la Parrilla al eliminar un torneo: libera
+  // TODOS los horarios que el torneo apartó, para no dejar bloqueos huérfanos:
+  //  1) sus bloqueos maestros (`torneos.bloqueos[].reserva_bloqueo_id`);
+  //  2) los horarios de cada partido (`torneo_partidos.reserva_bloqueo_id`),
+  //     en memoria y en Supabase;
+  //  3) respaldo: bloqueos «TORNEO: <nombre>» de su rango de fechas que no
+  //     quedaron registrados en el torneo (y no son de OTRO torneo).
+  // Se cancelan (estado 'Cancelada'), igual que «Liberar Bloqueo». Best effort:
+  // un bloqueo que falle no detiene la eliminación; se informa en el aviso.
+  async function liberarTodosLosBloqueosDeTorneo(torneo) {
+    const ids = new Set((torneo.bloqueos || []).map((b) => b.reserva_bloqueo_id).filter(Boolean));
+    (partidosTorneo || [])
+      .filter((p) => String(p.torneo_id) === String(torneo.id) && p.reserva_bloqueo_id)
+      .forEach((p) => ids.add(p.reserva_bloqueo_id));
+    if (!torneo._local) {
+      try {
+        const { data } = await supabase.from('torneo_partidos').select('id, reserva_bloqueo_id').eq('torneo_id', torneo.id);
+        (data || []).forEach((p) => p.reserva_bloqueo_id && ids.add(p.reserva_bloqueo_id));
+      } catch (_e) {
+        /* sin tabla de partidos: solo bloqueos maestros */
+      }
+      try {
+        const deOtros = idsBloqueosMaestroTorneo((torneos || []).filter((t) => String(t.id) !== String(torneo.id)));
+        const { data } = await conClubId(supabase.from('reservas').select('id, fecha, estado, jugador_nombre'))
+          .eq('estado', 'Torneo')
+          .eq('jugador_nombre', `TORNEO: ${String(torneo.nombre || '').trim()}`);
+        const desde = torneo.fecha_inicio || null;
+        const hasta = torneo.fecha_fin || torneo.fecha_inicio || null;
+        (data || []).forEach((r) => {
+          if (deOtros.has(r.id)) return;
+          if (desde && r.fecha && (r.fecha < desde || (hasta && r.fecha > hasta))) return;
+          ids.add(r.id);
+        });
+      } catch (_e) {
+        /* respaldo opcional */
+      }
+    }
+    const todos = [...ids];
+    const remotos = todos.filter((id) => !String(id).startsWith('local-'));
+    let fallidos = 0;
+    if (remotos.length > 0) {
+      try {
+        const { error } = await supabase.from('reservas').update({ estado: 'Cancelada' }).in('id', remotos);
+        if (error) throw error;
+      } catch (_e) {
+        // Uno por uno, para liberar todo lo posible.
+        for (const id of remotos) {
+          try {
+            const { error } = await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', id);
+            if (error) throw error;
+          } catch (_err) {
+            fallidos += 1;
+          }
+        }
+      }
+    }
+    todos.forEach((id) => marcarReservaCancelada?.(id));
+    // El torneo ya no apunta a horarios en la Parrilla.
+    if (!torneo._local && (torneo.bloqueos || []).length > 0) {
+      try {
+        await supabase.from('torneos').update({ bloqueos: [] }).eq('id', torneo.id);
+      } catch (_e) {
+        /* best effort */
+      }
+    }
+    setTorneos((prev) => prev.map((t) => (t.id === torneo.id ? { ...t, bloqueos: [] } : t)));
+    return { liberados: todos.length - fallidos, fallidos };
+  }
+
   // Archivado de Torneos (Limpieza Visual): oculta el torneo de la vista
   // activa sin tocar NINGÚN otro registro — pagos en el ERP, inscritos y
   // puntos ya sumados al Ranking siguen intactos, `archivado` es la única
@@ -43208,15 +43287,15 @@ function ModuloTorneosRetas({
   // `eliminarRetaVisualmente` — oculta el torneo de AMBOS tabs (Activos y
   // Archivados) escribiendo `deleted_at` + `motivo_eliminacion` (columnas
   // nuevas y opcionales, ver migracion_v51), sin tocar participantes, pagos
-  // ni puntos ya sumados al Ranking. Los bloqueos de Parrilla NO se
-  // cancelan aquí a propósito — el torneo sigue "vivo" para efectos de
-  // horario/cobro, solo deja de listarse en esta pantalla; usa "Archivar" o
-  // "Eliminar Definitivamente" si además quieres liberar las canchas.
+  // ni puntos ya sumados al Ranking. App-155: además libera EN CASCADA todos
+  // sus horarios en la Parrilla (`liberarTodosLosBloqueosDeTorneo`) — antes
+  // se quedaban bloqueos fantasma que había que liberar a mano.
   const [eliminandoVisualTorneoId, setEliminandoVisualTorneoId] = useState(null);
   async function eliminarTorneoVisualmente(torneo, motivo) {
     const ahoraISO = new Date().toISOString();
     const motivoLimpio = (motivo || '').trim();
     setEliminandoVisualTorneoId(torneo.id);
+    const limpieza = await liberarTodosLosBloqueosDeTorneo(torneo);
     setTorneos((prev) => prev.map((t) => (t.id === torneo.id ? { ...t, deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio } : t)));
     if (torneo._local) {
       guardarRegistroLocal(LS_KEY_TORNEOS_LOCAL, { ...torneo, deleted_at: ahoraISO, motivo_eliminacion: motivoLimpio });
@@ -43234,10 +43313,17 @@ function ModuloTorneosRetas({
       }
     }
     setEliminandoVisualTorneoId(null);
-    registrarAuditoriaLog('torneo_eliminado', { torneo_id: String(torneo.id), torneo: torneo.nombre, fecha: torneo.fecha_inicio || null, motivo: motivoLimpio || null });
+    registrarAuditoriaLog('torneo_eliminado', {
+      torneo_id: String(torneo.id),
+      torneo: torneo.nombre,
+      fecha: torneo.fecha_inicio || null,
+      motivo: motivoLimpio || null,
+      horarios_liberados: limpieza.liberados || null,
+    });
     mostrarToast({
       titulo: 'Torneo eliminado',
-      detalle: `${torneo.nombre} ya no aparece en la interfaz — sus participantes y pagos se conservan para reportes.`,
+      detalle: `${torneo.nombre} ya no aparece en la interfaz — sus participantes y pagos se conservan para reportes. ${textoLimpiezaParrilla(limpieza)}`,
+      tono: limpieza.fallidos > 0 ? 'aviso' : 'ok',
     });
   }
 
@@ -43257,15 +43343,8 @@ function ModuloTorneosRetas({
       return;
     }
     setEliminandoTorneoId(torneo.id);
-    for (const b of torneo.bloqueos || []) {
-      if (!b.reserva_bloqueo_id) continue;
-      try {
-        await supabase.from('reservas').update({ estado: 'Cancelada' }).eq('id', b.reserva_bloqueo_id);
-        marcarReservaCancelada?.(b.reserva_bloqueo_id);
-      } catch (_e) {
-        /* best effort — no bloquea la eliminación del torneo por un bloqueo suelto */
-      }
-    }
+    // App-155 — cascada completa (bloqueos maestros + horarios de partidos).
+    const limpieza = await liberarTodosLosBloqueosDeTorneo(torneo);
     if (torneo._local) {
       quitarRegistroLocal(LS_KEY_TORNEOS_LOCAL, torneo.id);
     } else {
@@ -43280,8 +43359,18 @@ function ModuloTorneosRetas({
     }
     setTorneos((prev) => prev.filter((t) => t.id !== torneo.id));
     setEliminandoTorneoId(null);
-    registrarAuditoriaLog('torneo_eliminado', { torneo_id: String(torneo.id), torneo: torneo.nombre, fecha: torneo.fecha_inicio || null, definitivo: true });
-    mostrarToast({ titulo: 'Torneo eliminado', detalle: `${torneo.nombre} se eliminó definitivamente.` });
+    registrarAuditoriaLog('torneo_eliminado', {
+      torneo_id: String(torneo.id),
+      torneo: torneo.nombre,
+      fecha: torneo.fecha_inicio || null,
+      definitivo: true,
+      horarios_liberados: limpieza.liberados || null,
+    });
+    mostrarToast({
+      titulo: 'Torneo eliminado',
+      detalle: `${torneo.nombre} se eliminó definitivamente. ${textoLimpiezaParrilla(limpieza)}`,
+      tono: limpieza.fallidos > 0 ? 'aviso' : 'ok',
+    });
   }
 
   // Nombre Personalizado de Retas: renombrar desde la propia tarjeta, en
