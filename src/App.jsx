@@ -33439,8 +33439,17 @@ function parejaSlotDesdeTexto(texto) {
   const limpio = String(texto || '').trim();
   if (!limpio) return nuevaParejaVacia();
   const nombres = separarPareja(limpio);
-  if (nombres.length >= 1 && nombres.length <= 2) return { modo: 'selects', jugador1: nombres[0] || '', jugador2: nombres[1] || '', texto: limpio };
-  return { modo: 'manual', jugador1: '', jugador2: '', texto: limpio };
+  // App-153 — siempre «elegir de la lista» (ya no existe la captura a mano).
+  return { modo: 'selects', jugador1: nombres[0] || limpio, jugador2: nombres.slice(1).join(' ') || '', texto: limpio };
+}
+// App-153 — nombres individuales ya colocados en casilleros (sin BYE).
+function nombresEnCasilleros(textos) {
+  const set = new Set();
+  (textos || []).forEach((t) => {
+    if (!t || t === BYE) return;
+    separarPareja(t).forEach((n) => set.add(n.trim().toLowerCase()));
+  });
+  return set;
 }
 const UNIDADES_PRECIO_TORNEO = [
   { value: 'pareja', label: 'Por Pareja' },
@@ -40925,6 +40934,11 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
 function EditorCasilleroPareja({ texto, jugadores, duplasDisponibles, onGuardar, onCancelar }) {
   const [valor, setValor] = useState(() => parejaSlotDesdeTexto(texto));
   const resultado = textoDeParejaCompleta(valor);
+  // Los jugadores que ya están en ESTE casillero siguen disponibles aquí.
+  const opciones = useMemo(() => {
+    const propios = separarPareja(texto || '');
+    return [...propios, ...(jugadores || []).filter((n) => !propios.includes(n))];
+  }, [texto, jugadores]);
   return (
     <div className="space-y-2 rounded-lg border border-orange-400/40 bg-white p-2" data-testid="editor-casillero">
       {(duplasDisponibles || []).length > 0 && (
@@ -40942,7 +40956,7 @@ function EditorCasilleroPareja({ texto, jugadores, duplasDisponibles, onGuardar,
           ))}
         </div>
       )}
-      <SelectorParejaCompleta etiqueta="Pareja del casillero" valor={valor} opciones={jugadores || []} onChange={setValor} testid="casillero" />
+      <SelectorParejaCompleta etiqueta="Pareja del casillero" valor={valor} opciones={opciones} onChange={setValor} testid="casillero" />
       <div className="flex items-center justify-between gap-1.5">
         <button type="button" onClick={() => onGuardar('')} className="text-[10px] font-bold text-rose-500 hover:underline">
           Dejar vacante
@@ -40954,7 +40968,7 @@ function EditorCasilleroPareja({ texto, jugadores, duplasDisponibles, onGuardar,
           <button
             type="button"
             onClick={() => onGuardar(resultado)}
-            disabled={!resultado || resultado === (texto || '')}
+            disabled={!valor.jugador1 || !valor.jugador2 || resultado === (texto || '')}
             className="rounded-md bg-orange-400 px-2.5 py-1 text-[10px] font-black text-slate-950 disabled:opacity-40"
             data-testid="guardar-casillero"
           >
@@ -41113,9 +41127,14 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
             <p className="mt-2 text-center text-[10px] italic text-slate-400">Esperando definición</p>
           )}
 
+          {(partido.sets || []).length > 0 && (
+            <p className="mt-1.5 text-center text-[11px] font-bold text-sky-700" data-testid="partido-en-juego">
+              En juego · {(partido.sets || []).map((x) => `${x.p1}-${x.p2}`).join(' · ')}
+            </p>
+          )}
           {parejasListas && (
             <BotonPrimario onClick={() => onCargarMarcador(partido)} className="mt-1.5 w-full px-2 py-1.5 text-[11px]">
-              <ClipboardList size={12} /> Cargar Marcador
+              <ClipboardList size={12} /> {(partido.sets || []).length > 0 ? 'Continuar Marcador' : 'Cargar Marcador'}
             </BotonPrimario>
           )}
         </>
@@ -41152,22 +41171,36 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
   // que se pueden asignar a mano a un casillero "Vacante" o reasignar en su
   // lugar (ver `FilaPareja`/`onReasignar`). Si el cuadro no tiene categorías
   // (torneo de una sola categoría), se usa el string vacío como categoría.
+  // App-153 — jugadores (individuales) que YA están en un casillero de la
+  // primera ronda de esta categoría: ya tienen pareja asignada en el cuadro.
+  const colocadosEnCuadro = useMemo(
+    () =>
+      nombresEnCasilleros(
+        partidosCategoria.filter((p) => p.ronda_orden === 0).flatMap((p) => [p.pareja1, p.pareja2])
+      ),
+    [partidosCategoria]
+  );
+  // Etiquetas moradas: parejas confirmadas en la inscripción cuyos DOS
+  // integrantes siguen sin casillero.
   const opcionesReasignar = useMemo(() => {
     const catActual = categorias.length === 0 ? undefined : categoriaFiltro;
-    const confirmadas = duplasConfirmadasTorneo(participantes, catActual);
-    const yaColocadas = new Set(
-      partidosCategoria
-        .filter((p) => p.ronda_orden === 0)
-        .flatMap((p) => [p.pareja1, p.pareja2])
-        .filter((t) => t && t !== BYE)
+    return duplasConfirmadasTorneo(participantes, catActual).filter((dupla) =>
+      separarPareja(dupla).every((n) => !colocadosEnCuadro.has(n.trim().toLowerCase()))
     );
-    return confirmadas.filter((nombre) => !yaColocadas.has(nombre));
-  }, [participantes, categorias.length, categoriaFiltro, partidosCategoria]);
-  // App-152 — todos los inscritos (una entrada por persona) de esta categoría.
-  const jugadoresInscritos = useMemo(
-    () => jugadoresInscritosTorneo(participantes, categorias.length === 0 ? undefined : categoriaFiltro),
-    [participantes, categorias.length, categoriaFiltro]
-  );
+  }, [participantes, categorias.length, categoriaFiltro, colocadosEnCuadro]);
+  // Listas desplegables: SOLO inscritos que aún no tienen pareja asignada en
+  // el torneo — ni colocados en un casillero ni con pareja confirmada en su
+  // inscripción (esos se asignan con su etiqueta morada).
+  const jugadoresInscritos = useMemo(() => {
+    const catActual = categorias.length === 0 ? undefined : categoriaFiltro;
+    const conParejaConfirmada = new Set(
+      duplasConfirmadasTorneo(participantes, catActual).flatMap((d) => separarPareja(d).map((n) => n.trim().toLowerCase()))
+    );
+    return jugadoresInscritosTorneo(participantes, catActual).filter((n) => {
+      const k = n.trim().toLowerCase();
+      return !colocadosEnCuadro.has(k) && !conParejaConfirmada.has(k);
+    });
+  }, [participantes, categorias.length, categoriaFiltro, colocadosEnCuadro]);
 
   const columnas = useMemo(() => {
     const mapa = new Map();
@@ -41381,9 +41414,9 @@ function sanearParejasModal(parejas) {
 // `SelectorJugadorRegistrado` en Retas/Inscripción de Torneo, para que
 // "cargar la info al seleccionarlo" se sienta igual en todo el club.
 function BuscadorSlotPareja({ valor, opciones, onChange, placeholder, testid }) {
-  // App-152 — al abrir se despliega la lista COMPLETA de inscritos (antes se
-  // filtraba por lo ya elegido y se cortaba a 8: solo se veía a una persona).
-  // Solo filtra cuando el operador ESCRIBE algo nuevo.
+  // App-153 — SOLO se elige de la lista de inscritos (no hay captura libre):
+  // escribir únicamente FILTRA; el valor cambia al tocar un nombre. Al abrir
+  // se despliega la lista completa de los que siguen disponibles.
   const [abierto, setAbierto] = useState(false);
   const [consulta, setConsulta] = useState(null); // null = sin escribir → lista completa
   const sugerencias = useMemo(() => {
@@ -41398,7 +41431,6 @@ function BuscadorSlotPareja({ valor, opciones, onChange, placeholder, testid }) 
           value={consulta ?? valor}
           onChange={(e) => {
             setConsulta(e.target.value);
-            onChange(e.target.value);
             setAbierto(true);
           }}
           onFocus={(e) => {
@@ -41412,20 +41444,38 @@ function BuscadorSlotPareja({ valor, opciones, onChange, placeholder, testid }) 
               setConsulta(null);
             }, 150)
           }
-          className={`${inputClase} pr-7 text-xs`}
+          className={`${inputClase} pr-12 text-xs ${valor ? 'font-bold text-slate-900' : ''}`}
           placeholder={placeholder}
           autoComplete="off"
           data-testid={testid}
         />
+        {valor && (
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onChange('');
+            }}
+            className="absolute right-6 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-rose-500"
+            aria-label="Quitar jugador"
+            data-testid={testid ? `${testid}-quitar` : undefined}
+          >
+            <X size={12} />
+          </button>
+        )}
         <ChevronDown size={13} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" />
       </div>
       {abierto && (
+        // En línea (no flotante): dentro de modales/listas con scroll nunca
+        // queda recortada — empuja el contenido y se ve completa.
         <div
-          className="absolute z-30 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-300 bg-white shadow-xl"
+          className="relative z-30 mt-1 max-h-52 w-full overflow-y-auto rounded-lg border border-slate-300 bg-white shadow-lg"
           data-testid={testid ? `${testid}-lista` : undefined}
         >
           {sugerencias.length === 0 ? (
-            <p className="px-3 py-2 text-[11px] italic text-slate-400">Sin coincidencias — puedes dejarlo escrito así.</p>
+            <p className="px-3 py-2 text-[11px] italic text-slate-400">
+              {opciones.length === 0 ? 'Ya no quedan jugadores disponibles.' : 'Ningún inscrito coincide.'}
+            </p>
           ) : (
             sugerencias.map((n, i) => (
               <button
@@ -41453,53 +41503,29 @@ function BuscadorSlotPareja({ valor, opciones, onChange, placeholder, testid }) 
 }
 
 function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange, testid }) {
-  const modo = valor.modo || 'selects';
+  // App-153 — la pareja se arma SOLO eligiendo Jugador 1 y Jugador 2 de la
+  // lista de inscritos (`opciones` ya viene sin los jugadores asignados en
+  // otros casilleros). Se quitó «Escribir a mano».
   const textoResultante = textoDeParejaCompleta(valor);
-
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{etiqueta}</span>
-        <button
-          type="button"
-          onClick={() =>
-            onChange(
-              modo === 'manual'
-                ? { ...parejaSlotDesdeTexto(valor.texto), modo: 'selects' }
-                : { ...valor, modo: 'manual', texto: textoDeParejaCompleta(valor) }
-            )
-          }
-          className="shrink-0 text-[10px] font-bold text-orange-400 hover:underline"
-        >
-          {modo === 'manual' ? 'Elegir de la lista' : 'Escribir a mano'}
-        </button>
-      </div>
-
-      {modo === 'manual' ? (
-        <input
-          value={valor.texto}
-          onChange={(e) => onChange({ ...valor, texto: e.target.value })}
-          className={`${inputClase} text-xs`}
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5" data-testid={testid}>
+      <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500">{etiqueta}</span>
+      <div className="grid grid-cols-2 gap-2">
+        <BuscadorSlotPareja
+          valor={valor.jugador1}
+          opciones={opciones.filter((n) => n !== valor.jugador2)}
+          onChange={(n) => onChange({ ...valor, modo: 'selects', jugador1: n })}
+          placeholder="Elegir Jugador 1"
+          testid={testid ? `${testid}-j1` : undefined}
         />
-      ) : (
-        <div className="grid grid-cols-2 gap-2">
-          <BuscadorSlotPareja
-            valor={valor.jugador1}
-            opciones={opciones.filter((n) => n !== valor.jugador2)}
-            onChange={(n) => onChange({ ...valor, jugador1: n })}
-            placeholder="Jugador 1"
-            testid={testid ? `${testid}-j1` : undefined}
-          />
-          <BuscadorSlotPareja
-            valor={valor.jugador2}
-            opciones={opciones.filter((n) => n !== valor.jugador1)}
-            onChange={(n) => onChange({ ...valor, jugador2: n })}
-            placeholder="Jugador 2"
-            testid={testid ? `${testid}-j2` : undefined}
-          />
-        </div>
-      )}
-
+        <BuscadorSlotPareja
+          valor={valor.jugador2}
+          opciones={opciones.filter((n) => n !== valor.jugador1)}
+          onChange={(n) => onChange({ ...valor, modo: 'selects', jugador2: n })}
+          placeholder="Elegir Jugador 2"
+          testid={testid ? `${testid}-j2` : undefined}
+        />
+      </div>
       {textoResultante && <p className="mt-1.5 truncate text-[11px] italic text-slate-500">{textoResultante}</p>}
     </div>
   );
@@ -41563,20 +41589,19 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
   // el resultado en el modal y decide si lo deja así, lo corrige o lo deja
   // vacío — nada se escribe en Supabase hasta que presiona "Generar
   // Cuadro"/"Guardar cambios" a propósito.
-  const [parejas, setParejas] = useState(() => {
-    if (!modoEdicion) {
-      return Array.from({ length: numParejasSugerido }, (_, i) => nuevaParejaDesdeTexto(duplasConfirmadasTexto[i]));
-    }
-    const yaColocadas = new Set(duplasExistentesTexto.filter(Boolean));
-    const pendientes = duplasConfirmadasTexto.filter((n) => !yaColocadas.has(n));
-    let idxPendiente = 0;
-    return Array.from({ length: numParejasSugerido }, (_, i) => {
-      const existente = duplasExistentesTexto[i];
-      if (existente) return nuevaParejaDesdeTexto(existente);
-      if (idxPendiente < pendientes.length) return nuevaParejaDesdeTexto(pendientes[idxPendiente++]);
-      return nuevaParejaVacia();
-    });
-  });
+  // App-153 — CERO precarga automática: un cuadro nuevo arranca con todos
+  // los casilleros en blanco, y al editar uno ya generado solo se muestran
+  // las parejas que el organizador YA guardó (nunca se rellenan solos los
+  // vacíos con parejas confirmadas). Todo se elige a mano de la lista.
+  const [parejas, setParejas] = useState(() =>
+    Array.from({ length: numParejasSugerido }, (_, i) => (modoEdicion ? nuevaParejaDesdeTexto(duplasExistentesTexto[i]) : nuevaParejaVacia()))
+  );
+  // Jugadores ya asignados en CADA casillero (para ocultarlos en los demás).
+  const asignadosPorCasillero = useMemo(() => parejas.map((p) => nombresDeParejaSlot(p)), [parejas]);
+  function opcionesParaCasillero(idx) {
+    const ocupados = new Set(asignadosPorCasillero.flatMap((nombres, i) => (i === idx ? [] : nombres)));
+    return sugerencias.filter((n) => !ocupados.has(n));
+  }
   const [error, setError] = useState('');
 
   const numParejasValido = Math.max(2, Math.min(128, Number(numParejas) || 0));
@@ -41622,6 +41647,7 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
   // solo, los casilleros donde aparecían antes quedan vacíos en vez de
   // duplicar su nombre en dos posiciones distintas del cuadro.
   function actualizarPareja(idx, valor) {
+    setError('');
     setParejas((prev) => {
       const siguientes = prev.map((p, i) => (i === idx ? valor : p));
       const nombresAsignados = nombresDeParejaSlot(valor);
@@ -41650,6 +41676,12 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
   // el modal se queda abierto, lo que se ve en pantalla sea exactamente lo
   // que se intentó guardar — nunca un duplicado silencioso.
   function guardar() {
+    // App-153 — una pareja va completa (Jugador 1 y Jugador 2) o vacía.
+    const incompleta = parejas.findIndex((p) => nombresDeParejaSlot(p).length === 1);
+    if (incompleta >= 0) {
+      setError(`Pareja ${incompleta + 1}: elige también al ${parejas[incompleta].jugador1 ? 'Jugador 2' : 'Jugador 1'} (o deja el casillero vacío).`);
+      return;
+    }
     const parejasLimpias = sanearParejasModal(parejas);
     setParejas(parejasLimpias);
     const parejasTexto = parejasLimpias.map((p) => textoDeParejaCompleta(p));
@@ -41722,7 +41754,7 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
                 key={idx}
                 etiqueta={`Pareja ${idx + 1}`}
                 valor={p}
-                opciones={sugerencias}
+                opciones={opcionesParaCasillero(idx)}
                 onChange={(v) => actualizarPareja(idx, v)}
                 testid={`pareja-cuadro-${idx}`}
               />
@@ -41848,7 +41880,7 @@ function ModalAsignarHorarioPartido({ partido, canchas, reservas, torneos, onClo
   );
 }
 
-function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, guardando }) {
+function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, onGuardarAvance, guardando }) {
   // App-152 — la regla del torneo decide qué sets se capturan y cuándo
   // termina el partido (ver `reglaPartidoTorneo`/`evaluarMarcadorTorneo`).
   const regla = useMemo(() => reglaPartidoTorneo(torneo), [torneo]);
@@ -41916,6 +41948,23 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, guardando }
     onGuardar({ partido, sets: evaluacion.sets, ganador: evaluacion.ganador });
   }
 
+  // App-153 — GUARDADO PROGRESIVO: se puede guardar el avance (sets ya
+  // terminados) mientras el partido sigue en juego. Solo sets completos y
+  // válidos, en orden y sin huecos; el partido queda «pendiente» y sin
+  // ganador hasta que se capture el set que lo decide.
+  const avance = useMemo(() => {
+    if (evaluacion.ganador || !evaluacion.incompleto || evaluacion.sets.length === 0) return null;
+    const primerVacio = evaluacion.sets.length;
+    const hayDatosDespues = filas.some((f, i) => i > primerVacio && (String(f.p1).trim() !== '' || String(f.p2).trim() !== ''));
+    return hayDatosDespues ? null : evaluacion.sets;
+  }, [evaluacion, filas]);
+  const yaJugado = partido.estado === 'jugado';
+  const avanceGuardado = (partido.sets || []).length;
+  function guardarAvance() {
+    if (!avance || !onGuardarAvance) return;
+    onGuardarAvance({ partido, sets: avance });
+  }
+
   const nombreFila = (tipo, i) =>
     tipo === 'stb' ? 'Súper tie-break (a 10)' : regla.sets.length === 1 ? `Set único (a ${tipo === 'set8' ? 8 : 6} juegos)` : `Set ${i + 1}`;
   const errorFila = (i) => {
@@ -41939,6 +41988,24 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, guardando }
           <p className="mt-0.5 font-medium">{regla.descripcion}</p>
         </div>
 
+        {/* App-153 — Pareja completa 1 vs Pareja completa 2 (cada columna
+            siempre es la misma pareja en todos los sets). */}
+        <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2" data-testid="marcador-parejas">
+          <p className="rounded-lg bg-slate-100 px-2 py-1.5 text-center text-[11px] font-black leading-tight text-slate-800" data-testid="marcador-pareja1">
+            <span className="block text-[9px] font-bold uppercase tracking-wide text-slate-400">Pareja 1</span>
+            {partido.pareja1}
+          </p>
+          <span className="pb-2 text-[10px] font-black text-slate-400">VS</span>
+          <p className="rounded-lg bg-slate-100 px-2 py-1.5 text-center text-[11px] font-black leading-tight text-slate-800" data-testid="marcador-pareja2">
+            <span className="block text-[9px] font-bold uppercase tracking-wide text-slate-400">Pareja 2</span>
+            {partido.pareja2}
+          </p>
+        </div>
+        {!yaJugado && avanceGuardado > 0 && (
+          <p className="rounded-lg bg-sky-50 px-3 py-1.5 text-[11px] font-semibold text-sky-800 ring-1 ring-sky-200" data-testid="marcador-en-juego">
+            Partido en juego · avance guardado: {(partido.sets || []).map((x) => `${x.p1}-${x.p2}`).join(' · ')}
+          </p>
+        )}
         {regla.sets.map((tipo, i) => {
           const activa = habilitadas[i];
           const err = errorFila(i);
@@ -41958,8 +42025,9 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, guardando }
                   onChange={(e) => actualizar(i, 'p1', e.target.value)}
                   className={`${inputClase} text-center font-bold disabled:cursor-not-allowed`}
                   aria-label={`${nombreFila(tipo, i)} — ${partido.pareja1}`}
+                  title={partido.pareja1}
                   data-testid={`marcador-${i}-p1`}
-                  placeholder={partido.pareja1 ? String(partido.pareja1).split(' / ')[0] : 'Pareja 1'}
+                  placeholder="0"
                 />
                 <span className="text-xs font-bold text-slate-400">–</span>
                 <input
@@ -41969,8 +42037,9 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, guardando }
                   onChange={(e) => actualizar(i, 'p2', e.target.value)}
                   className={`${inputClase} text-center font-bold disabled:cursor-not-allowed`}
                   aria-label={`${nombreFila(tipo, i)} — ${partido.pareja2}`}
+                  title={partido.pareja2}
                   data-testid={`marcador-${i}-p2`}
-                  placeholder={partido.pareja2 ? String(partido.pareja2).split(' / ')[0] : 'Pareja 2'}
+                  placeholder="0"
                 />
               </div>
               {err && <p className="mt-1 text-[11px] font-semibold text-rose-500">{err}</p>}
@@ -41984,19 +42053,30 @@ function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, guardando }
             {regla.sets.length > 1 ? ' en sets' : ''}) y avanza a la siguiente ronda.
           </p>
         ) : (
-          intentoGuardar &&
-          evaluacion.error && (
-            <p className="text-xs font-semibold text-rose-500" data-testid="marcador-error">
-              {evaluacion.error}
+          avance && !yaJugado ? (
+            <p className="text-[11px] font-semibold text-slate-500" data-testid="marcador-avance-info">
+              Partido en juego: puedes guardar el avance ({avance.length} set{avance.length === 1 ? '' : 's'}) y seguir capturando después.
             </p>
+          ) : (
+            intentoGuardar &&
+            evaluacion.error && (
+              <p className="text-xs font-semibold text-rose-500" data-testid="marcador-error">
+                {evaluacion.error}
+              </p>
+            )
           )
         )}
 
-        <div className="flex justify-end gap-2 pt-2">
+        <div className="flex flex-wrap justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
+          {!yaJugado && onGuardarAvance && !evaluacion.ganador && (
+            <BotonSecundario onClick={guardarAvance} disabled={guardando || !avance} data-testid="boton-guardar-avance">
+              <ClipboardList size={14} /> Guardar avance
+            </BotonSecundario>
+          )}
           <BotonPrimario onClick={guardar} disabled={guardando || !evaluacion.ganador} data-testid="boton-guardar-marcador">
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Guardar Marcador
+            Guardar resultado final
           </BotonPrimario>
         </div>
       </div>
@@ -43450,9 +43530,8 @@ function ModuloTorneosRetas({
     // silencio); si está libre, borra el cuadro viejo de esta categoría y
     // cae al mismo flujo de generación completa de abajo.
     if (modoEdicion && partidosCategoriaExistentes.length > 0) {
-      const hayResultadosReales = partidosCategoriaExistentes.some(
-        (p) => p.estado === 'jugado' && Array.isArray(p.sets) && p.sets.length > 0
-      );
+      // App-153 — un avance guardado (sets de un partido en juego) también cuenta.
+      const hayResultadosReales = partidosCategoriaExistentes.some((p) => Array.isArray(p.sets) && p.sets.length > 0);
       if (hayResultadosReales) {
         setGuardandoCuadro(false);
         mostrarToast({
@@ -43784,6 +43863,35 @@ function ModuloTorneosRetas({
   // partido dentro de su ronda ubica exactamente a qué partido de la
   // siguiente ronda avanza (posición par → cae en `pareja1`, impar →
   // `pareja2`) — la misma lógica de bracket estándar de eliminación directa.
+  // App-153 — guarda el AVANCE de un partido en juego (solo sets ya
+  // terminados): queda «pendiente», sin ganador, y nada avanza en el cuadro.
+  async function guardarAvanceMarcadorHandler({ partido, sets }) {
+    setGuardandoMarcador(true);
+    const cambios = { sets, ganador: null, estado: 'pendiente' };
+    if (!partido._local) {
+      try {
+        const { error } = await supabase.from('torneo_partidos').update(cambios).eq('id', partido.id);
+        if (error) throw error;
+      } catch (err) {
+        console.warn('[Torneos & Retas] No se pudo sincronizar el avance del marcador en Supabase — se aplica solo local.', err);
+      }
+    }
+    setPartidosTorneo((prev) =>
+      prev.map((p) => {
+        if (p.id !== partido.id) return p;
+        const actualizado = { ...p, ...cambios };
+        if (actualizado._local) guardarRegistroLocal(LS_KEY_TORNEO_PARTIDOS_LOCAL, actualizado);
+        return actualizado;
+      })
+    );
+    setGuardandoMarcador(false);
+    setPartidoMarcador(null);
+    mostrarToast({
+      titulo: 'Avance guardado',
+      detalle: `${partido.pareja1} vs ${partido.pareja2}: ${sets.map((x) => `${x.p1}-${x.p2}`).join(' · ')} — el partido sigue en juego.`,
+    });
+  }
+
   async function cargarMarcadorPartidoHandler({ partido, sets, ganador }) {
     setGuardandoMarcador(true);
     const cambios = { sets, ganador, estado: 'jugado' };
@@ -44364,6 +44472,7 @@ function ModuloTorneosRetas({
           partido={partidoMarcador}
           onClose={() => setPartidoMarcador(null)}
           onGuardar={cargarMarcadorPartidoHandler}
+          onGuardarAvance={guardarAvanceMarcadorHandler}
           guardando={guardandoMarcador}
         />
       )}
