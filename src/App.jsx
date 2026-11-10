@@ -33288,8 +33288,160 @@ const NIVELES_FUERZA = ['1ª Fuerza', '2ª Fuerza', '3ª Fuerza', '4ª Fuerza', 
 const CUPOS_RETA = 4;
 const TOLERANCIA_HORAS_DEFAULT = 6;
 
+// Formatos que pudieron guardar torneos VIEJOS (solo se leen/muestran).
 const FORMATOS_TORNEO = ['Americano/Pozo', 'Round Robin + Eliminatoria', 'Eliminación Directa con Consolación'];
-const REGLAS_PUNTUACION_TORNEO = ['3 Sets', 'Súper Tie-Break', 'Punto de Oro'];
+// App-152 — todo torneo nuevo es de ELIMINACIÓN DIRECTA (el motor de cuadros
+// opera bajo ese esquema): quien pierde un partido queda fuera.
+const FORMATO_TORNEO_UNICO = 'Eliminación Directa';
+
+// App-152 — Reglas oficiales de puntuación (pádel = tenis):
+//  • Juegos 15-30-40-juego; en iguales (40-40) se gana con 2 puntos de
+//    ventaja, o con PUNTO DE ORO (un punto decisivo) si el torneo lo usa.
+//  • Set a 6 juegos con 2 de ventaja (6-4); 5-5 → 7-5; 6-6 → tie-break a 7
+//    puntos con 2 de diferencia (7-6).
+//  • Duración: mejor de 3 sets, 3.er set como súper tie-break a 10, o un solo
+//    set de 6 u 8 juegos (torneos rápidos / promoción).
+// `value` es lo que se guarda en `torneos.regla_puntuacion` (compatible con
+// los valores de siempre: '3 Sets', 'Súper Tie-Break', 'Punto de Oro').
+const DURACIONES_PARTIDO_TORNEO = [
+  {
+    value: '3 Sets',
+    etiqueta: 'Mejor de 3 sets',
+    sets: ['set6', 'set6', 'set6'],
+    setsParaGanar: 2,
+    descripcion: 'Mejor de 3 sets: gana la pareja que se lleva 2. Cada set a 6 juegos con 2 de ventaja (si van 5-5 se juega a 7-5; en 6-6, tie-break a 7 puntos con 2 de diferencia).',
+  },
+  {
+    value: 'Súper Tie-Break',
+    etiqueta: '2 sets + súper tie-break',
+    sets: ['set6', 'set6', 'stb'],
+    setsParaGanar: 2,
+    descripcion: 'Mejor de 3 sets con súper tie-break: los 2 primeros sets a 6 juegos (7-5; tie-break a 7 en 6-6); si quedan 1-1, el tercero se define con un súper tie-break a 10 puntos con 2 de diferencia.',
+  },
+  {
+    value: '1 Set a 6 juegos',
+    etiqueta: '1 set a 6 juegos',
+    sets: ['set6'],
+    setsParaGanar: 1,
+    descripcion: 'Un solo set a 6 juegos con 2 de ventaja (si van 5-5 se juega a 7-5; en 6-6, tie-break a 7 puntos).',
+  },
+  {
+    value: '1 Set a 8 juegos',
+    etiqueta: '1 set a 8 juegos (pro set)',
+    sets: ['set8'],
+    setsParaGanar: 1,
+    descripcion: 'Un solo set a 8 juegos con 2 de ventaja (si van 7-7 se juega a 9-7; en 8-8, tie-break a 7 puntos).',
+  },
+];
+const SUFIJO_PUNTO_ORO = ' · Punto de Oro';
+
+// Regla de juego de un torneo (de `regla_puntuacion`, con respaldo en
+// `reglas`). Torneos viejos: '3 Sets' / 'Súper Tie-Break' / 'Punto de Oro'
+// (= mejor de 3 sets con punto de oro).
+function reglaPartidoTorneo(torneo) {
+  const texto = String(torneo?.regla_puntuacion || torneo?.reglas || '').trim();
+  let value = '3 Sets';
+  if (/s[uú]per\s*tie/i.test(texto)) value = 'Súper Tie-Break';
+  else if (/1\s*set\s*a\s*8|pro\s*set/i.test(texto)) value = '1 Set a 8 juegos';
+  else if (/1\s*set/i.test(texto)) value = '1 Set a 6 juegos';
+  const duracion = DURACIONES_PARTIDO_TORNEO.find((d) => d.value === value) || DURACIONES_PARTIDO_TORNEO[0];
+  const puntoOro = /punto\s*de\s*oro|golden/i.test(texto);
+  return { ...duracion, puntoOro, etiquetaCompleta: `${duracion.etiqueta}${puntoOro ? ' · punto de oro' : ''}` };
+}
+function textoReglaPartido(duracion, puntoOro) {
+  return [
+    duracion.descripcion,
+    puntoOro
+      ? 'Juegos 15-30-40 con PUNTO DE ORO: en iguales (40-40) se juega un único punto decisivo y quien lo gana se lleva el juego.'
+      : 'Juegos 15-30-40; en iguales (40-40) se gana con 2 puntos de ventaja consecutivos.',
+    'Eliminación directa: la pareja que pierde un partido queda fuera del torneo.',
+  ].join(' ');
+}
+
+// ¿Es válido el marcador de UN set/súper tie-break? Devuelve null si sí, o el
+// motivo si no. `tipo`: 'set6' | 'set8' | 'stb'.
+function errorMarcadorSet(a, b, tipo) {
+  if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return 'usa números enteros (0 o más)';
+  if (a === b) return 'no puede quedar empatado';
+  const g = Math.max(a, b);
+  const p = Math.min(a, b);
+  if (tipo === 'stb') {
+    if (g < 10) return 'el súper tie-break se gana con al menos 10 puntos';
+    if (g === 10 && p > 8) return 'con 9-9 o más se sigue hasta sacar 2 puntos de diferencia';
+    if (g > 10 && g - p !== 2) return 'pasando de 10, se gana por exactamente 2 puntos (ej. 12-10)';
+    return null;
+  }
+  const meta = tipo === 'set8' ? 8 : 6;
+  if (g === meta && p <= meta - 2) return null;
+  if (g === meta + 1 && (p === meta - 1 || p === meta)) return null;
+  if (g === meta && p === meta - 1) return `con ${meta}-${meta - 1} el set no ha terminado (se juega hasta ${meta + 1}-${meta - 1} o tie-break en ${meta}-${meta})`;
+  return `un set a ${meta} juegos termina ${meta}-0 a ${meta}-${meta - 2}, ${meta + 1}-${meta - 1} o ${meta + 1}-${meta} (tie-break)`;
+}
+
+// Evalúa el marcador completo de un partido con la regla del torneo.
+// `filas`: [{p1, p2}] (texto de los inputs), una por set posible.
+// Devuelve { sets, ganador, error, decididoEn, setsP1, setsP2 }.
+function evaluarMarcadorTorneo(filas, regla) {
+  const tipos = regla.sets;
+  const nombres = tipos.map((t, i) => (t === 'stb' ? 'Súper tie-break' : tipos.length === 1 ? 'Set' : `Set ${i + 1}`));
+  const sets = [];
+  let w1 = 0;
+  let w2 = 0;
+  let decididoEn = -1;
+  for (let i = 0; i < tipos.length; i += 1) {
+    const f = filas[i] || { p1: '', p2: '' };
+    const vacio1 = String(f.p1 ?? '').trim() === '';
+    const vacio2 = String(f.p2 ?? '').trim() === '';
+    if (decididoEn >= 0) {
+      if (!vacio1 || !vacio2) return { error: `El partido ya se decidió en el ${nombres[decididoEn]}: deja vacío el ${nombres[i]}.`, sets: [], ganador: null, decididoEn, setsP1: w1, setsP2: w2 };
+      continue;
+    }
+    if (vacio1 && vacio2) {
+      return { error: `Falta el marcador del ${nombres[i]} — el partido todavía no tiene ganador según la regla «${regla.etiqueta}».`, sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2, incompleto: true };
+    }
+    if (vacio1 || vacio2) return { error: `${nombres[i]}: captura el marcador de las dos parejas.`, sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2 };
+    const a = Number(f.p1);
+    const b = Number(f.p2);
+    const motivo = errorMarcadorSet(a, b, tipos[i]);
+    if (motivo) return { error: `${nombres[i]} ${a}-${b}: ${motivo}.`, sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2 };
+    sets.push(tipos[i] === 'stb' ? { p1: a, p2: b, tipo: 'super_tie_break' } : { p1: a, p2: b });
+    if (a > b) w1 += 1;
+    else w2 += 1;
+    if (w1 >= regla.setsParaGanar || w2 >= regla.setsParaGanar) decididoEn = i;
+  }
+  if (decididoEn < 0) return { error: 'El marcador no define un ganador.', sets, ganador: null, decididoEn, setsP1: w1, setsP2: w2 };
+  return { error: null, sets, ganador: w1 > w2 ? 'pareja1' : 'pareja2', decididoEn, setsP1: w1, setsP2: w2 };
+}
+
+// App-152 — TODOS los jugadores inscritos (una entrada por persona) de una
+// categoría: el titular de cada fila Y su pareja capturada en la misma fila
+// (`pareja_nombre`/alias), sin bajas ni repetidos. Fuente de "Jugador 1 /
+// Jugador 2" en «Editar Cuadro» y en el casillero de la Mesa de Control.
+function jugadoresInscritosTorneo(participantes, categoria) {
+  const vistos = new Set();
+  const lista = [];
+  (participantes || [])
+    .filter((p) => !categoria || p.categoria === categoria)
+    .filter((p) => (typeof inscripcionOcupaLugar === 'function' ? inscripcionOcupaLugar(p) : true))
+    .forEach((p) => {
+      [p.nombre, parejaNombreDeParticipante(p)].forEach((n) => {
+        const limpio = String(n || '').trim();
+        const clave = limpio.toLowerCase();
+        if (!limpio || vistos.has(clave)) return;
+        vistos.add(clave);
+        lista.push(limpio);
+      });
+    });
+  return lista.sort((a, b) => a.localeCompare(b, 'es'));
+}
+// "Juan / María" → casillero en modo "elegir de la lista" con los 2 jugadores.
+function parejaSlotDesdeTexto(texto) {
+  const limpio = String(texto || '').trim();
+  if (!limpio) return nuevaParejaVacia();
+  const nombres = separarPareja(limpio);
+  if (nombres.length >= 1 && nombres.length <= 2) return { modo: 'selects', jugador1: nombres[0] || '', jugador2: nombres[1] || '', texto: limpio };
+  return { modo: 'manual', jugador1: '', jugador2: '', texto: limpio };
+}
 const UNIDADES_PRECIO_TORNEO = [
   { value: 'pareja', label: 'Por Pareja' },
   { value: 'jugador', label: 'Por Jugador' },
@@ -39667,8 +39819,12 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
   const [fechaFin, setFechaFin] = useState(hoyISO());
   const [precio, setPrecio] = useState('500');
   const [unidadPrecio, setUnidadPrecio] = useState('pareja');
-  const [formato, setFormato] = useState(FORMATOS_TORNEO[0]);
-  const [reglaPuntuacion, setReglaPuntuacion] = useState(REGLAS_PUNTUACION_TORNEO[0]);
+  // App-152 — formato ÚNICO e inalterable (ver `FORMATO_TORNEO_UNICO`).
+  const formato = FORMATO_TORNEO_UNICO;
+  const [duracionPartido, setDuracionPartido] = useState(DURACIONES_PARTIDO_TORNEO[0].value);
+  const [puntoOro, setPuntoOro] = useState(false);
+  const duracionElegida = DURACIONES_PARTIDO_TORNEO.find((d) => d.value === duracionPartido) || DURACIONES_PARTIDO_TORNEO[0];
+  const reglaPuntuacion = `${duracionElegida.value}${puntoOro ? SUFIJO_PUNTO_ORO : ''}`;
 
   // Formato de Juego → Combo-box Dinámico: ya NO es un `<select>` cerrado a
   // los 3 formatos de `FORMATOS_TORNEO` — el club puede escribir cualquier
@@ -39677,10 +39833,6 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
   // `formatosJuegoCustom`, cargada desde `configuracion_club` en `AppInterno`
   // — ver `guardarFormatoJuegoCustomNuevo`), sin duplicar si el club escribe
   // de nuevo (con otras mayúsculas/espacios) un formato que ya existe.
-  const formatosDisponibles = useMemo(
-    () => Array.from(new Set([...FORMATOS_TORNEO, ...(formatosJuegoCustom || [])])),
-    [formatosJuegoCustom]
-  );
 
   const [categoriaRama, setCategoriaRama] = useState(RAMAS_JUEGO[0]);
   const [categoriaNivel, setCategoriaNivel] = useState('');
@@ -39792,7 +39944,6 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
     // Torneo" ya aparezca como sugerencia — en silencio, sin bloquear ni
     // retrasar la creación del torneo (ver `guardarFormatoJuegoCustomNuevo`
     // en `AppInterno`, que ya deduplica y hace su propio best-effort).
-    onGuardarFormatoJuegoCustom?.(formato);
 
     // Mapeo defensivo de columnas — mismo criterio que `ModalNuevaReta`:
     // se manda `formato` (nombre corto) y también su alias largo
@@ -39817,7 +39968,8 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
       formato,
       formato_juego: formato,
       regla_puntuacion: reglaPuntuacion,
-      reglas: reglaPuntuacion,
+      // App-152 — texto completo de la regla (lo muestra el Portal).
+      reglas: textoReglaPartido(duracionElegida, puntoOro),
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin || fechaInicio,
       // Descuentos por Pronto Pago (Early Bird, columna nueva y opcional —
@@ -39969,34 +40121,44 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
               ))}
             </select>
           </Campo>
-          <Campo label="Formato de juego" hint="Elige uno o escribe el tuyo — se guarda para tus próximos torneos">
-            {/* Combo-box Dinámico (item 2): ya NO es un `<select>` cerrado a
-                los 3 formatos de `FORMATOS_TORNEO` — mismo componente
-                (`ComboBoxTexto`) que Categorías/Niveles más abajo. Las
-                sugerencias son `formatosDisponibles` (los 3 predeterminados +
-                los personalizados del club, ver arriba); cualquier texto que
-                el club escriba se acepta tal cual y, al crear el torneo, se
-                guarda para la próxima vez (`onGuardarFormatoJuegoCustom`, ver
-                `guardar()`). */}
-            <ComboBoxTexto
-              value={formato}
-              onChange={setFormato}
-              opciones={formatosDisponibles}
-              placeholder="Ej. Round Robin + Eliminatoria…"
-              className={inputClase}
-            />
+          <Campo label="Formato de juego" hint="Todo el motor de cuadros opera bajo este esquema">
+            {/* App-152 — formato único e inalterable. */}
+            <div
+              className={`${inputClase} flex cursor-not-allowed items-center gap-2 bg-slate-100 font-bold text-slate-700`}
+              data-testid="formato-torneo-fijo"
+              aria-readonly="true"
+            >
+              <Lock size={13} className="shrink-0 text-slate-400" /> {FORMATO_TORNEO_UNICO}
+            </div>
           </Campo>
         </div>
 
-        <Campo label="Regla de puntuación">
-          <select value={reglaPuntuacion} onChange={(e) => setReglaPuntuacion(e.target.value)} className={`${inputClase} sm:w-64`}>
-            {REGLAS_PUNTUACION_TORNEO.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </Campo>
+        {/* App-152 — Regla de puntuación: manda la pauta del modal «Cargar Marcador». */}
+        <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3.5" data-testid="regla-puntuacion-torneo">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Campo label="Regla de puntuación · duración del partido">
+              <select
+                value={duracionPartido}
+                onChange={(e) => setDuracionPartido(e.target.value)}
+                className={inputClase}
+                data-testid="select-duracion-partido"
+              >
+                {DURACIONES_PARTIDO_TORNEO.map((d) => (
+                  <option key={d.value} value={d.value}>
+                    {d.etiqueta}
+                  </option>
+                ))}
+              </select>
+            </Campo>
+            <label className="flex cursor-pointer items-center gap-2.5 self-end rounded-lg bg-white px-3 py-2.5 ring-1 ring-slate-200">
+              <input type="checkbox" checked={puntoOro} onChange={(e) => setPuntoOro(e.target.checked)} data-testid="check-punto-oro" />
+              <span className="text-xs font-bold text-slate-700">Punto de oro en iguales (40-40)</span>
+            </label>
+          </div>
+          <p className="text-[11px] leading-relaxed text-slate-500" data-testid="descripcion-regla">
+            {textoReglaPartido(duracionElegida, puntoOro)}
+          </p>
+        </div>
 
         <div>
           <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Categorías (Rama por Nivel)</span>
@@ -40755,33 +40917,72 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
 // React lo reconoce como el mismo componente entre renders y solo el estado
 // `editandoSlot` (que sigue viviendo en `TarjetaPartido`, el dueño real del
 // dato) decide cuándo mostrar el `<select>`.
-function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, setEditandoSlot, opcionesReasignar, onReasignar, partido, puedeNotificar, onNotificar }) {
+// App-152 — editor de UN casillero del cuadro (Mesa de Control): pareja
+// completa con Jugador 1 / Jugador 2 elegidos de TODOS los inscritos de la
+// categoría, atajos a las parejas confirmadas que aún no tienen casillero, y
+// «Dejar vacante». Antes era un <select> que solo ofrecía parejas ya
+// confirmadas (con registros individuales, solo aparecía una persona suelta).
+function EditorCasilleroPareja({ texto, jugadores, duplasDisponibles, onGuardar, onCancelar }) {
+  const [valor, setValor] = useState(() => parejaSlotDesdeTexto(texto));
+  const resultado = textoDeParejaCompleta(valor);
+  return (
+    <div className="space-y-2 rounded-lg border border-orange-400/40 bg-white p-2" data-testid="editor-casillero">
+      {(duplasDisponibles || []).length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {duplasDisponibles.map((d) => (
+            <button
+              key={d}
+              type="button"
+              onClick={() => setValor(parejaSlotDesdeTexto(d))}
+              className="max-w-full truncate rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700 ring-1 ring-violet-200 hover:bg-violet-100"
+              title="Pareja confirmada sin casillero"
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+      )}
+      <SelectorParejaCompleta etiqueta="Pareja del casillero" valor={valor} opciones={jugadores || []} onChange={setValor} testid="casillero" />
+      <div className="flex items-center justify-between gap-1.5">
+        <button type="button" onClick={() => onGuardar('')} className="text-[10px] font-bold text-rose-500 hover:underline">
+          Dejar vacante
+        </button>
+        <div className="flex gap-1.5">
+          <button type="button" onClick={onCancelar} className="rounded-md px-2 py-1 text-[10px] font-bold text-slate-500 hover:bg-slate-100">
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={() => onGuardar(resultado)}
+            disabled={!resultado || resultado === (texto || '')}
+            className="rounded-md bg-orange-400 px-2.5 py-1 text-[10px] font-black text-slate-950 disabled:opacity-40"
+            data-testid="guardar-casillero"
+          >
+            Asignar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, setEditandoSlot, opcionesReasignar, jugadoresInscritos, onReasignar, partido, puedeNotificar, onNotificar }) {
   function etiquetaPareja(t) {
     return t === BYE ? 'BYE (pase directo)' : t || 'Vacante';
   }
 
   if (editandoSlot === slot) {
-    // Opciones: la propia pareja actual (para no perderla de la lista si no
-    // se cambia), "Vacante" (limpiar el casillero), y las duplas confirmadas
-    // que todavía no están en NINGÚN casillero de este cuadro.
-    const opciones = [texto || '', ...(opcionesReasignar || [])].filter((v, i, arr) => arr.indexOf(v) === i);
     return (
-      <select
-        autoFocus
-        value={texto || ''}
-        onChange={(e) => {
-          onReasignar(partido, slot, e.target.value);
+      <EditorCasilleroPareja
+        texto={texto}
+        jugadores={jugadoresInscritos}
+        duplasDisponibles={(opcionesReasignar || []).filter((d) => d && d !== texto)}
+        onCancelar={() => setEditandoSlot(null)}
+        onGuardar={(nuevo) => {
+          if (nuevo !== (texto || '')) onReasignar(partido, slot, nuevo);
           setEditandoSlot(null);
         }}
-        onBlur={() => setEditandoSlot(null)}
-        className="w-full rounded-lg border border-orange-400/40 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-900"
-      >
-        {opciones.map((op) => (
-          <option key={op || '__vacante__'} value={op}>
-            {op || 'Vacante'}
-          </option>
-        ))}
-      </select>
+      />
     );
   }
 
@@ -40813,7 +41014,7 @@ function FilaPareja({ slot, texto, esGanador, editable, esBySlot, editandoSlot, 
   );
 }
 
-function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsignarHorario, onCargarMarcador, opcionesReasignar, onReasignar }) {
+function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsignarHorario, onCargarMarcador, opcionesReasignar, jugadoresInscritos, onReasignar }) {
   const parejasListas = !!partido.pareja1 && !!partido.pareja2;
   const jugado = partido.estado === 'jugado';
   const esBye = partido.pareja1 === BYE || partido.pareja2 === BYE;
@@ -40842,9 +41043,10 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
 
   return (
     <div
-      className={`w-60 shrink-0 rounded-xl border p-3 ${
+      className={`${editandoSlot ? 'w-80' : 'w-60'} shrink-0 rounded-xl border p-3 transition-[width] ${
         jugado ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-slate-200 bg-slate-50'
       }`}
+      data-testid="tarjeta-partido"
     >
       <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">{partido.ronda}</p>
 
@@ -40858,6 +41060,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
           editandoSlot={editandoSlot}
           setEditandoSlot={setEditandoSlot}
           opcionesReasignar={opcionesReasignar}
+          jugadoresInscritos={jugadoresInscritos}
           onReasignar={onReasignar}
           partido={partido}
           puedeNotificar={puedeNotificar}
@@ -40873,6 +41076,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
           editandoSlot={editandoSlot}
           setEditandoSlot={setEditandoSlot}
           opcionesReasignar={opcionesReasignar}
+          jugadoresInscritos={jugadoresInscritos}
           onReasignar={onReasignar}
           partido={partido}
           puedeNotificar={puedeNotificar}
@@ -40959,6 +41163,11 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
     );
     return confirmadas.filter((nombre) => !yaColocadas.has(nombre));
   }, [participantes, categorias.length, categoriaFiltro, partidosCategoria]);
+  // App-152 — todos los inscritos (una entrada por persona) de esta categoría.
+  const jugadoresInscritos = useMemo(
+    () => jugadoresInscritosTorneo(participantes, categorias.length === 0 ? undefined : categoriaFiltro),
+    [participantes, categorias.length, categoriaFiltro]
+  );
 
   const columnas = useMemo(() => {
     const mapa = new Map();
@@ -41071,6 +41280,7 @@ function SeccionCuadroPartidos({ torneo, partidos, canchas, participantes, loadi
                       onAsignarHorario={onAsignarHorario}
                       onCargarMarcador={onCargarMarcador}
                       opcionesReasignar={opcionesReasignar}
+                      jugadoresInscritos={jugadoresInscritos}
                       onReasignar={onReasignarCasillero}
                     />
                     );
@@ -41170,48 +41380,79 @@ function sanearParejasModal(parejas) {
 // no al directorio completo del club) — mismo criterio de interacción que
 // `SelectorJugadorRegistrado` en Retas/Inscripción de Torneo, para que
 // "cargar la info al seleccionarlo" se sienta igual en todo el club.
-function BuscadorSlotPareja({ valor, opciones, onChange, placeholder }) {
+function BuscadorSlotPareja({ valor, opciones, onChange, placeholder, testid }) {
+  // App-152 — al abrir se despliega la lista COMPLETA de inscritos (antes se
+  // filtraba por lo ya elegido y se cortaba a 8: solo se veía a una persona).
+  // Solo filtra cuando el operador ESCRIBE algo nuevo.
   const [abierto, setAbierto] = useState(false);
+  const [consulta, setConsulta] = useState(null); // null = sin escribir → lista completa
   const sugerencias = useMemo(() => {
-    const q = (valor || '').trim().toLowerCase();
-    const base = q ? opciones.filter((n) => n.toLowerCase().includes(q)) : opciones;
-    return base.slice(0, 8);
-  }, [opciones, valor]);
+    const q = (consulta || '').trim().toLowerCase();
+    return q ? opciones.filter((n) => n.toLowerCase().includes(q)) : opciones;
+  }, [opciones, consulta]);
 
   return (
     <div className="relative">
-      <input
-        value={valor}
-        onChange={(e) => onChange(e.target.value)}
-        onFocus={() => setAbierto(true)}
-        onBlur={() => setTimeout(() => setAbierto(false), 150)}
-        className={`${inputClase} text-xs`}
-        placeholder={placeholder}
-        autoComplete="off"
-      />
-      {abierto && sugerencias.length > 0 && (
-        <div className="absolute z-20 mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-slate-300 bg-slate-100 shadow-xl">
-          {sugerencias.map((n, i) => (
-            <button
-              key={i}
-              type="button"
-              onMouseDown={() => {
-                onChange(n);
-                setAbierto(false);
-              }}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-800 transition hover:bg-slate-200"
-            >
-              <Users size={11} className="shrink-0 text-orange-400" />
-              <span className="min-w-0 flex-1 truncate">{n}</span>
-            </button>
-          ))}
+      <div className="relative">
+        <input
+          value={consulta ?? valor}
+          onChange={(e) => {
+            setConsulta(e.target.value);
+            onChange(e.target.value);
+            setAbierto(true);
+          }}
+          onFocus={(e) => {
+            setConsulta(null);
+            setAbierto(true);
+            e.target.select?.();
+          }}
+          onBlur={() =>
+            setTimeout(() => {
+              setAbierto(false);
+              setConsulta(null);
+            }, 150)
+          }
+          className={`${inputClase} pr-7 text-xs`}
+          placeholder={placeholder}
+          autoComplete="off"
+          data-testid={testid}
+        />
+        <ChevronDown size={13} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" />
+      </div>
+      {abierto && (
+        <div
+          className="absolute z-30 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-300 bg-white shadow-xl"
+          data-testid={testid ? `${testid}-lista` : undefined}
+        >
+          {sugerencias.length === 0 ? (
+            <p className="px-3 py-2 text-[11px] italic text-slate-400">Sin coincidencias — puedes dejarlo escrito así.</p>
+          ) : (
+            sugerencias.map((n, i) => (
+              <button
+                key={`${n}-${i}`}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onChange(n);
+                  setConsulta(null);
+                  setAbierto(false);
+                }}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition hover:bg-slate-100 ${
+                  n === valor ? 'bg-orange-50 font-bold text-orange-700' : 'text-slate-800'
+                }`}
+              >
+                <Users size={11} className="shrink-0 text-orange-400" />
+                <span className="min-w-0 flex-1 truncate">{n}</span>
+              </button>
+            ))
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
+function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange, testid }) {
   const modo = valor.modo || 'selects';
   const textoResultante = textoDeParejaCompleta(valor);
 
@@ -41221,7 +41462,13 @@ function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
         <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{etiqueta}</span>
         <button
           type="button"
-          onClick={() => onChange({ ...valor, modo: modo === 'manual' ? 'selects' : 'manual' })}
+          onClick={() =>
+            onChange(
+              modo === 'manual'
+                ? { ...parejaSlotDesdeTexto(valor.texto), modo: 'selects' }
+                : { ...valor, modo: 'manual', texto: textoDeParejaCompleta(valor) }
+            )
+          }
           className="shrink-0 text-[10px] font-bold text-orange-400 hover:underline"
         >
           {modo === 'manual' ? 'Elegir de la lista' : 'Escribir a mano'}
@@ -41240,13 +41487,15 @@ function SelectorParejaCompleta({ etiqueta, valor, opciones, onChange }) {
             valor={valor.jugador1}
             opciones={opciones.filter((n) => n !== valor.jugador2)}
             onChange={(n) => onChange({ ...valor, jugador1: n })}
-            placeholder="Buscar Jugador 1..."
+            placeholder="Jugador 1"
+            testid={testid ? `${testid}-j1` : undefined}
           />
           <BuscadorSlotPareja
             valor={valor.jugador2}
             opciones={opciones.filter((n) => n !== valor.jugador1)}
             onChange={(n) => onChange({ ...valor, jugador2: n })}
-            placeholder="Buscar Jugador 2..."
+            placeholder="Jugador 2"
+            testid={testid ? `${testid}-j2` : undefined}
           />
         </div>
       )}
@@ -41263,10 +41512,8 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
   // selects de "Jugador 1"/"Jugador 2" de `SelectorParejaCompleta`, donde sí
   // hace falta ver a cada integrante por separado (incluyendo a los dos de
   // una "Pareja nueva"/"Unirme", cada uno con su propia fila).
-  const sugerencias = useMemo(
-    () => participantes.filter((p) => !categoria || p.categoria === categoria).map((p) => p.nombre).filter(Boolean),
-    [participantes, categoria]
-  );
+  // App-152 — TODOS los inscritos de la categoría (titular + pareja de cada fila).
+  const sugerencias = useMemo(() => jugadoresInscritosTorneo(participantes, categoria), [participantes, categoria]);
 
   // Reeditar un cuadro YA GENERADO (`partidosExistentes` = sus partidos de
   // Ronda 0, ver `SeccionCuadroPartidos`/`ModalGestionTorneo`): auto-llena
@@ -41293,9 +41540,10 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
     ? duplasExistentesTexto.length
     : TAMANOS_CUADRO.find((t) => t >= Math.max(2, numConfirmados)) || Math.max(2, numConfirmados);
 
+  // App-152 — un casillero ya capturado ("Juan / María") abre con Jugador 1 y
+  // Jugador 2 ya separados en la lista (antes: un solo texto libre).
   function nuevaParejaDesdeTexto(texto) {
-    const limpio = (texto || '').trim();
-    return limpio ? { modo: 'manual', jugador1: '', jugador2: '', texto: limpio } : nuevaParejaVacia();
+    return parejaSlotDesdeTexto(texto);
   }
 
   // 'fichas' = una de las 5 fichas rápidas (2/4/8/16/32); 'personalizado' =
@@ -41476,6 +41724,7 @@ function ModalGenerarCuadro({ torneo, participantes, categoriaInicial, partidosE
                 valor={p}
                 opciones={sugerencias}
                 onChange={(v) => actualizarPareja(idx, v)}
+                testid={`pareja-cuadro-${idx}`}
               />
             ))}
           </div>
@@ -41599,40 +41848,82 @@ function ModalAsignarHorarioPartido({ partido, canchas, reservas, torneos, onClo
   );
 }
 
-function ModalMarcadorPartido({ partido, onClose, onGuardar, guardando }) {
+function ModalMarcadorPartido({ torneo, partido, onClose, onGuardar, guardando }) {
+  // App-152 — la regla del torneo decide qué sets se capturan y cuándo
+  // termina el partido (ver `reglaPartidoTorneo`/`evaluarMarcadorTorneo`).
+  const regla = useMemo(() => reglaPartidoTorneo(torneo), [torneo]);
   const setsPrevios = partido.sets || [];
-  const [set1, setSet1] = useState({ p1: setsPrevios[0]?.p1 ?? '', p2: setsPrevios[0]?.p2 ?? '' });
-  const [set2, setSet2] = useState({ p1: setsPrevios[1]?.p1 ?? '', p2: setsPrevios[1]?.p2 ?? '' });
-  const [set3, setSet3] = useState({ p1: setsPrevios[2]?.p1 ?? '', p2: setsPrevios[2]?.p2 ?? '' });
-  const [error, setError] = useState('');
+  const [filas, setFilas] = useState(() =>
+    regla.sets.map((_, i) => ({ p1: setsPrevios[i]?.p1 ?? '', p2: setsPrevios[i]?.p2 ?? '' }))
+  );
+  const [intentoGuardar, setIntentoGuardar] = useState(false);
+  const evaluacion = useMemo(() => evaluarMarcadorTorneo(filas, regla), [filas, regla]);
 
-  function actualizar(setSetter, campo, valor) {
-    setSetter((prev) => ({ ...prev, [campo]: valor }));
+  // ¿Hasta qué fila hace falta capturar? Una fila solo se habilita si las
+  // anteriores son válidas y el partido sigue sin ganador.
+  // `habilitadas[i]`: la fila se puede capturar (las anteriores son válidas y
+  // el partido sigue sin ganador). `sobrantes[i]`: el partido YA se decidió
+  // antes de esa fila → no se juega.
+  const { habilitadas, sobrantes } = useMemo(() => {
+    const hab = [];
+    const sob = [];
+    let w1 = 0;
+    let w2 = 0;
+    let abierto = true;
+    let decidido = false;
+    regla.sets.forEach((tipo, i) => {
+      hab.push(abierto && !decidido);
+      sob.push(decidido);
+      const f = filas[i];
+      const a = Number(f.p1);
+      const b = Number(f.p2);
+      const completa = String(f.p1).trim() !== '' && String(f.p2).trim() !== '' && !errorMarcadorSet(a, b, tipo);
+      if (!completa) {
+        abierto = false;
+        return;
+      }
+      if (!abierto || decidido) return;
+      if (a > b) w1 += 1;
+      else w2 += 1;
+      if (w1 >= regla.setsParaGanar || w2 >= regla.setsParaGanar) decidido = true;
+    });
+    return { habilitadas: hab, sobrantes: sob };
+  }, [filas, regla]);
+
+  // Solo se vacían las filas SOBRANTES (el partido ya se decidió antes), para
+  // no guardar sets sueltos. Una fila deshabilitada porque un set anterior
+  // quedó a medio corregir conserva lo que tenía.
+  useEffect(() => {
+    if (!sobrantes.some(Boolean)) return;
+    setFilas((prev) => {
+      let cambio = false;
+      const sig = prev.map((f, i) => {
+        if (!sobrantes[i] || (f.p1 === '' && f.p2 === '')) return f;
+        cambio = true;
+        return { p1: '', p2: '' };
+      });
+      return cambio ? sig : prev;
+    });
+  }, [sobrantes]);
+
+  function actualizar(idx, campo, valor) {
+    setFilas((prev) => prev.map((f, i) => (i === idx ? { ...f, [campo]: valor.replace(/[^0-9]/g, '').slice(0, 2) } : f)));
   }
 
   function guardar() {
-    const sets = [set1, set2, set3]
-      .filter((s) => s.p1 !== '' && s.p2 !== '')
-      .map((s) => ({ p1: Number(s.p1), p2: Number(s.p2) }));
-
-    if (sets.length === 0) {
-      setError('Captura al menos el marcador del Set 1.');
-      return;
-    }
-    const ganador = calcularGanadorSets(sets);
-    if (!ganador) {
-      setError('El marcador no define un ganador claro — revisa los sets (no puede haber empate en sets ganados).');
-      return;
-    }
-    setError('');
-    onGuardar({ partido, sets, ganador });
+    setIntentoGuardar(true);
+    if (evaluacion.error || !evaluacion.ganador) return;
+    onGuardar({ partido, sets: evaluacion.sets, ganador: evaluacion.ganador });
   }
 
-  const filas = [
-    { label: 'Set 1', valor: set1, setValor: setSet1 },
-    { label: 'Set 2', valor: set2, setValor: setSet2 },
-    { label: 'Set 3 / Súper Tie-Break', valor: set3, setValor: setSet3 },
-  ];
+  const nombreFila = (tipo, i) =>
+    tipo === 'stb' ? 'Súper tie-break (a 10)' : regla.sets.length === 1 ? `Set único (a ${tipo === 'set8' ? 8 : 6} juegos)` : `Set ${i + 1}`;
+  const errorFila = (i) => {
+    const f = filas[i];
+    if (String(f.p1).trim() === '' || String(f.p2).trim() === '') return null;
+    return errorMarcadorSet(Number(f.p1), Number(f.p2), regla.sets[i]);
+  };
+  const ganadorTexto = evaluacion.ganador ? (evaluacion.ganador === 'pareja1' ? partido.pareja1 : partido.pareja2) : null;
 
   return (
     <ModalShell
@@ -41643,35 +41934,67 @@ function ModalMarcadorPartido({ partido, onClose, onGuardar, guardando }) {
       ancho="max-w-md"
     >
       <div className="space-y-4">
-        {filas.map((s) => (
-          <div key={s.label} className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
-            <Campo label={`${s.label} — ${partido.pareja1}`}>
-              <input
-                type="number"
-                min="0"
-                value={s.valor.p1}
-                onChange={(e) => actualizar(s.setValor, 'p1', e.target.value)}
-                className={inputClase}
-              />
-            </Campo>
-            <span className="pb-2.5 text-xs font-bold text-slate-400">–</span>
-            <Campo label={`${s.label} — ${partido.pareja2}`}>
-              <input
-                type="number"
-                min="0"
-                value={s.valor.p2}
-                onChange={(e) => actualizar(s.setValor, 'p2', e.target.value)}
-                className={inputClase}
-              />
-            </Campo>
-          </div>
-        ))}
+        <div className="rounded-lg bg-violet-400/10 px-3 py-2 text-[11px] font-semibold text-violet-700 ring-1 ring-violet-400/20" data-testid="regla-marcador">
+          <p className="font-black">Regla del torneo: {regla.etiquetaCompleta}</p>
+          <p className="mt-0.5 font-medium">{regla.descripcion}</p>
+        </div>
 
-        {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+        {regla.sets.map((tipo, i) => {
+          const activa = habilitadas[i];
+          const err = errorFila(i);
+          return (
+            <div key={i} data-testid="fila-set" data-tipo={tipo} data-activa={activa ? 'si' : 'no'} className={activa ? '' : 'opacity-50'}>
+              <p className="mb-1 text-[11px] font-black uppercase tracking-wide text-slate-500">
+                {nombreFila(tipo, i)}
+                {!activa && regla.sets.length > 1 && i > 0 && (
+                  <span className="ml-1.5 font-semibold normal-case text-slate-400">— solo si hace falta (1-1 en sets)</span>
+                )}
+              </p>
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                <input
+                  inputMode="numeric"
+                  value={filas[i].p1}
+                  disabled={!activa}
+                  onChange={(e) => actualizar(i, 'p1', e.target.value)}
+                  className={`${inputClase} text-center font-bold disabled:cursor-not-allowed`}
+                  aria-label={`${nombreFila(tipo, i)} — ${partido.pareja1}`}
+                  data-testid={`marcador-${i}-p1`}
+                  placeholder={partido.pareja1 ? String(partido.pareja1).split(' / ')[0] : 'Pareja 1'}
+                />
+                <span className="text-xs font-bold text-slate-400">–</span>
+                <input
+                  inputMode="numeric"
+                  value={filas[i].p2}
+                  disabled={!activa}
+                  onChange={(e) => actualizar(i, 'p2', e.target.value)}
+                  className={`${inputClase} text-center font-bold disabled:cursor-not-allowed`}
+                  aria-label={`${nombreFila(tipo, i)} — ${partido.pareja2}`}
+                  data-testid={`marcador-${i}-p2`}
+                  placeholder={partido.pareja2 ? String(partido.pareja2).split(' / ')[0] : 'Pareja 2'}
+                />
+              </div>
+              {err && <p className="mt-1 text-[11px] font-semibold text-rose-500">{err}</p>}
+            </div>
+          );
+        })}
+
+        {ganadorTexto ? (
+          <p className="flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 ring-1 ring-emerald-200" data-testid="marcador-ganador">
+            <CheckCircle2 size={14} /> Gana {ganadorTexto} ({evaluacion.setsP1}-{evaluacion.setsP2}
+            {regla.sets.length > 1 ? ' en sets' : ''}) y avanza a la siguiente ronda.
+          </p>
+        ) : (
+          intentoGuardar &&
+          evaluacion.error && (
+            <p className="text-xs font-semibold text-rose-500" data-testid="marcador-error">
+              {evaluacion.error}
+            </p>
+          )
+        )}
 
         <div className="flex justify-end gap-2 pt-2">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar} disabled={guardando}>
+          <BotonPrimario onClick={guardar} disabled={guardando || !evaluacion.ganador} data-testid="boton-guardar-marcador">
             {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
             Guardar Marcador
           </BotonPrimario>
@@ -44037,6 +44360,7 @@ function ModuloTorneosRetas({
 
       {partidoMarcador && (
         <ModalMarcadorPartido
+          torneo={(torneos || []).find((t) => String(t.id) === String(partidoMarcador.torneo_id)) || null}
           partido={partidoMarcador}
           onClose={() => setPartidoMarcador(null)}
           onGuardar={cargarMarcadorPartidoHandler}
