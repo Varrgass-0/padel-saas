@@ -1735,8 +1735,30 @@ function urlPublicaDeRutaMedia(ruta) {
 //   • `blob:`/`file:`/rutas del dispositivo o un nombre de archivo suelto
 //     ("IMG_1234.JPG") → null: solo existían en el aparato que lo subió.
 const CARPETAS_MEDIA = ['productos', 'canchas', 'club', 'empleados', 'jugadores', 'general'];
+// App-151 — un elemento de imagen puede venir como texto o como objeto
+// ({ url }, { publicUrl }, { public_url }, { src }, { path }…) o como texto
+// JSON de ese objeto. Devuelve el texto de la URL/ruta (o '').
+function urlDeElementoImagen(valor) {
+  if (valor == null) return '';
+  if (typeof valor === 'object') {
+    for (const k of ['url', 'publicUrl', 'public_url', 'secure_url', 'src', 'imagen_url', 'href', 'path', 'ruta', 'fullPath', 'key', 'name']) {
+      if (typeof valor[k] === 'string' && valor[k].trim()) return valor[k].trim();
+    }
+    if (valor.data && typeof valor.data === 'object') return urlDeElementoImagen(valor.data);
+    return '';
+  }
+  const t = String(valor).trim();
+  if (t.startsWith('{') && t.endsWith('}') && t.includes(':')) {
+    try {
+      return urlDeElementoImagen(JSON.parse(t));
+    } catch (_e) {
+      return t;
+    }
+  }
+  return t;
+}
 function normalizarUrlMediaPublica(valor) {
-  let v = String(valor ?? '').trim();
+  let v = urlDeElementoImagen(valor);
   if (!v) return null;
   if (/^data:image\/(png|jpe?g|gif|webp|avif|bmp|svg\+xml);base64,/i.test(v)) return v;
   if (/^(blob|file|content|ph|assets-library|capacitor|data):/i.test(v)) return null;
@@ -1778,6 +1800,7 @@ function arregloImagenesCrudo(valor) {
       return [];
     }
   }
+  if (t.startsWith('{') && t.endsWith('}') && /^\{\s*"[^"]+"\s*:/.test(t)) return [t];
   if (t.startsWith('{') && t.endsWith('}')) {
     return t
       .slice(1, -1)
@@ -1849,16 +1872,74 @@ async function asegurarUrlsPublicasMedia(valores, carpeta = 'productos') {
   return [...new Set(salida)];
 }
 
+// App-151 — formato REAL de una imagen leyendo sus primeros bytes (el nombre
+// y el `type` del archivo pueden mentir: un iPad puede entregar una foto HEIC
+// llamada «foto.jpg», que Safari dibuja pero Chrome/Windows no).
+function formatoImagenDeBytes(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  const txt = (i, n) => String.fromCharCode(...b.slice(i, i + n));
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpeg';
+  if (b.length >= 4 && b[0] === 0x89 && txt(1, 3) === 'PNG') return 'png';
+  if (b.length >= 12 && txt(0, 4) === 'RIFF' && txt(8, 4) === 'WEBP') return 'webp';
+  if (b.length >= 3 && txt(0, 3) === 'GIF') return 'gif';
+  if (b.length >= 12 && txt(4, 4) === 'ftyp') {
+    const marca = txt(8, 4).toLowerCase();
+    if (['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1'].includes(marca)) return 'heic';
+    if (['avif', 'avis'].includes(marca)) return 'avif';
+  }
+  if (b.length >= 2 && txt(0, 2) === 'BM') return 'bmp';
+  if (b.length >= 4 && (txt(0, 4) === 'II*\u0000' || txt(0, 4) === 'MM\u0000*')) return 'tiff';
+  return null;
+}
+async function formatoRealDeArchivo(file) {
+  try {
+    const buf = await file.slice(0, 32).arrayBuffer();
+    return formatoImagenDeBytes(new Uint8Array(buf));
+  } catch (_e) {
+    return null;
+  }
+}
+// Convierte cualquier imagen que el navegador SÍ pueda decodificar (Safari
+// decodifica HEIC) a un JPG real, con el lado mayor en máx. 1600 px.
+async function convertirImagenAJpeg(file, ladoMax = 1600) {
+  const bitmap = await createImageBitmap(file);
+  const escala = Math.min(1, ladoMax / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * escala));
+  const h = Math.max(1, Math.round(bitmap.height * escala));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  if (bitmap.close) bitmap.close();
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.88));
+  if (!blob) throw new Error('No se pudo convertir la imagen.');
+  const base = String(file.name || 'foto').replace(/\.[^.]+$/, '') || 'foto';
+  return new File([blob], `${base}.jpg`, { type: 'image/jpeg' });
+}
+const MENSAJE_HEIC_NO_CONVERTIBLE =
+  'Esta foto está en formato HEIC (iPhone/iPad) y este navegador no puede convertirla. Súbela desde el iPad/iPhone (se convierte sola a JPG) o expórtala como JPG.';
+
 async function uploadMedia(file, carpeta = 'general') {
   if (!file) return null;
-  const mime = mimeImagenDeArchivo(file);
-  if (/heic|heif/i.test(mime) || /^(heic|heif)$/i.test(extensionArchivo(file))) {
-    throw new Error('Las fotos HEIC del iPhone/iPad no se admiten — compártela o expórtala como JPG (o toma una captura) y vuelve a subirla.');
+  // App-151 — el formato REAL manda sobre el nombre/`type` del archivo.
+  const real = await formatoRealDeArchivo(file);
+  const pareceHeic = real === 'heic' || (!real && (/heic|heif/i.test(mimeImagenDeArchivo(file)) || /^(heic|heif)$/i.test(extensionArchivo(file))));
+  if (pareceHeic || real === 'avif' || real === 'bmp' || real === 'tiff') {
+    try {
+      file = await convertirImagenAJpeg(file);
+    } catch (_e) {
+      throw new Error(pareceHeic ? MENSAJE_HEIC_NO_CONVERTIBLE : 'Formato no admitido — solo se aceptan imágenes .jpg, .jpeg, .png o .webp.');
+    }
   }
+  const realFinal = file.type === 'image/jpeg' && pareceHeic ? 'jpeg' : await formatoRealDeArchivo(file);
+  const mime = realFinal ? `image/${realFinal}` : mimeImagenDeArchivo(file);
   if (!MIME_IMAGEN_PERMITIDOS.includes(mime)) {
     throw new Error('Formato no admitido — solo se aceptan imágenes .jpg, .jpeg, .png o .webp.');
   }
-  const ext = mime === 'image/jpeg' ? (extensionArchivo(file) === 'jpeg' ? 'jpeg' : 'jpg') : mime.split('/')[1];
+  const ext = mime === 'image/jpeg' ? 'jpg' : mime.split('/')[1];
   const nombreUnico = `${carpeta}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${ext}`;
   const { error } = await supabase.storage.from(BUCKET_MEDIA).upload(nombreUnico, file, {
     cacheControl: '3600',
@@ -1907,6 +1988,84 @@ async function eliminarImagenesProductoStorage(urls) {
     console.warn('[Imágenes] No se pudieron borrar del almacenamiento:', err);
     return { borradas: 0, error: err };
   }
+}
+
+// App-151 — ¿por qué no carga una foto? (solo se consulta cuando el <img>
+// falla): archivo inexistente, bucket sin lectura pública o formato que este
+// navegador no dibuja (HEIC del iPhone/iPad, que Safari sí muestra).
+async function diagnosticarImagenRota(url) {
+  const d = (corto, largo) => ({ corto, largo });
+  if (!/^https?:\/\//i.test(String(url || ''))) return d('Sin dirección', 'La foto no tiene una dirección válida. Vuelve a subirla.');
+  try {
+    const resp = await fetch(url, { cache: 'no-store' });
+    if (resp.status === 404 || resp.status === 400) return d('No existe', 'El archivo ya no existe en el almacenamiento. Vuelve a subirla.');
+    if (resp.status === 401 || resp.status === 403)
+      return d('Sin permiso', 'El almacenamiento no permite ver esta foto: el bucket «app-media» debe ser público.');
+    if (!resp.ok) return d(`Error ${resp.status}`, `El almacenamiento respondió ${resp.status}. Intenta de nuevo.`);
+    const buf = await resp.arrayBuffer();
+    const formato = formatoImagenDeBytes(new Uint8Array(buf.slice(0, 32)));
+    if (formato === 'heic')
+      return d('Formato HEIC', 'Está en formato HEIC (iPhone/iPad): Safari la muestra, pero este navegador no. Vuelve a subirla desde el iPad: ahora se convierte sola a JPG.');
+    if (formato === 'avif' || formato === 'tiff' || formato === 'bmp')
+      return d(`Formato ${formato.toUpperCase()}`, `Está en formato ${formato.toUpperCase()}, que este navegador no muestra. Vuelve a subirla (se convierte a JPG).`);
+    if (!formato) return d('No es imagen', 'El archivo guardado no es una imagen válida. Vuelve a subirla.');
+    return d('No se dibuja', 'Este navegador no pudo dibujar la foto. Vuelve a subirla.');
+  } catch (_e) {
+    return d('Sin descarga', 'No se pudo descargar la foto (red o bloqueador de contenido en este navegador).');
+  }
+}
+function MiniaturaImagenProducto({ url, alt, onDiagnostico }) {
+  const src = urlSegura(normalizarUrlMediaPublica(url)) || '';
+  const sinDireccion = { corto: 'Sin dirección', largo: 'La foto no tiene una dirección válida. Vuelve a subirla.' };
+  const [estado, setEstado] = useState(src ? 'cargando' : 'error');
+  const [motivo, setMotivo] = useState(src ? null : sinDireccion);
+  const avisarRef = useRef(onDiagnostico);
+  avisarRef.current = onDiagnostico;
+  useEffect(() => {
+    setEstado(src ? 'cargando' : 'error');
+    setMotivo(src ? null : sinDireccion);
+    avisarRef.current?.(src ? null : sinDireccion.largo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src]);
+  return (
+    <>
+      {src && (
+        <img
+          src={src}
+          alt={alt}
+          className={`h-full w-full object-cover transition-opacity ${estado === 'ok' ? 'opacity-100' : 'opacity-0'}`}
+          data-testid="miniatura-imagen"
+          data-estado={estado}
+          onLoad={() => {
+            setEstado('ok');
+            avisarRef.current?.(null);
+          }}
+          onError={() => {
+            setEstado('error');
+            diagnosticarImagenRota(src).then((m) => {
+              setMotivo(m);
+              avisarRef.current?.(m.largo);
+            });
+          }}
+        />
+      )}
+      {estado === 'cargando' && (
+        <span className="absolute inset-0 flex items-center justify-center text-slate-400">
+          <Loader2 size={16} className="animate-spin" />
+        </span>
+      )}
+      {estado === 'error' && (
+        <span
+          className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-rose-50 px-2 text-center text-[11px] font-black text-rose-700"
+          data-testid="miniatura-error"
+          title={motivo?.largo || src}
+        >
+          <AlertTriangle size={15} />
+          {motivo?.corto || 'Revisando…'}
+        </span>
+      )}
+    </>
+  );
 }
 
 // Selector de archivo + subida a Storage reutilizable en cualquier modal que
@@ -15416,7 +15575,7 @@ function ModalNuevoProducto({
     // App-150 — misma regla que `obtenerFotoProducto`: `imagen_url` es la
     // portada y luego el resto de `imagenes` (sin importar en cuál de las dos
     // columnas quedó guardada la foto).
-    const crudas = [...new Set([producto?.imagen_url, ...arregloImagenesCrudo(producto?.imagenes)].map((u) => String(u ?? '').trim()).filter(Boolean))];
+    const crudas = [...new Set([producto?.imagen_url, ...arregloImagenesCrudo(producto?.imagenes)].map(urlDeElementoImagen).filter(Boolean))];
     const validas = [];
     let descartadas = 0;
     crudas.forEach((u) => {
@@ -15518,6 +15677,17 @@ function ModalNuevoProducto({
   // Múltiples Imágenes: cada subida AGREGA una foto más al arreglo (nunca
   // reemplaza las anteriores) — el admin repite "Subir archivo" tantas
   // veces como fotos quiera para ropa/accesorios con varios ángulos.
+  // App-151 — motivo (por URL) de las fotos que este navegador no pudo dibujar.
+  const [problemasFotos, setProblemasFotos] = useState({});
+  const registrarProblemaFoto = useCallback((url, motivo) => {
+    setProblemasFotos((prev) => {
+      if ((prev[url] || null) === (motivo || null)) return prev;
+      const sig = { ...prev };
+      if (motivo) sig[url] = motivo;
+      else delete sig[url];
+      return sig;
+    });
+  }, []);
   function onImagenSubida(url) {
     setError('');
     subidasSesionRef.current = [...subidasSesionRef.current, url];
@@ -16070,13 +16240,13 @@ function ModalNuevoProducto({
                   data-portada={idx === 0 ? 'si' : 'no'}
                   data-url={url}
                 >
-                  <img
-                    src={urlSegura(url) || undefined}
+                  {/* App-151 — la miniatura lee la URL absoluta y, si este
+                      navegador no puede dibujarla, dice por qué (en vez de
+                      quedarse gris). Portada / quitar siguen por índice. */}
+                  <MiniaturaImagenProducto
+                    url={url}
                     alt={idx === 0 ? 'Portada del producto' : `Imagen ${idx + 1}`}
-                    className="h-full w-full object-cover"
-                    onError={(e) => {
-                      e.currentTarget.style.display = 'none';
-                    }}
+                    onDiagnostico={(m) => registrarProblemaFoto(url, m)}
                   />
                   {idx === 0 && (
                     <span
@@ -16111,8 +16281,20 @@ function ModalNuevoProducto({
             </div>
           ) : (
             <div className="flex h-20 items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-center text-[11px] text-slate-400">
-              Sin imágenes todavía — se usará una de referencia por categoría
+              Sin imágenes todavía — se mostrará «Sin foto»
             </div>
+          )}
+          {/* App-151 — por qué no se ve cada foto (solo las que fallan). */}
+          {imagenes.some((u) => problemasFotos[u]) && (
+            <ul className="space-y-1 rounded-lg bg-rose-50 px-3 py-2 text-[11px] font-semibold text-rose-800 ring-1 ring-rose-200" data-testid="avisos-fotos">
+              {imagenes.map((u, i) =>
+                problemasFotos[u] ? (
+                  <li key={`${u}-${i}`}>
+                    <b>{i === 0 ? 'Portada' : `Foto ${i + 1}`}:</b> {problemasFotos[u]}
+                  </li>
+                ) : null
+              )}
+            </ul>
           )}
         </div>
 
