@@ -2605,6 +2605,8 @@ const PERMISOS_POR_ROL = {
     modulos: 'todos',
     puedeCancelarReservas: true,
     puedeReprogramarReservas: true,
+    // App-157 — Ajustar Duración de reservas en mostrador (v146; el servidor valida PIN y rol).
+    puedeAjustarDuracionReserva: true,
     puedeAplicarDescuentoManual: true,
     puedeEditarPrecioPOS: true,
     puedeRegistrarDevolucionPOS: true,
@@ -2656,6 +2658,8 @@ const PERMISOS_POR_ROL = {
     modulos: ['parrilla', 'pos', 'erp', 'contabilidad', 'analytics', 'torneos', 'academia', 'jugadores', 'seguridad'],
     puedeCancelarReservas: true,
     puedeReprogramarReservas: true,
+    // App-157 — Ajustar Duración de reservas en mostrador (v146; el servidor valida PIN y rol).
+    puedeAjustarDuracionReserva: true,
     puedeAplicarDescuentoManual: true,
     puedeEditarPrecioPOS: true,
     puedeRegistrarDevolucionPOS: true,
@@ -2691,6 +2695,8 @@ const PERMISOS_POR_ROL = {
     modulos: ['parrilla', 'pos', 'academia', 'jugadores', 'torneos'],
     puedeCancelarReservas: true,
     puedeReprogramarReservas: true,
+    // App-157 — Ajustar Duración de reservas en mostrador (v146; el servidor valida PIN y rol).
+    puedeAjustarDuracionReserva: true,
     puedeAplicarDescuentoManual: false,
     puedeEditarPrecioPOS: false,
     puedeRegistrarDevolucionPOS: false,
@@ -2723,6 +2729,8 @@ const PERMISOS_POR_ROL = {
     modulos: ['pos', 'erp'],
     puedeCancelarReservas: false,
     puedeReprogramarReservas: false,
+    // App-157 — Ajustar Duración de reservas en mostrador (v146; el servidor valida PIN y rol).
+    puedeAjustarDuracionReserva: false,
     puedeAplicarDescuentoManual: false,
     puedeEditarPrecioPOS: false,
     puedeRegistrarDevolucionPOS: true, // devoluciones de barra (producto en mal estado, pedido equivocado...)
@@ -2748,6 +2756,8 @@ const PERMISOS_POR_ROL = {
     modulos: ['parrilla', 'academia', 'jugadores', 'torneos'],
     puedeCancelarReservas: false,
     puedeReprogramarReservas: false,
+    // App-157 — Ajustar Duración de reservas en mostrador (v146; el servidor valida PIN y rol).
+    puedeAjustarDuracionReserva: false,
     puedeAplicarDescuentoManual: false,
     puedeEditarPrecioPOS: false,
     puedeRegistrarDevolucionPOS: false,
@@ -2790,6 +2800,8 @@ const PERMISOS_POR_ROL = {
     modulos: ['contabilidad', 'erp', 'analytics'],
     puedeCancelarReservas: false,
     puedeReprogramarReservas: false,
+    // App-157 — Ajustar Duración de reservas en mostrador (v146; el servidor valida PIN y rol).
+    puedeAjustarDuracionReserva: false,
     puedeAplicarDescuentoManual: false,
     puedeEditarPrecioPOS: false,
     puedeRegistrarDevolucionPOS: false,
@@ -5332,6 +5344,14 @@ function validarToleranciaCancelacion(fechaEventoMs, toleranciaHoras) {
 // en Reservas/Clases, `estatus_pago` en algunas filas de Retas/Torneos más
 // viejas) nunca hagan que una reserva sin pago real se lea como "pagada" ni
 // viceversa. Úsalo en vez de comparar `=== 'pendiente'` a mano.
+// App-157 — al liquidar en Cuentas Pendientes: una reserva YA pagada que solo
+// debía tiempo extra (`saldo_mostrador`, v146) conserva su estado y método de
+// pago originales (p. ej. pagada en línea) y solo se limpia el saldo.
+function camposReservaAlLiquidar(reserva, metodoPago) {
+  if (Number(reserva?.saldo_mostrador) > 0 && String(reserva?.estado_pago || '').toLowerCase() === 'pagado') return { saldo_mostrador: 0 };
+  return { estado_pago: 'pagado', metodo_pago: metodoPago };
+}
+
 function esPagoPendiente(entidad) {
   return ['pendiente', 'pago_en_club', 'pendiente_pago'].includes(
     String(entidad?.estado_pago ?? entidad?.estatus_pago ?? '').toLowerCase()
@@ -10039,10 +10059,399 @@ function ModalNuevaReserva({
  * MODAL: DETALLE / VER HORARIOS + CANCELACIÓN CON SALDO A FAVOR
  * ==========================================================================*/
 
+// ============================================================================
+// App-157 — AJUSTAR DURACIÓN de una reserva en mostrador (migración v146)
+// ============================================================================
+// Desde el Detalle de Reserva (Parrilla), Recepción · Gerente · Dueño cambian
+// la hora de FIN (bloques de 30 min) y, si quieren, la cancha. Todo lo decide
+// el servidor en UNA transacción (`fn_reserva_ajustar_duracion`, con PIN):
+// disponibilidad, recálculo del cobro y el destino del dinero. Nunca se toca
+// Stripe ni se reembolsa a la tarjeta:
+//   • Pendiente de pago → se recalcula lo que se cobrará en recepción.
+//   • Pagada + extensión → «saldo pendiente en mostrador» (Smart POS →
+//     Cuentas Pendientes).
+//   • Pagada + reducción → Wallet del jugador, efectivo de la caja abierta o
+//     sin devolución (con motivo). Lo que se debía en mostrador se cancela
+//     primero.
+const ROLES_AJUSTE_DURACION = ['owner', 'manager', 'recepcion'];
+const MAX_MIN_AJUSTE_DURACION = 6 * 60;
+const MENSAJE_FALTA_V146 = 'Falta correr la migración v146 en Supabase (Ajustar Duración).';
+
+function situacionPagoReservaAjuste(reserva) {
+  if (reserva?.pago_en_linea_estado === 'pagado') return 'pagado_en_linea';
+  const ep = String(reserva?.estado_pago ?? reserva?.estatus_pago ?? '').toLowerCase().trim();
+  if (!ep || esPagoPendiente(reserva)) return 'pendiente';
+  if (ep === 'pagado' || ep === 'pagada') return 'pagado_mostrador';
+  return 'otro';
+}
+
+function etiquetaDuracionAjuste(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h === 0) return `${m} min`;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+async function rpcAjusteDuracion(nombre, args) {
+  try {
+    const { data, error } = await supabase.rpc(nombre, args);
+    if (error) {
+      const sinModulo = /could not find the function|does not exist|PGRST202/i.test(`${error.code || ''} ${error.message || ''}`);
+      return { ok: false, codigo: sinModulo ? 'sin_modulo' : 'error', mensaje: sinModulo ? MENSAJE_FALTA_V146 : error.message || 'No se pudo conectar con el servidor.' };
+    }
+    if (!data || typeof data !== 'object') return { ok: false, codigo: 'error', mensaje: 'Respuesta inesperada del servidor.' };
+    if (data.ok === false && !data.mensaje) return { ...data, mensaje: MENSAJES_CODIGO_CAJA[data.codigo] || 'No se pudo completar el ajuste.' };
+    return data;
+  } catch (err) {
+    return { ok: false, codigo: 'error', mensaje: err?.message || 'Sin conexión con el servidor. No se cambió nada.' };
+  }
+}
+
+function PanelAjustarDuracion({ reserva, cancha, canchas = [], reservas = [], configClub, tarifasHorarios = [], onRegresar, onAjustada }) {
+  const toast = useToast();
+  const caja = useCaja();
+  const ini = parseHoraAMinutos(reserva.hora_inicio);
+  const finCrudo = parseHoraAMinutos(reserva.hora_fin);
+  const finActual = finCrudo === 0 ? 24 * 60 : finCrudo;
+  const durActual = ini !== null && finActual !== null && finActual > ini ? finActual - ini : 60;
+  const operacion = minutosOperacionDelClub(configClub, reserva.fecha || null);
+  const limiteFin = Math.max(operacion.cierreMin, finActual || 0);
+  const opciones = useMemo(() => {
+    if (ini === null) return [];
+    const lista = [];
+    const tope = Math.max(MAX_MIN_AJUSTE_DURACION, durActual);
+    for (let d = 30; ini + d <= limiteFin && d <= tope; d += 30) lista.push(d);
+    if (!lista.includes(durActual)) lista.push(durActual);
+    return lista.sort((a, b) => a - b);
+  }, [ini, limiteFin, durActual]);
+
+  const [duracion, setDuracion] = useState(durActual);
+  const [canchaDestinoId, setCanchaDestinoId] = useState(reserva.cancha_id);
+  const canchaDestino = canchas.find((c) => String(c.id) === String(canchaDestinoId)) || cancha;
+  const cambiaCancha = String(canchaDestinoId) !== String(reserva.cancha_id);
+  const horaFinNueva = ini !== null ? minutosAHora(ini + duracion) : reserva.hora_fin;
+  const situacion = situacionPagoReservaAjuste(reserva);
+  const pagada = situacion === 'pagado_mostrador' || situacion === 'pagado_en_linea';
+
+  // Precio sugerido = lo que ya vale la reserva + la diferencia de tarifa del
+  // club entre el tiempo nuevo y el actual (conserva descuentos y promociones
+  // que ya traía). Sin tarifa configurada: proporcional al tiempo.
+  const montoActual = Math.round((Number(reserva.monto_total) || 0) * 100) / 100;
+  const sugerido = useMemo(() => {
+    const dow = reserva.fecha ? new Date(`${reserva.fecha}T12:00:00`).getDay() : null;
+    const tarifasDe = (c) =>
+      configClub?.tarifasHabilitadas === false || dow === null ? [] : tarifasActivasDelDia(tarifasHorarios, dow, { fecha: reserva.fecha, canchaId: c?.id ?? null });
+    const cotizar = (c, min) =>
+      cotizarReservaConPromo(reserva.hora_inicio, min, tarifasDe(c), precioPorHoraDeCancha(c), promoSegundaHoraDelClub(configClub), c?.id ?? null, reserva.fecha).total || 0;
+    if (duracion === durActual && !cambiaCancha) return montoActual;
+    const cotNueva = cotizar(canchaDestino, duracion);
+    const cotActual = cotizar(cancha, durActual);
+    const s = cotNueva > 0 || cotActual > 0 ? montoActual + (cotNueva - cotActual) : durActual > 0 ? (montoActual * duracion) / durActual : montoActual;
+    return Math.max(0, Math.round(s * 100) / 100);
+  }, [reserva.fecha, reserva.hora_inicio, configClub, tarifasHorarios, canchaDestino, cancha, duracion, durActual, cambiaCancha, montoActual]);
+
+  const [precioManual, setPrecioManual] = useState(false);
+  const [montoManual, setMontoManual] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const montoFinal = precioManual && montoManual !== '' ? Math.round(Number(montoManual) * 100) / 100 : sugerido;
+  const montoValido = Number.isFinite(montoFinal) && montoFinal >= 0;
+  const delta = montoValido ? Math.round((montoFinal - montoActual) * 100) / 100 : 0;
+  const saldoMostrador = Number(reserva.saldo_mostrador) || 0;
+  const saldoCancelado = pagada && delta < 0 ? Math.min(-delta, saldoMostrador) : 0;
+  const resto = pagada && delta < 0 ? Math.round((-delta - saldoCancelado) * 100) / 100 : 0;
+  const tieneJugador = Boolean(reserva.jugador_id);
+  const cajaAbierta = caja?.cajaTerminal?.sesion?.estado === 'abierta';
+  const [tratamiento, setTratamiento] = useState(tieneJugador ? 'wallet' : 'efectivo');
+  const sinCambios = duracion === durActual && !cambiaCancha && Math.abs(delta) < 0.01;
+
+  // Vista previa local (al instante) + verificación del SERVIDOR (la que manda).
+  const cruceLocal = useMemo(
+    () => (ini === null ? null : buscarSolapeEnCancha(reservas.filter((r) => r.id !== reserva.id), canchaDestino?.id ?? canchaDestinoId, reserva.fecha, reserva.hora_inicio, horaFinNueva)),
+    [reservas, reserva.id, reserva.fecha, reserva.hora_inicio, canchaDestino, canchaDestinoId, horaFinNueva, ini]
+  );
+  const [verificacion, setVerificacion] = useState({ estado: 'sin_cambios' });
+  const consultaRef = useRef(0);
+  useEffect(() => {
+    if (duracion === durActual && !cambiaCancha) {
+      setVerificacion({ estado: 'sin_cambios' });
+      return undefined;
+    }
+    const n = ++consultaRef.current;
+    setVerificacion({ estado: 'cargando' });
+    const t = setTimeout(async () => {
+      const r = await rpcAjusteDuracion('fn_reserva_ajuste_disponibilidad', {
+        p_reserva_id: String(reserva.id),
+        p_hora_fin: horaFinNueva,
+        p_cancha_id: String(canchaDestino?.id ?? canchaDestinoId),
+      });
+      if (n !== consultaRef.current) return;
+      if (!r.ok) setVerificacion({ estado: 'error', mensaje: r.mensaje, codigo: r.codigo });
+      else if (!r.disponible) setVerificacion({ estado: 'ocupado', conflictos: r.conflictos || [], canchasLibres: r.canchas_libres || [] });
+      else setVerificacion({ estado: 'libre' });
+    }, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duracion, canchaDestinoId]);
+
+  const [auth, setAuth] = useState({ empleadoId: '', pin: '' });
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  const ocupado = verificacion.estado === 'ocupado' || (verificacion.estado !== 'libre' && Boolean(cruceLocal));
+  const conflictos = verificacion.estado === 'ocupado' ? verificacion.conflictos : cruceLocal ? [{ jugador_nombre: cruceLocal.jugador_nombre, hora_inicio: cruceLocal.hora_inicio, hora_fin: cruceLocal.hora_fin }] : [];
+  const canchasLibres = useMemo(() => {
+    const ids = verificacion.estado === 'ocupado' ? (verificacion.canchasLibres || []).map((c) => String(c.id)) : null;
+    return canchas.filter((c) => {
+      if (String(c.id) === String(canchaDestino?.id ?? canchaDestinoId)) return false;
+      if (ids) return ids.includes(String(c.id));
+      return !buscarSolapeEnCancha(reservas.filter((r) => r.id !== reserva.id), c.id, reserva.fecha, reserva.hora_inicio, horaFinNueva);
+    });
+  }, [verificacion, canchas, canchaDestino, canchaDestinoId, reservas, reserva.id, reserva.fecha, reserva.hora_inicio, horaFinNueva]);
+
+  async function aplicar() {
+    setError('');
+    if (sinCambios) return setError('Elige otra duración, otra cancha o ajusta el precio.');
+    if (!montoValido) return setError('Revisa el precio: debe ser de $0 o más.');
+    if (precioManual && Math.abs(montoFinal - sugerido) >= 0.01 && motivo.trim().length < 3) return setError('El precio no es el sugerido: escribe el motivo (ej. cortesía).');
+    if (resto > 0 && tratamiento === 'sin_devolucion' && motivo.trim().length < 3) return setError('Sin devolución: escribe el motivo.');
+    if (resto > 0 && tratamiento === 'wallet' && !tieneJugador) return setError('Esta reserva no tiene jugador del directorio: elige efectivo o sin devolución.');
+    if (ocupado) return setError('Ese horario está ocupado en esta cancha. Elige otra duración o una cancha libre.');
+    if (verificacion.estado === 'error' && verificacion.codigo === 'sin_modulo') return setError(MENSAJE_FALTA_V146);
+    if (!auth.empleadoId || !auth.pin) return setError('Elige quién autoriza y escribe su PIN.');
+    setEnviando(true);
+    const r = await rpcAjusteDuracion('fn_reserva_ajustar_duracion', {
+      p_reserva_id: String(reserva.id),
+      p_hora_fin: horaFinNueva,
+      p_cancha_id: String(canchaDestino?.id ?? canchaDestinoId),
+      p_monto_nuevo: montoFinal,
+      p_monto_sugerido: sugerido,
+      p_tratamiento: resto > 0 ? tratamiento : null,
+      p_motivo: motivo.trim() || null,
+      p_empleado_id: auth.empleadoId,
+      p_pin: auth.pin,
+    });
+    setEnviando(false);
+    if (!r.ok) {
+      setAuth((a) => ({ ...a, pin: '' }));
+      if (r.codigo === 'horario_ocupado') setVerificacion({ estado: 'ocupado', conflictos: r.conflictos || [], canchasLibres: r.canchas_libres || [] });
+      return setError(r.mensaje || 'No se pudo ajustar la duración.');
+    }
+    const nombre = reserva.jugador_nombre || 'el jugador';
+    const detalle =
+      r.tratamiento === 'recalculo_pendiente'
+        ? `Nuevo total por cobrar en recepción: ${formatoMoneda(montoFinal)}.`
+        : r.tratamiento === 'saldo_mostrador' && Number(r.saldo_mostrador) > 0
+        ? `Quedan ${formatoMoneda(r.saldo_mostrador)} pendientes en mostrador (Smart POS → Cuentas Pendientes).`
+        : r.tratamiento === 'saldo_mostrador'
+        ? `Se canceló el saldo pendiente de ${formatoMoneda(r.saldo_cancelado)}.`
+        : r.tratamiento === 'wallet'
+        ? `Se abonaron ${formatoMoneda(r.devuelto)} al Wallet de ${nombre}.`
+        : r.tratamiento === 'efectivo'
+        ? `Entrega ${formatoMoneda(r.devuelto)} en efectivo de la caja.`
+        : r.tratamiento === 'sin_devolucion'
+        ? 'Sin devolución: el club conserva lo pagado.'
+        : 'El precio no cambió.';
+    toast({ titulo: `Duración ajustada · ${formatoHora12(reserva.hora_inicio)} – ${formatoHora12(horaFinNueva)}`, detalle });
+    onAjustada?.(r.reserva && typeof r.reserva === 'object' ? r.reserva : { ...reserva, hora_fin: horaFinNueva, cancha_id: canchaDestino?.id ?? canchaDestinoId, monto_total: montoFinal }, r);
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-sky-200 bg-sky-50 p-4" data-testid="panel-ajustar-duracion">
+      <p className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+        <Timer size={15} className="text-sky-600" /> Ajustar duración
+      </p>
+      <p className="text-xs font-semibold text-slate-600">
+        {cancha?.nombre || 'Cancha'} · Actual: {formatoHora12(reserva.hora_inicio)} – {formatoHora12(reserva.hora_fin)} ({etiquetaDuracionAjuste(durActual)}) · {formatoMoneda(montoActual)}
+      </p>
+
+      <div>
+        <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">Nueva duración</p>
+        <div className="flex flex-wrap gap-1.5" data-testid="ajuste-opciones-duracion">
+          {opciones.map((d) => {
+            const fin = minutosAHora(ini + d);
+            const choca = Boolean(buscarSolapeEnCancha(reservas.filter((r) => r.id !== reserva.id), canchaDestino?.id ?? canchaDestinoId, reserva.fecha, reserva.hora_inicio, fin));
+            const activa = d === duracion;
+            return (
+              <button
+                key={d}
+                type="button"
+                onClick={() => setDuracion(d)}
+                data-testid={`ajuste-duracion-${d}`}
+                className={`flex flex-col items-start rounded-lg border px-2.5 py-1.5 text-left transition ${
+                  activa ? 'border-sky-500 bg-white ring-2 ring-sky-400' : choca ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white hover:border-sky-300'
+                }`}
+              >
+                <span className="text-xs font-black text-slate-900">
+                  {etiquetaDuracionAjuste(d)}
+                  {d === durActual && <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] font-bold uppercase text-slate-500">Actual</span>}
+                </span>
+                <span className={`text-[10px] font-semibold ${choca ? 'text-amber-700' : 'text-slate-500'}`}>{choca ? 'Ocupado' : `hasta ${formatoHora12(fin)}`}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {cambiaCancha && (
+        <p className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-700 ring-1 ring-sky-200" data-testid="ajuste-cambio-cancha">
+          <span>Se mueve a {canchaDestino?.nombre || 'otra cancha'}</span>
+          <button type="button" className="text-[11px] font-bold text-sky-700 underline" onClick={() => setCanchaDestinoId(reserva.cancha_id)}>
+            Volver a {cancha?.nombre || 'la cancha original'}
+          </button>
+        </p>
+      )}
+
+      {verificacion.estado === 'cargando' && (
+        <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+          <Loader2 size={12} className="animate-spin" /> Revisando disponibilidad…
+        </p>
+      )}
+      {ocupado && (
+        <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3" data-testid="ajuste-ocupado">
+          <p className="flex items-start gap-1.5 text-xs font-bold text-amber-900">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            Horario ocupado en {canchaDestino?.nombre || 'esta cancha'}
+            {conflictos[0] ? `: ${conflictos[0].jugador_nombre || 'otra reserva'} de ${formatoHora12(conflictos[0].hora_inicio)} a ${formatoHora12(conflictos[0].hora_fin)}.` : '.'}
+          </p>
+          {canchasLibres.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-semibold text-amber-900">Libre en ese horario:</span>
+              {canchasLibres.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setCanchaDestinoId(c.id)}
+                  data-testid={`ajuste-cancha-libre-${c.id}`}
+                  className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-sky-700 ring-1 ring-sky-300 hover:bg-sky-50"
+                >
+                  Mover a {c.nombre}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] font-semibold text-amber-900">No hay otra cancha libre en ese horario.</p>
+          )}
+        </div>
+      )}
+      {verificacion.estado === 'error' && <p className="text-[11px] font-semibold text-rose-600">{verificacion.mensaje}</p>}
+
+      <div className="space-y-2 rounded-lg bg-white p-3 ring-1 ring-slate-200" data-testid="ajuste-precio">
+        <div className="flex items-center justify-between text-xs">
+          <span className="font-semibold text-slate-600">Precio sugerido (tarifa del club)</span>
+          <span className="font-black text-slate-900" data-testid="ajuste-precio-sugerido">{formatoMoneda(sugerido)}</span>
+        </div>
+        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+          <input
+            type="checkbox"
+            checked={precioManual}
+            onChange={(e) => {
+              setPrecioManual(e.target.checked);
+              if (e.target.checked && montoManual === '') setMontoManual(String(sugerido));
+            }}
+            className="h-4 w-4 accent-sky-600"
+            data-testid="ajuste-precio-manual"
+          />
+          Ajustar precio manualmente (cortesía / acuerdo)
+        </label>
+        {precioManual && (
+          <input
+            type="number"
+            inputMode="decimal"
+            min="0"
+            step="1"
+            value={montoManual}
+            onChange={(e) => setMontoManual(e.target.value)}
+            className={inputClase}
+            data-testid="ajuste-precio-manual-monto"
+          />
+        )}
+      </div>
+
+      <div className="space-y-1.5 rounded-lg bg-white p-3 text-xs ring-1 ring-slate-200" data-testid="ajuste-resumen">
+        <div className="flex justify-between">
+          <span className="text-slate-600">Total de la renta</span>
+          <span className="font-bold text-slate-900">
+            {formatoMoneda(montoActual)} → {formatoMoneda(montoValido ? montoFinal : montoActual)}
+          </span>
+        </div>
+        {situacion === 'pendiente' && delta !== 0 && (
+          <p className="font-semibold text-slate-600">Aún no se ha cobrado: el nuevo total se cobra en recepción (Smart POS → Cuentas Pendientes).</p>
+        )}
+        {pagada && delta > 0 && (
+          <p className="font-semibold text-amber-800" data-testid="ajuste-saldo-mostrador">
+            Ya está pagada: quedan {formatoMoneda(delta)} pendientes en mostrador (Smart POS → Cuentas Pendientes).
+            {situacion === 'pagado_en_linea' ? ' No se cobra a la tarjeta del jugador.' : ''}
+          </p>
+        )}
+        {saldoCancelado > 0 && <p className="font-semibold text-slate-600">Se cancela el saldo pendiente en mostrador de {formatoMoneda(saldoCancelado)}.</p>}
+        {resto > 0 && (
+          <div className="space-y-1.5" data-testid="ajuste-devolucion">
+            <p className="font-bold text-slate-800">Diferencia a favor del jugador: {formatoMoneda(resto)}</p>
+            {[
+              { valor: 'wallet', etiqueta: `Abonar al Wallet de ${reserva.jugador_nombre || 'el jugador'}`, deshabilitado: !tieneJugador, nota: tieneJugador ? 'Saldo a favor para futuras reservas.' : 'Sin jugador del directorio.' },
+              { valor: 'efectivo', etiqueta: 'Devolver en efectivo de la caja', deshabilitado: false, nota: cajaAbierta ? 'Se registra como salida de la caja abierta.' : 'Requiere la caja de esta terminal abierta.' },
+              { valor: 'sin_devolucion', etiqueta: 'Sin devolución', deshabilitado: false, nota: 'El club conserva lo pagado (escribe el motivo).' },
+            ].map((o) => (
+              <label key={o.valor} className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${o.deshabilitado ? 'opacity-50' : 'hover:bg-slate-50'}`}>
+                <input
+                  type="radio"
+                  name={`ajuste-tratamiento-${reserva.id}`}
+                  value={o.valor}
+                  checked={tratamiento === o.valor}
+                  disabled={o.deshabilitado}
+                  onChange={() => setTratamiento(o.valor)}
+                  className="mt-0.5 accent-sky-600"
+                  data-testid={`ajuste-tratamiento-${o.valor}`}
+                />
+                <span>
+                  <span className="block font-semibold text-slate-800">{o.etiqueta}</span>
+                  <span className="block text-[10px] text-slate-500">{o.nota}</span>
+                </span>
+              </label>
+            ))}
+            <p className="text-[10px] font-semibold text-slate-500">Nunca se reembolsa a la tarjeta: el pago en línea (Stripe) no se toca.</p>
+          </div>
+        )}
+      </div>
+
+      {((precioManual && Math.abs(montoFinal - sugerido) >= 0.01) || (resto > 0 && tratamiento === 'sin_devolucion')) && (
+        <Campo label="Motivo (obligatorio)">
+          <input value={motivo} onChange={(e) => setMotivo(e.target.value)} className={inputClase} placeholder="Ej. cortesía por cliente frecuente" data-testid="ajuste-motivo" />
+        </Campo>
+      )}
+
+      <AutorizacionPinCaja empleados={caja?.empleados || []} operador={caja?.operador} roles={ROLES_AJUSTE_DURACION} valor={auth} onChange={setAuth} testid="autorizacion-ajuste" />
+
+      {error && (
+        <p className="text-xs font-semibold text-rose-600" data-testid="ajuste-error">
+          {error}
+        </p>
+      )}
+      <div className="flex justify-end gap-2 pt-1">
+        <BotonSecundario onClick={onRegresar} disabled={enviando}>
+          Regresar
+        </BotonSecundario>
+        <button
+          onClick={aplicar}
+          disabled={enviando || sinCambios}
+          data-testid="ajuste-aplicar"
+          className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-sky-500 disabled:opacity-50"
+        >
+          {enviando ? <Loader2 size={15} className="animate-spin" /> : <Timer size={15} />}
+          Aplicar ajuste
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DetalleReserva({
   reserva,
   cancha,
   reservas = [],
+  // App-157 — Ajustar Duración (v146)
+  canchas = [],
+  tarifasHorarios = [],
+  onAjustada,
   permisos,
   configClub,
   onVolver,
@@ -10128,6 +10537,8 @@ function DetalleReserva({
   // bloque horario de esta MISMA reserva/cancha (día y jugador se quedan
   // igual). Gateado por `permisos.puedeReprogramarReservas`.
   const [mostrarReprogramar, setMostrarReprogramar] = useState(false);
+  // App-157 — Ajustar Duración (extender / reducir) en mostrador.
+  const [mostrarAjuste, setMostrarAjuste] = useState(false);
   const [nuevaHoraInicio, setNuevaHoraInicio] = useState(reserva.hora_inicio || '');
   const [nuevaHoraFin, setNuevaHoraFin] = useState(reserva.hora_fin || '');
   const [procesandoReprogramar, setProcesandoReprogramar] = useState(false);
@@ -10510,10 +10921,16 @@ function DetalleReserva({
               <CreditCard size={12} /> {METODOS_PAGO.find((m) => m.value === reserva.metodo_pago)?.label || reserva.metodo_pago}
             </span>
           )}
+          {Number(reserva.saldo_mostrador) > 0 && (
+            // App-157 — tiempo extra de una reserva ya pagada, por cobrar en mostrador.
+            <span className="col-span-2 flex items-center gap-1.5 font-bold text-amber-700" data-testid="detalle-saldo-mostrador">
+              <Timer size={12} /> Saldo pendiente en mostrador: {formatoMoneda(reserva.saldo_mostrador)}
+            </span>
+          )}
         </div>
       </div>
 
-      {!mostrarCancelacion && !mostrarReprogramar ? (
+      {!mostrarCancelacion && !mostrarReprogramar && !mostrarAjuste ? (
         <div className="flex justify-between gap-2">
           {onVolver ? (
             <BotonSecundario onClick={onVolver}>
@@ -10522,7 +10939,16 @@ function DetalleReserva({
           ) : (
             <span />
           )}
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {permisos?.puedeAjustarDuracionReserva && reserva.pago_en_linea_estado !== 'procesando' && (
+              <button
+                onClick={() => setMostrarAjuste(true)}
+                data-testid="boton-ajustar-duracion"
+                className="inline-flex items-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-4 py-2.5 text-sm font-bold text-sky-700 transition hover:bg-sky-500/20"
+              >
+                <Timer size={15} /> Ajustar Duración
+              </button>
+            )}
             {permisos?.puedeReprogramarReservas && (
               <button
                 onClick={() => setMostrarReprogramar(true)}
@@ -10549,6 +10975,20 @@ function DetalleReserva({
             )}
           </div>
         </div>
+      ) : mostrarAjuste ? (
+        <PanelAjustarDuracion
+          reserva={reserva}
+          cancha={cancha}
+          canchas={canchas}
+          reservas={reservas}
+          configClub={configClub}
+          tarifasHorarios={tarifasHorarios}
+          onRegresar={() => setMostrarAjuste(false)}
+          onAjustada={(reservaActualizada) => {
+            onAjustada?.(reservaActualizada);
+            onClose();
+          }}
+        />
       ) : mostrarReprogramar ? (
         // Contraste (fix): antes era fondo violeta muy oscuro translúcido con
         // texto violeta claro — sobre el modal claro casi no se leía. Ahora
@@ -10772,6 +11212,10 @@ function DetalleReserva({
 function ModalDetalleCancha({
   cancha,
   reservas,
+  // App-157 — Ajustar Duración (v146)
+  canchas = [],
+  tarifasHorarios = [],
+  onAjustada,
   fechaSeleccionada,
   reservaInicial,
   permisos,
@@ -10816,6 +11260,9 @@ function ModalDetalleCancha({
           onReprogramada={onReprogramada}
           onRegistrarAuditoria={onRegistrarAuditoria}
           onCancelarClaseDesdeParrilla={onCancelarClaseDesdeParrilla}
+          canchas={canchas}
+          tarifasHorarios={tarifasHorarios}
+          onAjustada={onAjustada || onReprogramada}
         />
       </ModalShell>
     );
@@ -11519,6 +11966,9 @@ function ModuloParrillaOperativa({
           onClose={() => setModalDetalle(null)}
           onCancelada={(id) => marcarReservaCancelada(id)}
           onReprogramada={(reserva) => upsertReserva(reserva)}
+          onAjustada={(reserva) => upsertReserva(reserva)}
+          canchas={canchas}
+          tarifasHorarios={tarifasHorarios}
           onRegistrarAuditoria={onRegistrarAuditoria}
           onCancelarClaseDesdeParrilla={onCancelarClaseDesdeParrilla}
           estadoRetaDeReserva={estadoRetaDeReserva}
@@ -14493,6 +14943,7 @@ function ResultadoCierreCaja({ resultado, caja: cajaSel, onRetirado }) {
         <p className="text-[11px] text-slate-500" data-testid="cierre-desglose">
           Fondo {formatoMoneda(resultado.desglose.fondo)} + ventas en efectivo {formatoMoneda(resultado.desglose.ventas_efectivo)} + ingresos{' '}
           {formatoMoneda(resultado.desglose.ingresos)} − gastos {formatoMoneda(resultado.desglose.gastos)} − retiros {formatoMoneda(resultado.desglose.retiros)}
+          {Number(resultado.desglose.devoluciones) > 0 ? ` − devoluciones ${formatoMoneda(resultado.desglose.devoluciones)}` : ''}
         </p>
       )}
       <RetiroGananciaConPermisoCaja
@@ -14723,7 +15174,7 @@ function PanelMovimientosCaja({ cajaSel, onVolver }) {
     { value: 'retiro', label: 'Retiro (sangría)' },
     { value: 'reposicion', label: 'Reposición de fondo' },
   ];
-  const ETIQUETA_TIPO_MOV = { gasto: 'Gasto', retiro: 'Retiro', reposicion: 'Reposición', ingreso_inscripcion: 'Inscripción en efectivo', retiro_cierre: 'Retiro de ganancia' };
+  const ETIQUETA_TIPO_MOV = { gasto: 'Gasto', retiro: 'Retiro', reposicion: 'Reposición', ingreso_inscripcion: 'Inscripción en efectivo', retiro_cierre: 'Retiro de ganancia', devolucion_reserva: 'Devolución de reserva' };
   return (
     <div className="space-y-4" data-testid="panel-movimientos-caja">
       <EnlaceAtrasWizard onClick={onVolver}>Volver</EnlaceAtrasWizard>
@@ -14860,6 +15311,8 @@ function PanelCorteEnVivoCaja({ cajaSel, onVolver }) {
         ['Inscripciones y reposiciones', calculo.ingresos, '+'],
         ['Gastos de caja chica', calculo.gastos, '−'],
         ['Retiros', calculo.retiros, '−'],
+        // App-157 — devoluciones de reservas reducidas (v146); solo si hubo.
+        ...(Number(calculo.devoluciones) > 0 ? [['Devoluciones de reservas', calculo.devoluciones, '−']] : []),
       ]
     : [];
   return (
@@ -19656,6 +20109,8 @@ function ModuloSmartPOS({
       // 'Torneo'/'Reta'` en la Parrilla) — esos nunca son reservas de
       // jugador con cobro pendiente.
       if (['Cancelada', 'Completada', 'Torneo', 'Reta'].includes(r.estado)) return false;
+      // App-157 — reserva pagada con tiempo extra por cobrar (v146).
+      if (Number(r.saldo_mostrador) > 0) return true;
       const estadoPago = claveNombre(r.estado_pago);
       const metodoPago = claveNombre(r.metodo_pago);
       return estadoPago === 'pendiente' || metodoPago.includes('recep');
@@ -20255,18 +20710,19 @@ function ModuloSmartPOS({
     // esa migración en vez de pensar que el cobro se perdió.
     if (grupo.reserva?.id) {
       try {
+        const camposReserva = camposReservaAlLiquidar(grupo.reserva, metodoPago);
         const { error: errReserva } = await supabase
           .from('reservas')
-          .update({ estado_pago: 'pagado', metodo_pago: metodoPago })
+          .update(camposReserva)
           .eq('id', grupo.reserva.id);
         if (errReserva) throw errReserva;
-        upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: metodoPago });
+        upsertReserva?.({ id: grupo.reserva.id, ...camposReserva });
       } catch (errReserva) {
         console.warn('[Smart POS] La venta se cobró, pero no se pudo sincronizar estado_pago de la reserva vinculada:', errReserva);
         // Se refleja igual en la UI local para que la tarjeta desaparezca
         // AHORA MISMO (el cobro sí se guardó) — el toast de abajo avisa que
         // falta correr la migración para que esto sea permanente.
-        upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: metodoPago });
+        upsertReserva?.({ id: grupo.reserva.id, ...camposReservaAlLiquidar(grupo.reserva, metodoPago) });
         mostrarToast({
           titulo: 'Cobro guardado, pero sin sincronizar la reserva',
           detalle: esErrorPermisoRLS(errReserva)
@@ -20569,14 +21025,15 @@ function ModuloSmartPOS({
 
     if (grupo.reserva?.id) {
       try {
+        const camposReserva = camposReservaAlLiquidar(grupo.reserva, 'dividido');
         const { error: errReserva } = await supabase
           .from('reservas')
-          .update({ estado_pago: 'pagado', metodo_pago: 'dividido' })
+          .update(camposReserva)
           .eq('id', grupo.reserva.id);
         if (errReserva) throw errReserva;
-        upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: 'dividido' });
+        upsertReserva?.({ id: grupo.reserva.id, ...camposReserva });
       } catch (errReserva) {
-        upsertReserva?.({ id: grupo.reserva.id, estado_pago: 'pagado', metodo_pago: 'dividido' });
+        upsertReserva?.({ id: grupo.reserva.id, ...camposReservaAlLiquidar(grupo.reserva, 'dividido') });
         mostrarToast({
           titulo: 'Cuenta dividida y cobrada, pero sin sincronizar la reserva',
           detalle: esErrorPermisoRLS(errReserva)
@@ -36184,6 +36641,7 @@ const TIPOS_EVENTO_AUDITORIA = {
           { etiqueta: 'Inscripciones / reposiciones', valor: g ? dineroLog(g.ingresos) : null },
           { etiqueta: 'Gastos', valor: g ? dineroLog(g.gastos) : null },
           { etiqueta: 'Retiros', valor: g ? dineroLog(g.retiros) : null },
+          { etiqueta: 'Devoluciones de reservas', valor: g && Number(g.devoluciones) > 0 ? dineroLog(g.devoluciones) : null },
           { etiqueta: 'Nota', valor: d?.nota },
         ],
       });
@@ -36289,6 +36747,43 @@ const TIPOS_EVENTO_AUDITORIA = {
         datos: [
           { etiqueta: 'Cancha', valor: mismaCancha ? d.canchaAntes : null },
           { etiqueta: 'Fecha', valor: valorLog(d?.fechaAntes) ? null : fechaLog(d?.fecha) },
+        ],
+      });
+    },
+  },
+  // App-157 — Ajustar Duración (lo escribe el servidor, v146).
+  ajuste_duracion_reserva: {
+    label: 'Duración de reserva ajustada',
+    categoria: 'canchas',
+    icon: Timer,
+    color: 'text-sky-400',
+    bg: 'bg-sky-400/10',
+    presentar: (d) => {
+      const tratamientos = {
+        recalculo_pendiente: 'Total por cobrar recalculado',
+        saldo_mostrador: 'Saldo pendiente en mostrador',
+        wallet: 'Abono al Wallet',
+        efectivo: 'Devolución en efectivo',
+        sin_devolucion: 'Sin devolución',
+        sin_cambio_monto: 'Sin cambio de precio',
+      };
+      return armarPresentacionLog({
+        resumen: unirLog([
+          nombreJugadorLog(d?.jugador) ? `Reserva de ${d.jugador}` : 'Reserva',
+          d?.cancha,
+          d?.horario,
+          tratamientos[d?.tratamiento] || null,
+        ]),
+        cambios: [{ campo: 'Renta', antes: dineroLog(d?.monto_antes), despues: dineroLog(d?.monto_despues) }],
+        involucrados: [{ etiqueta: 'Jugador', nombre: nombreJugadorLog(d?.jugador) }],
+        datos: [
+          { etiqueta: 'Fecha', valor: fechaLog(d?.fecha) },
+          { etiqueta: 'Precio sugerido', valor: dineroLog(d?.monto_sugerido) },
+          { etiqueta: 'Precio manual', valor: d?.precio_manual ? 'Sí' : null },
+          { etiqueta: 'Destino del dinero', valor: tratamientos[d?.tratamiento] || d?.tratamiento },
+          { etiqueta: 'Por cobrar en mostrador', valor: Number(d?.saldo_mostrador) > 0 ? dineroLog(d.saldo_mostrador) : null },
+          { etiqueta: 'Devuelto', valor: Number(d?.devuelto) > 0 ? dineroLog(d.devuelto) : null },
+          { etiqueta: 'Motivo', valor: d?.motivo },
         ],
       });
     },
