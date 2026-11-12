@@ -5344,12 +5344,42 @@ function validarToleranciaCancelacion(fechaEventoMs, toleranciaHoras) {
 // en Reservas/Clases, `estatus_pago` en algunas filas de Retas/Torneos más
 // viejas) nunca hagan que una reserva sin pago real se lea como "pagada" ni
 // viceversa. Úsalo en vez de comparar `=== 'pendiente'` a mano.
-// App-157 — al liquidar en Cuentas Pendientes: una reserva YA pagada que solo
-// debía tiempo extra (`saldo_mostrador`, v146) conserva su estado y método de
-// pago originales (p. ej. pagada en línea) y solo se limpia el saldo.
+// App-157/158 — al liquidar en Cuentas Pendientes: una reserva YA pagada que
+// solo debía tiempo extra (`saldo_mostrador`, v146) conserva su estado y método
+// de pago originales (p. ej. pagada en línea). FLUJO DE CAJA REAL (App-158): en
+// una reserva pagada `monto_total` es SOLO lo cobrado; el tiempo extra pasa a
+// `monto_total` hasta que su ticket se cobra, vía la RPC atómica e idempotente
+// `fn_reserva_saldo_mostrador_cobrado`. Así Analytics, P&L y CRM (que suman
+// `monto_total` de reservas pagadas) nunca cuentan dinero no cobrado.
+function esSaldoMostradorPorLiquidar(reserva) {
+  return Number(reserva?.saldo_mostrador) > 0 && String(reserva?.estado_pago || '').toLowerCase() === 'pagado';
+}
+
 function camposReservaAlLiquidar(reserva, metodoPago) {
-  if (Number(reserva?.saldo_mostrador) > 0 && String(reserva?.estado_pago || '').toLowerCase() === 'pagado') return { saldo_mostrador: 0 };
+  if (esSaldoMostradorPorLiquidar(reserva)) {
+    return { saldo_mostrador: 0, monto_total: Math.round(((Number(reserva.monto_total) || 0) + Number(reserva.saldo_mostrador)) * 100) / 100 };
+  }
   return { estado_pago: 'pagado', metodo_pago: metodoPago };
+}
+
+// Sincroniza la reserva ligada a una cuenta recién cobrada. Reserva normal:
+// mismo UPDATE de siempre. Tiempo extra (v146): la RPC del servidor.
+async function sincronizarReservaAlLiquidar(reserva, metodoPago) {
+  if (!esSaldoMostradorPorLiquidar(reserva)) {
+    const campos = camposReservaAlLiquidar(reserva, metodoPago);
+    const { error } = await supabase.from('reservas').update(campos).eq('id', reserva.id);
+    return { campos, error };
+  }
+  const { data, error } = await supabase.rpc('fn_reserva_saldo_mostrador_cobrado', { p_reserva_id: String(reserva.id) });
+  if (error && esErrorRpcInexistente(error)) {
+    // BD con la v146 anterior (ahí `monto_total` ya incluía el tiempo extra): solo se limpia el saldo.
+    const { error: errViejo } = await supabase.from('reservas').update({ saldo_mostrador: 0 }).eq('id', reserva.id);
+    return { campos: { saldo_mostrador: 0 }, error: errViejo };
+  }
+  if (error) return { campos: null, error };
+  const r = (Array.isArray(data) ? data[0] : data) || {};
+  if (!r.ok) return { campos: null, error: new Error(r.mensaje || 'No se pudo registrar el cobro del tiempo extra.') };
+  return { campos: { saldo_mostrador: 0, monto_total: Number(r.monto_total) || 0 }, error: null };
 }
 
 function esPagoPendiente(entidad) {
@@ -10136,7 +10166,9 @@ function PanelAjustarDuracion({ reserva, cancha, canchas = [], reservas = [], co
   // Precio sugerido = lo que ya vale la reserva + la diferencia de tarifa del
   // club entre el tiempo nuevo y el actual (conserva descuentos y promociones
   // que ya traía). Sin tarifa configurada: proporcional al tiempo.
-  const montoActual = Math.round((Number(reserva.monto_total) || 0) * 100) / 100;
+  // App-158 — en una reserva pagada `monto_total` es lo cobrado; el precio
+  // vigente suma el tiempo extra aún por cobrar (`saldo_mostrador`).
+  const montoActual = Math.round(((Number(reserva.monto_total) || 0) + (pagada ? Number(reserva.saldo_mostrador) || 0 : 0)) * 100) / 100;
   const sugerido = useMemo(() => {
     const dow = reserva.fecha ? new Date(`${reserva.fecha}T12:00:00`).getDay() : null;
     const tarifasDe = (c) =>
@@ -10251,7 +10283,7 @@ function PanelAjustarDuracion({ reserva, cancha, canchas = [], reservas = [], co
         ? 'Sin devolución: el club conserva lo pagado.'
         : 'El precio no cambió.';
     toast({ titulo: `Duración ajustada · ${formatoHora12(reserva.hora_inicio)} – ${formatoHora12(horaFinNueva)}`, detalle });
-    onAjustada?.(r.reserva && typeof r.reserva === 'object' ? r.reserva : { ...reserva, hora_fin: horaFinNueva, cancha_id: canchaDestino?.id ?? canchaDestinoId, monto_total: montoFinal }, r);
+    onAjustada?.(r.reserva && typeof r.reserva === 'object' ? r.reserva : { ...reserva, hora_fin: horaFinNueva, cancha_id: canchaDestino?.id ?? canchaDestinoId, ...(pagada ? {} : { monto_total: montoFinal }) }, r);
   }
 
   return (
@@ -10915,6 +10947,7 @@ function DetalleReserva({
           </span>
           <span className="flex items-center gap-1.5">
             <DollarSign size={12} /> {formatoMoneda(reserva.monto_total)}
+            {Number(reserva.saldo_mostrador) > 0 && <span className="text-[10px] font-semibold text-slate-500">cobrados</span>}
           </span>
           {reserva.metodo_pago && (
             <span className="col-span-2 flex items-center gap-1.5 capitalize">
@@ -20279,6 +20312,24 @@ function ModuloSmartPOS({
           const montoAddons = Number(r.monto_addons) || 0;
           const walletAplicado = Number(r.saldo_wallet_aplicado) || 0;
           const saldoGuardado = Number(r.saldo_pendiente) || 0;
+          if (esSaldoMostradorPorLiquidar(r)) {
+            // App-158 — reserva ya pagada sin su ticket de tiempo extra: solo se cobra el tiempo extra.
+            const extra = Number(r.saldo_mostrador) || 0;
+            return {
+              clave: `reserva-pendiente::${r.id}`,
+              cancha,
+              reserva: r,
+              ventas: [],
+              numTickets: 1,
+              total: extra,
+              items: { [`Tiempo extra · ${cancha?.nombre || 'cancha'}`]: { cantidad: 1, subtotal: extra } },
+              addonsDetalle: [],
+              clienteNombre: r.jugador_nombre || '',
+              jugadorId: r.jugador_id || null,
+              clienteOperadorId: null,
+              clienteOperadorNombre: '',
+            };
+          }
           total = saldoGuardado > 0 ? saldoGuardado : Math.max(0, montoCancha + montoAddons - walletAplicado);
           items[`Renta ${cancha?.nombre || 'cancha'}`] = { cantidad: 1, subtotal: montoCancha };
           // DESGLOSE INDIVIDUAL DE ADD-ONS: en vez del renglón genérico
@@ -20710,11 +20761,7 @@ function ModuloSmartPOS({
     // esa migración en vez de pensar que el cobro se perdió.
     if (grupo.reserva?.id) {
       try {
-        const camposReserva = camposReservaAlLiquidar(grupo.reserva, metodoPago);
-        const { error: errReserva } = await supabase
-          .from('reservas')
-          .update(camposReserva)
-          .eq('id', grupo.reserva.id);
+        const { campos: camposReserva, error: errReserva } = await sincronizarReservaAlLiquidar(grupo.reserva, metodoPago);
         if (errReserva) throw errReserva;
         upsertReserva?.({ id: grupo.reserva.id, ...camposReserva });
       } catch (errReserva) {
@@ -21025,11 +21072,7 @@ function ModuloSmartPOS({
 
     if (grupo.reserva?.id) {
       try {
-        const camposReserva = camposReservaAlLiquidar(grupo.reserva, 'dividido');
-        const { error: errReserva } = await supabase
-          .from('reservas')
-          .update(camposReserva)
-          .eq('id', grupo.reserva.id);
+        const { campos: camposReserva, error: errReserva } = await sincronizarReservaAlLiquidar(grupo.reserva, 'dividido');
         if (errReserva) throw errReserva;
         upsertReserva?.({ id: grupo.reserva.id, ...camposReserva });
       } catch (errReserva) {
@@ -33023,6 +33066,19 @@ function ModuloAnalyticsBI({
     () => reservasEnRango.filter((r) => !esBloqueoDeEvento(r) && esCobroConfirmado(r) && (Number(r.monto_total) || 0) > 0),
     [reservasEnRango]
   );
+  // App-158 — OCUPACIÓN OPERATIVA vs. FLUJO DE CAJA REAL: el tiempo extra de
+  // una reserva ya pagada (ajuste de duración, v146) SÍ ocupa cancha (la
+  // reserva ya trae el horario nuevo) pero NO es ingreso hasta que su ticket
+  // se cobra en Smart POS → Cuentas Pendientes: vive en `saldo_mostrador`,
+  // fuera de `monto_total`, así que `reservasCobradas` nunca lo suma. Aquí
+  // solo se muestra como «por cobrar».
+  const tiempoExtraPorCobrar = useMemo(
+    () =>
+      Math.round(
+        reservasOcupacion.reduce((acc, r) => acc + (!esBloqueoDeEvento(r) && esCobroConfirmado(r) ? Math.max(0, Number(r.saldo_mostrador) || 0) : 0), 0) * 100
+      ) / 100,
+    [reservasOcupacion]
+  );
 
   const canchasPorId = useMemo(() => {
     const mapa = {};
@@ -33729,7 +33785,11 @@ function ModuloAnalyticsBI({
           icon={Wallet}
           etiqueta="Ingresos Totales (Cobrados)"
           valor={formatoMoneda(analisis.ingresosTotales)}
-          sub="Solo pagados · sin pendientes ni cuentas abiertas"
+          sub={
+            tiempoExtraPorCobrar > 0
+              ? `Solo pagados · no incluye ${formatoMoneda(tiempoExtraPorCobrar)} de tiempo extra por cobrar`
+              : 'Solo pagados · sin pendientes ni cuentas abiertas'
+          }
           tono="emerald"
         />
         <MetricCard
