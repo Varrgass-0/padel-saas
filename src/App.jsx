@@ -2543,8 +2543,8 @@ const ROLES = [
   { value: 'owner', label: 'Owner', descripcion: 'Acceso total e incondicional.', icon: Crown, color: 'text-amber-300', bg: 'bg-amber-400/10', ring: 'ring-amber-400/30' },
   { value: 'manager', label: 'Manager', descripcion: 'Gestión de reservas, aprobación de cortes y supervisión de POS.', icon: UserCog, color: 'text-sky-300', bg: 'bg-sky-400/10', ring: 'ring-sky-400/30' },
   { value: 'recepcion', label: 'Recepción/Caja', descripcion: 'Agendar reservas, check-in, cobro en POS/Split Bill, Torneos & Retas (Mesa de Control) y flujos de inscripción de Academia.', icon: Users, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
-  { value: 'bar', label: 'Restaurante/Bar', descripcion: 'Comandas y venta en Smart POS; inventario de alimentos/bebidas en solo lectura, sin precios ni costos.', icon: Coffee, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
-  { value: 'coach', label: 'Coach', descripcion: 'Academia & Clínicas, Torneos & Retas y Parrilla Operativa en modo solo lectura.', icon: Award, color: 'text-fuchsia-300', bg: 'bg-fuchsia-400/10', ring: 'ring-fuchsia-400/30' },
+  { value: 'bar', label: 'Restaurante/Bar', descripcion: 'Comandas y venta en el Punto de Venta; inventario de alimentos/bebidas en solo lectura, sin precios ni costos.', icon: Coffee, color: 'text-orange-300', bg: 'bg-orange-400/10', ring: 'ring-orange-400/30' },
+  { value: 'coach', label: 'Coach', descripcion: 'Clases & Academia, Torneos & Retas y Reservas & Canchas en modo solo lectura.', icon: Award, color: 'text-fuchsia-300', bg: 'bg-fuchsia-400/10', ring: 'ring-fuchsia-400/30' },
   {
     value: 'contador',
     label: 'Contador',
@@ -3850,8 +3850,8 @@ function eventoYaTermino(fechaISO, horaStr, ahoraMs = Date.now()) {
 // visualmente por carril con los partidos programados dentro de esa misma
 // franja horaria.
 function textoLimpiezaParrilla({ liberados = 0, fallidos = 0 } = {}) {
-  if (fallidos > 0) return `Se liberaron ${liberados} horario(s) de la Parrilla, pero ${fallidos} no se pudieron liberar: revísalos en la Parrilla.`;
-  return liberados > 0 ? `Se liberaron ${liberados} horario(s) de la Parrilla.` : 'No tenía horarios apartados en la Parrilla.';
+  if (fallidos > 0) return `Se liberaron ${liberados} horario(s) de Reservas & Canchas, pero ${fallidos} no se pudieron liberar: revísalos en Reservas & Canchas.`;
+  return liberados > 0 ? `Se liberaron ${liberados} horario(s) de Reservas & Canchas.` : 'No tenía horarios apartados en Reservas & Canchas.';
 }
 
 function idsBloqueosMaestroTorneo(torneos) {
@@ -4111,7 +4111,8 @@ function esCobroConfirmado(fila) {
 // Bloqueos de cancha creados por Retas/Torneos/Academia: ocupan horario pero
 // su dinero vive en inscripciones/mensualidades (nunca en la reserva).
 function esBloqueoDeEvento(reserva) {
-  return reserva?.estado === 'Reta' || reserva?.estado === 'Torneo' || reserva?.estado === 'Clase';
+  // App-163 — el Mantenimiento programado también es un bloqueo sin dinero.
+  return reserva?.estado === 'Reta' || reserva?.estado === 'Torneo' || reserva?.estado === 'Clase' || reserva?.estado === 'Mantenimiento';
 }
 
 // Monto real cobrado por una inscripción (reta/torneo): su `monto`; si una
@@ -4431,6 +4432,37 @@ function estatusManualEfectivo(cancha) {
   return null;
 }
 
+// App-163 — MANTENIMIENTO PROGRAMADO: un bloqueo por rango de horas (fila de
+// `reservas` con `estado: 'Mantenimiento'`, sin jugador ni cobro — mismo
+// patrón que los bloqueos de Torneo/Reta/Clase, ver `crearBloqueoParrilla`).
+// Ocupa la cancha solo en ese horario y se libera sola al pasar la hora de
+// fin, igual que cualquier reserva. NO es una reserva de jugador: no cuenta
+// como «en juego», ni para cuentas abiertas, ocupación o próximas reservas.
+const ESTADO_MANTENIMIENTO = 'Mantenimiento';
+function esMantenimientoProgramado(reserva) {
+  return reserva?.estado === ESTADO_MANTENIMIENTO;
+}
+function mantenimientoEnCursoAhora(reservas, canchaId, fechaISO = hoyISO(), minutoRef = minutosAhora()) {
+  return (
+    (reservas || []).find((r) => {
+      if (!esMantenimientoProgramado(r) || r.cancha_id !== canchaId || r.fecha !== fechaISO) return false;
+      const ini = parseHoraAMinutos(r.hora_inicio);
+      const fin = parseHoraAMinutos(r.hora_fin);
+      return ini !== null && fin !== null && minutoRef >= ini && minutoRef < fin;
+    }) || null
+  );
+}
+function proximoMantenimientoHoy(reservas, canchaId, minutoRef = minutosAhora()) {
+  const hoy = hoyISO();
+  const lista = (reservas || []).filter((r) => {
+    if (!esMantenimientoProgramado(r) || r.cancha_id !== canchaId || r.fecha !== hoy) return false;
+    const ini = parseHoraAMinutos(r.hora_inicio);
+    return ini !== null && ini > minutoRef;
+  });
+  if (lista.length === 0) return null;
+  return lista.reduce((a, r) => (parseHoraAMinutos(r.hora_inicio) < parseHoraAMinutos(a.hora_inicio) ? r : a));
+}
+
 // Reserva "en curso" ahora mismo para una cancha, en la fecha indicada
 // (por defecto hoy). Ignora reservas canceladas/completadas.
 function reservaEnCursoAhora(reservas, canchaId, fechaISO = hoyISO(), minutoRef = minutosAhora()) {
@@ -4439,6 +4471,7 @@ function reservaEnCursoAhora(reservas, canchaId, fechaISO = hoyISO(), minutoRef 
       if (r.cancha_id !== canchaId) return false;
       if (r.fecha !== fechaISO) return false;
       if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
+      if (esMantenimientoProgramado(r)) return false; // App-163 — no es un juego
       const ini = parseHoraAMinutos(r.hora_inicio);
       const fin = parseHoraAMinutos(r.hora_fin);
       if (ini === null || fin === null) return false;
@@ -4457,6 +4490,7 @@ function tieneReservaFuturaHoy(reservas, canchaId) {
     if (r.cancha_id !== canchaId) return false;
     if (r.fecha !== hoy) return false;
     if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
+    if (esMantenimientoProgramado(r)) return false;
     const ini = parseHoraAMinutos(r.hora_inicio);
     return ini !== null && ini > ahora;
   });
@@ -4471,6 +4505,7 @@ function proximaReservaHoy(reservas, canchaId, minutoRef = minutosAhora()) {
     if (r.cancha_id !== canchaId) return false;
     if (r.fecha !== hoy) return false;
     if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
+    if (esMantenimientoProgramado(r)) return false;
     const ini = parseHoraAMinutos(r.hora_inicio);
     return ini !== null && ini > minutoRef;
   });
@@ -4491,6 +4526,7 @@ function proximaReservaHoy(reservas, canchaId, minutoRef = minutosAhora()) {
 //                       (ver `proximaReservaHoy` para ese aviso secundario)
 function estadoActualCancha(cancha, reservas) {
   if (estatusManualEfectivo(cancha) === 'mantenimiento') return 'mantenimiento';
+  if (mantenimientoEnCursoAhora(reservas, cancha.id)) return 'mantenimiento'; // App-163 — solo durante su horario
   if (reservaEnCursoAhora(reservas, cancha.id)) return 'en_juego';
   return 'disponible';
 }
@@ -5619,7 +5655,7 @@ function precioGrupalPorPersona(fuente, personas) {
 //   "Academia - [Clase] - [Jugador] (Clase Suelta)"
 //   "Academia - [Clase] - [Jugador] (Plan Mensual - [X] clases)"
 function origenAcademia(claseNombre, alumnoNombre, tipoPago, clasesPaquete) {
-  if (!claseNombre) return 'Academia & Clínicas';
+  if (!claseNombre) return 'Clases & Academia';
   const sufijo = tipoPago === 'mensualidad' ? `Plan Mensual - ${clasesPaquete} clases` : 'Clase Suelta';
   return `Academia - ${claseNombre} - ${alumnoNombre || 'Jugador'} (${sufijo})`;
 }
@@ -7044,6 +7080,10 @@ function CanchaCard({
   onCambiarFoto,
   onCambiarEstatus,
   onReservaClick,
+  // App-163 — Mantenimiento programado (bloqueo por horas).
+  mantenimientoActual = null,
+  proximoMantenimiento = null,
+  onProgramarMantenimiento,
   // Mejora de RBAC — Coach (`permisos.soloLecturaParrilla`): la Parrilla se
   // ve completa, pero SIN ningún control de edición (Nueva Reserva, Foto,
   // Cambiar Estatus) — "Horarios" se queda porque es de solo consulta.
@@ -7062,7 +7102,9 @@ function CanchaCard({
   onEditarCancha,
 }) {
   const meta = ESTATUS_META[estadoActual];
-  const bloqueada = estadoActual === 'mantenimiento';
+  // App-163 — solo el bloqueo TOTAL anterior (bandera manual de la cancha)
+  // impide reservar; un mantenimiento programado ocupa únicamente su horario.
+  const bloqueada = estatusManualEfectivo(cancha) === 'mantenimiento';
 
   // Edición rápida de Nombre (Patrocinios) — estado local propio de esta
   // tarjeta, independiente del resto de controles: clic en el lápiz cambia
@@ -7148,7 +7190,24 @@ function CanchaCard({
               <Clock size={10} className="shrink-0" /> Próxima reserva: {formatoHora12(proximaReserva.hora_inicio)}
             </span>
           )}
+          {!mantenimientoActual && proximoMantenimiento && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50/90 px-2 py-0.5 text-[10px] font-semibold text-amber-700 backdrop-blur" data-testid="chip-proximo-mantenimiento">
+              <Wrench size={10} className="shrink-0" /> Mantenimiento: {formatoHora12(proximoMantenimiento.hora_inicio)} – {formatoHora12(proximoMantenimiento.hora_fin)}
+            </span>
+          )}
         </div>
+        {mantenimientoActual && !reservaActual && (
+          <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 px-3 pb-2.5">
+            <button
+              onClick={() => onReservaClick(mantenimientoActual)}
+              className="flex min-w-0 items-center gap-1.5 rounded-lg bg-amber-50/90 px-2 py-1 text-left backdrop-blur transition hover:bg-amber-100"
+              data-testid="tarjeta-mantenimiento-en-curso"
+            >
+              <Wrench size={12} className="shrink-0 text-amber-600" />
+              <span className="truncate text-xs font-bold text-amber-800">En mantenimiento hasta {formatoHora12(mantenimientoActual.hora_fin)}</span>
+            </button>
+          </div>
+        )}
         {reservaActual && (
           <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-2 px-3 pb-2.5">
             <button
@@ -7292,11 +7351,13 @@ function CanchaCard({
               >
                 <ImagePlus size={13} /> Foto
               </button>
-              {/* Botón único (ya no dropdown): Mantenimiento es el ÚNICO
-                  estatus manual real — ver nota arriba de `CanchaCard`. Un
-                  clic bloquea/desbloquea directo, sin menú intermedio. */}
+              {/* App-163 — «Programar Mantenimiento» abre un modal (fecha +
+                  hora inicio/fin) y bloquea SOLO ese rango. «Liberar Cancha»
+                  sigue apareciendo únicamente para una cancha que quedó con
+                  el bloqueo total anterior, para poder quitarlo. */}
               <button
-                onClick={() => onCambiarEstatus(cancha, bloqueada ? 'disponible' : 'mantenimiento')}
+                onClick={() => (bloqueada ? onCambiarEstatus(cancha, 'disponible') : onProgramarMantenimiento?.(cancha))}
+                data-testid="boton-programar-mantenimiento"
                 className={`col-span-2 inline-flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-[11px] font-semibold transition ${
                   bloqueada
                     ? 'border-amber-400/40 bg-amber-400/10 text-amber-500 hover:bg-amber-400/20'
@@ -7309,7 +7370,7 @@ function CanchaCard({
                   </>
                 ) : (
                   <>
-                    <Wrench size={13} /> Mantenimiento / Bloquear
+                    <Wrench size={13} /> Programar Mantenimiento
                   </>
                 )}
               </button>
@@ -7502,6 +7563,8 @@ function FilaCronograma({
                 ? ESTATUS_META.reta
                 : reserva.estado === 'Clase'
                 ? ESTATUS_META.clase
+                : reserva.estado === 'Mantenimiento'
+                ? ESTATUS_META.mantenimiento
                 : ESTATUS_META.reservada;
             // Si este bloque se solapa con otro, se reparte la altura de la
             // celda entre `totalCarriles` — así ambos quedan visibles uno
@@ -7996,6 +8059,7 @@ function tipoEventoDeReserva(estado) {
   if (estado === 'Torneo') return { label: 'Torneo', meta: ESTATUS_META.torneo };
   if (estado === 'Reta') return { label: 'Reta', meta: ESTATUS_META.reta };
   if (estado === 'Clase') return { label: 'Clase', meta: ESTATUS_META.clase };
+  if (estado === 'Mantenimiento') return { label: 'Mantenimiento', meta: ESTATUS_META.mantenimiento };
   return { label: 'Reserva', meta: ESTATUS_META.reservada };
 }
 
@@ -8739,6 +8803,154 @@ function ModalNuevaCancha({ onClose, onCreada }) {
 }
 
 /* ============================================================================
+ * MODAL: PROGRAMAR MANTENIMIENTO (App-163)
+ * ----------------------------------------------------------------------------
+ * Igual que crear una reserva: fecha + hora de inicio y de fin (bloques de 30
+ * min dentro del horario del club). Se guarda como bloqueo en `reservas`
+ * (`estado: 'Mantenimiento'`, sin jugador ni cobro, vía `crearBloqueoParrilla`)
+ * y se libera solo al llegar la hora de fin. No se puede encimar con otra
+ * reserva o bloqueo: dice con quién choca.
+ * ==========================================================================*/
+function ModalProgramarMantenimiento({ cancha, reservas = [], configClub, fechaInicial, onClose, onCreado }) {
+  const toast = useToast();
+  const hoy = hoyISO();
+  const [fecha, setFecha] = useState(fechaInicial && fechaInicial >= hoy ? fechaInicial : hoy);
+  const { aperturaMin, cierreMin } = minutosOperacionDelClub(configClub, fecha);
+  const opciones = useMemo(() => opcionesHoraEnRango(aperturaMin, cierreMin, SLOT_MIN), [aperturaMin, cierreMin]);
+  const inicioMinimo = fecha === hoy ? Math.floor(minutosAhora() / SLOT_MIN) * SLOT_MIN : -1;
+  const [horaInicio, setHoraInicio] = useState('');
+  const [horaFin, setHoraFin] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+  const guardandoRef = useRef(false);
+
+  const iniMin = parseHoraAMinutos(horaInicio);
+  const finMin = parseHoraAMinutos(horaFin);
+  const opcionesInicio = opciones.filter((h) => parseHoraAMinutos(h) < cierreMin);
+  const opcionesFin = opciones.filter((h) => parseHoraAMinutos(h) > (iniMin ?? aperturaMin));
+  const choque = iniMin !== null && finMin !== null && finMin > iniMin ? buscarSolapeEnCancha(reservas, cancha.id, fecha, horaInicio, horaFin) : null;
+
+  useEffect(() => {
+    // Al cambiar la fecha o el inicio, el fin deja de ser válido si quedó antes.
+    if (horaFin && iniMin !== null && parseHoraAMinutos(horaFin) <= iniMin) setHoraFin('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [horaInicio, fecha]);
+
+  async function guardar() {
+    if (guardandoRef.current) return;
+    setError('');
+    if (!fecha || fecha < hoy) return setError('Elige hoy o una fecha futura.');
+    if (iniMin === null || finMin === null) return setError('Elige la hora de inicio y la de fin.');
+    if (finMin <= iniMin) return setError('La hora de fin debe ser después de la de inicio.');
+    if (iniMin < inicioMinimo) return setError('Esa hora de inicio ya pasó.');
+    if (iniMin < aperturaMin || finMin > cierreMin) return setError('El horario debe quedar dentro del horario del club.');
+    const cruce = buscarSolapeEnCancha(reservas, cancha.id, fecha, horaInicio, horaFin);
+    if (cruce) {
+      return setError(
+        `Ese horario ya está ocupado: ${cruce.jugador_nombre || 'otra reserva'} (${formatoHora12(cruce.hora_inicio)} – ${formatoHora12(cruce.hora_fin)}). Elige otro horario.`
+      );
+    }
+    guardandoRef.current = true;
+    setGuardando(true);
+    const etiqueta = `MANTENIMIENTO${motivo.trim() ? ` · ${motivo.trim()}` : ''}`;
+    const { data, error: err } = await crearBloqueoParrilla({
+      canchaId: cancha.id,
+      fecha,
+      horaInicio,
+      horaFin,
+      estado: ESTADO_MANTENIMIENTO,
+      etiqueta,
+    });
+    setGuardando(false);
+    guardandoRef.current = false;
+    if (err || !data) {
+      const msg = err?.message || 'No se pudo programar el mantenimiento.';
+      setError(msg);
+      toast({ titulo: 'No se pudo programar el mantenimiento', detalle: msg, tono: 'error' });
+      return;
+    }
+    toast({
+      titulo: 'Mantenimiento programado',
+      detalle: `${cancha.nombre} · ${formatoFechaLarga(fecha)} · ${formatoHora12(horaInicio)} – ${formatoHora12(horaFin)}. Se libera sola al terminar.`,
+    });
+    onCreado?.(data);
+    onClose();
+  }
+
+  return (
+    <ModalShell titulo="Programar Mantenimiento" subtitulo={cancha.nombre} onClose={onClose} icon={Wrench} ancho="max-w-md">
+      <div className="space-y-4" data-testid="modal-programar-mantenimiento">
+        <Campo label="Fecha">
+          <SelectorFechaCalendario
+            value={fecha}
+            onChange={(v) => {
+              setFecha(v);
+              setError('');
+            }}
+            className="w-full"
+          />
+        </Campo>
+        <div className="grid grid-cols-2 gap-3">
+          <Campo label="Hora de inicio">
+            <SelectorHoraBloques
+              value={horaInicio}
+              onChange={(v) => {
+                setHoraInicio(v);
+                setError('');
+              }}
+              opciones={opcionesInicio}
+              esDeshabilitada={(h) => parseHoraAMinutos(h) < inicioMinimo}
+              ocultarDeshabilitadas
+              ariaLabel="Hora de inicio del mantenimiento"
+            />
+          </Campo>
+          <Campo label="Hora de fin">
+            <SelectorHoraBloques
+              value={horaFin}
+              onChange={(v) => {
+                setHoraFin(v);
+                setError('');
+              }}
+              opciones={opcionesFin}
+              disabled={!horaInicio}
+              ariaLabel="Hora de fin del mantenimiento"
+              vacio="Elige primero el inicio"
+            />
+          </Campo>
+        </div>
+        <Campo label="Motivo (opcional)">
+          <input value={motivo} onChange={(e) => setMotivo(e.target.value)} className={inputClase} placeholder="Ej. cambio de red, limpieza de pasto" maxLength={60} />
+        </Campo>
+        {choque ? (
+          <p className="rounded-lg bg-rose-50 px-3 py-2 text-[11px] font-semibold text-rose-700 ring-1 ring-rose-200" data-testid="mantenimiento-choque">
+            Ocupado: {choque.jugador_nombre || 'otra reserva'} ({formatoHora12(choque.hora_inicio)} – {formatoHora12(choque.hora_fin)}).
+          </p>
+        ) : iniMin !== null && finMin !== null && finMin > iniMin ? (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200" data-testid="mantenimiento-resumen">
+            La cancha quedará bloqueada de {formatoHora12(horaInicio)} a {formatoHora12(horaFin)} y se liberará sola al terminar.
+          </p>
+        ) : null}
+        {error && (
+          <p className="text-xs font-semibold text-rose-500" data-testid="mantenimiento-error">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <BotonSecundario onClick={onClose} disabled={guardando}>
+            Cancelar
+          </BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando || Boolean(choque)} data-testid="boton-guardar-mantenimiento">
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : <Wrench size={15} />}
+            Programar
+          </BotonPrimario>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ============================================================================
  * MODAL: CAMBIAR FOTO
  * ==========================================================================*/
 
@@ -9342,7 +9554,7 @@ function SeccionDatosFiscalesClub({ permisos, operador, nombreClub, telefonoCont
               <Landmark size={16} className="text-orange-400" /> Datos fiscales y de contacto
             </h3>
             <p className="mt-0.5 text-xs text-slate-500">
-              Se imprimen en los tickets del club (Smart POS, Historial de Tickets y ticket digital). Solo Owner y Manager pueden editarlos.
+              Se imprimen en los tickets del club (Punto de Venta, Historial de Tickets y ticket digital). Solo Owner y Manager pueden editarlos.
             </p>
           </div>
           {cargando ? (
@@ -9887,7 +10099,7 @@ function ModalNuevaReserva({
       estado_pago: 'pendiente',
     });
     toast({
-      titulo: 'Reserva creada — cóbrala en Smart POS',
+      titulo: 'Reserva creada — cóbrala en el Punto de Venta',
       detalle: `${canchaSeleccionada.nombre || 'Cancha'} · ${formatoHora12(horaInicio)} · ${formatoMoneda(montoAutomatico ?? 0)}`,
     });
     onCreada(reservaCreada, canchaSeleccionada);
@@ -10136,7 +10348,7 @@ function ModalNuevaReserva({
           )}
           <p className="mt-2 flex items-start gap-1.5 text-[11px] font-semibold text-slate-500">
             <Info size={13} className="mt-0.5 shrink-0 text-sky-500" /> Precio fijado por el sistema según la tarifa de la cancha y la franja horaria. El cobro
-            (Efectivo, Tarjeta, SPEI o Dividir Cuenta) se hace enseguida en Smart POS.
+            (Efectivo, Tarjeta, SPEI o Dividir Cuenta) se hace enseguida en el Punto de Venta.
           </p>
         </div>
 
@@ -10342,7 +10554,7 @@ function PanelAjustarDuracion({ reserva, cancha, canchas = [], reservas = [], co
       r.tratamiento === 'recalculo_pendiente'
         ? `Nuevo total por cobrar en recepción: ${formatoMoneda(montoFinal)}.`
         : r.tratamiento === 'saldo_mostrador' && Number(r.saldo_mostrador) > 0
-        ? `Quedan ${formatoMoneda(r.saldo_mostrador)} pendientes en mostrador (Smart POS → Cuentas Pendientes).`
+        ? `Quedan ${formatoMoneda(r.saldo_mostrador)} pendientes en mostrador (Punto de Venta → Cuentas Pendientes).`
         : r.tratamiento === 'saldo_mostrador'
         ? `Se canceló el saldo pendiente de ${formatoMoneda(r.saldo_cancelado)}.`
         : r.tratamiento === 'wallet'
@@ -10476,11 +10688,11 @@ function PanelAjustarDuracion({ reserva, cancha, canchas = [], reservas = [], co
           </span>
         </div>
         {situacion === 'pendiente' && delta !== 0 && (
-          <p className="font-semibold text-slate-600">Aún no se ha cobrado: el nuevo total se cobra en recepción (Smart POS → Cuentas Pendientes).</p>
+          <p className="font-semibold text-slate-600">Aún no se ha cobrado: el nuevo total se cobra en recepción (Punto de Venta → Cuentas Pendientes).</p>
         )}
         {pagada && delta > 0 && (
           <p className="font-semibold text-amber-800" data-testid="ajuste-saldo-mostrador">
-            Ya está pagada: quedan {formatoMoneda(delta)} pendientes en mostrador (Smart POS → Cuentas Pendientes).
+            Ya está pagada: quedan {formatoMoneda(delta)} pendientes en mostrador (Punto de Venta → Cuentas Pendientes).
             {situacion === 'pagado_en_linea' ? ' No se cobra a la tarjeta del jugador.' : ''}
           </p>
         )}
@@ -10720,13 +10932,16 @@ function DetalleReserva({
   // real, así que no tiene sentido mostrarle el detalle de pago/abono de
   // una reserva normal — solo un resumen y el botón para liberar el
   // horario.
-  const esBloqueoEvento = reserva.estado === 'Torneo' || reserva.estado === 'Reta' || reserva.estado === 'Clase';
+  const esBloqueoEvento = reserva.estado === 'Torneo' || reserva.estado === 'Reta' || reserva.estado === 'Clase' || reserva.estado === 'Mantenimiento';
   if (esBloqueoEvento) {
+    const esMantenimiento = reserva.estado === 'Mantenimiento';
     const colorBloqueo =
       reserva.estado === 'Torneo'
         ? { borde: 'border-violet-400/30 bg-violet-400/5', icono: 'text-violet-400' }
         : reserva.estado === 'Reta'
         ? { borde: 'border-fuchsia-400/30 bg-fuchsia-400/5', icono: 'text-fuchsia-400' }
+        : esMantenimiento
+        ? { borde: 'border-amber-400/40 bg-amber-400/5', icono: 'text-amber-500' }
         : { borde: 'border-teal-400/30 bg-teal-400/5', icono: 'text-teal-400' };
     return (
       <div className="space-y-4">
@@ -10747,9 +10962,11 @@ function DetalleReserva({
             </span>
           </div>
           <p className="mt-3 text-[11px] text-slate-500">
-            {reserva.estado === 'Clase'
-              ? 'Al cancelar se abre el mismo panel de Cancelación de Clase que en Academia & Clínicas: evalúa reembolso o penalización por alumno y libera la cancha de inmediato.'
-              : 'Gestiona los cupos/participantes desde el módulo Torneos & Retas. Liberar este bloqueo solo abre de nuevo el horario en la Parrilla para reservas regulares.'}
+            {esMantenimiento
+              ? 'Mantenimiento programado: la cancha queda bloqueada solo en este horario y se libera sola al terminar. Puedes cancelarlo para liberarla antes.'
+              : reserva.estado === 'Clase'
+              ? 'Al cancelar se abre el mismo panel de Cancelación de Clase que en Clases & Academia: evalúa reembolso o penalización por alumno y libera la cancha de inmediato.'
+              : 'Gestiona los cupos/participantes desde el módulo Torneos & Retas. Liberar este bloqueo solo abre de nuevo el horario en Reservas & Canchas para reservas regulares.'}
           </p>
         </div>
         <div className="flex justify-between gap-2">
@@ -10789,15 +11006,19 @@ function DetalleReserva({
                   toast({ titulo: 'No se pudo liberar', detalle: errReserva.message, tono: 'error' });
                   return;
                 }
-                toast({ titulo: 'Bloqueo liberado', detalle: 'El horario ya está disponible en la Parrilla.' });
+                toast(
+                  esMantenimiento
+                    ? { titulo: 'Mantenimiento cancelado', detalle: `${cancha?.nombre || 'La cancha'} queda disponible en ese horario.` }
+                    : { titulo: 'Bloqueo liberado', detalle: 'El horario ya está disponible en Reservas & Canchas.' }
+                );
                 onCancelada(reserva.id);
                 onClose();
               }}
               disabled={procesando}
               className="inline-flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
             >
-              {procesando ? <Loader2 size={15} className="animate-spin" /> : <Lock size={15} />}
-              Liberar Bloqueo
+              {procesando ? <Loader2 size={15} className="animate-spin" /> : esMantenimiento ? <Wrench size={15} /> : <Lock size={15} />}
+              {esMantenimiento ? 'Cancelar mantenimiento' : 'Liberar Bloqueo'}
             </button>
           )}
         </div>
@@ -10886,7 +11107,7 @@ function DetalleReserva({
         referenciaTabla: 'reservas',
         referenciaId: reserva.id,
         monto: montoPenalizacionSugerido,
-        motivo: motivoCancelacion.trim() || 'Cancelación extemporánea desde Parrilla Operativa',
+        motivo: motivoCancelacion.trim() || 'Cancelación extemporánea desde Reservas & Canchas',
         fechaActividad: reserva.fecha,
       });
       if (resultadoPenalizacion?.ok) {
@@ -10900,7 +11121,7 @@ function DetalleReserva({
           titulo: 'La reserva se canceló, pero la penalización NO se guardó',
           detalle:
             resultadoPenalizacion?.error?.message ||
-            'No se pudo registrar el adeudo en Penalizaciones Pendientes (Smart POS). Vuelve a intentarlo o regístralo ahí manualmente.',
+            'No se pudo registrar el adeudo en Penalizaciones Pendientes (Punto de Venta). Vuelve a intentarlo o regístralo ahí manualmente.',
           tono: 'error',
         });
       }
@@ -10983,7 +11204,7 @@ function DetalleReserva({
           : retencionPorPolitica
           ? `Cancelación fuera de tiempo — el pago de ${formatoMoneda(montoPagado)} queda retenido por el club, sin reembolso.`
           : penalizacionRegistradaOk
-          ? `Se generó un adeudo de ${formatoMoneda(montoPenalizacionSugerido)} en Penalizaciones Pendientes (Smart POS).`
+          ? `Se generó un adeudo de ${formatoMoneda(montoPenalizacionSugerido)} en Penalizaciones Pendientes (Punto de Venta).`
           : 'El horario quedó liberado.',
     });
     // Control Interno — "Cancelaciones de reservas y motivos".
@@ -11275,7 +11496,7 @@ function DetalleReserva({
                   </span>
                   {!generarPenalizacion && (
                     <span className="mt-1 block text-emerald-700">
-                      Se exonerará al jugador: la cancelación quedará limpia, sin adeudo en Smart POS.
+                      Se exonerará al jugador: la cancelación quedará limpia, sin adeudo en el Punto de Venta.
                     </span>
                   )}
                 </span>
@@ -11715,6 +11936,7 @@ function ModuloParrillaOperativa({
   const [modalNuevaCancha, setModalNuevaCancha] = useState(false);
   const [modalLimiteCanchasPlan, setModalLimiteCanchasPlan] = useState(false);
   const [modalCambiarFoto, setModalCambiarFoto] = useState(null); // cancha
+  const [modalMantenimiento, setModalMantenimiento] = useState(null); // App-163 — cancha
   const [modalNuevaReserva, setModalNuevaReserva] = useState(null); // { cancha, hora }
   const [modalDetalle, setModalDetalle] = useState(null); // { cancha, reserva }
   const [retaDetalleId, setRetaDetalleId] = useState(null);
@@ -11761,6 +11983,7 @@ function ModuloParrillaOperativa({
     return reservas
       .filter((r) => {
         if (r.estado === 'Cancelada' || r.estado === 'Completada') return false;
+        if (esMantenimientoProgramado(r)) return false; // App-163 — no es una reserva
         if (r.fecha > hoy) return true;
         if (r.fecha === hoy) {
           const ini = parseHoraAMinutos(r.hora_inicio);
@@ -11792,7 +12015,7 @@ function ModuloParrillaOperativa({
 
     const ocupado = Array.from({ length: ORDEN_SEMANA_BI.length }, () => HEATMAP_HORAS.map(() => 0));
     reservas
-      .filter((r) => r.estado !== 'Cancelada' && r.fecha >= desdeISO && r.fecha <= hoyISOStr)
+      .filter((r) => r.estado !== 'Cancelada' && !esMantenimientoProgramado(r) && r.fecha >= desdeISO && r.fecha <= hoyISOStr)
       .forEach((r) => {
         const hi = parseHoraAMinutos(r.hora_inicio);
         const hf = parseHoraAMinutos(r.hora_fin);
@@ -11855,7 +12078,7 @@ function ModuloParrillaOperativa({
     const mapa = {};
     const prefijoMes = `${calendarioMes.anio}-${pad2(calendarioMes.mes + 1)}-`;
     reservas.forEach((r) => {
-      if (!r.fecha || !r.fecha.startsWith(prefijoMes) || r.estado === 'Cancelada') return;
+      if (!r.fecha || !r.fecha.startsWith(prefijoMes) || r.estado === 'Cancelada' || esMantenimientoProgramado(r)) return;
       const dia = mapa[r.fecha] || (mapa[r.fecha] = { reserva: 0, clase: 0, evento: 0 });
       if (r.estado === 'Clase') dia.clase += 1;
       else if (r.estado === 'Torneo' || r.estado === 'Reta') dia.evento += 1;
@@ -11926,6 +12149,9 @@ function ModuloParrillaOperativa({
               onVerHorarios={(cancha) => setModalDetalle({ cancha, reserva: null })}
               onCambiarFoto={(cancha) => setModalCambiarFoto(cancha)}
               onCambiarEstatus={actualizarEstatusCancha}
+              mantenimientoActual={mantenimientoEnCursoAhora(reservas, c.id)}
+              proximoMantenimiento={proximoMantenimientoHoy(reservas, c.id)}
+              onProgramarMantenimiento={(cancha) => setModalMantenimiento(cancha)}
               onReservaClick={abrirDetalleReserva}
               soloLectura={permisos?.soloLecturaParrilla === true}
               puedeRenombrarCancha={permisos?.puedeCambiarEstatusCancha === true}
@@ -12012,6 +12238,24 @@ function ModuloParrillaOperativa({
           // devuelve `true`; el modal NO reabre "Nueva Cancha" (el límite
           // sube solo cuando Stripe confirma el nuevo plan).
           onConfirmar={(plan) => onCambiarPlan?.(plan)}
+        />
+      )}
+
+      {modalMantenimiento && (
+        <ModalProgramarMantenimiento
+          cancha={modalMantenimiento}
+          reservas={reservas}
+          configClub={configClub}
+          fechaInicial={fechaSeleccionada}
+          onClose={() => setModalMantenimiento(null)}
+          onCreado={(fila) => {
+            upsertReserva(fila);
+            onRegistrarAuditoria?.('modificacion_cancha', {
+              cancha: modalMantenimiento.nombre,
+              antes: 'Operativa',
+              despues: `Mantenimiento programado ${formatoFechaLarga(fila.fecha)} ${String(fila.hora_inicio).slice(0, 5)}–${String(fila.hora_fin).slice(0, 5)}`,
+            });
+          }}
         />
       )}
 
@@ -12558,7 +12802,7 @@ function EmptyStateProductos({ onCrear = null }) {
       </div>
       <p className="text-sm font-bold text-slate-600">Todavía no tienes productos en tu catálogo</p>
       <p className="mt-1 max-w-sm text-xs text-slate-500">
-        Crea tu primer producto con «Nuevo Producto»: aparecerá al instante en Smart POS, Inventario y la Tienda del Portal de Jugadores.
+        Crea tu primer producto con «Nuevo Producto»: aparecerá al instante en el Punto de Venta, Inventario y la Tienda del Portal de Jugadores.
       </p>
       {onCrear && (
         <BotonPrimario onClick={onCrear} className="mt-4">
@@ -13259,7 +13503,7 @@ function PasosDeCobro({
     if (!walletPersona) return;
     setWalletError('');
     setWalletProcesando(true);
-    const motivo = `Cobro Smart POS${referenciaTipo ? ' · ' + referenciaTipo : ''}${referenciaDescripcion ? ' — ' + referenciaDescripcion : ''}`;
+    const motivo = `Cobro en Punto de Venta${referenciaTipo ? ' · ' + referenciaTipo : ''}${referenciaDescripcion ? ' — ' + referenciaDescripcion : ''}`;
     const resultado =
       walletTarget === 'jugador'
         ? await ajustarWalletJugador({ jugadorId: walletPersona.id, monto: -walletMontoWallet, motivo, referenciaTipo, referenciaId })
@@ -15916,7 +16160,7 @@ function PanelCajaCortes({ cierresAnteriores, puedeAprobarAnteriores, onAprobarA
           <SkeletonGrid />
         ) : datos.sesiones.length === 0 ? (
           <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
-            Todavía no hay aperturas de caja. Se abren desde Smart POS → botón «Caja».
+            Todavía no hay aperturas de caja. Se abren desde el Punto de Venta → botón «Caja».
           </p>
         ) : (
           datos.sesiones.map((s) => (
@@ -16679,7 +16923,7 @@ function ModalNuevoProducto({
                       onChange={(e) => actualizarFilaVariante(v.id, 'costoUnitario', e.target.value)}
                       className={`${inputClase} w-24`}
                       placeholder="Costo unit."
-                      title="Costo Unitario (vacío = hereda el del producto) — alimenta Margen Bruto % y Analytics BI"
+                      title="Costo Unitario (vacío = hereda el del producto) — alimenta Margen Bruto % y Analytics"
                     />
                     {/* Ajuste fino — Variantes de Alimentos / sin stock
                         rígido: los inputs de Stock/Stock mínimo se OCULTAN
@@ -17671,10 +17915,10 @@ function ModalConfirmarLiberarClasePrivada({ clase, onClose, onConfirmar, libera
     <ModalShell titulo="¿Liberar la cancha?" subtitulo={clase.nombre} onClose={onClose} icon={GraduationCap} ancho="max-w-sm">
       <div className="space-y-4">
         <p className="text-xs font-semibold text-slate-600">
-          Esta Clase Privada se quedó sin alumnos (0/1) tras la cancelación. ¿Deseas cancelarla para liberar la cancha en el Cronograma y la Parrilla Operativa, disponible de inmediato para otros cobros o reservas?
+          Esta Clase Privada se quedó sin alumnos (0/1) tras la cancelación. ¿Deseas cancelarla para liberar la cancha en Reservas & Canchas, disponible de inmediato para otros cobros o reservas?
         </p>
         <p className="text-[11px] text-slate-500">
-          Esto no borra nada — es reversible, igual que "Cancelar Clase" en Academia &amp; Clínicas. Si prefieres dejarla, no pasa nada: puedes cancelarla después desde ahí.
+          Esto no borra nada — es reversible, igual que "Cancelar Clase" en Clases &amp; Academia. Si prefieres dejarla, no pasa nada: puedes cancelarla después desde ahí.
         </p>
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose} disabled={liberando}>
@@ -17948,7 +18192,7 @@ function InscripcionesEventoPanel({
           <Trophy size={26} className="text-slate-300" />
           <p className="text-sm font-semibold text-slate-500">Sin inscripciones pendientes de cobro.</p>
           <p className="text-xs text-slate-400">
-            Se llenan solas desde Torneos &amp; Retas y Academia &amp; Clínicas — cualquier inscripción con saldo pendiente aparece aquí.
+            Se llenan solas desde Torneos &amp; Retas y Clases &amp; Academia — cualquier inscripción con saldo pendiente aparece aquí.
           </p>
         </div>
       ) : (
@@ -19320,7 +19564,7 @@ function TableroKDSRestauranteBar({ productos, canchas, variantesPorProducto, op
           </p>
           <p className="text-xs text-slate-400">
             {vista === 'activas'
-              ? 'Se llenan solas en cuanto Recepción agrega un consumo de Restaurante/Bar en Smart POS o a una cuenta de cancha.'
+              ? 'Se llenan solas en cuanto Recepción agrega un consumo de Restaurante/Bar en el Punto de Venta o a una cuenta de cancha.'
               : 'Las comandas marcadas "Listo" aparecen aquí, de la más reciente a la más antigua.'}
           </p>
         </div>
@@ -19933,7 +20177,7 @@ function ModuloSmartPOS({
         stock_anterior: stockAnterior,
         stock_nuevo: nuevoStock,
         costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-        motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`})${
+        motivo: `Venta en el Punto de Venta · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`})${
           esVariante ? ` · ${varianteNombreEtiqueta}` : ''
         }${sufijoPreparadoKardex(item)}`,
         operador: operador?.nombre,
@@ -19979,7 +20223,7 @@ function ModuloSmartPOS({
         stock_anterior: 0,
         stock_nuevo: 0,
         costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-        motivo: `Venta en Smart POS · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`}) (sin control de stock)${
+        motivo: `Venta en el Punto de Venta · Split Bill (${roster[indice]?.nombre || `Jugador ${indice + 1}`}) (sin control de stock)${
           esVariante ? ` · ${varianteNombreEtiqueta}` : ''
         }${sufijoPreparadoKardex(item)}`,
         operador: operador?.nombre,
@@ -21875,7 +22119,7 @@ function ModuloSmartPOS({
       origen: fila.origen,
       monto: fila.monto,
       motivo,
-      desde: 'Smart POS · Cuentas Pendientes',
+      desde: 'Punto de Venta · Cuentas Pendientes',
       resultado: resultado.estado || 'baja',
     });
     return true;
@@ -22771,7 +23015,7 @@ function ModuloSmartPOS({
           stock_anterior: stockAnterior,
           stock_nuevo: nuevoStock,
           costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
-          motivo: `${esVariante ? `Venta en Smart POS · ${varianteNombreEtiqueta}` : 'Venta en Smart POS'}${sufijoPreparadoKardex(item)}`,
+          motivo: `${esVariante ? `Venta en el Punto de Venta · ${varianteNombreEtiqueta}` : 'Venta en el Punto de Venta'}${sufijoPreparadoKardex(item)}`,
           operador: operador?.nombre,
         });
         if (!resultadoKardex.ok) {
@@ -22826,8 +23070,8 @@ function ModuloSmartPOS({
           costo_unitario: resolverCostoUnitarioVenta(productoId, varianteId, productos, variantesPorProducto),
           motivo: `${
             esVariante
-              ? `Venta en Smart POS · ${varianteNombreEtiqueta} (sin control de stock)`
-              : 'Venta en Smart POS (sin control de stock)'
+              ? `Venta en el Punto de Venta · ${varianteNombreEtiqueta} (sin control de stock)`
+              : 'Venta en el Punto de Venta (sin control de stock)'
           }${sufijoPreparadoKardex(item)}`,
           operador: operador?.nombre,
         });
@@ -25913,7 +26157,7 @@ function ListaGruposModificadores({ grupos, loading, tablaExiste, onNuevo, onEdi
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-500">
-          Asigna un grupo a un producto desde su ficha ("Asignar Grupo de Modificadores") para activar el Paso 2 en Smart POS.
+          Asigna un grupo a un producto desde su ficha ("Asignar Grupo de Modificadores") para activar el Paso 2 en el Punto de Venta.
         </p>
         <BotonPrimario onClick={onNuevo} className="shrink-0 px-3 py-2 text-xs">
           <Plus size={14} /> Nuevo Grupo
@@ -27253,7 +27497,7 @@ function TopProductosTabla({ filas, cargando }) {
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-900">
         <Trophy size={16} className="text-amber-400" /> Top 5 Productos Más Vendidos
       </h3>
-      <p className="mb-3 text-[11px] text-slate-500">Incluye ventas de mostrador (Smart POS) y de la Tienda en Línea del Portal.</p>
+      <p className="mb-3 text-[11px] text-slate-500">Incluye ventas de mostrador (Punto de Venta) y de la Tienda en Línea del Portal.</p>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
           Sin ventas de productos en este rango.
@@ -27324,7 +27568,7 @@ function TopModificadoresTabla({ filas, cargando }) {
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-black text-slate-900">
         <Sliders size={16} className="text-orange-500" /> Top Extras Más Pedidos
       </h3>
-      <p className="mb-3 text-[11px] text-slate-500">Preparados y extras más solicitados en ventas de Smart POS.</p>
+      <p className="mb-3 text-[11px] text-slate-500">Preparados y extras más solicitados en ventas del Punto de Venta.</p>
       {filas.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-10 text-center text-xs text-slate-500">
           Sin modificadores/extras pedidos en este rango.
@@ -28273,7 +28517,7 @@ function generarCSVReporte({
   nombreClub,
 }) {
   const filas = [];
-  filas.push([`${nombreClub || 'ClubOS'} — Reporte Analytics BI`]);
+  filas.push([`${nombreClub || 'ClubOS'} — Reporte Analytics`]);
   filas.push([etiquetaReporteExport(modo, rango)]);
   filas.push(['Generado', new Date().toLocaleString('es-MX')]);
   filas.push([]);
@@ -30098,7 +30342,7 @@ function ModuloContabilidadCompras({
       idCorto: (a.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
       hora: horaDe(a.created_at),
       concepto: `${a.nombre || 'Alumno'} · ${a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta'}${a.pagado_con_creditos ? ' (crédito)' : ''}`,
-      canal: esCanalPortalWeb(a.canal_origen) ? 'Portal Web' : 'Academia & Clínicas',
+      canal: esCanalPortalWeb(a.canal_origen) ? 'Portal Web' : 'Clases & Academia',
       // Método de Pago (item 1, migracion_v32) — real (Efectivo/Transferencia/
       // Tarjeta TPV/Portal Web/Wallet) cuando la fila ya lo tiene guardado;
       // "Crédito" si se pagó con un crédito de membresía (no hay método real
@@ -31763,8 +32007,8 @@ function ModuloContabilidadCompras({
       [],
       ['Matriz de Ingresos Consolidados', 'Monto'],
       ['a) Reservas de Canchas (Renta pura de canchas, Web + Mostrador)', pnl.reservasCanchas.toFixed(2)],
-      ['b) Pro-Shop (Smart POS + Tienda Web)', pnl.proShop.toFixed(2)],
-      ['c) Restaurante / Bar (Smart POS + Tienda Web)', pnl.restauranteBar.toFixed(2)],
+      ['b) Pro-Shop (Punto de Venta + Tienda Web)', pnl.proShop.toFixed(2)],
+      ['c) Restaurante / Bar (Punto de Venta + Tienda Web)', pnl.restauranteBar.toFixed(2)],
       ['d) Clases y Clínicas', pnl.clasesClinicas.toFixed(2)],
       ['e) Torneos y Retas (Inscripciones)', pnl.torneosRetas.toFixed(2)],
       ['f) Otros Ingresos / Penalizaciones', pnl.otrosIngresos.toFixed(2)],
@@ -33177,7 +33421,8 @@ function ModuloAnalyticsBI({
     () => reservas.filter((r) => r.fecha >= rango.inicioFechaISO && r.fecha < rango.finFechaISO && !idsMaestroTorneo.has(r.id)),
     [reservas, rango, idsMaestroTorneo]
   );
-  const reservasOcupacion = useMemo(() => reservasEnRango.filter((r) => r.estado !== 'Cancelada'), [reservasEnRango]);
+  // App-163 — el Mantenimiento programado bloquea la cancha pero no es uso: no suma horas ocupadas.
+  const reservasOcupacion = useMemo(() => reservasEnRango.filter((r) => r.estado !== 'Cancelada' && !esMantenimientoProgramado(r)), [reservasEnRango]);
   const reservasCobradas = useMemo(
     () => reservasEnRango.filter((r) => !esBloqueoDeEvento(r) && esCobroConfirmado(r) && (Number(r.monto_total) || 0) > 0),
     [reservasEnRango]
@@ -37392,7 +37637,7 @@ function eventoLogDesdeVenta(venta, opciones) {
       // del Historial de Tickets. Antes se mostraba el id interno de la venta
       // (global de la base). Sin folio de club (local / sin v99) no se muestra.
       folio: local || venta._folio_club == null ? null : `#${venta._folio_club}`,
-      canal: esWeb ? 'Portal de Jugadores (en línea)' : 'Mostrador (Smart POS)',
+      canal: esWeb ? 'Portal de Jugadores (en línea)' : 'Mostrador (Punto de Venta)',
       cancha: venta.cancha_id != null ? nombreCancha?.(venta.cancha_id) || null : null,
       turno: valorLog(venta.turno) ? capitalizarLog(venta.turno) : null,
       split_texto: d.split_bill && Number(d.split_bill_total_partes) > 1 ? `Parte ${d.split_bill_parte} de ${d.split_bill_total_partes}` : null,
@@ -38392,7 +38637,7 @@ function ModalCancelarRetaIncompleta({ reta, inscritosActivos, onClose }) {
     <ModalShell titulo="Cancelar Reta por Incompleta" subtitulo={`${reta.nombre || 'Reta'} · ${inscritosActivos.length}/${CUPOS_RETA} jugadores`} onClose={onClose} icon={Ban} ancho="max-w-md">
       <div className="space-y-4">
         <p className="text-xs leading-relaxed text-slate-500">
-          Se libera la cancha en la Parrilla, se cancelan las inscripciones (sin adeudos ni penalizaciones) y quien ya pagó
+          Se libera la cancha en Reservas & Canchas, se cancelan las inscripciones (sin adeudos ni penalizaciones) y quien ya pagó
           recibe su dinero íntegro como saldo a favor en su Wallet. La Reta queda archivada como cancelada.
         </p>
         <div className="space-y-1.5" data-rescate="previa">
@@ -38452,7 +38697,7 @@ function ModalCancelarRetaIncompleta({ reta, inscritosActivos, onClose }) {
 // App-122 siguen cobrándose normal en Smart POS (no se tocan).
 const OPCIONES_AJUSTE_INVITADO_RETA = [
   { value: 'club_absorbe', label: 'El club absorbe el lugar', detalle: 'Cortesía $0 · no genera ingreso ni adeudo' },
-  { value: 'dividido', label: 'Dividir entre los jugadores', detalle: 'Se cobra en Smart POS con Dividir Cuenta' },
+  { value: 'dividido', label: 'Dividir entre los jugadores', detalle: 'Se cobra en el Punto de Venta con Dividir Cuenta' },
 ];
 const MIN_JUGADORES_DIVIDIR_CUOTA = 2; // "Dividir Cuenta" del POS reparte entre 2–4.
 // App-123 — la Cuota de Coach / Invitado dividida se reparte SIEMPRE entre 3
@@ -38572,8 +38817,8 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
       detalle: esCortesia
         ? `${nombre.trim()} · el club absorbe el lugar (cortesía).`
         : abrePOS
-        ? `${nombre.trim()} · ${formatoMoneda(precio)} — abriendo "Dividir Cuenta" en Smart POS.`
-        : `${nombre.trim()} · ${formatoMoneda(precio)} pendiente en Smart POS (Dividir Cuenta): ${formatoMoneda(cuotaPorJugador)} por jugador.`,
+        ? `${nombre.trim()} · ${formatoMoneda(precio)} — abriendo "Dividir Cuenta" en el Punto de Venta.`
+        : `${nombre.trim()} · ${formatoMoneda(precio)} pendiente en el Punto de Venta (Dividir Cuenta): ${formatoMoneda(cuotaPorJugador)} por jugador.`,
     });
     onInscrito?.(data);
     onClose();
@@ -38653,7 +38898,7 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
         <p className="rounded-lg bg-slate-50 px-2.5 py-2 text-[11px] text-slate-500">
           {esCortesia
             ? 'Quedará como Cortesía ($0).'
-            : `Quedará en Smart POS como "${conceptoCuotaRescate({ nombre: nombre || 'Coach' }, reta, coaches)}" por ${formatoMoneda(precio)}${
+            : `Quedará en el Punto de Venta como "${conceptoCuotaRescate({ nombre: nombre || 'Coach' }, reta, coaches)}" por ${formatoMoneda(precio)}${
                 abrePOS ? ' y se abrirá "Dividir Cuenta" para cobrarla.' : '.'
               }`}
         </p>
@@ -38965,7 +39210,7 @@ function ModalGestionInscripcionReta({ reta, inscripcion, configClub, cancelando
                     </span>
                     {!generarPenalizacion && (
                       <span className="mt-1 block text-emerald-700">
-                        Se exonerará al jugador: la cancelación quedará limpia, sin adeudo en Smart POS.
+                        Se exonerará al jugador: la cancelación quedará limpia, sin adeudo en el Punto de Venta.
                       </span>
                     )}
                   </span>
@@ -39280,7 +39525,7 @@ function TarjetaReta({
 
       {confirmarEliminarVisual ? (
         <ConfirmarEliminacionVisual
-          mensaje={`¿Eliminar "${reta.nombre}" definitivamente? Se borrará la Reta y se liberará su horario en la Parrilla. Las inscripciones y pagos ya registrados se conservan para reportes.`}
+          mensaje={`¿Eliminar "${reta.nombre}" definitivamente? Se borrará la Reta y se liberará su horario en Reservas & Canchas. Las inscripciones y pagos ya registrados se conservan para reportes.`}
           eliminando={eliminandoVisual}
           onCancelar={() => setConfirmarEliminarVisual(false)}
           onConfirmar={(motivo) => onEliminarVisual?.(reta, motivo)}
@@ -39356,7 +39601,7 @@ function TarjetaReta({
             type="button"
             onClick={() => setConfirmarEliminarVisual(true)}
             disabled={eliminandoVisual}
-            title="Elimina la Reta definitivamente y libera su cancha/horario en la Parrilla — las inscripciones y pagos se conservan para reportes"
+            title="Elimina la Reta definitivamente y libera su cancha/horario en Reservas & Canchas — las inscripciones y pagos se conservan para reportes"
             className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 transition hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <EyeOff size={12} /> Eliminar Reta
@@ -40012,7 +40257,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
             <span>
               Ingreso potencial: <b>{formatoMoneda(celdasActivas.reduce((s, c) => s + (Number(c.precio) || 0) * CUPOS_RETA, 0))}</b>
             </span>
-            {celdasOcupadas > 0 && <span className="text-slate-500">{celdasOcupadas} bloque(s) ocupados en la Parrilla</span>}
+            {celdasOcupadas > 0 && <span className="text-slate-500">{celdasOcupadas} bloque(s) ocupados en Reservas & Canchas</span>}
           </div>
 
           {error && <p className="text-xs font-semibold text-rose-500">{error}</p>}
@@ -40152,7 +40397,7 @@ function ModalNuevaReta({ canchas, reservas, configClub, onClose, onCreada }) {
         </p>
 
         <p className="flex items-start gap-1.5 rounded-lg bg-fuchsia-400/10 px-3 py-2 text-xs font-semibold text-fuchsia-300 ring-1 ring-fuchsia-400/20">
-          <Lock size={13} className="mt-0.5 shrink-0" /> Al guardar, cada horario se bloquea automáticamente en la Parrilla Operativa como "RETA
+          <Lock size={13} className="mt-0.5 shrink-0" /> Al guardar, cada horario se bloquea automáticamente en Reservas & Canchas como "RETA
           ABIERTA" en {canchaIdsSeleccionadas.length > 1 ? `las ${canchaIdsSeleccionadas.length} canchas seleccionadas` : 'esa cancha'} — nadie
           más podrá reservarla{canchaIdsSeleccionadas.length > 1 ? 'n' : ''} en ese bloque.
         </p>
@@ -40222,7 +40467,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscr
     // (`resolverJugadorId`), así que sin teléfono un jugador con nombre
     // repetido puede fusionarse por accidente con otro cliente.
     const claveTelInscripcion = claveTelefono(telefono);
-    if (!claveTelInscripcion) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio & CRM.');
+    if (!claveTelInscripcion) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio de Jugadores.');
     // App-120 — Inscripción Única: misma regla que la base (v128), con los
     // mismos datos que viajan en el INSERT (teléfono + nombre).
     const duplicadoReta = buscarInscripcionDuplicada(inscritosReta, { telefono, nombre }, 'reta');
@@ -40371,7 +40616,7 @@ function ModalInscribirJugador({ reta, lugaresDisponibles, jugadores = [], inscr
           />
         </Campo>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Campo label="Teléfono *" hint="Obligatorio — identificador único del cliente en el Directorio & CRM.">
+          <Campo label="Teléfono *" hint="Obligatorio — identificador único del cliente en el Directorio de Jugadores.">
             <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="10 dígitos" required />
           </Campo>
           <Campo label="Correo">
@@ -40555,7 +40800,7 @@ function TarjetaTorneo({
 
       {confirmarEliminarVisual ? (
         <ConfirmarEliminacionVisual
-          mensaje={`¿Eliminar "${torneo.nombre}" de la interfaz? Sus participantes, pagos y puntos de Ranking se conservan intactos para reportes/Analytics, y todos sus horarios apartados en la Parrilla se liberan automáticamente.`}
+          mensaje={`¿Eliminar "${torneo.nombre}" de la interfaz? Sus participantes, pagos y puntos de Ranking se conservan intactos para reportes/Analytics, y todos sus horarios apartados en Reservas & Canchas se liberan automáticamente.`}
           eliminando={eliminandoVisual}
           onCancelar={() => setConfirmarEliminarVisual(false)}
           onConfirmar={(motivo) => onEliminarVisual?.(torneo, motivo)}
@@ -40563,7 +40808,7 @@ function TarjetaTorneo({
       ) : confirmarEliminar ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-300 bg-rose-50 p-2.5">
           <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-700">
-            ¿Eliminar "{torneo.nombre}" para siempre? No tiene participantes ni ingresos, así que esto no se puede deshacer. Sus horarios apartados en la Parrilla se liberan automáticamente.
+            ¿Eliminar "{torneo.nombre}" para siempre? No tiene participantes ni ingresos, así que esto no se puede deshacer. Sus horarios apartados en Reservas & Canchas se liberan automáticamente.
           </p>
           <div className="flex shrink-0 gap-1.5">
             <button
@@ -41089,7 +41334,7 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
         <div>
           <div className="mb-1.5 flex items-center justify-between">
             <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <Lock size={12} /> Bloqueo de Canchas en la Parrilla
+              <Lock size={12} /> Bloqueo de horarios en Reservas & Canchas
             </span>
             <button onClick={agregarBloqueo} className="text-[11px] font-bold text-orange-400 hover:underline">
               + Agregar horario
@@ -41134,7 +41379,7 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
         </div>
 
         <p className="flex items-start gap-1.5 rounded-lg bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-300 ring-1 ring-violet-400/20">
-          <Info size={13} className="mt-0.5 shrink-0" /> Cada horario de arriba bloquea esa cancha en la Parrilla Operativa como "TORNEO:{' '}
+          <Info size={13} className="mt-0.5 shrink-0" /> Cada horario de arriba bloquea esa cancha en Reservas & Canchas como "TORNEO:{' '}
           {nombre.trim() || '(nombre)'}" — nadie más podrá reservarla en ese bloque.
         </p>
 
@@ -41481,7 +41726,7 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
     // CRM & Guardado de Teléfono: obligatorio, igual que en Smart POS — es el
     // identificador único del cliente (`resolverJugadorId`).
     const claveTelParticipante = claveTelefono(telefono);
-    if (!claveTelParticipante) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio & CRM.');
+    if (!claveTelParticipante) return setError('Indica un teléfono válido (10 dígitos) — es obligatorio para el Directorio de Jugadores.');
     // Requerimiento 2 — Validación al guardar: cubre tanto al operador que
     // escribió a mano el nombre/teléfono de alguien ya inscrito (sin pasar
     // por el autocompletado, que ya lo habría excluido) como, de respaldo,
@@ -41644,10 +41889,10 @@ function ModalAgregarParticipanteTorneo({ torneo, jugadores = [], participantesE
           />
         </Campo>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Campo label="Teléfono *" hint="Obligatorio — identificador único del cliente en el Directorio & CRM.">
+          <Campo label="Teléfono *" hint="Obligatorio — identificador único del cliente en el Directorio de Jugadores.">
             <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="10 dígitos" required />
           </Campo>
-          <Campo label="Fecha de nacimiento" hint="Se guarda en la ficha global del jugador (Directorio & CRM).">
+          <Campo label="Fecha de nacimiento" hint="Se guarda en la ficha global del jugador (Directorio de Jugadores).">
             <SelectorFechaClick value={fechaNacimiento} onChange={setFechaNacimiento} />
           </Campo>
         </div>
@@ -43597,7 +43842,7 @@ async function cancelarInscripcionRetaNativa(reta, inscripcion, opciones = {}, {
       : 'Inscripción cancelada',
     detalle: generaAdeudo
       ? penalizacionGuardada === false
-        ? `El lugar de ${inscripcion.nombre} se liberó, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Smart POS). Regístralo ahí manualmente.`
+        ? `El lugar de ${inscripcion.nombre} se liberó, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Punto de Venta). Regístralo ahí manualmente.`
         : `Fuera de la ventana de tolerancia — nunca se cobró, así que queda como adeudo pendiente de cobro. El lugar vuelve a estar disponible.`
       : nuevoEstado === 'retenido'
       ? `Fuera de la ventana de tolerancia — la cuota de ${inscripcion.nombre} ya estaba pagada y el club la retiene (sin reembolso). El lugar vuelve a estar disponible.`
@@ -43685,7 +43930,7 @@ async function cancelarParticipanteTorneoNativa(torneo, participante, { configCl
       : 'Inscripción cancelada',
     detalle: generaAdeudo
       ? penalizacionGuardada === false
-        ? `El lugar de ${participante.nombre} se liberó, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Smart POS). Regístralo ahí manualmente.`
+        ? `El lugar de ${participante.nombre} se liberó, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Punto de Venta). Regístralo ahí manualmente.`
         : `Fuera de la ventana de tolerancia — nunca se cobró, así que queda como adeudo pendiente de cobro. El lugar vuelve a estar disponible.`
       : generaRetencion
       ? `Fuera de la ventana de tolerancia — la inscripción de ${participante.nombre} ya estaba pagada y el club la retiene (sin reembolso). El lugar vuelve a estar disponible.`
@@ -43764,7 +44009,7 @@ async function darDeBajaAlumnoNativa(alumno, { configClub, clase, toast, onAlumn
       : 'Alumno dado de baja',
     detalle: generaAdeudo
       ? penalizacionGuardada === false
-        ? `Se liberó el cupo de ${alumno.nombre}, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Smart POS). Regístralo ahí manualmente.`
+        ? `Se liberó el cupo de ${alumno.nombre}, pero el adeudo no quedó registrado en Penalizaciones Pendientes (Punto de Venta). Regístralo ahí manualmente.`
         : `Fuera de la ventana de tolerancia — nunca se cobró, así que queda como adeudo pendiente de cobro.`
       : generaRetencion
       ? `Fuera de la ventana de tolerancia — la clase de ${alumno.nombre} ya estaba pagada y el club la retiene (sin reembolso).`
@@ -44038,7 +44283,7 @@ function ModuloTorneosRetas({
       console.warn('[Torneos & Retas] No se pudo sincronizar el torneo tras liberar el bloqueo:', errTorneo.message);
     }
     setTorneos((prev) => (prev.map((t) => (t.id === torneo.id ? { ...t, bloqueos: nuevosBloqueos } : t))));
-    mostrarToast({ titulo: 'Horario liberado', detalle: `${bloqueo.cancha_nombre} vuelve a estar disponible en la Parrilla.` });
+    mostrarToast({ titulo: 'Horario liberado', detalle: `${bloqueo.cancha_nombre} vuelve a estar disponible en Reservas & Canchas.` });
   }
 
   // App-155 — LIMPIEZA EN CASCADA de la Parrilla al eliminar un torneo: libera
@@ -44393,14 +44638,14 @@ function ModuloTorneosRetas({
     if (errorBloqueos) {
       mostrarToast({
         titulo: 'Reta eliminada, pero la cancha sigue ocupada',
-        detalle: `No se pudieron liberar los bloqueos de la Parrilla (${errorBloqueos.message}). Cancélalos manualmente desde el Cronograma.`,
+        detalle: `No se pudieron liberar los bloqueos de Reservas & Canchas (${errorBloqueos.message}). Cancélalos manualmente desde el Cronograma.`,
         tono: 'aviso',
       });
       return;
     }
     mostrarToast({
       titulo: 'Reta eliminada',
-      detalle: `${reta.nombre} se eliminó definitivamente y ${idsBloqueos.length > 1 ? 'las canchas quedaron libres' : 'la cancha quedó libre'} en la Parrilla.`,
+      detalle: `${reta.nombre} se eliminó definitivamente y ${idsBloqueos.length > 1 ? 'las canchas quedaron libres' : 'la cancha quedó libre'} en Reservas & Canchas.`,
     });
   }
 
@@ -45290,7 +45535,7 @@ function ModuloTorneosRetas({
               <p className="text-xs text-slate-400">
                 {filtroReta === 'archivadas'
                   ? 'Las retas que archives aparecerán aquí, sin perder inscripciones ni pagos.'
-                  : 'Crea una para vender lugares individuales y bloquear el horario en la Parrilla.'}
+                  : 'Crea una para vender lugares individuales y bloquear el horario en Reservas & Canchas.'}
               </p>
             </div>
           ) : (
@@ -47287,7 +47532,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     const solape = buscarSolapeEnCancha(reservas || [], canchaId, fecha, horaInicio, horaFin);
     if (solape) {
       const mensaje =
-        solape.estado === 'Torneo' || solape.estado === 'Reta' || solape.estado === 'Clase'
+        solape.estado === 'Torneo' || solape.estado === 'Reta' || solape.estado === 'Clase' || solape.estado === 'Mantenimiento'
           ? 'La cancha ya está ocupada por otro evento en ese horario.'
           : 'Esa cancha ya tiene una reserva en ese horario.';
       setError(mensaje);
@@ -47500,7 +47745,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   }
 
   return (
-    <ModalShell titulo="Nueva Clase" subtitulo="Academia & Clínicas — parrilla de clases" onClose={onClose} icon={GraduationCap} ancho="max-w-lg">
+    <ModalShell titulo="Nueva Clase" subtitulo="Clases & Academia — parrilla de clases" onClose={onClose} icon={GraduationCap} ancho="max-w-lg">
       <div className="space-y-4">
         {esPrivada ? (
           <Campo
@@ -47762,7 +48007,7 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
             {inscribirGrupoAhora ? (
               <div className="space-y-2">
                 <p className="text-[11px] text-slate-500">
-                  Cada alumno queda inscrito con su cuenta pendiente de {formatoMoneda(Number(precioClaseSuelta) || 0)} en Smart POS. Los cupos vacíos quedan
+                  Cada alumno queda inscrito con su cuenta pendiente de {formatoMoneda(Number(precioClaseSuelta) || 0)} en el Punto de Venta. Los cupos vacíos quedan
                   libres para inscribirse desde el Portal.
                 </p>
                 {alumnosGrupoVisibles.map((a, i) => (
@@ -48672,7 +48917,7 @@ function ModalDetalleClase({
           <div className="space-y-3 rounded-xl border border-rose-200 bg-rose-50 p-4">
             <p className="text-sm font-bold text-red-900">¿Confirmas cancelar "{clase.nombre}"?</p>
             <p className="text-xs text-gray-700">
-              La cancha se liberará de inmediato en la Parrilla Operativa y en el Cronograma de Academia. El historial de alumnos y asistencia se conserva.
+              La cancha se liberará de inmediato en Reservas & Canchas y en el Cronograma de Academia. El historial de alumnos y asistencia se conserva.
             </p>
 
             {alumnosPagadosClase.length > 0 && (
@@ -48734,7 +48979,7 @@ function ModalDetalleClase({
                       {alumnosSinPagarClase.length > 1 ? ` · ${alumnosSinPagarClase.length} alumnos` : ''})
                     </span>
                     {!generarPenalizacionClase && (
-                      <span className="mt-1 block text-emerald-700">Se exonerará al/a los alumno(s): la cancelación quedará limpia, sin adeudo en Smart POS.</span>
+                      <span className="mt-1 block text-emerald-700">Se exonerará al/a los alumno(s): la cancelación quedará limpia, sin adeudo en el Punto de Venta.</span>
                     )}
                   </span>
                 </label>
@@ -48782,7 +49027,7 @@ function ModalDetalleClase({
               <div className="flex flex-wrap items-center gap-2 rounded-xl border border-rose-300 bg-rose-50 p-3">
                 <AlertTriangle size={16} className="shrink-0 text-rose-600" />
                 <p className="min-w-0 flex-1 text-[11px] font-semibold text-rose-700">
-                  Esta Clase Privada se quedó sin alumnos (0/1). ¿Deseas cancelarla para liberar la cancha en el Cronograma y la Parrilla, y que quede disponible para otros cobros o reservas?
+                  Esta Clase Privada se quedó sin alumnos (0/1). ¿Deseas cancelarla para liberar la cancha en Reservas & Canchas, y que quede disponible para otros cobros o reservas?
                 </p>
                 <div className="flex shrink-0 gap-1.5">
                   <button
@@ -48849,7 +49094,7 @@ function ModalDetalleClase({
                   <p className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 px-3 py-2 text-[11px] font-semibold text-emerald-300">
                     <Sparkles size={13} /> Ya tiene {membresiaActivaPreview.creditos_restantes} crédito
                     {membresiaActivaPreview.creditos_restantes === 1 ? '' : 's'} vigente
-                    {membresiaActivaPreview.creditos_restantes === 1 ? '' : 's'} — esta inscripción será GRATIS (se descuenta 1 crédito, sin pasar por Smart POS).
+                    {membresiaActivaPreview.creditos_restantes === 1 ? '' : 's'} — esta inscripción será GRATIS (se descuenta 1 crédito, sin pasar por Punto de Venta).
                   </p>
                 ) : (
                   <div className="grid grid-cols-2 gap-3">
@@ -49059,7 +49304,7 @@ function ModalConfirmarEliminarClase({ clase, alumnosActivos, onClose, onConfirm
       <div className="space-y-4">
         <div className="flex items-start gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2.5 text-[11px] font-semibold text-rose-700">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-          Esta acción es permanente: se borra la clase, su sesión, sus alumnos inscritos y su asistencia de Supabase, y se libera la cancha en el Cronograma y la Parrilla Operativa. No se puede deshacer.
+          Esta acción es permanente: se borra la clase, su sesión, sus alumnos inscritos y su asistencia de Supabase, y se libera la cancha en Reservas & Canchas. No se puede deshacer.
         </div>
         {alumnosActivos.length > 0 && (
           <p className="text-[11px] font-semibold text-amber-400">
@@ -49755,7 +50000,7 @@ function AnalyticsAcademia({
     const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambios, []);
     if (error) console.warn('[Academia & Clínicas] No se pudo marcar la renovación como pendiente en Supabase, se aplicó solo local.', error);
     onAlumnoActualizado?.({ ...alumno, ...cambios });
-    toast({ titulo: 'Lista para cobrar en Smart POS', detalle: `${alumno.nombre} — búscala en "Inscripciones pendientes".` });
+    toast({ titulo: 'Lista para cobrar en el Punto de Venta', detalle: `${alumno.nombre} — búscala en "Inscripciones pendientes".` });
     onIrAPOS?.();
   }
 
@@ -51089,7 +51334,7 @@ function ModuloAcademiaClinicas({
 
   function manejarClicReservaCronograma(reserva) {
     if (reserva.estado !== 'Clase') {
-      toast({ titulo: 'Esa es una reserva normal', detalle: 'Gestiónala desde la Parrilla Operativa.', tono: 'aviso' });
+      toast({ titulo: 'Esa es una reserva normal', detalle: 'Gestiónala desde Reservas & Canchas.', tono: 'aviso' });
       return;
     }
     const sesion = sesionPorReservaId[reserva.id];
@@ -52024,7 +52269,7 @@ function DirectorioJugadoresCRM({
     const fin = new Date('2100-01-01T00:00:00');
     const { data, error } = await consultarVentasEnRango(inicio, fin);
     if (error) {
-      setErrorVentas(error.message || 'No se pudieron cargar las ventas de Smart POS.');
+      setErrorVentas(error.message || 'No se pudieron cargar las ventas del Punto de Venta.');
       setVentasHistoricas([]);
     } else {
       setVentasHistoricas(data || []);
@@ -53235,7 +53480,7 @@ function DirectorioJugadoresCRM({
         cargarCortesiasOtorgadas(),
         onRefrescarDirectorio ? onRefrescarDirectorio() : Promise.resolve(),
       ]);
-      mostrarToast({ titulo: 'Directorio sincronizado', detalle: 'Jugadores, reservas y ventas de Smart POS al día.' });
+      mostrarToast({ titulo: 'Directorio sincronizado', detalle: 'Jugadores, reservas y ventas del Punto de Venta al día.' });
     } catch (_e) {
       mostrarToast({
         titulo: 'No se pudo sincronizar del todo',
@@ -53280,7 +53525,7 @@ function DirectorioJugadoresCRM({
 
   return (
     <div className="space-y-4">
-      {errorVentas && <ErrorBanner mensaje={`Smart POS: ${errorVentas}`} onReintentar={cargarVentasHistoricas} />}
+      {errorVentas && <ErrorBanner mensaje={`Punto de Venta: ${errorVentas}`} onReintentar={cargarVentasHistoricas} />}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MetricCard icon={Users} etiqueta="Jugadores en el Directorio" valor={String(resumen.totalJugadores)} tono="sky" />
@@ -53351,7 +53596,7 @@ function DirectorioJugadoresCRM({
             type="button"
             onClick={sincronizarDirectorio}
             disabled={sincronizando}
-            title="Vuelve a traer jugadores, reservas y ventas de Smart POS, y re-evalúa a qué jugador pertenece cada consumo por cancha"
+            title="Vuelve a traer jugadores, reservas y ventas del Punto de Venta, y re-evalúa a qué jugador pertenece cada consumo por cancha"
             className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600 transition hover:text-slate-900 disabled:cursor-wait disabled:opacity-60"
           >
             <RefreshCw size={12} className={sincronizando ? 'animate-spin' : ''} /> {sincronizando ? 'Sincronizando…' : 'Sincronizar'}
@@ -53365,7 +53610,7 @@ function DirectorioJugadoresCRM({
           <p className="text-sm font-semibold text-slate-500">
             {perfiles.length === 0 ? 'Todavía no hay jugadores en el directorio.' : 'Ningún jugador coincide con el filtro.'}
           </p>
-          <p className="text-xs text-slate-400">Se llena solo con cada reserva agendada en la Parrilla (ver "Nueva Reserva").</p>
+          <p className="text-xs text-slate-400">Se llena solo con cada reserva agendada en Reservas & Canchas (ver "Nueva Reserva").</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -53627,7 +53872,7 @@ function ModalMetasCortesia({
         {activoActual === false && (
           <p className="rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-[11px] text-slate-600">
             Con el módulo Desactivado se ocultan las barras de progreso de cortesía en la Vista 360°, las insignias de
-            "🎁 Cortesía Disponible" en Smart POS y CRM, y no se puede acumular ni canjear cortesías. Las compras que
+            "🎁 Cortesía Disponible" en el Punto de Venta y CRM, y no se puede acumular ni canjear cortesías. Las compras que
             se hagan mientras esté Desactivado NUNCA sumarán retroactivo: al volver a Activarlo, el progreso de cada
             jugador arranca en $0 desde ese momento. Los ajustes de abajo se guardan igual, listos para cuando lo
             vuelvas a Activar.
@@ -54186,7 +54431,7 @@ function DetalleConsumoPOS({ perfil, onAbrirCanjeCortesia, canjeandoCategoria, o
   const compras = perfil.comprasPOS || [];
   const cortesiaBar = perfil.cortesiaBar;
   const cortesiaProShop = perfil.cortesiaProShop;
-  if (compras.length === 0) return <EstadoVacioHistorial mensaje="Sin compras registradas en Smart POS todavía." />;
+  if (compras.length === 0) return <EstadoVacioHistorial mensaje="Sin compras registradas en el Punto de Venta todavía." />;
   return (
     <div className="space-y-2">
       {perfil.productoFavorito && (
@@ -54633,7 +54878,7 @@ function ModalCanjearCortesia({ jugador, categoria, meta, productos, variantesPo
             sobra manteniendo el tono "positivo" (cortesía/regalo) del
             aviso. */}
         <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
-          Elige el producto del catálogo que se le entrega. Se genera un ticket en $0.00 en Smart POS a nombre de{' '}
+          Elige el producto del catálogo que se le entrega. Se genera un ticket en $0.00 en el Punto de Venta a nombre de{' '}
           <span className="font-bold">{jugador.nombre}</span>, se descuenta el stock real y el Kardex, y el progreso de{' '}
           {etiquetaCategoria} vuelve a $0 para el próximo ciclo.
         </p>
@@ -56895,7 +57140,7 @@ function ModuloControlSeguridad({
             <SkeletonGrid />
           ) : cierresOrdenados.length === 0 ? (
             <p className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500">
-              Sin cortes de caja registrados todavía. Se crean desde "Cerrar Turno / Arqueo" en Smart POS.
+              Sin cortes de caja registrados todavía. Se crean desde "Cerrar Turno / Arqueo" en el Punto de Venta.
             </p>
           ) : (
             <div className="space-y-2">
@@ -59989,7 +60234,7 @@ function SeccionGeneralClub({
           <h3 className="text-sm font-black text-slate-900">Horario de Apertura y Cierre</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
-          Define el rango de operación del club — reemplaza el límite fijo en la Parrilla Operativa, el Cronograma de
+          Define el rango de operación del club — reemplaza el límite fijo en Reservas & Canchas, el Cronograma de
           Academia y los selectores de hora de "Solicitar Clase"/"Nueva Reserva"/reservas del Portal.
         </p>
 
@@ -61258,7 +61503,7 @@ function SeccionTarifasFranjas({
         </div>
         <p className="mb-3 text-xs text-slate-500">
           Define precios diferenciados por horario (ej. Horario Muerto vs. Horario Pico) para la renta de canchas —
-          la Parrilla Operativa y el Portal de Jugadores aplican la franja correspondiente automáticamente al
+          Reservas & Canchas y el Portal de Jugadores aplican la franja correspondiente automáticamente al
           calcular el monto de cada reserva.
         </p>
 
@@ -61298,7 +61543,7 @@ function SeccionTarifasFranjas({
 
         <p className="mb-4 text-[11px] text-slate-500">
           El precio estándar de cada horario es el precio por hora de la cancha (se edita en su tarjeta de la
-          Parrilla Operativa). Cada regla puede fijar un precio por hora o aplicar un % de descuento sobre ese
+          Reservas & Canchas). Cada regla puede fijar un precio por hora o aplicar un % de descuento sobre ese
           precio, para todas las canchas o solo algunas, y con vigencia opcional. Si una reserva cruza dos
           franjas, cada tramo se cobra con su propia tarifa (prorrateo). Si dos reglas activas se sobreponen, apaga
           o ajusta una con su switch.
@@ -62607,7 +62852,7 @@ function SeccionReservasAcademia({
         </div>
         <p className="mb-3 text-xs text-slate-500">
           Duración por default de cada reserva de cancha y de cada clase — ajusta el cálculo automático de hora final
-          en la Parrilla Operativa y los intervalos disponibles en el Portal de Jugadores.
+          en Reservas & Canchas y los intervalos disponibles en el Portal de Jugadores.
         </p>
 
         <div className="space-y-3.5">
@@ -64638,7 +64883,7 @@ function esMovimientoTicketPOS(m) {
 function conceptoMovimientoWallet(m) {
   if (esMovimientoTicketPOS(m)) {
     const esLiquidacion = String(m?.referencia_tipo || '') === 'liquidacion_cuenta' || /liquidacion_cuenta/i.test(textoMotivoMovimientoWallet(m));
-    return `${esLiquidacion ? 'Liquidación de Cuenta' : 'Venta Smart POS'} · Ticket #${folioTicketDeMovimientoWallet(m)}`;
+    return `${esLiquidacion ? 'Liquidación de Cuenta' : 'Venta en Punto de Venta'} · Ticket #${folioTicketDeMovimientoWallet(m)}`;
   }
   return textoMotivoMovimientoWallet(m) || (Number(m?.monto) >= 0 ? 'Recarga' : 'Consumo');
 }
@@ -76019,7 +76264,7 @@ function AppInterno({ clubInicial } = {}) {
           manuales.length > 0
             ? `Devuelve en Recepción: ${manuales.map((m) => `${m.nombre || 'Jugador'} ${formatoMoneda(Number(m.monto) || 0)}`).join(', ')}.`
             : '',
-          resumen.bloqueos_error ? 'No se pudo liberar la cancha: cancélala desde el Cronograma.' : 'La cancha quedó libre en la Parrilla.',
+          resumen.bloqueos_error ? 'No se pudo liberar la cancha: cancélala desde el Cronograma.' : 'La cancha quedó libre en Reservas & Canchas.',
         ]
           .filter(Boolean)
           .join(' '),
@@ -77624,7 +77869,7 @@ function AppInterno({ clubInicial } = {}) {
         const clase = academiaClasesRef.current.find((c) => c.id === fila.clase_id);
         agregarAlertaClub({
           tipo: 'academia',
-          titulo: `${fila.nombre || 'Un jugador'} se inscribió a la clase ${clase?.nombre || 'de Academia & Clínicas'}`,
+          titulo: `${fila.nombre || 'Un jugador'} se inscribió a la clase ${clase?.nombre || 'de Clases & Academia'}`,
           jugadorId: fila.jugador_id,
           metadata: {
             clase_id: fila.clase_id,
@@ -77648,7 +77893,7 @@ function AppInterno({ clubInicial } = {}) {
         const clase = academiaClasesRef.current.find((c) => c.id === fila.clase_id);
         agregarAlertaClub({
           tipo: 'cancelacion',
-          titulo: `${fila.nombre || 'Un jugador'} canceló su inscripción a la clase ${clase?.nombre || 'de Academia & Clínicas'}`,
+          titulo: `${fila.nombre || 'Un jugador'} canceló su inscripción a la clase ${clase?.nombre || 'de Clases & Academia'}`,
           jugadorId: fila.jugador_id,
           // Una cancelación no es un cobro pendiente — cae directo al
           // fallback (Tarjeta del Jugador) si trae `jugadorId`; si no, al
@@ -77668,7 +77913,7 @@ function AppInterno({ clubInicial } = {}) {
         const etiquetaTipo = fila.tipo_solicitud === 'privada' ? 'una Clase Privada' : 'un Nuevo Grupo';
         agregarAlertaClub({
           tipo: 'solicitud',
-          titulo: `${fila.nombre || 'Un jugador'} solicitó ${etiquetaTipo} en Academia & Clínicas`,
+          titulo: `${fila.nombre || 'Un jugador'} solicitó ${etiquetaTipo} en Clases & Academia`,
           jugadorId: fila.jugador_id,
           // Una solicitud de clase nueva no tiene nada que cobrar todavía
           // (la clase ni existe) — el destino útil es la pestaña
