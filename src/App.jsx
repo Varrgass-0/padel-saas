@@ -7613,15 +7613,52 @@ function VistaCronograma({
   );
 }
 
+/* App-160 — Campo de fecha que SOLO se elige desde el calendario: un clic (o
+   Enter/Espacio) en cualquier parte del campo abre el selector nativo
+   (`showPicker`); el teclado no escribe dígitos (Tab sí funciona). En
+   navegadores sin `showPicker` el control nativo sigue abriendo su calendario. */
+function SelectorFechaCalendario({ value, onChange, className = 'w-40' }) {
+  const ref = useRef(null);
+  const abrir = () => {
+    const el = ref.current;
+    if (!el) return;
+    try {
+      if (typeof el.showPicker === 'function') el.showPicker();
+      else el.focus();
+    } catch (_e) {
+      el.focus();
+    }
+  };
+  return (
+    <div className="relative cursor-pointer" onClick={abrir} data-testid="selector-fecha-parrilla">
+      <CalendarIcon size={15} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-slate-500" />
+      <input
+        ref={ref}
+        type="date"
+        value={value}
+        onChange={(e) => {
+          if (e.target.value) onChange(e.target.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Tab') return;
+          e.preventDefault();
+          if (e.key === 'Enter' || e.key === ' ') abrir();
+        }}
+        onPaste={(e) => e.preventDefault()}
+        inputMode="none"
+        className={`${inputClase} ${className} cursor-pointer caret-transparent pl-9`}
+      />
+    </div>
+  );
+}
+
 /* ============================================================================
- * TOOLBAR (búsqueda, fecha, filtro de estatus, conmutador de vista)
+ * TOOLBAR (fecha, filtro de estatus, conmutador de vista)
  * ==========================================================================*/
 
 function Toolbar({
   vista,
   onCambiarVista,
-  busqueda,
-  onBusqueda,
   fechaSeleccionada,
   onCambiarFecha,
   filtroEstatus,
@@ -7637,25 +7674,9 @@ function Toolbar({
   return (
     <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
-          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            value={busqueda}
-            onChange={(e) => onBusqueda(e.target.value)}
-            placeholder="Buscar cancha..."
-            className={`${inputClase} w-48 pl-9`}
-          />
-        </div>
-
-        <div className="relative">
-          <CalendarIcon size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            type="date"
-            value={fechaSeleccionada}
-            onChange={(e) => onCambiarFecha(e.target.value)}
-            className={`${inputClase} w-40 pl-9`}
-          />
-        </div>
+        {/* App-160 — sin «Buscar cancha…». Fecha: un clic en cualquier parte
+            del campo abre el calendario; no se puede escribir a mano. */}
+        <SelectorFechaCalendario value={fechaSeleccionada} onChange={onCambiarFecha} />
         <div className="flex items-center gap-1">
           <button
             onClick={() => onCambiarFecha(sumarDia(fechaSeleccionada, -1))}
@@ -7702,7 +7723,7 @@ function Toolbar({
               vista === 'tarjetas' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <LayoutGrid size={14} /> Tarjetas
+            <LayoutGrid size={14} /> Canchas
           </button>
           <button
             onClick={() => onCambiarVista('cronograma')}
@@ -8717,63 +8738,107 @@ function ModalNuevaCancha({ onClose, onCreada }) {
  * ==========================================================================*/
 
 function ModalCambiarFoto({ cancha, onClose, onActualizada }) {
+  // App-160 — misma lógica limpia que las fotos de producto (App-151/156):
+  //   - Subir / Cambiar: `SelectorArchivoImagen` → `uploadMedia` entrega SOLO la
+  //     URL pública permanente de Storage (verificada; HEIC → JPG), nunca blob.
+  //   - Eliminar: la cancha se queda sin foto propia (se ve la imagen de
+  //     referencia). Nada se guarda ni se borra hasta «Guardar»; cancelar no toca
+  //     nada. «Guardar» se bloquea mientras se sube y no se manda dos veces.
+  //   - Vista previa con diagnóstico si la foto no se puede ver (mismo
+  //     `MiniaturaImagenProducto` del catálogo).
+  //   El archivo anterior se conserva en Storage (las políticas de borrado del
+  //   servidor solo cubren `productos/`); dejarlo no afecta nada.
   const toast = useToast();
-  const [url, setUrl] = useState(cancha.imagen_url || '');
+  const original = normalizarUrlMediaPublica(cancha.imagen_url || '') || '';
+  const [url, setUrl] = useState(original);
   const [guardando, setGuardando] = useState(false);
+  const [subiendo, setSubiendo] = useState(false);
+  const [problema, setProblema] = useState(null);
   const [error, setError] = useState('');
+  const guardandoRef = useRef(false);
+  const sinCambios = (url || '') === original;
 
   async function guardar() {
+    if (subiendo) return setError('Espera a que termine de subir la foto.');
+    if (sinCambios || guardandoRef.current) return;
+    guardandoRef.current = true;
     setGuardando(true);
     setError('');
-    const { data, error: err } = await supabase
-      .from('canchas')
-      .update({ imagen_url: url.trim() || null })
-      .eq('id', cancha.id)
-      .select()
-      .single();
+    const nueva = url ? normalizarUrlMediaPublica(url) || url : null;
+    const { data, error: err } = await supabase.from('canchas').update({ imagen_url: nueva }).eq('id', cancha.id).select().single();
     setGuardando(false);
+    guardandoRef.current = false;
     if (err) {
       setError(err.message || 'No se pudo actualizar la foto.');
       toast({ titulo: 'Error al actualizar foto', detalle: err.message, tono: 'error' });
       return;
     }
-    toast({ titulo: 'Foto actualizada', detalle: cancha.nombre });
-    onActualizada(data);
+    toast({ titulo: nueva ? 'Foto actualizada' : 'Foto eliminada', detalle: nueva ? cancha.nombre : `${cancha.nombre} · se muestra la imagen de referencia` });
+    onActualizada(data || { ...cancha, imagen_url: nueva });
     onClose();
   }
 
   return (
-    <ModalShell titulo="Cambiar Foto" subtitulo={cancha.nombre} onClose={onClose} icon={ImagePlus}>
+    <ModalShell titulo="Foto de la cancha" subtitulo={cancha.nombre} onClose={onClose} icon={ImagePlus}>
       <div className="space-y-4">
-        <div className="h-40 overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
-          <img
-            src={urlSegura(url) || fallbackImagen(cancha.id)}
-            onError={(e) => {
-              e.currentTarget.onerror = null;
-              e.currentTarget.src = fallbackImagen(cancha.id);
-            }}
-            alt="Vista previa"
-            className="h-full w-full object-cover"
-          />
+        <div className="relative h-40 overflow-hidden rounded-xl border border-slate-200 bg-slate-100" data-testid="foto-cancha-vista">
+          {url ? (
+            <>
+              <MiniaturaImagenProducto url={url} alt={`Foto de ${cancha.nombre}`} onDiagnostico={setProblema} />
+              <button
+                type="button"
+                onClick={() => {
+                  setUrl('');
+                  setProblema(null);
+                  setError('');
+                }}
+                disabled={guardando || subiendo}
+                title="Eliminar foto"
+                aria-label="Eliminar foto"
+                data-testid="boton-eliminar-foto-cancha"
+                className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full bg-white/95 px-2.5 py-1.5 text-[11px] font-bold text-rose-500 shadow ring-1 ring-slate-200 transition hover:bg-rose-50 disabled:opacity-50"
+              >
+                <Trash2 size={13} /> Eliminar
+              </button>
+            </>
+          ) : (
+            <>
+              <img src={fallbackImagen(cancha.id)} alt="Imagen de referencia" className="h-full w-full object-cover opacity-60" />
+              <span className="absolute inset-x-0 bottom-0 bg-slate-950/70 px-3 py-1.5 text-center text-[11px] font-bold text-white" data-testid="foto-cancha-sin-foto">
+                Sin foto propia — se muestra una imagen de referencia
+              </span>
+            </>
+          )}
         </div>
-        {/* Subida limpia por archivo, ÚNICAMENTE — sin campo de URL/link de
-            texto. Sube al bucket `app-media` de Supabase Storage y entrega
-            la URL pública — nunca base64/blob local, para que la foto se
-            vea igual en Mac, iPad o cualquier navegador. */}
-        <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Nueva foto</span>
+        {problema && url && (
+          <p className="rounded-lg bg-rose-50 px-3 py-2 text-[11px] font-semibold text-rose-800 ring-1 ring-rose-200" data-testid="foto-cancha-problema">
+            {problema}
+          </p>
+        )}
+        <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">{url ? 'Cambiar foto' : 'Subir foto'}</span>
         <SelectorArchivoImagen
           carpeta="canchas"
+          disabled={guardando}
+          onCambioSubiendo={setSubiendo}
           onSubida={(nuevaUrl) => {
             setError('');
+            setProblema(null);
             setUrl(nuevaUrl);
           }}
         />
+        {original && !url && (
+          <p className="text-[11px] font-semibold text-amber-700" data-testid="foto-cancha-aviso-eliminar">
+            Al guardar, la cancha se queda sin foto. Si te arrepientes, cierra sin guardar.
+          </p>
+        )}
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
-          <BotonPrimario onClick={guardar} disabled={guardando}>
-            {guardando ? <Loader2 size={15} className="animate-spin" /> : <ImagePlus size={15} />}
-            Guardar foto
+          <BotonSecundario onClick={onClose} disabled={guardando}>
+            Cancelar
+          </BotonSecundario>
+          <BotonPrimario onClick={guardar} disabled={guardando || subiendo || sinCambios} data-testid="boton-guardar-foto-cancha">
+            {guardando ? <Loader2 size={15} className="animate-spin" /> : url ? <ImagePlus size={15} /> : <Trash2 size={15} />}
+            {url ? 'Guardar foto' : 'Guardar sin foto'}
           </BotonPrimario>
         </div>
       </div>
@@ -11605,7 +11670,6 @@ function ModuloParrillaOperativa({
   // min si nunca se configuró.
   const { reservaMin: duracionReservaMinutos } = duracionesBloqueDelClub(configClub);
   const [vista, setVista] = useState('tarjetas');
-  const [busqueda, setBusqueda] = useState('');
   const [filtroEstatus, setFiltroEstatus] = useState('todos');
   const [fechaSeleccionada, setFechaSeleccionada] = useState(hoyISO());
   // App-131 — horario del día mostrado (especial por día de la semana o general).
@@ -11769,14 +11833,13 @@ function ModuloParrillaOperativa({
 
   const canchasFiltradas = useMemo(() => {
     return canchas.filter((c) => {
-      if (busqueda.trim() && !c.nombre?.toLowerCase().includes(busqueda.trim().toLowerCase())) return false;
       if (filtroEstatus !== 'todos') {
         const estado = estadoActualCancha(c, reservas);
         if (estado !== filtroEstatus) return false;
       }
       return true;
     });
-  }, [canchas, busqueda, filtroEstatus, reservas]);
+  }, [canchas, filtroEstatus, reservas]);
 
   // Calendario Mensual — contador por día del mes que se está viendo,
   // clasificado por `estado` (mismo campo que ya distingue reserva normal /
@@ -11801,21 +11864,15 @@ function ModuloParrillaOperativa({
   return (
     <>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <MetricCard icon={LayoutGrid} etiqueta="Total Canchas" valor={metrics.totalCanchas} sub={`${canchasActivas.length} activas`} tono="orange" />
-        <MetricCard
-          icon={TrendingUp}
-          etiqueta="Ocupación Actual"
-          valor={`${metrics.ocupacion}%`}
-          sub={metrics.esHoy ? 'Ahora mismo, sobre canchas activas' : `${formatoFechaLarga(fechaSeleccionada)}, misma hora`}
-          tono="sky"
-        />
+        {/* App-160 — tarjetas sin textos secundarios largos. */}
+        <MetricCard icon={LayoutGrid} etiqueta="Total Canchas" valor={metrics.totalCanchas} tono="orange" />
+        <MetricCard icon={TrendingUp} etiqueta="Ocupación Actual" valor={`${metrics.ocupacion}%`} sub="Ocupación actual en tiempo real" tono="sky" />
         {/* AJUSTE UX: tarjeta clickeable — abre el panel rápido
             "Próximas Reservas" con la lista cronológica completa. */}
         <MetricCard
           icon={Clock}
           etiqueta="Próximas Reservas"
           valor={proximasReservasDetalle.length}
-          sub="Desde ahora, cualquier fecha — clic para ver la lista"
           tono="violet"
           onClick={() => setModalProximasReservas(true)}
         />
@@ -11824,8 +11881,6 @@ function ModuloParrillaOperativa({
       <Toolbar
         vista={vista}
         onCambiarVista={setVista}
-        busqueda={busqueda}
-        onBusqueda={setBusqueda}
         fechaSeleccionada={fechaSeleccionada}
         onCambiarFecha={setFechaSeleccionada}
         filtroEstatus={filtroEstatus}
@@ -38561,7 +38616,17 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
     <ModalShell titulo="Coach / Invitado de emergencia" subtitulo={`${reta.nombre || 'Reta'} · ${activos.length}/${CUPOS_RETA} jugadores`} onClose={onClose} icon={UserCheck} ancho="max-w-md">
       <div className="space-y-4">
         <Campo label="Nombre">
-          <input value={nombre} onChange={(e) => setNombre(e.target.value)} className={inputClase} placeholder="Coach o invitado" autoFocus />
+          <input
+            value={nombre}
+            onChange={(e) => {
+              setNombre(e.target.value);
+              // App-160 — sin campo de teléfono: el del coach elegido solo se conserva si no se cambia el nombre.
+              setTelefono('');
+            }}
+            className={inputClase}
+            placeholder="Coach o invitado"
+            autoFocus
+          />
         </Campo>
         {coaches.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
@@ -38580,9 +38645,8 @@ function ModalInvitadoEmergenciaReta({ reta, inscritos, onClose, onInscrito }) {
             ))}
           </div>
         )}
-        <Campo label="Teléfono (opcional)">
-          <input value={telefono} onChange={(e) => setTelefono(e.target.value)} className={inputClase} placeholder="10 dígitos" />
-        </Campo>
+        {/* App-160 — se quitó «Teléfono (opcional)»: el coach ya está registrado
+            (su teléfono se toma de su ficha al elegirlo arriba). */}
         <div className="space-y-1.5" role="radiogroup" aria-label="Ajuste de pago">
           {OPCIONES_AJUSTE_INVITADO_RETA.map((op) => {
             const deshabilitada = op.value === 'dividido' && !puedeDividir;
