@@ -760,6 +760,218 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
+
+/* ============================================================================
+ * App-164 — SINCRONIZACIÓN EN TIEMPO REAL (capa central, sin tocar módulos)
+ * ----------------------------------------------------------------------------
+ * Toda la App ya refresca sus datos con canales de Supabase Realtime
+ * (`.on('postgres_changes', { event: '*', table }, recargar)`). Esta capa
+ * envuelve el MISMO cliente `supabase` para que esos canales también reaccionen:
+ *   1) A lo que hace ESTE dispositivo al instante: cualquier insert / update /
+ *      upsert / delete exitoso (y las RPC que escriben) avisa a todos los
+ *      canales suscritos a esa tabla, sin esperar el eco del servidor. Así una
+ *      cuenta abierta, una reserva o un mantenimiento aparecen sin F5 aunque
+ *      Realtime tarde o no esté activo para esa tabla.
+ *   2) A los borrados hechos en OTROS dispositivos: Realtime no entrega
+ *      DELETE en canales filtrados por club; la migración v147 deja una señal
+ *      por club en `realtime_senales` y aquí se escucha.
+ *   3) A cortes de conexión: al reconectar, cada canal recarga una vez para
+ *      ponerse al día; si un canal falla, recarga cada 20 s mientras la
+ *      pestaña está visible hasta que se recupere.
+ * Las recargas se agrupan (ráfagas de eventos → una sola recarga por canal).
+ * Los avisos del Centro de Alertas (canales `INSERT`) no se tocan.
+ * ==========================================================================*/
+const OPERACIONES_ESCRITURA_SYNC = new Set(['insert', 'update', 'upsert', 'delete']);
+const registrosSync = new Map(); // tabla → Set<{ cb, tabla }>
+const temporizadoresSync = new Map(); // cb → timeout
+function programarRecargaSync(cb, espera = 120) {
+  if (temporizadoresSync.has(cb)) return;
+  temporizadoresSync.set(
+    cb,
+    setTimeout(() => {
+      temporizadoresSync.delete(cb);
+      try {
+        cb({ eventType: 'LOCAL', schema: 'public', new: {}, old: {} });
+      } catch (err) {
+        console.warn('[Tiempo real] No se pudo recargar una vista:', err);
+      }
+    }, espera)
+  );
+}
+function emitirCambioSync(tablas) {
+  const lista = Array.isArray(tablas) ? tablas : [tablas];
+  const vistos = new Set();
+  lista.forEach((t) =>
+    (registrosSync.get(t) || []).forEach((reg) => {
+      if (vistos.has(reg.cb)) return;
+      vistos.add(reg.cb);
+      programarRecargaSync(reg.cb);
+    })
+  );
+}
+// RPC que escriben → tablas que tocan (por nombre). Las de solo lectura no avisan.
+function tablasDeRpcSync(nombre) {
+  const n = String(nombre || '').toLowerCase();
+  if (/disponibilidad|verificar|consultar|obtener|listar|buscar|calcular|estado_|acceso|cupon|resolver|preview|es_|jugador_de_token/.test(n)) return [];
+  const t = new Set();
+  if (/reserva|portal|parrilla|bloqueo/.test(n)) ['reservas', 'ventas'].forEach((x) => t.add(x));
+  if (/venta|ticket|cobro|liquidar|cuenta/.test(n)) t.add('ventas');
+  if (/caja/.test(n)) ['ventas', 'cierres_caja', 'log_actividad'].forEach((x) => t.add(x));
+  if (/reta/.test(n)) ['retas', 'reta_inscripciones', 'reservas'].forEach((x) => t.add(x));
+  if (/torneo/.test(n)) ['torneos', 'torneo_participantes', 'reservas'].forEach((x) => t.add(x));
+  if (/clase|academia|alumno/.test(n)) ['academia_clases', 'academia_alumnos', 'academia_solicitudes', 'reservas'].forEach((x) => t.add(x));
+  if (/wallet|abonar/.test(n)) t.add('jugadores');
+  if (/penaliz/.test(n)) t.add('penalizaciones_pendientes');
+  if (/inscrip|portal/.test(n)) ['reta_inscripciones', 'torneo_participantes', 'academia_alumnos'].forEach((x) => t.add(x));
+  if (/notificacion/.test(n)) ['notificaciones_club', 'notificaciones_jugador'].forEach((x) => t.add(x));
+  if (/ajust|duracion/.test(n)) ['reservas', 'ventas', 'log_actividad'].forEach((x) => t.add(x));
+  return [...t];
+}
+function envolverConsultaSync(obj, tablas, op) {
+  if (!obj || (typeof obj !== 'object' && typeof obj !== 'function')) return obj;
+  return new Proxy(obj, {
+    get(target, prop) {
+      if (prop === 'then') {
+        const thenOriginal = Reflect.get(target, 'then', target);
+        if (typeof thenOriginal !== 'function') return thenOriginal;
+        if (!op) return thenOriginal.bind(target);
+        return (ok, ko) =>
+          thenOriginal.call(
+            target,
+            (res) => {
+              try {
+                if (!res?.error && tablas.length > 0) emitirCambioSync(tablas);
+              } catch (_e) {
+                /* nunca rompe la escritura */
+              }
+              return ok ? ok(res) : res;
+            },
+            ko
+          );
+      }
+      const valor = Reflect.get(target, prop, target);
+      if (typeof valor !== 'function') return valor;
+      return (...args) => {
+        const nuevoOp = typeof prop === 'string' && OPERACIONES_ESCRITURA_SYNC.has(prop) ? prop : op;
+        const r = valor.apply(target, args);
+        if (r && (typeof r === 'object' || typeof r === 'function') && (r === target || typeof r.then === 'function')) {
+          return envolverConsultaSync(r, tablas, nuevoOp);
+        }
+        return r;
+      };
+    },
+  });
+}
+const canalesSenalesSync = new Map(); // club → canal de `realtime_senales`
+function clubDeFiltroSync(filtro) {
+  const m = /^club_id=eq\.(.+)$/.exec(String(filtro || ''));
+  return m ? m[1] : null;
+}
+function instalarSincronizacionTiempoReal(cliente) {
+  if (!cliente || cliente.__qlubosSync) return;
+  cliente.__qlubosSync = true;
+  const fromOriginal = cliente.from.bind(cliente);
+  cliente.from = (tabla) => envolverConsultaSync(fromOriginal(tabla), [tabla], null);
+  if (typeof cliente.rpc === 'function') {
+    const rpcOriginal = cliente.rpc.bind(cliente);
+    cliente.rpc = (nombre, ...resto) => {
+      const r = rpcOriginal(nombre, ...resto);
+      const tablas = tablasDeRpcSync(nombre);
+      return tablas.length > 0 ? envolverConsultaSync(r, tablas, 'rpc') : r;
+    };
+  }
+  if (typeof cliente.channel !== 'function') return;
+  const canalOriginal = cliente.channel.bind(cliente);
+  const asegurarCanalSenales = (club) => {
+    if (!club || canalesSenalesSync.has(club)) return;
+    canalesSenalesSync.set(club, null);
+    setTimeout(() => {
+      try {
+        const ch = canalOriginal(`qlubos-senales-${club}`);
+        ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'realtime_senales', filter: `club_id=eq.${club}` }, (payload) => {
+          const tabla = payload?.new?.tabla;
+          if (tabla) emitirCambioSync(tabla);
+        });
+        ch.subscribe();
+        canalesSenalesSync.set(club, ch);
+      } catch (_e) {
+        /* sin v147 no hay señales de borrado; todo lo demás sigue igual */
+      }
+    }, 0);
+  };
+  cliente.channel = (nombre, ...resto) => {
+    const ch = canalOriginal(nombre, ...resto);
+    if (!ch || typeof ch.on !== 'function') return ch;
+    const registros = [];
+    let suscritoAntes = false;
+    let respaldo = null;
+    const detenerRespaldo = () => {
+      if (respaldo) clearInterval(respaldo);
+      respaldo = null;
+    };
+    const iniciarRespaldo = () => {
+      if (respaldo || ch.__qlubosRemovido || registros.length === 0) return;
+      respaldo = setInterval(() => {
+        if (typeof document === 'undefined' || document.visibilityState === 'visible') registros.forEach((r) => programarRecargaSync(r.cb));
+      }, 20000);
+    };
+    const onOriginal = ch.on.bind(ch);
+    ch.on = (tipo, cfg, cb) => {
+      let cbFinal = cb;
+      if (tipo === 'postgres_changes' && cfg?.table && (!cfg.event || cfg.event === '*') && typeof cb === 'function') {
+        const reg = { cb, tabla: cfg.table };
+        if (!registrosSync.has(cfg.table)) registrosSync.set(cfg.table, new Set());
+        registrosSync.get(cfg.table).add(reg);
+        registros.push(reg);
+        asegurarCanalSenales(clubDeFiltroSync(cfg.filter));
+        // Ráfagas (p. ej. 10 renglones de Kardex por venta) → una sola recarga.
+        cbFinal = () => programarRecargaSync(cb, 150);
+      }
+      onOriginal(tipo, cfg, cbFinal);
+      return ch;
+    };
+    if (typeof ch.subscribe === 'function') {
+      const subscribeOriginal = ch.subscribe.bind(ch);
+      ch.subscribe = (cbEstado, ...restoSub) =>
+        subscribeOriginal((estado, err) => {
+          if (estado === 'SUBSCRIBED') {
+            if (suscritoAntes) registros.forEach((r) => programarRecargaSync(r.cb));
+            suscritoAntes = true;
+            detenerRespaldo();
+          } else if (estado === 'CHANNEL_ERROR' || estado === 'TIMED_OUT' || estado === 'CLOSED') {
+            iniciarRespaldo();
+          }
+          if (typeof cbEstado === 'function') cbEstado(estado, err);
+        }, ...restoSub);
+    }
+    ch.__qlubosLimpiar = () => {
+      ch.__qlubosRemovido = true;
+      detenerRespaldo();
+      registros.forEach((r) => registrosSync.get(r.tabla)?.delete(r));
+    };
+    return ch;
+  };
+  if (typeof cliente.removeChannel === 'function') {
+    const removeOriginal = cliente.removeChannel.bind(cliente);
+    cliente.removeChannel = (ch) => {
+      try {
+        ch?.__qlubosLimpiar?.();
+      } catch (_e) {
+        /* nada */
+      }
+      return removeOriginal(ch);
+    };
+  }
+  if (typeof cliente.removeAllChannels === 'function') {
+    const removeAllOriginal = cliente.removeAllChannels.bind(cliente);
+    cliente.removeAllChannels = (...a) => {
+      registrosSync.clear();
+      canalesSenalesSync.clear();
+      return removeAllOriginal(...a);
+    };
+  }
+}
+instalarSincronizacionTiempoReal(supabase);
 // Módulo Soporte (migracion_v93) — vive en su propia carpeta
 // `src/soporte/` y solo se conecta aquí en 4 puntos: estos imports, las
 // entradas 'soporte'/'admin_soporte' de NAV_MODULOS/MODULOS_META, el estado
@@ -10242,8 +10454,11 @@ function ModalNuevaReserva({
                     }}
                     aria-pressed={seleccionado}
                     title={bloqueado ? `${formatoHora12(f.horaInicio)} · ${etiqueta}` : `${formatoHora12(f.horaInicio)} – ${formatoHora12(f.horaFin)} · ${formatoMoneda(precioSlot)}`}
+                    data-tipo-slot={f.tipo}
                     className={`flex min-w-0 flex-col items-center gap-0.5 rounded-lg border px-1.5 py-2 text-center transition ${
-                      bloqueado
+                      bloqueado && f.tipo === 'mantenimiento' && !f.pasado
+                        ? `cursor-not-allowed ${ESTILO_OCUPACION_SLOT.mantenimiento.clases}`
+                        : bloqueado
                         ? 'cursor-not-allowed border-slate-200 bg-slate-200/60 text-slate-400'
                         : seleccionado
                         ? 'border-2 border-orange-500 bg-white font-semibold text-slate-900 ring-2 ring-orange-500/30'
@@ -23120,6 +23335,11 @@ function ModuloSmartPOS({
           }
         : null;
 
+    // App-164 — la cuenta abierta / consumo pendiente se ve al instante en
+    // «Cuentas Abiertas» (la recarga en segundo plano la confirma).
+    if (estadoPago === 'pendiente' && data && data.id != null) {
+      setCuentasAbiertas((prev) => (prev.some((v) => v.id === data.id) ? prev : [...prev, data]));
+    }
     limpiarComanda();
     mostrarToast({
       titulo: canchaVinculadaId ? 'Consumo agregado a la cuenta' : estadoPago === 'pendiente' ? 'Cuenta abierta creada' : 'Venta registrada',
@@ -64141,6 +64361,8 @@ const ESTILO_OCUPACION_SLOT = {
   reservado: { etiqueta: 'Reservado', clases: 'border-slate-300 bg-slate-100/90 text-slate-500' },
   clase: { etiqueta: 'Clase', clases: 'border-sky-400/50 bg-sky-400/10 text-sky-400' },
   torneo_reta: { etiqueta: 'Torneo/Reta', clases: 'border-purple-400/50 bg-purple-400/10 text-purple-400' },
+  // App-164 — Mantenimiento programado: bloqueado y distinto de una reserva.
+  mantenimiento: { etiqueta: 'En mantenimiento', clases: 'border-dashed border-amber-300 bg-amber-50 text-amber-700' },
   // Fuera de los Rangos de Horario Habilitados para Clases del club (item
   // 2, `horaDentroDeRangosClase`) — solo usado en "Solicitar Clase", nunca
   // en "Reservar Cancha" (esa cuadrícula no tiene restricción de horario de
@@ -64221,6 +64443,7 @@ function estadoOcupacionCanchaSlot(canchaId, fecha, horaInicio, horaFin, reserva
   const bloqueo = buscarSolapeEnCancha(reservas, canchaId, fecha, horaInicio, horaFin);
   if (!bloqueo) return { tipo: 'disponible', coachNombre: null };
   if (bloqueo.estado === 'Torneo' || bloqueo.estado === 'Reta') return { tipo: 'torneo_reta', coachNombre: null };
+  if (bloqueo.estado === 'Mantenimiento') return { tipo: 'mantenimiento', coachNombre: null };
   if (bloqueo.estado === 'Clase') {
     const claseCoincide = (academiaClases || []).find(
       (c) => c.cancha_id === canchaId && c.fecha === fecha && c.hora_inicio === horaInicio
@@ -64306,6 +64529,7 @@ function estadoOcupacionAgregado(canchasActivas, fecha, horaInicio, horaFin, res
   if (conTorneo) return { tipo: 'torneo_reta', coachesNombres: [] };
   const conClase = porCancha.find((e) => e.tipo === 'clase');
   if (conClase) return { tipo: 'clase', coachesNombres: conClase.coachNombre ? [conClase.coachNombre] : [] };
+  if (porCancha.length > 0 && porCancha.every((e) => e.tipo === 'mantenimiento')) return { tipo: 'mantenimiento', coachesNombres: [] };
   return { tipo: 'reservado', coachesNombres: [] };
 }
 
@@ -69039,7 +69263,6 @@ function PortalPublicoJugadores({ clubSlug }) {
               )}
               <div className="min-w-0">
                 <p className="truncate text-sm font-black leading-tight text-slate-900">{club.nombre || 'Club de Pádel'}</p>
-                <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-slate-500">Portal de jugadores</p>
               </div>
             </div>
 
@@ -73391,8 +73614,11 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                     // Modo Oscuro `bg-white`/`text-slate-900` ya se traducen
                     // automáticamente a un fondo tipo `slate-800` con texto
                     // claro, sin necesitar clases `dark:` aparte).
+                    data-tipo-slot={f.tipo}
                     className={`flex flex-col items-center gap-0.5 rounded-lg border px-1.5 py-2 text-center transition ${
-                      bloqueado
+                      bloqueado && f.tipo === 'mantenimiento' && !f.pasado
+                        ? `cursor-not-allowed ${ESTILO_OCUPACION_SLOT.mantenimiento.clases}`
+                        : bloqueado
                         ? 'cursor-not-allowed border-slate-200 bg-slate-200/60 text-slate-400'
                         : seleccionado
                         ? 'border-2 border-orange-500 ring-2 ring-orange-500/30 bg-white text-slate-900 font-semibold'
