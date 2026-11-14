@@ -5071,14 +5071,19 @@ function SeccionPenalizacionesPendientes({ jugadorId, onIrACobrarEnComanda, ocul
 // (antes cada uno tenía sus propios botones a mano, duplicados). RBAC filtra
 // esta misma lista por `permisos.modulos` en cada uno de los dos lugares que
 // la consumen, así que agregar/quitar un módulo del nav es un solo cambio.
+// App-162 — «Ranking del Club» (módulo Jugadores) oculto mientras se prepara su nueva versión.
+const MOSTRAR_RANKING_CLUB = false;
+
 const NAV_MODULOS = [
-  { id: 'parrilla', label: 'Parrilla Operativa', labelCorto: 'Parrilla', icon: LayoutGrid },
-  { id: 'pos', label: 'Smart POS', labelCorto: 'Smart POS', icon: ShoppingCart },
+  // App-162 — nombres visibles: «Reservas & Canchas», «Punto de Venta», «Analytics» y
+  // «Clases & Academia». Los `id` no cambian (permisos, orden guardado, alertas).
+  { id: 'parrilla', label: 'Reservas & Canchas', labelCorto: 'Reservas', icon: LayoutGrid },
+  { id: 'pos', label: 'Punto de Venta', labelCorto: 'Punto de Venta', icon: ShoppingCart },
   { id: 'erp', label: 'Inventario', labelCorto: 'Inventario', icon: Boxes },
   { id: 'contabilidad', label: 'Contabilidad & Compras', labelCorto: 'Contabilidad', icon: Landmark },
-  { id: 'analytics', label: 'Analytics BI', labelCorto: 'Analytics', icon: BarChart3 },
+  { id: 'analytics', label: 'Analytics', labelCorto: 'Analytics', icon: BarChart3 },
   { id: 'torneos', label: 'Torneos & Retas', labelCorto: 'Torneos', icon: Trophy },
-  { id: 'academia', label: 'Academia & Clínicas', labelCorto: 'Academia', icon: GraduationCap },
+  { id: 'academia', label: 'Clases & Academia', labelCorto: 'Clases', icon: GraduationCap },
   { id: 'jugadores', label: 'Jugadores', labelCorto: 'Jugadores', icon: Users },
   { id: 'seguridad', label: 'Control & Seguridad', labelCorto: 'Seguridad', icon: ShieldAlert },
   // Módulo "Configuración del Club" (nuevo): solo Owner lo tiene en su
@@ -6462,18 +6467,18 @@ function Reloj() {
 }
 
 const MODULOS_META = {
-  parrilla: { titulo: 'Parrilla Operativa', subtitulo: 'Canchas dinámicas en tiempo real' },
-  pos: { titulo: 'Smart POS', subtitulo: 'Punto de venta de alta velocidad' },
+  parrilla: { titulo: 'Reservas & Canchas', subtitulo: 'Canchas dinámicas en tiempo real' },
+  pos: { titulo: 'Punto de Venta', subtitulo: 'Ventas, cuentas abiertas y cobros de alta velocidad' },
   erp: { titulo: 'Inventario', subtitulo: 'Catálogo, costos, margen y kardex' },
   // `contabilidad` faltaba aquí desde antes de este cambio (gap
   // preexistente en `MODULOS_META` vs. `NAV_MODULOS`) — el título del
   // módulo activo caía de vuelta a "Parrilla Operativa" por el `|| MODULOS_META.parrilla`
   // de `TopHeader`; se corrige de paso al agregar 'academia' abajo.
   contabilidad: { titulo: 'Contabilidad & Compras', subtitulo: 'Estado de resultados, egresos y cuentas por cobrar' },
-  analytics: { titulo: 'Analytics BI', subtitulo: 'Inteligencia de negocio y rentabilidad' },
+  analytics: { titulo: 'Analytics', subtitulo: 'Inteligencia de negocio y rentabilidad' },
   torneos: { titulo: 'Torneos & Retas', subtitulo: 'Competencias, retas abiertas y bloqueo inteligente de canchas' },
-  academia: { titulo: 'Academia & Clínicas', subtitulo: 'Clases, alumnos, asistencia y retención' },
-  jugadores: { titulo: 'Jugadores (CRM)', subtitulo: 'Ranking del club y clasificación por categoría' },
+  academia: { titulo: 'Clases & Academia', subtitulo: 'Clases, alumnos, asistencia y retención' },
+  jugadores: { titulo: 'Jugadores (CRM)', subtitulo: 'Directorio de jugadores, CRM y fidelización' },
   seguridad: { titulo: 'Control & Seguridad', subtitulo: 'Empleados, roles, arqueos y Log de Actividad' },
   configuracion: { titulo: 'Configuración del Club', subtitulo: 'Portal & Tienda Web, y ajustes generales del club' },
   soporte: { titulo: 'Soporte', subtitulo: 'Horas y reuniones de soporte con el equipo QLUBOS' },
@@ -55646,9 +55651,11 @@ function ModuloJugadores({
   onCargarPenalizacionAComanda,
 }) {
   const [subvista, setSubvista] = useState('crm');
+  // App-162 — «Ranking del Club» oculto temporalmente (se prepara una versión
+  // nueva). Su código queda intacto: basta volver a poner MOSTRAR_RANKING_CLUB en true.
   const subvistas = [
-    { value: 'crm', label: 'Directorio & CRM', icon: HeartPulse },
-    { value: 'ranking', label: 'Ranking del Club', icon: Award },
+    { value: 'crm', label: 'Directorio de Jugadores', icon: HeartPulse },
+    ...(MOSTRAR_RANKING_CLUB ? [{ value: 'ranking', label: 'Ranking del Club', icon: Award }] : []),
   ];
 
   // El Centro de Alertas del Club siempre navega a "Directorio & CRM" — es
