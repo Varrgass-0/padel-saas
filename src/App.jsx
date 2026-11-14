@@ -18721,7 +18721,6 @@ function AnalyticsOperativosSinMontos({ productos, variantesPorProducto, filtroC
             icon={Star}
             etiqueta="Categoría Estrella"
             valor={categoriaEstrella ? etiquetaCategoriaProducto(categoriaEstrella[0]) : '—'}
-            sub={categoriaEstrella ? `${categoriaEstrella[1]} unidades vendidas · ${dias} días` : 'Sin ventas en el periodo'}
             tono="amber"
           />
         )}
@@ -26366,14 +26365,12 @@ function ModuloERPInventario({
               icon={Wallet}
               etiqueta="Valor Total del Inventario"
               valor={formatoMoneda(kpis.valorInventario)}
-              sub="stock × costo unitario"
               tono="emerald"
             />
             <MetricCard
               icon={TrendingUp}
               etiqueta="Margen Bruto Promedio"
               valor={kpis.margenPromedio !== null ? `${kpis.margenPromedio.toFixed(1)}%` : '—'}
-              sub={kpis.margenPromedio !== null ? 'Sobre productos con costo cargado' : 'Carga el costo unitario'}
               tono="sky"
             />
           </>
@@ -26386,7 +26383,6 @@ function ModuloERPInventario({
           icon={AlertTriangle}
           etiqueta="Alertas de Reorden"
           valor={kpis.alertasReorden}
-          sub={kpis.alertasReorden > 0 ? 'Productos en o bajo su mínimo · clic para ver desglose' : 'Todo por encima del mínimo'}
           tono={kpis.alertasReorden > 0 ? 'rose' : 'orange'}
           onClick={kpis.alertasReorden > 0 ? () => setModalAlertasReorden(true) : undefined}
         />
@@ -26417,10 +26413,8 @@ function ModuloERPInventario({
           ) : (
             <>
               <p className="mt-2 text-2xl font-black text-slate-900">{formatoMoneda(ventasDia.monto)}</p>
-              <p className="mt-0.5 text-[11px] text-slate-500">{ventasDia.unidades} unidades vendidas</p>
             </>
           )}
-          <p className="mt-1 text-[10px] font-semibold text-slate-400">Clic para ver el desglose</p>
         </div>
         <div
           className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-orange-400/50 hover:bg-slate-100/60"
@@ -26447,10 +26441,8 @@ function ModuloERPInventario({
           ) : (
             <>
               <p className="mt-2 text-2xl font-black text-slate-900">{formatoMoneda(ventasMes.monto)}</p>
-              <p className="mt-0.5 text-[11px] text-slate-500">{ventasMes.unidades} unidades vendidas · {etiquetaMesDeFecha(fechaVentasMes)}</p>
             </>
           )}
-          <p className="mt-1 text-[10px] font-semibold text-slate-400">Clic para ver el desglose</p>
         </div>
       </div>
 
@@ -32881,7 +32873,6 @@ function ModuloContabilidadCompras({
                 icon={CalendarDays}
                 etiqueta="Reservas de Canchas"
                 valor={formatoMoneda(pnl.reservasCanchas)}
-                sub="Renta pura de canchas (Web + Mostrador)"
                 tono="sky"
                 onClick={() => setModalDesglose({ titulo: 'Reservas de Canchas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.reservas })}
               />
@@ -32892,7 +32883,6 @@ function ModuloContabilidadCompras({
                 icon={ShoppingBag}
                 etiqueta="Pro-Shop"
                 valor={formatoMoneda(pnl.proShop)}
-                sub={`Mostrador ${formatoMoneda(pnl.lineasPorCanal.proShop.mostrador)} · Web ${formatoMoneda(pnl.lineasPorCanal.proShop.web)}`}
                 tono="violet"
                 onClick={() => setModalDesglose({ titulo: 'Pro-Shop', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.proShop })}
               />
@@ -32900,7 +32890,6 @@ function ModuloContabilidadCompras({
                 icon={Coffee}
                 etiqueta="Restaurante / Bar"
                 valor={formatoMoneda(pnl.restauranteBar)}
-                sub={`Mostrador ${formatoMoneda(pnl.lineasPorCanal.restauranteBar.mostrador)} · Web ${formatoMoneda(pnl.lineasPorCanal.restauranteBar.web)}`}
                 tono="amber"
                 onClick={() => setModalDesglose({ titulo: 'Restaurante / Bar', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.restauranteBar })}
               />
@@ -32908,7 +32897,6 @@ function ModuloContabilidadCompras({
                 icon={Trophy}
                 etiqueta="Torneos y Retas"
                 valor={formatoMoneda(pnl.torneosRetas)}
-                sub="Inscripciones recaudadas"
                 tono="amber"
                 onClick={() => setModalDesglose({ titulo: 'Torneos y Retas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.torneosRetas })}
               />
@@ -32916,7 +32904,6 @@ function ModuloContabilidadCompras({
                 icon={Award}
                 etiqueta="Clases y Clínicas"
                 valor={formatoMoneda(pnl.clasesClinicas)}
-                sub="Academia — mensualidades y clases sueltas"
                 tono="orange"
                 onClick={() => setModalDesglose({ titulo: 'Clases y Clínicas', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.clasesClinicas })}
               />
@@ -32924,7 +32911,6 @@ function ModuloContabilidadCompras({
                 icon={Receipt}
                 etiqueta="Otros Ingresos / Penalizaciones"
                 valor={formatoMoneda(pnl.otrosIngresos)}
-                sub="Cobros de cancelaciones y otros conceptos directos"
                 tono="rose"
                 onClick={() =>
                   setModalDesglose({ titulo: 'Otros Ingresos / Penalizaciones', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.otrosIngresos })
@@ -32938,7 +32924,6 @@ function ModuloContabilidadCompras({
               icon={TrendingUp}
               etiqueta="Ingresos Totales Consolidados"
               valor={formatoMoneda(pnl.ingresosTotalesConsolidados)}
-              sub="Suma de las 6 líneas de negocio de arriba"
               tono="emerald"
               onClick={() => setModalDesglose({ titulo: 'Ingresos Totales Consolidados', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.ingresosTotales })}
             />
@@ -32946,7 +32931,6 @@ function ModuloContabilidadCompras({
               icon={TrendingDown}
               etiqueta="Egresos Totales"
               valor={formatoMoneda(pnl.egresosTotales)}
-              sub="Compras + Gastos Operativos"
               tono="rose"
               onClick={() => setModalDesglose({ titulo: 'Egresos Totales', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.egresos })}
             />
@@ -32954,7 +32938,6 @@ function ModuloContabilidadCompras({
               icon={Landmark}
               etiqueta="Utilidad Real"
               valor={formatoMoneda(pnl.utilidadReal)}
-              sub="Ingresos Totales Consolidados − Egresos Totales"
               tono={pnl.utilidadReal >= 0 ? 'emerald' : 'rose'}
             />
           </div>
@@ -33198,15 +33181,8 @@ function ModuloAnalyticsBI({
   // una reserva ya pagada (ajuste de duración, v146) SÍ ocupa cancha (la
   // reserva ya trae el horario nuevo) pero NO es ingreso hasta que su ticket
   // se cobra en Smart POS → Cuentas Pendientes: vive en `saldo_mostrador`,
-  // fuera de `monto_total`, así que `reservasCobradas` nunca lo suma. Aquí
-  // solo se muestra como «por cobrar».
-  const tiempoExtraPorCobrar = useMemo(
-    () =>
-      Math.round(
-        reservasOcupacion.reduce((acc, r) => acc + (!esBloqueoDeEvento(r) && esCobroConfirmado(r) ? Math.max(0, Number(r.saldo_mostrador) || 0) : 0), 0) * 100
-      ) / 100,
-    [reservasOcupacion]
-  );
+  // fuera de `monto_total`, así que `reservasCobradas` nunca lo suma.
+  // (App-161: la tarjeta ya no muestra el aviso «por cobrar» — sin subtítulos.)
 
   const canchasPorId = useMemo(() => {
     const mapa = {};
@@ -33913,39 +33889,30 @@ function ModuloAnalyticsBI({
           icon={Wallet}
           etiqueta="Ingresos Totales (Cobrados)"
           valor={formatoMoneda(analisis.ingresosTotales)}
-          sub={
-            tiempoExtraPorCobrar > 0
-              ? `Solo pagados · no incluye ${formatoMoneda(tiempoExtraPorCobrar)} de tiempo extra por cobrar`
-              : 'Solo pagados · sin pendientes ni cuentas abiertas'
-          }
           tono="emerald"
         />
         <MetricCard
           icon={Receipt}
           etiqueta="Ticket Promedio por Venta"
           valor={analisis.ticketPromedio !== null ? formatoMoneda(analisis.ticketPromedio) : '—'}
-          sub={`${analisis.totalTransacciones} cobros efectivos: ${analisis.transaccionesCanchas} reservas · ${analisis.transaccionesEventos} inscripciones/clases · ${analisis.transaccionesConProducto} tickets`}
           tono="sky"
         />
         <MetricCard
           icon={Gauge}
           etiqueta="Ocupación de Canchas (%)"
           valor={`${ocupacionCanchasPct.toFixed(1)}%`}
-          sub="Horas ocupadas (incluye pendientes) ÷ capacidad"
           tono={ocupacionCanchasPct >= 50 ? 'emerald' : ocupacionCanchasPct >= 25 ? 'amber' : 'rose'}
         />
         <MetricCard
           icon={Star}
           etiqueta="Categoría Estrella"
           valor={analisis.categoriaEstrella?.ingreso > 0 ? analisis.categoriaEstrella.categoria : '—'}
-          sub={analisis.categoriaEstrella?.ingreso > 0 ? formatoMoneda(analisis.categoriaEstrella.ingreso) : 'Sin ventas en el rango'}
           tono="violet"
         />
         <MetricCard
           icon={Flame}
           etiqueta="Hora Pico de Ocupación"
           valor={heatmap.horaPicoLabel}
-          sub="Mayor concentración de reservas"
           tono="amber"
         />
         {/* App-96: reemplazan a "Ratio de Gasto Secundario" — dos tarjetas
@@ -33955,7 +33922,6 @@ function ModuloAnalyticsBI({
           icon={ShoppingBag}
           etiqueta="Ventas Pro-Shop"
           valor={formatoMoneda(analisis.ingresoProShop || 0)}
-          sub={`${analisis.unidadesPorCategoria?.['Pro-Shop'] || 0} unidades vendidas · ${ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'} · Ver desglose →`}
           tono="sky"
           onClick={() => setDesgloseVentasBI('Pro-Shop')}
         />
@@ -33963,7 +33929,6 @@ function ModuloAnalyticsBI({
           icon={Coffee}
           etiqueta="Ventas Restaurante / Bar"
           valor={formatoMoneda(analisis.ingresoRestauranteBar || 0)}
-          sub={`${analisis.unidadesPorCategoria?.['Cafetería/Bar'] || 0} unidades vendidas · ${ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'} · Ver desglose →`}
           tono="orange"
           onClick={() => setDesgloseVentasBI('Cafetería/Bar')}
         />
@@ -43358,16 +43323,15 @@ function MesaDeControl({
 
       <div className={`grid grid-cols-1 gap-3 ${puedeVerMontos ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
         {puedeVerMontos && (
-          <MetricCard icon={Wallet} etiqueta="Monto Cobrado" valor={formatoMoneda(resumen.cobrado)} sub="Retas + Torneos" tono="emerald" />
+          <MetricCard icon={Wallet} etiqueta="Monto Cobrado" valor={formatoMoneda(resumen.cobrado)} tono="emerald" />
         )}
         {puedeVerMontos ? (
-          <MetricCard icon={AlertTriangle} etiqueta="Pendiente por Cobrar" valor={formatoMoneda(resumen.pendiente)} sub="Retas + Torneos" tono="amber" />
+          <MetricCard icon={AlertTriangle} etiqueta="Pendiente por Cobrar" valor={formatoMoneda(resumen.pendiente)} tono="amber" />
         ) : (
           <MetricCard
             icon={AlertTriangle}
             etiqueta="Jugadores Pendientes de Pago"
             valor={resumen.jugadoresPendientesPago}
-            sub="Sin liquidar su inscripción"
             tono="amber"
             onClick={() => setFiltroDirectorio((prev) => (prev === 'pendientes' ? 'todos' : 'pendientes'))}
             activo={filtroDirectorio === 'pendientes'}
@@ -43377,7 +43341,6 @@ function MesaDeControl({
           icon={Users}
           etiqueta="Total de Participantes"
           valor={resumen.totalParticipantes}
-          sub="Inscritos activos"
           tono="violet"
           onClick={() => setFiltroDirectorio('todos')}
           activo={filtroDirectorio === 'todos'}
@@ -49842,28 +49805,24 @@ function AnalyticsAcademia({
               icon={DollarSign}
               etiqueta="Ingreso Promedio por Hora/Clase"
               valor={`${formatoMoneda(kpisOperativos.ingresoPorHora)}/hr`}
-              sub="Ponderado por duración real de cada clase"
               tono="orange"
             />
             <MetricCard
               icon={Layers}
               etiqueta="Ratio Grupales vs Privadas"
               valor={kpisOperativos.pctGrupal === null ? 'Sin clases' : `${kpisOperativos.pctGrupal}% Grupal`}
-              sub={`${kpisOperativos.clasesGrupal} grupales · ${kpisOperativos.clasesPrivada} privadas`}
               tono="violet"
             />
             <MetricCard
               icon={Percent}
               etiqueta="Tasa de Asistencia Global"
               valor={kpisOperativos.tasaAsistenciaGlobal === null ? 'Sin datos' : `${kpisOperativos.tasaAsistenciaGlobal}%`}
-              sub="Histórico de pases de lista"
               tono="sky"
             />
             <MetricCard
               icon={Clock}
               etiqueta="Horas Pico de Academia"
               valor={horaPico ? `${pad2(horaPico.hora)}:00 – ${pad2(horaPico.hora + 1)}:00` : 'Sin datos'}
-              sub={horaPico ? `${horaPico.clases} clase${horaPico.clases === 1 ? '' : 's'} programada${horaPico.clases === 1 ? '' : 's'} en ese horario` : undefined}
               tono="amber"
             />
           </div>
@@ -49939,7 +49898,6 @@ function AnalyticsAcademia({
               icon={Crown}
               etiqueta="Membresías Activas"
               valor={kpisMembresias.activas}
-              sub={`${alumnosConMembresia.length} con membresía alguna vez`}
               tono="orange"
               activo={filtroMembresia === 'activa'}
               onClick={() => setFiltroMembresia((prev) => (prev === 'activa' ? 'todas' : 'activa'))}
@@ -49948,7 +49906,6 @@ function AnalyticsAcademia({
               icon={Bell}
               etiqueta="Membresías por Vencer"
               valor={kpisMembresias.porVencer}
-              sub="Próximos 7 días"
               tono="amber"
               activo={filtroMembresia === 'por_vencer'}
               onClick={() => setFiltroMembresia((prev) => (prev === 'por_vencer' ? 'todas' : 'por_vencer'))}
@@ -49957,7 +49914,6 @@ function AnalyticsAcademia({
               icon={AlertTriangle}
               etiqueta="Membresías Vencidas"
               valor={kpisMembresias.vencidas}
-              sub="Ya venció su fecha de renovación"
               tono="rose"
               activo={filtroMembresia === 'vencida'}
               onClick={() => setFiltroMembresia((prev) => (prev === 'vencida' ? 'todas' : 'vencida'))}
@@ -49968,14 +49924,12 @@ function AnalyticsAcademia({
               icon={RefreshCw}
               etiqueta="Ingreso Recurrente Estimado"
               valor={formatoMoneda(kpisMembresias.mrr)}
-              sub="MRR — ciclos vigentes ya pagados"
               tono="sky"
             />
             <MetricCard
               icon={TrendingDown}
               etiqueta="Cancelaciones del Mes"
               valor={kpisMembresias.churnPct === null ? 'Sin datos' : `${kpisMembresias.churnPct}%`}
-              sub={`Bajas registradas en el mes: ${kpisMembresias.bajasEsteMes}`}
               tono="rose"
             />
           </div>
@@ -50078,7 +50032,6 @@ function AnalyticsAcademia({
             icon={Clock}
             etiqueta="Hora Pico de Clases (Academia)"
             valor={horaPicoOcupacion ? horaPicoOcupacion.label : '—'}
-            sub={horaPicoOcupacion ? `${horaPicoOcupacion.conteo} clases en esa franja` : 'Sin clases registradas todavía'}
             tono="sky"
           />
           {/* BANNERS INTERACTIVOS (refinamiento UX): cada tarjeta de nivel
@@ -50099,7 +50052,6 @@ function AnalyticsAcademia({
               >
                 <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{nivel}</p>
                 <p className="mt-1 text-2xl font-black text-slate-900">{totalesPorNivel[nivel]}</p>
-                <p className="text-[11px] text-slate-500">alumno{totalesPorNivel[nivel] === 1 ? '' : 's'} activo{totalesPorNivel[nivel] === 1 ? '' : 's'}</p>
               </button>
             ))}
           </div>
@@ -56852,7 +56804,7 @@ function ModuloControlSeguridad({
   return (
     <>
       <div className={SHOW_BETA_POS_CIERRE_ARQUEO ? 'grid grid-cols-2 gap-3 sm:grid-cols-4' : 'grid grid-cols-2 gap-3'}>
-        <MetricCard icon={Users} etiqueta="Empleados" valor={empleadosOrdenados.length} sub={`${ROLES.length} roles disponibles`} tono="orange" />
+        <MetricCard icon={Users} etiqueta="Empleados" valor={empleadosOrdenados.length} tono="orange" />
         {/* Beta: tarjetas de Cortes de Caja ocultas — `cortesPendientesAprobar`/
             `cortesConDiferencia` se siguen calculando arriba (no se tocan),
             solo no se muestran mientras dure la Beta. */}
@@ -56861,7 +56813,6 @@ function ModuloControlSeguridad({
             icon={Calculator}
             etiqueta="Cortes Pendientes de Aprobar"
             valor={cortesPendientesAprobar}
-            sub={`${cierresOrdenados.length} registrados en total`}
             tono="sky"
           />
         )}
@@ -56870,11 +56821,10 @@ function ModuloControlSeguridad({
             icon={AlertTriangle}
             etiqueta="Cortes con Diferencia"
             valor={cortesConDiferencia}
-            sub="Sobrantes o faltantes notificados"
             tono="amber"
           />
         )}
-        <MetricCard icon={History} etiqueta="Eventos en el Log" valor={logActividad.length} sub="Auditoría, caja y agenda" tono="violet" />
+        <MetricCard icon={History} etiqueta="Eventos en el Log" valor={logActividad.length} tono="violet" />
       </div>
 
       <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
