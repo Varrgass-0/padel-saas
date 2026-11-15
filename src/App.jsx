@@ -1431,6 +1431,14 @@ html.qb-modal-abierto body { padding-right: var(--qb-ancho-scrollbar, 0px); }
   }
   html.dark .qb-sidebar { background-color: #0b1329 !important; }
 }
+/* App-166 — calendario nativo (<input type="date">) y selects táctiles: ancho
+   y altura fijos dentro de su contenedor. En iOS/iPadOS Safari el control
+   nativo ignora width/min-width y crecía sobre el campo vecino. */
+.qb-input-fecha, .qb-select-tactil { display: block; width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; min-height: 2.5rem; }
+@supports (-webkit-touch-callout: none) {
+  .qb-input-fecha { -webkit-appearance: none; appearance: none; line-height: 1.25rem; text-align: left; }
+  .qb-input-fecha::-webkit-date-and-time-value { text-align: left; min-height: 1.25rem; margin: 0; }
+}
 `;
 
 // Selector de "hay un modal abierto": la capa de `ModalShell`
@@ -4344,6 +4352,75 @@ function montoVentaSinInscripciones(venta) {
   const items = Array.isArray(venta?.detalles?.items) ? venta.detalles.items : [];
   const inscripciones = items.filter((it) => it?.tipo === 'inscripcion_evento').reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0);
   return Math.max(0, total - inscripciones);
+}
+
+// =============================================================================
+// App-166 — Retenciones por cancelación fuera de tiempo (penalización aplicada)
+// -----------------------------------------------------------------------------
+// Cuando alguien cancela fuera de la ventana de tolerancia algo que YA pagó,
+// el club se queda con el dinero (no hay reembolso). Cada módulo ya deja su
+// propia marca — aquí solo se LEEN (no se cambia ningún flujo de cancelación):
+//   • Reservas: `estado_pago: 'retenido'` (Reservas & Canchas y Portal, también
+//     el pago en línea — v122).
+//   • Retas / Torneos: `estado: 'retenido'` con el pago confirmado.
+//   • Clases & Academia: `estado_pago: 'retenido'`, o baja fuera de tiempo que
+//     conserva `estado_pago: 'pagado'` (la baja en tiempo pasa a 'reembolsado').
+// Antes ese dinero quedaba fuera del Estado de Resultados (Reservas y Academia
+// solo suman lo 'pagado' y activo) o escondido dentro de "Torneos y Retas".
+// Ahora se acumula en «Otros Ingresos / Penalizaciones» (P&L) y en la
+// categoría «Penalizaciones» de Analytics — una sola vez, sin duplicar.
+// Los adeudos (penalización sin pagar) siguen sin sumar hasta cobrarse en
+// Punto de Venta (renglón `tipo: 'penalizacion'`), igual que siempre.
+// =============================================================================
+function esReservaRetenidaPorCancelacion(r) {
+  return !!r && !esBloqueoDeEvento(r) && estatusCobroNormalizado(r) === 'retenido';
+}
+function montoRetenidoReserva(r) {
+  const base = (Number(r?.monto_total) || 0) + (Number(r?.monto_addons) || 0);
+  return base > 0 ? base : Number(r?.pago_en_linea_monto) || 0;
+}
+function esInscripcionRetenidaPorCancelacion(fila) {
+  if (fila?.estado !== 'retenido') return false;
+  const estatus = estatusCobroNormalizado(fila);
+  return estatus === 'pagado' || estatus === 'retenido';
+}
+function esAlumnoRetenidoPorCancelacion(a) {
+  if (!a) return false;
+  if (estatusCobroNormalizado(a) === 'retenido') return true;
+  return a.estado === 'baja' && esCobroConfirmado(a) && !a.pagado_con_creditos;
+}
+function montoRetenidoInscripcion(fila) {
+  return Number(fila?.monto) || Number(fila?.pago_en_linea_monto) || 0;
+}
+// Lista normalizada de retenciones del periodo. Reservas por fecha de juego
+// (`fecha`, mismo criterio que la renta de canchas); inscripciones y alumnos
+// por `created_at` (mismo criterio que Torneos/Retas y Clases), así un monto
+// que antes contaba en "Torneos y Retas" se mueve de tarjeta sin cambiar de
+// periodo ni el total consolidado.
+function construirRetencionesPorCancelacion({ reservas, inscripciones, participantesTorneo, academiaAlumnos, rango, montoReta }) {
+  const filas = [];
+  (reservas || []).forEach((r) => {
+    if (!(r.fecha >= rango.inicioFechaISO && r.fecha < rango.finFechaISO)) return;
+    if (!esReservaRetenidaPorCancelacion(r)) return;
+    const monto = montoRetenidoReserva(r);
+    if (monto > 0) filas.push({ tipo: 'reserva', fila: r, monto });
+  });
+  (inscripciones || []).forEach((i) => {
+    if (!esInscripcionRetenidaPorCancelacion(i) || !dentroDeRangoPorCreatedAt(i, rango)) return;
+    const monto = (montoReta ? montoReta(i) : 0) || montoRetenidoInscripcion(i);
+    if (monto > 0) filas.push({ tipo: 'reta', fila: i, monto });
+  });
+  (participantesTorneo || []).forEach((p) => {
+    if (!esInscripcionRetenidaPorCancelacion(p) || !dentroDeRangoPorCreatedAt(p, rango)) return;
+    const monto = montoRetenidoInscripcion(p);
+    if (monto > 0) filas.push({ tipo: 'torneo', fila: p, monto });
+  });
+  (academiaAlumnos || []).forEach((a) => {
+    if (!esAlumnoRetenidoPorCancelacion(a) || !dentroDeRangoPorCreatedAt(a, rango)) return;
+    const monto = montoRetenidoInscripcion(a);
+    if (monto > 0) filas.push({ tipo: 'academia', fila: a, monto });
+  });
+  return filas;
 }
 
 // Ocupa un lugar/slot del roster de una Reta (Mesa de Control): TRUE salvo
@@ -27109,6 +27186,9 @@ const CATEGORIAS_BI = [
   { key: 'Academia', barra: 'bg-teal-400', texto: 'text-teal-500' },
   { key: 'Pro-Shop', barra: 'bg-violet-400', texto: 'text-violet-400' },
   { key: 'Cafetería/Bar', barra: 'bg-amber-400', texto: 'text-amber-400' },
+  // App-166 — penalizaciones cobradas en Punto de Venta + pagos retenidos por
+  // cancelación fuera de tiempo (ver `construirRetencionesPorCancelacion`).
+  { key: 'Penalizaciones', barra: 'bg-slate-400', texto: 'text-slate-500' },
 ];
 
 // Bloques de Ocupación Pico vs. Valle: Valle 07:00–17:00, Pico 17:00–23:00.
@@ -28161,6 +28241,7 @@ const COLOR_CATEGORIA_GRAFICA_BI = {
   Academia: '#0d9488',
   'Pro-Shop': '#8b5cf6',
   'Cafetería/Bar': '#d97706',
+  Penalizaciones: '#64748b',
 };
 const MESES_CORTOS_BI = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
@@ -28317,6 +28398,11 @@ function construirTendenciaIngresosBI({ modo, rango, reservasCobradas, cobrosFec
     if (!Array.isArray(items)) return;
     const idx = indiceDesdeFecha(obtenerTimestampVenta(v));
     items.forEach((item) => {
+      // App-166 — penalización cobrada en Punto de Venta.
+      if (item.tipo === 'penalizacion') {
+        sumar(idx, Number(item.subtotal) || 0, 'Penalizaciones');
+        return;
+      }
       if (item.tipo !== 'producto') return;
       const subtotal = Number(item.subtotal) || 0;
       // Producto real del artículo (variante buscada dentro de SU producto).
@@ -28745,7 +28831,7 @@ function generarCSVReporte({
   filas.push(['Métricas Ejecutivas y de Eficiencia de BI']);
   filas.push(['Métrica', 'Valor']);
   filas.push(['Regla de oro: solo cobros con estatus Pagado — sin pendientes, cobros en recepción ni cuentas abiertas']);
-  filas.push(['Ingresos Totales Cobrados (Canchas + Retas & Torneos + Academia + Pro-Shop + Cafetería)', analisis.ingresosTotales.toFixed(2)]);
+  filas.push(['Ingresos Totales Cobrados (Canchas + Retas & Torneos + Academia + Pro-Shop + Cafetería + Penalizaciones)', analisis.ingresosTotales.toFixed(2)]);
   filas.push(['  · Renta de Canchas cobrada', analisis.ingresoCanchas.toFixed(2)]);
   filas.push(['  · Retas (inscripciones pagadas)', analisis.ingresoRetas.toFixed(2)]);
   filas.push(['  · Torneos (inscripciones pagadas)', analisis.ingresoTorneos.toFixed(2)]);
@@ -29407,7 +29493,7 @@ const CATEGORIAS_INGRESO_PNL = [
   { key: 'proShop', label: 'Pro-Shop', color: '#8b5cf6' },
   { key: 'clasesClinicas', label: 'Clases / Academia', color: '#0d9488' },
   { key: 'torneosRetas', label: 'Torneos / Retas', color: '#d946ef' },
-  { key: 'otrosIngresos', label: 'Otros', color: '#64748b' },
+  { key: 'otrosIngresos', label: 'Otros / Penalizaciones', color: '#64748b' },
 ];
 
 // Reparto contable de una venta de producto por línea de negocio (App-97).
@@ -29564,6 +29650,10 @@ function construirTendenciaPnl(modo, rango, pnl) {
   (pnl._filasInscripcionesRetas || []).forEach((i) => sumar(indiceFecha(new Date(i.created_at)), 'ingresos', montoReta(i)));
   (pnl._filasInscripcionesTorneos || []).forEach((p) => sumar(indiceFecha(new Date(p.created_at)), 'ingresos', Number(p.monto) || 0));
   (pnl._filasInscripcionesAcademia || []).forEach((a) => sumar(indiceFecha(new Date(a.created_at)), 'ingresos', Number(a.monto) || 0));
+  // App-166 — retenciones por cancelación fuera de tiempo (mismo criterio de fecha).
+  (pnl._filasRetencionesCancelacion || []).forEach(({ tipo, fila, monto }) =>
+    sumar(tipo === 'reserva' ? indiceCalendario(fila.fecha, parseHoraAMinutos(fila.hora_inicio)) : indiceFecha(new Date(fila.created_at)), 'ingresos', monto)
+  );
 
   (pnl._egresosEnRango || []).forEach((g) => {
     const monto = Number(g.monto) || 0;
@@ -30335,7 +30425,10 @@ function ModuloContabilidadCompras({
       Math.round(repartoVentasPnl.filter((e) => (e.canal !== 'Mostrador (POS)') === web).reduce((acc, e) => acc + e.lineas[k].monto, 0) * 100) / 100;
     const proShop = sumaLineaPnl('proShop');
     const restauranteBar = sumaLineaPnl('restauranteBar');
-    const otrosIngresos = sumaLineaPnl('otrosIngresos');
+    // App-166: «Otros» = cobros directos de Punto de Venta / Tienda Web
+    // (penalizaciones cobradas, conceptos libres) + retenciones por
+    // cancelación (ver `retencionesCancelacion`, más abajo).
+    const otrosIngresosVentas = sumaLineaPnl('otrosIngresos');
     const lineasPorCanal = {
       proShop: { mostrador: sumaLineaCanalPnl('proShop', false), web: sumaLineaCanalPnl('proShop', true) },
       restauranteBar: { mostrador: sumaLineaCanalPnl('restauranteBar', false), web: sumaLineaCanalPnl('restauranteBar', true) },
@@ -30347,13 +30440,17 @@ function ModuloContabilidadCompras({
     // de este fix, un proyecto de Supabase cuya tabla solo tuviera la
     // columna `estatus_pago` (no la oficial `estado_pago`) nunca sumaba nada
     // aquí, aunque sí hubiera inscripciones realmente pagadas.
+    // App-166: una inscripción 'retenido' (canceló fuera de tiempo, el club
+    // se quedó con el pago) ya no cuenta aquí — se suma en «Otros Ingresos /
+    // Penalizaciones» (`retencionesCancelacion`, abajo). Mismo dinero, mismo
+    // periodo: el total consolidado no cambia.
     const filasInscripcionesRetas = (inscripciones || []).filter(
-      (i) => inscripcionEstaPagada(i) && i.estado !== 'cancelado' && dentroDeRangoPorCreatedAt(i, rangoPnl)
+      (i) => inscripcionEstaPagada(i) && i.estado !== 'cancelado' && i.estado !== 'retenido' && dentroDeRangoPorCreatedAt(i, rangoPnl)
     );
     // Soft-cancel de torneos (v83): una inscripción 'cancelado' ya no suma,
     // mismo criterio que Retas.
     const filasInscripcionesTorneos = (participantesTorneo || []).filter(
-      (p) => inscripcionEstaPagada(p) && p.estado !== 'cancelado' && dentroDeRangoPorCreatedAt(p, rangoPnl)
+      (p) => inscripcionEstaPagada(p) && p.estado !== 'cancelado' && p.estado !== 'retenido' && dentroDeRangoPorCreatedAt(p, rangoPnl)
     );
     // Retas: N lugares pagados × precio por lugar (monto real de cada
     // inscripción; respaldo al precio de la reta si una fila vieja no lo trae).
@@ -30375,7 +30472,21 @@ function ModuloContabilidadCompras({
     );
     const clasesClinicas = filasInscripcionesAcademia.reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
 
-    const ingresosTotalesConsolidados = ventasMostrador + ventasWeb + reservasCanchas + torneosRetas + clasesClinicas;
+    // App-166 — Penalizaciones aplicadas / pagos retenidos por cancelación
+    // fuera de tiempo (Reservas, Retas, Torneos, Clases). Es ingreso real del
+    // club: se suma a «Otros Ingresos / Penalizaciones» y al consolidado.
+    const filasRetencionesCancelacion = construirRetencionesPorCancelacion({
+      reservas,
+      inscripciones,
+      participantesTorneo,
+      academiaAlumnos,
+      rango: rangoPnl,
+      montoReta: montoInscripcionReta,
+    });
+    const retencionesCancelacion = Math.round(filasRetencionesCancelacion.reduce((acc, f) => acc + f.monto, 0) * 100) / 100;
+    const otrosIngresos = Math.round((otrosIngresosVentas + retencionesCancelacion) * 100) / 100;
+
+    const ingresosTotalesConsolidados = ventasMostrador + ventasWeb + reservasCanchas + torneosRetas + clasesClinicas + retencionesCancelacion;
 
     // `g.estatus_recepcion !== 'cancelada'` — una Compra Cancelada/Revertida
     // (ver `cancelarCompra`) sigue viviendo en `egresos` para que el
@@ -30406,8 +30517,11 @@ function ModuloContabilidadCompras({
       proShop,
       restauranteBar,
       otrosIngresos,
+      otrosIngresosVentas,
+      retencionesCancelacion,
       lineasPorCanal,
       _repartoVentas: repartoVentasPnl,
+      _filasRetencionesCancelacion: filasRetencionesCancelacion,
       reservasCanchas,
       torneosRetas,
       clasesClinicas,
@@ -30554,7 +30668,40 @@ function ModuloContabilidadCompras({
         });
     const proShopDesglose = desgloseLinea('proShop');
     const restauranteBarDesglose = desgloseLinea('restauranteBar');
-    const otrosIngresosDesglose = desgloseLinea('otrosIngresos');
+    // App-166 — Penalizaciones aplicadas / pagos retenidos por cancelación
+    // fuera de tiempo: un renglón por cada retención del periodo.
+    const nombreRetaPorId = new Map((retas || []).map((r) => [String(r.id), r.nombre || '']));
+    const retencionesDesglose = (pnl._filasRetencionesCancelacion || []).map(({ tipo, fila: f, monto }) => {
+      const idCorto = (f.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F';
+      const enLinea = f.pago_en_linea_estado === 'pagado' || Number(f.pago_en_linea_monto) > 0;
+      if (tipo === 'reserva') {
+        return {
+          id: `retencion-reserva-${f.id}`,
+          idCorto,
+          hora: f.hora_inicio || '—',
+          concepto: `Penalización · Reserva ${canchasPorId[f.cancha_id]?.nombre || 'Cancha'}${f.jugador_nombre ? ` — ${f.jugador_nombre}` : ''} (cancelación fuera de tiempo, pago retenido)`,
+          canal: enLinea || esCanalPortalWeb(f.canal_origen) ? 'Portal Web' : 'Reservas & Canchas',
+          metodoPago: f.metodo_pago || (enLinea ? 'Pago en línea' : '—'),
+          monto,
+        };
+      }
+      const etiqueta =
+        tipo === 'reta'
+          ? `Reta${nombreRetaPorId.get(String(f.reta_id)) ? ` «${nombreRetaPorId.get(String(f.reta_id))}»` : ''}`
+          : tipo === 'torneo'
+          ? `Torneo${f.categoria ? ` (${f.categoria})` : ''}`
+          : `Clase${f.tipo_pago === 'mensualidad' ? ' · Mensualidad' : ''}`;
+      return {
+        id: `retencion-${tipo}-${f.id}`,
+        idCorto,
+        hora: horaDe(f.created_at),
+        concepto: `Penalización · ${etiqueta} — ${f.nombre || 'Jugador'} (cancelación fuera de tiempo, pago retenido)`,
+        canal: enLinea || esCanalPortalWeb(f.canal_origen) ? 'Portal Web' : tipo === 'academia' ? 'Clases & Academia' : 'Torneos & Retas',
+        metodoPago: etiquetaMetodoPagoInscripcion(f.metodo_pago) || (enLinea ? 'Pago en línea' : '—'),
+        monto,
+      };
+    });
+    const otrosIngresosDesglose = [...desgloseLinea('otrosIngresos'), ...retencionesDesglose];
     // Desglose de "Clases y Clínicas" (item 4) — mismo formato normalizado
     // que el resto de las tarjetas.
     const clasesClinicasDesglose = pnl._filasInscripcionesAcademia.map((a) => ({
@@ -30614,7 +30761,7 @@ function ModuloContabilidadCompras({
         ...otrosIngresosDesglose,
       ],
     };
-  }, [pnl, canchas]);
+  }, [pnl, canchas, retas]);
 
   /* ---- Formulario de Egresos & Compras ---- */
   const ESTADO_INICIAL_FORM_EGRESO = {
@@ -32232,6 +32379,7 @@ function ModuloContabilidadCompras({
       ['d) Clases y Clínicas', pnl.clasesClinicas.toFixed(2)],
       ['e) Torneos y Retas (Inscripciones)', pnl.torneosRetas.toFixed(2)],
       ['f) Otros Ingresos / Penalizaciones', pnl.otrosIngresos.toFixed(2)],
+      ['   · de ello, penalizaciones aplicadas / pagos retenidos por cancelación fuera de tiempo', (Number(pnl.retencionesCancelacion) || 0).toFixed(2)],
       ['Ingresos Totales Consolidados', pnl.ingresosTotalesConsolidados.toFixed(2)],
       ['Egresos Totales', pnl.egresosTotales.toFixed(2)],
       ['Utilidad Real (Ingresos Totales Consolidados − Egresos Totales)', pnl.utilidadReal.toFixed(2)],
@@ -33686,9 +33834,14 @@ function ModuloAnalyticsBI({
       const reta = retasPorId.get(String(i.reta_id)) || null;
       const monto = montoInscripcionCobrada(i, reta ? precioDeReta(reta) : 0);
       if (monto <= 0) return;
-      cobrosFechados.push({ fecha: new Date(i.created_at), monto, categoria: 'Retas & Torneos' });
-      totalRetas += monto;
-      transaccionesRetas += 1;
+      // App-166 — 'retenido' (canceló fuera de tiempo) suma en
+      // «Penalizaciones», no en Retas & Torneos; sigue contando como ingreso
+      // de la cancha donde se jugaría (tabla por cancha).
+      if (i.estado !== 'retenido') {
+        cobrosFechados.push({ fecha: new Date(i.created_at), monto, categoria: 'Retas & Torneos' });
+        totalRetas += monto;
+        transaccionesRetas += 1;
+      }
       const clave = String(i.reta_id);
       const acc = porReta.get(clave) || { reta, monto: 0, lugares: 0 };
       acc.monto += monto;
@@ -33705,9 +33858,11 @@ function ModuloAnalyticsBI({
       const torneo = torneosPorId.get(String(p.torneo_id)) || null;
       const monto = Number(p.monto) || 0;
       if (monto <= 0) return;
-      cobrosFechados.push({ fecha: new Date(p.created_at), monto, categoria: 'Retas & Torneos' });
-      totalTorneos += monto;
-      transaccionesTorneos += 1;
+      if (p.estado !== 'retenido') {
+        cobrosFechados.push({ fecha: new Date(p.created_at), monto, categoria: 'Retas & Torneos' });
+        totalTorneos += monto;
+        transaccionesTorneos += 1;
+      }
       const clave = String(p.torneo_id);
       const acc = porTorneo.get(clave) || { torneo, monto: 0 };
       acc.monto += monto;
@@ -33737,8 +33892,37 @@ function ModuloAnalyticsBI({
       transaccionesAcademia += 1;
     });
 
+    // App-166 — Penalizaciones aplicadas / pagos retenidos por cancelación
+    // fuera de tiempo (Reservas, Retas, Torneos, Clases): mismo cálculo que
+    // «Otros Ingresos / Penalizaciones» del Estado de Resultados.
+    const retenciones = construirRetencionesPorCancelacion({
+      reservas: reservasEnRango,
+      inscripciones,
+      participantesTorneo,
+      academiaAlumnos,
+      rango,
+      montoReta: (i) => {
+        const reta = retasPorId.get(String(i.reta_id)) || null;
+        return montoInscripcionCobrada(i, reta ? precioDeReta(reta) : 0);
+      },
+    });
+    let totalPenalizaciones = 0;
+    retenciones.forEach(({ tipo, fila, monto }) => {
+      let fecha = new Date(fila.created_at);
+      if (tipo === 'reserva') {
+        const [y, m, d] = String(fila.fecha || '').split('-').map(Number);
+        const min = parseHoraAMinutos(fila.hora_inicio);
+        fecha = y && m && d ? new Date(y, m - 1, d, min === null ? 0 : Math.floor(min / 60), min === null ? 0 : min % 60) : new Date(NaN);
+      }
+      cobrosFechados.push({ fecha, monto, categoria: 'Penalizaciones' });
+      totalPenalizaciones += monto;
+    });
+
     return {
       porReta,
+      totalPenalizaciones,
+      transaccionesPenalizaciones: retenciones.length,
+      retenciones,
       porTorneo,
       totalRetas,
       totalTorneos,
@@ -33750,7 +33934,7 @@ function ModuloAnalyticsBI({
       transaccionesAcademia,
       cobrosFechados,
     };
-  }, [retas, inscripciones, torneos, participantesTorneo, academiaAlumnos, academiaClases, rango]);
+  }, [retas, inscripciones, torneos, participantesTorneo, academiaAlumnos, academiaClases, rango, reservasEnRango]);
 
   const productosPorId = useMemo(() => {
     const mapa = {};
@@ -33988,11 +34172,13 @@ function ModuloAnalyticsBI({
       Academia: ingresosEventos.totalAcademia,
       'Pro-Shop': 0,
       'Cafetería/Bar': 0,
+      Penalizaciones: ingresosEventos.totalPenalizaciones || 0,
     };
     // COGS: Costo Total = unidades × costo_unitario, resuelto item por item
     // con `costoUnitarioParaItem` (ver arriba) — ya NO de un cruce Kardex↔
     // ventas por clave compuesta exacta.
-    const cogsPorCategoria = { Canchas: 0, 'Retas & Torneos': 0, Academia: 0, 'Pro-Shop': 0, 'Cafetería/Bar': 0 };
+    const cogsPorCategoria = { Canchas: 0, 'Retas & Torneos': 0, Academia: 0, 'Pro-Shop': 0, 'Cafetería/Bar': 0, Penalizaciones: 0 };
+    let transaccionesPenalizacionPOS = 0;
     let cogsTotal = 0;
     let transaccionesConProducto = 0;
     const filasPorClave = {};
@@ -34023,7 +34209,16 @@ function ModuloAnalyticsBI({
       if (!Array.isArray(items)) return;
       let tieneProducto = false;
       let subtotalProductosTicket = 0;
+      let subtotalPenalizacionTicket = 0;
       items.forEach((item) => {
+        // App-166 — penalización cobrada en Punto de Venta (antes no sumaba
+        // en Analytics; el Estado de Resultados ya la contaba en «Otros»).
+        if (item.tipo === 'penalizacion') {
+          const st = Number(item.subtotal) || 0;
+          ingresoPorCategoria.Penalizaciones += st;
+          subtotalPenalizacionTicket += st;
+          return;
+        }
         if (item.tipo !== 'producto') return; // cancha ya contada desde `reservas`
         tieneProducto = true;
         subtotalProductosTicket += Number(item.subtotal) || 0;
@@ -34120,6 +34315,7 @@ function ModuloAnalyticsBI({
       });
       // Solo tickets con cobro real de producto cuentan como transacción.
       if (tieneProducto && subtotalProductosTicket > 0) transaccionesConProducto += 1;
+      else if (subtotalPenalizacionTicket > 0) transaccionesPenalizacionPOS += 1;
     });
 
     // Ticket Promedio = Ingreso Total REAL ÷ transacciones EFECTIVAMENTE
@@ -34128,7 +34324,8 @@ function ModuloAnalyticsBI({
     // vacíos, bloqueos de eventos, tickets en $0 ni nada pendiente.
     const transaccionesEventos =
       ingresosEventos.transaccionesRetas + ingresosEventos.transaccionesTorneos + ingresosEventos.transaccionesAcademia;
-    const totalTransacciones = transaccionesCanchas + transaccionesEventos + transaccionesConProducto;
+    const transaccionesPenalizaciones = (ingresosEventos.transaccionesPenalizaciones || 0) + transaccionesPenalizacionPOS;
+    const totalTransacciones = transaccionesCanchas + transaccionesEventos + transaccionesConProducto + transaccionesPenalizaciones;
 
     const filasProducto = Object.values(filasPorClave).map((f) => ({
       ...f,
@@ -34153,10 +34350,10 @@ function ModuloAnalyticsBI({
       return { categoria: c.key, ingreso, costo, utilidad, margen };
     });
 
-    const categoriaEstrella = rentabilidadPorCategoria.reduce(
-      (mejor, actual) => (actual.ingreso > (mejor?.ingreso ?? -1) ? actual : mejor),
-      null
-    );
+    // App-166: «Penalizaciones» no es una línea de negocio — no compite por Categoría Estrella.
+    const categoriaEstrella = rentabilidadPorCategoria
+      .filter((c) => c.categoria !== 'Penalizaciones')
+      .reduce((mejor, actual) => (actual.ingreso > (mejor?.ingreso ?? -1) ? actual : mejor), null);
 
     const topProductos = [...filasProducto].sort((a, b) => b.unidades - a.unidades).slice(0, 5);
 
@@ -34212,6 +34409,8 @@ function ModuloAnalyticsBI({
       ingresoTorneos: ingresosEventos.totalTorneos,
       ingresoAcademia: ingresosEventos.totalAcademia,
       academiaDesglose: ingresosEventos.academiaDesglose,
+      ingresoPenalizaciones: ingresoPorCategoria.Penalizaciones,
+      transaccionesPenalizaciones,
       rentabilidadPorCategoria,
       categoriaEstrella,
       topProductos,
@@ -73396,53 +73595,62 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
             </span>
           </div>
         )}
-        {/* App-147 — en celular Fecha y Duración van una debajo de la otra
-            (antes 2 columnas fijas: el selector de fecha se encimaba con el
-            de duración); desde `sm`, lado a lado sin desbordarse. */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="reserva-fecha-duracion">
-          <Campo label="Fecha">
-            <input
-              type="date"
-              min={hoyISO()}
-              value={fecha}
-              onChange={(e) => {
-                const valor = e.target.value;
-                // Clamp defensivo: un valor tecleado a mano (o un navegador
-                // que no respete `min`) nunca debe dejar pasar una fecha
-                // anterior a hoy — se ajusta silenciosamente a hoy en vez
-                // de aceptarlo.
-                setFecha(valor && valor < hoyISO() ? hoyISO() : valor);
-              }}
-              // FIX DE USABILIDAD: mismo criterio que "Solicitar Clase" —
-              // un clic en cualquier parte del recuadro abre el picker
-              // nativo, no solo el icono de calendario.
-              onClick={(e) => e.target.showPicker && e.target.showPicker()}
-              className={`${inputClase} min-w-0 cursor-pointer`}
-              data-testid="reserva-fecha"
-            />
-            {/* DATEPICKER — accesos rápidos: un click para hoy/mañana sin
-                tener que abrir el calendario nativo. */}
-            <div className="mt-1.5 flex gap-1.5">
-              <button
-                type="button"
-                onClick={() => setFecha(hoyISO())}
-                className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                  fecha === hoyISO() ? 'border-orange-400/60 bg-orange-400/15 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
-                }`}
-              >
-                Hoy
-              </button>
-              <button
-                type="button"
-                onClick={() => setFecha(sumarDia(hoyISO(), 1))}
-                className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
-                  fecha === sumarDia(hoyISO(), 1) ? 'border-orange-400/60 bg-orange-400/15 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
-                }`}
-              >
-                Mañana
-              </button>
+        {/* App-166 — Fecha y Duración, cada una en su propio renglón a
+            cualquier ancho (antes, en iPad, 2 columnas: Safari dibuja el
+            <input type="date"> nativo más ancho que su columna y se encimaba
+            con Duración). Hoy/Mañana van junto al calendario desde `sm` y
+            debajo en celular; `qb-input-fecha` (ver `CSS_LAYOUT_QLUBOS`)
+            fija ancho y altura del calendario nativo en iOS/iPadOS. */}
+        <div className="flex flex-col gap-4" data-testid="reserva-fecha-duracion">
+          <div className="min-w-0" data-testid="reserva-bloque-fecha">
+            <label htmlFor="reserva-fecha-portal" className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Fecha
+            </label>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+              <input
+                id="reserva-fecha-portal"
+                type="date"
+                min={hoyISO()}
+                value={fecha}
+                onChange={(e) => {
+                  const valor = e.target.value;
+                  // Clamp defensivo: un valor tecleado a mano (o un navegador
+                  // que no respete `min`) nunca debe dejar pasar una fecha
+                  // anterior a hoy — se ajusta silenciosamente a hoy en vez
+                  // de aceptarlo.
+                  setFecha(valor && valor < hoyISO() ? hoyISO() : valor);
+                }}
+                // FIX DE USABILIDAD: mismo criterio que "Solicitar Clase" —
+                // un clic en cualquier parte del recuadro abre el picker
+                // nativo, no solo el icono de calendario.
+                onClick={(e) => e.target.showPicker && e.target.showPicker()}
+                className={`${inputClase} qb-input-fecha min-w-0 cursor-pointer sm:flex-1`}
+                data-testid="reserva-fecha"
+              />
+              {/* DATEPICKER — accesos rápidos: un click para hoy/mañana sin
+                  tener que abrir el calendario nativo. */}
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0" data-testid="reserva-fecha-accesos">
+                <button
+                  type="button"
+                  onClick={() => setFecha(hoyISO())}
+                  className={`rounded-lg border px-4 py-2 text-xs font-bold transition ${
+                    fecha === hoyISO() ? 'border-orange-400/60 bg-orange-400/15 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
+                  }`}
+                >
+                  Hoy
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFecha(sumarDia(hoyISO(), 1))}
+                  className={`rounded-lg border px-4 py-2 text-xs font-bold transition ${
+                    fecha === sumarDia(hoyISO(), 1) ? 'border-orange-400/60 bg-orange-400/15 text-orange-400' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/40'
+                  }`}
+                >
+                  Mañana
+                </button>
+              </div>
             </div>
-          </Campo>
+          </div>
           <Campo label="Duración">
             {/* Duración de Bloques/Turnos (migracion_v42) + Extensión Opción
                 1/2 Horas (mejora, ampliada): cuando el club fijó su bloque
@@ -73461,7 +73669,7 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
                 setHoraInicio('');
               }}
               disabled={duracionesPermitidas.length <= 1}
-              className={`${inputClase} min-w-0 disabled:cursor-not-allowed disabled:opacity-70`}
+              className={`${inputClase} qb-select-tactil min-w-0 disabled:cursor-not-allowed disabled:opacity-70`}
               data-testid="reserva-duracion"
             >
               {duracionesPermitidas.map((d) => (
