@@ -55304,71 +55304,6 @@ function FichaDeportivaCRM({ perfil, onGuardar }) {
   );
 }
 
-// App-115 — Estatus VIP del jugador en la Vista 360°: por qué es (o no) VIP
-// y, para Owner/Manager, el control manual de 3 posiciones:
-//   Automático (manda el criterio del club) · VIP manual · Sin VIP.
-function ControlVipJugador({ perfil, criterio, puedeGestionar = false, mostrarMontos = true, onCambiar }) {
-  const [guardando, setGuardando] = useState(false);
-  const c = normalizarCriterioVip(criterio);
-  const actual = perfil.vipManual === true ? 'vip' : perfil.vipManual === false ? 'sin' : 'auto';
-  let estado;
-  if (perfil.vipManual === true) {
-    estado = `VIP manual${perfil.vipManualPor ? ` · por ${perfil.vipManualPor}` : ''}${perfil.vipManualEn ? ` · ${formatoFechaCorta(String(perfil.vipManualEn).slice(0, 10))}` : ''}`;
-  } else if (perfil.vipManual === false) {
-    estado = 'VIP retirado manualmente — no se evalúa con el criterio automático';
-  } else if (perfil.vipAutomatico) {
-    estado = `VIP automático: cumple ${textoCriterioVip(c, { conMontos: mostrarMontos })}`;
-  } else {
-    estado = c.automatico ? `No cumple el criterio VIP (${textoCriterioVip(c, { conMontos: mostrarMontos })})` : 'VIP automático desactivado — solo VIP manuales';
-  }
-  async function cambiar(opcion) {
-    if (!puedeGestionar || guardando || opcion === actual) return;
-    setGuardando(true);
-    await onCambiar?.(perfil.id, opcion === 'vip' ? true : opcion === 'sin' ? false : null, perfil.nombre);
-    setGuardando(false);
-  }
-  const opciones = [
-    { value: 'auto', label: 'Automático' },
-    { value: 'vip', label: 'VIP manual' },
-    { value: 'sin', label: 'Sin VIP' },
-  ];
-  return (
-    <div className="rounded-xl border border-amber-300/50 bg-amber-400/5 px-3 py-2.5" data-testid="control-vip">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="flex items-center gap-1.5 text-xs font-black text-slate-900">
-            <Crown size={13} className="text-amber-500" /> Estatus VIP
-          </p>
-          <p className="mt-0.5 text-[11px] text-slate-600" data-testid="estado-vip">{estado}</p>
-          <p className="mt-0.5 text-[10px] text-slate-500" data-testid="metricas-vip">
-            Últimos {c.ventanaDias} días: {mostrarMontos ? `${formatoMoneda(perfil.gastoVentanaVip || 0)} · ` : ''}
-            {perfil.visitasVentanaVip || 0} visita{perfil.visitasVentanaVip === 1 ? '' : 's'}
-          </p>
-        </div>
-        {puedeGestionar && (
-          <div className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-white p-0.5" role="group" aria-label="Estatus VIP">
-            {opciones.map((o) => (
-              <button
-                key={o.value}
-                type="button"
-                aria-pressed={actual === o.value}
-                disabled={guardando}
-                onClick={() => cambiar(o.value)}
-                data-testid={`vip-opcion-${o.value}`}
-                className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition disabled:opacity-60 ${
-                  actual === o.value ? 'bg-amber-400 text-slate-950' : 'text-slate-500 hover:bg-slate-100'
-                }`}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function ModalPerfilJugadorCRM({
   perfil,
   diaHoy,
@@ -55802,14 +55737,9 @@ function ModalPerfilJugadorCRM({
           )}
         </div>
 
-        {/* App-115 — Estatus VIP híbrido: motivo + control manual (Owner/Manager). */}
-        <ControlVipJugador
-          perfil={perfil}
-          criterio={criterioVip}
-          puedeGestionar={permisos?.puedeGestionarVip === true}
-          mostrarMontos={permisos?.puedeVerMontos !== false}
-          onCambiar={onActualizarVipManualJugador}
-        />
+        {/* App-165 — se quitó el bloque «Estatus VIP» de la ficha: el VIP se
+            gestiona desde Configuración del Club (criterio automático). Los
+            datos y el cálculo del VIP no cambian. */}
 
         {/* Motor de Gestión de Penalizaciones Pendientes (v74), Parte 3 —
             "Adeudos Pendientes de Cobro": reusa tal cual
