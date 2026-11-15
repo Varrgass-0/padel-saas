@@ -5154,6 +5154,71 @@ function TransicionPestana({ activeKey, children, className }) {
   );
 }
 
+// =============================================================================
+// App-167 — Estatus financiero de las CLASES en la Parrilla / Cronograma /
+// Agenda / Calendario. El bloqueo de cancha de una clase (`reservas`,
+// `estado: 'Clase'`, ver `crearBloqueoParrilla`) se guarda con
+// `estado_pago: 'pagado'` y monto $0 porque NO es un cobro: el dinero vive en
+// `academia_alumnos` (cada alumno nace 'pendiente' y se cobra en Punto de
+// Venta → Cuentas Pendientes). Por eso las vistas mostraban «Pagado» desde
+// que se creaba la clase. El bloqueo NO se cambia en la base (si se marcara
+// 'pendiente' entraría a Cuentas Pendientes como una renta de cancha y se
+// cobraría dos veces); el estatus que se MUESTRA sale de sus alumnos:
+//   • «Pendiente» al crear la clase y mientras algún alumno no haya pagado
+//     (o si todavía no tiene alumnos).
+//   • «Pagado» cuando todos los alumnos activos quedaron cobrados en Punto de
+//     Venta (o con créditos de membresía / cortesía).
+// =============================================================================
+const ContextoEstadoPagoClases = React.createContext(null);
+function claveBloqueoClase(canchaId, fecha, horaInicio) {
+  return `${String(canchaId ?? '')}|${String(fecha || '').slice(0, 10)}|${String(horaInicio || '').slice(0, 5)}`;
+}
+function alumnoClaseSaldado(a) {
+  if (a?.pagado_con_creditos === true) return true;
+  const e = estatusCobroNormalizado(a);
+  return e === 'pagado' || e === 'cortesia' || e === 'exonerado';
+}
+// Índice clase ↔ bloqueo (cancha + fecha + hora de inicio, que el candado
+// anti-encimado hace único) y estatus de cobro por clase.
+function construirEstadoPagoClases(clases, alumnos) {
+  const alumnosPorClase = new Map();
+  (alumnos || []).forEach((a) => {
+    if (a?.estado === 'baja' || a?.clase_id == null) return;
+    const k = String(a.clase_id);
+    if (!alumnosPorClase.has(k)) alumnosPorClase.set(k, []);
+    alumnosPorClase.get(k).push(a);
+  });
+  const estadoDeClase = (clase) => {
+    const lista = alumnosPorClase.get(String(clase.id)) || [];
+    return lista.length > 0 && lista.every(alumnoClaseSaldado) ? 'pagado' : 'pendiente';
+  };
+  const porBloqueo = new Map();
+  const porNombreFecha = new Map();
+  (clases || []).forEach((c) => {
+    if (!c || c.estado === 'cancelada' || !c.fecha) return;
+    const estado = estadoDeClase(c);
+    porBloqueo.set(claveBloqueoClase(c.cancha_id, c.fecha, c.hora_inicio), estado);
+    porNombreFecha.set(`${claveNombre(c.nombre || '')}|${String(c.fecha).slice(0, 10)}`, estado);
+  });
+  return (reserva) => {
+    if (reserva?.estado !== 'Clase') return null;
+    const directo = porBloqueo.get(claveBloqueoClase(reserva.cancha_id, reserva.fecha, reserva.hora_inicio));
+    if (directo) return directo;
+    // Respaldo: etiqueta del bloqueo «Clase - Nombre» + fecha.
+    const nombre = String(reserva.jugador_nombre || '').replace(/^clase\s*-\s*/i, '');
+    return porNombreFecha.get(`${claveNombre(nombre)}|${String(reserva.fecha || '').slice(0, 10)}`) || 'pendiente';
+  };
+}
+// Estatus de pago a MOSTRAR para una fila de `reservas` (solo cambia las
+// clases; cualquier otra reserva/bloqueo sigue mostrando su `estado_pago`).
+function useEstadoPagoVisualReserva() {
+  const resolver = React.useContext(ContextoEstadoPagoClases);
+  return useCallback((reserva) => {
+    if (reserva?.estado === 'Clase') return (resolver && resolver(reserva)) || 'pendiente';
+    return reserva?.estado_pago;
+  }, [resolver]);
+}
+
 function BadgePago({ estadoPago }) {
   if (!estadoPago) return null;
   // Reserva retenida mientras el jugador paga en línea (Stripe Connect, v121).
@@ -7390,6 +7455,7 @@ function CanchaCard({
   // en `AppInterno`.
   onEditarCancha,
 }) {
+  const estadoPagoVisual = useEstadoPagoVisualReserva(); // App-167
   const meta = ESTATUS_META[estadoActual];
   // App-163 — solo el bloqueo TOTAL anterior (bandera manual de la cancha)
   // impide reservar; un mantenimiento programado ocupa únicamente su horario.
@@ -7506,7 +7572,7 @@ function CanchaCard({
               <Clock size={12} className="shrink-0 text-slate-600" />
               <span className="truncate text-xs font-bold text-slate-900">{reservaActual.jugador_nombre || 'Jugador'}</span>
             </button>
-            <BadgePago estadoPago={reservaActual.estado_pago} />
+            <BadgePago estadoPago={estadoPagoVisual(reservaActual)} />
           </div>
         )}
         <span className="absolute right-3 top-3 rounded-lg bg-slate-50/70 px-2 py-1 text-xs font-black text-orange-400 backdrop-blur">
@@ -7749,6 +7815,7 @@ function FilaCronograma({
   horaCierreMin = HORA_FIN_MIN,
   estadoRetaDeReserva,
 }) {
+  const estadoPagoVisual = useEstadoPagoVisualReserva(); // App-167
   const bloqueada = estadoActual === 'mantenimiento';
   const meta = ESTATUS_META[estadoActual];
   // Horario de Operación del Club (item 4): `totalSlots` ya no es la
@@ -7885,7 +7952,7 @@ function FilaCronograma({
                     </span>
                   )}
                   {formatoHora12(reserva.hora_inicio)}–{formatoHora12(reserva.hora_fin)}
-                  {!estadoReta && reserva.estado_pago === 'pendiente' && <AlertTriangle size={9} />}
+                  {!estadoReta && estadoPagoVisual(reserva) === 'pendiente' && <AlertTriangle size={9} />}
                 </span>
               </button>
             );
@@ -8281,6 +8348,7 @@ function CalendarioMensual({ anio, mes, onCambiarMes, onDiaClick, eventosPorDia,
               key={fechaCelda}
               type="button"
               onClick={() => onDiaClick(fechaCelda)}
+              data-fecha={fechaCelda}
               data-dia-cerrado={cerrado ? '' : undefined}
               className={`flex min-h-[64px] flex-col items-start gap-1 rounded-xl border p-1.5 text-left transition hover:border-orange-400/60 hover:bg-orange-400/5 sm:min-h-[78px] ${
                 esHoy ? 'border-orange-400 bg-orange-400/10' : cerrado ? 'border-slate-200 bg-slate-200/60' : 'border-slate-200 bg-slate-50'
@@ -11067,6 +11135,7 @@ function DetalleReserva({
   onRegistrarAuditoria,
   onCancelarClaseDesdeParrilla,
 }) {
+  const estadoPagoVisual = useEstadoPagoVisualReserva(); // App-167
   const toast = useToast();
   const [mostrarCancelacion, setMostrarCancelacion] = useState(false);
   // Homologación Parrilla Operativa ↔ Academia (Unificación de Cancelación
@@ -11240,7 +11309,13 @@ function DetalleReserva({
         <div className={`rounded-xl border p-4 ${colorBloqueo.borde}`}>
           <div className="flex items-center gap-2">
             <Lock size={15} className={colorBloqueo.icono} />
-            <p className="text-sm font-black text-slate-900">{reserva.jugador_nombre}</p>
+            <p className="min-w-0 flex-1 text-sm font-black text-slate-900">{reserva.jugador_nombre}</p>
+            {/* App-167 — la clase muestra el cobro real de sus alumnos. */}
+            {reserva.estado === 'Clase' && (
+              <span data-testid="detalle-clase-estatus-pago">
+                <BadgePago estadoPago={estadoPagoVisual(reserva)} />
+              </span>
+            )}
           </div>
           <div className="mt-3 grid grid-cols-2 gap-y-2 text-xs text-slate-500">
             <span className="flex items-center gap-1.5">
@@ -11845,6 +11920,7 @@ function ModalDetalleCancha({
   estadoRetaDeReserva,
   onAbrirReta,
 }) {
+  const estadoPagoVisual = useEstadoPagoVisualReserva(); // App-167
   const [reservaActiva, setReservaActiva] = useState(reservaInicial || null);
 
   const reservasDelDia = useMemo(
@@ -11919,7 +11995,7 @@ function ModalDetalleCancha({
                 {r.estado === 'Reta' ? (
                   <ChipEstadoEventoParrilla reserva={r} estadoReta={estadoRetaDeReserva?.(r) || null} />
                 ) : (
-                  <BadgePago estadoPago={r.estado_pago} />
+                  <BadgePago estadoPago={estadoPagoVisual(r)} />
                 )}
                 <ChevronRight size={16} className="text-slate-400" />
               </div>
@@ -12287,46 +12363,14 @@ function ModuloParrillaOperativa({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reservas, tick]);
 
-  // AJUSTE UX: Mapa de Calor de Ocupación por día/hora en "Cronograma" —
-  // mismo cálculo/criterio que el heatmap de Contabilidad & Compras/BI
-  // (`minutosSolapadosBI` sobre `HEATMAP_HORAS`, denominador = canchas
-  // activas × 60min × veces que cayó cada día de la semana en la ventana),
-  // pero con su propia ventana fija de datos (últimas 8 semanas hasta hoy)
-  // en vez del selector de rango de fechas de Contabilidad — la Parrilla no
-  // tiene ese filtro y no tiene sentido agregarle uno solo para esto.
-  const heatmapCronograma = useMemo(() => {
-    const numCanchas = canchasActivas.length || 1;
-    const hoyDate = new Date();
-    hoyDate.setHours(0, 0, 0, 0);
-    const desdeDate = new Date(hoyDate);
-    desdeDate.setDate(desdeDate.getDate() - 55); // 8 semanas completas, incluyendo hoy
-    const finExclusivo = new Date(hoyDate);
-    finExclusivo.setDate(finExclusivo.getDate() + 1); // `contarDiasPorDiaSemana` espera un fin EXCLUSIVO
-    const desdeISO = `${desdeDate.getFullYear()}-${pad2(desdeDate.getMonth() + 1)}-${pad2(desdeDate.getDate())}`;
-    const hoyISOStr = hoyISO();
-
-    const ocupado = Array.from({ length: ORDEN_SEMANA_BI.length }, () => HEATMAP_HORAS.map(() => 0));
-    reservas
-      .filter((r) => r.estado !== 'Cancelada' && !esMantenimientoProgramado(r) && r.fecha >= desdeISO && r.fecha <= hoyISOStr)
-      .forEach((r) => {
-        const hi = parseHoraAMinutos(r.hora_inicio);
-        const hf = parseHoraAMinutos(r.hora_fin);
-        if (hi === null || hf === null || hf <= hi) return;
-        const [y, m, d] = r.fecha.split('-').map(Number);
-        const dow = new Date(y, m - 1, d).getDay();
-        const filaIdx = ORDEN_SEMANA_BI.indexOf(dow);
-        if (filaIdx === -1) return;
-        HEATMAP_HORAS.forEach((h, colIdx) => {
-          const solapado = minutosSolapadosBI(hi, hf, h * 60, (h + 1) * 60);
-          if (solapado > 0) ocupado[filaIdx][colIdx] += solapado;
-        });
-      });
-
-    const conteos = contarDiasPorDiaSemana(desdeDate, finExclusivo);
-    const denomPorFila = ORDEN_SEMANA_BI.map((dow) => Math.max(1, conteos[dow]) * numCanchas * 60);
-    const celdas = ocupado.map((fila, fIdx) => fila.map((min) => Math.min(100, Math.round((min / denomPorFila[fIdx]) * 100))));
-    return { filas: Array.from({ length: ORDEN_SEMANA_BI.length }), celdas };
-  }, [reservas, canchasActivas]);
+  // App-167 — Mapa de Calor del Cronograma: MISMA lógica que Analytics en
+  // modo Día (`calcularHeatmapOcupacionDia`), filtrado a la fecha elegida en
+  // el selector superior. Antes era una matriz fija de las últimas 8 semanas
+  // por día de la semana que no cambiaba al mover la fecha.
+  const heatmapCronograma = useMemo(
+    () => calcularHeatmapOcupacionDia({ reservas, fechaISO: fechaSeleccionada, canchas, excluirIds: bloqueosMaestroTorneoIds }),
+    [reservas, fechaSeleccionada, canchas, bloqueosMaestroTorneoIds]
+  );
 
   const metrics = useMemo(() => {
     const totalCanchas = canchas.length;
@@ -12509,7 +12553,14 @@ function ModuloParrillaOperativa({
               cada celda). Alimentado por `heatmapCronograma` (últimas 8
               semanas de reservas activas), independiente del filtro de
               fechas que vive en el módulo de Contabilidad. */}
-          <HeatmapOcupacion modo="semana" filas={heatmapCronograma.filas} celdas={heatmapCronograma.celdas} />
+          <HeatmapOcupacion
+            modo="dia"
+            filas={heatmapCronograma.filas}
+            celdas={heatmapCronograma.celdas}
+            etiquetasFila={[etiquetaDiaHeatmap(fechaSeleccionada)]}
+            subtitulo={`Ocupación de canchas del ${formatoFechaLarga(fechaSeleccionada)}`}
+            testId="heatmap-cronograma"
+          />
         </div>
       )}
       </TransicionPestana>
@@ -27347,15 +27398,47 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
 
 /* ---------------- Mapa de Calor de Ocupación por Horarios ---------------- */
 
-function HeatmapOcupacion({ modo, filas, celdas }) {
-  const etiquetasFila = modo === 'dia' ? ['Hoy'] : ORDEN_SEMANA_BI.map((d) => ETIQUETA_DIA_SEMANA[d]);
+// App-167 — Ocupación por hora de UN día (la misma cuenta que Analytics en
+// modo Día): minutos ocupados en cada franja de `HEATMAP_HORAS` ÷ (canchas
+// activas × 60 min). Cuenta reservas, retas, torneos (partidos) y clases;
+// excluye canceladas, mantenimiento programado y apartados maestro de Torneo.
+function calcularHeatmapOcupacionDia({ reservas, fechaISO, canchas, excluirIds = null }) {
+  const numCanchas = (canchas || []).filter((c) => c.activa !== false).length || 1;
+  const fila = HEATMAP_HORAS.map(() => 0);
+  (reservas || []).forEach((r) => {
+    if (!r || String(r.fecha || '').slice(0, 10) !== fechaISO) return;
+    if (r.estado === 'Cancelada' || esMantenimientoProgramado(r)) return;
+    if (excluirIds && typeof excluirIds.has === 'function' && excluirIds.has(r.id)) return;
+    const hi = parseHoraAMinutos(r.hora_inicio);
+    const hf = parseHoraAMinutos(r.hora_fin);
+    if (hi === null || hf === null || hf <= hi) return;
+    HEATMAP_HORAS.forEach((h, colIdx) => {
+      const solapado = minutosSolapadosBI(hi, hf, h * 60, (h + 1) * 60);
+      if (solapado > 0) fila[colIdx] += solapado;
+    });
+  });
+  return { filas: [0], celdas: [fila.map((min) => Math.min(100, Math.round((min / (numCanchas * 60)) * 100)))] };
+}
+// «Mar 17 nov» — etiqueta corta del renglón del día.
+function etiquetaDiaHeatmap(fechaISO) {
+  const [y, m, d] = String(fechaISO || '').split('-').map(Number);
+  if (!y || !m || !d) return 'Día';
+  const f = new Date(y, m - 1, d);
+  return `${ETIQUETA_DIA_SEMANA[f.getDay()]} ${d} ${MESES_CORTOS_BI[m - 1]?.toLowerCase() || ''}`.trim();
+}
+
+function HeatmapOcupacion({ modo, filas, celdas, etiquetasFila: etiquetasFilaProp = null, subtitulo = '', testId = undefined }) {
+  const etiquetasFila = etiquetasFilaProp || (modo === 'dia' ? ['Hoy'] : ORDEN_SEMANA_BI.map((d) => ETIQUETA_DIA_SEMANA[d]));
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid={testId}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-          <Flame size={16} className="text-amber-400" /> Mapa de Calor — Ocupación por Horario
-        </h3>
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+            <Flame size={16} className="text-amber-400" /> Mapa de Calor — Ocupación por Horario
+          </h3>
+          {subtitulo && <p className="mt-0.5 text-[11px] font-semibold text-slate-500" data-testid={testId ? `${testId}-fecha` : undefined}>{subtitulo}</p>}
+        </div>
         <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-500">
           <span className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/70" /> Baja
@@ -27379,10 +27462,12 @@ function HeatmapOcupacion({ modo, filas, celdas }) {
             ))}
             {filas.map((_, filaIdx) => (
               <React.Fragment key={filaIdx}>
-                <div className="flex items-center pr-2 text-[11px] font-bold text-slate-500">{etiquetasFila[filaIdx]}</div>
+                <div className="flex items-center pr-2 text-[11px] font-bold leading-tight text-slate-500">{etiquetasFila[filaIdx]}</div>
                 {celdas[filaIdx].map((pct, colIdx) => (
                   <div key={colIdx} className="p-0.5">
                     <div
+                      data-hora={HEATMAP_HORAS[colIdx]}
+                      data-pct={pct}
                       title={`${pad2(HEATMAP_HORAS[colIdx])}:00 – ${pad2(HEATMAP_HORAS[colIdx] + 1)}:00 · ${pct}% de ocupación`}
                       className={`flex h-8 items-center justify-center rounded-md text-[10px] font-bold transition ${colorCeldaOcupacion(pct)}`}
                     >
@@ -39394,6 +39479,7 @@ function useRetasDeParrilla(retas, inscripciones) {
 // siempre se guarda como 'pagado' y no significa nada para una Reta); para
 // todo lo demás, Pagado/Pendiente como siempre.
 function ChipEstadoEventoParrilla({ reserva, estadoReta }) {
+  const estadoPagoVisual = useEstadoPagoVisualReserva(); // App-167
   let texto;
   let clase;
   let titulo;
@@ -39406,7 +39492,7 @@ function ChipEstadoEventoParrilla({ reserva, estadoReta }) {
       clase = 'bg-emerald-400/10 text-emerald-500 ring-1 ring-emerald-400/30';
     }
     titulo = estadoReta ? `${estadoReta.ocupados}/${CUPOS_RETA} lugares ocupados` : undefined;
-  } else if (reserva?.estado_pago === 'pagado') {
+  } else if (estadoPagoVisual(reserva) === 'pagado') {
     texto = 'Pagado';
     clase = 'bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/30';
   } else {
@@ -49755,39 +49841,44 @@ function ModalConfirmarEliminarClase({ clase, alumnosActivos, onClose, onConfirm
 // (alumnos activos / capacidad_maxima) de la(s) clase(s) que arrancan en ese
 // día+hora, no % de ocupación de cancha — por eso es su propio componente
 // en vez de reutilizar `HeatmapOcupacion` tal cual (título/leyenda propios).
-function HeatmapAcademia({ clases, alumnosPorClase }) {
+// App-167 — filtrado a la FECHA elegida en el selector del Cronograma de la
+// Parrilla de Clases (misma estructura que Analytics en modo Día: un renglón,
+// una celda por hora). Cada celda = inscritos ÷ cupo máximo de las clases que
+// ocupan esa hora ese día (una clase de 2 h cuenta en sus 2 horas). Antes era
+// una matriz fija por día de la semana con TODAS las clases, sin importar la
+// fecha seleccionada.
+function HeatmapAcademia({ clases, alumnosPorClase, fecha = null }) {
+  const fechaISO = fecha || hoyISO();
   const { filas, celdas } = useMemo(() => {
-    const filasLocal = ORDEN_SEMANA_BI;
-    const celdasLocal = filasLocal.map((dia) =>
-      HEATMAP_HORAS.map((hora) => {
-        const clasesDelSlot = clases.filter((c) => {
-          // Agrupación puramente estadística por día de la semana — se
-          // deriva de `fecha` (Arquitectura de Fecha Única), no de una
-          // columna de recurrencia guardada.
-          if (!c.fecha) return false;
-          const diaMeta = diaSemanaDeFecha(c.fecha);
-          if (!diaMeta || diaMeta.indice !== dia) return false;
-          const inicioMin = parseHoraAMinutos(c.hora_inicio);
-          return inicioMin !== null && Math.floor(inicioMin / 60) === hora;
-        });
-        if (clasesDelSlot.length === 0) return 0;
-        const promedio =
-          clasesDelSlot.reduce((acc, c) => {
-            const inscritos = (alumnosPorClase[c.id] || []).length;
-            return acc + Math.min(100, Math.round((inscritos / Math.max(c.capacidad_maxima, 1)) * 100));
-          }, 0) / clasesDelSlot.length;
-        return Math.round(promedio);
-      })
-    );
-    return { filas: filasLocal, celdas: celdasLocal };
-  }, [clases, alumnosPorClase]);
+    const delDia = (clases || []).filter((c) => c && c.estado !== 'cancelada' && String(c.fecha || '').slice(0, 10) === fechaISO);
+    const fila = HEATMAP_HORAS.map((hora) => {
+      let inscritos = 0;
+      let cupo = 0;
+      delDia.forEach((c) => {
+        const hi = parseHoraAMinutos(c.hora_inicio);
+        const hfCrudo = parseHoraAMinutos(c.hora_fin);
+        if (hi === null) return;
+        const hf = hfCrudo !== null && hfCrudo > hi ? hfCrudo : hi + 60;
+        if (minutosSolapadosBI(hi, hf, hora * 60, (hora + 1) * 60) <= 0) return;
+        inscritos += (alumnosPorClase[c.id] || []).length;
+        cupo += Math.max(Number(c.capacidad_maxima) || 0, 1);
+      });
+      return cupo > 0 ? Math.min(100, Math.round((inscritos / cupo) * 100)) : 0;
+    });
+    return { filas: [fechaISO], celdas: [fila] };
+  }, [clases, alumnosPorClase, fechaISO]);
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="heatmap-academia">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-          <Flame size={16} className="text-teal-400" /> Mapa de Calor — Saturación de Cupos por Día/Hora
-        </h3>
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+            <Flame size={16} className="text-teal-400" /> Mapa de Calor — Saturación de Cupos por Horario
+          </h3>
+          <p className="mt-0.5 text-[11px] font-semibold text-slate-500" data-testid="heatmap-academia-fecha">
+            Clases del {formatoFechaLarga(fechaISO)}
+          </p>
+        </div>
         <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-500">
           <span className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/70" /> Con cupo
@@ -49811,11 +49902,13 @@ function HeatmapAcademia({ clases, alumnosPorClase }) {
             ))}
             {filas.map((dia, filaIdx) => (
               <React.Fragment key={dia}>
-                <div className="flex items-center pr-2 text-[11px] font-bold text-slate-500">{ETIQUETA_DIA_SEMANA[dia]}</div>
+                <div className="flex items-center pr-2 text-[11px] font-bold leading-tight text-slate-500">{etiquetaDiaHeatmap(dia)}</div>
                 {celdas[filaIdx].map((pct, colIdx) => (
                   <div key={colIdx} className="p-0.5">
                     <div
-                      title={`${ETIQUETA_DIA_SEMANA[dia]} ${pad2(HEATMAP_HORAS[colIdx])}:00 · ${pct}% de cupo ocupado`}
+                      data-hora={HEATMAP_HORAS[colIdx]}
+                      data-pct={pct}
+                      title={`${etiquetaDiaHeatmap(dia)} ${pad2(HEATMAP_HORAS[colIdx])}:00 · ${pct}% de cupo ocupado`}
                       className={`flex h-8 items-center justify-center rounded-md text-[10px] font-bold transition ${colorCeldaOcupacion(pct)}`}
                     >
                       {pct > 0 ? `${pct}%` : ''}
@@ -52258,7 +52351,7 @@ function ModuloAcademiaClinicas({
                   capacidad_maxima) de las clases que arrancan en ese
                   día+hora, así que Torneos, Retas y renta libre de la
                   Parrilla general JAMÁS entran a este cálculo. */}
-              <HeatmapAcademia clases={clasesActivas} alumnosPorClase={alumnosActivosPorClase} />
+              <HeatmapAcademia clases={clasesActivas} alumnosPorClase={alumnosActivosPorClase} fecha={fechaCronograma} />
             </>
           )}
           </TransicionPestana>
@@ -79139,6 +79232,9 @@ function AppInterno({ clubInicial } = {}) {
   // App-117 — Plan de Rescate de Retas: lo consumen `TarjetaReta`, el Detalle
   // de Reta de la Parrilla, `ModalInscribirJugador` y Configuración.
   const coachesRescateRetas = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
+  // App-167 — estatus de cobro de cada clase para pintar su bloqueo en
+  // Parrilla / Cronograma / Agenda / Calendario (ver `construirEstadoPagoClases`).
+  const estadoPagoClasesCtx = useMemo(() => construirEstadoPagoClases(academiaClases, academiaAlumnos), [academiaClases, academiaAlumnos]);
   const rescateRetasCtx = useMemo(
     () => ({
       toleranciaInscripcionMinutos: toleranciaInscripcionRetasMinutos,
@@ -79796,6 +79892,7 @@ function AppInterno({ clubInicial } = {}) {
       <RescateRetasContext.Provider value={rescateRetasCtx}>
       <AuditoriaLogContext.Provider value={registrarEventoAuditoria}>
       <CajaContext.Provider value={cajaCtx}>
+      <ContextoEstadoPagoClases.Provider value={estadoPagoClasesCtx}>
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={faseEntrada}
@@ -79808,6 +79905,7 @@ function AppInterno({ clubInicial } = {}) {
           {contenido}
         </motion.div>
       </AnimatePresence>
+      </ContextoEstadoPagoClases.Provider>
       </CajaContext.Provider>
       </AuditoriaLogContext.Provider>
       </RescateRetasContext.Provider>
