@@ -5209,12 +5209,63 @@ function construirEstadoPagoClases(clases, alumnos) {
     return porNombreFecha.get(`${claveNombre(nombre)}|${String(reserva.fecha || '').slice(0, 10)}`) || 'pendiente';
   };
 }
-// Estatus de pago a MOSTRAR para una fila de `reservas` (solo cambia las
-// clases; cualquier otra reserva/bloqueo sigue mostrando su `estado_pago`).
+// App-168 — mismo criterio para los TORNEOS: sus apartados de cancha
+// (`estado: 'Torneo'`, el apartado maestro y el horario de cada partido) se
+// guardan 'pagado'/$0 igual que las clases, pero el dinero vive en
+// `torneo_participantes`. El bloqueo se vincula a su torneo por
+// `torneos.bloqueos[].reserva_bloqueo_id` (apartado maestro) o
+// `torneo_partidos.reserva_bloqueo_id` (partido); respaldo por la etiqueta
+// «TORNEO: Nombre». «Pagado» solo cuando todas las inscripciones activas
+// (sin canceladas/retenidas) están cobradas o son cortesía; si no, o si aún
+// no tiene inscritos, «Pendiente».
+function participanteTorneoSaldado(p) {
+  const e = estatusCobroNormalizado(p);
+  return e === 'pagado' || e === 'cortesia' || e === 'exonerado' || esInscripcionCortesia(p);
+}
+function construirEstadoPagoTorneos(torneos, participantes, partidos) {
+  const porTorneo = new Map();
+  (participantes || []).forEach((p) => {
+    if (p?.torneo_id == null || !inscripcionOcupaLugar(p)) return;
+    const k = String(p.torneo_id);
+    if (!porTorneo.has(k)) porTorneo.set(k, []);
+    porTorneo.get(k).push(p);
+  });
+  const estadoDeTorneo = (torneoId) => {
+    const lista = porTorneo.get(String(torneoId)) || [];
+    return lista.length > 0 && lista.every(participanteTorneoSaldado) ? 'pagado' : 'pendiente';
+  };
+  const torneoPorBloqueo = new Map();
+  const torneoPorNombre = new Map();
+  (torneos || []).forEach((t) => {
+    if (!t) return;
+    (t.bloqueos || []).forEach((b) => b?.reserva_bloqueo_id && torneoPorBloqueo.set(String(b.reserva_bloqueo_id), t.id));
+    if (t.nombre) torneoPorNombre.set(claveNombre(t.nombre), t.id);
+  });
+  (partidos || []).forEach((pt) => {
+    if (pt?.reserva_bloqueo_id && pt.torneo_id != null) torneoPorBloqueo.set(String(pt.reserva_bloqueo_id), pt.torneo_id);
+  });
+  return (reserva) => {
+    if (reserva?.estado !== 'Torneo') return null;
+    let torneoId = torneoPorBloqueo.get(String(reserva.id));
+    if (torneoId == null) {
+      const nombre = String(reserva.jugador_nombre || '').replace(/^torneo\s*:\s*/i, '');
+      torneoId = torneoPorNombre.get(claveNombre(nombre));
+    }
+    return torneoId == null ? 'pendiente' : estadoDeTorneo(torneoId);
+  };
+}
+// Resolutor único que se comparte por contexto (clases + torneos).
+function construirEstadoPagoEventos({ clases, alumnos, torneos, participantes, partidos }) {
+  const deClase = construirEstadoPagoClases(clases, alumnos);
+  const deTorneo = construirEstadoPagoTorneos(torneos, participantes, partidos);
+  return (reserva) => (reserva?.estado === 'Clase' ? deClase(reserva) : reserva?.estado === 'Torneo' ? deTorneo(reserva) : null);
+}
+// Estatus de pago a MOSTRAR para una fila de `reservas` (solo cambia clases y
+// torneos; cualquier otra reserva/bloqueo sigue mostrando su `estado_pago`).
 function useEstadoPagoVisualReserva() {
   const resolver = React.useContext(ContextoEstadoPagoClases);
   return useCallback((reserva) => {
-    if (reserva?.estado === 'Clase') return (resolver && resolver(reserva)) || 'pendiente';
+    if (reserva?.estado === 'Clase' || reserva?.estado === 'Torneo') return (resolver && resolver(reserva)) || 'pendiente';
     return reserva?.estado_pago;
   }, [resolver]);
 }
@@ -11310,9 +11361,9 @@ function DetalleReserva({
           <div className="flex items-center gap-2">
             <Lock size={15} className={colorBloqueo.icono} />
             <p className="min-w-0 flex-1 text-sm font-black text-slate-900">{reserva.jugador_nombre}</p>
-            {/* App-167 — la clase muestra el cobro real de sus alumnos. */}
-            {reserva.estado === 'Clase' && (
-              <span data-testid="detalle-clase-estatus-pago">
+            {/* App-167/168 — clase y torneo muestran el cobro real de sus alumnos / inscritos. */}
+            {(reserva.estado === 'Clase' || reserva.estado === 'Torneo') && (
+              <span data-testid={reserva.estado === 'Clase' ? 'detalle-clase-estatus-pago' : 'detalle-torneo-estatus-pago'}>
                 <BadgePago estadoPago={estadoPagoVisual(reserva)} />
               </span>
             )}
@@ -79234,7 +79285,18 @@ function AppInterno({ clubInicial } = {}) {
   const coachesRescateRetas = useMemo(() => (empleados || []).filter((e) => e.rol === 'coach' && e.activo !== false), [empleados]);
   // App-167 — estatus de cobro de cada clase para pintar su bloqueo en
   // Parrilla / Cronograma / Agenda / Calendario (ver `construirEstadoPagoClases`).
-  const estadoPagoClasesCtx = useMemo(() => construirEstadoPagoClases(academiaClases, academiaAlumnos), [academiaClases, academiaAlumnos]);
+  // App-168 — también torneos (inscripciones de `torneo_participantes`).
+  const estadoPagoClasesCtx = useMemo(
+    () =>
+      construirEstadoPagoEventos({
+        clases: academiaClases,
+        alumnos: academiaAlumnos,
+        torneos,
+        participantes: participantesTorneo,
+        partidos: partidosTorneo,
+      }),
+    [academiaClases, academiaAlumnos, torneos, participantesTorneo, partidosTorneo]
+  );
   const rescateRetasCtx = useMemo(
     () => ({
       toleranciaInscripcionMinutos: toleranciaInscripcionRetasMinutos,
