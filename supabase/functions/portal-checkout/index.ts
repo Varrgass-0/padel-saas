@@ -17,6 +17,12 @@
 //        = 'academia'     { clase_id, tipo_pago: 'clase_suelta'|'mensualidad' }
 //        = 'tienda'       { items: [{ producto_id, variante_id?, cantidad }] }
 //   Sin `tipo` = 'reserva' (compatible con App-101).
+//   App-169 (v149): `cortesia_id?` — Cortesía por Frecuencia del jugador. La
+//   BD la valida y cotiza (fn_frecuencia_cotizar_checkout), el descuento se
+//   resta ANTES de crear el cargo y la cortesía queda apartada para este pago
+//   (fn_frecuencia_apartar_checkout). Al confirmarse el pago (webhook, sin
+//   cambios) un trigger la marca redimida; si la retención expira, vuelve a
+//   estar disponible.
 //   → valida club ↔ slug, Stripe Connect activo, token del jugador, el evento
 //     y TODOS los precios/existencias contra la BD (nunca el monto del
 //     navegador); retiene el lugar (fn_portal_pago_retener, v122) y crea la
@@ -43,6 +49,10 @@ import { appUrl, corsHeaders, crearAdmin, crearStripe, mensajeStripe, origenes, 
 import { clubIdValido, urlDeRetornoValida } from '../_shared/billing_logica.ts';
 import {
   ahoraEnZona,
+  aplicarCortesiaAlPlan,
+  baseCortesiaDelPlan,
+  type CortesiaCotizada,
+  tablaCortesiaDeTipo,
   type ArticuloCobrado,
   centavos,
   cotizacionCancha,
@@ -621,12 +631,48 @@ Deno.serve(async (req) => {
 
     const zona = zonaDelClub(club);
     const ctx: Contexto = { req, admin, club, clubId, jugador, cuerpo, zona, hoy: ahoraEnZona(zona).fecha };
-    const plan = await PLANES[tipo](ctx);
+    const planBase = await PLANES[tipo](ctx);
+
+    // App-169 — Cortesía por Frecuencia (opcional).
+    let cortesia: CortesiaCotizada | null = null;
+    let plan = planBase;
+    if (cuerpo.cortesia_id != null && cuerpo.cortesia_id !== '') {
+      if (!esTokenPortal(cuerpo.cortesia_id)) return respuestaJson(req, { error: 'Cortesía inválida.', codigo: 'cortesia_invalida' }, 400);
+      const base = baseCortesiaDelPlan(tipo, planBase, cuerpo.duracion_minutos);
+      if (!base) return respuestaJson(req, { error: 'Las cortesías no aplican a este cobro.', codigo: 'cortesia_no_aplica' }, 400);
+      const { data: cot, error: errCot } = await admin.rpc('fn_frecuencia_cotizar_checkout', {
+        p_club_id: clubId,
+        p_jugador_id: String(jugador.id),
+        p_cortesia_id: String(cuerpo.cortesia_id),
+        p_tipo: tipo,
+        p_base: base.base,
+        p_horas: base.horas,
+      });
+      if (errCot) {
+        console.error('[portal-checkout] No se pudo cotizar la cortesía', errCot.message);
+        return respuestaJson(req, { error: 'No se pudo validar tu cortesía. Intenta de nuevo o elige «Pagar en el club».', codigo: 'cortesia_no_disponible' }, 409);
+      }
+      const r = (cot ?? {}) as Fila;
+      if (r.ok !== true) {
+        return respuestaJson(req, { error: String(r.mensaje ?? 'Esa cortesía ya no está disponible.'), codigo: `cortesia_${String(r.codigo ?? 'no_disponible')}` }, 409);
+      }
+      cortesia = { id: String(r.cortesia_id), descuento: Number(r.descuento) || 0, montoOriginal: base.base };
+      plan = aplicarCortesiaAlPlan(planBase, tipo, cortesia);
+    }
 
     const totalCentavos = plan.lineas.reduce((acc, l) => acc + l.centavos * l.cantidad, 0);
     const monto = totalCentavos / 100;
     if (!(monto >= MONTO_MINIMO_MXN)) {
-      return respuestaJson(req, { error: `El monto mínimo para pagar en línea es de $${MONTO_MINIMO_MXN} MXN.`, codigo: 'monto_minimo' }, 400);
+      return respuestaJson(
+        req,
+        {
+          error: cortesia
+            ? `Con tu cortesía el total queda en $${monto.toFixed(2)} MXN, menos del mínimo para pagar en línea ($${MONTO_MINIMO_MXN}). Elige «Pagar en el club».`
+            : `El monto mínimo para pagar en línea es de $${MONTO_MINIMO_MXN} MXN.`,
+          codigo: 'monto_minimo',
+        },
+        400
+      );
     }
 
     // URLs de regreso: página del Portal del club (origen permitido) o APP_URL.
@@ -668,6 +714,27 @@ Deno.serve(async (req) => {
       const { error } = await admin.rpc('fn_portal_pago_expirar', { p_pago_id: pagoId, p_session_id: null });
       if (error) console.error('[portal-checkout] No se pudo liberar la retención', pagoId, error.message);
     };
+
+    // App-169 — aparta la cortesía para ESTE pago (candado en la BD: una
+    // cortesía nunca queda en dos cobros a la vez).
+    if (cortesia) {
+      const { data: apartado, error: errApartar } = await admin.rpc('fn_frecuencia_apartar_checkout', {
+        p_cortesia_id: cortesia.id,
+        p_pago_id: pagoId,
+        p_tabla: tablaCortesiaDeTipo(tipo),
+        p_referencia_id: referencias[0] ?? null,
+        p_descuento: Number((plan.detalle.cortesia_frecuencia as Fila | undefined)?.descuento ?? cortesia.descuento),
+        p_monto_original: cortesia.montoOriginal,
+      });
+      if (errApartar || (apartado as Fila | null)?.ok !== true) {
+        await liberarRetencion();
+        return respuestaJson(
+          req,
+          { error: String((apartado as Fila | null)?.mensaje ?? 'Esa cortesía ya no está disponible.'), codigo: 'cortesia_no_disponible' },
+          409
+        );
+      }
+    }
 
     let sesion;
     try {

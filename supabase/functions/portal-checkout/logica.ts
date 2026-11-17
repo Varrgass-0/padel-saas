@@ -975,3 +975,80 @@ export function errorDeRetencion(mensaje: string): { codigo: string; error: stri
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// App-169 (v149) — Cortesías por Frecuencia de Actividad en el pago en línea.
+// El descuento lo cotiza y valida la BD (`fn_frecuencia_cotizar_checkout`);
+// aquí solo se aplica al plan ANTES de crear el cargo en Stripe.
+// ---------------------------------------------------------------------------
+export interface CortesiaCotizada {
+  id: string;
+  descuento: number;
+  montoOriginal: number;
+}
+
+interface PlanCortesia {
+  concepto: string;
+  detalle: Fila;
+  filas: Fila[];
+  lineas: Array<{ nombre: string; descripcion?: string; centavos: number; cantidad: number }>;
+}
+
+/** Tabla del módulo de cada tipo de cobro del Portal (null = no aplica). */
+export function tablaCortesiaDeTipo(tipo: string): string | null {
+  switch (tipo) {
+    case 'reserva':
+      return 'reservas';
+    case 'reta':
+      return 'reta_inscripciones';
+    case 'torneo':
+    case 'torneo_union':
+      return 'torneo_participantes';
+    case 'academia':
+      return 'academia_alumnos';
+    default:
+      return null;
+  }
+}
+
+/** Monto sobre el que se calcula la cortesía: la renta de la cancha (sin
+ *  artículos) o la inscripción PROPIA del jugador (la primera fila). */
+export function baseCortesiaDelPlan(tipo: string, plan: { filas: Fila[] }, duracionMinutos?: unknown): { base: number; horas: number } | null {
+  if (!tablaCortesiaDeTipo(tipo)) return null;
+  const fila = plan.filas[0];
+  if (!fila) return null;
+  if (tipo === 'reserva') {
+    const min = Number(duracionMinutos);
+    return { base: redondear2(Number(fila.monto_total) || 0), horas: Number.isFinite(min) && min > 0 ? min / 60 : 1 };
+  }
+  return { base: redondear2(Number(fila.monto) || 0), horas: 1 };
+}
+
+/** Aplica la cortesía: baja el monto de la fila del jugador, deja el rastro
+ *  (`cortesia_frecuencia_*`, columnas que solo escribe el servidor) y descuenta
+ *  lo mismo de la primera línea de Stripe (la renta o la inscripción). */
+export function aplicarCortesiaAlPlan<T extends PlanCortesia>(plan: T, tipo: string, cortesia: CortesiaCotizada): T {
+  const base = baseCortesiaDelPlan(tipo, plan);
+  if (!base || plan.lineas.length === 0) return plan;
+  const descuento = redondear2(Math.min(Math.max(Number(cortesia.descuento) || 0, 0), base.base));
+  if (descuento <= 0) return plan;
+  const campo = tipo === 'reserva' ? 'monto_total' : 'monto';
+  const fila0: Fila = {
+    ...plan.filas[0],
+    [campo]: redondear2(base.base - descuento),
+    cortesia_frecuencia_id: cortesia.id,
+    cortesia_frecuencia_descuento: descuento,
+    cortesia_frecuencia_monto_original: base.base,
+  };
+  const [linea0, ...resto] = plan.lineas;
+  const centavosLinea0 = Math.max(0, linea0.centavos - centavos(descuento));
+  const lineas = centavosLinea0 > 0
+    ? [{ ...linea0, centavos: centavosLinea0, descripcion: `${linea0.descripcion ? `${linea0.descripcion} · ` : ''}Cortesía por frecuencia aplicada` }, ...resto]
+    : resto;
+  const detalle: Fila = {
+    ...plan.detalle,
+    cortesia_frecuencia: { id: cortesia.id, descuento, monto_original: base.base },
+    ...(tipo === 'reserva' ? { monto_cancha: redondear2(base.base - descuento) } : {}),
+  };
+  return { ...plan, concepto: `${plan.concepto} · Cortesía`, detalle, filas: [fila0, ...plan.filas.slice(1)], lineas };
+}

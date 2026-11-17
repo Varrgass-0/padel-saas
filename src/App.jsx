@@ -825,6 +825,8 @@ function tablasDeRpcSync(nombre) {
   if (/inscrip|portal/.test(n)) ['reta_inscripciones', 'torneo_participantes', 'academia_alumnos'].forEach((x) => t.add(x));
   if (/notificacion/.test(n)) ['notificaciones_club', 'notificaciones_jugador'].forEach((x) => t.add(x));
   if (/ajust|duracion/.test(n)) ['reservas', 'ventas', 'log_actividad'].forEach((x) => t.add(x));
+  // App-169 — cortesías por frecuencia (v149).
+  if (/frecuencia/.test(n)) ['reservas', 'reta_inscripciones', 'torneo_participantes', 'academia_alumnos', 'cortesias_frecuencia'].forEach((x) => t.add(x));
   return [...t];
 }
 function envolverConsultaSync(obj, tablas, op) {
@@ -6313,6 +6315,8 @@ function etiquetaRecompensaFrecuencia(categoria, tipo, valor) {
 const CORTESIAS_FRECUENCIA_DEFAULT_LOCAL = {
   activo: false,
   activadaDesde: null,
+  activas: { reservas: false, retas: false, torneos: false, clases: false },
+  activasDesde: { reservas: null, retas: null, torneos: null, clases: null },
   reservas: { meta: null, tipo: null, valor: null, premio: null },
   retas: { meta: null, tipo: null, valor: null, premio: null },
   torneos: { meta: null, tipo: null, valor: null, premio: null },
@@ -6354,14 +6358,70 @@ function cortesiasFrecuenciaDesdeFila(fila) {
     valor: numero(fila[`recompensa_valor_frecuencia_${c}`]),
     premio: limpiarPremioFrecuencia(fila[`premio_frecuencia_${c}`]),
   });
+  const activo = fila.cortesias_frecuencia_activas === true;
+  // App-169 (v149) — interruptor por categoría; sin la migración, cada
+  // categoría hereda el switch maestro anterior.
+  const activas = {};
+  const activasDesde = {};
+  CATEGORIAS_FRECUENCIA.forEach((c) => {
+    const col = fila[`frecuencia_activa_${c}`];
+    activas[c] = col === undefined || col === null ? activo : col === true;
+    const desde = fila[`frecuencia_activa_desde_${c}`];
+    activasDesde[c] =
+      typeof desde === 'string'
+        ? desde
+        : col === undefined && typeof fila.cortesias_frecuencia_activadas_desde === 'string'
+        ? fila.cortesias_frecuencia_activadas_desde
+        : null;
+  });
   return {
-    activo: fila.cortesias_frecuencia_activas === true,
+    activo,
     activadaDesde: typeof fila.cortesias_frecuencia_activadas_desde === 'string' ? fila.cortesias_frecuencia_activadas_desde : null,
+    activas,
+    activasDesde,
     reservas: categoria('reservas'),
     retas: categoria('retas'),
     torneos: categoria('torneos'),
     clases: categoria('clases'),
   };
+}
+// App-169 — interruptores por categoría (Configuración del Club → Jugadores &
+// Fidelización) que leen Directorio, Punto de Venta y la tarjeta de config.
+const ContextoFrecuenciaClub = React.createContext({ activas: { reservas: false, clases: false, torneos: false, retas: false } });
+const ETIQUETA_CATEGORIA_FRECUENCIA = { reservas: 'Reservas de Cancha', clases: 'Clases / Academia', torneos: 'Torneos', retas: 'Retas' };
+const ORDEN_CATEGORIAS_FRECUENCIA = ['reservas', 'clases', 'torneos', 'retas'];
+const CATEGORIA_FRECUENCIA_DE_TABLA = {
+  reservas: 'reservas',
+  reta_inscripciones: 'retas',
+  torneo_participantes: 'torneos',
+  academia_alumnos: 'clases',
+};
+// Texto corto de una cortesía ganada (`cortesias_frecuencia`, v149).
+function textoCortesiaGanada(c) {
+  if (!c) return '';
+  if (c.tipo === TIPO_RECOMPENSA_GRATIS) {
+    return c.categoria === 'reservas' ? '1 Hora gratis' : c.categoria === 'clases' ? '1 Clase gratis' : '1 Inscripción gratis';
+  }
+  return `${Math.round(Number(c.valor) || 0)}% de descuento`;
+}
+// Descuento que tendrá una cortesía sobre un monto (MISMA regla que
+// `fn__frec_calcular_descuento` en la BD — el servidor siempre recalcula):
+// reservas «1 Hora gratis» cubre 1 hora prorrateada; el resto, el 100 %.
+function descuentoCortesiaGanada(c, base, horas = 1) {
+  const b = Math.max(0, Math.round((Number(base) || 0) * 100) / 100);
+  if (!c || b <= 0) return 0;
+  let d = 0;
+  if (c.tipo === TIPO_RECOMPENSA_GRATIS) d = c.categoria === 'reservas' && Number(horas) > 1 ? Math.round((b / Number(horas)) * 100) / 100 : b;
+  else d = Math.round(((b * Math.min(100, Math.max(0, Number(c.valor) || 0))) / 100) * 100) / 100;
+  return Math.min(d, b);
+}
+// Mensajes de `fn_frecuencia_aplicar` / `portal-checkout` para el usuario.
+function mensajeErrorCortesiaFrecuencia(resultado, error) {
+  if (error) {
+    const sinModulo = /could not find the function|does not exist|PGRST202/i.test(`${error.code || ''} ${error.message || ''}`);
+    return sinModulo ? 'Falta correr la migración v149 en Supabase (cortesías por frecuencia).' : error.message || 'No se pudo aplicar la cortesía.';
+  }
+  return resultado?.mensaje || 'No se pudo aplicar la cortesía.';
 }
 function leerCortesiasFrecuenciaLocal() {
   try {
@@ -6374,9 +6434,17 @@ function leerCortesiasFrecuenciaLocal() {
       valor: Number.isFinite(Number(parsed?.[c]?.valor)) && parsed?.[c]?.valor !== null ? Number(parsed[c].valor) : null,
       premio: limpiarPremioFrecuencia(parsed?.[c]?.premio),
     });
+    const activas = {};
+    const activasDesde = {};
+    CATEGORIAS_FRECUENCIA.forEach((c) => {
+      activas[c] = typeof parsed?.activas?.[c] === 'boolean' ? parsed.activas[c] : parsed.activo === true;
+      activasDesde[c] = typeof parsed?.activasDesde?.[c] === 'string' ? parsed.activasDesde[c] : null;
+    });
     return {
       activo: parsed.activo === true,
       activadaDesde: typeof parsed.activadaDesde === 'string' ? parsed.activadaDesde : null,
+      activas,
+      activasDesde,
       reservas: categoria('reservas'),
       retas: categoria('retas'),
       torneos: categoria('torneos'),
@@ -18348,6 +18416,8 @@ function ModalLiquidarCuenta({
   jugadoresDirectorio,
   empleadosDirectorio,
   operadorActual,
+  // App-169 (v149) — «Aplicar Cortesía» por frecuencia (reserva pendiente).
+  onCortesiaAplicada,
 }) {
   // `useState(() => ...)` — se calcula solo UNA vez, al montar (cada apertura
   // del modal es un montaje nuevo, ver el `{grupoALiquidar && (...)}` que lo
@@ -18485,6 +18555,37 @@ function ModalLiquidarCuenta({
       {operador?.nombre && (
         <p className="mb-2 text-[10px] font-semibold text-slate-400">
           Se cobrará como: <span className="text-slate-600">{operador.nombre}</span>
+        </p>
+      )}
+      {/* App-169 — solo reservas pendientes sin ticket ligado: la cortesía baja
+          la renta de la reserva y la cuenta se vuelve a abrir con el monto nuevo. */}
+      {onCortesiaAplicada &&
+        grupo.reserva &&
+        grupo.reserva.jugador_id &&
+        !grupo.reserva.cortesia_frecuencia_id &&
+        !(Array.isArray(grupo.ventas) && grupo.ventas.length > 0) &&
+        !esSaldoMostradorPorLiquidar(grupo.reserva) &&
+        String(grupo.reserva.estado_pago || '').toLowerCase() !== 'pagado' && (
+          <PanelCortesiaFrecuenciaPOS
+            jugadorId={grupo.reserva.jugador_id}
+            tabla="reservas"
+            referenciaId={grupo.reserva.id}
+            montoActual={Number(grupo.reserva.monto_total) || 0}
+            horas={(() => {
+              const ini = parseHoraAMinutos(grupo.reserva.hora_inicio);
+              let fin = parseHoraAMinutos(grupo.reserva.hora_fin);
+              if (ini === null || fin === null) return 1;
+              if (fin <= ini) fin += 24 * 60;
+              return (fin - ini) / 60;
+            })()}
+            deshabilitado={liquidando}
+            onAplicada={(r) => onCortesiaAplicada(grupo, r)}
+          />
+        )}
+      {grupo.reserva?.cortesia_frecuencia_id && Number(grupo.reserva.cortesia_frecuencia_descuento) > 0 && (
+        <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[11px] font-semibold text-amber-800" data-testid="pos-cortesia-aplicada">
+          <Gift size={11} className="mr-1 inline" />
+          Cortesía por frecuencia aplicada: −{formatoMoneda(grupo.reserva.cortesia_frecuencia_descuento)} en la renta
         </p>
       )}
       <PasosDeCobro
@@ -18672,7 +18773,96 @@ function InscripcionesEventoPanel({
   );
 }
 
-function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando, onCambiarTipoPago, onCancelarInscripcion, cancelando = false }) {
+// App-169 (v149) — «Aplicar Cortesía» en el Punto de Venta: si el cliente de
+// un cobro pendiente (reserva o inscripción) tiene una Cortesía por Frecuencia
+// disponible de esa categoría y el club tiene su interruptor encendido. El
+// servidor (`fn_frecuencia_aplicar`) valida todo y ajusta el cobro: a $0
+// (queda pagado por cortesía, sin ticket ni movimiento de caja) o al monto con
+// descuento, que se cobra normal. Una cortesía nunca se usa dos veces.
+function PanelCortesiaFrecuenciaPOS({ jugadorId, tabla, referenciaId, montoActual, horas = 1, deshabilitado = false, onAplicada }) {
+  const { activas } = React.useContext(ContextoFrecuenciaClub);
+  const categoria = CATEGORIA_FRECUENCIA_DE_TABLA[tabla] || null;
+  const encendida = Boolean(categoria) && activas?.[categoria] === true;
+  const [cortesias, setCortesias] = useState([]);
+  const [aplicando, setAplicando] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let vivo = true;
+    setCortesias([]);
+    if (!jugadorId || !CLUB_ACTIVO_ID || !encendida) return undefined;
+    (async () => {
+      try {
+        const { data, error: errRpc } = await supabase.rpc('fn_frecuencia_estado_jugador', {
+          p_club_id: Number(CLUB_ACTIVO_ID),
+          p_jugador_id: String(jugadorId),
+        });
+        if (!vivo || errRpc || !data?.ok) return;
+        const lista = (data.jugadores?.[String(jugadorId)]?.cortesias || []).filter((c) => c.categoria === categoria && c.estado === 'disponible');
+        // La más antigua primero.
+        setCortesias(lista.slice().sort((a, b) => String(a.generada_en || '').localeCompare(String(b.generada_en || ''))));
+      } catch (_e) {
+        /* sin cortesías visibles */
+      }
+    })();
+    return () => {
+      vivo = false;
+    };
+  }, [jugadorId, categoria, encendida, referenciaId]);
+  if (!encendida || cortesias.length === 0 || !(Number(montoActual) > 0)) return null;
+  const cortesia = cortesias[0];
+  const descuento = descuentoCortesiaGanada(cortesia, montoActual, horas);
+  async function aplicar() {
+    if (aplicando) return;
+    setAplicando(true);
+    setError('');
+    try {
+      const { data, error: errRpc } = await supabase.rpc('fn_frecuencia_aplicar', {
+        p_club_id: Number(CLUB_ACTIVO_ID),
+        p_cortesia_id: cortesia.id,
+        p_tabla: tabla,
+        p_referencia_id: String(referenciaId),
+        p_portal_token: null,
+      });
+      if (errRpc || !data?.ok) {
+        setError(mensajeErrorCortesiaFrecuencia(data, errRpc));
+        return;
+      }
+      onAplicada?.(data, cortesia);
+    } catch (err) {
+      setError(err?.message || 'No se pudo aplicar la cortesía.');
+    } finally {
+      setAplicando(false);
+    }
+  }
+  return (
+    <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3" data-testid="pos-cortesia-frecuencia">
+      <p className="flex items-center gap-1.5 text-xs font-black text-amber-800">
+        <Gift size={14} /> Cortesía por frecuencia disponible
+      </p>
+      <p className="mt-0.5 text-[11px] text-amber-800">
+        {textoCortesiaGanada(cortesia)} · {ETIQUETA_CATEGORIA_FRECUENCIA[categoria]}
+        {cortesias.length > 1 ? ` · tiene ${cortesias.length}` : ''}
+        {descuento > 0 ? ` · descuenta ${formatoMoneda(descuento)}` : ''}
+      </p>
+      <button
+        type="button"
+        onClick={aplicar}
+        disabled={aplicando || deshabilitado}
+        data-testid="pos-aplicar-cortesia"
+        className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-400 px-3 py-2 text-xs font-black text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {aplicando ? <Loader2 size={13} className="animate-spin" /> : <Gift size={13} />} Aplicar Cortesía
+      </button>
+      {error && (
+        <p className="mt-1.5 text-[11px] font-semibold text-rose-600" data-testid="pos-cortesia-error">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando, onCambiarTipoPago, onCancelarInscripcion, cancelando = false, onCortesiaAplicada }) {
   // App-159 — «Cancelar Inscripción»: ejecuta la cancelación NATIVA del
   // módulo de origen (ver `cancelarInscripcionNativaDesdePOS` en Smart POS).
   const [mostrarCancelar, setMostrarCancelar] = useState(false);
@@ -18685,6 +18875,7 @@ function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando, onCambiar
   const puedeAlternarPlan =
     fila.tabla === 'academia_alumnos' &&
     onCambiarTipoPago &&
+    !fila.cortesiaFrecuenciaId &&
     Number(fila.academiaPrecioMensualidad) > 0 &&
     Number(fila.academiaPrecioClaseSuelta) > 0;
   const cambiarA = fila.tipoPagoAcademia === 'mensualidad' ? 'clase_suelta' : 'mensualidad';
@@ -18711,7 +18902,23 @@ function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando, onCambiar
             : `Cambiar a Clase Suelta (${formatoMoneda(precioCambiarA)})`}
         </button>
       )}
-      <PasosDeCobro monto={fila.monto} deshabilitado={liquidando || cancelando} onConfirmar={({ metodo, cambio, mixto }) => onCobrar(metodo, cambio, mixto)} />
+      {fila.jugadorId && !fila.esLocal && !fila.cortesiaFrecuenciaId && onCortesiaAplicada && (
+        <PanelCortesiaFrecuenciaPOS
+          jugadorId={fila.jugadorId}
+          tabla={fila.tabla}
+          referenciaId={fila.id}
+          montoActual={fila.monto}
+          deshabilitado={liquidando || cancelando}
+          onAplicada={onCortesiaAplicada}
+        />
+      )}
+      {fila.cortesiaFrecuenciaId && Number(fila.cortesiaFrecuenciaDescuento) > 0 && (
+        <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[11px] font-semibold text-amber-800" data-testid="pos-cortesia-aplicada">
+          <Gift size={11} className="mr-1 inline" />
+          Cortesía aplicada: −{formatoMoneda(fila.cortesiaFrecuenciaDescuento)}
+        </p>
+      )}
+      <PasosDeCobro key={`cobro-${fila.monto}`} monto={fila.monto} deshabilitado={liquidando || cancelando} onConfirmar={({ metodo, cambio, mixto }) => onCobrar(metodo, cambio, mixto)} />
 
       {onCancelarInscripcion && (
         <button
@@ -21876,6 +22083,10 @@ function ModuloSmartPOS({
           tabla: 'reta_inscripciones',
           id: i.id,
           esLocal: !!i._local,
+          // App-169 — Cortesía por Frecuencia (v149).
+          jugadorId: i.jugador_id ?? null,
+          cortesiaFrecuenciaId: i.cortesia_frecuencia_id || null,
+          cortesiaFrecuenciaDescuento: Number(i.cortesia_frecuencia_descuento) || 0,
           nombre: i.nombre,
           telefono: i.telefono,
           correo: i.correo || i.email,
@@ -21919,6 +22130,9 @@ function ModuloSmartPOS({
           tabla: 'torneo_participantes',
           id: p.id,
           esLocal: !!p._local,
+          jugadorId: p.jugador_id ?? null,
+          cortesiaFrecuenciaId: p.cortesia_frecuencia_id || null,
+          cortesiaFrecuenciaDescuento: Number(p.cortesia_frecuencia_descuento) || 0,
           nombre: p.nombre,
           telefono: p.telefono,
           correo: p.correo || p.email,
@@ -21945,6 +22159,9 @@ function ModuloSmartPOS({
           tabla: 'academia_alumnos',
           id: a.id,
           esLocal: !!a._local,
+          jugadorId: a.jugador_id ?? null,
+          cortesiaFrecuenciaId: a.cortesia_frecuencia_id || null,
+          cortesiaFrecuenciaDescuento: Number(a.cortesia_frecuencia_descuento) || 0,
           nombre: a.nombre,
           telefono: a.telefono,
           correo: null,
@@ -22101,6 +22318,81 @@ function ModuloSmartPOS({
   // bloquea: el estado local levantado (`setInscripciones`/
   // `setParticipantesTorneo`) se actualiza de inmediato para que la UI de
   // Torneos & Retas y Mesa de Control reflejen el pago al instante.
+  // App-169 (v149) — reserva pendiente: refleja la cortesía y vuelve a abrir la
+  // cuenta con el monto nuevo (o la cierra si quedó cubierta al 100 %).
+  const [reabrirGrupoClave, setReabrirGrupoClave] = useState(null);
+  function aplicarCortesiaReservaLocal(grupo, r) {
+    const reserva = grupo.reserva;
+    const descuento = Number(r?.descuento) || 0;
+    const saldo = Number(reserva.saldo_pendiente) || 0;
+    upsertReserva?.({
+      id: reserva.id,
+      monto_total: Number(r?.monto_final) || 0,
+      cortesia_frecuencia_id: r?.cortesia_id || null,
+      cortesia_frecuencia_descuento: descuento,
+      cortesia_frecuencia_monto_original: Number(r?.monto_original) || 0,
+      ...(saldo > 0 ? { saldo_pendiente: Math.max(0, Math.round((saldo - descuento) * 100) / 100) } : {}),
+      ...(r?.cubierto_total ? { estado_pago: 'pagado', metodo_pago: 'Cortesía por frecuencia', saldo_pendiente: 0 } : {}),
+    });
+    onRegistrarAuditoria?.('cortesia_frecuencia_aplicada', {
+      jugador: reserva.jugador_nombre,
+      concepto: `Reserva ${grupo.cancha?.nombre || ''} ${reserva.fecha || ''} ${String(reserva.hora_inicio || '').slice(0, 5)}`.trim(),
+      descuento,
+      monto_final: Number(r?.monto_final) || 0,
+    });
+    mostrarToast({
+      titulo: 'Cortesía aplicada',
+      detalle: r?.cubierto_total
+        ? `${reserva.jugador_nombre || 'Jugador'}: la reserva quedó cubierta al 100 % con su cortesía.`
+        : `${reserva.jugador_nombre || 'Jugador'}: se descontaron ${formatoMoneda(descuento)} de la renta. Ya puedes cobrar el resto.`,
+    });
+    setGrupoALiquidar(null);
+    if (!r?.cubierto_total) setReabrirGrupoClave(grupo.clave);
+  }
+  useEffect(() => {
+    if (!reabrirGrupoClave) return;
+    const g = gruposReservasPendientes.find((x) => x.clave === reabrirGrupoClave);
+    if (g && g.reserva?.cortesia_frecuencia_id) {
+      setGrupoALiquidar(g);
+      setReabrirGrupoClave(null);
+    }
+  }, [reabrirGrupoClave, gruposReservasPendientes]);
+
+  // App-169 (v149) — la cortesía ya quedó aplicada en el servidor; aquí solo se
+  // refleja en pantalla (el resto llega solo por la sincronización en vivo).
+  function aplicarCortesiaInscripcionLocal(fila, r) {
+    const cambios = {
+      monto: Number(r?.monto_final) || 0,
+      cortesia_frecuencia_id: r?.cortesia_id || null,
+      cortesia_frecuencia_descuento: Number(r?.descuento) || 0,
+      cortesia_frecuencia_monto_original: Number(r?.monto_original) || 0,
+      ...(r?.cubierto_total ? { estado_pago: 'pagado', estatus_pago: 'pagado', metodo_pago: 'cortesia_frecuencia' } : {}),
+    };
+    const actualizar = (prev) => prev.map((x) => (mismoId(x.id, fila.id) ? { ...x, ...cambios } : x));
+    if (fila.tabla === 'reta_inscripciones') setInscripciones(actualizar);
+    else if (fila.tabla === 'academia_alumnos') setAcademiaAlumnos(actualizar);
+    else setParticipantesTorneo(actualizar);
+    onRegistrarAuditoria?.('cortesia_frecuencia_aplicada', {
+      jugador: fila.nombre,
+      concepto: fila.concepto || fila.origen,
+      descuento: Number(r?.descuento) || 0,
+      monto_final: Number(r?.monto_final) || 0,
+    });
+    mostrarToast({
+      titulo: 'Cortesía aplicada',
+      detalle: r?.cubierto_total
+        ? `${fila.nombre} · ${fila.origen}: cubierto al 100 % con su cortesía. No hay nada que cobrar.`
+        : `${fila.nombre} · Se descontaron ${formatoMoneda(r?.descuento)}. Cobra ${formatoMoneda(r?.monto_final)}.`,
+    });
+    if (r?.cubierto_total) setInscripcionACobrar(null);
+    else
+      setInscripcionACobrar((prev) =>
+        prev && prev.clave === fila.clave
+          ? { ...prev, monto: Number(r?.monto_final) || 0, cortesiaFrecuenciaId: r?.cortesia_id || 'aplicada', cortesiaFrecuenciaDescuento: Number(r?.descuento) || 0 }
+          : prev
+      );
+  }
+
   async function cobrarInscripcionEvento(fila, metodoPago, cambio, mixto) {
     setCobrandoInscripcionId(fila.clave);
 
@@ -24205,6 +24497,7 @@ function ModuloSmartPOS({
           empleadosDirectorio={empleados}
           operadorActual={operador?.id != null ? operador : null}
           onLiquidar={(metodo, cambio, items, mixto, datos) => liquidarCuenta(grupoALiquidar, metodo, cambio, items, mixto, datos)}
+          onCortesiaAplicada={aplicarCortesiaReservaLocal}
           onAnular={(motivo, items) => anularCuenta(grupoALiquidar, motivo, items)}
           onDividirCuenta={(grupo, items, totalGrupo) => {
             setGrupoParaDividir({ grupo, items, total: totalGrupo });
@@ -24236,6 +24529,7 @@ function ModuloSmartPOS({
           onClose={() => setInscripcionACobrar(null)}
           onCobrar={(metodo, cambio, mixto) => cobrarInscripcionEvento(inscripcionACobrar, metodo, cambio, mixto)}
           onCambiarTipoPago={alternarTipoPagoInscripcionACobrar}
+          onCortesiaAplicada={(r) => aplicarCortesiaInscripcionLocal(inscripcionACobrar, r)}
           onCancelarInscripcion={permisos?.puedeCancelarReservas ? (motivo) => cancelarInscripcionNativaDesdePOS(inscripcionACobrar, motivo) : null}
           cancelando={cancelandoInscripcionId === inscripcionACobrar.clave}
         />
@@ -37361,6 +37655,24 @@ const TIPOS_EVENTO_AUDITORIA = {
           { etiqueta: 'Actividad', valor: d?.origen },
           { etiqueta: 'Monto', valor: dineroLog(d?.monto) },
           { etiqueta: 'Motivo', valor: d?.motivo },
+        ],
+      }),
+  },
+  // App-169 (v149) — Cortesía por Frecuencia aplicada en el Punto de Venta.
+  cortesia_frecuencia_aplicada: {
+    label: 'Cortesía por frecuencia aplicada',
+    categoria: 'caja',
+    icon: Gift,
+    color: 'text-amber-500',
+    bg: 'bg-amber-400/10',
+    presentar: (d) =>
+      armarPresentacionLog({
+        resumen: unirLog(['Cortesía por frecuencia', nombreJugadorLog(d?.jugador), d?.concepto, dineroLog(d?.descuento) ? `−${dineroLog(d?.descuento)}` : null]),
+        involucrados: [{ etiqueta: 'Jugador', nombre: nombreJugadorLog(d?.jugador) }],
+        datos: [
+          { etiqueta: 'Cobro', valor: d?.concepto },
+          { etiqueta: 'Descuento', valor: dineroLog(d?.descuento) },
+          { etiqueta: 'Por cobrar después', valor: dineroLog(d?.monto_final) },
         ],
       }),
   },
@@ -52812,6 +53124,36 @@ function DirectorioJugadoresCRM({
   // columna (`cortesias_frecuencia_activadas_desde`) para que jamás se
   // pisen entre sí los dos motores.
   const cortesiasFrecuenciaActivasEfectivo = cortesiasFrecuenciaActivas === true;
+
+  // App-169 (v149) — Motor de frecuencia en el SERVIDOR: cortesías ganadas
+  // (solo eventos pagados y ya jugados), progreso por categoría y blindaje
+  // ante cancelaciones. Si la migración no está, se sigue con el cálculo
+  // anterior en el navegador (sin redención automática).
+  const { activas: frecuenciaActivasClub } = React.useContext(ContextoFrecuenciaClub);
+  const [estadoFrecuenciaServidor, setEstadoFrecuenciaServidor] = useState(null);
+  const cargarEstadoFrecuencia = useCallback(async () => {
+    if (!CLUB_ACTIVO_ID) return;
+    try {
+      const { data, error } = await supabase.rpc('fn_frecuencia_estado_club', { p_club_id: Number(CLUB_ACTIVO_ID) });
+      setEstadoFrecuenciaServidor(!error && data?.ok ? data : null);
+    } catch (_e) {
+      setEstadoFrecuenciaServidor(null);
+    }
+  }, []);
+  useEffect(() => {
+    const id = setTimeout(() => cargarEstadoFrecuencia(), 700);
+    return () => clearTimeout(id);
+  }, [cargarEstadoFrecuencia, reservas, inscripciones, participantesTorneo, academiaAlumnos, frecuenciaActivasClub, metaFrecuenciaReservas, metaFrecuenciaRetas, metaFrecuenciaTorneos, metaFrecuenciaClases]);
+  useEffect(() => {
+    const canal = supabase
+      .channel('jugadores-crm-cortesias-frecuencia')
+      .on('postgres_changes', canalClubFiltro('cortesias_frecuencia'), () => cargarEstadoFrecuencia())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [cargarEstadoFrecuencia]);
+
   const cortesiasFrecuenciaActivadasDesdeMs = useMemo(() => {
     if (!cortesiasFrecuenciaActivadasDesde) return 0;
     const ts = new Date(cortesiasFrecuenciaActivadasDesde).getTime();
@@ -53556,7 +53898,28 @@ function DirectorioJugadoresCRM({
         const metaFrecuenciaRetasEfectiva = Number(metaFrecuenciaRetas) > 0 ? Number(metaFrecuenciaRetas) : 0;
         const metaFrecuenciaTorneosEfectiva = Number(metaFrecuenciaTorneos) > 0 ? Number(metaFrecuenciaTorneos) : 0;
         const metaFrecuenciaClasesEfectiva = Number(metaFrecuenciaClases) > 0 ? Number(metaFrecuenciaClases) : 0;
-        const cortesiaFrecuenciaReservas =
+        // App-169 — con el motor del servidor (v149) manda su resultado; cada
+        // categoría respeta su propio interruptor.
+        const frecuenciaDelServidor = (cat, valorAnterior) => {
+          if (frecuenciaActivasClub?.[cat] !== true) return null;
+          if (!estadoFrecuenciaServidor) return valorAnterior;
+          const metaSrv = Number(estadoFrecuenciaServidor.config?.[cat]?.meta) || 0;
+          if (!(metaSrv > 0)) return null;
+          const srv = estadoFrecuenciaServidor.jugadores?.[String(j.id)] || null;
+          const prog = Number(srv?.progreso?.[cat]) || 0;
+          const disponibles = (srv?.cortesias || []).filter((c) => c.categoria === cat && c.estado === 'disponible');
+          return {
+            progreso: Math.min(prog, metaSrv),
+            gastoActual: prog,
+            meta: metaSrv,
+            lista: disponibles.length > 0,
+            disponibles: disponibles.length,
+            cortesias: disponibles,
+            porCompletar: Number(srv?.por_completar?.[cat]) || 0,
+            servidor: true,
+          };
+        };
+        const cortesiaFrecuenciaReservasCalc =
           cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaReservasEfectiva > 0
             ? calcularProgresoCortesiaFrecuencia(
                 fechasFrecuenciaReservas,
@@ -53565,7 +53928,7 @@ function DirectorioJugadoresCRM({
                 frecuenciaDebugActivo && `${j.nombre} · Reservas de Cancha`
               )
             : null;
-        const cortesiaFrecuenciaRetas =
+        const cortesiaFrecuenciaRetasCalc =
           cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaRetasEfectiva > 0
             ? calcularProgresoCortesiaFrecuencia(
                 fechasFrecuenciaRetas,
@@ -53574,7 +53937,7 @@ function DirectorioJugadoresCRM({
                 frecuenciaDebugActivo && `${j.nombre} · Retas`
               )
             : null;
-        const cortesiaFrecuenciaTorneos =
+        const cortesiaFrecuenciaTorneosCalc =
           cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaTorneosEfectiva > 0
             ? calcularProgresoCortesiaFrecuencia(
                 fechasFrecuenciaTorneos,
@@ -53583,7 +53946,7 @@ function DirectorioJugadoresCRM({
                 frecuenciaDebugActivo && `${j.nombre} · Torneos`
               )
             : null;
-        const cortesiaFrecuenciaClases =
+        const cortesiaFrecuenciaClasesCalc =
           cortesiasFrecuenciaActivasEfectivo && metaFrecuenciaClasesEfectiva > 0
             ? calcularProgresoCortesiaFrecuencia(
                 fechasFrecuenciaClases,
@@ -53592,6 +53955,10 @@ function DirectorioJugadoresCRM({
                 frecuenciaDebugActivo && `${j.nombre} · Clases/Academia`
               )
             : null;
+        const cortesiaFrecuenciaReservas = frecuenciaDelServidor('reservas', cortesiaFrecuenciaReservasCalc);
+        const cortesiaFrecuenciaRetas = frecuenciaDelServidor('retas', cortesiaFrecuenciaRetasCalc);
+        const cortesiaFrecuenciaTorneos = frecuenciaDelServidor('torneos', cortesiaFrecuenciaTorneosCalc);
+        const cortesiaFrecuenciaClases = frecuenciaDelServidor('clases', cortesiaFrecuenciaClasesCalc);
 
         // 2) Torneos/Retas: eventos combinados (inscripción o participación).
         const eventosTorneoRetas = [
@@ -53871,6 +54238,8 @@ function DirectorioJugadoresCRM({
     metaFrecuenciaClases,
     criterioVipEfectivo,
     desdeVentanaVipISO,
+    estadoFrecuenciaServidor,
+    frecuenciaActivasClub,
   ]);
 
   // Insignia de Smart POS ("🎁 Cortesía Disponible", mejora): reporta hacia
@@ -54590,6 +54959,7 @@ function payloadFilaFrecuencia(fila) {
 
 function ModalCortesiasFrecuencia({
   activoActual,
+  activasActuales = null,
   metaReservasActual,
   recompensaTipoReservasActual,
   recompensaValorReservasActual,
@@ -54639,6 +55009,8 @@ function ModalCortesiasFrecuencia({
     const c = payloadFilaFrecuencia(filas.clases);
     const ok = await onGuardar?.({
       activo: activoActual === true,
+      // App-169: los interruptores por categoría no cambian al editar metas.
+      ...(activasActuales ? { activas: { ...activasActuales } } : {}),
       reservasMeta: r.meta,
       reservasTipo: r.tipo,
       reservasValor: r.valor,
@@ -54669,10 +55041,10 @@ function ModalCortesiasFrecuencia({
       ancho="max-w-2xl"
     >
       <div className="space-y-3.5" data-testid="modal-cortesias-frecuencia">
-        {activoActual !== true && (
+        {(activasActuales ? !CATEGORIAS_FRECUENCIA.every((c) => activasActuales[c]) : activoActual !== true) && (
           <p className="rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-[11px] text-slate-600">
-            Con el módulo Desactivado no se muestran barras de progreso ni notificaciones de frecuencia en la Vista
-            360°. Los ajustes de abajo se guardan igual, listos para cuando lo actives.
+            Las categorías con su interruptor apagado no generan cortesías ni permiten usarlas. Los ajustes de abajo se
+            guardan igual, listos para cuando las actives.
           </p>
         )}
 
@@ -54955,7 +55327,7 @@ function EstadoVacioHistorial({ mensaje }) {
 // los dos motores (ver `calcularProgresoCortesiaFrecuencia`).
 // `comoPorcentaje` (App-109, vista operativa sin montos): en vez de
 // "$progreso/$meta" muestra solo el avance en % — mismo candado y mismo botón.
-function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, canjeando, comoConteo, comoPorcentaje = false }) {
+function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, canjeando, comoConteo, comoPorcentaje = false, disponibles = null, porCompletar = 0, testId = undefined }) {
   const pct = meta > 0 ? Math.min(100, Math.round((progreso / meta) * 100)) : 0;
   const formatearValor = (n) => (comoConteo ? `${Math.round(Number(n) || 0)}` : formatoMoneda(n));
   return (
@@ -54971,7 +55343,26 @@ function BarraProgresoCortesia({ etiqueta, progreso, meta, lista, onCanjear, can
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
         <div className={`h-full rounded-full ${lista ? 'bg-amber-400' : 'bg-orange-400'}`} style={{ width: `${pct}%` }} />
       </div>
-      {lista ? (
+      {disponibles !== null ? (
+        // App-169 — motor del servidor: la cortesía ya está en el perfil del
+        // jugador; se aplica sola al reservar en el Portal o al cobrar en POS.
+        <span className="mt-1 flex flex-wrap items-center gap-1.5" data-testid={testId}>
+          {disponibles > 0 ? (
+            <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-400 px-2.5 py-1 text-[11px] font-bold text-slate-950">
+              <Gift size={11} /> {disponibles} cortesía{disponibles === 1 ? '' : 's'} disponible{disponibles === 1 ? '' : 's'} · se usa al cobrar
+            </span>
+          ) : (
+            <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-500">
+              <Lock size={10} /> Se genera sola al llegar a la meta
+            </span>
+          )}
+          {porCompletar > 0 && (
+            <span className="text-[10px] font-semibold text-slate-500">
+              +{porCompletar} pagado{porCompletar === 1 ? '' : 's'} por jugarse
+            </span>
+          )}
+        </span>
+      ) : lista ? (
         <button
           type="button"
           onClick={onCanjear}
@@ -56229,6 +56620,9 @@ function ModalPerfilJugadorCRM({
                       onCanjear={() => setCategoriaFrecuenciaAConfirmar(cat)}
                       canjeando={canjeandoFrecuencia && categoriaFrecuenciaAConfirmar === cat}
                       comoConteo
+                      disponibles={datosFrecuenciaPorCategoria[cat].servidor ? datosFrecuenciaPorCategoria[cat].disponibles : null}
+                      porCompletar={datosFrecuenciaPorCategoria[cat].porCompletar || 0}
+                      testId={`frecuencia-360-${cat.replace('frecuencia_', '')}`}
                     />
                   ))}
               </div>
@@ -62377,16 +62771,14 @@ function SeccionJugadoresFidelizacion({
   // default para no interrumpir clubes que ya lo tenían andando), este
   // motor es opt-in EXPLÍCITO: `=== true`, mismo criterio que
   // `cortesiasFrecuenciaActivasEfectivo` en `DirectorioJugadoresCRM`.
-  const activoFrecuencia = cortesiasFrecuenciaActivas === true;
-
-  // Switch Master del motor de FRECUENCIA — mismo patrón que `alternarActivo`
-  // de arriba (reenvía el resto de la configuración SIN TOCAR, porque
-  // `guardarCortesiasFrecuencia` escribe el objeto completo en cada
-  // guardado), pero en su propia columna/callback: los dos switches nunca
-  // se pisan entre sí.
-  function alternarActivoFrecuencia() {
+  // App-169 (v149) — un interruptor ON/OFF independiente por categoría (antes,
+  // un switch maestro para las 4). Reenvía el resto de la configuración SIN
+  // TOCAR, porque `guardarCortesiasFrecuencia` escribe el objeto completo.
+  const { activas: frecuenciaActivas } = React.useContext(ContextoFrecuenciaClub);
+  function alternarCategoriaFrecuencia(cat) {
     onGuardarCortesiasFrecuencia?.({
-      activo: !activoFrecuencia,
+      activo: cortesiasFrecuenciaActivas === true,
+      activas: { ...frecuenciaActivas, [cat]: !(frecuenciaActivas?.[cat] === true) },
       reservasMeta: metaFrecuenciaReservas,
       reservasTipo: recompensaTipoFrecuenciaReservas,
       reservasValor: recompensaValorFrecuenciaReservas,
@@ -62510,38 +62902,58 @@ function SeccionJugadoresFidelizacion({
           <h3 className="text-sm font-black text-slate-900">Cortesías por Frecuencia de Actividad</h3>
         </div>
         <p className="mb-3 text-xs text-slate-500">
-          Premia a un jugador por CANTIDAD de eventos cumplidos (reservas jugadas, retas, torneos o clases tomadas),
-          no por gasto — define la meta de eventos y la recompensa por categoría. Independiente del Motor de
-          Cortesías por Fidelidad de arriba.
+          Premia a un jugador por CANTIDAD de eventos pagados y ya jugados (reservas, clases, torneos o retas), no por
+          gasto. Cada categoría tiene su propio interruptor. La cortesía se genera sola al llegar a la meta y el jugador
+          la usa al reservar en el Portal o al cobrar en el Punto de Venta. Si cancela un evento que contó, la cortesía
+          se retira.
         </p>
 
-        <button
-          type="button"
-          onClick={alternarActivoFrecuencia}
-          disabled={guardandoCortesiasFrecuencia}
-          className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-            activoFrecuencia ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-slate-100'
-          }`}
-        >
-          <span className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${activoFrecuencia ? 'bg-orange-500' : 'bg-slate-400'}`} />
-            <span className={`text-xs font-bold ${activoFrecuencia ? 'text-orange-700' : 'text-slate-600'}`}>
-              Cortesías por Frecuencia de Actividad: {activoFrecuencia ? 'Activado' : 'Desactivado'}
-            </span>
-          </span>
-          <span
-            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
-              activoFrecuencia ? 'bg-orange-500' : 'bg-slate-300'
-            }`}
-          >
-            <span
-              className={`inline-block h-4.5 w-4.5 transform rounded-full bg-white shadow transition ${
-                activoFrecuencia ? 'translate-x-6' : 'translate-x-1'
-              }`}
-              style={{ height: '1.125rem', width: '1.125rem' }}
-            />
-          </span>
-        </button>
+        {/* App-169 — un interruptor por categoría: cada una se evalúa sola al
+            generar y al permitir usar sus cortesías. */}
+        <div className="space-y-2" data-testid="interruptores-frecuencia">
+          {[
+            { cat: 'reservas', larga: 'frecuencia_reservas', meta: metaFrecuenciaReservas, tipo: recompensaTipoFrecuenciaReservas, valor: recompensaValorFrecuenciaReservas, unidad: 'reservas' },
+            { cat: 'clases', larga: 'frecuencia_clases', meta: metaFrecuenciaClases, tipo: recompensaTipoFrecuenciaClases, valor: recompensaValorFrecuenciaClases, unidad: 'clases' },
+            { cat: 'torneos', larga: 'frecuencia_torneos', meta: metaFrecuenciaTorneos, tipo: recompensaTipoFrecuenciaTorneos, valor: recompensaValorFrecuenciaTorneos, unidad: 'torneos' },
+            { cat: 'retas', larga: 'frecuencia_retas', meta: metaFrecuenciaRetas, tipo: recompensaTipoFrecuenciaRetas, valor: recompensaValorFrecuenciaRetas, unidad: 'retas' },
+          ].map((f) => {
+            const encendida = frecuenciaActivas?.[f.cat] === true;
+            const recompensa = textoRecompensaFrecuencia(f.larga, f.tipo, f.valor, premiosFrecuencia?.[f.cat]);
+            const configurada = Number(f.meta) > 0 && Boolean(recompensa);
+            return (
+              <button
+                key={f.cat}
+                type="button"
+                role="switch"
+                aria-checked={encendida}
+                onClick={() => alternarCategoriaFrecuencia(f.cat)}
+                disabled={guardandoCortesiasFrecuencia}
+                data-testid={`toggle-frecuencia-${f.cat}`}
+                className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                  encendida ? 'border-orange-400/40 bg-orange-400/10' : 'border-slate-300 bg-slate-100'
+                }`}
+              >
+                <span className="min-w-0">
+                  <span className="flex items-center gap-2">
+                    <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${encendida ? 'bg-orange-500' : 'bg-slate-400'}`} />
+                    <span className={`text-xs font-bold ${encendida ? 'text-orange-700' : 'text-slate-600'}`}>
+                      {ETIQUETA_CATEGORIA_FRECUENCIA[f.cat]}: {encendida ? 'Activado' : 'Desactivado'}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 block truncate pl-[18px] text-[11px] text-slate-500">
+                    {configurada ? `Cada ${f.meta} ${f.unidad}: ${recompensa}` : 'Sin meta configurada — toca «Editar Metas»'}
+                  </span>
+                </span>
+                <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${encendida ? 'bg-orange-500' : 'bg-slate-300'}`}>
+                  <span
+                    className={`inline-block transform rounded-full bg-white shadow transition ${encendida ? 'translate-x-6' : 'translate-x-1'}`}
+                    style={{ height: '1.125rem', width: '1.125rem' }}
+                  />
+                </span>
+              </button>
+            );
+          })}
+        </div>
 
         <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
           <div className="min-w-0">
@@ -62575,6 +62987,7 @@ function SeccionJugadoresFidelizacion({
       {SHOW_BETA_CORTESIAS_FRECUENCIA && mostrarModalFrecuencia && (
         <ModalCortesiasFrecuencia
           activoActual={cortesiasFrecuenciaActivas}
+          activasActuales={frecuenciaActivas}
           metaReservasActual={metaFrecuenciaReservas}
           recompensaTipoReservasActual={recompensaTipoFrecuenciaReservas}
           recompensaValorReservasActual={recompensaValorFrecuenciaReservas}
@@ -66263,6 +66676,91 @@ function PortalPublicoJugadores({ clubSlug }) {
     cargarWallet(jugador?.id || null);
   }, [jugador?.id, cargarWallet]);
 
+  // App-169 (v149) — Cortesías por Frecuencia del jugador: el servidor las
+  // genera (eventos pagados y ya jugados) y las valida al usarlas. Se
+  // recargan al iniciar sesión y cada vez que se abre un resumen de pago.
+  const [frecuenciaPortal, setFrecuenciaPortal] = useState(null);
+  const cargarFrecuenciaPortal = useCallback(async () => {
+    if (!club?.id || !jugador?.portalToken) {
+      setFrecuenciaPortal(null);
+      return;
+    }
+    try {
+      const { data, error } = await supabase.rpc('fn_portal_estado_frecuencia', { p_club_id: Number(club.id), p_portal_token: jugador.portalToken });
+      setFrecuenciaPortal(!error && data?.ok ? data : null);
+    } catch (_e) {
+      setFrecuenciaPortal(null);
+    }
+  }, [club?.id, jugador?.portalToken]);
+  useEffect(() => {
+    cargarFrecuenciaPortal();
+  }, [cargarFrecuenciaPortal]);
+  useEffect(() => {
+    if (canchaParaReservar || flujoPago) cargarFrecuenciaPortal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Boolean(canchaParaReservar), Boolean(flujoPago)]);
+  // Cortesías DISPONIBLES de una categoría (la más antigua primero), solo si
+  // el club tiene encendido el interruptor de esa categoría.
+  function cortesiasPortalDe(categoria) {
+    if (!frecuenciaPortal || frecuenciaPortal.config?.[categoria]?.activa !== true) return [];
+    return (frecuenciaPortal.estado?.cortesias || [])
+      .filter((c) => c.categoria === categoria && c.estado === 'disponible')
+      .sort((a, b) => String(a.generada_en || '').localeCompare(String(b.generada_en || '')));
+  }
+  // «Pagar en el club» con cortesía: la fila ya se guardó pendiente; el
+  // servidor aplica el beneficio (a $0 → pagada por cortesía, o con descuento).
+  async function aplicarCortesiaPortal({ cortesia, tabla, fila, concepto }) {
+    let data = null;
+    let errorRpc = null;
+    try {
+      ({ data, error: errorRpc } = await supabase.rpc('fn_frecuencia_aplicar', {
+        p_club_id: Number(club.id),
+        p_cortesia_id: cortesia.id,
+        p_tabla: tabla,
+        p_referencia_id: String(fila.id),
+        p_portal_token: jugador?.portalToken || null,
+      }));
+    } catch (err) {
+      errorRpc = err;
+    }
+    if (errorRpc || !data?.ok) {
+      mostrarToast({
+        titulo: 'Lugar confirmado, pero sin cortesía',
+        detalle: `${concepto}: ${mensajeErrorCortesiaFrecuencia(data, errorRpc)} Paga el total en el club o pide ayuda en recepción.`,
+        tono: 'aviso',
+      });
+      cargarFrecuenciaPortal();
+      return { ok: false };
+    }
+    const cambios =
+      tabla === 'reservas'
+        ? {
+            monto_total: Number(data.monto_final) || 0,
+            cortesia_frecuencia_id: data.cortesia_id,
+            cortesia_frecuencia_descuento: Number(data.descuento) || 0,
+            ...(data.cubierto_total ? { estado_pago: 'pagado', metodo_pago: 'Cortesía por frecuencia', saldo_pendiente: 0 } : {}),
+          }
+        : {
+            monto: Number(data.monto_final) || 0,
+            cortesia_frecuencia_id: data.cortesia_id,
+            cortesia_frecuencia_descuento: Number(data.descuento) || 0,
+            ...(data.cubierto_total ? { estado_pago: 'pagado', estatus_pago: 'pagado', metodo_pago: 'cortesia_frecuencia' } : {}),
+          };
+    const actualizar = (prev) => prev.map((x) => (mismoId(x.id, fila.id) ? { ...x, ...cambios } : x));
+    if (tabla === 'reservas') setReservas(actualizar);
+    else if (tabla === 'reta_inscripciones') setInscripciones(actualizar);
+    else if (tabla === 'torneo_participantes') setParticipantes(actualizar);
+    else setAcademiaAlumnosPortal(actualizar);
+    mostrarToast({
+      titulo: data.cubierto_total ? '¡Listo! Cubierto con tu cortesía' : '¡Cortesía aplicada!',
+      detalle: data.cubierto_total
+        ? `${concepto} · No tienes nada que pagar.`
+        : `${concepto} · Se descontaron ${formatoMoneda(data.descuento)}. Paga ${formatoMoneda(data.monto_final)} en el club.`,
+    });
+    cargarFrecuenciaPortal();
+    return { ok: true, data };
+  }
+
   // Historial General (item 3) — Compras en Tienda del jugador logueado.
   // `ventas` NUNCA se carga completa en el Portal (a diferencia de
   // `reservas`/`inscripciones`/`participantes`/`academiaAlumnosPortal`, que
@@ -66965,7 +67463,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   // arriba, así que no vuelve a pedir nombre/teléfono. `metodo` ('wallet' |
   // 'recepcion') decide si se cobra contra el saldo del jugador antes de
   // insertar — ver `ModalElegirPago`/`confirmarFlujoPago`.
-  async function inscribirseAReta(reta, metodo) {
+  async function inscribirseAReta(reta, metodo, opciones = {}) {
     if (!jugador) return setModalIdentificacion(true);
     const monto = precioDeReta(reta);
     const esPagoTarjeta = metodo === 'tarjeta';
@@ -67044,13 +67542,14 @@ function PortalPublicoJugadores({ clubSlug }) {
           );
         }
       }
-      mostrarToast({
-        titulo: '¡Inscripción confirmada!',
-        detalle:
-          montoRestante > 0
-            ? `${reta.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
-            : `${reta.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
-      });
+      if (!opciones.silencioso)
+        mostrarToast({
+          titulo: '¡Inscripción confirmada!',
+          detalle:
+            montoRestante > 0
+              ? `${reta.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
+              : `${reta.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
+        });
       crearNotificacionClub({
         portalToken: jugador?.portalToken || null,
         tipo: 'inscripcion_reta',
@@ -67062,6 +67561,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         // inscripción cuando `pagado` es `false` (pagar en recepción).
         payload: { reta_id: reta.id, monto, metodo, inscripcion_id: data.id, tabla: 'reta_inscripciones', pagado, modulo_destino: 'torneos' },
       });
+      return { ok: true, data };
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (inscripción a Reta):', err);
       mostrarToast({
@@ -67081,7 +67581,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   // límite estricto de lugares en este proyecto), una clase SÍ tiene
   // `capacidad_maxima` y el catálogo del Portal puede llegar desactualizado
   // por una fracción de segundo si dos jugadores se inscriben casi a la vez.
-  async function inscribirseAClase(clase, tipoPago, metodo) {
+  async function inscribirseAClase(clase, tipoPago, metodo, opciones = {}) {
     if (!jugador) return setModalIdentificacion(true);
     const inscritosActivos = academiaAlumnosPortal.filter((a) => a.clase_id === clase.id && a.estado !== 'baja').length;
     if (inscritosActivos >= clase.capacidad_maxima) {
@@ -67219,13 +67719,14 @@ function PortalPublicoJugadores({ clubSlug }) {
         cargarWallet(jugador.id);
       }
       setAcademiaAlumnosPortal((prev) => [...prev, data]);
-      mostrarToast({
-        titulo: '¡Inscripción a la clase confirmada!',
-        detalle:
-          montoRestante > 0
-            ? `${clase.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de tu primera clase.`
-            : `${clase.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
-      });
+      if (!opciones.silencioso)
+        mostrarToast({
+          titulo: '¡Inscripción a la clase confirmada!',
+          detalle:
+            montoRestante > 0
+              ? `${clase.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de tu primera clase.`
+              : `${clase.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`,
+        });
       crearNotificacionClub({
         portalToken: jugador?.portalToken || null,
         tipo: 'inscripcion_clase',
@@ -67243,6 +67744,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           modulo_destino: 'academia',
         },
       });
+      return { ok: true, data };
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (inscripción a Clase de Academia):', err);
       mostrarToast({
@@ -67261,7 +67763,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   // (Arquitectura Flexible): si tu Supabase todavía no las tiene, se
   // reintenta el insert sin ellas — la inscripción del jugador principal
   // nunca se pierde por esto.
-  async function inscribirseATorneo(torneo, categoria, metodo, pareja = null) {
+  async function inscribirseATorneo(torneo, categoria, metodo, pareja = null, opciones = {}) {
     if (!jugador) return setModalIdentificacion(true);
     // Monto REAL de este registro — el MISMO cálculo que ya se le mostró y
     // cobró al jugador en `ModalElegirPago` (`montoInscripcionTorneo`, ver su
@@ -67461,13 +67963,14 @@ function PortalPublicoJugadores({ clubSlug }) {
           : pareja?.nombre
           ? ` · Pareja: ${pareja.nombre}`
           : '';
-      mostrarToast({
-        titulo: '¡Inscripción confirmada!',
-        detalle:
-          (montoRestante > 0
-            ? `${torneo.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
-            : `${torneo.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`) + detallePareja,
-      });
+      if (!opciones.silencioso)
+        mostrarToast({
+          titulo: '¡Inscripción confirmada!',
+          detalle:
+            (montoRestante > 0
+              ? `${torneo.nombre} · Paga ${formatoMoneda(montoRestante)} en recepción antes de jugar.`
+              : `${torneo.nombre} · Cubierta ${esPagoTarjeta ? 'con tu tarjeta' : montoWallet > 0 ? 'con tu Wallet' : ''}.`) + detallePareja,
+        });
       crearNotificacionClub({
         portalToken: jugador?.portalToken || null,
         tipo: 'inscripcion_torneo',
@@ -67527,7 +68030,7 @@ function PortalPublicoJugadores({ clubSlug }) {
   // (titular + quien se une) comparten `pareja_grupo_id` (ver
   // `claveGrupoPareja`) para que el armado del cuadro las trate como UNA
   // sola pareja, nunca enfrentada consigo misma.
-  async function confirmarUnionTorneo(participanteExistente, metodo, monto) {
+  async function confirmarUnionTorneo(participanteExistente, metodo, monto, opciones = {}) {
     if (!jugador) {
       setModalIdentificacion(true);
       return;
@@ -67611,6 +68114,7 @@ function PortalPublicoJugadores({ clubSlug }) {
 
       setParticipantes((prev) => [...prev.map((p) => (p.id === participanteExistente.id ? { ...p, ...payloadTitular } : p)), data]);
 
+      if (!opciones.silencioso)
       mostrarToast({
         titulo: '¡Listo, ya son pareja!',
         detalle:
@@ -67638,6 +68142,7 @@ function PortalPublicoJugadores({ clubSlug }) {
           modulo_destino: 'torneos',
         },
       });
+      return { ok: true, data };
     } catch (err) {
       console.error('[Portal] Error detallado Supabase (unirse como pareja):', err);
       mostrarToast({
@@ -69190,6 +69695,7 @@ function PortalPublicoJugadores({ clubSlug }) {
         return { ok: false, mensaje: 'Tu sesión expiró. Vuelve a iniciar sesión para pagar en línea.' };
       }
       if (MENSAJES_PAGO_EN_LINEA[error.codigo]) cargarDatosPortal();
+      if (String(error.codigo || '').startsWith('cortesia_') || error.codigo === 'monto_minimo') cargarFrecuenciaPortal();
       const mensaje = MENSAJES_PAGO_EN_LINEA[error.codigo] || error.mensaje;
       mostrarToast({ titulo: 'No se pudo iniciar el pago', detalle: mensaje, tono: 'error' });
       return { ok: false, mensaje, codigo: error.codigo || null };
@@ -69204,8 +69710,11 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   // Reserva + Quick Sell: el servidor suma cancha + artículos en la MISMA
   // transacción y, al confirmarse el pago, descuenta el inventario del POS.
-  function iniciarPagoEnLineaReserva({ cancha, fecha, horaInicio, duracionMinutos, addons = [] }) {
+  function iniciarPagoEnLineaReserva({ cancha, fecha, horaInicio, duracionMinutos, addons = [], cortesiaId = null }) {
     return iniciarPagoEnLinea('reserva', {
+      // App-169 — Cortesía por Frecuencia: el servidor la valida y descuenta
+      // antes de crear el cargo en Stripe.
+      ...(cortesiaId ? { cortesia_id: cortesiaId } : {}),
       cancha_id: cancha.id,
       fecha,
       hora_inicio: horaInicio,
@@ -69220,14 +69729,16 @@ function PortalPublicoJugadores({ clubSlug }) {
 
   // Flujos de `ModalElegirPago` (Retas, Torneos, Unirme a pareja, Academia)
   // con "Pagar en línea".
-  async function pagarEnLineaFlujo(flujo) {
+  async function pagarEnLineaFlujo(flujo, cortesia = null) {
     if (!jugador) {
       setModalIdentificacion(true);
       return { ok: false };
     }
-    if (flujo.tipo === 'reta') return iniciarPagoEnLinea('reta', { reta_id: flujo.evento.id });
-    if (flujo.tipo === 'torneo-union') return iniciarPagoEnLinea('torneo_union', { participante_id: flujo.participanteExistente?.id });
-    if (flujo.tipo === 'academia') return iniciarPagoEnLinea('academia', { clase_id: flujo.evento.id, tipo_pago: flujo.tipoPago });
+    // App-169 — Cortesía por Frecuencia (la valida y descuenta el servidor).
+    const extraCortesia = cortesia?.id ? { cortesia_id: cortesia.id } : {};
+    if (flujo.tipo === 'reta') return iniciarPagoEnLinea('reta', { reta_id: flujo.evento.id, ...extraCortesia });
+    if (flujo.tipo === 'torneo-union') return iniciarPagoEnLinea('torneo_union', { participante_id: flujo.participanteExistente?.id, ...extraCortesia });
+    if (flujo.tipo === 'academia') return iniciarPagoEnLinea('academia', { clase_id: flujo.evento.id, tipo_pago: flujo.tipoPago, ...extraCortesia });
     // Torneo: una pareja NUEVA se da de alta en el CRM antes de pagar (mismo
     // `resolverJugadorId` que `inscribirseATorneo`), así el servidor la
     // recibe ya con su id del directorio del club.
@@ -69241,6 +69752,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       }
     }
     return iniciarPagoEnLinea('torneo', {
+      ...extraCortesia,
       torneo_id: flujo.evento.id,
       categoria: flujo.categoria || null,
       pareja: pareja
@@ -69249,13 +69761,16 @@ function PortalPublicoJugadores({ clubSlug }) {
     });
   }
 
-  async function confirmarReservaConAddons({ cancha, fecha, horaInicio, horaFin, duracionMinutos, costoCancha, addons, metodo, nombre, telefono }) {
+  async function confirmarReservaConAddons({ cancha, fecha, horaInicio, horaFin, duracionMinutos, costoCancha, addons, metodo: metodoElegido, nombre, telefono, cortesia = null }) {
     const jugadorActivo = jugador;
     if (!jugadorActivo) {
       requerirCuentaPortal('reservar una cancha', { canchaReservar: cancha });
       return { ok: false };
     }
-    if (metodo === 'en_linea') return iniciarPagoEnLineaReserva({ cancha, fecha, horaInicio, duracionMinutos, addons });
+    if (metodoElegido === 'en_linea') return iniciarPagoEnLineaReserva({ cancha, fecha, horaInicio, duracionMinutos, addons, cortesiaId: cortesia?.id || null });
+    // App-169 — con cortesía: la reserva se guarda «pagar en el club» y el
+    // servidor aplica el beneficio enseguida (sin Wallet de por medio).
+    const metodo = cortesia ? 'recepcion' : metodoElegido;
     const addonsSubtotal = Math.round(addons.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100;
     const totalReserva = Math.round((costoCancha + addonsSubtotal) * 100) / 100;
     const esPagoTarjeta = metodo === 'tarjeta';
@@ -69457,6 +69972,15 @@ function PortalPublicoJugadores({ clubSlug }) {
         cargarWallet(jugadorActivo.id);
       }
 
+      if (cortesia) {
+        await aplicarCortesiaPortal({
+          cortesia,
+          tabla: 'reservas',
+          fila: reservaCreada,
+          concepto: `Reserva ${cancha.nombre} · ${formatoFechaLarga(fecha)} ${horaInicio}`,
+        });
+        return { ok: true };
+      }
       mostrarToast({
         titulo: '¡Reserva confirmada!',
         detalle:
@@ -70486,7 +71010,21 @@ function PortalPublicoJugadores({ clubSlug }) {
             onClose={() => setFlujoPago(null)}
             aceptaPagoEnLinea={pagosEnLineaClub && !(flujoPago.tipo === 'academia' && jugador && buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id))}
             tieneSesionPortal={Boolean(jugador?.portalToken)}
-            onConfirmar={async (metodo) => {
+            // App-169 — Cortesías por Frecuencia de la categoría del cobro.
+            cortesiasDisponibles={
+              flujoPago.tipo === 'academia' && jugador && buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id)
+                ? []
+                : cortesiasPortalDe(flujoPago.tipo === 'reta' ? 'retas' : flujoPago.tipo === 'academia' ? 'clases' : 'torneos')
+            }
+            baseCortesia={
+              flujoPago.tipo === 'torneo' && (flujoPago.pareja?.modo === 'nueva' || flujoPago.pareja?.modo === 'registrada') && flujoPago.pareja?.nombre
+                ? Math.round((Number(flujoPago.monto) || 0) * 50) / 100
+                : Number(flujoPago.monto) || 0
+            }
+            onConfirmar={async (metodoElegido, extra = {}) => {
+              const cortesiaElegida = extra?.cortesia || null;
+              const metodo = cortesiaElegida && metodoElegido !== 'en_linea' ? 'recepcion' : metodoElegido;
+              const opcionesCortesia = cortesiaElegida ? { silencioso: true } : {};
               // App-120 — Inscripción Única: se valida ANTES de cualquier cobro.
               const avisoInscripcionUnica = validarInscripcionUnicaPortal(flujoPago);
               if (avisoInscripcionUnica) {
@@ -70497,12 +71035,24 @@ function PortalPublicoJugadores({ clubSlug }) {
               if (metodo === 'en_linea') {
                 // Si no se pudo iniciar, el modal sigue abierto para reintentar
                 // o elegir "Pagar en el club".
-                return pagarEnLineaFlujo(flujoPago);
+                return pagarEnLineaFlujo(flujoPago, cortesiaElegida);
               }
-              if (flujoPago.tipo === 'reta') await inscribirseAReta(flujoPago.evento, metodo);
-              else if (flujoPago.tipo === 'torneo-union') await confirmarUnionTorneo(flujoPago.participanteExistente, metodo, flujoPago.monto);
-              else if (flujoPago.tipo === 'academia') await inscribirseAClase(flujoPago.evento, flujoPago.tipoPago, metodo);
-              else await inscribirseATorneo(flujoPago.evento, flujoPago.categoria, metodo, flujoPago.pareja || null);
+              let resultadoInscripcion = null;
+              if (flujoPago.tipo === 'reta') resultadoInscripcion = await inscribirseAReta(flujoPago.evento, metodo, opcionesCortesia);
+              else if (flujoPago.tipo === 'torneo-union')
+                resultadoInscripcion = await confirmarUnionTorneo(flujoPago.participanteExistente, metodo, flujoPago.monto, opcionesCortesia);
+              else if (flujoPago.tipo === 'academia') resultadoInscripcion = await inscribirseAClase(flujoPago.evento, flujoPago.tipoPago, metodo, opcionesCortesia);
+              else resultadoInscripcion = await inscribirseATorneo(flujoPago.evento, flujoPago.categoria, metodo, flujoPago.pareja || null, opcionesCortesia);
+              // App-169 — «Pagar en el club» con cortesía: el lugar ya quedó
+              // apartado; el servidor aplica el beneficio a esa inscripción.
+              if (cortesiaElegida && resultadoInscripcion?.ok && resultadoInscripcion.data?.id != null) {
+                await aplicarCortesiaPortal({
+                  cortesia: cortesiaElegida,
+                  tabla: flujoPago.tipo === 'reta' ? 'reta_inscripciones' : flujoPago.tipo === 'academia' ? 'academia_alumnos' : 'torneo_participantes',
+                  fila: resultadoInscripcion.data,
+                  concepto: flujoPago.evento?.nombre || 'Tu inscripción',
+                });
+              }
               setFlujoPago(null);
             }}
           />
@@ -70743,6 +71293,7 @@ function PortalPublicoJugadores({ clubSlug }) {
               return resultado;
             }}
             aceptaPagoEnLinea={pagosEnLineaClub}
+            cortesiasDisponibles={cortesiasPortalDe('reservas')}
           />
           )}
         </AnimatePresence>
@@ -72913,7 +73464,55 @@ function ModalPoliticasClaseGrupal({ clase, tipoPago, inscritos = 0, horasValida
 // servidor). Con montos menores al mínimo de Stripe ($10 MXN) solo queda el
 // pago en el club. Si el club no acepta pagos en línea, el modal es idéntico
 // al de siempre.
-function ModalElegirPago({ monto, saldoWallet, concepto, politica, onClose, onConfirmar, aceptaPagoEnLinea = false, tieneSesionPortal = false }) {
+// App-169 (v149) — opción «Usar mi cortesía» en los resúmenes de pago del
+// Portal (reserva, clase, torneo y reta).
+function SelectorCortesiaPortal({ cortesia, total = 1, activa, descuento, onCambiar }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={activa}
+      onClick={() => onCambiar(!activa)}
+      data-testid="portal-usar-cortesia"
+      className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition ${
+        activa ? 'border-amber-400 bg-amber-50' : 'border-amber-300/70 bg-white hover:bg-amber-50/60'
+      }`}
+    >
+      <span className="min-w-0">
+        <span className="flex items-center gap-1.5 text-xs font-black text-amber-800">
+          <Gift size={14} /> {activa ? 'Usando tu cortesía' : 'Tienes una cortesía'}: {textoCortesiaGanada(cortesia)}
+        </span>
+        <span className="mt-0.5 block text-[11px] text-amber-800/80">
+          {descuento > 0 ? `Descuenta ${formatoMoneda(descuento)}` : 'Se aplica al confirmar'}
+          {total > 1 ? ` · tienes ${total}` : ''} · se usa una sola vez
+        </span>
+      </span>
+      <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${activa ? 'bg-amber-500' : 'bg-slate-300'}`}>
+        <span className={`inline-block transform rounded-full bg-white shadow transition ${activa ? 'translate-x-6' : 'translate-x-1'}`} style={{ height: '1.125rem', width: '1.125rem' }} />
+      </span>
+    </button>
+  );
+}
+
+function ModalElegirPago({
+  monto: montoBruto,
+  saldoWallet,
+  concepto,
+  politica,
+  onClose,
+  onConfirmar,
+  aceptaPagoEnLinea = false,
+  tieneSesionPortal = false,
+  // App-169 (v149) — Cortesías por Frecuencia disponibles para este cobro
+  // (la más antigua primero) y el monto PROPIO del jugador sobre el que aplica.
+  cortesiasDisponibles = [],
+  baseCortesia = null,
+}) {
+  const [usarCortesia, setUsarCortesia] = useState(false);
+  const cortesia = cortesiasDisponibles[0] || null;
+  const descuentoCortesia = usarCortesia && cortesia ? descuentoCortesiaGanada(cortesia, baseCortesia ?? montoBruto) : 0;
+  const monto = Math.max(0, Math.round(((Number(montoBruto) || 0) - descuentoCortesia) * 100) / 100);
+  const cubiertoPorCortesia = usarCortesia && cortesia && monto <= 0;
   const mostrarPagoEnLinea = aceptaPagoEnLinea && Number(monto) >= MONTO_MINIMO_PAGO_EN_LINEA;
   const pagoEnLineaDisponible = mostrarPagoEnLinea && tieneSesionPortal;
   const [metodo, setMetodo] = useState(() =>
@@ -72922,16 +73521,21 @@ function ModalElegirPago({ monto, saldoWallet, concepto, politica, onClose, onCo
   useEffect(() => {
     if (!pagoEnLineaDisponible && metodo === 'en_linea') setMetodo('recepcion');
   }, [pagoEnLineaDisponible, metodo]);
-  const esPagoEnLinea = metodo === 'en_linea';
+  // Con cortesía no se combina con Wallet (el beneficio se aplica sobre el
+  // cobro en el club o en línea).
+  useEffect(() => {
+    if (usarCortesia && metodo === 'wallet') setMetodo('recepcion');
+  }, [usarCortesia, metodo]);
+  const esPagoEnLinea = metodo === 'en_linea' && !cubiertoPorCortesia;
   const [datosTarjeta, setDatosTarjeta] = useState(DATOS_TARJETA_VACIOS);
   const [enviando, setEnviando] = useState(false);
   const { montoWallet, montoRestante } = repartirPagoConWallet(monto, saldoWallet, metodo === 'wallet');
-  const puedeConfirmar = metodo !== 'tarjeta' || tarjetaEsValida(datosTarjeta);
+  const puedeConfirmar = cubiertoPorCortesia || metodo !== 'tarjeta' || tarjetaEsValida(datosTarjeta);
 
   async function confirmar() {
     if (!puedeConfirmar) return;
     setEnviando(true);
-    const resultado = await onConfirmar(metodo);
+    const resultado = await onConfirmar(cubiertoPorCortesia ? 'recepcion' : metodo, { cortesia: usarCortesia ? cortesia : null });
     // Pago en línea: el navegador ya va camino a Stripe.
     if (resultado?.redirigiendo) return;
     setEnviando(false);
@@ -72940,11 +73544,24 @@ function ModalElegirPago({ monto, saldoWallet, concepto, politica, onClose, onCo
   return (
     <ModalShell titulo="¿Cómo quieres pagar?" subtitulo={concepto} onClose={onClose} icon={Wallet} ancho="max-w-sm">
       <div className="space-y-3">
-        <p className="text-center text-2xl font-black text-slate-900">{formatoMoneda(monto)}</p>
+        <p className="text-center text-2xl font-black text-slate-900" data-testid="pago-monto-final">
+          {descuentoCortesia > 0 && <span className="mr-2 text-base font-bold text-slate-400 line-through">{formatoMoneda(montoBruto)}</span>}
+          {formatoMoneda(monto)}
+        </p>
+        {cortesia && (
+          <SelectorCortesiaPortal
+            cortesia={cortesia}
+            total={cortesiasDisponibles.length}
+            activa={usarCortesia}
+            descuento={usarCortesia ? descuentoCortesia : descuentoCortesiaGanada(cortesia, baseCortesia ?? montoBruto)}
+            onCambiar={setUsarCortesia}
+          />
+        )}
+        {!cubiertoPorCortesia && (
         <SelectorMetodoPagoPortal
           metodo={metodo}
           onCambiarMetodo={setMetodo}
-          mostrarWallet={true}
+          mostrarWallet={!usarCortesia}
           saldoWallet={saldoWallet}
           montoWallet={montoWallet}
           montoRestante={montoRestante}
@@ -72955,6 +73572,7 @@ function ModalElegirPago({ monto, saldoWallet, concepto, politica, onClose, onCo
           avisoPagoEnLinea={mostrarPagoEnLinea && !tieneSesionPortal ? 'Para pagar en línea vuelve a iniciar sesión en el Portal.' : null}
           textoPagoEnLinea="Te llevaremos al pago seguro de Stripe. El cobro va directo a la cuenta del club y tu lugar queda confirmado en cuanto se acredite."
         />
+        )}
         {politica &&
           (esPagoEnLinea ? (
             <AvisoPoliticaCancelacionPagoEnLinea activa={politica.activa} horas={politica.horas} concepto="inscripcion" />
@@ -72965,7 +73583,13 @@ function ModalElegirPago({ monto, saldoWallet, concepto, politica, onClose, onCo
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={confirmar} disabled={enviando || !puedeConfirmar} data-testid="boton-confirmar-pago">
             {enviando ? <Loader2 size={15} className="animate-spin" /> : esPagoEnLinea ? <CreditCard size={15} /> : <CheckCircle2 size={15} />}
-            {esPagoEnLinea ? (enviando ? 'Abriendo pago seguro…' : `Pagar ${formatoMoneda(monto)} en línea`) : 'Aceptar y Confirmar'}
+            {cubiertoPorCortesia
+              ? 'Confirmar con mi cortesía'
+              : esPagoEnLinea
+              ? enviando
+                ? 'Abriendo pago seguro…'
+                : `Pagar ${formatoMoneda(monto)} en línea`
+              : 'Aceptar y Confirmar'}
           </BotonPrimario>
         </div>
       </div>
@@ -73460,7 +74084,10 @@ const TURNOS_RESERVA_PORTAL = [
 // Reserva de cancha desde el Portal, con Add-ons de consumo — flujo
 // completo: fecha/hora/duración → add-ons opcionales → método de pago →
 // identificación (si hace falta) → confirmar.
-function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, productosAddOns, variantesPorProducto, saldoWallet, tarifasHorarios, onClose, onConfirmar, aceptaPagoEnLinea = false }) {
+function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, productosAddOns, variantesPorProducto, saldoWallet, tarifasHorarios, onClose, onConfirmar, aceptaPagoEnLinea = false, cortesiasDisponibles = [] }) {
+  // App-169 (v149) — «Usar mi cortesía» (Cortesía por Frecuencia de Reservas).
+  const [usarCortesia, setUsarCortesia] = useState(false);
+  const cortesiaReserva = cortesiasDisponibles[0] || null;
   // App-128: si hoy el club no abre, arranca en el próximo día abierto.
   const [fecha, setFecha] = useState(() => proximaFechaAbiertaClub(club, hoyISO()));
   const [turnoFiltro, setTurnoFiltro] = useState('todos');
@@ -73646,9 +74273,18 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
   // MISMA transacción de Stripe; el servidor recalcula los precios y, al
   // confirmarse el pago, descuenta el inventario del POS (+ Kardex).
   const addonsSubtotal = Math.round(addons.reduce((acc, i) => acc + i.precio * i.cantidad, 0) * 100) / 100;
-  const total = Math.round((costoCancha + addonsSubtotal) * 100) / 100;
+  // App-169 — mismo cálculo que el servidor (1 Hora gratis = 1 hora
+  // prorrateada de la renta; % sobre la renta). Los artículos no se descuentan.
+  const descuentoCortesia = usarCortesia && cortesiaReserva ? descuentoCortesiaGanada(cortesiaReserva, costoCancha, duracionHoras) : 0;
+  const total = Math.max(0, Math.round((costoCancha - descuentoCortesia + addonsSubtotal) * 100) / 100);
+  const cubiertoPorCortesia = Boolean(usarCortesia && cortesiaReserva) && total <= 0;
+  const pagoEnLineaPorMonto = !usarCortesia || total >= MONTO_MINIMO_PAGO_EN_LINEA;
+  useEffect(() => {
+    if (usarCortesia && metodo === 'wallet') setMetodo('recepcion');
+    if (usarCortesia && metodo === 'en_linea' && !pagoEnLineaPorMonto) setMetodo('recepcion');
+  }, [usarCortesia, metodo, pagoEnLineaPorMonto]);
   const { montoWallet, montoRestante } = repartirPagoConWallet(total, saldoWallet, metodo === 'wallet' && !!jugador);
-  const puedeConfirmarPago = metodo !== 'tarjeta' || tarjetaEsValida(datosTarjeta);
+  const puedeConfirmarPago = cubiertoPorCortesia || metodo !== 'tarjeta' || tarjetaEsValida(datosTarjeta);
 
   function agregarAddon(producto, variante = null) {
     const nombreArticulo = variante ? `${producto.nombre} — ${variante.nombre}` : producto.nombre;
@@ -73717,9 +74353,10 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
       duracionMinutos: duracionMin,
       costoCancha,
       addons,
-      metodo,
+      metodo: cubiertoPorCortesia ? 'recepcion' : metodo,
       nombre,
       telefono,
+      cortesia: usarCortesia ? cortesiaReserva : null,
     });
     // Pago en línea: el navegador ya va camino a Stripe — se deja el botón en
     // "Abriendo pago seguro…".
@@ -74003,11 +74640,29 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
               <span>{formatoMoneda(addonsSubtotal)}</span>
             </div>
           )}
+          {descuentoCortesia > 0 && (
+            <div className="flex items-center justify-between text-xs font-bold text-amber-700" data-testid="reserva-cortesia-descuento">
+              <span className="flex items-center gap-1">
+                <Gift size={12} /> Cortesía · {textoCortesiaGanada(cortesiaReserva)}
+              </span>
+              <span>−{formatoMoneda(descuentoCortesia)}</span>
+            </div>
+          )}
           <div className="flex items-center justify-between border-t border-slate-300 pt-2 text-sm font-black text-slate-900">
             <span>Total</span>
-            <span className="text-orange-400">{formatoMoneda(total)}</span>
+            <span className="text-orange-400" data-testid="reserva-total">{formatoMoneda(total)}</span>
           </div>
         </div>
+
+        {cortesiaReserva && jugador && (
+          <SelectorCortesiaPortal
+            cortesia={cortesiaReserva}
+            total={cortesiasDisponibles.length}
+            activa={usarCortesia}
+            descuento={descuentoCortesiaGanada(cortesiaReserva, costoCancha, duracionHoras)}
+            onCambiar={setUsarCortesia}
+          />
+        )}
 
         {/* MÉTODOS DE PAGO EN EL PORTAL: mismo componente compartido que usan
             el Carrito de la Tienda y el flujo de Reta/Torneo — Recepción,
@@ -74017,20 +74672,26 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
             de verla deshabilitada) — inconsistente con los otros dos
             modales, donde Wallet siempre aparece (solo se deshabilita sin
             saldo, dentro del propio `SelectorMetodoPagoPortal`). */}
+        {cubiertoPorCortesia ? (
+          <p className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700" data-testid="reserva-cubierta-cortesia">
+            Tu cortesía cubre esta reserva: no tienes nada que pagar.
+          </p>
+        ) : (
         <SelectorMetodoPagoPortal
           metodo={metodo}
           onCambiarMetodo={setMetodo}
-          mostrarWallet={!!jugador}
+          mostrarWallet={!!jugador && !usarCortesia}
           saldoWallet={saldoWallet}
           montoWallet={montoWallet}
           montoRestante={montoRestante}
           datosTarjeta={datosTarjeta}
           onCambiarDatosTarjeta={setDatosTarjeta}
           tamano="chico"
-          mostrarPagoEnLinea={aceptaPagoEnLinea}
-          pagoEnLineaDisponible={pagoEnLineaDisponible}
+          mostrarPagoEnLinea={aceptaPagoEnLinea && pagoEnLineaPorMonto}
+          pagoEnLineaDisponible={pagoEnLineaDisponible && pagoEnLineaPorMonto}
           avisoPagoEnLinea={aceptaPagoEnLinea && !jugador?.portalToken ? 'Para pagar en línea vuelve a iniciar sesión en el Portal.' : null}
         />
+        )}
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
 
@@ -74043,8 +74704,14 @@ function ModalReservarCancha({ cancha, club, jugador, reservas, academiaClases, 
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cancelar</BotonSecundario>
           <BotonPrimario onClick={confirmar} disabled={enviando || !horaInicio || !puedeConfirmarPago} data-testid="boton-confirmar-reserva">
-            {enviando ? <Loader2 size={15} className="animate-spin" /> : esPagoEnLinea ? <CreditCard size={15} /> : <CheckCircle2 size={15} />}
-            {esPagoEnLinea ? (enviando ? 'Abriendo pago seguro…' : `Pagar ${formatoMoneda(total)} en línea`) : 'Aceptar y Confirmar Reserva'}
+            {enviando ? <Loader2 size={15} className="animate-spin" /> : esPagoEnLinea && !cubiertoPorCortesia ? <CreditCard size={15} /> : <CheckCircle2 size={15} />}
+            {cubiertoPorCortesia
+              ? 'Confirmar con mi cortesía'
+              : esPagoEnLinea
+              ? enviando
+                ? 'Abriendo pago seguro…'
+                : `Pagar ${formatoMoneda(total)} en línea`
+              : 'Aceptar y Confirmar Reserva'}
           </BotonPrimario>
         </div>
       </div>
@@ -75106,6 +75773,14 @@ function AppInterno({ clubInicial } = {}) {
   const [cortesiasFrecuenciaActivadasDesde, setCortesiasFrecuenciaActivadasDesde] = useState(
     cortesiasFrecuenciaLocalIniciales.activadaDesde ?? null
   );
+  // App-169 (v149) — un interruptor ON/OFF por categoría (reemplaza al switch
+  // maestro en la tarjeta de configuración) + su fecha de activación.
+  const [frecuenciaActivas, setFrecuenciaActivas] = useState(() => ({ ...CORTESIAS_FRECUENCIA_DEFAULT_LOCAL.activas, ...(cortesiasFrecuenciaLocalIniciales.activas || {}) }));
+  const [frecuenciaActivasDesde, setFrecuenciaActivasDesde] = useState(() => ({
+    ...CORTESIAS_FRECUENCIA_DEFAULT_LOCAL.activasDesde,
+    ...(cortesiasFrecuenciaLocalIniciales.activasDesde || {}),
+  }));
+  const contextoFrecuenciaClub = useMemo(() => ({ activas: frecuenciaActivas }), [frecuenciaActivas]);
   const [metaFrecuenciaReservas, setMetaFrecuenciaReservas] = useState(cortesiasFrecuenciaLocalIniciales.reservas.meta ?? null);
   const [recompensaTipoFrecuenciaReservas, setRecompensaTipoFrecuenciaReservas] = useState(cortesiasFrecuenciaLocalIniciales.reservas.tipo ?? null);
   const [recompensaValorFrecuenciaReservas, setRecompensaValorFrecuenciaReservas] = useState(cortesiasFrecuenciaLocalIniciales.reservas.valor ?? null);
@@ -75965,6 +76640,8 @@ function AppInterno({ clubInicial } = {}) {
           if (frecuencia) {
             setCortesiasFrecuenciaActivas(frecuencia.activo);
             setCortesiasFrecuenciaActivadasDesde(frecuencia.activadaDesde);
+            if (frecuencia.activas) setFrecuenciaActivas(frecuencia.activas);
+            if (frecuencia.activasDesde) setFrecuenciaActivasDesde(frecuencia.activasDesde);
             setMetaFrecuenciaReservas(frecuencia.reservas.meta);
             setRecompensaTipoFrecuenciaReservas(frecuencia.reservas.tipo);
             setRecompensaValorFrecuenciaReservas(frecuencia.reservas.valor);
@@ -76513,11 +77190,30 @@ function AppInterno({ clubInicial } = {}) {
       // `guardarMetasCortesia`, idéntico razonamiento: el piso solo se
       // mueve en la transición exacta `false -> true` del switch, nunca al
       // solo editar metas/recompensas con el switch quieto.
-      const reactivando = activo && cortesiasFrecuenciaActivas === false;
-      const activadaDesde = reactivando ? new Date().toISOString() : cortesiasFrecuenciaActivadasDesde;
+      // App-169 (v149) — interruptores por categoría. `activas` llega de la
+      // tarjeta (un switch por categoría) o del modal de metas (sin cambios);
+      // si no llega (llamador anterior), cada categoría sigue a `activo`.
+      const ahoraISO = new Date().toISOString();
+      const activasNuevas = {};
+      const activasDesdeNuevas = {};
+      const categoriasEncendidas = [];
+      const categoriasApagadas = [];
+      CATEGORIAS_FRECUENCIA.forEach((c) => {
+        const antes = frecuenciaActivas?.[c] === true;
+        const despues = nuevaConfig?.activas && typeof nuevaConfig.activas[c] === 'boolean' ? nuevaConfig.activas[c] : nuevaConfig?.activas ? antes : activo;
+        activasNuevas[c] = despues;
+        activasDesdeNuevas[c] = despues && !antes ? ahoraISO : frecuenciaActivasDesde?.[c] ?? null;
+        if (despues && !antes) categoriasEncendidas.push(c);
+        if (!despues && antes) categoriasApagadas.push(c);
+      });
+      const activoMaestro = nuevaConfig?.activas ? CATEGORIAS_FRECUENCIA.some((c) => activasNuevas[c]) : activo;
+      const reactivando = activoMaestro && cortesiasFrecuenciaActivas === false;
+      const activadaDesde = reactivando ? ahoraISO : cortesiasFrecuenciaActivadasDesde;
       setGuardandoCortesiasFrecuencia(true);
-      setCortesiasFrecuenciaActivas(activo);
+      setCortesiasFrecuenciaActivas(activoMaestro);
       setCortesiasFrecuenciaActivadasDesde(activadaDesde);
+      setFrecuenciaActivas(activasNuevas);
+      setFrecuenciaActivasDesde(activasDesdeNuevas);
       setMetaFrecuenciaReservas(reservasMeta);
       setRecompensaTipoFrecuenciaReservas(reservasTipo);
       setRecompensaValorFrecuenciaReservas(reservasValor);
@@ -76533,8 +77229,10 @@ function AppInterno({ clubInicial } = {}) {
       setPremiosFrecuencia(premios);
       premiosFrecuenciaRef.current = premios;
       guardarCortesiasFrecuenciaLocal({
-        activo,
+        activo: activoMaestro,
         activadaDesde,
+        activas: activasNuevas,
+        activasDesde: activasDesdeNuevas,
         reservas: { meta: reservasMeta, tipo: reservasTipo, valor: reservasValor, premio: premios.reservas },
         retas: { meta: retasMeta, tipo: retasTipo, valor: retasValor, premio: premios.retas },
         torneos: { meta: torneosMeta, tipo: torneosTipo, valor: torneosValor, premio: premios.torneos },
@@ -76547,8 +77245,16 @@ function AppInterno({ clubInicial } = {}) {
           'configuracion_club',
           CLUB_ACTIVO_ID,
           {
-            cortesias_frecuencia_activas: activo,
+            cortesias_frecuencia_activas: activoMaestro,
             cortesias_frecuencia_activadas_desde: activadaDesde,
+            frecuencia_activa_reservas: activasNuevas.reservas,
+            frecuencia_activa_clases: activasNuevas.clases,
+            frecuencia_activa_torneos: activasNuevas.torneos,
+            frecuencia_activa_retas: activasNuevas.retas,
+            frecuencia_activa_desde_reservas: activasDesdeNuevas.reservas,
+            frecuencia_activa_desde_clases: activasDesdeNuevas.clases,
+            frecuencia_activa_desde_torneos: activasDesdeNuevas.torneos,
+            frecuencia_activa_desde_retas: activasDesdeNuevas.retas,
             meta_frecuencia_reservas: reservasMeta,
             recompensa_tipo_frecuencia_reservas: reservasTipo,
             recompensa_valor_frecuencia_reservas: reservasValor,
@@ -76569,6 +77275,14 @@ function AppInterno({ clubInicial } = {}) {
           [
             'cortesias_frecuencia_activas',
             'cortesias_frecuencia_activadas_desde',
+            'frecuencia_activa_reservas',
+            'frecuencia_activa_clases',
+            'frecuencia_activa_torneos',
+            'frecuencia_activa_retas',
+            'frecuencia_activa_desde_reservas',
+            'frecuencia_activa_desde_clases',
+            'frecuencia_activa_desde_torneos',
+            'frecuencia_activa_desde_retas',
             'meta_frecuencia_reservas',
             'recompensa_tipo_frecuencia_reservas',
             'recompensa_valor_frecuencia_reservas',
@@ -76601,18 +77315,20 @@ function AppInterno({ clubInicial } = {}) {
         setGuardandoCortesiasFrecuencia(false);
         return false;
       }
+      const nombres = (lista) => lista.map((c) => ETIQUETA_CATEGORIA_FRECUENCIA[c]).join(', ');
       mostrarToast({
         titulo: 'Cortesías por Frecuencia de Actividad actualizadas',
-        detalle: reactivando
-          ? 'Módulo reactivado: el progreso de cada jugador arranca en 0 desde ahora — los eventos de mientras estuvo desactivado no cuentan.'
-          : activo
-          ? 'La Vista 360° de cada jugador ya usa las metas y recompensas nuevas.'
-          : 'El módulo de Cortesías por Frecuencia quedó Desactivado para todo el club.',
+        detalle:
+          categoriasEncendidas.length > 0
+            ? `${nombres(categoriasEncendidas)}: activado. El progreso de esa categoría arranca en 0 desde ahora.`
+            : categoriasApagadas.length > 0
+            ? `${nombres(categoriasApagadas)}: apagado. No genera ni permite usar cortesías hasta que lo vuelvas a activar.`
+            : 'La Vista 360° de cada jugador ya usa las metas y recompensas nuevas.',
       });
       setGuardandoCortesiasFrecuencia(false);
       return true;
     },
-    [mostrarToast, cortesiasFrecuenciaActivas, cortesiasFrecuenciaActivadasDesde]
+    [mostrarToast, cortesiasFrecuenciaActivas, cortesiasFrecuenciaActivadasDesde, frecuenciaActivas, frecuenciaActivasDesde]
   );
 
   // App-115 — Guarda el Criterio VIP automático en `configuracion_club`
@@ -79955,6 +80671,7 @@ function AppInterno({ clubInicial } = {}) {
       <AuditoriaLogContext.Provider value={registrarEventoAuditoria}>
       <CajaContext.Provider value={cajaCtx}>
       <ContextoEstadoPagoClases.Provider value={estadoPagoClasesCtx}>
+      <ContextoFrecuenciaClub.Provider value={contextoFrecuenciaClub}>
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={faseEntrada}
@@ -79967,6 +80684,7 @@ function AppInterno({ clubInicial } = {}) {
           {contenido}
         </motion.div>
       </AnimatePresence>
+      </ContextoFrecuenciaClub.Provider>
       </ContextoEstadoPagoClases.Provider>
       </CajaContext.Provider>
       </AuditoriaLogContext.Provider>
