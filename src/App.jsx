@@ -4344,6 +4344,18 @@ function montoInscripcionCobrada(fila, precioRespaldo = 0) {
   if (Number.isFinite(monto) && monto > 0) return monto;
   return Number(precioRespaldo) || 0;
 }
+// App-170 — versión CONTABLE (Estado de Resultados y Analytics): una
+// inscripción cubierta con una Cortesía por Frecuencia (v149) trae su
+// `monto` real ya descontado — $0 si fue gratis. El respaldo al precio de la
+// reta es solo para filas viejas sin `monto`; aplicarlo aquí convertía una
+// cortesía de $0 en «ingreso» al precio completo de la reta.
+function montoInscripcionCobradaContable(fila, precioRespaldo = 0) {
+  if (fila?.cortesia_frecuencia_id != null && fila.cortesia_frecuencia_id !== '') {
+    const monto = Number(fila.monto);
+    return Number.isFinite(monto) && monto > 0 ? monto : 0;
+  }
+  return montoInscripcionCobrada(fila, precioRespaldo);
+}
 
 // Monto de un ticket de `ventas` SIN los renglones de cobro de inscripciones
 // (`tipo: 'inscripcion_evento'`, que genera Smart POS al cobrar una Reta/
@@ -28209,6 +28221,377 @@ function UtilidadMostradorBI({ filas, canales = null, cargando }) {
   );
 }
 
+/* ---------------- App-170 — Cortesías Redimidas (informativo) ----------------
+ * Valor que el club ABSORBIÓ al entregar cortesías en el periodo. Es una
+ * métrica puramente informativa: NO es ingreso. El Estado de Resultados, el
+ * corte de caja e «Ingresos Totales (Cobrados)» siguen viendo solo el dinero
+ * real (una reserva de $300 con 50 % de cortesía: $150 cobrados + $150
+ * absorbidos aquí).
+ *  a) Cortesías por Frecuencia (v149): filas de reservas / academia_alumnos /
+ *     torneo_participantes / reta_inscripciones con `cortesia_frecuencia_id`.
+ *     Monto absorbido = `cortesia_frecuencia_descuento` (100 % del precio de
+ *     lista si fue gratis; solo la fracción descontada si fue porcentaje).
+ *     Periodo con el MISMO criterio que el ingreso de cada módulo: reservas
+ *     por fecha de juego, inscripciones y clases por `created_at`.
+ *  b) Cortesías de Metas (Pro-Shop / Restaurante-Bar): tickets $0.00 que
+ *     genera `otorgarCortesiaCRM` (`detalles.nota` «Cortesía por Fidelidad
+ *     CRM · …»), por fecha del ticket (igual que las ventas de mostrador).
+ *     Valor equivalente = precio de lista del catálogo (variante o producto).
+ * ------------------------------------------------------------------------- */
+const CATEGORIAS_CORTESIA_FRECUENCIA_BI = [
+  { clave: 'reservas', etiqueta: 'Reservas de Cancha', tabla: 'reservas' },
+  { clave: 'clases', etiqueta: 'Clases / Academia', tabla: 'academia_alumnos' },
+  { clave: 'torneos', etiqueta: 'Torneos', tabla: 'torneo_participantes' },
+  { clave: 'retas', etiqueta: 'Retas', tabla: 'reta_inscripciones' },
+];
+const CATEGORIAS_CORTESIA_META_BI = [
+  { clave: 'Pro-Shop', etiqueta: 'Pro-Shop' },
+  { clave: 'Cafetería/Bar', etiqueta: 'Restaurante / Bar' },
+];
+const PREFIJO_NOTA_CORTESIA_META_BI = 'Cortesía por Fidelidad CRM';
+
+function redondearCentavosBI(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+// ¿La cortesía de esta fila se CONSUMIÓ? Fuente de verdad: la tabla
+// `cortesias_frecuencia` (redimida y ligada a ESTA fila — si se canceló a
+// tiempo, la cortesía regresó al jugador y no cuenta). Si no se pudo leer,
+// respaldo por la propia fila: activa, o cancelada fuera de tiempo
+// (retenida: la cortesía quedó consumida).
+function cortesiaFrecuenciaConsumidaEnFilaBI(fila, tabla, estadosCortesias) {
+  const id = fila?.cortesia_frecuencia_id;
+  if (id == null || id === '') return false;
+  if (!((Number(fila.cortesia_frecuencia_descuento) || 0) > 0)) return false;
+  const estatus = estatusCobroNormalizado(fila);
+  if (fila.pago_en_linea_estado === 'procesando' || estatus === 'procesando_pago') return false;
+  const estado = estadosCortesias?.get?.(String(id));
+  if (estado) {
+    return estado.estado === 'redimida' && (estado.redimida_referencia_id == null || String(estado.redimida_referencia_id) === String(fila.id));
+  }
+  if (estatus === 'retenido') return true;
+  if (tabla === 'reservas') return fila.estado !== 'Cancelada';
+  if (tabla === 'academia_alumnos') return fila.estado !== 'baja';
+  return fila.estado !== 'cancelado';
+}
+
+function construirCortesiasRedimidasBI({
+  reservasEnRango = [],
+  inscripciones = [],
+  participantesTorneo = [],
+  academiaAlumnos = [],
+  ventasRango = [],
+  rango,
+  estadosCortesias = null,
+  productosPorId = {},
+  variantesPorProducto = {},
+  variantesPorId = {},
+  indicePorNombre = null,
+}) {
+  const frecuencia = {};
+  CATEGORIAS_CORTESIA_FRECUENCIA_BI.forEach((c) => {
+    frecuencia[c.clave] = { ...c, canjes: 0, gratis: 0, porcentaje: 0, valorLista: 0, absorbido: 0 };
+  });
+  const detalle = [];
+  const fuentes = [
+    { clave: 'reservas', tabla: 'reservas', filas: reservasEnRango, enRango: () => true, fecha: (f) => f.fecha },
+    { clave: 'clases', tabla: 'academia_alumnos', filas: academiaAlumnos, enRango: (f) => dentroDeRangoPorCreatedAt(f, rango), fecha: (f) => f.created_at },
+    { clave: 'torneos', tabla: 'torneo_participantes', filas: participantesTorneo, enRango: (f) => dentroDeRangoPorCreatedAt(f, rango), fecha: (f) => f.created_at },
+    { clave: 'retas', tabla: 'reta_inscripciones', filas: inscripciones, enRango: (f) => dentroDeRangoPorCreatedAt(f, rango), fecha: (f) => f.created_at },
+  ];
+  fuentes.forEach(({ clave, tabla, filas, enRango, fecha }) => {
+    (filas || []).forEach((f) => {
+      if (!cortesiaFrecuenciaConsumidaEnFilaBI(f, tabla, estadosCortesias) || !enRango(f)) return;
+      const descuento = redondearCentavosBI(f.cortesia_frecuencia_descuento);
+      const lista = redondearCentavosBI(Math.max(Number(f.cortesia_frecuencia_monto_original) || 0, descuento));
+      const absorbido = Math.min(descuento, lista);
+      const esGratis = absorbido >= lista - 0.005;
+      const acc = frecuencia[clave];
+      acc.canjes += 1;
+      if (esGratis) acc.gratis += 1;
+      else acc.porcentaje += 1;
+      acc.valorLista += lista;
+      acc.absorbido += absorbido;
+      detalle.push({
+        origen: 'frecuencia',
+        categoria: acc.etiqueta,
+        fecha: fecha(f) || null,
+        concepto: f.jugador_nombre || f.nombre || 'Jugador',
+        tipo: esGratis ? '100% (gratis)' : `${Math.round((absorbido / (lista || 1)) * 100)}% de descuento`,
+        unidades: 1,
+        valorLista: lista,
+        absorbido,
+      });
+    });
+  });
+
+  const metas = {};
+  CATEGORIAS_CORTESIA_META_BI.forEach((c) => {
+    metas[c.clave] = { ...c, entregas: 0, productos: 0, valor: 0, sinPrecio: 0 };
+  });
+  (ventasRango || []).forEach((v) => {
+    const nota = String(v?.detalles?.nota || '');
+    if (!nota.startsWith(PREFIJO_NOTA_CORTESIA_META_BI) || !esCobroConfirmado(v)) return;
+    const items = Array.isArray(v.detalles?.items) ? v.detalles.items : [];
+    let contoEntrega = null;
+    items.forEach((item) => {
+      if (item?.tipo && item.tipo !== 'producto') return;
+      const resuelto = resolverProductoYVarianteDeItem(item, { productosPorId, variantesPorProducto, variantesPorIdLegado: variantesPorId });
+      let cat = /Restaurante|Bar/i.test(nota.slice(PREFIJO_NOTA_CORTESIA_META_BI.length))
+        ? 'Cafetería/Bar'
+        : /Pro-?Shop/i.test(nota)
+          ? 'Pro-Shop'
+          : categoriaVentaBI(item, resuelto, indicePorNombre);
+      if (!metas[cat]) cat = 'Pro-Shop';
+      const cantidad = Math.max(1, Number(item.cantidad) || 1);
+      const precioCrudo = resuelto.variante?.precio != null && resuelto.variante.precio !== '' ? resuelto.variante.precio : resuelto.producto?.precio;
+      const precio = Number(precioCrudo);
+      const tienePrecio = Number.isFinite(precio) && precio > 0;
+      const valor = tienePrecio ? redondearCentavosBI(precio * cantidad) : 0;
+      const acc = metas[cat];
+      acc.productos += cantidad;
+      acc.valor += valor;
+      if (!tienePrecio) acc.sinPrecio += cantidad;
+      if (contoEntrega !== cat) {
+        acc.entregas += 1;
+        contoEntrega = cat;
+      }
+      detalle.push({
+        origen: 'meta',
+        categoria: acc.etiqueta,
+        fecha: v.created_at || v.fecha || null,
+        concepto: `${resuelto.nombre || item.nombre || 'Producto'}${v.detalles?.jugador_nombre ? ` · ${v.detalles.jugador_nombre}` : ''}`,
+        tipo: 'Meta de gasto',
+        unidades: cantidad,
+        valorLista: valor,
+        absorbido: valor,
+      });
+    });
+  });
+
+  const filasFrecuencia = CATEGORIAS_CORTESIA_FRECUENCIA_BI.map((c) => ({
+    ...frecuencia[c.clave],
+    valorLista: redondearCentavosBI(frecuencia[c.clave].valorLista),
+    absorbido: redondearCentavosBI(frecuencia[c.clave].absorbido),
+  }));
+  const filasMetas = CATEGORIAS_CORTESIA_META_BI.map((c) => ({ ...metas[c.clave], valor: redondearCentavosBI(metas[c.clave].valor) }));
+  const totalFrecuencia = {
+    canjes: filasFrecuencia.reduce((a, f) => a + f.canjes, 0),
+    gratis: filasFrecuencia.reduce((a, f) => a + f.gratis, 0),
+    porcentaje: filasFrecuencia.reduce((a, f) => a + f.porcentaje, 0),
+    valorLista: redondearCentavosBI(filasFrecuencia.reduce((a, f) => a + f.valorLista, 0)),
+    absorbido: redondearCentavosBI(filasFrecuencia.reduce((a, f) => a + f.absorbido, 0)),
+  };
+  const totalMetas = {
+    entregas: filasMetas.reduce((a, f) => a + f.entregas, 0),
+    productos: filasMetas.reduce((a, f) => a + f.productos, 0),
+    valor: redondearCentavosBI(filasMetas.reduce((a, f) => a + f.valor, 0)),
+    sinPrecio: filasMetas.reduce((a, f) => a + f.sinPrecio, 0),
+  };
+  detalle.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+  return {
+    frecuencia: filasFrecuencia,
+    metas: filasMetas,
+    totalFrecuencia,
+    totalMetas,
+    totalCanjes: totalFrecuencia.canjes + totalMetas.productos,
+    totalAbsorbido: redondearCentavosBI(totalFrecuencia.absorbido + totalMetas.valor),
+    detalle,
+  };
+}
+
+function formatoFechaCortesiaBI(valor) {
+  if (!valor) return '—';
+  const s = String(valor);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [a, m, d] = s.split('-').map(Number);
+    return new Date(a, m - 1, d).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+  return formatoFechaHoraVentaBI(s);
+}
+
+// Sección del Reporte CSV de Analytics (App-170). Informativa: estos montos
+// NO están dentro de «Ingresos Totales Cobrados» ni de ninguna otra cifra.
+function filasCSVCortesiasRedimidas(datos) {
+  if (!datos) return [];
+  const f = [];
+  f.push(['Cortesías Redimidas (informativo — valor absorbido por el club, NO es ingreso)']);
+  f.push(['No suma a Ingresos Totales Cobrados, Estado de Resultados ni cortes de caja. 100% = gratis (precio de lista completo); % = solo la parte descontada.']);
+  f.push(['Total de canjes', datos.totalCanjes]);
+  f.push(['Valor total absorbido', datos.totalAbsorbido.toFixed(2)]);
+  f.push([]);
+  f.push(['Cortesías por Frecuencia de Actividad', 'Canjes', 'Gratis (100%)', 'Con descuento (%)', 'Valor de Lista', 'Monto Absorbido']);
+  datos.frecuencia.forEach((r) => f.push([r.etiqueta, r.canjes, r.gratis, r.porcentaje, r.valorLista.toFixed(2), r.absorbido.toFixed(2)]));
+  const tf = datos.totalFrecuencia;
+  f.push(['Total Frecuencia', tf.canjes, tf.gratis, tf.porcentaje, tf.valorLista.toFixed(2), tf.absorbido.toFixed(2)]);
+  f.push([]);
+  f.push(['Cortesías de Metas de Gasto', 'Productos Entregados', 'Valor Equivalente (precio de lista)']);
+  datos.metas.forEach((r) => f.push([r.etiqueta, r.productos, r.valor.toFixed(2)]));
+  f.push(['Total Metas', datos.totalMetas.productos, datos.totalMetas.valor.toFixed(2)]);
+  f.push([]);
+  if (datos.detalle.length > 0) {
+    f.push(['Detalle de Cortesías Redimidas']);
+    f.push(['Fecha', 'Origen', 'Categoría', 'Jugador / Producto', 'Tipo', 'Unidades', 'Valor de Lista', 'Monto Absorbido']);
+    datos.detalle.forEach((d) =>
+      f.push([
+        d.fecha ? String(d.fecha).slice(0, 10) : '',
+        d.origen === 'meta' ? 'Meta de gasto' : 'Frecuencia',
+        d.categoria,
+        d.concepto,
+        d.tipo,
+        d.unidades,
+        d.valorLista.toFixed(2),
+        d.absorbido.toFixed(2),
+      ])
+    );
+    f.push([]);
+  }
+  return f;
+}
+
+function CortesiasRedimidasBI({ datos, cargando, periodo }) {
+  const [verDetalle, setVerDetalle] = useState(false);
+  if (cargando || !datos) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
+  const { frecuencia, metas, totalFrecuencia, totalMetas, totalCanjes, totalAbsorbido, detalle } = datos;
+  const th = 'px-3 py-2.5';
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="cortesias-redimidas">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
+            <Gift size={16} className="text-lime-400" /> Cortesías Redimidas
+          </h3>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            Valor absorbido por el club en el periodo ({periodo}). Informativo: no es ingreso y no cambia el Estado de Resultados, los cortes de caja ni «Ingresos Totales (Cobrados)».
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <div className="rounded-xl border border-slate-200 px-3 py-2 text-right">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Canjes</p>
+            <p className="text-lg font-black text-slate-900" data-testid="cortesias-redimidas-canjes">{totalCanjes}</p>
+          </div>
+          <div className="rounded-xl border border-lime-400/40 bg-lime-400/10 px-3 py-2 text-right">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Valor absorbido</p>
+            <p className="text-lg font-black text-slate-900" data-testid="cortesias-redimidas-total">{formatoMoneda(totalAbsorbido)}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="min-w-0">
+          <p className="mb-1.5 text-xs font-black text-slate-900">Por Frecuencia de Actividad</p>
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-left text-xs sm:min-w-[460px]" data-testid="cortesias-frecuencia-tabla">
+              <thead>
+                <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                  <th className={th}>Categoría</th>
+                  <th className={`${th} text-right`}>Canjes</th>
+                  <th className={`${th} text-right`}>100% / %</th>
+                  <th className={`${th} hidden text-right sm:table-cell`}>Valor de lista</th>
+                  <th className={`${th} text-right`}>Absorbido</th>
+                </tr>
+              </thead>
+              <tbody>
+                {frecuencia.map((f) => (
+                  <tr key={f.clave} className="border-b border-slate-200/70" data-testid={`cortesias-frecuencia-${f.clave}`}>
+                    <td className={`${th} font-bold text-slate-900`}>{f.etiqueta}</td>
+                    <td className={`${th} text-right tabular-nums text-slate-700`} data-campo="canjes">{f.canjes}</td>
+                    <td className={`${th} text-right tabular-nums text-slate-500`}>{f.gratis} / {f.porcentaje}</td>
+                    <td className={`${th} hidden text-right tabular-nums text-slate-500 sm:table-cell`}>{formatoMoneda(f.valorLista)}</td>
+                    <td className={`${th} text-right font-bold tabular-nums text-slate-900`} data-campo="absorbido">{formatoMoneda(f.absorbido)}</td>
+                  </tr>
+                ))}
+                <tr className="bg-slate-50 font-black text-slate-900" data-testid="cortesias-frecuencia-total">
+                  <td className={th}>Total</td>
+                  <td className={`${th} text-right tabular-nums`} data-campo="canjes">{totalFrecuencia.canjes}</td>
+                  <td className={`${th} text-right tabular-nums`}>{totalFrecuencia.gratis} / {totalFrecuencia.porcentaje}</td>
+                  <td className={`${th} hidden text-right tabular-nums sm:table-cell`}>{formatoMoneda(totalFrecuencia.valorLista)}</td>
+                  <td className={`${th} text-right tabular-nums`} data-campo="absorbido">{formatoMoneda(totalFrecuencia.absorbido)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-1 text-[10px] text-slate-500">100% = gratis (se absorbe el precio de lista completo) · % = solo la parte descontada.</p>
+        </div>
+
+        <div className="min-w-0">
+          <p className="mb-1.5 text-xs font-black text-slate-900">De Metas de Gasto (Pro-Shop / Restaurante-Bar)</p>
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-left text-xs sm:min-w-[380px]" data-testid="cortesias-metas-tabla">
+              <thead>
+                <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                  <th className={th}>Negocio</th>
+                  <th className={`${th} text-right`}>Productos<span className="hidden sm:inline"> entregados</span></th>
+                  <th className={`${th} text-right`}>Valor equivalente</th>
+                </tr>
+              </thead>
+              <tbody>
+                {metas.map((f) => (
+                  <tr key={f.clave} className="border-b border-slate-200/70" data-testid={`cortesias-meta-${f.clave === 'Pro-Shop' ? 'proshop' : 'bar'}`}>
+                    <td className={`${th} font-bold text-slate-900`}>{f.etiqueta}</td>
+                    <td className={`${th} text-right tabular-nums text-slate-700`} data-campo="productos">{f.productos}</td>
+                    <td className={`${th} text-right font-bold tabular-nums text-slate-900`} data-campo="valor">{formatoMoneda(f.valor)}</td>
+                  </tr>
+                ))}
+                <tr className="bg-slate-50 font-black text-slate-900" data-testid="cortesias-metas-total">
+                  <td className={th}>Total</td>
+                  <td className={`${th} text-right tabular-nums`} data-campo="productos">{totalMetas.productos}</td>
+                  <td className={`${th} text-right tabular-nums`} data-campo="valor">{formatoMoneda(totalMetas.valor)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-1 text-[10px] text-slate-500">
+            Valor equivalente = precio de lista actual del catálogo.
+            {totalMetas.sinPrecio > 0 ? ` ${totalMetas.sinPrecio} producto(s) sin precio en el catálogo cuentan en $0.` : ''}
+          </p>
+        </div>
+      </div>
+
+      {detalle.length > 0 && (
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setVerDetalle((v) => !v)}
+            className="text-xs font-bold text-lime-500 hover:underline"
+            data-testid="cortesias-redimidas-ver-detalle"
+          >
+            {verDetalle ? 'Ocultar detalle' : `Ver detalle (${detalle.length})`}
+          </button>
+          {verDetalle && (
+            <div className="mt-2 max-h-80 overflow-auto rounded-xl border border-slate-200">
+              <table className="w-full min-w-[640px] text-left text-xs" data-testid="cortesias-redimidas-detalle">
+                <thead>
+                  <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    <th className={th}>Fecha</th>
+                    <th className={th}>Categoría</th>
+                    <th className={th}>Jugador / Producto</th>
+                    <th className={th}>Tipo</th>
+                    <th className={`${th} text-right`}>Valor de lista</th>
+                    <th className={`${th} text-right`}>Absorbido</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detalle.map((d, idx) => (
+                    <tr key={idx} className="border-b border-slate-200/70 last:border-0">
+                      <td className={`${th} whitespace-nowrap text-slate-500`}>{formatoFechaCortesiaBI(d.fecha)}</td>
+                      <td className={`${th} text-slate-700`}>{d.categoria}</td>
+                      <td className={`${th} font-bold text-slate-900`}>{d.concepto}{d.unidades > 1 ? ` ×${d.unidades}` : ''}</td>
+                      <td className={`${th} text-slate-500`}>{d.tipo}</td>
+                      <td className={`${th} text-right tabular-nums text-slate-500`}>{formatoMoneda(d.valorLista)}</td>
+                      <td className={`${th} text-right font-bold tabular-nums text-slate-900`}>{formatoMoneda(d.absorbido)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- Top 5 Productos Más Vendidos ---------------- */
 
 function TopProductosTabla({ filas, cargando }) {
@@ -29251,6 +29634,9 @@ function generarCSVReporte({
   // que ya resuelve el fallback a 'ClubOS') — antes decía "Smash Pádel Club"
   // fijo, roto para cualquier OTRO club que use ClubOS.
   nombreClub,
+  // App-170 — Cortesías Redimidas (`construirCortesiasRedimidasBI`), sección
+  // informativa: NO suma a ningún ingreso del reporte.
+  cortesiasRedimidas = null,
 }) {
   const filas = [];
   filas.push([`${nombreClub || 'ClubOS'} — Reporte Analytics`]);
@@ -29283,6 +29669,8 @@ function generarCSVReporte({
   filas.push(['Ocupación Horas Valle (07:00–17:00)', `${picoValle.valle.toFixed(1)}%`]);
   filas.push(['Ocupación Horas Pico (17:00–23:00)', `${picoValle.pico.toFixed(1)}%`]);
   filas.push([]);
+
+  filasCSVCortesiasRedimidas(cortesiasRedimidas).forEach((f) => filas.push(f));
 
   filas.push(['Rentabilidad por Categoría']);
   filas.push(['Categoría', 'Ingreso Bruto', 'Costo Total', 'Margen Bruto', 'Margen %']);
@@ -30885,7 +31273,7 @@ function ModuloContabilidadCompras({
     // Retas: N lugares pagados × precio por lugar (monto real de cada
     // inscripción; respaldo al precio de la reta si una fila vieja no lo trae).
     const precioRetaPorId = new Map((retas || []).map((r) => [String(r.id), precioDeReta(r)]));
-    const montoInscripcionReta = (i) => montoInscripcionCobrada(i, precioRetaPorId.get(String(i.reta_id)) || 0);
+    const montoInscripcionReta = (i) => montoInscripcionCobradaContable(i, precioRetaPorId.get(String(i.reta_id)) || 0);
     const torneosRetas =
       filasInscripcionesRetas.reduce((acc, i) => acc + montoInscripcionReta(i), 0) +
       filasInscripcionesTorneos.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
@@ -34262,7 +34650,7 @@ function ModuloAnalyticsBI({
       if (!esCobroConfirmado(i) || i.estado === 'cancelado') return;
       if (!dentroDeRangoPorCreatedAt(i, rango)) return;
       const reta = retasPorId.get(String(i.reta_id)) || null;
-      const monto = montoInscripcionCobrada(i, reta ? precioDeReta(reta) : 0);
+      const monto = montoInscripcionCobradaContable(i, reta ? precioDeReta(reta) : 0);
       if (monto <= 0) return;
       // App-166 — 'retenido' (canceló fuera de tiempo) suma en
       // «Penalizaciones», no en Retas & Torneos; sigue contando como ingreso
@@ -34333,7 +34721,7 @@ function ModuloAnalyticsBI({
       rango,
       montoReta: (i) => {
         const reta = retasPorId.get(String(i.reta_id)) || null;
-        return montoInscripcionCobrada(i, reta ? precioDeReta(reta) : 0);
+        return montoInscripcionCobradaContable(i, reta ? precioDeReta(reta) : 0);
       },
     });
     let totalPenalizaciones = 0;
@@ -34387,6 +34775,83 @@ function ModuloAnalyticsBI({
     });
     return mapa;
   }, [productos, variantesPorProducto]);
+
+  /* ---- App-170 — Cortesías Redimidas (informativo, NO es ingreso) ----
+   * Estado real de cada cortesía por frecuencia aplicada en el periodo
+   * (`cortesias_frecuencia`, RLS: solo el club dueño): distingue una
+   * cancelación a tiempo (la cortesía regresó al jugador → no cuenta) de una
+   * tardía (quedó consumida → sí cuenta). Solo lectura; si la tabla no existe
+   * o no se puede leer, `construirCortesiasRedimidasBI` usa el respaldo por
+   * fila. No toca ningún total financiero. */
+  const idsCortesiasFrecuenciaRango = useMemo(() => {
+    const ids = new Set();
+    const tomar = (f) => {
+      if (f?.cortesia_frecuencia_id != null && f.cortesia_frecuencia_id !== '') ids.add(String(f.cortesia_frecuencia_id));
+    };
+    reservasEnRango.forEach(tomar);
+    [inscripciones, participantesTorneo, academiaAlumnos].forEach((lista) =>
+      (lista || []).forEach((f) => {
+        if (f?.cortesia_frecuencia_id != null && dentroDeRangoPorCreatedAt(f, rango)) tomar(f);
+      })
+    );
+    return [...ids].sort().join(',');
+  }, [reservasEnRango, inscripciones, participantesTorneo, academiaAlumnos, rango]);
+  const [estadosCortesiasFrecuencia, setEstadosCortesiasFrecuencia] = useState(null);
+  const [versionCortesiasFrecuencia, setVersionCortesiasFrecuencia] = useState(0);
+  useEffect(() => {
+    let vigente = true;
+    if (!idsCortesiasFrecuenciaRango) {
+      setEstadosCortesiasFrecuencia(null);
+      return undefined;
+    }
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('cortesias_frecuencia')
+          .select('id, estado, redimida_tabla, redimida_referencia_id')
+          .in('id', idsCortesiasFrecuenciaRango.split(','));
+        if (!vigente) return;
+        if (error || !Array.isArray(data)) {
+          setEstadosCortesiasFrecuencia(null);
+          return;
+        }
+        setEstadosCortesiasFrecuencia(new Map(data.map((c) => [String(c.id), c])));
+      } catch (_e) {
+        if (vigente) setEstadosCortesiasFrecuencia(null);
+      }
+    })();
+    return () => {
+      vigente = false;
+    };
+  }, [idsCortesiasFrecuenciaRango, versionCortesiasFrecuencia]);
+  useEffect(() => {
+    if (!idsCortesiasFrecuenciaRango) return undefined;
+    const canal = supabase
+      .channel('analytics-cortesias-frecuencia')
+      .on('postgres_changes', canalClubFiltro('cortesias_frecuencia'), () => setVersionCortesiasFrecuencia((n) => n + 1))
+      .subscribe();
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, [idsCortesiasFrecuenciaRango]);
+
+  const cortesiasRedimidas = useMemo(
+    () =>
+      construirCortesiasRedimidasBI({
+        reservasEnRango,
+        inscripciones,
+        participantesTorneo,
+        academiaAlumnos,
+        ventasRango,
+        rango,
+        estadosCortesias: estadosCortesiasFrecuencia,
+        productosPorId,
+        variantesPorProducto,
+        variantesPorId,
+        indicePorNombre: indiceCategoriaPorNombreBI(productos),
+      }),
+    [reservasEnRango, inscripciones, participantesTorneo, academiaAlumnos, ventasRango, rango, estadosCortesiasFrecuencia, productosPorId, variantesPorProducto, variantesPorId, productos]
+  );
 
   /* ---- Heatmap de ocupación por horario (incluye reservas pendientes) ---- */
   const heatmap = useMemo(() => {
@@ -34936,6 +35401,7 @@ function ModuloAnalyticsBI({
       variantesPorProducto,
       ventasPorVarianteSemana,
       nombreClub: (configClub?.nombre || '').trim() || 'ClubOS',
+      cortesiasRedimidas,
     });
     const nombreArchivo = `analytics-bi_${rango.inicioFechaISO}_a_${rango.finFechaISO}.csv`;
     descargarArchivoTexto(nombreArchivo, csv, 'text/csv;charset=utf-8;');
@@ -35041,6 +35507,14 @@ function ModuloAnalyticsBI({
           onClose={() => setDesgloseVentasBI(null)}
         />
       )}
+
+      {/* App-170 — Cortesías Redimidas: valor absorbido por el club en el
+          periodo (informativo; no suma a ningún ingreso). */}
+      <CortesiasRedimidasBI
+        datos={cortesiasRedimidas}
+        cargando={loadingVentas}
+        periodo={rango.etiqueta || ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'}
+      />
 
       {/* Complemento visual de los KPIs: flujo de ingresos cobrados por
           hora (Día), por día (Mes) o por mes (Año). */}
@@ -39295,12 +39769,17 @@ function previaCancelacionReta(reta, inscritosActivos) {
   const precio = precioDeReta(reta);
   const filas = (inscritosActivos || []).map((i) => {
     const pagado = esCobroConfirmado(i);
-    const monto = montoInscripcionCobrada(i, precio);
+    // v150 / App-171 — mismo criterio que el servidor: un lugar cubierto con
+    // Cortesía por Frecuencia reembolsa solo lo que se pagó ($0 si fue gratis)
+    // y la cortesía regresa al jugador.
+    const conCortesiaFrecuencia = i?.cortesia_frecuencia_id != null && i.cortesia_frecuencia_id !== '';
+    const monto = montoInscripcionCobradaContable(i, precio);
     const identificable = Boolean(i.jugador_id) || Boolean(claveTelefono(i.telefono || ''));
     let accion;
     if (pagado && monto > 0) accion = identificable ? 'wallet' : 'manual';
+    else if (conCortesiaFrecuencia) accion = 'cortesia_frecuencia';
     else accion = esInscripcionCortesia(i) ? 'cortesia' : 'sin_cargo';
-    return { id: i.id, nombre: i.nombre || 'Jugador', monto, accion };
+    return { id: i.id, nombre: i.nombre || 'Jugador', monto, accion, devuelveCortesia: conCortesiaFrecuencia };
   });
   const totalWallet = filas.filter((f) => f.accion === 'wallet').reduce((acc, f) => acc + f.monto, 0);
   const totalManual = filas.filter((f) => f.accion === 'manual').reduce((acc, f) => acc + f.monto, 0);
@@ -39490,6 +39969,7 @@ function ModalCancelarRetaIncompleta({ reta, inscritosActivos, onClose }) {
     manual: 'Reembolso manual (sin teléfono)',
     cortesia: 'Cortesía · sin cargo',
     sin_cargo: 'No había pagado · sin cargo',
+    cortesia_frecuencia: 'Cortesía por frecuencia · se le devuelve',
   };
 
   async function confirmar() {
@@ -39515,6 +39995,7 @@ function ModalCancelarRetaIncompleta({ reta, inscritosActivos, onClose }) {
               <span className={`shrink-0 text-[11px] font-bold ${f.accion === 'wallet' ? 'text-emerald-600' : f.accion === 'manual' ? 'text-amber-600' : 'text-slate-500'}`}>
                 {textoAccion[f.accion]}
                 {f.accion === 'wallet' || f.accion === 'manual' ? ` · ${formatoMoneda(f.monto)}` : ''}
+                {f.devuelveCortesia && f.accion !== 'cortesia_frecuencia' ? ' + cortesía de vuelta' : ''}
               </span>
             </div>
           ))}
@@ -39954,7 +40435,8 @@ function ModalGestionInscripcionReta({ reta, inscripcion, configClub, cancelando
   // App-117 — lugar absorbido por el club (Invitado de emergencia): $0, sin
   // cobro ni penalización posibles.
   const esCortesia = esInscripcionCortesia(inscripcion);
-  const monto = esCortesia ? 0 : Number(inscripcion?.monto) || precioDeReta(reta);
+  // App-170 — cubierta con Cortesía por Frecuencia: su monto real (sin respaldo al precio de la reta).
+  const monto = esCortesia ? 0 : montoInscripcionCobradaContable(inscripcion, precioDeReta(reta));
   const yaResuelta = inscripcion?.estado === 'cancelado' || inscripcion?.estado === 'retenido';
 
   async function confirmarCancelar() {
@@ -44602,7 +45084,9 @@ async function cancelarInscripcionRetaNativa(reta, inscripcion, opciones = {}, {
   // App-117 — una cortesía (Invitado de emergencia que absorbe el club)
   // nunca genera adeudo ni reembolso: se libera el lugar y listo.
   const esCortesia = esInscripcionCortesia(inscripcion);
-  const monto = esCortesia ? 0 : Number(inscripcion.monto) || precioDeReta(reta);
+  // App-170 — cubierta con Cortesía por Frecuencia: su monto real ($0 si fue gratis), nunca el precio de
+  // la reta (antes un lugar gratis por cortesía se abonaba a la Wallet al precio completo).
+  const monto = esCortesia ? 0 : montoInscripcionCobradaContable(inscripcion, precioDeReta(reta));
   const nuevoEstado = dentroDeTolerancia || esCortesia ? 'cancelado' : 'retenido';
   // Modal Unificado de Gestión de Inscripción (mismo patrón que
   // `DetalleReserva.cancelar`/`cancelarClaseCompleta`): el staff puede
