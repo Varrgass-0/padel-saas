@@ -4397,6 +4397,215 @@ function montoRetenidoReserva(r) {
   const base = (Number(r?.monto_total) || 0) + (Number(r?.monto_addons) || 0);
   return base > 0 ? base : Number(r?.pago_en_linea_monto) || 0;
 }
+// =============================================================================
+// App-173 — Tickets LIGADOS a una reserva (`reserva_id` / `es_reserva`)
+// -----------------------------------------------------------------------------
+// Al liquidar una cuenta pendiente con consumos, en el Split Bill con reserva
+// vinculada o en el ticket de una reserva del Portal, el MISMO ticket trae la
+// renta de la cancha (renglón `cancha`) y los productos vendidos. La renta se
+// cuenta desde `reservas.monto_total` (nunca desde el ticket, para no
+// duplicarla), pero los productos sí son dinero cobrado y deben sumarse.
+// Reglas, para no duplicar ni inflar:
+//   • Solo renglones `producto` y `penalizacion` con monto (nunca `cancha`,
+//     `inscripcion_evento` ni renglones sin tipo).
+//   • Los add-ons del Portal ya se cuentan desde `reservas.monto_addons`
+//     (Reserva pagada o pago retenido): ese monto se DESCUENTA de los productos
+//     de los tickets de esa reserva — así el mismo add-on nunca entra dos veces.
+//   • Reserva pagada en línea (Stripe) y reembolsada: el reembolso devolvió
+//     todo el cargo (renta + artículos), así que sus productos no son ingreso.
+function ventaLigadaAReserva(venta) {
+  return Boolean(venta) && ((venta.reserva_id !== null && venta.reserva_id !== undefined && venta.reserva_id !== '') || venta.es_reserva === true);
+}
+function reservaReembolsadaEnLinea(reserva) {
+  if (!reserva) return false;
+  if (estatusCobroNormalizado(reserva) !== 'reembolsado') return false;
+  return reserva.pago_en_linea_estado === 'pagado' || (Number(reserva.pago_en_linea_monto) || 0) > 0 || Boolean(reserva.pago_en_linea_id);
+}
+// ¿Este ticket ligado se cobró sobre una reserva cuyo cargo en línea se
+// reembolsó completo? (Analytics y Estado de Resultados lo excluyen igual.)
+function ventaLigadaReembolsadaEnLinea(venta, reservasPorId) {
+  if (!ventaLigadaAReserva(venta) || venta?.reserva_id == null) return false;
+  return reservaReembolsadaEnLinea(reservasPorId?.get?.(String(venta.reserva_id)));
+}
+function claveArticuloAddonReserva(it) {
+  return it?.producto_id != null && it?.producto_id !== '' ? `p:${it.producto_id}` : `n:${claveNombre(String(it?.nombre || '').split(' — ')[0])}`;
+}
+
+// App-174 — Add-ons EFECTIVOS de una reserva del Portal: lo que de verdad se
+// cobró de los artículos que traía (`monto_addons` / `addons_detalle`).
+// Si Recepción redujo o quitó un add-on al liquidar, el ticket de la reserva
+// trae la cantidad final: cada artículo cuenta hasta lo que aparece en sus
+// tickets pagados (mismo producto o nombre). Sin ningún ticket pagado (no
+// hay con qué comparar) se conserva el monto original. Nunca supera
+// `monto_addons`. Devuelve { monto, detalle, ajustado }.
+function addonsEfectivosReserva(reserva, ticketsPagados) {
+  const redondear = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const original = redondear(Math.max(0, Number(reserva?.monto_addons) || 0));
+  if (!(original > 0)) return { monto: 0, detalle: [], ajustado: false };
+  const detalleOriginal =
+    Array.isArray(reserva?.addons_detalle) && reserva.addons_detalle.length > 0 ? reserva.addons_detalle : [{ nombre: 'Quick Sell', subtotal: original }];
+  const tickets = (ticketsPagados || []).filter((v) => esCobroConfirmado(v));
+  if (!tickets.length) return { monto: original, detalle: detalleOriginal, ajustado: false };
+  const enTickets = new Map();
+  let totalProductos = 0;
+  tickets.forEach((v) =>
+    (Array.isArray(v?.detalles?.items) ? v.detalles.items : []).forEach((it) => {
+      const st = Number(it?.subtotal) || 0;
+      if (it?.tipo !== 'producto' || !(st > 0)) return;
+      const k = claveArticuloAddonReserva(it);
+      enTickets.set(k, redondear((enTickets.get(k) || 0) + st));
+      totalProductos = redondear(totalProductos + st);
+    })
+  );
+  let detalle;
+  if (!(Array.isArray(reserva?.addons_detalle) && reserva.addons_detalle.length > 0)) {
+    detalle = [{ nombre: 'Quick Sell', subtotal: Math.min(original, totalProductos) }];
+  } else {
+    detalle = reserva.addons_detalle.map((a) => {
+      const st = Number(a?.subtotal) || redondear((Number(a?.precio) || 0) * (Number(a?.cantidad) || 1));
+      const k = claveArticuloAddonReserva(a);
+      const tomado = redondear(Math.min(st, enTickets.get(k) || 0));
+      enTickets.set(k, redondear((enTickets.get(k) || 0) - tomado));
+      if (tomado === redondear(st)) return a;
+      const precio = Number(a?.precio) || 0;
+      return { ...a, subtotal: tomado, cantidad: precio > 0 ? Math.round((tomado / precio) * 100) / 100 : a?.cantidad };
+    });
+  }
+  let monto = redondear(Math.min(original, detalle.reduce((acc, a) => acc + (Number(a?.subtotal) || 0), 0)));
+  detalle = detalle.filter((a) => (Number(a?.subtotal) || 0) > 0);
+  return { monto, detalle, ajustado: monto !== original };
+}
+
+// Descuenta de los productos de los tickets de UNA reserva los add-ons que ya
+// se cuentan desde `reservas.monto_addons` (`montoADescontar`). Primero contra
+// los mismos artículos (`addons_detalle`: mismo producto o nombre), y lo que
+// quede, en orden de los tickets. Devuelve Map(venta → { lista: renglones
+// `producto` ajustados sin los que quedan en $0, porOriginal: original → ajustado | null }).
+function descontarAddonsDeTicketsReserva(tickets, reserva, montoADescontar) {
+  const redondear = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const claveItem = claveArticuloAddonReserva;
+  let pendiente = redondear(montoADescontar);
+  const porArticulo = new Map();
+  (Array.isArray(reserva?.addons_detalle) ? reserva.addons_detalle : []).forEach((a) => {
+    const st = Number(a?.subtotal) || (Number(a?.precio) || 0) * (Number(a?.cantidad) || 1);
+    if (st > 0) porArticulo.set(claveItem(a), redondear((porArticulo.get(claveItem(a)) || 0) + st));
+  });
+  const trabajo = tickets.map((t) => ({ venta: t.venta, items: t.productos.map((it) => ({ original: it, resto: redondear(it.subtotal) })) }));
+  // 1) mismos artículos
+  trabajo.forEach((t) =>
+    t.items.forEach((x) => {
+      if (pendiente <= 0) return;
+      const k = claveItem(x.original);
+      const disponible = porArticulo.get(k) || 0;
+      const quitar = Math.min(disponible, x.resto, pendiente);
+      if (quitar > 0) {
+        x.resto = redondear(x.resto - quitar);
+        porArticulo.set(k, redondear(disponible - quitar));
+        pendiente = redondear(pendiente - quitar);
+      }
+    })
+  );
+  // 2) lo que quede, en orden
+  trabajo.forEach((t) =>
+    t.items.forEach((x) => {
+      if (pendiente <= 0) return;
+      const quitar = Math.min(x.resto, pendiente);
+      x.resto = redondear(x.resto - quitar);
+      pendiente = redondear(pendiente - quitar);
+    })
+  );
+  const resultado = new Map();
+  trabajo.forEach((t) => {
+    const porOriginal = new Map();
+    t.items.forEach((x) =>
+      porOriginal.set(x.original, x.resto <= 0 ? null : x.resto === redondear(x.original.subtotal) ? x.original : { ...x.original, subtotal: x.resto })
+    );
+    resultado.set(t.venta, { lista: [...porOriginal.values()].filter(Boolean), porOriginal });
+  });
+  return resultado;
+}
+const ordenTicketsPorFecha = (a, b) =>
+  String(a?.created_at || '').localeCompare(String(b?.created_at || '')) || String(a?.id).localeCompare(String(b?.id));
+
+// Analytics cuenta los productos desde los tickets (no usa `monto_addons`),
+// salvo en una reserva con pago RETENIDO: la retención ya suma renta +
+// add-ons en «Penalizaciones», así que esos add-ons se descuentan de los
+// productos de sus tickets (mismo descuento que el Estado de Resultados).
+// Devuelve las ventas depuradas; las demás, intactas.
+function ventasContablesBI(ventas, reservasPorId) {
+  const grupos = new Map();
+  (ventas || []).forEach((v) => {
+    if (!esCobroConfirmado(v) || !ventaLigadaAReserva(v) || v.reserva_id == null) return;
+    const r = reservasPorId?.get?.(String(v.reserva_id));
+    if (!r || esBloqueoDeEvento(r) || !esReservaRetenidaPorCancelacion(r) || !((Number(r.monto_addons) || 0) > 0)) return;
+    const productos = (Array.isArray(v?.detalles?.items) ? v.detalles.items : []).filter((it) => it?.tipo === 'producto' && (Number(it.subtotal) || 0) > 0);
+    if (!productos.length) return;
+    if (!grupos.has(String(v.reserva_id))) grupos.set(String(v.reserva_id), { reserva: r, tickets: [] });
+    grupos.get(String(v.reserva_id)).tickets.push({ venta: v, productos });
+  });
+  const ajustes = new Map();
+  grupos.forEach(({ reserva, tickets }) => {
+    tickets.sort((a, b) => ordenTicketsPorFecha(a.venta, b.venta));
+    const netos = descontarAddonsDeTicketsReserva(tickets, reserva, Number(reserva.monto_addons) || 0);
+    tickets.forEach((t) => {
+      const porOriginal = netos.get(t.venta)?.porOriginal || new Map();
+      const items = Array.isArray(t.venta?.detalles?.items) ? t.venta.detalles.items : [];
+      const nuevos = items.map((it) => (porOriginal.has(it) ? porOriginal.get(it) : it)).filter(Boolean);
+      ajustes.set(t.venta, { ...t.venta, detalles: { ...(t.venta.detalles || {}), items: nuevos } });
+    });
+  });
+  return (ventas || []).filter((v) => !ventaLigadaReembolsadaEnLinea(v, reservasPorId)).map((v) => ajustes.get(v) || v);
+}
+// `addonsContados(reserva)` (opcional, App-174): { monto, detalle } de los
+// add-ons que el Estado de Resultados ya cuenta por la reserva (los efectivos
+// si se redujeron al liquidar). Sin él, `monto_addons` / `addons_detalle`.
+function construirVentasLigadasReservaPnl(ventas, reservasPorId, addonsContados = null) {
+  const redondear = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const grupos = new Map();
+  (ventas || []).forEach((v) => {
+    if (!esCobroConfirmado(v) || !ventaLigadaAReserva(v)) return;
+    if (ventaLigadaReembolsadaEnLinea(v, reservasPorId)) return;
+    const items = Array.isArray(v?.detalles?.items) ? v.detalles.items : [];
+    const productos = items.filter((it) => it?.tipo === 'producto' && (Number(it.subtotal) || 0) > 0);
+    const penalizaciones = items.filter((it) => it?.tipo === 'penalizacion' && (Number(it.subtotal) || 0) > 0);
+    if (!productos.length && !penalizaciones.length) return;
+    const clave = v.reserva_id !== null && v.reserva_id !== undefined && v.reserva_id !== '' ? String(v.reserva_id) : `venta-${v.id}`;
+    if (!grupos.has(clave)) grupos.set(clave, []);
+    grupos.get(clave).push({ venta: v, productos, penalizaciones });
+  });
+  const resultado = [];
+  grupos.forEach((lista, clave) => {
+    const r = reservasPorId?.get?.(clave) || null;
+    const cuentaAddons = r && !esBloqueoDeEvento(r) && (esCobroConfirmado(r) || esReservaRetenidaPorCancelacion(r));
+    // Pagada: los add-ons efectivos (App-174). Retenida: la retención suma
+    // `monto_addons` completo, así que se descuenta completo.
+    const contados =
+      cuentaAddons && addonsContados && esCobroConfirmado(r)
+        ? addonsContados(r)
+        : { monto: cuentaAddons ? Math.max(0, Number(r.monto_addons) || 0) : 0, detalle: r?.addons_detalle };
+    lista.sort((a, b) => ordenTicketsPorFecha(a.venta, b.venta));
+    const netos = descontarAddonsDeTicketsReserva(lista, { addons_detalle: contados.detalle }, contados.monto);
+    lista.forEach((e) => {
+      const productos = netos.get(e.venta)?.lista || [];
+      const montoProductos = redondear(productos.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0));
+      const montoBruto = redondear(e.productos.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0));
+      const montoPenalizaciones = redondear(e.penalizaciones.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0));
+      const monto = redondear(montoProductos + montoPenalizaciones);
+      if (monto <= 0) return;
+      resultado.push({
+        venta: e.venta,
+        web: esOrigenPortalWeb(e.venta.origen),
+        productos,
+        penalizaciones: e.penalizaciones,
+        montoProductos,
+        montoPenalizaciones,
+        addonsDescontados: redondear(montoBruto - montoProductos),
+        monto,
+      });
+    });
+  });
+  return resultado;
+}
 function esInscripcionRetenidaPorCancelacion(fila) {
   if (fila?.estado !== 'retenido') return false;
   const estatus = estatusCobroNormalizado(fila);
@@ -28330,7 +28539,7 @@ function construirCortesiasRedimidasBI({
 
   const metas = {};
   CATEGORIAS_CORTESIA_META_BI.forEach((c) => {
-    metas[c.clave] = { ...c, entregas: 0, productos: 0, valor: 0, sinPrecio: 0 };
+    metas[c.clave] = { ...c, entregas: 0, productos: 0, valor: 0, sinPrecio: 0, articulos: new Map() };
   });
   (ventasRango || []).forEach((v) => {
     const nota = String(v?.detalles?.nota || '');
@@ -28355,6 +28564,12 @@ function construirCortesiasRedimidasBI({
       acc.productos += cantidad;
       acc.valor += valor;
       if (!tienePrecio) acc.sinPrecio += cantidad;
+      // App-174 — qué productos se entregaron (nombre + unidades + valor).
+      const nombreArticulo = resuelto.nombre || item.nombre || 'Producto';
+      const art = acc.articulos.get(nombreArticulo) || { nombre: nombreArticulo, unidades: 0, valor: 0 };
+      art.unidades += cantidad;
+      art.valor = redondearCentavosBI(art.valor + valor);
+      acc.articulos.set(nombreArticulo, art);
       if (contoEntrega !== cat) {
         acc.entregas += 1;
         contoEntrega = cat;
@@ -28377,7 +28592,11 @@ function construirCortesiasRedimidasBI({
     valorLista: redondearCentavosBI(frecuencia[c.clave].valorLista),
     absorbido: redondearCentavosBI(frecuencia[c.clave].absorbido),
   }));
-  const filasMetas = CATEGORIAS_CORTESIA_META_BI.map((c) => ({ ...metas[c.clave], valor: redondearCentavosBI(metas[c.clave].valor) }));
+  const filasMetas = CATEGORIAS_CORTESIA_META_BI.map((c) => {
+    const { articulos, ...resto } = metas[c.clave];
+    const detalleProductos = [...articulos.values()].sort((a, b) => b.unidades - a.unidades || b.valor - a.valor || a.nombre.localeCompare(b.nombre));
+    return { ...resto, valor: redondearCentavosBI(resto.valor), detalleProductos };
+  });
   const totalFrecuencia = {
     canjes: filasFrecuencia.reduce((a, f) => a + f.canjes, 0),
     gratis: filasFrecuencia.reduce((a, f) => a + f.gratis, 0),
@@ -28428,8 +28647,10 @@ function filasCSVCortesiasRedimidas(datos) {
   const tf = datos.totalFrecuencia;
   f.push(['Total Frecuencia', tf.canjes, tf.gratis, tf.porcentaje, tf.valorLista.toFixed(2), tf.absorbido.toFixed(2)]);
   f.push([]);
-  f.push(['Cortesías de Metas de Gasto', 'Productos Entregados', 'Valor Equivalente (precio de lista)']);
-  datos.metas.forEach((r) => f.push([r.etiqueta, r.productos, r.valor.toFixed(2)]));
+  f.push(['Cortesías de Metas de Gasto', 'Productos Entregados', 'Valor Equivalente (precio de lista)', 'Detalle de productos']);
+  datos.metas.forEach((r) =>
+    f.push([r.etiqueta, r.productos, r.valor.toFixed(2), (r.detalleProductos || []).map((a) => `${a.nombre} x${a.unidades} (${a.valor.toFixed(2)})`).join('; ')])
+  );
   f.push(['Total Metas', datos.totalMetas.productos, datos.totalMetas.valor.toFixed(2)]);
   f.push([]);
   if (datos.detalle.length > 0) {
@@ -28531,7 +28752,19 @@ function CortesiasRedimidasBI({ datos, cargando, periodo }) {
               <tbody>
                 {metas.map((f) => (
                   <tr key={f.clave} className="border-b border-slate-200/70" data-testid={`cortesias-meta-${f.clave === 'Pro-Shop' ? 'proshop' : 'bar'}`}>
-                    <td className={`${th} font-bold text-slate-900`}>{f.etiqueta}</td>
+                    <td className={`${th} text-slate-900`}>
+                      <span className="font-bold">{f.etiqueta}</span>
+                      {/* App-174 — qué productos se entregaron en esta categoría. */}
+                      {f.detalleProductos?.length > 0 && (
+                        <ul className="mt-1 space-y-0.5 text-[11px] font-normal text-slate-500" data-campo="detalle">
+                          {f.detalleProductos.map((a) => (
+                            <li key={a.nombre}>
+                              {a.nombre} ×{a.unidades} · {formatoMoneda(a.valor)}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </td>
                     <td className={`${th} text-right tabular-nums text-slate-700`} data-campo="productos">{f.productos}</td>
                     <td className={`${th} text-right font-bold tabular-nums text-slate-900`} data-campo="valor">{formatoMoneda(f.valor)}</td>
                   </tr>
@@ -30253,7 +30486,6 @@ function generarHTMLReporteAnalytics({
     )
   );
 
-  const unidadesCortesia = cortesiasRedimidas?.totalMetas?.productos || 0;
   partes.push(
     seccionReporte(
       'Top productos más vendidos',
@@ -30261,11 +30493,7 @@ function generarHTMLReporteAnalytics({
         columnas: [{ titulo: 'Producto' }, { titulo: 'Categoría' }, { titulo: 'Unidades', alinear: 'der' }, { titulo: 'Ingreso', alinear: 'der' }, { titulo: 'Margen bruto', alinear: 'der' }],
         filas: (analisis.topProductos || []).map((f) => [f.nombre, etiquetaCategoriaProducto(f.categoria) || '—', String(f.unidades), dineroReporte(f.ingreso), dineroReporte(f.ganancia)]),
         vacio: 'Sin ventas de productos en el periodo.',
-      })}${
-        unidadesCortesia > 0
-          ? `<p class="nota">Las unidades incluyen ${unidadesCortesia} producto(s) entregados como cortesía de metas (sin ingreso; ver «Cortesías redimidas»).</p>`
-          : ''
-      }`,
+      })}`,
       { subtitulo: 'Punto de Venta y Tienda en Línea del Portal.' }
     )
   );
@@ -30285,9 +30513,14 @@ function generarHTMLReporteAnalytics({
           filas: cr.frecuencia.map((f) => [f.etiqueta, String(f.canjes), `${f.gratis} / ${f.porcentaje}`, dineroReporte(f.absorbido)]),
           total: ['Total', String(cr.totalFrecuencia.canjes), `${cr.totalFrecuencia.gratis} / ${cr.totalFrecuencia.porcentaje}`, dineroReporte(cr.totalFrecuencia.absorbido)],
         })}${htmlTablaReporte({
-          columnas: [{ titulo: 'Metas de gasto' }, { titulo: 'Productos', alinear: 'der' }, { titulo: 'Valor equivalente', alinear: 'der' }],
-          filas: cr.metas.map((f) => [f.etiqueta, String(f.productos), dineroReporte(f.valor)]),
-          total: ['Total', String(cr.totalMetas.productos), dineroReporte(cr.totalMetas.valor)],
+          columnas: [{ titulo: 'Metas de gasto' }, { titulo: 'Productos entregados' }, { titulo: 'Unid.', alinear: 'der' }, { titulo: 'Valor', alinear: 'der' }],
+          filas: cr.metas.map((f) => [
+            f.etiqueta,
+            (f.detalleProductos || []).map((a) => `${a.nombre} ×${a.unidades}`).join(', ') || '—',
+            String(f.productos),
+            dineroReporte(f.valor),
+          ]),
+          total: ['Total', '', String(cr.totalMetas.productos), dineroReporte(cr.totalMetas.valor)],
         })}</div><p class="nota">100% = gratis (se absorbe el precio de lista completo) · % = solo la parte descontada. Metas: precio de lista actual del catálogo.</p></div>`,
         { subtitulo: 'Informativo: valor que el club absorbió. No suma a ingresos, Estado de Resultados ni cortes de caja.' }
       ).replace('<h2>Cortesías redimidas</h2>', '<h2>Cortesías redimidas <span class="etiqueta-info">Informativo</span></h2>')
@@ -31132,10 +31365,14 @@ function construirTendenciaPnl(modo, rango, pnl) {
 
   (pnl._filasVentasMostrador || []).forEach((v) => sumar(indiceFecha(obtenerTimestampVenta(v)), 'ingresos', montoVentaSinInscripciones(v)));
   (pnl._filasVentasWeb || []).forEach((v) => sumar(indiceFecha(obtenerTimestampVenta(v)), 'ingresos', montoVentaSinInscripciones(v)));
+  // App-173 — productos de tickets ligados a una reserva (por fecha del ticket).
+  (pnl._ventasLigadasReserva || []).forEach((e) => sumar(indiceFecha(obtenerTimestampVenta(e.venta)), 'ingresos', e.monto));
   (pnl._filasReservas || []).forEach((r) => {
     const idx = indiceCalendario(r.fecha, parseHoraAMinutos(r.hora_inicio));
     sumar(idx, 'ingresos', Number(r.monto_total) || 0);
-    sumar(idx, 'ingresos', Number(r.monto_addons) || 0);
+    // App-174 — add-ons efectivos (los que el P&L cuenta), si están.
+    const efectivos = pnl._addonsEfectivos?.get?.(String(r.id));
+    sumar(idx, 'ingresos', efectivos ? efectivos.monto : Number(r.monto_addons) || 0);
   });
   const montoReta = pnl._montoInscripcionReta || (() => 0);
   (pnl._filasInscripcionesRetas || []).forEach((i) => sumar(indiceFecha(new Date(i.created_at)), 'ingresos', montoReta(i)));
@@ -31795,6 +32032,49 @@ function ModuloContabilidadCompras({
     cargarVentasRangoPnl();
   }, [cargarVentasRangoPnl]);
 
+  // App-174 — Tickets pagados de las reservas con add-ons del Portal que
+  // toca el periodo (por su fecha de juego o porque un ticket del periodo las
+  // nombra), aunque el ticket sea de otro periodo: de ahí sale cuánto de esos
+  // add-ons se cobró de verdad (`addonsEfectivosReserva`). Solo lectura.
+  const idsReservasAddonsPnl = useMemo(() => {
+    const ids = new Set();
+    const cuenta = (r) => r && (Number(r.monto_addons) || 0) > 0 && !esBloqueoDeEvento(r) && esCobroConfirmado(r);
+    (reservas || []).forEach((r) => {
+      if (cuenta(r) && r.fecha >= rangoPnl.inicioFechaISO && r.fecha < rangoPnl.finFechaISO) ids.add(String(r.id));
+    });
+    const porId = new Map((reservas || []).map((r) => [String(r.id), r]));
+    ventasRangoPnl.forEach((v) => {
+      if (ventaLigadaAReserva(v) && v.reserva_id != null && cuenta(porId.get(String(v.reserva_id)))) ids.add(String(v.reserva_id));
+    });
+    return [...ids].sort().join(',');
+  }, [reservas, rangoPnl, ventasRangoPnl]);
+  const [ventasReservasAddonsPnl, setVentasReservasAddonsPnl] = useState([]);
+  const [loadingAddonsPnl, setLoadingAddonsPnl] = useState(false);
+  useEffect(() => {
+    let vigente = true;
+    if (!idsReservasAddonsPnl) {
+      setVentasReservasAddonsPnl([]);
+      return undefined;
+    }
+    const ids = idsReservasAddonsPnl.split(',');
+    setLoadingAddonsPnl(true);
+    (async () => {
+      try {
+        const { data, error } = await conClubId(supabase.from('ventas').select('*')).in('reserva_id', ids);
+        if (!vigente) return;
+        // Si falla, se usan solo los tickets del periodo (ya cargados).
+        setVentasReservasAddonsPnl(error ? [] : (data || []).filter((v) => v?.reserva_id != null && ids.includes(String(v.reserva_id))));
+      } catch (_e) {
+        if (vigente) setVentasReservasAddonsPnl([]);
+      } finally {
+        if (vigente) setLoadingAddonsPnl(false);
+      }
+    })();
+    return () => {
+      vigente = false;
+    };
+  }, [idsReservasAddonsPnl, ventasRangoPnl]);
+
   useEffect(() => {
     const canal = supabase
       .channel('contabilidad-pnl-ventas')
@@ -31850,8 +32130,34 @@ function ModuloContabilidadCompras({
     );
     const filasVentasMostrador = ventasNoLigadasAReserva.filter((v) => !esOrigenPortalWeb(v.origen));
     const filasVentasWeb = ventasNoLigadasAReserva.filter((v) => esOrigenPortalWeb(v.origen));
-    const ventasMostrador = filasVentasMostrador.reduce((acc, v) => acc + montoVentaSinInscripciones(v), 0);
-    const ventasWebTienda = filasVentasWeb.reduce((acc, v) => acc + montoVentaSinInscripciones(v), 0);
+    // App-173 — productos (y penalizaciones) cobrados en tickets ligados a una
+    // reserva: la renta sigue saliendo de `reservas` (sin duplicarse), los
+    // productos ahora sí suman. Ver `construirVentasLigadasReservaPnl`.
+    const reservasPorIdPnl = new Map((reservas || []).map((r) => [String(r.id), r]));
+    // App-174 — add-ons efectivos por reserva (si Recepción redujo o quitó un
+    // add-on al liquidar, cuenta el monto final del ticket, no el original).
+    const ticketsPorReservaPnl = new Map();
+    const vistosTicketsPnl = new Set();
+    [...ventasRangoPnl, ...ventasReservasAddonsPnl].forEach((v) => {
+      if (!ventaLigadaAReserva(v) || v.reserva_id == null || !esCobroConfirmado(v)) return;
+      const claveTicket = v.id != null ? String(v.id) : null;
+      if (claveTicket && vistosTicketsPnl.has(claveTicket)) return;
+      if (claveTicket) vistosTicketsPnl.add(claveTicket);
+      const k = String(v.reserva_id);
+      if (!ticketsPorReservaPnl.has(k)) ticketsPorReservaPnl.set(k, []);
+      ticketsPorReservaPnl.get(k).push(v);
+    });
+    const addonsEfectivosPnl = new Map();
+    const addonsEfectivosDe = (r) => {
+      const k = String(r.id);
+      if (!addonsEfectivosPnl.has(k)) addonsEfectivosPnl.set(k, addonsEfectivosReserva(r, ticketsPorReservaPnl.get(k) || []));
+      return addonsEfectivosPnl.get(k);
+    };
+    const ventasLigadasReserva = construirVentasLigadasReservaPnl(ventasRangoPnl, reservasPorIdPnl, addonsEfectivosDe);
+    const ventasLigadasMostrador = ventasLigadasReserva.filter((e) => !e.web).reduce((acc, e) => acc + e.monto, 0);
+    const ventasLigadasWeb = ventasLigadasReserva.filter((e) => e.web).reduce((acc, e) => acc + e.monto, 0);
+    const ventasMostrador = filasVentasMostrador.reduce((acc, v) => acc + montoVentaSinInscripciones(v), 0) + ventasLigadasMostrador;
+    const ventasWebTienda = filasVentasWeb.reduce((acc, v) => acc + montoVentaSinInscripciones(v), 0) + ventasLigadasWeb;
 
     const filasReservas = (reservas || []).filter(
       (r) =>
@@ -31867,7 +32173,8 @@ function ModuloContabilidadCompras({
     // (grips, bebidas, accesorios) — se suman a "Ventas Tienda Web" en vez
     // de a "Reservas de Canchas" (ver comentario arriba). Siempre 0 para
     // reservas hechas desde Mostrador.
-    const addonsDeReservasWeb = filasReservas.reduce((acc, r) => acc + (Number(r.monto_addons) || 0), 0);
+    // App-174 — add-ons EFECTIVOS (ver `addonsEfectivosReserva`).
+    const addonsDeReservasWeb = filasReservas.reduce((acc, r) => acc + addonsEfectivosDe(r).monto, 0);
     const ventasWeb = ventasWebTienda + addonsDeReservasWeb;
 
     // App-97 — Reclasificación por línea de negocio: el MISMO dinero de
@@ -31900,17 +32207,29 @@ function ModuloContabilidadCompras({
       })
     );
     filasReservas
-      .filter((r) => (Number(r.monto_addons) || 0) > 0)
+      .filter((r) => addonsEfectivosDe(r).monto > 0)
       .forEach((r) => {
-        const detalle = Array.isArray(r.addons_detalle) && r.addons_detalle.length > 0 ? r.addons_detalle : [{ nombre: 'Quick Sell', subtotal: Number(r.monto_addons) || 0 }];
+        const efectivos = addonsEfectivosDe(r);
+        const detalle = efectivos.detalle.length > 0 ? efectivos.detalle : [{ nombre: 'Quick Sell', subtotal: efectivos.monto }];
         repartoVentasPnl.push({
           tipo: 'addon',
           fila: r,
           canal: 'Tienda Web (Quick Sell de reserva)',
           // Los add-ons de reserva SIEMPRE son producto (Quick Sell).
-          lineas: repartirMontoPorLineaPnl(detalle, Number(r.monto_addons) || 0, productosPorIdPnl, productosPorNombrePnl, 'producto'),
+          lineas: repartirMontoPorLineaPnl(detalle, efectivos.monto, productosPorIdPnl, productosPorNombrePnl, 'producto'),
         });
       });
+    // App-173 — tickets ligados a una reserva: solo sus productos (ya sin los
+    // add-ons que cuenta `monto_addons`) y sus penalizaciones.
+    ventasLigadasReserva.forEach((e) => {
+      const lp = repartirMontoPorLineaPnl(e.productos, e.montoProductos, productosPorIdPnl, productosPorNombrePnl, 'producto');
+      const lpen = repartirMontoPorLineaPnl(e.penalizaciones, e.montoPenalizaciones, productosPorIdPnl, productosPorNombrePnl, 'otro');
+      const lineas = {};
+      LINEAS_VENTA_PNL.forEach((k) => {
+        lineas[k] = { monto: Math.round((lp[k].monto + lpen[k].monto) * 100) / 100, items: [...lp[k].items, ...lpen[k].items] };
+      });
+      repartoVentasPnl.push({ tipo: 'venta_reserva', fila: e.venta, canal: e.web ? 'Tienda Web' : 'Mostrador (POS)', lineas });
+    });
     const sumaLineaPnl = (k) => Math.round(repartoVentasPnl.reduce((acc, e) => acc + e.lineas[k].monto, 0) * 100) / 100;
     const sumaLineaCanalPnl = (k, web) =>
       Math.round(repartoVentasPnl.filter((e) => (e.canal !== 'Mostrador (POS)') === web).reduce((acc, e) => acc + e.lineas[k].monto, 0) * 100) / 100;
@@ -32024,6 +32343,8 @@ function ModuloContabilidadCompras({
       // exportador CSV, para no recalcular los mismos filtros dos veces.
       _filasVentasMostrador: filasVentasMostrador,
       _filasVentasWeb: filasVentasWeb,
+      _ventasLigadasReserva: ventasLigadasReserva,
+      _addonsEfectivos: addonsEfectivosPnl,
       _filasReservas: filasReservas,
       _egresosEnRango: egresosEnRango,
       _addonsDeReservasWeb: addonsDeReservasWeb,
@@ -32037,7 +32358,7 @@ function ModuloContabilidadCompras({
       _filasInscripcionesTorneos: filasInscripcionesTorneos,
       _montoInscripcionReta: montoInscripcionReta,
     };
-  }, [ventasRangoPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, retas, rangoPnl, productos]);
+  }, [ventasRangoPnl, ventasReservasAddonsPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, retas, rangoPnl, productos]);
 
   // Desglose para las tarjetas interactivas (ver Modal de Desglose más
   // abajo): ID de transacción, hora, concepto, canal, método de pago y
@@ -32098,12 +32419,14 @@ function ModuloContabilidadCompras({
     // Tienda Web" (no en "Reservas de Canchas"), un renglón por artículo
     // cuando `addons_detalle` está disponible (mismo dato que usa
     // `gruposReservasPendientes`), o uno agregado por reserva si no.
+    // App-174 — con los add-ons EFECTIVOS (lo cobrado tras reducir al liquidar).
+    const efectivosDe = (r) => pnl._addonsEfectivos?.get?.(String(r.id)) || { monto: Number(r.monto_addons) || 0, detalle: r.addons_detalle || [] };
     const filasAddonsReservaWebDesglose = pnl._filasReservas
-      .filter((r) => (Number(r.monto_addons) || 0) > 0)
+      .filter((r) => efectivosDe(r).monto > 0)
       .flatMap((r) => {
         const canchaNombre = canchasPorId[r.cancha_id]?.nombre || 'Cancha';
         const etiquetaReserva = `Reserva ${canchaNombre}${r.jugador_nombre ? ` — ${r.jugador_nombre}` : ''}`;
-        const addonsDetalle = Array.isArray(r.addons_detalle) ? r.addons_detalle : [];
+        const addonsDetalle = Array.isArray(r.addons_detalle) && r.addons_detalle.length > 0 ? efectivosDe(r).detalle : [];
         if (addonsDetalle.length > 0) {
           return addonsDetalle.map((a, i) => ({
             id: `${r.id}-addon-${i}`,
@@ -32125,7 +32448,7 @@ function ModuloContabilidadCompras({
             concepto: `Quick Sell — ${etiquetaReserva}`,
             canal: 'Tienda Web (Quick Sell de reserva)',
             metodoPago: r.metodo_pago || '—',
-            monto: Number(r.monto_addons) || 0,
+            monto: efectivosDe(r).monto,
           },
         ];
       });
@@ -32139,8 +32462,27 @@ function ModuloContabilidadCompras({
       metodoPago: g.metodo_pago || '—',
       monto: Number(g.monto) || 0,
     }));
-    const ventasMostradorDesglose = filasVenta(pnl._filasVentasMostrador, 'Mostrador (POS)');
-    const ventasWebDesglose = [...filasVenta(pnl._filasVentasWeb, 'Tienda Web'), ...filasAddonsReservaWebDesglose];
+    // App-173 — tickets ligados a una reserva: un renglón con SOLO lo que suma
+    // (productos sin los add-ons ya contados en la reserva + penalizaciones).
+    const filasVentaLigada = (web) =>
+      (pnl._ventasLigadasReserva || [])
+        .filter((e) => e.web === web)
+        .map((e) => {
+          const v = e.venta;
+          const its = [...e.productos, ...e.penalizaciones];
+          return {
+            id: `ligada-${v.id}`,
+            idCorto: (v.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+            hora: horaDe(v.created_at || v.fecha),
+            fecha: v.created_at || v.fecha || null,
+            concepto: `${its.map((it) => `${it?.nombre || 'Artículo'}${Number(it?.cantidad) > 1 ? ` ×${it.cantidad}` : ''}`).join(', ')} — Cuenta de reserva`,
+            canal: web ? 'Tienda Web' : 'Mostrador (POS)',
+            metodoPago: v.metodo_pago || '—',
+            monto: e.monto,
+          };
+        });
+    const ventasMostradorDesglose = [...filasVenta(pnl._filasVentasMostrador, 'Mostrador (POS)'), ...filasVentaLigada(false)];
+    const ventasWebDesglose = [...filasVenta(pnl._filasVentasWeb, 'Tienda Web'), ...filasAddonsReservaWebDesglose, ...filasVentaLigada(true)];
     // Líneas de negocio (App-97): un renglón por ticket/reserva con SOLO los
     // artículos de esa línea y el monto que le tocó en el reparto.
     const desgloseLinea = (k) =>
@@ -32153,7 +32495,11 @@ function ModuloContabilidadCompras({
             ? its.map((it) => `${it?.nombre || 'Artículo'}${Number(it?.cantidad) > 1 ? ` ×${it.cantidad}` : ''}`).join(', ')
             : 'Cobro directo (sin detalle de artículos)';
           const etiquetaReserva =
-            e.tipo === 'addon' ? ` — Reserva ${canchasPorId[f.cancha_id]?.nombre || 'Cancha'}${f.jugador_nombre ? ` · ${f.jugador_nombre}` : ''}` : '';
+            e.tipo === 'addon'
+              ? ` — Reserva ${canchasPorId[f.cancha_id]?.nombre || 'Cancha'}${f.jugador_nombre ? ` · ${f.jugador_nombre}` : ''}`
+              : e.tipo === 'venta_reserva'
+                ? ` — Cuenta de reserva${canchasPorId[f.cancha_id]?.nombre ? ` ${canchasPorId[f.cancha_id].nombre}` : ''}${f.detalles?.jugador_nombre ? ` · ${f.detalles.jugador_nombre}` : ''}`
+                : '';
           return {
             id: `${k}-${e.tipo}-${f.id ?? i}`,
             idCorto: (f.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
@@ -33870,7 +34216,7 @@ function ModuloContabilidadCompras({
   // App-172 — «Exportar reporte» del P&L: modal con PDF (diseño) o CSV.
   const [modalExportarPnl, setModalExportarPnl] = useState(false);
   function exportarPnlPDF() {
-    if (loadingVentasPnl || loadingEgresos) {
+    if (loadingVentasPnl || loadingEgresos || loadingAddonsPnl) {
       mostrarToast({ titulo: 'Espera a que termine de cargar', detalle: 'El Estado de Resultados todavía se está calculando.', tono: 'aviso' });
       return;
     }
@@ -35320,6 +35666,10 @@ function ModuloAnalyticsBI({
    * Los Bloqueos Maestro de Torneo (apartado general, ver
    * `idsBloqueosMaestroTorneo`) quedan fuera de ambos: no son ocupación real.
    * ---------------------------------------------------------------------- */
+  // App-173 — reservas por id (para reconocer tickets ligados a una reserva
+  // pagada en línea y reembolsada) y ventas del rango sin esos tickets.
+  const reservasPorIdBI = useMemo(() => new Map((reservas || []).map((r) => [String(r.id), r])), [reservas]);
+  const ventasRangoContablesBI = useMemo(() => ventasContablesBI(ventasRango, reservasPorIdBI), [ventasRango, reservasPorIdBI]);
   const reservasEnRango = useMemo(
     () => reservas.filter((r) => r.fecha >= rango.inicioFechaISO && r.fecha < rango.finFechaISO && !idsMaestroTorneo.has(r.id)),
     [reservas, rango, idsMaestroTorneo]
@@ -35704,7 +36054,10 @@ function ModuloAnalyticsBI({
   const analisis = useMemo(() => {
     // REGLA DE ORO: solo tickets cobrados (`esCobroConfirmado`) — nunca
     // cuentas abiertas ni pendientes.
-    const ventasPagadas = ventasRango.filter((v) => esCobroConfirmado(v));
+    // App-173 — ventas ya depuradas (`ventasContablesBI`): sin tickets de una
+    // reserva pagada en línea y reembolsada, y sin los add-ons que la retención
+    // de una reserva cancelada tarde ya suma — mismo criterio que el P&L.
+    const ventasPagadas = ventasRangoContablesBI.filter((v) => esCobroConfirmado(v));
 
     // Canchas: renta COBRADA, por fecha de juego (`reservas.fecha`).
     const ingresoCanchas = reservasCobradas.reduce((acc, r) => acc + (Number(r.monto_total) || 0), 0);
@@ -35819,6 +36172,12 @@ function ModuloAnalyticsBI({
     ventasPagadas.forEach((v) => {
       const items = v?.detalles?.items;
       if (!Array.isArray(items)) return;
+      // App-174 — ticket $0 de una cortesía por meta de gasto (CRM): no es
+      // venta cobrada. Sus artículos no cuentan como unidades vendidas (Top
+      // productos, desglose de Pro-Shop / Restaurante-Bar); su costo sí sigue
+      // en el costo de lo vendido, como siempre. Se reportan aparte en
+      // «Cortesías redimidas».
+      const esCortesiaMeta = String(v?.detalles?.nota || '').startsWith(PREFIJO_NOTA_CORTESIA_META_BI);
       let tieneProducto = false;
       let subtotalProductosTicket = 0;
       let subtotalPenalizacionTicket = 0;
@@ -35845,6 +36204,11 @@ function ModuloAnalyticsBI({
         const costo = cantidad * costoUnitario;
         // Mismo bucket para ingreso, COGS, tarjetas y Modal de Desglose.
         const catBucket = categoriaDeItem(item, resuelto);
+        if (esCortesiaMeta) {
+          cogsTotal += costo;
+          cogsPorCategoria[catBucket] += costo;
+          return;
+        }
 
         if (!filasPorClave[clave]) {
           filasPorClave[clave] = {
@@ -36034,7 +36398,7 @@ function ModuloAnalyticsBI({
       ingresoRestauranteBar: ingresoPorCategoria['Cafetería/Bar'],
       lineasVentaProducto,
     };
-  }, [ventasRango, kardexRango, productos, productosPorId, variantesPorId, variantesPorProducto, reservasCobradas, ingresosEventos]);
+  }, [ventasRangoContablesBI, kardexRango, productos, productosPorId, variantesPorId, variantesPorProducto, reservasCobradas, ingresosEventos]);
 
   /* ---- Nº de canchas activas (denominador de RevPACP y Pico/Valle) ---- */
   const numCanchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false).length, [canchas]);
@@ -36084,12 +36448,12 @@ function ModuloAnalyticsBI({
         rango,
         reservasCobradas,
         cobrosFechados: ingresosEventos.cobrosFechados,
-        ventasRango,
+        ventasRango: ventasRangoContablesBI,
         productosPorId,
         variantesPorId,
         variantesPorProducto,
       }),
-    [modoFiltro, rango, reservasCobradas, ingresosEventos, ventasRango, productosPorId, variantesPorId, variantesPorProducto]
+    [modoFiltro, rango, reservasCobradas, ingresosEventos, ventasRangoContablesBI, productosPorId, variantesPorId, variantesPorProducto]
   );
 
   // Exportación de Datos: arma un CSV súper completo (se abre nativamente en
