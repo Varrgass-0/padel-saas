@@ -991,6 +991,8 @@ import BannerAnunciosPlataforma from './admin/BannerAnunciosPlataforma';
 import { QRCodeSVG } from 'qrcode.react';
 // Íconos nuevos con alias para no chocar con el import principal de lucide.
 import { QrCode as IconoQrTicket, Printer as IconoImprimirTicket, ScrollText as IconoHistorialTickets } from 'lucide-react';
+// App-172 — icono de la opción «Reporte PDF» (modal Exportar reporte).
+import { FileText } from 'lucide-react';
 import {
   ExternalLink,
   LayoutGrid,
@@ -1126,8 +1128,10 @@ const MONTO_MINIMO_PAGO_EN_LINEA = 10;
 // meta/premio/recompensa_*_frecuencia_* de `configuracion_club` no se podían
 // editar desde el Panel.
 const SHOW_BETA_CORTESIAS_FRECUENCIA = true;
-// Analytics BI y Contabilidad y Compras: oculta el botón "Exportar Reporte".
-const SHOW_BETA_EXPORTAR_REPORTES = false;
+// Analytics BI y Contabilidad y Compras: botón «Exportar reporte».
+// App-172 — reactivado: abre el modal con «Reporte PDF» (diseño con gráficas)
+// y «Datos para Excel (.CSV)». En false vuelve a ocultar los tres botones.
+const SHOW_BETA_EXPORTAR_REPORTES = true;
 // Smart POS: oculta "Cerrar Turno / Arqueo" y "Devolución" (los handlers,
 // modales y tablas de respaldo — `cierres_caja`, devoluciones de stock —
 // siguen funcionando si se reactiva la bandera).
@@ -27741,11 +27745,10 @@ function BarraFiltroTemporal({ modo, onModo, fechaDia, onFechaDia, mes, anio, on
         <p className="text-xs font-semibold text-slate-500">
           Mostrando: <span className="text-slate-900">{etiqueta}</span>
         </p>
-        {/* Beta: botón de exportar oculto — `onExportar`/la generación del CSV
-            no se tocan, solo el botón que los dispara. */}
-        {SHOW_BETA_EXPORTAR_REPORTES && (
-          <BotonSecundario onClick={onExportar} className="whitespace-nowrap">
-            <Download size={15} /> Exportar Reporte
+        {/* App-172 — reactivado: abre el modal «Exportar reporte» (PDF o CSV). */}
+        {SHOW_BETA_EXPORTAR_REPORTES && onExportar && (
+          <BotonSecundario onClick={onExportar} className="whitespace-nowrap" data-testid="bi-exportar">
+            <Download size={15} /> Exportar reporte
           </BotonSecundario>
         )}
       </div>
@@ -29655,6 +29658,10 @@ function generarCSVReporte({
   filas.push(['      – Mensualidades', (analisis.academiaDesglose?.mensualidades || 0).toFixed(2)]);
   filas.push(['      – Clases Grupales', (analisis.academiaDesglose?.grupales || 0).toFixed(2)]);
   filas.push(['      – Clases Privadas', (analisis.academiaDesglose?.privadas || 0).toFixed(2)]);
+  // App-172 — con estos tres renglones el desglose suma exactamente el total.
+  filas.push(['  · Pro-Shop (productos cobrados)', (analisis.ingresoProShop || 0).toFixed(2)]);
+  filas.push(['  · Restaurante / Bar (productos cobrados)', (analisis.ingresoRestauranteBar || 0).toFixed(2)]);
+  filas.push(['  · Penalizaciones / pagos retenidos', (analisis.ingresoPenalizaciones || 0).toFixed(2)]);
   filas.push(['Costo Total de lo Vendido (COGS)', analisis.cogsTotal.toFixed(2)]);
   filas.push(['Ocupación de Canchas (%) — incluye reservas pendientes', `${ocupacionCanchasPct.toFixed(1)}%`]);
   filas.push(['Ticket Promedio por Venta (Ingreso cobrado ÷ cobros efectivos)', analisis.ticketPromedio !== null ? analisis.ticketPromedio.toFixed(2) : '']);
@@ -29721,7 +29728,8 @@ function generarCSVReporte({
   filas.push([]);
 
   filas.push([`Mapa de Calor — % de Ocupación por Franja Horaria (${pad2(HEATMAP_HORAS[0])}:00–${pad2(HEATMAP_HORAS[HEATMAP_HORAS.length - 1] + 1)}:00)`]);
-  const etiquetasFilaHeatmap = modo === 'dia' ? ['Hoy'] : ORDEN_SEMANA_BI.map((d) => ETIQUETA_DIA_SEMANA[d]);
+  // App-172 — en modo Día, la fecha elegida (antes decía «Hoy» aunque fuera otro día).
+  const etiquetasFilaHeatmap = modo === 'dia' ? [rango.inicioFechaISO] : ORDEN_SEMANA_BI.map((d) => ETIQUETA_DIA_SEMANA[d]);
   filas.push(['Día', ...HEATMAP_HORAS.map((h) => `${pad2(h)}:00`)]);
   heatmap.celdas.forEach((fila, idx) => {
     filas.push([etiquetasFilaHeatmap[idx], ...fila.map((pct) => `${pct}%`)]);
@@ -29817,6 +29825,671 @@ function descargarArchivoTexto(nombreArchivo, contenido, tipoMime) {
   enlace.click();
   document.body.removeChild(enlace);
   URL.revokeObjectURL(url);
+}
+
+/* ============================================================================
+ * App-172 — REPORTES PDF (impresión estructurada)
+ * ============================================================================
+ * Documento HTML autocontenido (sin librerías ni recursos externos) que el
+ * navegador convierte en PDF con «Guardar como PDF». Las gráficas son SVG o
+ * barras HTML, así que salen vectoriales y nítidas. Tamaño carta, saltos de
+ * página limpios y encabezados de tabla que se repiten en cada hoja.
+ *
+ * REGLA: el reporte NO recalcula nada. Recibe los mismos objetos que pinta la
+ * pantalla (`analisis`, `pnl`, `desglosePnl`, `cortesiasRedimidas`, …) y solo
+ * les da formato. Lo informativo (cortesías) va marcado como tal y nunca se
+ * suma a un ingreso.
+ * ------------------------------------------------------------------------- */
+const COLOR_REPORTE_TINTA = '#15171C';
+const COLOR_REPORTE_NARANJA = '#FF6B35';
+const COLOR_REPORTE_GRIS = '#5B6170';
+const COLOR_REPORTE_LINEA = '#E4E6EB';
+const COLOR_REPORTE_EGRESO = '#3A3F4B';
+// Rampa secuencial naranja (claro → oscuro) para el mapa de calor.
+const RAMPA_REPORTE_CALOR = ['#FFFFFF', '#FFF1EA', '#FFD9C7', '#FFB896', '#FF9466', '#F2703C', '#C9521F'];
+
+function escHTMLReporte(valor) {
+  return String(valor === null || valor === undefined ? '' : valor)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+function dineroReporte(valor) {
+  const n = Number(valor);
+  return (Number.isFinite(n) ? n : 0).toLocaleString('es-MX', { style: 'currency', currency: 'MXN', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function pctReporte(valor, decimales = 1) {
+  const n = Number(valor);
+  return Number.isFinite(n) ? `${n.toFixed(decimales)}%` : '—';
+}
+function fechaCortaReporte(valor) {
+  if (!valor) return '—';
+  const s = String(valor);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+  const f = new Date(s);
+  return Number.isNaN(f.getTime()) ? '—' : f.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// Logo QLUBOS vectorial: «QLUB» en tinta y «OS» en naranja de marca.
+function svgLogoQlubosReporte(alto = 30) {
+  const ancho = Math.round((alto * 1630) / 252);
+  return `<svg class="logo" viewBox="180 156 1630 252" width="${ancho}" height="${alto}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="QLUBOS">
+<defs><mask id="qlubos-rep-q" maskUnits="userSpaceOnUse" x="0" y="0" width="2000" height="600"><rect x="0" y="0" width="2000" height="600" fill="white"/><path d="${LOGO_Q_COLA}" fill="black" stroke="black" stroke-width="24" stroke-linejoin="round"/></mask></defs>
+<g fill="${COLOR_REPORTE_TINTA}"><path d="${LOGO_Q_ARO}" fill-rule="evenodd" mask="url(#qlubos-rep-q)"/><path d="${LOGO_Q_COLA}"/><path d="${LOGO_LUB}" fill-rule="evenodd"/></g>
+<path d="${LOGO_OS}" fill="${COLOR_REPORTE_NARANJA}" fill-rule="evenodd"/></svg>`;
+}
+
+// Eje con marcas "redondas": paso de 1, 2 o 5 × 10^k y a lo más 5 tramos
+// (2,100 → 0, 500 … 2,500; 750 → 0, 200 … 800).
+function marcasEjeReporte(maximo) {
+  if (!(maximo > 0)) return { tope: 1, paso: 0.25, tramos: 4 };
+  let pot = 10 ** Math.floor(Math.log10(maximo / 5));
+  for (let guardia = 0; guardia < 6; guardia += 1) {
+    for (const f of [1, 2, 5]) {
+      const paso = f * pot;
+      const tramos = Math.ceil(maximo / paso);
+      if (tramos <= 5) return { tope: paso * Math.max(1, tramos), paso, tramos: Math.max(1, tramos) };
+    }
+    pot *= 10;
+  }
+  return { tope: maximo, paso: maximo / 4, tramos: 4 };
+}
+
+/* ---- Gráfica de columnas (una o dos series) en SVG ---- */
+function svgColumnasReporte({ etiquetas, series, alto = 210, etiquetaAccesible = 'Gráfica' }) {
+  const ancho = 700;
+  const margenIzq = 56;
+  const margenDer = 8;
+  const margenSup = 10;
+  const margenInf = 26;
+  const n = etiquetas.length || 1;
+  const maximo = Math.max(0, ...series.flatMap((s) => s.valores.map((v) => Number(v) || 0)));
+  const { tope, tramos } = marcasEjeReporte(maximo);
+  const altoUtil = alto - margenSup - margenInf;
+  const anchoUtil = ancho - margenIzq - margenDer;
+  const paso = anchoUtil / n;
+  const huecoGrupo = Math.min(paso * 0.28, 14);
+  const anchoBarra = Math.max(2, (paso - huecoGrupo) / series.length - (series.length > 1 ? 1 : 0));
+  const y = (v) => margenSup + altoUtil - (Math.max(0, Number(v) || 0) / tope) * altoUtil;
+  const partes = [];
+  Array.from({ length: tramos + 1 }, (_, i) => i / tramos).forEach((f) => {
+    const yy = margenSup + altoUtil - f * altoUtil;
+    partes.push(`<line x1="${margenIzq}" x2="${ancho - margenDer}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}" stroke="${f === 0 ? '#C9CCD3' : COLOR_REPORTE_LINEA}" stroke-width="1"/>`);
+    partes.push(`<text x="${margenIzq - 6}" y="${(yy + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="${COLOR_REPORTE_GRIS}">${escHTMLReporte(formatoMonedaCortaBI(tope * f))}</text>`);
+  });
+  const cadaEtiqueta = n > 16 ? Math.ceil(n / 16) : 1;
+  etiquetas.forEach((et, i) => {
+    const x0 = margenIzq + i * paso + huecoGrupo / 2;
+    series.forEach((s, j) => {
+      const v = Number(s.valores[i]) || 0;
+      if (v <= 0) return;
+      const x = x0 + j * (anchoBarra + 1);
+      const yy = y(v);
+      const h = margenSup + altoUtil - yy;
+      const r = Math.min(3, anchoBarra / 2, h);
+      // Columna con extremo superior redondeado, anclada a la base.
+      partes.push(
+        `<path d="M${x.toFixed(1)},${(yy + h).toFixed(1)} V${(yy + r).toFixed(1)} Q${x.toFixed(1)},${yy.toFixed(1)} ${(x + r).toFixed(1)},${yy.toFixed(1)} H${(x + anchoBarra - r).toFixed(1)} Q${(x + anchoBarra).toFixed(1)},${yy.toFixed(1)} ${(x + anchoBarra).toFixed(1)},${(yy + r).toFixed(1)} V${(yy + h).toFixed(1)} Z" fill="${s.color}"><title>${escHTMLReporte(`${et} · ${s.nombre}: ${dineroReporte(v)}`)}</title></path>`
+      );
+    });
+    if (i % cadaEtiqueta === 0) {
+      partes.push(`<text x="${(margenIzq + i * paso + paso / 2).toFixed(1)}" y="${alto - 9}" text-anchor="middle" font-size="10" fill="${COLOR_REPORTE_GRIS}">${escHTMLReporte(et)}</text>`);
+    }
+  });
+  return `<svg class="grafica" viewBox="0 0 ${ancho} ${alto}" width="100%" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escHTMLReporte(etiquetaAccesible)}" font-family="inherit">${partes.join('')}</svg>`;
+}
+
+/* ---- Barras horizontales HTML (magnitud por renglón, etiquetas directas) ---- */
+function htmlBarrasReporte(items, { color = COLOR_REPORTE_NARANJA, total = null } = {}) {
+  const maximo = Math.max(0, ...items.map((it) => Number(it.valor) || 0));
+  const suma = total !== null ? total : items.reduce((acc, it) => acc + (Number(it.valor) || 0), 0);
+  return `<div class="barras">${items
+    .map((it) => {
+      const v = Number(it.valor) || 0;
+      const ancho = maximo > 0 ? Math.max(v > 0 ? 1.5 : 0, (v / maximo) * 100) : 0;
+      const pct = suma > 0 ? (v / suma) * 100 : 0;
+      return `<div class="barra-fila"><div class="barra-etq">${escHTMLReporte(it.etiqueta)}</div><div class="barra-pista"><div class="barra" style="width:${ancho.toFixed(2)}%;background:${it.color || color}"></div></div><div class="barra-val">${escHTMLReporte(dineroReporte(v))}<span>${pct.toFixed(1)}%</span></div></div>`;
+    })
+    .join('')}</div>`;
+}
+
+function htmlKpisReporte(kpis) {
+  return `<div class="kpis">${kpis
+    .map(
+      (k) =>
+        `<div class="kpi${k.destacado ? ' kpi-destacado' : ''}"><div class="kpi-etq">${escHTMLReporte(k.etiqueta)}</div><div class="kpi-val">${escHTMLReporte(k.valor)}</div>${
+          k.nota ? `<div class="kpi-nota">${escHTMLReporte(k.nota)}</div>` : ''
+        }</div>`
+    )
+    .join('')}</div>`;
+}
+
+// `columnas`: [{ titulo, alinear: 'der' }]; `filas`: arreglos de celdas (texto
+// plano); `total`: renglón final opcional en negritas.
+function htmlTablaReporte({ columnas, filas, total = null, vacio = 'Sin registros en el periodo.', clase = '' }) {
+  if (!filas.length && !total) return `<p class="vacio">${escHTMLReporte(vacio)}</p>`;
+  const celda = (valor, i, tag = 'td') => `<${tag}${columnas[i]?.alinear === 'der' ? ' class="der"' : ''}>${escHTMLReporte(valor)}</${tag}>`;
+  return `<table class="tabla ${clase}"><thead><tr>${columnas.map((c, i) => celda(c.titulo, i, 'th')).join('')}</tr></thead><tbody>${filas
+    .map((f) => `<tr>${f.map((v, i) => celda(v, i)).join('')}</tr>`)
+    .join('')}${total ? `<tr class="total">${total.map((v, i) => celda(v, i)).join('')}</tr>` : ''}</tbody></table>`;
+}
+
+function seccionReporte(titulo, cuerpo, { subtitulo = '', clase = '' } = {}) {
+  return `<section class="seccion ${clase}"><h2>${escHTMLReporte(titulo)}</h2>${subtitulo ? `<p class="sub">${escHTMLReporte(subtitulo)}</p>` : ''}${cuerpo}</section>`;
+}
+
+const CSS_REPORTE_QLUBOS = `
+@page { size: letter; margin: 14mm 13mm 16mm; @bottom-left { content: "QLUBOS · Run your club."; font: 600 8pt -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: ${COLOR_REPORTE_GRIS}; } @bottom-right { content: "Página " counter(page) " de " counter(pages); font: 8pt -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: ${COLOR_REPORTE_GRIS}; } }
+* { box-sizing: border-box; }
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body { margin: 0; background: #F3F4F6; color: ${COLOR_REPORTE_TINTA}; font: 10pt/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+.hoja { max-width: 216mm; margin: 0 auto; background: #FFFFFF; padding: 12mm 13mm 14mm; }
+.barra-acciones { position: sticky; top: 0; z-index: 5; display: flex; gap: 10px; align-items: center; justify-content: center; padding: 10px 14px; background: ${COLOR_REPORTE_TINTA}; color: #FFFFFF; font-size: 13px; }
+.barra-acciones button { font-family: inherit; font-weight: 700; font-size: 13px; border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer; background: ${COLOR_REPORTE_NARANJA}; color: ${COLOR_REPORTE_TINTA}; }
+.barra-acciones span { opacity: .75; }
+header.cabecera { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding-bottom: 10px; border-bottom: 3px solid ${COLOR_REPORTE_NARANJA}; }
+.cabecera .club { font-size: 19pt; font-weight: 800; letter-spacing: -.3px; line-height: 1.1; }
+.cabecera .club span { color: ${COLOR_REPORTE_NARANJA}; }
+.cabecera .titulo { font-size: 11pt; font-weight: 700; margin-top: 4px; }
+.cabecera .periodo { font-size: 9.5pt; color: ${COLOR_REPORTE_GRIS}; margin-top: 2px; }
+.cabecera .marca { text-align: right; font-size: 8pt; color: ${COLOR_REPORTE_GRIS}; }
+.cabecera .marca .logo { display: block; margin: 0 0 4px auto; }
+.aviso { margin: 10px 0 0; padding: 7px 10px; border-left: 3px solid ${COLOR_REPORTE_NARANJA}; background: #FFF6F1; font-size: 8.5pt; color: #3B3F48; }
+.seccion { margin-top: 16px; break-inside: auto; }
+.seccion h2 { font-size: 12pt; font-weight: 800; margin: 0 0 2px; padding-left: 8px; border-left: 4px solid ${COLOR_REPORTE_NARANJA}; break-after: avoid; }
+.seccion .sub { margin: 0 0 8px 12px; font-size: 8.5pt; color: ${COLOR_REPORTE_GRIS}; break-after: avoid; }
+.bloque { break-inside: avoid; }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+.kpi { border: 1px solid ${COLOR_REPORTE_LINEA}; border-radius: 10px; padding: 9px 11px; break-inside: avoid; background: #FFFFFF; }
+.kpi-destacado { background: ${COLOR_REPORTE_TINTA}; border-color: ${COLOR_REPORTE_TINTA}; color: #FFFFFF; }
+.kpi-destacado .kpi-etq, .kpi-destacado .kpi-nota { color: #C9CCD3; }
+.kpi-destacado .kpi-val { color: ${COLOR_REPORTE_NARANJA}; }
+.kpi-etq { font-size: 7.5pt; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: ${COLOR_REPORTE_GRIS}; }
+.kpi-val { font-size: 15pt; font-weight: 800; margin-top: 3px; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
+.kpi-nota { font-size: 7.5pt; color: ${COLOR_REPORTE_GRIS}; margin-top: 2px; }
+.dos-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grafica { display: block; margin-top: 4px; }
+.leyenda { display: flex; gap: 14px; font-size: 8.5pt; color: #3B3F48; margin: 4px 0 0 56px; }
+.leyenda i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.barras { margin-top: 6px; }
+.barra-fila { display: grid; grid-template-columns: 34% 1fr 30%; align-items: center; gap: 8px; padding: 3px 0; break-inside: avoid; }
+.barra-etq { font-size: 9pt; font-weight: 600; }
+.barra-pista { height: 12px; background: #F1F2F4; border-radius: 3px; overflow: hidden; }
+.barra { height: 12px; border-radius: 0 3px 3px 0; }
+.barra-val { text-align: right; font-size: 9pt; font-weight: 700; font-variant-numeric: tabular-nums; }
+.barra-val span { display: inline-block; min-width: 42px; margin-left: 6px; font-weight: 500; color: ${COLOR_REPORTE_GRIS}; }
+.tabla { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 8.5pt; }
+.tabla thead { display: table-header-group; }
+.tabla th { text-align: left; font-size: 7.5pt; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: ${COLOR_REPORTE_GRIS}; background: #F6F7F9; padding: 5px 7px; border-bottom: 1px solid #D5D8DE; }
+.tabla td { padding: 4.5px 7px; border-bottom: 1px solid ${COLOR_REPORTE_LINEA}; vertical-align: top; }
+.tabla tr { break-inside: avoid; }
+.tabla .der { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tabla tr.total td { font-weight: 800; border-top: 2px solid ${COLOR_REPORTE_TINTA}; border-bottom: 0; background: #FFF6F1; }
+.vacio { margin: 6px 0 0; font-size: 8.5pt; color: ${COLOR_REPORTE_GRIS}; font-style: italic; }
+.calor { width: 100%; border-collapse: separate; border-spacing: 2px; margin-top: 6px; font-size: 7pt; table-layout: fixed; }
+.calor th { font-weight: 600; color: ${COLOR_REPORTE_GRIS}; padding: 2px 0; }
+.calor th.dia { text-align: left; width: 46px; }
+.calor td { text-align: center; padding: 5px 0; border-radius: 3px; font-variant-numeric: tabular-nums; }
+.escala { display: flex; align-items: center; gap: 4px; font-size: 7.5pt; color: ${COLOR_REPORTE_GRIS}; margin-top: 4px; }
+.escala i { display: inline-block; width: 18px; height: 8px; border-radius: 2px; border: 1px solid ${COLOR_REPORTE_LINEA}; }
+.nota { font-size: 8pt; color: ${COLOR_REPORTE_GRIS}; margin-top: 5px; }
+.informativo { border: 1px dashed #F0A580; border-radius: 10px; padding: 10px 12px; background: #FFFBF8; }
+.etiqueta-info { display: inline-block; font-size: 7pt; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; color: #9A3B12; background: #FFE7DB; border-radius: 999px; padding: 2px 8px; margin-left: 6px; vertical-align: 2px; }
+footer.pie { margin-top: 18px; padding-top: 8px; border-top: 1px solid ${COLOR_REPORTE_LINEA}; display: flex; justify-content: space-between; font-size: 8pt; color: ${COLOR_REPORTE_GRIS}; }
+footer.pie b { color: ${COLOR_REPORTE_TINTA}; }
+footer.pie b span { color: ${COLOR_REPORTE_NARANJA}; }
+@media print {
+  body { background: #FFFFFF; }
+  .hoja { max-width: none; padding: 0; }
+  .barra-acciones { display: none; }
+  footer.pie { display: none; }
+}
+@media screen and (max-width: 640px) {
+  .hoja { padding: 16px; }
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .dos-col { grid-template-columns: 1fr; }
+  header.cabecera { flex-direction: column-reverse; align-items: flex-start; }
+  .cabecera .marca { text-align: left; }
+  .cabecera .marca .logo { margin: 0 0 4px; }
+}
+`;
+
+// Documento completo: encabezado (club + título + periodo + logo), cuerpo y
+// pie. `autoImprimir`: abre el diálogo de impresión al cargar.
+function documentoReporteQlubos({ titulo, nombreClub, periodo, cuerpo, autoImprimir = true }) {
+  const generado = new Date().toLocaleString('es-MX', { dateStyle: 'long', timeStyle: 'short' });
+  const club = escHTMLReporte(nombreClub || 'Club');
+  return `<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escHTMLReporte(`${titulo} · ${nombreClub || 'Club'} · ${periodo}`)}</title>
+<style>${CSS_REPORTE_QLUBOS}</style></head>
+<body>
+<div class="barra-acciones"><button type="button" onclick="window.print()">Descargar PDF</button><span>En el diálogo elige «Guardar como PDF».</span></div>
+<main class="hoja">
+<header class="cabecera"><div><div class="club">${club}<span>.</span></div><div class="titulo">${escHTMLReporte(titulo)}</div><div class="periodo">${escHTMLReporte(periodo)} · Generado el ${escHTMLReporte(generado)}</div></div>
+<div class="marca">${svgLogoQlubosReporte(26)}Run your club.</div></header>
+${cuerpo}
+<footer class="pie"><span><b>QLUB<span>OS</span></b> · Run your club.</span><span>${club} · ${escHTMLReporte(periodo)}</span></footer>
+</main>
+${autoImprimir ? '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},350);});</script>' : ''}
+</body></html>`;
+}
+
+// Abre el reporte en una pestaña nueva lista para «Guardar como PDF». Si el
+// navegador bloquea la ventana, descarga el mismo documento como .html (se
+// abre en cualquier navegador y se imprime igual).
+function abrirReporteImprimible(html, nombreArchivoBase) {
+  let ventana = null;
+  try {
+    ventana = window.open('', '_blank');
+  } catch (_e) {
+    ventana = null;
+  }
+  if (ventana && ventana.document) {
+    ventana.document.open();
+    ventana.document.write(html);
+    ventana.document.close();
+    return { modo: 'ventana' };
+  }
+  descargarArchivoTexto(`${nombreArchivoBase}.html`, html, 'text/html;charset=utf-8;');
+  return { modo: 'archivo' };
+}
+
+function etiquetaPeriodoReporte(modo, rango) {
+  if (modo === 'dia') return `Día · ${rango.etiqueta || rango.inicioFechaISO}`;
+  if (modo === 'anio') return rango.etiqueta || 'Año';
+  return `Mes · ${rango.etiqueta || ''}`;
+}
+
+/* ---------------- Reporte de Analytics ---------------- */
+function generarHTMLReporteAnalytics({
+  modo,
+  rango,
+  analisis,
+  rendimientoPorCancha,
+  heatmap,
+  productos,
+  ingresosCanchaSinAsignar = { eventos: 0, academia: 0 },
+  picoValle,
+  revPACP,
+  ocupacionCanchasPct,
+  ventasPorProductoSemana,
+  variantesPorProducto,
+  tendencia = null,
+  cortesiasRedimidas = null,
+  nombreClub,
+  autoImprimir = true,
+}) {
+  const periodo = etiquetaPeriodoReporte(modo, rango);
+  const partes = [];
+  partes.push(
+    `<p class="aviso">Regla de oro: los ingresos son <b>solo cobros con estatus Pagado</b> (sin pendientes, cuentas abiertas ni cobros en proceso). Las cortesías se muestran aparte como valor absorbido por el club y <b>no suman a ingresos</b>.</p>`
+  );
+
+  partes.push(
+    seccionReporte(
+      'Resumen ejecutivo',
+      htmlKpisReporte([
+        { etiqueta: 'Ingresos totales cobrados', valor: dineroReporte(analisis.ingresosTotales), destacado: true },
+        { etiqueta: 'Ticket promedio', valor: analisis.ticketPromedio !== null ? dineroReporte(analisis.ticketPromedio) : '—', nota: `${analisis.totalTransacciones} cobros efectivos` },
+        { etiqueta: 'Ocupación de canchas', valor: pctReporte(ocupacionCanchasPct), nota: `Valle ${pctReporte(picoValle.valle)} · Pico ${pctReporte(picoValle.pico)}` },
+        { etiqueta: 'Categoría estrella', valor: analisis.categoriaEstrella?.ingreso > 0 ? analisis.categoriaEstrella.categoria : '—' },
+        { etiqueta: 'Hora pico', valor: heatmap.horaPicoLabel || '—' },
+        { etiqueta: 'Ingreso por hora de cancha', valor: revPACP !== null ? dineroReporte(revPACP) : '—', nota: 'RevPACP (horas disponibles)' },
+        { etiqueta: 'Costo de lo vendido', valor: dineroReporte(analisis.cogsTotal), nota: 'Pro-Shop y Restaurante/Bar' },
+        {
+          etiqueta: 'Cortesías absorbidas',
+          valor: cortesiasRedimidas ? dineroReporte(cortesiasRedimidas.totalAbsorbido) : '—',
+          nota: cortesiasRedimidas ? `${cortesiasRedimidas.totalCanjes} canjes · informativo` : 'Informativo',
+        },
+      ])
+    )
+  );
+
+  if (tendencia && Array.isArray(tendencia.cubetas) && tendencia.cubetas.length) {
+    const unidad = modo === 'dia' ? 'por hora' : modo === 'anio' ? 'por mes' : 'por día';
+    partes.push(
+      seccionReporte(
+        'Tendencia de ingresos cobrados',
+        `<div class="bloque">${svgColumnasReporte({
+          etiquetas: tendencia.cubetas.map((c) => c.etiqueta),
+          series: [{ nombre: 'Ingresos', color: COLOR_REPORTE_NARANJA, valores: tendencia.cubetas.map((c) => c.total) }],
+          etiquetaAccesible: `Ingresos cobrados ${unidad}`,
+        })}</div>`,
+        { subtitulo: `Ingresos cobrados ${unidad} en el periodo. Mismo criterio de fechas que el tablero.` }
+      )
+    );
+  }
+
+  const rentab = (analisis.rentabilidadPorCategoria || []).filter((f) => f.ingreso > 0 || f.costo > 0);
+  const etiquetaCat = (k) => (k === 'Cafetería/Bar' ? 'Restaurante / Bar' : k);
+  partes.push(
+    seccionReporte(
+      'Ingresos por categoría',
+      `<div class="bloque">${htmlBarrasReporte(
+        [...(analisis.rentabilidadPorCategoria || [])].sort((a, b) => b.ingreso - a.ingreso).map((f) => ({ etiqueta: etiquetaCat(f.categoria), valor: f.ingreso })),
+        { total: analisis.ingresosTotales }
+      )}</div><div class="bloque">${htmlTablaReporte({
+        columnas: [{ titulo: 'Categoría' }, { titulo: 'Ingreso', alinear: 'der' }, { titulo: 'Costo', alinear: 'der' }, { titulo: 'Margen bruto', alinear: 'der' }, { titulo: 'Margen %', alinear: 'der' }],
+        filas: rentab.map((f) => [etiquetaCat(f.categoria), dineroReporte(f.ingreso), dineroReporte(f.costo), dineroReporte(f.utilidad), f.margen !== null ? pctReporte(f.margen) : '—']),
+        total: [
+          'Total',
+          dineroReporte(analisis.ingresosTotales),
+          dineroReporte(rentab.reduce((a, f) => a + f.costo, 0)),
+          dineroReporte(rentab.reduce((a, f) => a + f.utilidad, 0)),
+          analisis.ingresosTotales > 0 ? pctReporte((rentab.reduce((a, f) => a + f.utilidad, 0) / analisis.ingresosTotales) * 100) : '—',
+        ],
+        vacio: 'Sin ingresos cobrados en el periodo.',
+      })}<p class="nota">Academia: mensualidades ${dineroReporte(analisis.academiaDesglose?.mensualidades)}, clases grupales ${dineroReporte(
+        analisis.academiaDesglose?.grupales
+      )}, clases privadas ${dineroReporte(analisis.academiaDesglose?.privadas)}. Retas ${dineroReporte(analisis.ingresoRetas)} · Torneos ${dineroReporte(analisis.ingresoTorneos)}.</p></div>`,
+      { subtitulo: 'Participación de cada línea en los ingresos cobrados y su rentabilidad.' }
+    )
+  );
+
+  // Mapa de calor de ocupación (rampa secuencial naranja).
+  const filasCalor = modo === 'dia' ? [rango.inicioFechaISO ? fechaCortaReporte(rango.inicioFechaISO) : 'Día'] : ORDEN_SEMANA_BI.map((d) => ETIQUETA_DIA_SEMANA[d]);
+  const colorCalor = (pct) => RAMPA_REPORTE_CALOR[Math.min(RAMPA_REPORTE_CALOR.length - 1, Math.ceil((Math.max(0, pct) / 100) * (RAMPA_REPORTE_CALOR.length - 1)))];
+  const tablaCalor = `<table class="calor"><thead><tr><th class="dia"></th>${HEATMAP_HORAS.map((h) => `<th>${pad2(h)}</th>`).join('')}</tr></thead><tbody>${(heatmap.celdas || [])
+    .map(
+      (fila, idx) =>
+        `<tr><th class="dia">${escHTMLReporte(filasCalor[idx] || '')}</th>${fila
+          .map((pct) => `<td style="background:${colorCalor(pct)};color:${pct >= 60 ? '#FFFFFF' : COLOR_REPORTE_TINTA}">${pct > 0 ? pct : ''}</td>`)
+          .join('')}</tr>`
+    )
+    .join('')}</tbody></table><div class="escala">0%${RAMPA_REPORTE_CALOR.map((c) => `<i style="background:${c}"></i>`).join('')}100% de ocupación · Hora pico: ${escHTMLReporte(heatmap.horaPicoLabel || '—')}</div>`;
+  partes.push(
+    seccionReporte('Mapa de calor de ocupación', `<div class="bloque">${tablaCalor}</div>`, {
+      subtitulo: modo === 'dia' ? '% de ocupación por hora del día elegido (todas las canchas activas).' : '% de ocupación promedio por día de la semana y hora (todas las canchas activas).',
+    })
+  );
+
+  // Ingresos y ocupación por cancha.
+  const sinEv = Number(ingresosCanchaSinAsignar?.eventos) || 0;
+  const sinAc = Number(ingresosCanchaSinAsignar?.academia) || 0;
+  const tot = (rendimientoPorCancha || []).reduce(
+    (acc, f) => ({ horas: acc.horas + f.horas, reservas: acc.reservas + f.ingresoReservas, eventos: acc.eventos + f.ingresoEventos, academia: acc.academia + f.ingresoAcademia }),
+    { horas: 0, reservas: 0, eventos: 0, academia: 0 }
+  );
+  const filasCancha = (rendimientoPorCancha || []).map((f) => [
+    f.cancha?.nombre || 'Cancha',
+    f.horas.toFixed(1),
+    pctReporte(f.ocupacion),
+    dineroReporte(f.ingresoReservas),
+    dineroReporte(f.ingresoEventos),
+    dineroReporte(f.ingresoAcademia),
+    dineroReporte(f.ingresos),
+  ]);
+  if (sinEv + sinAc > 0) filasCancha.push(['Sin cancha asignada', '—', '—', '—', dineroReporte(sinEv), dineroReporte(sinAc), dineroReporte(sinEv + sinAc)]);
+  partes.push(
+    seccionReporte(
+      'Ingresos y ocupación por cancha',
+      htmlTablaReporte({
+        columnas: [
+          { titulo: 'Cancha' },
+          { titulo: 'Horas', alinear: 'der' },
+          { titulo: 'Ocupación', alinear: 'der' },
+          { titulo: 'Reservas', alinear: 'der' },
+          { titulo: 'Retas y torneos', alinear: 'der' },
+          { titulo: 'Academia', alinear: 'der' },
+          { titulo: 'Ingreso real', alinear: 'der' },
+        ],
+        filas: filasCancha,
+        total: [
+          'Total',
+          tot.horas.toFixed(1),
+          pctReporte(ocupacionCanchasPct),
+          dineroReporte(tot.reservas),
+          dineroReporte(tot.eventos + sinEv),
+          dineroReporte(tot.academia + sinAc),
+          dineroReporte(tot.reservas + tot.eventos + tot.academia + sinEv + sinAc),
+        ],
+        vacio: 'Sin canchas activas.',
+      })
+    )
+  );
+
+  const unidadesCortesia = cortesiasRedimidas?.totalMetas?.productos || 0;
+  partes.push(
+    seccionReporte(
+      'Top productos más vendidos',
+      `${htmlTablaReporte({
+        columnas: [{ titulo: 'Producto' }, { titulo: 'Categoría' }, { titulo: 'Unidades', alinear: 'der' }, { titulo: 'Ingreso', alinear: 'der' }, { titulo: 'Margen bruto', alinear: 'der' }],
+        filas: (analisis.topProductos || []).map((f) => [f.nombre, etiquetaCategoriaProducto(f.categoria) || '—', String(f.unidades), dineroReporte(f.ingreso), dineroReporte(f.ganancia)]),
+        vacio: 'Sin ventas de productos en el periodo.',
+      })}${
+        unidadesCortesia > 0
+          ? `<p class="nota">Las unidades incluyen ${unidadesCortesia} producto(s) entregados como cortesía de metas (sin ingreso; ver «Cortesías redimidas»).</p>`
+          : ''
+      }`,
+      { subtitulo: 'Punto de Venta y Tienda en Línea del Portal.' }
+    )
+  );
+
+  if (cortesiasRedimidas) {
+    const cr = cortesiasRedimidas;
+    partes.push(
+      seccionReporte(
+        'Cortesías redimidas',
+        `<div class="informativo bloque">${htmlKpisReporte([
+          { etiqueta: 'Canjes', valor: String(cr.totalCanjes) },
+          { etiqueta: 'Valor absorbido', valor: dineroReporte(cr.totalAbsorbido), nota: 'No es ingreso' },
+          { etiqueta: 'Por frecuencia', valor: dineroReporte(cr.totalFrecuencia.absorbido), nota: `${cr.totalFrecuencia.canjes} canjes` },
+          { etiqueta: 'De metas', valor: dineroReporte(cr.totalMetas.valor), nota: `${cr.totalMetas.productos} productos` },
+        ])}<div class="dos-col">${htmlTablaReporte({
+          columnas: [{ titulo: 'Frecuencia' }, { titulo: 'Canjes', alinear: 'der' }, { titulo: '100% / %', alinear: 'der' }, { titulo: 'Absorbido', alinear: 'der' }],
+          filas: cr.frecuencia.map((f) => [f.etiqueta, String(f.canjes), `${f.gratis} / ${f.porcentaje}`, dineroReporte(f.absorbido)]),
+          total: ['Total', String(cr.totalFrecuencia.canjes), `${cr.totalFrecuencia.gratis} / ${cr.totalFrecuencia.porcentaje}`, dineroReporte(cr.totalFrecuencia.absorbido)],
+        })}${htmlTablaReporte({
+          columnas: [{ titulo: 'Metas de gasto' }, { titulo: 'Productos', alinear: 'der' }, { titulo: 'Valor equivalente', alinear: 'der' }],
+          filas: cr.metas.map((f) => [f.etiqueta, String(f.productos), dineroReporte(f.valor)]),
+          total: ['Total', String(cr.totalMetas.productos), dineroReporte(cr.totalMetas.valor)],
+        })}</div><p class="nota">100% = gratis (se absorbe el precio de lista completo) · % = solo la parte descontada. Metas: precio de lista actual del catálogo.</p></div>`,
+        { subtitulo: 'Informativo: valor que el club absorbió. No suma a ingresos, Estado de Resultados ni cortes de caja.' }
+      ).replace('<h2>Cortesías redimidas</h2>', '<h2>Cortesías redimidas <span class="etiqueta-info">Informativo</span></h2>')
+    );
+  }
+
+  // Inventario: valor del almacén, alertas de reabastecimiento y Kardex.
+  let valorAlmacen = 0;
+  const porReabastecer = [];
+  (productos || [])
+    .filter((p) => p.activo !== false)
+    .forEach((p) => {
+      const manejaStock = !productoIgnoraStockRigido(p);
+      const stock = Number(p.stock);
+      const costo = Number(p.costo_unitario);
+      if (manejaStock && Number.isFinite(stock) && Number.isFinite(costo)) valorAlmacen += stock * costo;
+      (variantesPorProducto?.[p.id] || [])
+        .filter((v) => v.activo !== false)
+        .forEach((v) => {
+          const vc = Number(v.costo_unitario != null ? v.costo_unitario : p.costo_unitario);
+          const vs = Number(v.stock);
+          if (manejaStock && v.stock != null && Number.isFinite(vs) && Number.isFinite(vc)) valorAlmacen += vs * vc;
+        });
+      if (!manejaStock) return;
+      const cobertura = calcularCoberturaStock(p, ventasPorProductoSemana?.[p.id] || 0);
+      const bajo = estatusStockProducto(p) === 'bajo';
+      if (bajo || cobertura.estatus === 'reordenar') {
+        porReabastecer.push([p.nombre, etiquetaCategoriaProducto(p.categoria) || '—', Number.isFinite(stock) ? String(stock) : '—', p.stock_minimo ?? '—', etiquetaDiasCobertura(cobertura), cobertura.estatus === 'reordenar' ? 'Reordenar ya' : 'Bajo el mínimo']);
+      }
+    });
+  const kx = analisis.auditoriaKardex || { entradas: 0, salidas: 0, ajustes: 0 };
+  partes.push(
+    seccionReporte(
+      'Inventario',
+      `${htmlKpisReporte([
+        { etiqueta: 'Valor del almacén', valor: dineroReporte(valorAlmacen), nota: 'Stock actual × costo' },
+        { etiqueta: 'Por reabastecer', valor: String(porReabastecer.length), nota: 'Bajo mínimo o reorden' },
+        { etiqueta: 'Entradas (Kardex)', valor: String(kx.entradas), nota: 'Unidades en el periodo' },
+        { etiqueta: 'Salidas por venta', valor: String(kx.salidas), nota: `Ajustes: ${kx.ajustes}` },
+      ])}${htmlTablaReporte({
+        columnas: [{ titulo: 'Producto' }, { titulo: 'Categoría' }, { titulo: 'Stock', alinear: 'der' }, { titulo: 'Mínimo', alinear: 'der' }, { titulo: 'Cobertura' }, { titulo: 'Alerta' }],
+        filas: porReabastecer.slice(0, 40),
+        vacio: 'Ningún producto por debajo del mínimo ni con alerta de reorden.',
+      })}${porReabastecer.length > 40 ? `<p class="nota">Y ${porReabastecer.length - 40} más. El listado completo está en «Datos para Excel (.CSV)».</p>` : ''}`,
+      { subtitulo: 'Estado actual del catálogo (no depende del periodo) y movimientos de Kardex del periodo.' }
+    )
+  );
+
+  return documentoReporteQlubos({ titulo: 'Reporte de Analytics', nombreClub, periodo, cuerpo: partes.join('\n'), autoImprimir });
+}
+
+/* ---------------- Reporte de Estado de Resultados (P&L) ---------------- */
+function generarHTMLReportePnl({ modo, rango, pnl, desglosePnl, nombreClub, autoImprimir = true }) {
+  const periodo = etiquetaPeriodoReporte(modo, rango);
+  const partes = [];
+  const ingresos = Number(pnl.ingresosTotalesConsolidados) || 0;
+  const egresos = Number(pnl.egresosTotales) || 0;
+  const utilidad = Number(pnl.utilidadReal) || 0;
+  partes.push(
+    `<p class="aviso">Solo dinero real cobrado (estatus Pagado), por la misma fecha de cobro que usa el Estado de Resultados en pantalla. Las cortesías no son ingreso. Las compras canceladas o revertidas no cuentan como egreso.</p>`
+  );
+  partes.push(
+    seccionReporte(
+      'Resumen del periodo',
+      htmlKpisReporte([
+        { etiqueta: 'Ingresos consolidados', valor: dineroReporte(ingresos), destacado: true },
+        { etiqueta: 'Egresos totales', valor: dineroReporte(egresos), nota: `${(pnl._egresosEnRango || []).length} registros` },
+        { etiqueta: 'Utilidad real', valor: dineroReporte(utilidad), nota: utilidad < 0 ? 'Pérdida en el periodo' : 'Ingresos − egresos' },
+        { etiqueta: 'Margen de utilidad', valor: ingresos > 0 ? pctReporte((utilidad / ingresos) * 100) : '—', nota: 'Utilidad ÷ ingresos' },
+      ])
+    )
+  );
+
+  const lineas = [
+    { etiqueta: 'Reservas de canchas', valor: pnl.reservasCanchas },
+    { etiqueta: 'Pro-Shop', valor: pnl.proShop },
+    { etiqueta: 'Restaurante / Bar', valor: pnl.restauranteBar },
+    { etiqueta: 'Clases y clínicas', valor: pnl.clasesClinicas },
+    { etiqueta: 'Torneos y retas', valor: pnl.torneosRetas },
+    { etiqueta: 'Otros / penalizaciones', valor: pnl.otrosIngresos },
+  ];
+  const canal = pnl.lineasPorCanal || {};
+  partes.push(
+    seccionReporte(
+      'Matriz de ingresos consolidados',
+      `<div class="bloque">${htmlBarrasReporte([...lineas].sort((a, b) => (Number(b.valor) || 0) - (Number(a.valor) || 0)), { total: ingresos })}</div>${htmlTablaReporte({
+        columnas: [{ titulo: 'Línea de ingreso' }, { titulo: 'Mostrador', alinear: 'der' }, { titulo: 'Web', alinear: 'der' }, { titulo: 'Total', alinear: 'der' }],
+        filas: [
+          ['Pro-Shop', dineroReporte(canal.proShop?.mostrador), dineroReporte(canal.proShop?.web), dineroReporte(pnl.proShop)],
+          ['Restaurante / Bar', dineroReporte(canal.restauranteBar?.mostrador), dineroReporte(canal.restauranteBar?.web), dineroReporte(pnl.restauranteBar)],
+          ['Otros ingresos de venta', dineroReporte(canal.otrosIngresos?.mostrador), dineroReporte(canal.otrosIngresos?.web), dineroReporte(pnl.otrosIngresosVentas)],
+          ['Penalizaciones / pagos retenidos', '—', '—', dineroReporte(pnl.retencionesCancelacion)],
+        ],
+      })}`,
+      { subtitulo: 'Cada línea con su participación en los ingresos consolidados.' }
+    )
+  );
+
+  try {
+    const tendencia = construirTendenciaPnl(modo, rango, pnl);
+    if (tendencia?.cubetas?.length) {
+      const unidad = modo === 'dia' ? 'por hora' : modo === 'anio' ? 'por mes' : 'por día';
+      partes.push(
+        seccionReporte(
+          'Ingresos contra egresos',
+          `<div class="bloque">${svgColumnasReporte({
+            etiquetas: tendencia.cubetas.map((c) => c.etiqueta),
+            series: [
+              { nombre: 'Ingresos', color: COLOR_REPORTE_NARANJA, valores: tendencia.cubetas.map((c) => c.ingresos) },
+              { nombre: 'Egresos', color: COLOR_REPORTE_EGRESO, valores: tendencia.cubetas.map((c) => c.egresos) },
+            ],
+            etiquetaAccesible: `Ingresos y egresos ${unidad}`,
+          })}<div class="leyenda"><span><i style="background:${COLOR_REPORTE_NARANJA}"></i>Ingresos</span><span><i style="background:${COLOR_REPORTE_EGRESO}"></i>Egresos</span></div></div>`,
+          { subtitulo: `Ingresos y egresos ${unidad} en el periodo.` }
+        )
+      );
+    }
+  } catch (_e) {
+    // La gráfica es complementaria: si algo falla, el reporte sale sin ella.
+  }
+
+  const egresosCat = Object.entries(pnl.egresosPorCategoria || {}).sort((a, b) => b[1] - a[1]);
+  partes.push(
+    seccionReporte(
+      'Egresos por categoría',
+      egresosCat.length
+        ? `<div class="bloque">${htmlBarrasReporte(egresosCat.map(([c, m]) => ({ etiqueta: c, valor: m })), { color: COLOR_REPORTE_EGRESO, total: egresos })}</div>`
+        : '<p class="vacio">Sin egresos en el periodo.</p>'
+    )
+  );
+
+  const columnasDetalle = [{ titulo: 'Fecha' }, { titulo: 'Hora' }, { titulo: 'Concepto' }, { titulo: 'Canal' }, { titulo: 'Método' }, { titulo: 'Monto', alinear: 'der' }];
+  const detalle = (titulo, lista, totalEsperado) => {
+    const filas = (lista || []).map((f) => [fechaCortaReporte(f.fecha), f.hora || '—', f.concepto || '—', f.canal || '—', f.metodoPago || '—', dineroReporte(f.monto)]);
+    return seccionReporte(
+      titulo,
+      htmlTablaReporte({
+        columnas: columnasDetalle,
+        filas,
+        total: filas.length ? ['Total', '', '', '', '', dineroReporte(totalEsperado ?? (lista || []).reduce((a, f) => a + (Number(f.monto) || 0), 0))] : null,
+      }),
+      { clase: 'detalle' }
+    );
+  };
+  partes.push(detalle('Detalle · Reservas de canchas', desglosePnl.reservas, pnl.reservasCanchas));
+  partes.push(detalle('Detalle · Pro-Shop', desglosePnl.proShop, pnl.proShop));
+  partes.push(detalle('Detalle · Restaurante / Bar', desglosePnl.restauranteBar, pnl.restauranteBar));
+  partes.push(detalle('Detalle · Clases y clínicas', desglosePnl.clasesClinicas, pnl.clasesClinicas));
+  partes.push(detalle('Detalle · Torneos y retas', desglosePnl.torneosRetas, pnl.torneosRetas));
+  partes.push(detalle('Detalle · Otros ingresos / penalizaciones', desglosePnl.otrosIngresos, pnl.otrosIngresos));
+  partes.push(
+    seccionReporte(
+      'Detalle · Egresos',
+      htmlTablaReporte({
+        columnas: [{ titulo: 'Fecha' }, { titulo: 'Concepto' }, { titulo: 'Categoría' }, { titulo: 'Proveedor' }, { titulo: 'Método' }, { titulo: 'Monto', alinear: 'der' }],
+        filas: (pnl._egresosEnRango || []).map((g) => [fechaCortaReporte(g.fecha), g.concepto || '—', g.categoria || 'Otro', g.proveedor_nombre || '—', g.metodo_pago || '—', dineroReporte(g.monto)]),
+        total: (pnl._egresosEnRango || []).length ? ['Total', '', '', '', '', dineroReporte(egresos)] : null,
+        vacio: 'Sin egresos en el periodo.',
+      })
+    )
+  );
+
+  return documentoReporteQlubos({ titulo: 'Estado de Resultados (P&L)', nombreClub, periodo, cuerpo: partes.join('\n'), autoImprimir });
+}
+
+/* ---------------- Modal «Exportar reporte» ---------------- */
+function ModalExportarReporte({ titulo, periodo, onPDF, onCSV, onClose, cargando = false }) {
+  const opcion = (testId, Icono, encabezado, texto, onClick, principal) => (
+    <button
+      type="button"
+      data-testid={testId}
+      disabled={cargando}
+      onClick={onClick}
+      className={`flex w-full items-start gap-3 rounded-xl border p-3.5 text-left transition disabled:opacity-50 ${
+        principal ? 'border-orange-400/60 bg-orange-400/10 hover:bg-orange-400/15' : 'border-slate-200 bg-white hover:bg-slate-50'
+      }`}
+    >
+      <span className={`mt-0.5 rounded-lg p-2 ${principal ? 'bg-orange-400 text-slate-950' : 'bg-slate-100 text-slate-700'}`}>
+        <Icono size={18} />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-black text-slate-900">{encabezado}</span>
+        <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">{texto}</span>
+      </span>
+    </button>
+  );
+  return (
+    <ModalShell titulo="Exportar reporte" subtitulo={`${titulo} · ${periodo}`} onClose={onClose} icon={Download} ancho="max-w-md">
+      <div className="space-y-2.5" data-testid="modal-exportar-reporte">
+        {opcion(
+          'exportar-pdf',
+          FileText,
+          'Reporte PDF',
+          'Diseño con resumen, gráficas y tablas. Se abre en una pestaña nueva: en el diálogo de impresión elige «Guardar como PDF».',
+          onPDF,
+          true
+        )}
+        {opcion('exportar-csv', Download, 'Datos para Excel (.CSV)', 'Todas las cifras del periodo en columnas, para trabajarlas en Excel o Google Sheets.', onCSV, false)}
+        {cargando && <p className="text-xs font-semibold text-amber-600">Espera a que termine de cargar el periodo.</p>}
+      </div>
+    </ModalShell>
+  );
 }
 
 /* ============================================================================
@@ -31370,6 +32043,8 @@ function ModuloContabilidadCompras({
   // abajo): ID de transacción, hora, concepto, canal, método de pago y
   // monto — normalizado a una sola forma sin importar si la fila viene de
   // `ventas`, `reservas` o `compras_gastos`.
+  // App-172 — cada renglón trae además `fecha` (ISO), solo para las tablas de
+  // detalle del reporte PDF; no cambia ningún monto ni lo que se ve en pantalla.
   const desglosePnl = useMemo(() => {
     const horaDe = (iso) => {
       if (!iso) return '—';
@@ -31393,6 +32068,7 @@ function ModuloContabilidadCompras({
         id: v.id,
         idCorto: (v.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
         hora: horaDe(v.created_at || v.fecha),
+        fecha: v.created_at || v.fecha || null,
         concepto: conceptoVenta(v),
         canal,
         metodoPago: v.metodo_pago || '—',
@@ -31411,6 +32087,7 @@ function ModuloContabilidadCompras({
         id: r.id,
         idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
         hora: r.hora_inicio || '—',
+        fecha: r.fecha || null,
         concepto: `Renta ${canchasPorId[r.cancha_id]?.nombre || 'Cancha'}${r.jugador_nombre ? ` — ${r.jugador_nombre}` : ''}`,
         canal: 'Reserva',
         metodoPago: r.metodo_pago || '—',
@@ -31432,6 +32109,7 @@ function ModuloContabilidadCompras({
             id: `${r.id}-addon-${i}`,
             idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
             hora: r.hora_inicio || '—',
+            fecha: r.fecha || null,
             concepto: `${a?.nombre || 'Quick Sell'} — ${etiquetaReserva}`,
             canal: 'Tienda Web (Quick Sell de reserva)',
             metodoPago: r.metodo_pago || '—',
@@ -31443,6 +32121,7 @@ function ModuloContabilidadCompras({
             id: `${r.id}-addons`,
             idCorto: (r.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
             hora: r.hora_inicio || '—',
+            fecha: r.fecha || null,
             concepto: `Quick Sell — ${etiquetaReserva}`,
             canal: 'Tienda Web (Quick Sell de reserva)',
             metodoPago: r.metodo_pago || '—',
@@ -31454,6 +32133,7 @@ function ModuloContabilidadCompras({
       id: g.id,
       idCorto: (g.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
       hora: g.fecha ? formatoFechaLarga(g.fecha) : '—',
+      fecha: g.fecha || null,
       concepto: g.concepto,
       canal: g.categoria || 'Otro',
       metodoPago: g.metodo_pago || '—',
@@ -31478,6 +32158,7 @@ function ModuloContabilidadCompras({
             id: `${k}-${e.tipo}-${f.id ?? i}`,
             idCorto: (f.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
             hora: e.tipo === 'addon' ? f.hora_inicio || '—' : horaDe(f.created_at || f.fecha),
+            fecha: e.tipo === 'addon' ? f.fecha || null : f.created_at || f.fecha || null,
             concepto: `${conceptoItems}${etiquetaReserva}`,
             canal: e.canal,
             metodoPago: f.metodo_pago || '—',
@@ -31497,6 +32178,7 @@ function ModuloContabilidadCompras({
           id: `retencion-reserva-${f.id}`,
           idCorto,
           hora: f.hora_inicio || '—',
+          fecha: f.fecha || null,
           concepto: `Penalización · Reserva ${canchasPorId[f.cancha_id]?.nombre || 'Cancha'}${f.jugador_nombre ? ` — ${f.jugador_nombre}` : ''} (cancelación fuera de tiempo, pago retenido)`,
           canal: enLinea || esCanalPortalWeb(f.canal_origen) ? 'Portal Web' : 'Reservas & Canchas',
           metodoPago: f.metodo_pago || (enLinea ? 'Pago en línea' : '—'),
@@ -31513,6 +32195,7 @@ function ModuloContabilidadCompras({
         id: `retencion-${tipo}-${f.id}`,
         idCorto,
         hora: horaDe(f.created_at),
+        fecha: f.created_at || null,
         concepto: `Penalización · ${etiqueta} — ${f.nombre || 'Jugador'} (cancelación fuera de tiempo, pago retenido)`,
         canal: enLinea || esCanalPortalWeb(f.canal_origen) ? 'Portal Web' : tipo === 'academia' ? 'Clases & Academia' : 'Torneos & Retas',
         metodoPago: etiquetaMetodoPagoInscripcion(f.metodo_pago) || (enLinea ? 'Pago en línea' : '—'),
@@ -31526,6 +32209,7 @@ function ModuloContabilidadCompras({
       id: a.id,
       idCorto: (a.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
       hora: horaDe(a.created_at),
+      fecha: a.created_at || null,
       concepto: `${a.nombre || 'Alumno'} · ${a.tipo_pago === 'mensualidad' ? 'Mensualidad' : 'Clase suelta'}${a.pagado_con_creditos ? ' (crédito)' : ''}`,
       canal: esCanalPortalWeb(a.canal_origen) ? 'Portal Web' : 'Clases & Academia',
       // Método de Pago (item 1, migracion_v32) — real (Efectivo/Transferencia/
@@ -31543,6 +32227,7 @@ function ModuloContabilidadCompras({
         id: i.id,
         idCorto: (i.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
         hora: horaDe(i.created_at),
+        fecha: i.created_at || null,
         concepto: `${i.nombre || 'Jugador'} · Reta`,
         canal: esCanalPortalWeb(i.canal_origen) ? 'Portal Web' : 'Torneos & Retas',
         metodoPago: etiquetaMetodoPagoInscripcion(i.metodo_pago) || '—',
@@ -31552,6 +32237,7 @@ function ModuloContabilidadCompras({
         id: p.id,
         idCorto: (p.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
         hora: horaDe(p.created_at),
+        fecha: p.created_at || null,
         concepto: `${p.nombre || 'Jugador'} · Torneo${p.categoria ? ` (${p.categoria})` : ''}`,
         canal: esCanalPortalWeb(p.canal_origen) ? 'Portal Web' : 'Torneos & Retas',
         metodoPago: etiquetaMetodoPagoInscripcion(p.metodo_pago) || '—',
@@ -33181,6 +33867,24 @@ function ModuloContabilidadCompras({
     mostrarToast({ titulo: 'Reporte exportado', detalle: nombreArchivo });
   }
 
+  // App-172 — «Exportar reporte» del P&L: modal con PDF (diseño) o CSV.
+  const [modalExportarPnl, setModalExportarPnl] = useState(false);
+  function exportarPnlPDF() {
+    if (loadingVentasPnl || loadingEgresos) {
+      mostrarToast({ titulo: 'Espera a que termine de cargar', detalle: 'El Estado de Resultados todavía se está calculando.', tono: 'aviso' });
+      return;
+    }
+    const html = generarHTMLReportePnl({ modo: modoFiltroPnl, rango: rangoPnl, pnl, desglosePnl, nombreClub: nombreClubExport });
+    const base = `estado-de-resultados_${rangoPnl.inicioFechaISO}_a_${rangoPnl.finFechaISO}`;
+    const r = abrirReporteImprimible(html, base);
+    setModalExportarPnl(false);
+    mostrarToast(
+      r.modo === 'ventana'
+        ? { titulo: 'Reporte listo', detalle: 'Se abrió en una pestaña nueva. Elige «Guardar como PDF».' }
+        : { titulo: 'Reporte descargado', detalle: `${base}.html — ábrelo y usa «Descargar PDF».` }
+    );
+  }
+
   // Exportar Reporte (.CSV) — P&L / Estado de Resultados: matriz de ingresos
   // consolidados + egresos por categoría + desglose de cada renglón, todo
   // acotado al periodo activo (`rangoPnl`).
@@ -34287,11 +34991,24 @@ function ModuloContabilidadCompras({
               <p className="text-xs font-semibold text-slate-500">
                 Mostrando: <span className="text-slate-900">{rangoPnl.etiqueta}</span>
               </p>
-              {/* Beta: botón de exportar oculto — `exportarPnlCSV` no se toca. */}
+              {/* App-172 — reactivado: abre el modal (PDF con diseño o CSV). */}
               {SHOW_BETA_EXPORTAR_REPORTES && (
-                <BotonSecundario onClick={exportarPnlCSV} className="text-xs">
-                  <Download size={14} /> Exportar Reporte (.CSV)
+                <BotonSecundario onClick={() => setModalExportarPnl(true)} className="text-xs" data-testid="pnl-exportar">
+                  <Download size={14} /> Exportar reporte
                 </BotonSecundario>
+              )}
+              {modalExportarPnl && (
+                <ModalExportarReporte
+                  titulo="Estado de Resultados (P&L)"
+                  periodo={rangoPnl.etiqueta}
+                  cargando={loadingVentasPnl || loadingEgresos}
+                  onClose={() => setModalExportarPnl(false)}
+                  onPDF={exportarPnlPDF}
+                  onCSV={() => {
+                    exportarPnlCSV();
+                    setModalExportarPnl(false);
+                  }}
+                />
               )}
             </div>
           </div>
@@ -35381,6 +36098,40 @@ function ModuloAnalyticsBI({
   // rendimiento por cancha, top productos, el mapa de calor y una auditoría
   // de ERP & Inventario — y lo descarga en el navegador. Lee dinámicamente
   // el selector Día/Mes/Año: siempre exporta el rango que esté activo.
+  // App-172 — «Exportar reporte» abre el modal (PDF con diseño o CSV para Excel).
+  const [modalExportarBI, setModalExportarBI] = useState(false);
+  function exportarReportePDF() {
+    if (cargandoFinanciero) {
+      mostrarToast({ titulo: 'Espera a que termine de cargar', detalle: 'El reporte todavía se está calculando.', tono: 'aviso' });
+      return;
+    }
+    const html = generarHTMLReporteAnalytics({
+      modo: modoFiltro,
+      rango,
+      analisis,
+      rendimientoPorCancha,
+      heatmap,
+      productos,
+      ingresosCanchaSinAsignar: ingresosPorCancha.sinAsignar,
+      picoValle,
+      revPACP,
+      ocupacionCanchasPct,
+      ventasPorProductoSemana,
+      variantesPorProducto,
+      tendencia: tendenciaIngresos,
+      cortesiasRedimidas,
+      nombreClub: (configClub?.nombre || '').trim() || 'Club',
+    });
+    const base = `reporte-analytics_${rango.inicioFechaISO}_a_${rango.finFechaISO}`;
+    const r = abrirReporteImprimible(html, base);
+    setModalExportarBI(false);
+    mostrarToast(
+      r.modo === 'ventana'
+        ? { titulo: 'Reporte listo', detalle: 'Se abrió en una pestaña nueva. Elige «Guardar como PDF».' }
+        : { titulo: 'Reporte descargado', detalle: `${base}.html — ábrelo y usa «Descargar PDF».` }
+    );
+  }
+
   function exportarReporte() {
     if (cargandoFinanciero) {
       mostrarToast({ titulo: 'Espera a que termine de cargar', detalle: 'El reporte todavía se está calculando.', tono: 'aviso' });
@@ -35420,8 +36171,22 @@ function ModuloAnalyticsBI({
         onMes={setMesSel}
         onAnio={setAnioSel}
         etiqueta={rango.etiqueta}
-        onExportar={exportarReporte}
+        onExportar={() => setModalExportarBI(true)}
       />
+
+      {modalExportarBI && (
+        <ModalExportarReporte
+          titulo="Reporte de Analytics"
+          periodo={rango.etiqueta}
+          cargando={cargandoFinanciero}
+          onClose={() => setModalExportarBI(false)}
+          onPDF={exportarReportePDF}
+          onCSV={() => {
+            exportarReporte();
+            if (!cargandoFinanciero) setModalExportarBI(false);
+          }}
+        />
+      )}
 
       <TransicionPestana activeKey={modoFiltro}>
       {errorPeriodo && (
