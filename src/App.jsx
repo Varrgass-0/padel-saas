@@ -4614,7 +4614,8 @@ function esInscripcionRetenidaPorCancelacion(fila) {
 function esAlumnoRetenidoPorCancelacion(a) {
   if (!a) return false;
   if (estatusCobroNormalizado(a) === 'retenido') return true;
-  return a.estado === 'baja' && esCobroConfirmado(a) && !a.pagado_con_creditos;
+  // App-175 — la baja de la clase donde se compró un plan vigente no es retención: el plan sigue.
+  return a.estado === 'baja' && esCobroConfirmado(a) && !a.pagado_con_creditos && !bajaConservaPlan(a);
 }
 function montoRetenidoInscripcion(fila) {
   return Number(fila?.monto) || Number(fila?.pago_en_linea_monto) || 0;
@@ -19101,6 +19102,7 @@ function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando, onCambiar
     fila.tabla === 'academia_alumnos' &&
     onCambiarTipoPago &&
     !fila.cortesiaFrecuenciaId &&
+    !(fila.planMensualVigenteAcademia && fila.tipoPagoAcademia !== 'mensualidad') && // App-175
     Number(fila.academiaPrecioMensualidad) > 0 &&
     Number(fila.academiaPrecioClaseSuelta) > 0;
   const cambiarA = fila.tipoPagoAcademia === 'mensualidad' ? 'clase_suelta' : 'mensualidad';
@@ -22424,6 +22426,10 @@ function ModuloSmartPOS({
           // Plan Mensual/Clase Suelta" sin tener que volver a consultar
           // `academiaClases` desde el modal de cobro.
           academiaClaseNombre: clase?.nombre || null,
+          // App-175 — tipo de clase (en una Privada, la clase donde se compra el plan ya cuenta como 1 de las incluidas).
+          academiaClaseTipo: clase?.tipo_clase || null,
+          // App-175 — con un Plan Mensual vigente (Clase Privada) no se ofrece «Cambiar a Plan Mensual».
+          planMensualVigenteAcademia: clase?.tipo_clase === 'privada' && Boolean(planVigenteDeJugador(academiaAlumnos, a.jugador_id)),
           academiaPrecioMensualidad: Number(clase?.precio_mensualidad) || 0,
           academiaPrecioClaseSuelta: Number(clase?.precio_clase_suelta) || 0,
           // Limpieza de Cronograma (item 2): `cancelarInscripcionEvento`
@@ -22662,7 +22668,7 @@ function ModuloSmartPOS({
             tipo_pago: fila.tipoPagoAcademia,
             monto: fila.monto,
             ...(fila.tipoPagoAcademia === 'mensualidad'
-              ? activarOrenovarMembresia(fila.paqueteCreditosAcademia || PAQUETE_CREDITOS_DEFECTO)
+              ? activarMembresiaParaClase({ tipo_clase: fila.academiaClaseTipo }, fila.paqueteCreditosAcademia || PAQUETE_CREDITOS_DEFECTO) // App-175
               : // Si el cajero cambió de Plan Mensual a Clase Suelta aquí
                 // mismo, se limpia cualquier ciclo de créditos que hubiera
                 // quedado armado por el alta original — una Clase Suelta no
@@ -23015,6 +23021,7 @@ function ModuloSmartPOS({
           setAcademiaAlumnos((prev) => prev.map((a) => (a.id === actualizado.id ? { ...a, ...actualizado } : a))),
         setDandoDeBajaId: bloqueo,
         alumnosActivos: (academiaAlumnos || []).filter((a) => mismoId(a.clase_id, clase.id) && a.estado !== 'baja'),
+        todosLosAlumnos: academiaAlumnos || [], // App-175 — devolver la clase al plan mensual
         // Clase Privada que se queda sin alumnos → el mismo aviso de liberar cancha que ya tiene el POS.
         setMostrarPromptClaseVacia: (mostrar) => {
           if (mostrar) setClaseVaciaParaLiberar(clase);
@@ -29859,7 +29866,7 @@ function generarCSVReporte({
   rendimientoPorCancha,
   heatmap,
   productos,
-  ingresosCanchaSinAsignar = { eventos: 0, academia: 0 },
+  ingresosCanchaSinAsignar = { eventos: 0, retas: 0, torneos: 0, academia: 0 },
   picoValle,
   revPACP,
   ocupacionCanchasPct,
@@ -29873,6 +29880,8 @@ function generarCSVReporte({
   // App-170 — Cortesías Redimidas (`construirCortesiasRedimidasBI`), sección
   // informativa: NO suma a ningún ingreso del reporte.
   cortesiasRedimidas = null,
+  // App-175 — uso de los Planes Mensuales de Academia (informativo).
+  usoPlanesAcademia = null,
 }) {
   const filas = [];
   filas.push([`${nombreClub || 'ClubOS'} — Reporte Analytics`]);
@@ -29883,7 +29892,7 @@ function generarCSVReporte({
   filas.push(['Métricas Ejecutivas y de Eficiencia de BI']);
   filas.push(['Métrica', 'Valor']);
   filas.push(['Regla de oro: solo cobros con estatus Pagado — sin pendientes, cobros en recepción ni cuentas abiertas']);
-  filas.push(['Ingresos Totales Cobrados (Canchas + Retas & Torneos + Academia + Pro-Shop + Cafetería + Penalizaciones)', analisis.ingresosTotales.toFixed(2)]);
+  filas.push(['Ingresos Totales Cobrados (Canchas + Retas + Torneos + Academia + Pro-Shop + Restaurante / Bar + Penalizaciones)', analisis.ingresosTotales.toFixed(2)]);
   filas.push(['  · Renta de Canchas cobrada', analisis.ingresoCanchas.toFixed(2)]);
   filas.push(['  · Retas (inscripciones pagadas)', analisis.ingresoRetas.toFixed(2)]);
   filas.push(['  · Torneos (inscripciones pagadas)', analisis.ingresoTorneos.toFixed(2)]);
@@ -29895,6 +29904,10 @@ function generarCSVReporte({
   filas.push(['  · Pro-Shop (productos cobrados)', (analisis.ingresoProShop || 0).toFixed(2)]);
   filas.push(['  · Restaurante / Bar (productos cobrados)', (analisis.ingresoRestauranteBar || 0).toFixed(2)]);
   filas.push(['  · Penalizaciones / pagos retenidos', (analisis.ingresoPenalizaciones || 0).toFixed(2)]);
+  if (usoPlanesAcademia) {
+    filas.push(['Planes Mensuales de Academia cobrados (ya incluidos en Academia)', usoPlanesAcademia.planesCobrados, usoPlanesAcademia.montoPlanes.toFixed(2)]);
+    filas.push(['Clases cubiertas por plan (sin ingreso adicional; sí cuentan en la ocupación)', usoPlanesAcademia.clasesCubiertas, `${usoPlanesAcademia.clasesCubiertasPrivadas} privadas`]);
+  }
   filas.push(['Costo Total de lo Vendido (COGS)', analisis.cogsTotal.toFixed(2)]);
   filas.push(['Ocupación de Canchas (%) — incluye reservas pendientes', `${ocupacionCanchasPct.toFixed(1)}%`]);
   filas.push(['Ticket Promedio por Venta (Ingreso cobrado ÷ cobros efectivos)', analisis.ticketPromedio !== null ? analisis.ticketPromedio.toFixed(2) : '']);
@@ -29914,40 +29927,48 @@ function generarCSVReporte({
 
   filas.push(['Rentabilidad por Categoría']);
   filas.push(['Categoría', 'Ingreso Bruto', 'Costo Total', 'Margen Bruto', 'Margen %']);
-  analisis.rentabilidadPorCategoria.forEach((f) => {
+  // App-175 — Retas y Torneos como rubros separados.
+  separarRetasTorneosReporte(analisis).forEach((f) => {
     filas.push([f.categoria, f.ingreso.toFixed(2), f.costo.toFixed(2), f.utilidad.toFixed(2), f.margen !== null ? f.margen.toFixed(1) : '']);
   });
   filas.push([]);
 
   filas.push(['Ingresos y Ocupación por Cancha']);
-  filas.push(['Cancha', 'Horas Ocupadas', 'Ocupación %', 'Reservas Cobradas', 'Retas & Torneos', 'Academia / Clases', 'Ingreso Real']);
+  // App-175 — Retas y Torneos en columnas separadas; «Academia» (antes «Academia / Clases»).
+  filas.push(['Cancha', 'Horas Ocupadas', 'Ocupación %', 'Reservas Cobradas', 'Retas', 'Torneos', 'Academia', 'Ingreso Real']);
   const sinEventosCsv = Number(ingresosCanchaSinAsignar?.eventos) || 0;
+  const sinRetasCsv = Number(ingresosCanchaSinAsignar?.retas ?? ingresosCanchaSinAsignar?.eventos) || 0;
+  const sinTorneosCsv = Number(ingresosCanchaSinAsignar?.torneos) || 0;
   const sinAcademiaCsv = Number(ingresosCanchaSinAsignar?.academia) || 0;
-  const tot = { horas: 0, reservas: 0, eventos: 0, academia: 0 };
+  const tot = { horas: 0, reservas: 0, eventos: 0, retas: 0, torneos: 0, academia: 0 };
   rendimientoPorCancha.forEach((f) => {
     tot.horas += f.horas;
     tot.reservas += f.ingresoReservas;
     tot.eventos += f.ingresoEventos;
+    tot.retas += Number(f.ingresoRetas ?? f.ingresoEventos) || 0;
+    tot.torneos += Number(f.ingresoTorneos) || 0;
     tot.academia += f.ingresoAcademia;
     filas.push([
       f.cancha.nombre,
       f.horas.toFixed(1),
       f.ocupacion.toFixed(1),
       f.ingresoReservas.toFixed(2),
-      f.ingresoEventos.toFixed(2),
+      (Number(f.ingresoRetas ?? f.ingresoEventos) || 0).toFixed(2),
+      (Number(f.ingresoTorneos) || 0).toFixed(2),
       f.ingresoAcademia.toFixed(2),
       f.ingresos.toFixed(2),
     ]);
   });
   if (sinEventosCsv + sinAcademiaCsv > 0) {
-    filas.push(['Sin cancha asignada', '', '', '', sinEventosCsv.toFixed(2), sinAcademiaCsv.toFixed(2), (sinEventosCsv + sinAcademiaCsv).toFixed(2)]);
+    filas.push(['Sin cancha asignada', '', '', '', sinRetasCsv.toFixed(2), sinTorneosCsv.toFixed(2), sinAcademiaCsv.toFixed(2), (sinEventosCsv + sinAcademiaCsv).toFixed(2)]);
   }
   filas.push([
     'TOTAL',
     tot.horas.toFixed(1),
     '',
     tot.reservas.toFixed(2),
-    (tot.eventos + sinEventosCsv).toFixed(2),
+    (tot.retas + sinRetasCsv).toFixed(2),
+    (tot.torneos + sinTorneosCsv).toFixed(2),
     (tot.academia + sinAcademiaCsv).toFixed(2),
     (tot.reservas + tot.eventos + tot.academia + sinEventosCsv + sinAcademiaCsv).toFixed(2),
   ]);
@@ -30339,6 +30360,28 @@ function etiquetaPeriodoReporte(modo, rango) {
 }
 
 /* ---------------- Reporte de Analytics ---------------- */
+// App-175 — Rentabilidad por categoría con Retas y Torneos separados (el
+// tablero los muestra juntos como «Retas & Torneos»; la suma no cambia).
+function separarRetasTorneosReporte(analisis) {
+  const lista = [];
+  (analisis?.rentabilidadPorCategoria || []).forEach((f) => {
+    if (f.categoria !== 'Retas & Torneos') {
+      lista.push(f);
+      return;
+    }
+    const retas = Number(analisis.ingresoRetas) || 0;
+    const torneos = Number(analisis.ingresoTorneos) || 0;
+    const total = retas + torneos;
+    const parte = (ingreso) => {
+      const costo = total > 0 ? (f.costo * ingreso) / total : 0;
+      const utilidad = ingreso - costo;
+      return { ingreso, costo, utilidad, margen: ingreso > 0 ? (utilidad / ingreso) * 100 : null };
+    };
+    lista.push({ categoria: 'Retas', ...parte(retas) });
+    lista.push({ categoria: 'Torneos', ...parte(torneos) });
+  });
+  return lista;
+}
 function generarHTMLReporteAnalytics({
   modo,
   rango,
@@ -30346,7 +30389,7 @@ function generarHTMLReporteAnalytics({
   rendimientoPorCancha,
   heatmap,
   productos,
-  ingresosCanchaSinAsignar = { eventos: 0, academia: 0 },
+  ingresosCanchaSinAsignar = { eventos: 0, retas: 0, torneos: 0, academia: 0 },
   picoValle,
   revPACP,
   ocupacionCanchasPct,
@@ -30354,6 +30397,7 @@ function generarHTMLReporteAnalytics({
   variantesPorProducto,
   tendencia = null,
   cortesiasRedimidas = null,
+  usoPlanesAcademia = null,
   nombreClub,
   autoImprimir = true,
 }) {
@@ -30398,13 +30442,15 @@ function generarHTMLReporteAnalytics({
     );
   }
 
-  const rentab = (analisis.rentabilidadPorCategoria || []).filter((f) => f.ingreso > 0 || f.costo > 0);
+  // App-175 — Retas y Torneos como rubros separados (misma cifra total).
+  const categoriasReporte = separarRetasTorneosReporte(analisis);
+  const rentab = categoriasReporte.filter((f) => f.ingreso > 0 || f.costo > 0);
   const etiquetaCat = (k) => (k === 'Cafetería/Bar' ? 'Restaurante / Bar' : k);
   partes.push(
     seccionReporte(
       'Ingresos por categoría',
       `<div class="bloque">${htmlBarrasReporte(
-        [...(analisis.rentabilidadPorCategoria || [])].sort((a, b) => b.ingreso - a.ingreso).map((f) => ({ etiqueta: etiquetaCat(f.categoria), valor: f.ingreso })),
+        [...categoriasReporte].sort((a, b) => b.ingreso - a.ingreso).map((f) => ({ etiqueta: etiquetaCat(f.categoria), valor: f.ingreso })),
         { total: analisis.ingresosTotales }
       )}</div><div class="bloque">${htmlTablaReporte({
         columnas: [{ titulo: 'Categoría' }, { titulo: 'Ingreso', alinear: 'der' }, { titulo: 'Costo', alinear: 'der' }, { titulo: 'Margen bruto', alinear: 'der' }, { titulo: 'Margen %', alinear: 'der' }],
@@ -30419,7 +30465,11 @@ function generarHTMLReporteAnalytics({
         vacio: 'Sin ingresos cobrados en el periodo.',
       })}<p class="nota">Academia: mensualidades ${dineroReporte(analisis.academiaDesglose?.mensualidades)}, clases grupales ${dineroReporte(
         analisis.academiaDesglose?.grupales
-      )}, clases privadas ${dineroReporte(analisis.academiaDesglose?.privadas)}. Retas ${dineroReporte(analisis.ingresoRetas)} · Torneos ${dineroReporte(analisis.ingresoTorneos)}.</p></div>`,
+      )}, clases privadas ${dineroReporte(analisis.academiaDesglose?.privadas)}.${
+        usoPlanesAcademia
+          ? ` Planes mensuales cobrados: ${usoPlanesAcademia.planesCobrados} (${dineroReporte(usoPlanesAcademia.montoPlanes)}). Clases cubiertas por plan: ${usoPlanesAcademia.clasesCubiertas} (${usoPlanesAcademia.clasesCubiertasPrivadas} privadas), sin ingreso adicional; su cancha sí cuenta en la ocupación.`
+          : ''
+      }</p></div>`,
       { subtitulo: 'Participación de cada línea en los ingresos cobrados y su rentabilidad.' }
     )
   );
@@ -30448,16 +30498,24 @@ function generarHTMLReporteAnalytics({
     (acc, f) => ({ horas: acc.horas + f.horas, reservas: acc.reservas + f.ingresoReservas, eventos: acc.eventos + f.ingresoEventos, academia: acc.academia + f.ingresoAcademia }),
     { horas: 0, reservas: 0, eventos: 0, academia: 0 }
   );
+  // App-175 — Retas y Torneos en columnas separadas.
+  const sinRe = Number(ingresosCanchaSinAsignar?.retas ?? ingresosCanchaSinAsignar?.eventos) || 0;
+  const sinTo = Number(ingresosCanchaSinAsignar?.torneos) || 0;
+  const totRT = (rendimientoPorCancha || []).reduce(
+    (acc, f) => ({ retas: acc.retas + (Number(f.ingresoRetas ?? f.ingresoEventos) || 0), torneos: acc.torneos + (Number(f.ingresoTorneos) || 0) }),
+    { retas: 0, torneos: 0 }
+  );
   const filasCancha = (rendimientoPorCancha || []).map((f) => [
     f.cancha?.nombre || 'Cancha',
     f.horas.toFixed(1),
     pctReporte(f.ocupacion),
     dineroReporte(f.ingresoReservas),
-    dineroReporte(f.ingresoEventos),
+    dineroReporte(f.ingresoRetas ?? f.ingresoEventos),
+    dineroReporte(f.ingresoTorneos ?? 0),
     dineroReporte(f.ingresoAcademia),
     dineroReporte(f.ingresos),
   ]);
-  if (sinEv + sinAc > 0) filasCancha.push(['Sin cancha asignada', '—', '—', '—', dineroReporte(sinEv), dineroReporte(sinAc), dineroReporte(sinEv + sinAc)]);
+  if (sinEv + sinAc > 0) filasCancha.push(['Sin cancha asignada', '—', '—', '—', dineroReporte(sinRe), dineroReporte(sinTo), dineroReporte(sinAc), dineroReporte(sinEv + sinAc)]);
   partes.push(
     seccionReporte(
       'Ingresos y ocupación por cancha',
@@ -30467,7 +30525,8 @@ function generarHTMLReporteAnalytics({
           { titulo: 'Horas', alinear: 'der' },
           { titulo: 'Ocupación', alinear: 'der' },
           { titulo: 'Reservas', alinear: 'der' },
-          { titulo: 'Retas y torneos', alinear: 'der' },
+          { titulo: 'Retas', alinear: 'der' },
+          { titulo: 'Torneos', alinear: 'der' },
           { titulo: 'Academia', alinear: 'der' },
           { titulo: 'Ingreso real', alinear: 'der' },
         ],
@@ -30477,7 +30536,8 @@ function generarHTMLReporteAnalytics({
           tot.horas.toFixed(1),
           pctReporte(ocupacionCanchasPct),
           dineroReporte(tot.reservas),
-          dineroReporte(tot.eventos + sinEv),
+          dineroReporte(totRT.retas + sinRe),
+          dineroReporte(totRT.torneos + sinTo),
           dineroReporte(tot.academia + sinAc),
           dineroReporte(tot.reservas + tot.eventos + tot.academia + sinEv + sinAc),
         ],
@@ -30598,8 +30658,9 @@ function generarHTMLReportePnl({ modo, rango, pnl, desglosePnl, nombreClub, auto
     { etiqueta: 'Reservas de canchas', valor: pnl.reservasCanchas },
     { etiqueta: 'Pro-Shop', valor: pnl.proShop },
     { etiqueta: 'Restaurante / Bar', valor: pnl.restauranteBar },
-    { etiqueta: 'Clases y clínicas', valor: pnl.clasesClinicas },
-    { etiqueta: 'Torneos y retas', valor: pnl.torneosRetas },
+    { etiqueta: 'Clases y Academia', valor: pnl.clasesClinicas },
+    { etiqueta: 'Retas', valor: pnl.retas ?? pnl.torneosRetas },
+    { etiqueta: 'Torneos', valor: pnl.torneos ?? 0 },
     { etiqueta: 'Otros / penalizaciones', valor: pnl.otrosIngresos },
   ];
   const canal = pnl.lineasPorCanal || {};
@@ -30668,8 +30729,9 @@ function generarHTMLReportePnl({ modo, rango, pnl, desglosePnl, nombreClub, auto
   partes.push(detalle('Detalle · Reservas de canchas', desglosePnl.reservas, pnl.reservasCanchas));
   partes.push(detalle('Detalle · Pro-Shop', desglosePnl.proShop, pnl.proShop));
   partes.push(detalle('Detalle · Restaurante / Bar', desglosePnl.restauranteBar, pnl.restauranteBar));
-  partes.push(detalle('Detalle · Clases y clínicas', desglosePnl.clasesClinicas, pnl.clasesClinicas));
-  partes.push(detalle('Detalle · Torneos y retas', desglosePnl.torneosRetas, pnl.torneosRetas));
+  partes.push(detalle('Detalle · Clases y Academia', desglosePnl.clasesClinicas, pnl.clasesClinicas));
+  partes.push(detalle('Detalle · Retas', desglosePnl.retas || [], pnl.retas));
+  partes.push(detalle('Detalle · Torneos', desglosePnl.torneos || [], pnl.torneos));
   partes.push(detalle('Detalle · Otros ingresos / penalizaciones', desglosePnl.otrosIngresos, pnl.otrosIngresos));
   partes.push(
     seccionReporte(
@@ -32266,9 +32328,10 @@ function ModuloContabilidadCompras({
     // inscripción; respaldo al precio de la reta si una fila vieja no lo trae).
     const precioRetaPorId = new Map((retas || []).map((r) => [String(r.id), precioDeReta(r)]));
     const montoInscripcionReta = (i) => montoInscripcionCobradaContable(i, precioRetaPorId.get(String(i.reta_id)) || 0);
-    const torneosRetas =
-      filasInscripcionesRetas.reduce((acc, i) => acc + montoInscripcionReta(i), 0) +
-      filasInscripcionesTorneos.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+    // App-175 — Retas y Torneos también por separado (reportes); la suma no cambia.
+    const retasPnl = filasInscripcionesRetas.reduce((acc, i) => acc + montoInscripcionReta(i), 0);
+    const torneosPnl = filasInscripcionesTorneos.reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+    const torneosRetas = retasPnl + torneosPnl;
 
     // Clases y Clínicas (item 4 de la reestructuración de Academia & Clínicas):
     // ya NO es un placeholder — mismo criterio que Torneos y Retas (inciso
@@ -32278,7 +32341,8 @@ function ModuloContabilidadCompras({
     // correcta — SÍ es una transacción real (consumió 1 crédito), solo que
     // sin dinero nuevo asociado.
     const filasInscripcionesAcademia = (academiaAlumnos || []).filter(
-      (a) => inscripcionEstaPagada(a) && a.estado !== 'baja' && dentroDeRangoPorCreatedAt(a, rangoPnl)
+      // App-175 — `bajaConservaPlan`: la clase se canceló pero el plan mensual pagado sigue (su ingreso se queda).
+      (a) => inscripcionEstaPagada(a) && (a.estado !== 'baja' || bajaConservaPlan(a)) && dentroDeRangoPorCreatedAt(a, rangoPnl)
     );
     const clasesClinicas = filasInscripcionesAcademia.reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
 
@@ -32334,6 +32398,8 @@ function ModuloContabilidadCompras({
       _filasRetencionesCancelacion: filasRetencionesCancelacion,
       reservasCanchas,
       torneosRetas,
+      retas: retasPnl,
+      torneos: torneosPnl,
       clasesClinicas,
       ingresosTotalesConsolidados,
       egresosTotales,
@@ -32568,6 +32634,26 @@ function ModuloContabilidadCompras({
     // Desglose de "Torneos y Retas" (item 1, tarjeta interactiva) — une las
     // 2 tablas (retas + torneos) en una sola lista normalizada, igual que el
     // KPI `pnl.torneosRetas` las suma juntas.
+    const retasDesglose = pnl._filasInscripcionesRetas.map((i) => ({
+      id: i.id,
+      idCorto: (i.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      hora: horaDe(i.created_at),
+      fecha: i.created_at || null,
+      concepto: `${i.nombre || 'Jugador'} · Reta`,
+      canal: esCanalPortalWeb(i.canal_origen) ? 'Portal Web' : 'Torneos & Retas',
+      metodoPago: etiquetaMetodoPagoInscripcion(i.metodo_pago) || '—',
+      monto: pnl._montoInscripcionReta(i),
+    }));
+    const torneosDesglose = pnl._filasInscripcionesTorneos.map((p) => ({
+      id: p.id,
+      idCorto: (p.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      hora: horaDe(p.created_at),
+      fecha: p.created_at || null,
+      concepto: `${p.nombre || 'Jugador'} · Torneo${p.categoria ? ` (${p.categoria})` : ''}`,
+      canal: esCanalPortalWeb(p.canal_origen) ? 'Portal Web' : 'Torneos & Retas',
+      metodoPago: etiquetaMetodoPagoInscripcion(p.metodo_pago) || '—',
+      monto: Number(p.monto) || 0,
+    }));
     const torneosRetasDesglose = [
       ...pnl._filasInscripcionesRetas.map((i) => ({
         id: i.id,
@@ -32600,6 +32686,8 @@ function ModuloContabilidadCompras({
       egresos: filasEgresosDesglose,
       clasesClinicas: clasesClinicasDesglose,
       torneosRetas: torneosRetasDesglose,
+      retas: retasDesglose, // App-175 — por separado (reportes)
+      torneos: torneosDesglose,
       // Desglose completo de Ingresos Totales Consolidados: los 5 incisos
       // (antes faltaban Torneos/Retas y Clases, así que no cuadraba con el KPI).
       ingresosTotales: [
@@ -34244,9 +34332,11 @@ function ModuloContabilidadCompras({
       ['a) Reservas de Canchas (Renta pura de canchas, Web + Mostrador)', pnl.reservasCanchas.toFixed(2)],
       ['b) Pro-Shop (Punto de Venta + Tienda Web)', pnl.proShop.toFixed(2)],
       ['c) Restaurante / Bar (Punto de Venta + Tienda Web)', pnl.restauranteBar.toFixed(2)],
-      ['d) Clases y Clínicas', pnl.clasesClinicas.toFixed(2)],
-      ['e) Torneos y Retas (Inscripciones)', pnl.torneosRetas.toFixed(2)],
-      ['f) Otros Ingresos / Penalizaciones', pnl.otrosIngresos.toFixed(2)],
+      ['d) Clases y Academia', pnl.clasesClinicas.toFixed(2)],
+      // App-175 — Retas y Torneos por separado.
+      ['e) Retas (Inscripciones)', (Number(pnl.retas) || 0).toFixed(2)],
+      ['f) Torneos (Inscripciones)', (Number(pnl.torneos) || 0).toFixed(2)],
+      ['g) Otros Ingresos / Penalizaciones', pnl.otrosIngresos.toFixed(2)],
       ['   · de ello, penalizaciones aplicadas / pagos retenidos por cancelación fuera de tiempo', (Number(pnl.retencionesCancelacion) || 0).toFixed(2)],
       ['Ingresos Totales Consolidados', pnl.ingresosTotalesConsolidados.toFixed(2)],
       ['Egresos Totales', pnl.egresosTotales.toFixed(2)],
@@ -34270,6 +34360,9 @@ function ModuloContabilidadCompras({
     };
     seccionDesglose('Detalle — Pro-Shop', desglosePnl.proShop);
     seccionDesglose('Detalle — Restaurante / Bar', desglosePnl.restauranteBar);
+    seccionDesglose('Detalle — Clases y Academia', desglosePnl.clasesClinicas);
+    seccionDesglose('Detalle — Retas', desglosePnl.retas || []);
+    seccionDesglose('Detalle — Torneos', desglosePnl.torneos || []);
     seccionDesglose('Detalle — Otros Ingresos / Penalizaciones', desglosePnl.otrosIngresos);
     seccionDesglose('Detalle — Reservas de Canchas', desglosePnl.reservas);
     seccionDesglose('Detalle — Egresos', desglosePnl.egresos);
@@ -35763,7 +35856,7 @@ function ModuloAnalyticsBI({
     let totalAcademia = 0;
     let transaccionesAcademia = 0;
     (academiaAlumnos || []).forEach((a) => {
-      if (!esCobroConfirmado(a) || a.estado === 'baja') return;
+      if (!esCobroConfirmado(a) || (a.estado === 'baja' && !bajaConservaPlan(a))) return; // App-175
       if (!dentroDeRangoPorCreatedAt(a, rango)) return;
       const monto = Number(a.monto) || 0;
       if (monto <= 0) return; // pagado con créditos de membresía: sin dinero nuevo
@@ -35920,6 +36013,33 @@ function ModuloAnalyticsBI({
     [reservasEnRango, inscripciones, participantesTorneo, academiaAlumnos, ventasRango, rango, estadosCortesiasFrecuencia, productosPorId, variantesPorProducto, variantesPorId, productos]
   );
 
+  /* ---- App-175 — Uso de los Planes Mensuales de Academia (informativo) ----
+   * Planes cobrados en el periodo (por fecha de cobro, como el ingreso de
+   * Academia) y clases tomadas con el plan (por la fecha de la clase). Las
+   * clases del plan no suman ingreso: el plan se cobró una sola vez. Su
+   * cancha ya cuenta en la ocupación (cada clase aparta su horario). */
+  const usoPlanesAcademiaBI = useMemo(() => {
+    const clasesPorId = new Map((academiaClases || []).map((c) => [String(c.id), c]));
+    let planesCobrados = 0;
+    let montoPlanes = 0;
+    let clasesCubiertas = 0;
+    let clasesCubiertasPrivadas = 0;
+    (academiaAlumnos || []).forEach((a) => {
+      if (a.tipo_pago === 'mensualidad' && esCobroConfirmado(a) && (a.estado !== 'baja' || bajaConservaPlan(a)) && (Number(a.monto) || 0) > 0 && dentroDeRangoPorCreatedAt(a, rango)) {
+        planesCobrados += 1;
+        montoPlanes += Number(a.monto) || 0;
+      }
+      if (a.pagado_con_creditos && a.estado !== 'baja') {
+        const c = clasesPorId.get(String(a.clase_id));
+        if (c?.fecha && c.fecha >= rango.inicioFechaISO && c.fecha < rango.finFechaISO && c.estado !== 'cancelada') {
+          clasesCubiertas += 1;
+          if (c.tipo_clase === 'privada') clasesCubiertasPrivadas += 1;
+        }
+      }
+    });
+    return { planesCobrados, montoPlanes, clasesCubiertas, clasesCubiertasPrivadas };
+  }, [academiaAlumnos, academiaClases, rango]);
+
   /* ---- Heatmap de ocupación por horario (incluye reservas pendientes) ---- */
   const heatmap = useMemo(() => {
     const canchasActivas = canchas.filter((c) => c.activa !== false);
@@ -35978,7 +36098,8 @@ function ModuloAnalyticsBI({
     const filasPorId = new Map();
     const fila = (cancha) => {
       const clave = String(cancha.id);
-      if (!filasPorId.has(clave)) filasPorId.set(clave, { cancha, horas: 0, ingresoReservas: 0, ingresoEventos: 0, ingresoAcademia: 0 });
+      // App-175 — `ingresoRetas`/`ingresoTorneos`: el mismo `ingresoEventos`, separado (para los reportes).
+      if (!filasPorId.has(clave)) filasPorId.set(clave, { cancha, horas: 0, ingresoReservas: 0, ingresoEventos: 0, ingresoRetas: 0, ingresoTorneos: 0, ingresoAcademia: 0 });
       return filasPorId.get(clave);
     };
     canchas.filter((c) => c.activa !== false).forEach((c) => fila(c));
@@ -36003,6 +36124,8 @@ function ModuloAnalyticsBI({
     });
 
     let sinAsignar = 0;
+    let sinAsignarRetas = 0;
+    let sinAsignarTorneos = 0;
     let sinAsignarAcademia = 0;
     ingresosEventos.academiaCobros.forEach(({ clase, monto }) => {
       const c = clase ? canchaDe(clase.cancha_id) : null;
@@ -36013,10 +36136,12 @@ function ModuloAnalyticsBI({
       const lista = reta ? canchasDeReta(reta, canchas) : [];
       if (lista.length === 0) {
         sinAsignar += monto;
+        sinAsignarRetas += monto;
         return;
       }
       lista.forEach((c) => {
         fila(c).ingresoEventos += monto / lista.length;
+        fila(c).ingresoRetas += monto / lista.length;
       });
     });
     ingresosEventos.porTorneo.forEach(({ torneo, monto }, torneoId) => {
@@ -36031,10 +36156,12 @@ function ModuloAnalyticsBI({
       const totalHoras = Array.from(horasPorCancha.values()).reduce((acc, x) => acc + x.horas, 0);
       if (!torneo || totalHoras <= 0) {
         sinAsignar += monto;
+        sinAsignarTorneos += monto;
         return;
       }
       horasPorCancha.forEach(({ c, horas }) => {
         fila(c).ingresoEventos += (monto * horas) / totalHoras;
+        fila(c).ingresoTorneos += (monto * horas) / totalHoras;
       });
     });
 
@@ -36046,7 +36173,7 @@ function ModuloAnalyticsBI({
         ocupacion: horasDisponiblesPorCancha > 0 ? Math.min(100, (f.horas / horasDisponiblesPorCancha) * 100) : 0,
       }))
       .sort((a, b) => b.ingresos - a.ingresos || String(a.cancha.nombre).localeCompare(String(b.cancha.nombre)));
-    return { filas, sinAsignar: { eventos: sinAsignar, academia: sinAsignarAcademia }, horasPorTipo };
+    return { filas, sinAsignar: { eventos: sinAsignar, retas: sinAsignarRetas, torneos: sinAsignarTorneos, academia: sinAsignarAcademia }, horasPorTipo };
   }, [canchas, reservasOcupacion, reservasCobradas, ingresosEventos, partidosTorneo, rango]);
   const rendimientoPorCancha = ingresosPorCancha.filas;
 
@@ -36484,6 +36611,7 @@ function ModuloAnalyticsBI({
       variantesPorProducto,
       tendencia: tendenciaIngresos,
       cortesiasRedimidas,
+      usoPlanesAcademia: usoPlanesAcademiaBI,
       nombreClub: (configClub?.nombre || '').trim() || 'Club',
     });
     const base = `reporte-analytics_${rango.inicioFechaISO}_a_${rango.finFechaISO}`;
@@ -36517,6 +36645,7 @@ function ModuloAnalyticsBI({
       ventasPorVarianteSemana,
       nombreClub: (configClub?.nombre || '').trim() || 'ClubOS',
       cortesiasRedimidas,
+      usoPlanesAcademia: usoPlanesAcademiaBI,
     });
     const nombreArchivo = `analytics-bi_${rango.inicioFechaISO}_a_${rango.finFechaISO}.csv`;
     descargarArchivoTexto(nombreArchivo, csv, 'text/csv;charset=utf-8;');
@@ -46425,8 +46554,47 @@ async function cancelarParticipanteTorneoNativa(torneo, participante, { configCl
   return { ok: true, estado: nuevoEstado };
 }
 
-async function darDeBajaAlumnoNativa(alumno, { configClub, clase, toast, onAlumnoActualizado, setDandoDeBajaId = (_id) => {}, alumnosActivos, setMostrarPromptClaseVacia = (_v) => {} }) {
+// App-175 — Baja de una Clase Privada cubierta por un Plan Mensual vigente
+// (o de la clase donde se compró el plan): nunca reembolsa, retiene ni genera
+// adeudo; la clase regresa al cupo del plan. La fila del plan conserva su
+// ingreso (`MARCA_BAJA_PLAN_VIGENTE`).
+async function darDeBajaClasePlanMensual(alumno, devolucion, { clase, toast, onAlumnoActualizado, setDandoDeBajaId = (_id) => {}, alumnosActivos = [], setMostrarPromptClaseVacia = (_v) => {}, motivo = null }) {
+  const cambios = devolucion.esAncla
+    ? {
+        estado: 'baja',
+        motivo_baja: `${MARCA_BAJA_PLAN_VIGENTE} ${motivo || 'Clase cancelada · el plan mensual sigue vigente'}`,
+        fecha_baja: hoyISO(),
+        creditos_restantes: devolucion.nuevosCreditos,
+      }
+    : { estado: 'baja', motivo_baja: motivo || 'Clase del plan mensual cancelada · la clase regresó al plan', fecha_baja: hoyISO() };
+  if (!alumno._local) {
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', alumno.id, cambios, ['motivo_baja', 'fecha_baja', 'creditos_restantes']);
+    if (error) {
+      setDandoDeBajaId(null);
+      toast({ titulo: 'No se pudo dar de baja al alumno', detalle: error.message, tono: 'error' });
+      return { ok: false, error };
+    }
+  }
+  onAlumnoActualizado({ ...alumno, ...cambios });
+  if (!devolucion.esAncla) await devolverClaseAlPlan(devolucion, onAlumnoActualizado);
+  setDandoDeBajaId(null);
+  toast({
+    titulo: 'Clase cancelada sin penalización',
+    detalle: `${alumno.nombre || 'El alumno'} conserva su plan mensual: la clase regresó a su cupo (le quedan ${devolucion.nuevosCreditos}).`,
+  });
+  const quedanActivos = (alumnosActivos || []).filter((a) => a.id !== alumno.id).length;
+  if (clase?.tipo_clase === 'privada' && quedanActivos === 0 && clase.estado !== 'cancelada') setMostrarPromptClaseVacia(true);
+  return { ok: true, planMensual: true, creditos: devolucion.nuevosCreditos };
+}
+
+async function darDeBajaAlumnoNativa(alumno, { configClub, clase, toast, onAlumnoActualizado, setDandoDeBajaId = (_id) => {}, alumnosActivos, setMostrarPromptClaseVacia = (_v) => {}, todosLosAlumnos = null }) {
   setDandoDeBajaId(alumno.id);
+  // App-175 — Clase Privada de un Plan Mensual vigente: sin penalización y la
+  // clase regresa al cupo del plan (ver `planParaDevolverClase`).
+  const devolucionPlan = planParaDevolverClase(todosLosAlumnos || alumnosActivos, alumno, clase);
+  if (devolucionPlan) {
+    return darDeBajaClasePlanMensual(alumno, devolucionPlan, { clase, toast, onAlumnoActualizado, setDandoDeBajaId, alumnosActivos, setMostrarPromptClaseVacia });
+  }
   const config = configClub || CONFIG_CLUB_DEFAULT;
   const { activa: toleranciaActiva, horas: toleranciaHoras } = politicaCancelacionModulo(config, 'academia');
   const fechaClaseMs = timestampEvento(clase?.fecha, clase?.hora_inicio);
@@ -49618,7 +49786,8 @@ function buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorId, opts = {}) {
         a.jugador_id === jugadorId &&
         a.tipo_pago === 'mensualidad' &&
         estadoPagoInscripcion(a) === 'pagado' &&
-        a.estado !== 'baja' &&
+        // App-175 — una clase privada cancelada que conserva su plan sigue siendo el plan.
+        (a.estado !== 'baja' || bajaConservaPlan(a)) &&
         Number(a.creditos_restantes) > 0 &&
         (!a.fecha_renovacion || a.fecha_renovacion >= hoy)
     ) || null
@@ -49640,6 +49809,149 @@ function estadoSemaforoMembresia(alumno, hoyISOref) {
   );
   if (diasParaVencer <= 7) return 'por_vencer';
   return 'activa';
+}
+
+/* ----------------------------------------------------------------------------
+ * App-175 — PLAN MENSUAL DE CLASES PRIVADAS (sobre la Membresía por Créditos)
+ * ----------------------------------------------------------------------------
+ * El plan es la inscripción `mensualidad` pagada (con su ciclo de 30 días
+ * desde el pago y su paquete de clases). Reglas, solo Clases Privadas:
+ *  • La clase privada donde se compra el plan ya cuenta como 1 de las
+ *    incluidas (`activarMembresiaParaClase`).
+ *  • Cada clase privada agendada con el plan descuenta 1 clase al crearse /
+ *    confirmarse en el Panel (no al enviar la solicitud en el Portal).
+ *  • Sin clases disponibles pero con el plan vigente: no se ofrece otra
+ *    mensualidad dentro del ciclo; solo Clase Suelta.
+ *  • Cancelación dentro de la vigencia: sin penalización y la clase regresa
+ *    al cupo (solo si el plan sigue vigente y es del mismo ciclo; al vencer
+ *    no se acumula). Si se cancela la clase donde se compró el plan, la
+ *    mensualidad NO se reembolsa ni se retiene: el plan sigue (baja marcada
+ *    con `MARCA_BAJA_PLAN_VIGENTE`, que conserva el ingreso del plan).
+ * -------------------------------------------------------------------------*/
+const MARCA_BAJA_PLAN_VIGENTE = '[plan-vigente]';
+function bajaConservaPlan(a) {
+  return a?.estado === 'baja' && String(a?.motivo_baja || '').startsWith(MARCA_BAJA_PLAN_VIGENTE);
+}
+function fechaLocalDeRegistroISO(valor) {
+  if (!valor) return null;
+  const s = String(valor);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const f = new Date(s);
+  if (Number.isNaN(f.getTime())) return s.slice(0, 10) || null;
+  return `${f.getFullYear()}-${pad2(f.getMonth() + 1)}-${pad2(f.getDate())}`;
+}
+// ¿Esta fila es (o fue) el plan mensual pagado de un jugador?
+function esFilaPlanMensual(a) {
+  return (
+    Boolean(a) &&
+    a.tipo_pago === 'mensualidad' &&
+    estadoPagoInscripcion(a) === 'pagado' &&
+    (a.estado !== 'baja' || bajaConservaPlan(a)) &&
+    Boolean(a.fecha_renovacion)
+  );
+}
+// Créditos con que nace un plan: en una Clase Privada la clase donde se
+// compra ya es 1 de las incluidas.
+function activarMembresiaParaClase(clase, paqueteCreditos = PAQUETE_CREDITOS_DEFECTO) {
+  const base = activarOrenovarMembresia(paqueteCreditos);
+  if (clase?.tipo_clase === 'privada') base.creditos_restantes = Math.max(0, Number(paqueteCreditos) - 1);
+  return base;
+}
+// Resumen del plan del jugador (el más reciente). `null` si nunca tuvo plan
+// ni tiene uno por pagar. estado: 'activo' | 'agotado' | 'vencido' | 'pendiente_pago'.
+function planMensualDeJugador(academiaAlumnos, jugadorId, opts = {}) {
+  if (jugadorId === null || jugadorId === undefined || jugadorId === '') return null;
+  const hoy = opts.hoy || hoyISO();
+  const mismo = (a) => a && a.jugador_id != null && String(a.jugador_id) === String(jugadorId);
+  const planes = (academiaAlumnos || [])
+    .filter((a) => mismo(a) && esFilaPlanMensual(a))
+    .sort(
+      (a, b) =>
+        String(b.fecha_inicio_membresia || '').localeCompare(String(a.fecha_inicio_membresia || '')) ||
+        String(b.created_at || '').localeCompare(String(a.created_at || ''))
+    );
+  const fila = planes[0] || null;
+  const pendiente = (academiaAlumnos || []).find(
+    (a) => mismo(a) && a.tipo_pago === 'mensualidad' && a.estado !== 'baja' && estadoPagoInscripcion(a) !== 'pagado' && estadoPagoInscripcion(a) !== 'reembolsado'
+  );
+  if (!fila) {
+    if (!pendiente) return null;
+    return { fila: pendiente, estado: 'pendiente_pago', paquete: Number(pendiente.paquete_creditos) || null, restantes: null, tomadas: 0, inicio: null, vence: null, vigente: false };
+  }
+  const paquete = Math.max(0, Number(fila.paquete_creditos) || 0);
+  const restantes = Math.max(0, Number(fila.creditos_restantes) || 0);
+  const vigente = !fila.fecha_renovacion || fila.fecha_renovacion >= hoy;
+  const estado = !vigente ? (pendiente ? 'pendiente_pago' : 'vencido') : restantes > 0 ? 'activo' : 'agotado';
+  return {
+    fila,
+    estado,
+    paquete,
+    restantes,
+    tomadas: Math.max(0, paquete - restantes),
+    inicio: fila.fecha_inicio_membresia || null,
+    vence: fila.fecha_renovacion || null,
+    vigente,
+    pendiente: pendiente || null,
+  };
+}
+// Plan vigente pero sin clases: no se ofrece otra mensualidad en el ciclo.
+function planVigenteSinClases(academiaAlumnos, jugadorId) {
+  const p = planMensualDeJugador(academiaAlumnos, jugadorId);
+  return Boolean(p && p.vigente && p.estado === 'agotado');
+}
+function planVigenteDeJugador(academiaAlumnos, jugadorId) {
+  const p = planMensualDeJugador(academiaAlumnos, jugadorId);
+  return p && p.vigente && (p.estado === 'activo' || p.estado === 'agotado') ? p : null;
+}
+// Al cancelar una Clase Privada de un plan: ¿a qué plan se le devuelve la
+// clase? Solo al plan VIGENTE del mismo ciclo (iniciado antes de que se
+// agendara esa clase). Devuelve { fila, nuevosCreditos } o null.
+function planParaDevolverClase(academiaAlumnos, alumno, clase) {
+  if (!alumno || clase?.tipo_clase !== 'privada') return null;
+  const hoy = hoyISO();
+  if (alumno.tipo_pago === 'mensualidad' && esFilaPlanMensual(alumno)) {
+    if (!(alumno.fecha_renovacion >= hoy)) return null;
+    const paquete = Math.max(0, Number(alumno.paquete_creditos) || 0);
+    return { fila: alumno, nuevosCreditos: Math.min(paquete, Math.max(0, Number(alumno.creditos_restantes) || 0) + 1), esAncla: true };
+  }
+  if (!alumno.pagado_con_creditos) return null;
+  const fechaClase = fechaLocalDeRegistroISO(alumno.created_at) || hoy;
+  const fila = (academiaAlumnos || [])
+    .filter(
+      (a) =>
+        a.id !== alumno.id &&
+        a.jugador_id != null &&
+        String(a.jugador_id) === String(alumno.jugador_id) &&
+        esFilaPlanMensual(a) &&
+        a.fecha_renovacion >= hoy &&
+        (!a.fecha_inicio_membresia || a.fecha_inicio_membresia <= fechaClase)
+    )
+    .sort((a, b) => String(b.fecha_inicio_membresia || '').localeCompare(String(a.fecha_inicio_membresia || '')))[0];
+  if (!fila) return null;
+  const paquete = Math.max(0, Number(fila.paquete_creditos) || 0);
+  return { fila, nuevosCreditos: Math.min(paquete, Math.max(0, Number(fila.creditos_restantes) || 0) + 1), esAncla: false };
+}
+// Guarda la devolución (+1 clase al plan). Nunca bloquea la cancelación.
+async function devolverClaseAlPlan(devolucion, onAlumnoActualizado) {
+  if (!devolucion?.fila) return null;
+  const { fila, nuevosCreditos } = devolucion;
+  if (!fila._local) {
+    const { error } = await actualizarConColumnasOpcionales('academia_alumnos', fila.id, { creditos_restantes: nuevosCreditos }, []);
+    if (error) console.warn('[Academia] No se pudo devolver la clase al plan en Supabase, se aplicó solo local.', error);
+  }
+  onAlumnoActualizado?.({ ...fila, creditos_restantes: nuevosCreditos });
+  return nuevosCreditos;
+}
+function etiquetaEstadoPlanMensual(estado) {
+  return estado === 'activo'
+    ? 'Activo'
+    : estado === 'agotado'
+    ? 'Sin clases disponibles'
+    : estado === 'vencido'
+    ? 'Vencido'
+    : estado === 'pendiente_pago'
+    ? 'Pendiente de pago'
+    : '—';
 }
 
 const LS_KEY_ACADEMIA_CLASES_LOCAL = 'smashpadel_academia_clases_local_v1';
@@ -49706,7 +50018,7 @@ async function generarSesionesClase({ clase, reservasExistentes = [] }) {
 // Privada / Personalizada — selector de alumno del directorio (en vez del
 // nombre libre), alta automática como primer inscrito (cupo 1/1) en
 // `academia_alumnos`, y notificación al jugador (`crearNotificacionJugador`).
-function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen, configClub, permisos, tarifasHorarios, rangosHorarioClases = [] }) {
+function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose, onCreada, onAlumnoAgregado, prellenado, solicitudOrigen, configClub, permisos, tarifasHorarios, rangosHorarioClases = [], academiaAlumnos = [], onAlumnoActualizado = null }) {
   const toast = useToast();
   const registrarAuditoriaLog = useRegistrarAuditoriaLog();
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
@@ -49885,6 +50197,12 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
   // automáticamente si el modal se abrió desde una solicitud web.
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(solicitudOrigen?.jugador_id || null);
   const [alumnoPrivadoNombre, setAlumnoPrivadoNombre] = useState(solicitudOrigen?.nombre || '');
+  // App-175 — Plan Mensual (Clase Privada): cómo se cubre la clase del alumno.
+  //  • Plan vigente con clases → cubierta por su membresía ($0) y descuenta 1.
+  //  • Plan vigente sin clases → solo Clase Suelta (no otra mensualidad en el ciclo).
+  //  • Sin plan → el operador elige Clase Suelta o Plan Mensual (lo que pidió en
+  //    su solicitud viene marcado); se cobra en Punto de Venta.
+  const [cobroPrivada, setCobroPrivada] = useState(solicitudOrigen?.tipo_pago_deseado === 'mensualidad' ? 'mensualidad' : 'clase_suelta');
   const [alumnoPrivadoTelefono, setAlumnoPrivadoTelefono] = useState(solicitudOrigen?.telefono || '');
 
   // Modo de la Clase Grupal (App-92): "Inscribir Jugadores Ahora" asocia
@@ -49935,6 +50253,15 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     !horarioAbiertoATodos &&
     !coachesAsignadosHorario.some((n) => claveNombre(n) === claveNombre(coachNombre));
   const esPrivada = tipoClase === 'privada';
+  const planPrivada = useMemo(
+    () => (esPrivada && jugadorSeleccionadoId ? planMensualDeJugador(academiaAlumnos, jugadorSeleccionadoId) : null),
+    [esPrivada, jugadorSeleccionadoId, academiaAlumnos]
+  );
+  const membresiaPrivada = useMemo(
+    () => (esPrivada && jugadorSeleccionadoId ? buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorSeleccionadoId) : null),
+    [esPrivada, jugadorSeleccionadoId, academiaAlumnos]
+  );
+  const planPrivadaSinClases = Boolean(!membresiaPrivada && planPrivada && planPrivada.vigente && planPrivada.estado === 'agotado');
   // App-120 — Visibilidad en el Portal (switch Pública / Privada). Mientras
   // el operador no lo toque, sigue al tipo de clase con el comportamiento de
   // siempre: Grupal = Pública, Privada = Privada.
@@ -50097,34 +50424,55 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     // Local no tiene un `id` real contra el que `academia_alumnos` pueda
     // apuntar.
     let jugadorIdPrivado = null;
+    let coberturaPrivadaCreada = null; // App-175
     if (esPrivada && !modoLocal) {
       jugadorIdPrivado =
         jugadorSeleccionadoId || (await resolverJugadorId(alumnoPrivadoNombre, { telefono: alumnoPrivadoTelefono, directorio: directorioJugadores }));
+      // App-175 — Plan Mensual: con el jugador ya resuelto se decide cómo se
+      // cubre la clase (ver `cobroPrivada`). Con plan vigente y clases, $0 y
+      // se descuenta 1 clase del plan AL CREAR la clase.
+      const membresiaUso = buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorIdPrivado);
+      const sinClasesPlan = !membresiaUso && planVigenteSinClases(academiaAlumnos, jugadorIdPrivado);
+      const cobroFinal = membresiaUso ? 'plan' : sinClasesPlan ? 'clase_suelta' : cobroPrivada;
+      const clasesIncluidasPlan = tarifasAcademiaClub.clasesIncluidasMensualidad || PAQUETE_CREDITOS_DEFECTO;
       const payloadAlumno = withClubId({
         clase_id: claseCreada.id,
         jugador_id: jugadorIdPrivado,
         nombre: alumnoPrivadoNombre.trim(),
         telefono: alumnoPrivadoTelefono.trim() || null,
-        tipo_pago: 'clase_suelta',
-        estado_pago: 'pendiente',
-        monto: Number(precioClaseSuelta) || 0,
+        tipo_pago: cobroFinal === 'mensualidad' ? 'mensualidad' : 'clase_suelta',
+        estado_pago: cobroFinal === 'plan' ? 'pagado' : 'pendiente',
+        monto: cobroFinal === 'plan' ? 0 : cobroFinal === 'mensualidad' ? Number(precioMensualidad) || 0 : Number(precioClaseSuelta) || 0,
         estado: 'activo',
+        ...(cobroFinal === 'plan' ? { pagado_con_creditos: true } : {}),
+        ...(cobroFinal === 'mensualidad' ? { paquete_creditos: clasesIncluidasPlan } : {}),
       });
       const { data: alumnoCreado, error: errAlumno } = await insertarConColumnasOpcionales('academia_alumnos', payloadAlumno, [
         'jugador_id',
         'telefono',
+        'pagado_con_creditos',
+        'paquete_creditos',
       ]);
       if (errAlumno || !alumnoCreado) {
         console.warn('[Academia & Clínicas] Clase Privada creada, pero no se pudo inscribir al alumno automáticamente.', errAlumno);
         onAlumnoAgregado?.({ ...payloadAlumno, id: idLocal('academia_alumno'), _local: true });
       } else {
         onAlumnoAgregado?.(alumnoCreado);
+        if (cobroFinal === 'plan' && membresiaUso) {
+          const nuevosCreditos = Math.max(0, Number(membresiaUso.creditos_restantes) - 1);
+          const { error: errCredito } = await actualizarConColumnasOpcionales('academia_alumnos', membresiaUso.id, { creditos_restantes: nuevosCreditos }, []);
+          if (errCredito) console.warn('[Academia] No se pudo descontar la clase del plan en Supabase, se aplicó solo local.', errCredito);
+          onAlumnoActualizado?.({ ...membresiaUso, creditos_restantes: nuevosCreditos });
+        }
       }
+      coberturaPrivadaCreada = cobroFinal;
 
       // Notificación al jugador (item 3): solo si se pudo resolver su
       // `jugador_id` real — sin eso no hay a quién notificar en el Portal.
       if (jugadorIdPrivado) {
-        const mensaje = `Tu clase privada con el Coach ${coachNombre} ha sido agendada para el ${formatoFechaLarga(fecha)} a las ${formatoHora12(horaInicio)}.`;
+        const mensaje = `Tu clase privada con el Coach ${coachNombre} ha sido agendada para el ${formatoFechaLarga(fecha)} a las ${formatoHora12(horaInicio)}.${
+          coberturaPrivadaCreada === 'plan' ? ' Está cubierta por tu Plan Mensual (se descontó 1 clase de tu plan).' : ''
+        }`;
         const resultadoNotif = await crearNotificacionJugador({
           jugadorId: jugadorIdPrivado,
           titulo: '¡Clase Confirmada!',
@@ -50251,6 +50599,52 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
               placeholder="Teléfono (opcional)"
             />
             {nombreClasePrivada && <p className="mt-1.5 text-[11px] text-slate-500">Se guardará como: <span className="font-bold text-slate-600">{nombreClasePrivada}</span></p>}
+            {/* App-175 — Plan Mensual del alumno (Clase Privada). */}
+            {membresiaPrivada ? (
+              <div className="mt-2 rounded-lg border border-emerald-500/40 bg-emerald-400/10 px-3 py-2 text-[11px] text-emerald-900" data-testid="nueva-clase-plan-activo">
+                <p className="flex items-center gap-1.5 font-black">
+                  <Sparkles size={13} /> Plan mensual activo
+                  {planPrivada?.vence ? ` · vence el ${formatoFechaLarga(planPrivada.vence)}` : ''}
+                </p>
+                <p className="mt-0.5 font-semibold">
+                  {planPrivada && planPrivada.paquete > 0 ? `Lleva ${planPrivada.tomadas} de ${planPrivada.paquete} clases · le quedan ${planPrivada.restantes}. ` : `Le quedan ${membresiaPrivada.creditos_restantes} clases. `}
+                  Esta clase se agenda cubierta por su membresía ($0 adicional) y descuenta 1 clase de su cupo.
+                </p>
+              </div>
+            ) : planPrivadaSinClases ? (
+              <p className="mt-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[11px] font-semibold text-amber-900" data-testid="nueva-clase-plan-sin-clases">
+                Ya usó las {planPrivada.paquete} clases de su plan mensual (vence el {formatoFechaLarga(planPrivada.vence)}). Esta clase se cobra como Clase
+                Suelta ({formatoMoneda(Number(precioClaseSuelta) || 0)}); no se ofrece otra mensualidad en el mismo ciclo.
+              </p>
+            ) : (
+              <div className="mt-2" data-testid="nueva-clase-cobro">
+                <p className="mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                  Cobro{solicitudOrigen?.tipo_pago_deseado ? ` · pidió ${solicitudOrigen.tipo_pago_deseado === 'mensualidad' ? 'Plan Mensual' : 'Clase Suelta'}` : ''}
+                </p>
+                <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
+                  {[
+                    { value: 'clase_suelta', label: `Clase suelta · ${formatoMoneda(Number(precioClaseSuelta) || 0)}` },
+                    { value: 'mensualidad', label: `Plan mensual · ${formatoMoneda(Number(precioMensualidad) || 0)} (${tarifasAcademiaClub.clasesIncluidasMensualidad} clases)` },
+                  ].map((o) => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      data-testid={`nueva-clase-cobro-${o.value}`}
+                      aria-pressed={cobroPrivada === o.value}
+                      onClick={() => setCobroPrivada(o.value)}
+                      className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
+                        cobroPrivada === o.value ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[10.5px] text-slate-500">
+                  Queda pendiente y se cobra en Punto de Venta. {cobroPrivada === 'mensualidad' ? 'El plan dura 30 días desde el pago; esta clase cuenta como la primera.' : ''}
+                </p>
+              </div>
+            )}
           </Campo>
         ) : (
           <Campo label="Nombre de la clase">
@@ -50744,7 +51138,7 @@ function ModalDetalleClase({
   const [nombreAlumno, setNombreAlumno] = useState('');
   const [telefonoAlumno, setTelefonoAlumno] = useState('');
   const [jugadorSeleccionadoId, setJugadorSeleccionadoId] = useState(null);
-  const [tipoPago, setTipoPago] = useState('mensualidad');
+  const [tipoPagoElegido, setTipoPago] = useState('mensualidad');
   const efectivoBloqueadoCaja = useBloqueoEfectivoCaja(); // App-135 (v137): false sin módulo/bloqueo
   const [estadoPagoAlta, setEstadoPagoAlta] = useState('pendiente');
   // Método de Pago (item 1, migracion_v32) — solo aplica si se registra YA
@@ -50775,6 +51169,13 @@ function ModalDetalleClase({
     () => buscarMembresiaActivaDeJugador(todosLosAlumnos, jugadorSeleccionadoId),
     [todosLosAlumnos, jugadorSeleccionadoId]
   );
+  // App-175 — Plan Mensual vigente sin clases (Clase Privada): solo Clase Suelta.
+  const planSinClasesPreview = useMemo(
+    () => (clase.tipo_clase === 'privada' ? planMensualDeJugador(todosLosAlumnos, jugadorSeleccionadoId) : null),
+    [clase.tipo_clase, todosLosAlumnos, jugadorSeleccionadoId]
+  );
+  const bloquearMensualidadAlta = Boolean(planSinClasesPreview && planSinClasesPreview.vigente && planSinClasesPreview.estado === 'agotado');
+  const tipoPago = bloquearMensualidadAlta ? 'clase_suelta' : tipoPagoElegido;
   // Monto en vivo (mismo cálculo que `altaAlumno` hace al guardar, ver abajo)
   // — se necesita aquí también para validar Pago Mixto contra el monto real
   // ANTES de que el operador presione "Inscribir".
@@ -50823,6 +51224,9 @@ function ModalDetalleClase({
     // importar qué tipo/estatus de pago haya elegido el operador arriba,
     // nunca se le vuelve a cobrar mientras tenga créditos disponibles.
     const membresiaActiva = buscarMembresiaActivaDeJugador(todosLosAlumnos, jugadorId);
+    // App-175 — Clase Privada con Plan Mensual vigente y sin clases: no se
+    // cobra otra mensualidad en el mismo ciclo, solo Clase Suelta.
+    const tipoPago = clase.tipo_clase === 'privada' && planVigenteSinClases(todosLosAlumnos, jugadorId) ? 'clase_suelta' : tipoPagoElegido;
     const yaPagadoAhora = !membresiaActiva && tipoPago === 'mensualidad' && estadoPagoAlta === 'pagado';
     const monto = membresiaActiva ? 0 : tipoPago === 'mensualidad' ? Number(clase.precio_mensualidad) || 0 : Number(clase.precio_clase_suelta) || 0;
 
@@ -50846,7 +51250,7 @@ function ModalDetalleClase({
       // Pago Mixto (item 1, migracion_v52).
       monto_efectivo: !membresiaActiva && estadoPagoAlta === 'pagado' && metodoPago === 'mixto' ? Number(montoEfectivoMixto) || 0 : null,
       monto_tarjeta: !membresiaActiva && estadoPagoAlta === 'pagado' && metodoPago === 'mixto' ? Number(montoTarjetaMixto) || 0 : null,
-      ...(yaPagadoAhora ? activarOrenovarMembresia(paqueteCreditos) : {}),
+      ...(yaPagadoAhora ? activarMembresiaParaClase(clase, paqueteCreditos) : {}), // App-175
     });
     const { data, error } = await insertarConColumnasOpcionales('academia_alumnos', payload, [
       'jugador_id',
@@ -50921,7 +51325,7 @@ function ModalDetalleClase({
   async function darDeBaja(alumno) {
     if (dandoDeBajaId) return; // Prevención de doble clic/bucles.
     // App-159 — misma lógica, ahora en `darDeBajaAlumnoNativa` (sin cambios) para Smart POS.
-    return darDeBajaAlumnoNativa(alumno, { configClub, clase, toast, onAlumnoActualizado, setDandoDeBajaId, alumnosActivos, setMostrarPromptClaseVacia });
+    return darDeBajaAlumnoNativa(alumno, { configClub, clase, toast, onAlumnoActualizado, setDandoDeBajaId, alumnosActivos, setMostrarPromptClaseVacia, todosLosAlumnos });
   }
 
   async function liberarClaseVacia() {
@@ -50952,7 +51356,7 @@ function ModalDetalleClase({
     // membresía vigente sin importar por cuál de los 2 caminos se cobró.
     const activacionMembresia =
       nuevoEstado === 'pagado' && alumno.tipo_pago === 'mensualidad' && !alumno.pagado_con_creditos
-        ? activarOrenovarMembresia(alumno.paquete_creditos || PAQUETE_CREDITOS_DEFECTO)
+        ? activarMembresiaParaClase(clase, alumno.paquete_creditos || PAQUETE_CREDITOS_DEFECTO) // App-175
         : {};
     // Método de Pago (item 1, migracion_v32) — este toggle rápido no tiene UI
     // de selector propia, así que al marcar "Ya pagó" se asume Efectivo por
@@ -51050,9 +51454,15 @@ function ModalDetalleClase({
   const claseFueraDeTolerancia = toleranciaAcademiaActiva && !claseDentroDeTolerancia;
   // "Pagada" excluye créditos de membresía (no hay dinero real que mover) —
   // mismo criterio que `darDeBaja`/`cancelarInscripcionClase` del Portal.
+  // App-175 — la mensualidad de un Plan Mensual vigente (Clase Privada) no se
+  // reembolsa ni se retiene al cancelar: la clase regresa al plan.
+  const alumnosPlanMensualClase = useMemo(
+    () => alumnosActivos.filter((a) => planParaDevolverClase(todosLosAlumnos, a, clase)),
+    [alumnosActivos, todosLosAlumnos, clase]
+  );
   const alumnosPagadosClase = useMemo(
-    () => alumnosActivos.filter((a) => a.estado_pago === 'pagado' && !a.pagado_con_creditos && Number(a.monto) > 0),
-    [alumnosActivos]
+    () => alumnosActivos.filter((a) => a.estado_pago === 'pagado' && !a.pagado_con_creditos && Number(a.monto) > 0 && !alumnosPlanMensualClase.includes(a)),
+    [alumnosActivos, alumnosPlanMensualClase]
   );
   const alumnosSinPagarClase = useMemo(
     () => alumnosActivos.filter((a) => !(a.estado_pago === 'pagado') && Number(a.monto) > 0),
@@ -51078,7 +51488,16 @@ function ModalDetalleClase({
     let adeudosOk = 0;
     let adeudosFallidos = 0;
 
+    let clasesDevueltasPlan = 0;
     for (const alumno of alumnosActivos) {
+      // App-175 — Clase Privada de un Plan Mensual vigente: sin reembolso,
+      // retención ni adeudo; la clase regresa al cupo del plan.
+      const devolucionPlan = planParaDevolverClase(todosLosAlumnos, alumno, clase);
+      if (devolucionPlan) {
+        const r = await darDeBajaClasePlanMensual(alumno, devolucionPlan, { clase, toast: () => {}, onAlumnoActualizado, motivo });
+        if (r?.ok) clasesDevueltasPlan += 1;
+        continue;
+      }
       const pagada = alumno.estado_pago === 'pagado' && !alumno.pagado_con_creditos;
       const monto = Number(alumno.monto) || 0;
       const generaReembolso = claseDentroDeTolerancia && pagada && monto > 0 && abonarSaldoClase;
@@ -51178,6 +51597,7 @@ function ModalDetalleClase({
     const detalles = [];
     if (reembolsosOk > 0) detalles.push(`${reembolsosOk} reembolso(s) a Wallet`);
     if (adeudosOk > 0) detalles.push(`${adeudosOk} adeudo(s) pendiente(s) en Penalizaciones Pendientes`);
+    if (clasesDevueltasPlan > 0) detalles.push(`${clasesDevueltasPlan} clase(s) regresada(s) al plan mensual, sin penalización`);
     if (reembolsosFallidos > 0 || adeudosFallidos > 0) detalles.push('algunos movimientos financieros fallaron — revísalos manualmente');
     toast({
       titulo: 'Clase cancelada',
@@ -51401,6 +51821,12 @@ function ModalDetalleClase({
               La cancha se liberará de inmediato en Reservas & Canchas y en el Cronograma de Academia. El historial de alumnos y asistencia se conserva.
             </p>
 
+            {alumnosPlanMensualClase.length > 0 && (
+              <p className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-emerald-300" data-testid="cancelar-clase-plan-mensual">
+                Plan mensual vigente: la clase regresa al cupo del plan de {alumnosPlanMensualClase.map((a) => a.nombre).join(', ')} — sin penalización ni
+                reembolso de la mensualidad.
+              </p>
+            )}
             {alumnosPagadosClase.length > 0 && (
               <>
                 {claseFueraDeTolerancia ? (
@@ -51579,8 +52005,14 @@ function ModalDetalleClase({
                   </p>
                 ) : (
                   <div className="grid grid-cols-2 gap-3">
-                    <select value={tipoPago} onChange={(e) => setTipoPago(e.target.value)} className={inputClase}>
-                      {TIPOS_PAGO_ACADEMIA.map((t) => (
+                    {bloquearMensualidadAlta && (
+                      <p className="col-span-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[11px] font-semibold text-amber-800" data-testid="alta-plan-sin-clases">
+                        Ya usó las {planSinClasesPreview.paquete} clases de su plan mensual (vence el {formatoFechaLarga(planSinClasesPreview.vence)}). Esta clase se
+                        cobra como Clase Suelta; no se ofrece otra mensualidad en el mismo ciclo.
+                      </p>
+                    )}
+                    <select value={tipoPago} onChange={(e) => setTipoPago(e.target.value)} className={inputClase} disabled={bloquearMensualidadAlta}>
+                      {TIPOS_PAGO_ACADEMIA.filter((t) => !bloquearMensualidadAlta || t.value !== 'mensualidad').map((t) => (
                         <option key={t.value} value={t.value}>
                           {t.label}
                         </option>
@@ -52420,7 +52852,7 @@ function AnalyticsAcademia({
     let bajasEsteMes = 0;
 
     alumnosConMembresia.forEach((a) => {
-      if (a.estado === 'baja') {
+      if (a.estado === 'baja' && !bajaConservaPlan(a)) {
         if (a.fecha_baja && a.fecha_baja.slice(0, 7) === mesActual) bajasEsteMes += 1;
         return;
       }
@@ -52439,9 +52871,14 @@ function AnalyticsAcademia({
     // alumnos que alguna vez tuvieron una membresía — una aproximación
     // razonable sin un conteo histórico "mes a mes" de altas/bajas.
     const churnPct = alumnosConMembresia.length > 0 ? Math.round((bajasEsteMes / alumnosConMembresia.length) * 100) : null;
+    // App-175 — uso del plan: clases cubiertas por plan agendadas este mes
+    // (sin ingreso adicional: el plan ya se cobró al pagarse).
+    const clasesCubiertasMes = alumnos.filter(
+      (a) => a.pagado_con_creditos && a.estado !== 'baja' && String(a.created_at || '').slice(0, 7) === mesActual
+    ).length;
 
-    return { activas, porVencer, vencidas, mrr, bajasEsteMes, churnPct };
-  }, [alumnosConMembresia]);
+    return { activas, porVencer, vencidas, mrr, bajasEsteMes, churnPct, clasesCubiertasMes };
+  }, [alumnosConMembresia, alumnos]);
 
   // BANNERS INTERACTIVOS (refinamiento UX) — filtro de Nivel: mismo patrón
   // que `filtroMembresia` de abajo, pero para las tarjetas
@@ -52464,7 +52901,7 @@ function AnalyticsAcademia({
   ];
   const filasMembresiaFiltradas = useMemo(() => {
     return alumnosConMembresia
-      .filter((a) => a.estado !== 'baja')
+      .filter((a) => a.estado !== 'baja' || bajaConservaPlan(a))
       .filter((a) => filtroMembresia === 'todas' || estadoSemaforoMembresia(a) === filtroMembresia)
       .sort((a, b) => (a.fecha_renovacion || '').localeCompare(b.fecha_renovacion || ''));
   }, [alumnosConMembresia, filtroMembresia]);
@@ -52657,13 +53094,15 @@ function AnalyticsAcademia({
               onClick={() => setFiltroMembresia((prev) => (prev === 'vencida' ? 'todas' : 'vencida'))}
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <MetricCard
               icon={RefreshCw}
               etiqueta="Ingreso Recurrente Estimado"
               valor={formatoMoneda(kpisMembresias.mrr)}
               tono="sky"
             />
+            {/* App-175 — clases tomadas con el plan (uso), sin ingreso adicional. */}
+            <MetricCard icon={GraduationCap} etiqueta="Clases Cubiertas por Plan (mes)" valor={kpisMembresias.clasesCubiertasMes} tono="emerald" />
             <MetricCard
               icon={TrendingDown}
               etiqueta="Cancelaciones del Mes"
@@ -54565,6 +55004,8 @@ function ModuloAcademiaClinicas({
             setSolicitudParaNuevaClase(null);
           }}
           onAlumnoAgregado={onAcademiaAlumnoAgregado}
+          academiaAlumnos={academiaAlumnos}
+          onAlumnoActualizado={onAcademiaAlumnoActualizado}
           onCreada={(clase, sesiones) => {
             onAcademiaClaseCreada(clase);
             if (sesiones?.length > 0) setAcademiaSesiones((prev) => [...prev, ...sesiones]);
@@ -69303,7 +69744,7 @@ function PortalPublicoJugadores({ clubSlug }) {
       // `inscribirseAReta`: Tarjeta simulada o Wallet del Portal, o `null`
       // si quedó pendiente por cobrar en recepción.
       metodo_pago: esPagoTarjeta ? 'tarjeta_portal' : montoWallet > 0 && montoRestante <= 0 ? 'wallet_portal' : null,
-      ...(pagado && tipoPago === 'mensualidad' ? activarOrenovarMembresia(PAQUETE_CREDITOS_DEFECTO) : {}),
+      ...(pagado && tipoPago === 'mensualidad' ? activarMembresiaParaClase(clase, PAQUETE_CREDITOS_DEFECTO) : {}), // App-175
       // App-94: aceptación del modal de políticas de clase grupal.
       ...(clase.tipo_clase !== 'privada' ? { acepto_politicas_grupo_en: new Date().toISOString() } : {}),
     });
@@ -69823,6 +70264,10 @@ function PortalPublicoJugadores({ clubSlug }) {
   // 'privada'. Vive del mismo `academiaClasesPortal`/`academiaAlumnosPortal`
   // que ya llega en vivo por el canal `portal-publico-${club.id}` — una
   // clase Privada creada desde el panel admin aparece aquí sin recargar.
+  // App-175 — Plan Mensual del jugador (Clases Privadas): bloque en Academia y
+  // resumen en «Solicitar Clase Privada».
+  const planMensualPortal = useMemo(() => (jugador?.id ? planMensualDeJugador(academiaAlumnosPortal, jugador.id) : null), [academiaAlumnosPortal, jugador]);
+
   const misClasesPrivadasProximas = useMemo(() => {
     if (!jugador) return [];
     return academiaClasesPortalVisibles.filter(
@@ -70227,6 +70672,37 @@ function PortalPublicoJugadores({ clubSlug }) {
       await cancelarInscripcionPagadaEnLinea('academia', alumno, clase?.nombre);
       setResumenClase(null);
       return;
+    }
+    // App-175 — Clase Privada de su Plan Mensual vigente: sin penalización ni
+    // reembolso de la mensualidad; la clase regresa a su plan.
+    {
+      const claseDelPlan = clase || (academiaClasesPortal || []).find((c) => String(c.id) === String(alumno?.clase_id));
+      const devolucionPlan = planParaDevolverClase(academiaAlumnosPortal, alumno, claseDelPlan);
+      if (devolucionPlan) {
+        const actualizarLocal = (x) => setAcademiaAlumnosPortal((prev) => prev.map((a) => (a.id === x.id ? { ...a, ...x } : a)));
+        const r = await darDeBajaClasePlanMensual(alumno, devolucionPlan, {
+          clase: { ...(claseDelPlan || {}), estado: 'cancelada' },
+          toast: () => {},
+          onAlumnoActualizado: actualizarLocal,
+          motivo: 'Cancelado por el jugador desde el Portal',
+        });
+        if (r?.ok) {
+          notificarCancelacionAlClub(`su clase privada "${claseDelPlan?.nombre || 'Clase'}" (regresó a su plan mensual)`, {
+            subtipo: 'clase',
+            clase_id: claseDelPlan?.id ?? alumno.clase_id ?? null,
+            alumno_id: alumno.id,
+            reembolso_wallet: false,
+            modulo_destino: 'academia',
+          });
+          mostrarToast({
+            titulo: 'Clase cancelada',
+            detalle: `Sin penalización: la clase regresó a tu plan mensual (te quedan ${devolucionPlan.nuevosCreditos}).`,
+          });
+          setResumenClase(null);
+          setHistorialDetalle(null);
+        }
+        return;
+      }
     }
     const monto = Number(alumno.monto) || 0;
     const huboReembolso = alumno.estado_pago === 'pagado' && monto > 0 && !alumno.pagado_con_creditos;
@@ -72183,6 +72659,7 @@ function PortalPublicoJugadores({ clubSlug }) {
                       `text-slate-600`), ya cubiertas por
                       `CSS_MODO_OSCURO_CLUBOS`, en vez de `dark:algo` (este
                       proyecto no usa ese prefijo en ningún lado). */}
+                  {planMensualPortal && <TarjetaPlanMensualPortal plan={planMensualPortal} />}
                   <button
                     type="button"
                     onClick={() => (jugador ? setModalSolicitudClase(true) : setModalIdentificacion(true))}
@@ -72787,6 +73264,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             academiaClases={academiaClasesPortal}
             rangosHorario={club?.rangos_horario_clases}
             club={club}
+            planMensual={planMensualPortal}
           />
           )}
         </AnimatePresence>
@@ -74089,6 +74567,68 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
   );
 }
 
+// App-175 — «Mi Plan Mensual» (Portal → Academia): contratación/pago,
+// vencimiento, clases tomadas y restantes, y estado del plan.
+function TarjetaPlanMensualPortal({ plan }) {
+  if (!plan) return null;
+  const tono =
+    plan.estado === 'activo'
+      ? 'bg-emerald-400/15 text-emerald-700 ring-emerald-400/40'
+      : plan.estado === 'agotado'
+      ? 'bg-amber-400/15 text-amber-800 ring-amber-400/40'
+      : 'bg-slate-200/60 text-slate-600 ring-slate-300';
+  const pct = plan.paquete > 0 ? Math.min(100, Math.round((plan.tomadas / plan.paquete) * 100)) : 0;
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white/80 p-4" data-testid="portal-plan-mensual">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-orange-400">Mi Plan Mensual · Clases Privadas</p>
+          <p className="mt-0.5 text-sm font-black text-slate-900">
+            {plan.estado === 'pendiente_pago'
+              ? 'Plan por pagar en recepción'
+              : `${plan.restantes} de ${plan.paquete} clase${plan.paquete === 1 ? '' : 's'} disponible${plan.restantes === 1 ? '' : 's'}`}
+          </p>
+        </div>
+        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-black ring-1 ${tono}`} data-testid="portal-plan-estado">
+          {etiquetaEstadoPlanMensual(plan.estado)}
+        </span>
+      </div>
+      {plan.estado !== 'pendiente_pago' && (
+        <>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
+            <div className="h-2 rounded-full bg-orange-400" style={{ width: `${pct}%` }} />
+          </div>
+          <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+            <div>
+              <dt className="text-slate-500">Clases tomadas</dt>
+              <dd className="font-black text-slate-900" data-testid="portal-plan-tomadas">{plan.tomadas}</dd>
+            </div>
+            <div>
+              <dt className="text-slate-500">Clases restantes</dt>
+              <dd className="font-black text-slate-900" data-testid="portal-plan-restantes">{plan.restantes}</dd>
+            </div>
+            <div>
+              <dt className="text-slate-500">Contratado / pagado</dt>
+              <dd className="font-semibold text-slate-800">{plan.inicio ? formatoFechaLarga(plan.inicio) : '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-slate-500">{plan.vigente ? 'Vence / renovación' : 'Venció'}</dt>
+              <dd className="font-semibold text-slate-800" data-testid="portal-plan-vence">{plan.vence ? formatoFechaLarga(plan.vence) : '—'}</dd>
+            </div>
+          </dl>
+          <p className="mt-2 text-[11px] text-slate-500">
+            {plan.estado === 'agotado'
+              ? 'Ya usaste todas las clases de tu plan. Hasta que se renueve puedes pedir clases sueltas.'
+              : plan.estado === 'vencido'
+              ? 'Tu plan terminó. Las clases que no usaste no se acumulan; puedes contratar uno nuevo al solicitar tu clase.'
+              : 'Vigencia de 30 días desde tu pago. Las clases no usadas no se acumulan al siguiente periodo.'}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 // PORTAL: SOLICITUD DE CLASE PRIVADA O NUEVO GRUPO (refinamiento UX) — el
 // jugador NO paga aquí ni elige una clase existente: pide que el club abra
 // una.
@@ -74102,7 +74642,12 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
 // activas a esa hora (`estadoOcupacionAgregado`) — 100% derivado de
 // `reservas`/`academiaClases` que el Portal ya tiene cargadas, sin ninguna
 // consulta ni suscripción nueva (Regla de Oro de Realtime intacta).
-function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club, tarifasHorarios }) {
+function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaClases, rangosHorario, club, tarifasHorarios, planMensual = null }) {
+  // App-175 — Plan Mensual vigente: se muestra su resumen en vez de ofrecer
+  // pagar otro plan. Con clases disponibles, «Usar una clase de mi plan» (el
+  // club la descuenta al confirmar); sin clases, solo Clase Suelta.
+  const planVigente = planMensual && planMensual.vigente && (planMensual.estado === 'activo' || planMensual.estado === 'agotado') ? planMensual : null;
+  const planConClases = Boolean(planVigente && planVigente.estado === 'activo');
   // Arquitectura de Tarifas Academia (Corrección — item 4): esta solicitud
   // ("modal genérico de horarios") no tenía forma de capturar si el
   // jugador busca una Clase Suelta o el Plan Mensual — ahora se pide con
@@ -74117,7 +74662,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   // Estado inicial SIN preselección (App-92): ninguna de las 2 tarjetas
   // ("Clase Suelta"/"Plan Mensual") arranca marcada — el jugador debe elegir
   // una explícitamente antes de enviar (ver validación en `enviar()`).
-  const [tipoPagoDeseado, setTipoPagoDeseado] = useState(null); // null | 'clase_suelta' | 'mensualidad'
+  const [tipoPagoDeseado, setTipoPagoDeseado] = useState(() => (planVigente ? (planConClases ? 'mensualidad' : 'clase_suelta') : null)); // null | 'clase_suelta' | 'mensualidad'
   // App-94: el Portal SOLO solicita Clase Privada / Personalizada 1-a-1 —
   // las clases grupales las publica el club y el jugador se inscribe a
   // ellas desde el catálogo (con su modal de políticas de grupo mínimo).
@@ -74256,6 +74801,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
   async function enviar() {
     setError('');
     if (!tipoPagoDeseado) return setError(`Elige una opción: ${tituloTarjetaClase} o Plan Mensual de Academia.`);
+    if (planVigente && !planConClases && tipoPagoDeseado === 'mensualidad') return setError('Ya usaste todas las clases de tu plan: solicita una Clase Personalizada.');
     if (fecha < hoyISO()) return setError('Elige una fecha a partir de hoy.');
     if (clubCerradoEseDia) return setError(`${mensajeClubCerrado(fecha)} Elige otra fecha.`);
     if (!horaInicio) return setError('Elige un horario disponible en la cuadrícula.');
@@ -74299,7 +74845,56 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
             tarjeta sugería (incorrectamente) que el clic ya enviaba la
             solicitud. Sin encabezado "¿Qué buscas?" (ajuste UX anterior):
             las 2 tarjetas se explican solas. */}
-        <div>
+        {planVigente && (
+          <div className="space-y-2" data-testid="solicitud-plan-mensual">
+            <div className={`rounded-xl border p-3 ${planConClases ? 'border-emerald-400/50 bg-emerald-400/10' : 'border-amber-400/50 bg-amber-400/10'}`}>
+              <p className="text-xs font-black text-slate-900">Tu Plan Mensual de Academia</p>
+              <p className="mt-0.5 text-[11px] font-semibold text-slate-700" data-testid="solicitud-plan-resumen">
+                {planVigente.tomadas} clase{planVigente.tomadas === 1 ? '' : 's'} tomada{planVigente.tomadas === 1 ? '' : 's'} · {planVigente.restantes} restante
+                {planVigente.restantes === 1 ? '' : 's'} de {planVigente.paquete} · vence el {formatoFechaLarga(planVigente.vence)}
+              </p>
+              {!planConClases && (
+                <p className="mt-1 text-[11px] font-semibold text-amber-900" data-testid="solicitud-plan-agotado">
+                  Ya usaste todas las clases incluidas en tu plan. Hasta su renovación puedes solicitar una clase suelta con su cobro normal.
+                </p>
+              )}
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {planConClases && (
+                <button
+                  type="button"
+                  data-testid="solicitud-usar-plan"
+                  onClick={() => setTipoPagoDeseado('mensualidad')}
+                  aria-pressed={tipoPagoDeseado === 'mensualidad'}
+                  className={`flex flex-col gap-1 rounded-xl border p-3 text-left transition ${
+                    tipoPagoDeseado === 'mensualidad' ? 'border-orange-500 bg-orange-400/[0.06] ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-orange-400/40'
+                  }`}
+                >
+                  <p className="text-xs font-black text-slate-900">Usar una clase de mi plan</p>
+                  <p className="text-[10.5px] leading-snug text-slate-500">Sin costo adicional · se descuenta cuando el club confirme</p>
+                  <p className="text-base font-black text-slate-900">$0</p>
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid="solicitud-clase-suelta"
+                onClick={() => setTipoPagoDeseado('clase_suelta')}
+                aria-pressed={tipoPagoDeseado === 'clase_suelta'}
+                className={`flex flex-col gap-1 rounded-xl border p-3 text-left transition ${
+                  tipoPagoDeseado === 'clase_suelta' ? 'border-orange-500 bg-orange-400/[0.06] ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-orange-400/40'
+                }`}
+              >
+                <p className="text-xs font-black text-slate-900">Clase suelta</p>
+                <p className="text-[10.5px] leading-snug text-slate-500">Sesión 1-a-1 con su cobro normal</p>
+                <p className="text-base font-black text-slate-900">
+                  {tarjetaClaseSuelta.desde && <span className="mr-1 text-[11px] font-bold text-slate-500">Desde</span>}
+                  {formatoMoneda(tarjetaClaseSuelta.monto)}
+                </p>
+              </button>
+            </div>
+          </div>
+        )}
+        <div className={planVigente ? 'hidden' : ''}>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <button
               type="button"
