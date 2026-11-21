@@ -49779,6 +49779,9 @@ function buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorId, opts = {}) {
   if (!jugadorId) return null;
   const hoy = hoyISO();
   const excluirId = opts.excluirAlumnoId;
+  // App-176 — Vigencia estricta: con `fechaClase` (Clases Privadas), el plan solo
+  // cubre clases hasta su fecha de vencimiento inclusive.
+  const fechaClase = opts.fechaClase ? String(opts.fechaClase).slice(0, 10) : null;
   return (
     (academiaAlumnos || []).find(
       (a) =>
@@ -49789,7 +49792,8 @@ function buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorId, opts = {}) {
         // App-175 — una clase privada cancelada que conserva su plan sigue siendo el plan.
         (a.estado !== 'baja' || bajaConservaPlan(a)) &&
         Number(a.creditos_restantes) > 0 &&
-        (!a.fecha_renovacion || a.fecha_renovacion >= hoy)
+        (!a.fecha_renovacion || a.fecha_renovacion >= hoy) &&
+        (!fechaClase || !a.fecha_renovacion || a.fecha_renovacion >= fechaClase)
     ) || null
   );
 }
@@ -49894,10 +49898,18 @@ function planMensualDeJugador(academiaAlumnos, jugadorId, opts = {}) {
     pendiente: pendiente || null,
   };
 }
-// Plan vigente pero sin clases: no se ofrece otra mensualidad en el ciclo.
-function planVigenteSinClases(academiaAlumnos, jugadorId) {
+// App-176 — Vigencia estricta: la fecha de la clase es posterior al
+// vencimiento del plan (el mismo día del vencimiento todavía aplica).
+function fechaFueraDeCicloPlan(plan, fechaClase) {
+  if (!plan || !plan.vence || !fechaClase) return false;
+  return String(fechaClase).slice(0, 10) > String(plan.vence).slice(0, 10);
+}
+// Plan vigente que NO puede cubrir esta clase: sin clases, o (App-176) la
+// fecha de la clase cae después de su vencimiento. No se ofrece otra
+// mensualidad en el ciclo; solo Clase Suelta / Clase Privada con su cobro normal.
+function planVigenteSinClases(academiaAlumnos, jugadorId, fechaClase = null) {
   const p = planMensualDeJugador(academiaAlumnos, jugadorId);
-  return Boolean(p && p.vigente && p.estado === 'agotado');
+  return Boolean(p && p.vigente && (p.estado === 'agotado' || fechaFueraDeCicloPlan(p, fechaClase)));
 }
 function planVigenteDeJugador(academiaAlumnos, jugadorId) {
   const p = planMensualDeJugador(academiaAlumnos, jugadorId);
@@ -50258,10 +50270,12 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
     [esPrivada, jugadorSeleccionadoId, academiaAlumnos]
   );
   const membresiaPrivada = useMemo(
-    () => (esPrivada && jugadorSeleccionadoId ? buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorSeleccionadoId) : null),
-    [esPrivada, jugadorSeleccionadoId, academiaAlumnos]
+    () => (esPrivada && jugadorSeleccionadoId ? buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorSeleccionadoId, { fechaClase: fecha }) : null),
+    [esPrivada, jugadorSeleccionadoId, academiaAlumnos, fecha]
   );
-  const planPrivadaSinClases = Boolean(!membresiaPrivada && planPrivada && planPrivada.vigente && planPrivada.estado === 'agotado');
+  // App-176 — la fecha elegida es posterior al vencimiento del plan: el plan no la cubre.
+  const planPrivadaFueraCiclo = Boolean(!membresiaPrivada && planPrivada && planPrivada.vigente && fechaFueraDeCicloPlan(planPrivada, fecha));
+  const planPrivadaSinClases = Boolean(!membresiaPrivada && planPrivada && planPrivada.vigente && (planPrivada.estado === 'agotado' || planPrivadaFueraCiclo));
   // App-120 — Visibilidad en el Portal (switch Pública / Privada). Mientras
   // el operador no lo toque, sigue al tipo de clase con el comportamiento de
   // siempre: Grupal = Pública, Privada = Privada.
@@ -50431,8 +50445,8 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
       // App-175 — Plan Mensual: con el jugador ya resuelto se decide cómo se
       // cubre la clase (ver `cobroPrivada`). Con plan vigente y clases, $0 y
       // se descuenta 1 clase del plan AL CREAR la clase.
-      const membresiaUso = buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorIdPrivado);
-      const sinClasesPlan = !membresiaUso && planVigenteSinClases(academiaAlumnos, jugadorIdPrivado);
+      const membresiaUso = buscarMembresiaActivaDeJugador(academiaAlumnos, jugadorIdPrivado, { fechaClase: fecha });
+      const sinClasesPlan = !membresiaUso && planVigenteSinClases(academiaAlumnos, jugadorIdPrivado, fecha);
       const cobroFinal = membresiaUso ? 'plan' : sinClasesPlan ? 'clase_suelta' : cobroPrivada;
       const clasesIncluidasPlan = tarifasAcademiaClub.clasesIncluidasMensualidad || PAQUETE_CREDITOS_DEFECTO;
       const payloadAlumno = withClubId({
@@ -50611,6 +50625,11 @@ function ModalNuevaClase({ canchas, reservas, empleados, jugadoresPorId, onClose
                   Esta clase se agenda cubierta por su membresía ($0 adicional) y descuenta 1 clase de su cupo.
                 </p>
               </div>
+            ) : planPrivadaFueraCiclo ? (
+              <p className="mt-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[11px] font-semibold text-amber-900" data-testid="nueva-clase-plan-fuera-ciclo">
+                La fecha elegida es posterior al vencimiento de su plan mensual (vence el {formatoFechaLarga(planPrivada.vence)}): el plan no cubre esta
+                clase y no se descuenta de su cupo. Se cobra como Clase Suelta ({formatoMoneda(Number(precioClaseSuelta) || 0)}).
+              </p>
             ) : planPrivadaSinClases ? (
               <p className="mt-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[11px] font-semibold text-amber-900" data-testid="nueva-clase-plan-sin-clases">
                 Ya usó las {planPrivada.paquete} clases de su plan mensual (vence el {formatoFechaLarga(planPrivada.vence)}). Esta clase se cobra como Clase
@@ -51165,16 +51184,22 @@ function ModalDetalleClase({
   // Aviso en vivo (sin esperar al submit): solo cuando el alumno viene del
   // directorio (`jugadorSeleccionadoId`, ver `SelectorJugadorRegistrado`) —
   // un nombre escrito a mano todavía no tiene `jugador_id` confirmado.
+  // App-176 — Vigencia estricta (Clase Privada): el plan solo cubre la clase
+  // si su fecha no pasa del vencimiento del plan.
+  const fechaClaseCobertura = clase.tipo_clase === 'privada' ? clase.fecha || null : null;
   const membresiaActivaPreview = useMemo(
-    () => buscarMembresiaActivaDeJugador(todosLosAlumnos, jugadorSeleccionadoId),
-    [todosLosAlumnos, jugadorSeleccionadoId]
+    () => buscarMembresiaActivaDeJugador(todosLosAlumnos, jugadorSeleccionadoId, { fechaClase: fechaClaseCobertura }),
+    [todosLosAlumnos, jugadorSeleccionadoId, fechaClaseCobertura]
   );
   // App-175 — Plan Mensual vigente sin clases (Clase Privada): solo Clase Suelta.
   const planSinClasesPreview = useMemo(
     () => (clase.tipo_clase === 'privada' ? planMensualDeJugador(todosLosAlumnos, jugadorSeleccionadoId) : null),
     [clase.tipo_clase, todosLosAlumnos, jugadorSeleccionadoId]
   );
-  const bloquearMensualidadAlta = Boolean(planSinClasesPreview && planSinClasesPreview.vigente && planSinClasesPreview.estado === 'agotado');
+  const planAltaFueraCiclo = Boolean(!membresiaActivaPreview && planSinClasesPreview && planSinClasesPreview.vigente && fechaFueraDeCicloPlan(planSinClasesPreview, fechaClaseCobertura));
+  const bloquearMensualidadAlta = Boolean(
+    planSinClasesPreview && planSinClasesPreview.vigente && (planSinClasesPreview.estado === 'agotado' || planAltaFueraCiclo)
+  );
   const tipoPago = bloquearMensualidadAlta ? 'clase_suelta' : tipoPagoElegido;
   // Monto en vivo (mismo cálculo que `altaAlumno` hace al guardar, ver abajo)
   // — se necesita aquí también para validar Pago Mixto contra el monto real
@@ -51223,10 +51248,11 @@ function ModalDetalleClase({
     // inscripción se confirma en $0 MXN y se descuenta 1 crédito — sin
     // importar qué tipo/estatus de pago haya elegido el operador arriba,
     // nunca se le vuelve a cobrar mientras tenga créditos disponibles.
-    const membresiaActiva = buscarMembresiaActivaDeJugador(todosLosAlumnos, jugadorId);
+    const membresiaActiva = buscarMembresiaActivaDeJugador(todosLosAlumnos, jugadorId, { fechaClase: fechaClaseCobertura });
     // App-175 — Clase Privada con Plan Mensual vigente y sin clases: no se
     // cobra otra mensualidad en el mismo ciclo, solo Clase Suelta.
-    const tipoPago = clase.tipo_clase === 'privada' && planVigenteSinClases(todosLosAlumnos, jugadorId) ? 'clase_suelta' : tipoPagoElegido;
+    // App-176 — igual si la fecha de la clase es posterior al vencimiento del plan.
+    const tipoPago = clase.tipo_clase === 'privada' && planVigenteSinClases(todosLosAlumnos, jugadorId, fechaClaseCobertura) ? 'clase_suelta' : tipoPagoElegido;
     const yaPagadoAhora = !membresiaActiva && tipoPago === 'mensualidad' && estadoPagoAlta === 'pagado';
     const monto = membresiaActiva ? 0 : tipoPago === 'mensualidad' ? Number(clase.precio_mensualidad) || 0 : Number(clase.precio_clase_suelta) || 0;
 
@@ -52007,8 +52033,9 @@ function ModalDetalleClase({
                   <div className="grid grid-cols-2 gap-3">
                     {bloquearMensualidadAlta && (
                       <p className="col-span-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[11px] font-semibold text-amber-800" data-testid="alta-plan-sin-clases">
-                        Ya usó las {planSinClasesPreview.paquete} clases de su plan mensual (vence el {formatoFechaLarga(planSinClasesPreview.vence)}). Esta clase se
-                        cobra como Clase Suelta; no se ofrece otra mensualidad en el mismo ciclo.
+                        {planAltaFueraCiclo
+                          ? `La fecha de esta clase es posterior al vencimiento de su plan mensual (vence el ${formatoFechaLarga(planSinClasesPreview.vence)}): el plan no la cubre ni se descuenta de su cupo. Se cobra como Clase Suelta.`
+                          : `Ya usó las ${planSinClasesPreview.paquete} clases de su plan mensual (vence el ${formatoFechaLarga(planSinClasesPreview.vence)}). Esta clase se cobra como Clase Suelta; no se ofrece otra mensualidad en el mismo ciclo.`}
                       </p>
                     )}
                     <select value={tipoPago} onChange={(e) => setTipoPago(e.target.value)} className={inputClase} disabled={bloquearMensualidadAlta}>
@@ -69649,7 +69676,11 @@ function PortalPublicoJugadores({ clubSlug }) {
     // SIN pasar por el flujo de pago (Wallet/Tarjeta) — se descuenta 1
     // crédito de esa membresía en su lugar. Mismo criterio que `altaAlumno`
     // en Recepción (`buscarMembresiaActivaDeJugador`).
-    const membresiaActiva = buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id);
+    // App-176 — Vigencia estricta (Clase Privada): el plan no cubre una clase
+    // con fecha posterior a su vencimiento.
+    const membresiaActiva = buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id, {
+      fechaClase: clase?.tipo_clase === 'privada' ? clase.fecha || null : null,
+    });
     if (membresiaActiva) {
       const payloadCredito = withClubId({
         clase_id: clase.id,
@@ -73098,11 +73129,11 @@ function PortalPublicoJugadores({ clubSlug }) {
                 : 'torneos'
             )}
             onClose={() => setFlujoPago(null)}
-            aceptaPagoEnLinea={pagosEnLineaClub && !(flujoPago.tipo === 'academia' && jugador && buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id))}
+            aceptaPagoEnLinea={pagosEnLineaClub && !(flujoPago.tipo === 'academia' && jugador && buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id, { fechaClase: flujoPago.evento?.tipo_clase === 'privada' ? flujoPago.evento?.fecha || null : null }))}
             tieneSesionPortal={Boolean(jugador?.portalToken)}
             // App-169 — Cortesías por Frecuencia de la categoría del cobro.
             cortesiasDisponibles={
-              flujoPago.tipo === 'academia' && jugador && buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id)
+              flujoPago.tipo === 'academia' && jugador && buscarMembresiaActivaDeJugador(academiaAlumnosPortal, jugador.id, { fechaClase: flujoPago.evento?.tipo_clase === 'privada' ? flujoPago.evento?.fecha || null : null })
                 ? []
                 : cortesiasPortalDe(flujoPago.tipo === 'reta' ? 'retas' : flujoPago.tipo === 'academia' ? 'clases' : 'torneos')
             }
@@ -74797,11 +74828,20 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
 
   const tarjetaClaseSuelta = precioClaseSueltaTarjeta;
   const tituloTarjetaClase = 'Clase Personalizada';
+  // App-176 — Vigencia estricta: la fecha elegida es posterior al vencimiento
+  // del plan (el mismo día del vencimiento todavía aplica). La fecha NO se
+  // bloquea: solo deja de poder usarse una clase del plan para esa fecha.
+  const fechaFueraDelPlan = Boolean(planConClases && fechaFueraDeCicloPlan(planVigente, fecha));
+  const planCubreFecha = planConClases && !fechaFueraDelPlan;
+  // Si el jugador había elegido "Usar una clase de mi plan" y cambia a una
+  // fecha fuera del ciclo, se toma como Clase privada (y vuelve a su plan si
+  // regresa a una fecha dentro del ciclo).
+  const tipoPagoEfectivo = tipoPagoDeseado === 'mensualidad' && planVigente && !planCubreFecha ? 'clase_suelta' : tipoPagoDeseado;
 
   async function enviar() {
     setError('');
-    if (!tipoPagoDeseado) return setError(`Elige una opción: ${tituloTarjetaClase} o Plan Mensual de Academia.`);
-    if (planVigente && !planConClases && tipoPagoDeseado === 'mensualidad') return setError('Ya usaste todas las clases de tu plan: solicita una Clase Personalizada.');
+    if (!tipoPagoEfectivo) return setError(`Elige una opción: ${tituloTarjetaClase} o Plan Mensual de Academia.`);
+    if (planVigente && !planCubreFecha && tipoPagoEfectivo === 'mensualidad') return setError('Tu plan no cubre esa fecha: solicita una Clase privada.');
     if (fecha < hoyISO()) return setError('Elige una fecha a partir de hoy.');
     if (clubCerradoEseDia) return setError(`${mensajeClubCerrado(fecha)} Elige otra fecha.`);
     if (!horaInicio) return setError('Elige un horario disponible en la cuadrícula.');
@@ -74821,7 +74861,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
       coach: coachPreferido || slotElegido?.coachesNombres?.[0] || null,
       // Privada 1-a-1: nunca lleva número de participantes.
       numeroParticipantes: null,
-      tipoPagoDeseado,
+      tipoPagoDeseado: tipoPagoEfectivo,
       // Precio Dinámico de Clase Suelta (migracion_v89): el monto EXACTO que el
       // jugador vio para el horario que eligió (franja que cubre el bloque, o
       // el precio estándar) — se guarda en la solicitud para que "Nueva
@@ -74847,7 +74887,7 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
             las 2 tarjetas se explican solas. */}
         {planVigente && (
           <div className="space-y-2" data-testid="solicitud-plan-mensual">
-            <div className={`rounded-xl border p-3 ${planConClases ? 'border-emerald-400/50 bg-emerald-400/10' : 'border-amber-400/50 bg-amber-400/10'}`}>
+            <div className={`rounded-xl border p-3 ${planCubreFecha ? 'border-emerald-400/50 bg-emerald-400/10' : 'border-amber-400/50 bg-amber-400/10'}`}>
               <p className="text-xs font-black text-slate-900">Tu Plan Mensual de Academia</p>
               <p className="mt-0.5 text-[11px] font-semibold text-slate-700" data-testid="solicitud-plan-resumen">
                 {planVigente.tomadas} clase{planVigente.tomadas === 1 ? '' : 's'} tomada{planVigente.tomadas === 1 ? '' : 's'} · {planVigente.restantes} restante
@@ -74855,7 +74895,13 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
               </p>
               {!planConClases && (
                 <p className="mt-1 text-[11px] font-semibold text-amber-900" data-testid="solicitud-plan-agotado">
-                  Ya usaste todas las clases incluidas en tu plan. Hasta su renovación puedes solicitar una clase suelta con su cobro normal.
+                  Ya usaste todas las clases incluidas en tu plan. Hasta su renovación puedes solicitar una clase privada con su cobro normal.
+                </p>
+              )}
+              {fechaFueraDelPlan && (
+                <p className="mt-1 text-[11px] font-semibold text-amber-900" data-testid="solicitud-plan-fuera-ciclo">
+                  La fecha elegida es posterior al vencimiento de tu plan ({formatoFechaLarga(planVigente.vence)}): para ese día tu plan no cubre la clase.
+                  Puedes solicitarla como clase privada con su cobro normal, o elegir una fecha hasta el vencimiento.
                 </p>
               )}
             </div>
@@ -74865,13 +74911,16 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                   type="button"
                   data-testid="solicitud-usar-plan"
                   onClick={() => setTipoPagoDeseado('mensualidad')}
-                  aria-pressed={tipoPagoDeseado === 'mensualidad'}
-                  className={`flex flex-col gap-1 rounded-xl border p-3 text-left transition ${
-                    tipoPagoDeseado === 'mensualidad' ? 'border-orange-500 bg-orange-400/[0.06] ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-orange-400/40'
+                  disabled={fechaFueraDelPlan}
+                  aria-pressed={tipoPagoEfectivo === 'mensualidad'}
+                  className={`flex flex-col gap-1 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                    tipoPagoEfectivo === 'mensualidad' ? 'border-orange-500 bg-orange-400/[0.06] ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-orange-400/40'
                   }`}
                 >
                   <p className="text-xs font-black text-slate-900">Usar una clase de mi plan</p>
-                  <p className="text-[10.5px] leading-snug text-slate-500">Sin costo adicional · se descuenta cuando el club confirme</p>
+                  <p className="text-[10.5px] leading-snug text-slate-500">
+                    {fechaFueraDelPlan ? 'No disponible para esta fecha · es posterior al vencimiento de tu plan' : 'Sin costo adicional · se descuenta cuando el club confirme'}
+                  </p>
                   <p className="text-base font-black text-slate-900">$0</p>
                 </button>
               )}
@@ -74879,13 +74928,13 @@ function ModalSolicitarClase({ onClose, onEnviar, canchas, reservas, academiaCla
                 type="button"
                 data-testid="solicitud-clase-suelta"
                 onClick={() => setTipoPagoDeseado('clase_suelta')}
-                aria-pressed={tipoPagoDeseado === 'clase_suelta'}
+                aria-pressed={tipoPagoEfectivo === 'clase_suelta'}
                 className={`flex flex-col gap-1 rounded-xl border p-3 text-left transition ${
-                  tipoPagoDeseado === 'clase_suelta' ? 'border-orange-500 bg-orange-400/[0.06] ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-orange-400/40'
+                  tipoPagoEfectivo === 'clase_suelta' ? 'border-orange-500 bg-orange-400/[0.06] ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50/60 hover:border-orange-400/40'
                 }`}
               >
-                <p className="text-xs font-black text-slate-900">Clase suelta</p>
-                <p className="text-[10.5px] leading-snug text-slate-500">Sesión 1-a-1 con su cobro normal</p>
+                <p className="text-xs font-black text-slate-900">Clase privada</p>
+                <p className="text-[10.5px] leading-snug text-slate-500">Clase privada 1-a-1 con su cobro normal (no usa tu plan)</p>
                 <p className="text-base font-black text-slate-900">
                   {tarjetaClaseSuelta.desde && <span className="mr-1 text-[11px] font-bold text-slate-500">Desde</span>}
                   {formatoMoneda(tarjetaClaseSuelta.monto)}
