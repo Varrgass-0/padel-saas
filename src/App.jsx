@@ -4365,11 +4365,88 @@ function montoInscripcionCobradaContable(fila, precioRespaldo = 0) {
 // (`tipo: 'inscripcion_evento'`, que genera Smart POS al cobrar una Reta/
 // Torneo/Clase pendiente): ese dinero ya se cuenta desde la inscripción
 // misma — sumarlo también aquí lo duplicaba en el Estado de Resultados.
+// App-177 — tampoco cuenta aquí el renglón de una Recarga de Wallet
+// (`recarga_wallet`): su ingreso va en su propio rubro, «Recargas de Wallet».
 function montoVentaSinInscripciones(venta) {
   const total = Number(venta?.total) || 0;
   const items = Array.isArray(venta?.detalles?.items) ? venta.detalles.items : [];
-  const inscripciones = items.filter((it) => it?.tipo === 'inscripcion_evento').reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0);
+  const inscripciones = items
+    .filter((it) => it?.tipo === 'inscripcion_evento' || it?.tipo === TIPO_ITEM_RECARGA_WALLET)
+    .reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0);
   return Math.max(0, total - inscripciones);
+}
+
+// =============================================================================
+// App-177 — RECARGAS DE WALLET COBRADAS EN PUNTO DE VENTA
+// -----------------------------------------------------------------------------
+// Configuración → Wallet → «Cargar Crédito» con Efectivo / Transferencia /
+// Tarjeta ya no abona directo: lleva a Punto de Venta, donde se cobra un
+// ticket con un renglón `recarga_wallet`. Al concretarse el cobro se abona
+// el saldo (movimiento `recarga_pos`, SIN vigencia). Bonos, cortesías y
+// ajustes administrativos siguen abonándose directo, como siempre.
+// Contabilidad (sin duplicar):
+//  • El ingreso se reconoce al cobrarse el ticket («Recargas cobradas»).
+//  • Cuando ese saldo COMPRADO se consume después (reserva, clase, venta…),
+//    el módulo que lo cobra lo sigue contando como siempre, y aquí se resta
+//    «(−) Consumo de saldo comprado» (`wallet_movimientos.monto_prepagado`,
+//    v151). Orden de consumo: lotes con vigencia (bonos, FEFO) → saldo
+//    permanente que no se compró (saldos a favor por cancelación, bonos sin
+//    vigencia, ajustes) → saldo comprado.
+//  • «Recargas de Wallet (neto)» = recargas cobradas − consumo de saldo
+//    comprado. Puede ser negativo en un periodo donde se usó saldo comprado
+//    antes: ese dinero ya fue ingreso cuando se cobró la recarga.
+// =============================================================================
+const TIPO_ITEM_RECARGA_WALLET = 'recarga_wallet';
+const REFERENCIA_RECARGA_WALLET_POS = 'recarga_pos';
+const CATEGORIA_RECARGAS_WALLET_BI = 'Recargas de Wallet';
+function montoRecargaWalletDeVenta(venta) {
+  const items = Array.isArray(venta?.detalles?.items) ? venta.detalles.items : [];
+  return Math.round(items.filter((it) => it?.tipo === TIPO_ITEM_RECARGA_WALLET).reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0) * 100) / 100;
+}
+// Recargas cobradas (tickets pagados) + consumo de saldo comprado del periodo.
+function resumenRecargasWallet(ventas, movimientosConsumo) {
+  const filasRecargas = [];
+  (ventas || []).forEach((v) => {
+    if (!esCobroConfirmado(v)) return;
+    const monto = montoRecargaWalletDeVenta(v);
+    if (!(monto > 0)) return;
+    const rw = v?.detalles?.recarga_wallet || {};
+    const linea = (v?.detalles?.items || []).find((it) => it?.tipo === TIPO_ITEM_RECARGA_WALLET) || {};
+    filasRecargas.push({
+      venta: v,
+      monto,
+      fecha: v.created_at || v.fecha || null,
+      jugadorNombre: rw.jugador_nombre || linea.jugador_nombre || '',
+      metodoPago: v.metodo_pago || '—',
+    });
+  });
+  const filasConsumo = (movimientosConsumo || [])
+    .map((m) => ({ mov: m, monto: Math.round((Number(m?.monto_prepagado) || 0) * 100) / 100, fecha: m?.created_at || null }))
+    .filter((f) => f.monto > 0);
+  const recargas = Math.round(filasRecargas.reduce((acc, f) => acc + f.monto, 0) * 100) / 100;
+  const consumo = Math.round(filasConsumo.reduce((acc, f) => acc + f.monto, 0) * 100) / 100;
+  return {
+    recargas,
+    consumo,
+    neto: Math.round((recargas - consumo) * 100) / 100,
+    filasRecargas,
+    filasConsumo,
+    hayActividad: filasRecargas.length > 0 || filasConsumo.length > 0,
+  };
+}
+// Cargos de Wallet del periodo cubiertos con saldo comprado (solo lectura).
+// Sin la columna `monto_prepagado` (falta v151) devuelve [] en silencio.
+async function consultarConsumoSaldoCompradoEnRango(inicio, fin) {
+  try {
+    const { data, error } = await conClubId(supabase.from('wallet_movimientos').select('*'))
+      .eq('tipo', 'cargo')
+      .gte('created_at', inicio.toISOString())
+      .lt('created_at', fin.toISOString());
+    if (error) return [];
+    return (data || []).filter((m) => (Number(m?.monto_prepagado) || 0) > 0);
+  } catch (_e) {
+    return [];
+  }
 }
 
 // =============================================================================
@@ -19088,6 +19165,38 @@ function PanelCortesiaFrecuenciaPOS({ jugadorId, tabla, referenciaId, montoActua
   );
 }
 
+// App-177 — Cobro de una Recarga de Wallet en Punto de Venta. Mismo flujo de
+// cobro de siempre (Efectivo con cambio, Tarjeta, Transferencia, Mixto) sin
+// el botón de Wallet: una recarga no se paga con la misma Wallet.
+function ModalCobrarRecargaWallet({ recarga, cobrando, onClose, onCobrar, onReintentarAbono }) {
+  const pendienteAbono = recarga.estado === 'abono_pendiente';
+  return (
+    <ModalShell titulo="Cobrar Recarga de Wallet" subtitulo={`${recarga.jugadorNombre || 'Jugador'} · ${formatoMoneda(recarga.monto)}`} onClose={onClose} icon={Wallet} ancho="max-w-sm">
+      <div className="space-y-3" data-testid="modal-recarga-wallet">
+        <div className="rounded-xl border border-sky-300/60 bg-sky-50 px-3 py-2 text-[11px] text-sky-900">
+          <p className="font-bold">{recarga.concepto || 'Recarga de Wallet'}</p>
+          <p className="mt-0.5">
+            Al cobrar, se abonan {formatoMoneda(recarga.monto)} a la Wallet de {recarga.jugadorNombre || 'el jugador'} <span className="font-bold">sin vencimiento</span>.
+            {recarga.metodoSugerido ? ` Método indicado: ${recarga.metodoSugerido}.` : ''}
+          </p>
+        </div>
+        {pendienteAbono ? (
+          <div className="space-y-2" data-testid="recarga-abono-pendiente">
+            <p className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-[11px] font-semibold text-rose-700">
+              El cobro ya quedó registrado, pero el saldo no se pudo abonar. Reintenta el abono (no se vuelve a cobrar).
+            </p>
+            <BotonPrimario onClick={onReintentarAbono} disabled={cobrando} className="w-full">
+              {cobrando ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} Reintentar abono
+            </BotonPrimario>
+          </div>
+        ) : (
+          <PasosDeCobro monto={recarga.monto} deshabilitado={cobrando} onConfirmar={({ metodo, cambio, mixto }) => onCobrar(metodo, cambio, mixto)} />
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
 function ModalCobrarInscripcion({ fila, onClose, onCobrar, liquidando, onCambiarTipoPago, onCancelarInscripcion, cancelando = false, onCortesiaAplicada }) {
   // App-159 — «Cancelar Inscripción»: ejecuta la cancelación NATIVA del
   // módulo de origen (ver `cancelarInscripcionNativaDesdePOS` en Smart POS).
@@ -20434,6 +20543,8 @@ function ModuloSmartPOS({
   onGuardarCierre,
   upsertReserva,
   conceptoPendiente,
+  recargaWalletPendiente = null, // App-177
+  onRecargaWalletConsumida = null,
   onConceptoConsumido,
   onCargarPenalizacionAComanda,
   productos,
@@ -21187,6 +21298,124 @@ function ModuloSmartPOS({
     onConceptoConsumido?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conceptoPendiente]);
+
+  // App-177 — Recarga de Wallet por cobrar (llega desde Configuración →
+  // Wallet → Cargar Crédito). Se cobra en su propio ticket, sin tocar la
+  // comanda en curso; el saldo se abona hasta que el ticket queda cobrado.
+  const [recargaACobrar, setRecargaACobrar] = useState(null);
+  const [cobrandoRecarga, setCobrandoRecarga] = useState(false);
+  useEffect(() => {
+    if (!recargaWalletPendiente) return;
+    setRecargaACobrar({ ...recargaWalletPendiente, estado: 'por_cobrar' });
+    onRecargaWalletConsumida?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recargaWalletPendiente]);
+
+  async function abonarRecargaWallet(recarga, venta, metodoPago) {
+    const etiquetaMetodo = (METODOS_PAGO_POS.find((m) => m.value === metodoPago)?.label || metodoPago || '').toString();
+    return ajustarWalletJugador({
+      jugadorId: recarga.jugadorId,
+      monto: recarga.monto,
+      motivo: `${recarga.concepto || 'Recarga de Wallet'} · Cobrada en Punto de Venta`,
+      metodoAplicacion: etiquetaMetodo || null,
+      referenciaTipo: REFERENCIA_RECARGA_WALLET_POS,
+      referenciaId: venta?.id ?? null,
+      creadoPorId: operador?.id || null,
+      creadoPorNombre: operador?.nombre || null,
+      vigencia: null, // saldo comprado: nunca vence
+    });
+  }
+
+  async function cobrarRecargaWallet(metodoPago, cambio, mixto) {
+    const recarga = recargaACobrar;
+    if (!recarga || cobrandoRecarga) return;
+    if (metodoPago === 'wallet' || metodoPago === 'wallet_mixto') {
+      mostrarToast({ titulo: 'Método no válido', detalle: 'Una recarga de Wallet no se paga con la misma Wallet.', tono: 'error' });
+      return;
+    }
+    setCobrandoRecarga(true);
+    const itemsComprobante = [
+      {
+        tipo: TIPO_ITEM_RECARGA_WALLET,
+        producto_id: null,
+        cancha_id: null,
+        nombre: `Recarga de Wallet — ${recarga.jugadorNombre || 'Jugador'}`,
+        precio: recarga.monto,
+        cantidad: 1,
+        subtotal: recarga.monto,
+        jugador_id: recarga.jugadorId,
+        jugador_nombre: recarga.jugadorNombre || null,
+      },
+    ];
+    // Sin `detalles.jugador_id`: la recarga no es consumo del jugador (no
+    // cuenta para su LTV / metas de gasto; su consumo posterior sí).
+    const { data: venta, error } = await insertarVentaConReintentos(
+      withClubId({
+        total: recarga.monto,
+        metodo_pago: metodoPago,
+        turno: turno?.valor || null,
+        operador: operador?.nombre || null,
+        reserva_id: null,
+        cancha_id: null,
+        origen: ORIGEN_VENTA_POS,
+        detalles: {
+          items: itemsComprobante,
+          pagos_divididos: null,
+          mixto: metodoPago === 'mixto' ? mixto || null : null,
+          ...desgloseEfectivoVenta(metodoPago, recarga.monto, cambio, mixto),
+          recarga_wallet: { jugador_id: recarga.jugadorId, jugador_nombre: recarga.jugadorNombre || null, monto: recarga.monto, concepto: recarga.concepto || null },
+        },
+        estado_pago: 'pagado',
+      })
+    );
+    if (error || !venta) {
+      setCobrandoRecarga(false);
+      mostrarToast({ titulo: 'No se pudo cobrar la recarga', detalle: error?.message || 'Inténtalo de nuevo. No se abonó nada a la Wallet.', tono: 'error' });
+      return;
+    }
+    let abono = await abonarRecargaWallet(recarga, venta, metodoPago);
+    if (!abono?.ok) abono = await abonarRecargaWallet(recarga, venta, metodoPago); // un reintento
+    setCobrandoRecarga(false);
+    if (!abono?.ok) {
+      // El cobro ya quedó registrado: se ofrece reintentar el abono (nunca se cobra dos veces).
+      setRecargaACobrar({ ...recarga, estado: 'abono_pendiente', venta, metodoPago });
+      mostrarToast({ titulo: 'Recarga cobrada, falta abonar el saldo', detalle: 'Reintenta el abono a la Wallet desde esta ventana.', tono: 'error' });
+      return;
+    }
+    setRecargaACobrar(null);
+    mostrarToast({
+      titulo: 'Recarga de Wallet cobrada',
+      detalle: `${formatoMoneda(recarga.monto)} abonados a la Wallet de ${recarga.jugadorNombre || 'el jugador'} (sin vencimiento)${cambio > 0 ? ` · Cambio: ${formatoMoneda(cambio)}` : ''}`,
+    });
+    setVentaFinalizada({
+      folio: (venta?.id || '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      ventaId: venta?.id ?? null,
+      fecha: hoyISO(),
+      horaEmision: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+      operadorNombre: operador?.nombre || 'Operador',
+      turnoLabel: turno?.label || '',
+      items: itemsComprobante,
+      total: recarga.monto,
+      metodoPago,
+      pagosDivididos: null,
+      cambio: cambio || 0,
+      mixto: metodoPago === 'mixto' ? mixto || null : null,
+    });
+  }
+
+  async function reintentarAbonoRecarga() {
+    const recarga = recargaACobrar;
+    if (!recarga?.venta || cobrandoRecarga) return;
+    setCobrandoRecarga(true);
+    const abono = await abonarRecargaWallet(recarga, recarga.venta, recarga.metodoPago);
+    setCobrandoRecarga(false);
+    if (!abono?.ok) {
+      mostrarToast({ titulo: 'No se pudo abonar el saldo', detalle: abono?.error?.message || 'Inténtalo de nuevo.', tono: 'error' });
+      return;
+    }
+    setRecargaACobrar(null);
+    mostrarToast({ titulo: 'Saldo abonado', detalle: `${formatoMoneda(recarga.monto)} en la Wallet de ${recarga.jugadorNombre || 'el jugador'}.` });
+  }
 
   const [modalCobro, setModalCobro] = useState(false);
   const [modalDividir, setModalDividir] = useState(false);
@@ -24754,6 +24983,16 @@ function ModuloSmartPOS({
         />
       )}
 
+      {recargaACobrar && (
+        <ModalCobrarRecargaWallet
+          recarga={recargaACobrar}
+          cobrando={cobrandoRecarga}
+          onClose={() => (recargaACobrar.estado === 'abono_pendiente' ? null : setRecargaACobrar(null))}
+          onCobrar={cobrarRecargaWallet}
+          onReintentarAbono={reintentarAbonoRecarga}
+        />
+      )}
+
       {inscripcionACobrar && (
         <ModalCobrarInscripcion
           fila={inscripcionACobrar}
@@ -27817,6 +28056,9 @@ const CATEGORIAS_BI = [
   // App-166 — penalizaciones cobradas en Punto de Venta + pagos retenidos por
   // cancelación fuera de tiempo (ver `construirRetencionesPorCancelacion`).
   { key: 'Penalizaciones', barra: 'bg-slate-400', texto: 'text-slate-500' },
+  // App-177 — Recargas de Wallet (neto: cobradas − consumo de saldo comprado).
+  // Solo se lista cuando el periodo tuvo movimiento (`soloConActividad`).
+  { key: CATEGORIA_RECARGAS_WALLET_BI, barra: 'bg-cyan-400', texto: 'text-cyan-500', soloConActividad: true },
 ];
 
 // Bloques de Ocupación Pico vs. Valle: Valle 07:00–17:00, Pico 17:00–23:00.
@@ -28682,11 +28924,11 @@ function filasCSVCortesiasRedimidas(datos) {
 
 function CortesiasRedimidasBI({ datos, cargando, periodo }) {
   const [verDetalle, setVerDetalle] = useState(false);
-  if (cargando || !datos) return <div className="h-56 animate-pulse rounded-2xl bg-white" />;
+  if (cargando || !datos) return <div id="cortesias-redimidas-bi" className="h-56 scroll-mt-4 animate-pulse rounded-2xl bg-white" />;
   const { frecuencia, metas, totalFrecuencia, totalMetas, totalCanjes, totalAbsorbido, detalle } = datos;
   const th = 'px-3 py-2.5';
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="cortesias-redimidas">
+    <div id="cortesias-redimidas-bi" className="scroll-mt-4 rounded-2xl border border-slate-200 bg-white p-4" data-testid="cortesias-redimidas">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="flex items-center gap-1.5 text-sm font-black text-slate-900">
@@ -29361,7 +29603,7 @@ function topeRedondoBI(max) {
  * La suma de todas las cubetas (+ `sinHora`, si hubiera registros sin hora)
  * es idéntica a `analisis.ingresosTotales`.
  * ------------------------------------------------------------------------- */
-function construirTendenciaIngresosBI({ modo, rango, reservasCobradas, cobrosFechados, ventasRango, productosPorId, variantesPorId, variantesPorProducto }) {
+function construirTendenciaIngresosBI({ modo, rango, reservasCobradas, cobrosFechados, ventasRango, productosPorId, variantesPorId, variantesPorProducto, consumoSaldoComprado = [] }) {
   const ahora = new Date();
   let total = 0;
   let sinHora = 0;
@@ -29459,6 +29701,11 @@ function construirTendenciaIngresosBI({ modo, rango, reservasCobradas, cobrosFec
         sumar(idx, Number(item.subtotal) || 0, 'Penalizaciones');
         return;
       }
+      // App-177 — recarga de Wallet cobrada (por fecha del ticket).
+      if (item.tipo === TIPO_ITEM_RECARGA_WALLET) {
+        sumar(idx, Number(item.subtotal) || 0, CATEGORIA_RECARGAS_WALLET_BI);
+        return;
+      }
       if (item.tipo !== 'producto') return;
       const subtotal = Number(item.subtotal) || 0;
       // Producto real del artículo (variante buscada dentro de SU producto).
@@ -29476,6 +29723,19 @@ function construirTendenciaIngresosBI({ modo, rango, reservasCobradas, cobrosFec
       }
       sumar(idx, subtotal, bucket);
     });
+  });
+
+  // App-177 — consumo de saldo comprado: resta en «Recargas de Wallet» (la
+  // reserva / clase / venta que lo usó ya suma en su propia categoría).
+  (consumoSaldoComprado || []).forEach((f) => {
+    const monto = Number(f?.monto) || 0;
+    if (!(monto > 0)) return;
+    const idx = indiceDesdeFecha(f.fecha ? new Date(f.fecha) : null);
+    total -= monto;
+    if (base[idx]) {
+      base[idx].total -= monto;
+      base[idx].porCategoria[CATEGORIA_RECARGAS_WALLET_BI] = (base[idx].porCategoria[CATEGORIA_RECARGAS_WALLET_BI] || 0) - monto;
+    } else sinHora -= monto;
   });
 
   // Modo Día: solo el horario con actividad (mínimo 07:00–23:00).
@@ -29671,13 +29931,15 @@ function GraficaTendenciaIngresosBI({ cubetas, transcurridas, oscuro }) {
 }
 
 function TablaTendenciaIngresosBI({ cubetas }) {
+  // App-177 — la columna «Recargas de Wallet» solo aparece si el periodo la usa.
+  const categoriasTabla = CATEGORIAS_BI.filter((c) => !c.soloConActividad || cubetas.some((cu) => cu.porCategoria[c.key]));
   return (
     <div className="max-h-[210px] overflow-y-auto rounded-xl border border-slate-200">
       <table className="w-full text-left text-xs">
         <thead className="sticky top-0 bg-white">
           <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-500">
             <th className="px-3 py-2">Periodo</th>
-            {CATEGORIAS_BI.map((c) => (
+            {categoriasTabla.map((c) => (
               <th key={c.key} className="hidden px-3 py-2 text-right md:table-cell">
                 {etiquetaCategoriaProducto(c.key)}
               </th>
@@ -29689,7 +29951,7 @@ function TablaTendenciaIngresosBI({ cubetas }) {
           {cubetas.map((c, i) => (
             <tr key={i} className="border-b border-slate-200/70 last:border-0">
               <td className="px-3 py-1.5 text-slate-600">{c.etiquetaLarga}</td>
-              {CATEGORIAS_BI.map((cat) => (
+              {categoriasTabla.map((cat) => (
                 <td key={cat.key} className="hidden px-3 py-1.5 text-right text-slate-500 md:table-cell">
                   {c.porCategoria[cat.key] ? formatoMoneda(c.porCategoria[cat.key]) : '—'}
                 </td>
@@ -29892,7 +30154,10 @@ function generarCSVReporte({
   filas.push(['Métricas Ejecutivas y de Eficiencia de BI']);
   filas.push(['Métrica', 'Valor']);
   filas.push(['Regla de oro: solo cobros con estatus Pagado — sin pendientes, cobros en recepción ni cuentas abiertas']);
-  filas.push(['Ingresos Totales Cobrados (Canchas + Retas + Torneos + Academia + Pro-Shop + Restaurante / Bar + Penalizaciones)', analisis.ingresosTotales.toFixed(2)]);
+  filas.push([
+    `Ingresos Totales Cobrados (Canchas + Retas + Torneos + Academia + Pro-Shop + Restaurante / Bar + Penalizaciones${analisis.hayRecargasWallet ? ' + Recargas de Wallet neto' : ''})`,
+    analisis.ingresosTotales.toFixed(2),
+  ]);
   filas.push(['  · Renta de Canchas cobrada', analisis.ingresoCanchas.toFixed(2)]);
   filas.push(['  · Retas (inscripciones pagadas)', analisis.ingresoRetas.toFixed(2)]);
   filas.push(['  · Torneos (inscripciones pagadas)', analisis.ingresoTorneos.toFixed(2)]);
@@ -29904,6 +30169,12 @@ function generarCSVReporte({
   filas.push(['  · Pro-Shop (productos cobrados)', (analisis.ingresoProShop || 0).toFixed(2)]);
   filas.push(['  · Restaurante / Bar (productos cobrados)', (analisis.ingresoRestauranteBar || 0).toFixed(2)]);
   filas.push(['  · Penalizaciones / pagos retenidos', (analisis.ingresoPenalizaciones || 0).toFixed(2)]);
+  // App-177 — Recargas de Wallet (solo si hubo movimiento en el periodo).
+  if (analisis.hayRecargasWallet) {
+    filas.push(['  · Recargas de Wallet (neto)', (Number(analisis.recargasWalletNeto) || 0).toFixed(2)]);
+    filas.push(['      – Recargas cobradas en Punto de Venta (saldo comprado, sin vencimiento)', (Number(analisis.recargasWalletCobradas) || 0).toFixed(2)]);
+    filas.push(['      – (−) Consumo de saldo comprado (ya suma en la categoría que lo cobró)', (-(Number(analisis.consumoSaldoComprado) || 0)).toFixed(2)]);
+  }
   if (usoPlanesAcademia) {
     filas.push(['Planes Mensuales de Academia cobrados (ya incluidos en Academia)', usoPlanesAcademia.planesCobrados, usoPlanesAcademia.montoPlanes.toFixed(2)]);
     filas.push(['Clases cubiertas por plan (sin ingreso adicional; sí cuentan en la ocupación)', usoPlanesAcademia.clasesCubiertas, `${usoPlanesAcademia.clasesCubiertasPrivadas} privadas`]);
@@ -30444,7 +30715,7 @@ function generarHTMLReporteAnalytics({
 
   // App-175 — Retas y Torneos como rubros separados (misma cifra total).
   const categoriasReporte = separarRetasTorneosReporte(analisis);
-  const rentab = categoriasReporte.filter((f) => f.ingreso > 0 || f.costo > 0);
+  const rentab = categoriasReporte.filter((f) => f.ingreso > 0 || f.costo > 0 || f.categoria === CATEGORIA_RECARGAS_WALLET_BI);
   const etiquetaCat = (k) => (k === 'Cafetería/Bar' ? 'Restaurante / Bar' : k);
   partes.push(
     seccionReporte(
@@ -30468,6 +30739,12 @@ function generarHTMLReporteAnalytics({
       )}, clases privadas ${dineroReporte(analisis.academiaDesglose?.privadas)}.${
         usoPlanesAcademia
           ? ` Planes mensuales cobrados: ${usoPlanesAcademia.planesCobrados} (${dineroReporte(usoPlanesAcademia.montoPlanes)}). Clases cubiertas por plan: ${usoPlanesAcademia.clasesCubiertas} (${usoPlanesAcademia.clasesCubiertasPrivadas} privadas), sin ingreso adicional; su cancha sí cuenta en la ocupación.`
+          : ''
+      }${
+        analisis.hayRecargasWallet
+          ? ` Recargas de Wallet: cobradas en Punto de Venta ${dineroReporte(analisis.recargasWalletCobradas)} − consumo de saldo comprado ${dineroReporte(
+              analisis.consumoSaldoComprado
+            )} = ${dineroReporte(analisis.recargasWalletNeto)} (el consumo ya suma en la categoría que lo cobró; se resta para no contarlo dos veces).`
           : ''
       }</p></div>`,
       { subtitulo: 'Participación de cada línea en los ingresos cobrados y su rentabilidad.' }
@@ -30640,7 +30917,9 @@ function generarHTMLReportePnl({ modo, rango, pnl, desglosePnl, nombreClub, auto
   const egresos = Number(pnl.egresosTotales) || 0;
   const utilidad = Number(pnl.utilidadReal) || 0;
   partes.push(
-    `<p class="aviso">Solo dinero real cobrado (estatus Pagado), por la misma fecha de cobro que usa el Estado de Resultados en pantalla. Las cortesías no son ingreso. Las compras canceladas o revertidas no cuentan como egreso.</p>`
+    `<p class="aviso">Solo dinero real cobrado (estatus Pagado), por la misma fecha de cobro que usa el Estado de Resultados en pantalla. Las cortesías no son ingreso. Las compras canceladas o revertidas no cuentan como egreso.${
+      pnl.hayRecargasWallet ? ' Las recargas de Wallet son ingreso al cobrarse en Punto de Venta; cuando ese saldo comprado se usa después, se resta para no contarlo dos veces.' : ''
+    }</p>`
   );
   partes.push(
     seccionReporte(
@@ -30662,6 +30941,8 @@ function generarHTMLReportePnl({ modo, rango, pnl, desglosePnl, nombreClub, auto
     { etiqueta: 'Retas', valor: pnl.retas ?? pnl.torneosRetas },
     { etiqueta: 'Torneos', valor: pnl.torneos ?? 0 },
     { etiqueta: 'Otros / penalizaciones', valor: pnl.otrosIngresos },
+    // App-177 — solo con movimiento en el periodo.
+    ...(pnl.hayRecargasWallet ? [{ etiqueta: 'Recargas de Wallet (neto)', valor: pnl.recargasWalletNeto }] : []),
   ];
   const canal = pnl.lineasPorCanal || {};
   partes.push(
@@ -30674,6 +30955,12 @@ function generarHTMLReportePnl({ modo, rango, pnl, desglosePnl, nombreClub, auto
           ['Restaurante / Bar', dineroReporte(canal.restauranteBar?.mostrador), dineroReporte(canal.restauranteBar?.web), dineroReporte(pnl.restauranteBar)],
           ['Otros ingresos de venta', dineroReporte(canal.otrosIngresos?.mostrador), dineroReporte(canal.otrosIngresos?.web), dineroReporte(pnl.otrosIngresosVentas)],
           ['Penalizaciones / pagos retenidos', '—', '—', dineroReporte(pnl.retencionesCancelacion)],
+          ...(pnl.hayRecargasWallet
+            ? [
+                ['Recargas de Wallet cobradas (sin vencimiento)', dineroReporte(pnl.recargasWalletCobradas), '—', dineroReporte(pnl.recargasWalletCobradas)],
+                ['(−) Consumo de saldo comprado', '—', '—', dineroReporte(-(Number(pnl.consumoSaldoComprado) || 0))],
+              ]
+            : []),
         ],
       })}`,
       { subtitulo: 'Cada línea con su participación en los ingresos consolidados.' }
@@ -30733,6 +31020,7 @@ function generarHTMLReportePnl({ modo, rango, pnl, desglosePnl, nombreClub, auto
   partes.push(detalle('Detalle · Retas', desglosePnl.retas || [], pnl.retas));
   partes.push(detalle('Detalle · Torneos', desglosePnl.torneos || [], pnl.torneos));
   partes.push(detalle('Detalle · Otros ingresos / penalizaciones', desglosePnl.otrosIngresos, pnl.otrosIngresos));
+  if (pnl.hayRecargasWallet) partes.push(detalle('Detalle · Recargas de Wallet', desglosePnl.recargasWallet || [], pnl.recargasWalletNeto));
   partes.push(
     seccionReporte(
       'Detalle · Egresos',
@@ -31280,6 +31568,8 @@ const CATEGORIAS_INGRESO_PNL = [
   { key: 'clasesClinicas', label: 'Clases / Academia', color: '#0d9488' },
   { key: 'torneosRetas', label: 'Torneos / Retas', color: '#d946ef' },
   { key: 'otrosIngresos', label: 'Otros / Penalizaciones', color: '#64748b' },
+  // App-177 — solo aparece en la dona si el periodo tuvo recargas (ver DonutIngresosPnl).
+  { key: 'recargasWalletNeto', label: 'Recargas de Wallet', color: '#0ea5e9', soloConActividad: 'hayRecargasWallet' },
 ];
 
 // Reparto contable de una venta de producto por línea de negocio (App-97).
@@ -31293,7 +31583,7 @@ const CATEGORIAS_INGRESO_PNL = [
 const LINEAS_VENTA_PNL = ['proShop', 'restauranteBar', 'otrosIngresos'];
 function lineaNegocioItemPnl(item, productosPorId, productosPorNombre, porDefecto = 'producto') {
   const tipo = item?.tipo || porDefecto;
-  if (tipo === 'inscripcion_evento') return null;
+  if (tipo === 'inscripcion_evento' || tipo === TIPO_ITEM_RECARGA_WALLET) return null;
   const idProd = item?.producto_id ?? item?.productoPadreId ?? null;
   const prod =
     (idProd != null ? productosPorId[String(idProd)] : null) ||
@@ -31444,6 +31734,9 @@ function construirTendenciaPnl(modo, rango, pnl) {
   (pnl._filasRetencionesCancelacion || []).forEach(({ tipo, fila, monto }) =>
     sumar(tipo === 'reserva' ? indiceCalendario(fila.fecha, parseHoraAMinutos(fila.hora_inicio)) : indiceFecha(new Date(fila.created_at)), 'ingresos', monto)
   );
+  // App-177 — Recargas de Wallet (+ al cobrarse) y consumo de saldo comprado (−).
+  (pnl._recargasWallet?.filasRecargas || []).forEach((f) => sumar(indiceFecha(obtenerTimestampVenta(f.venta)), 'ingresos', f.monto));
+  (pnl._recargasWallet?.filasConsumo || []).forEach((f) => sumar(indiceFecha(f.fecha ? new Date(f.fecha) : null), 'ingresos', -f.monto));
 
   (pnl._egresosEnRango || []).forEach((g) => {
     const monto = Number(g.monto) || 0;
@@ -31720,7 +32013,10 @@ function DonutIngresosPnl({ pnl, cargando }) {
   if (cargando) return <div className="h-[310px] animate-pulse rounded-2xl bg-white" />;
 
   const superficie = oscuro ? '#1e293b' : '#ffffff';
-  const datos = CATEGORIAS_INGRESO_PNL.map((c) => ({ ...c, monto: Math.max(0, Number(pnl[c.key]) || 0) }));
+  const datos = CATEGORIAS_INGRESO_PNL.filter((c) => !c.soloConActividad || pnl[c.soloConActividad]).map((c) => ({
+    ...c,
+    monto: Math.max(0, Number(pnl[c.key]) || 0),
+  }));
   const total = Number(pnl.ingresosTotalesConsolidados) || 0;
   const suma = datos.reduce((acc, d) => acc + d.monto, 0);
   const pct = (v) => (suma > 0 ? (v / suma) * 100 : 0);
@@ -32094,6 +32390,18 @@ function ModuloContabilidadCompras({
     cargarVentasRangoPnl();
   }, [cargarVentasRangoPnl]);
 
+  // App-177 — consumo de saldo comprado del periodo (resta de «Recargas de Wallet»).
+  const [consumoSaldoCompradoPnl, setConsumoSaldoCompradoPnl] = useState([]);
+  useEffect(() => {
+    let vigente = true;
+    consultarConsumoSaldoCompradoEnRango(rangoPnl.inicio, rangoPnl.fin).then((filas) => {
+      if (vigente) setConsumoSaldoCompradoPnl(filas);
+    });
+    return () => {
+      vigente = false;
+    };
+  }, [rangoPnl, ventasRangoPnl]);
+
   // App-174 — Tickets pagados de las reservas con add-ons del Portal que
   // toca el periodo (por su fecha de juego o porque un ticket del periodo las
   // nombra), aunque el ticket sea de otro periodo: de ahí sale cuánto de esos
@@ -32360,7 +32668,12 @@ function ModuloContabilidadCompras({
     const retencionesCancelacion = Math.round(filasRetencionesCancelacion.reduce((acc, f) => acc + f.monto, 0) * 100) / 100;
     const otrosIngresos = Math.round((otrosIngresosVentas + retencionesCancelacion) * 100) / 100;
 
-    const ingresosTotalesConsolidados = ventasMostrador + ventasWeb + reservasCanchas + torneosRetas + clasesClinicas + retencionesCancelacion;
+    // App-177 — Recargas de Wallet: + recargas cobradas en POS − consumo de
+    // saldo comprado (ese consumo ya suma en el rubro que lo cobró).
+    const recargasWallet = resumenRecargasWallet(ventasRangoPnl, consumoSaldoCompradoPnl);
+
+    const ingresosTotalesConsolidados =
+      ventasMostrador + ventasWeb + reservasCanchas + torneosRetas + clasesClinicas + retencionesCancelacion + recargasWallet.neto;
 
     // `g.estatus_recepcion !== 'cancelada'` — una Compra Cancelada/Revertida
     // (ver `cancelarCompra`) sigue viviendo en `egresos` para que el
@@ -32401,6 +32714,11 @@ function ModuloContabilidadCompras({
       retas: retasPnl,
       torneos: torneosPnl,
       clasesClinicas,
+      recargasWalletCobradas: recargasWallet.recargas,
+      consumoSaldoComprado: recargasWallet.consumo,
+      recargasWalletNeto: recargasWallet.neto,
+      hayRecargasWallet: recargasWallet.hayActividad,
+      _recargasWallet: recargasWallet,
       ingresosTotalesConsolidados,
       egresosTotales,
       egresosPorCategoria,
@@ -32424,7 +32742,7 @@ function ModuloContabilidadCompras({
       _filasInscripcionesTorneos: filasInscripcionesTorneos,
       _montoInscripcionReta: montoInscripcionReta,
     };
-  }, [ventasRangoPnl, ventasReservasAddonsPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, retas, rangoPnl, productos]);
+  }, [ventasRangoPnl, ventasReservasAddonsPnl, reservas, egresos, inscripciones, participantesTorneo, academiaAlumnos, retas, rangoPnl, productos, consumoSaldoCompradoPnl]);
 
   // Desglose para las tarjetas interactivas (ver Modal de Desglose más
   // abajo): ID de transacción, hora, concepto, canal, método de pago y
@@ -32676,7 +32994,32 @@ function ModuloContabilidadCompras({
         monto: Number(p.monto) || 0,
       })),
     ];
+    // App-177 — Recargas de Wallet (+) y consumo de saldo comprado (−).
+    const recargasWalletDesglose = (pnl._recargasWallet?.filasRecargas || []).map((f) => ({
+      id: `recarga-${f.venta.id}`,
+      idCorto: (f.venta.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      hora: horaDe(f.fecha),
+      fecha: f.fecha,
+      concepto: `Recarga de Wallet${f.jugadorNombre ? ` — ${f.jugadorNombre}` : ''} (cobrada en Punto de Venta)`,
+      canal: 'Mostrador (POS)',
+      metodoPago: etiquetaMetodoPagoVenta(f.metodoPago),
+      monto: f.monto,
+    }));
+    const consumoSaldoCompradoDesglose = (pnl._recargasWallet?.filasConsumo || []).map((f) => ({
+      id: `consumo-${f.mov.id}`,
+      idCorto: (f.mov.id ?? '').toString().slice(0, 8).toUpperCase() || 'S/F',
+      hora: horaDe(f.fecha),
+      fecha: f.fecha,
+      concepto: `(−) Consumo de saldo comprado${f.mov.concepto ? ` · ${f.mov.concepto}` : ''} (ya fue ingreso al cobrarse la recarga)`,
+      canal: 'Wallet',
+      metodoPago: 'Wallet',
+      monto: -f.monto,
+    }));
+    const recargasWalletNetoDesglose = [...recargasWalletDesglose, ...consumoSaldoCompradoDesglose];
     return {
+      recargasWallet: recargasWalletNetoDesglose,
+      recargasWalletCobradas: recargasWalletDesglose,
+      consumoSaldoComprado: consumoSaldoCompradoDesglose,
       ventasMostrador: ventasMostradorDesglose,
       ventasWeb: ventasWebDesglose,
       proShop: proShopDesglose,
@@ -32697,6 +33040,7 @@ function ModuloContabilidadCompras({
         ...clasesClinicasDesglose,
         ...torneosRetasDesglose,
         ...otrosIngresosDesglose,
+        ...recargasWalletNetoDesglose,
       ],
     };
   }, [pnl, canchas, retas]);
@@ -34338,6 +34682,14 @@ function ModuloContabilidadCompras({
       ['f) Torneos (Inscripciones)', (Number(pnl.torneos) || 0).toFixed(2)],
       ['g) Otros Ingresos / Penalizaciones', pnl.otrosIngresos.toFixed(2)],
       ['   · de ello, penalizaciones aplicadas / pagos retenidos por cancelación fuera de tiempo', (Number(pnl.retencionesCancelacion) || 0).toFixed(2)],
+      // App-177 — Recargas de Wallet (solo si hubo movimiento en el periodo).
+      ...(pnl.hayRecargasWallet
+        ? [
+            ['h) Recargas de Wallet (neto)', (Number(pnl.recargasWalletNeto) || 0).toFixed(2)],
+            ['   · Recargas cobradas en Punto de Venta (saldo comprado, sin vencimiento)', (Number(pnl.recargasWalletCobradas) || 0).toFixed(2)],
+            ['   · (−) Consumo de saldo comprado (ya contado al cobrarse la recarga)', (-(Number(pnl.consumoSaldoComprado) || 0)).toFixed(2)],
+          ]
+        : []),
       ['Ingresos Totales Consolidados', pnl.ingresosTotalesConsolidados.toFixed(2)],
       ['Egresos Totales', pnl.egresosTotales.toFixed(2)],
       ['Utilidad Real (Ingresos Totales Consolidados − Egresos Totales)', pnl.utilidadReal.toFixed(2)],
@@ -34364,6 +34716,7 @@ function ModuloContabilidadCompras({
     seccionDesglose('Detalle — Retas', desglosePnl.retas || []);
     seccionDesglose('Detalle — Torneos', desglosePnl.torneos || []);
     seccionDesglose('Detalle — Otros Ingresos / Penalizaciones', desglosePnl.otrosIngresos);
+    if (pnl.hayRecargasWallet) seccionDesglose('Detalle — Recargas de Wallet', desglosePnl.recargasWallet || []);
     seccionDesglose('Detalle — Reservas de Canchas', desglosePnl.reservas);
     seccionDesglose('Detalle — Egresos', desglosePnl.egresos);
 
@@ -35459,7 +35812,7 @@ function ModuloContabilidadCompras({
             <h3 className="mb-2.5 text-xs font-bold uppercase tracking-wide text-slate-500">
               Matriz de Ingresos Consolidados — clic en una tarjeta para ver el desglose
             </h3>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+            <div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${pnl.hayRecargasWallet ? 'xl:grid-cols-4 2xl:grid-cols-7' : 'xl:grid-cols-6'}`}>
               <MetricCard
                 icon={CalendarDays}
                 etiqueta="Reservas de Canchas"
@@ -35507,6 +35860,19 @@ function ModuloContabilidadCompras({
                   setModalDesglose({ titulo: 'Otros Ingresos / Penalizaciones', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.otrosIngresos })
                 }
               />
+              {/* App-177 — solo aparece si en el periodo hubo recargas o consumo de saldo comprado. */}
+              {pnl.hayRecargasWallet && (
+                <div data-testid="pnl-recargas-wallet" className="contents">
+                  <MetricCard
+                    icon={Wallet}
+                    etiqueta="Recargas de Wallet (neto)"
+                    valor={formatoMoneda(pnl.recargasWalletNeto)}
+                    sub={`Cobradas ${formatoMoneda(pnl.recargasWalletCobradas)} − consumo de saldo comprado ${formatoMoneda(pnl.consumoSaldoComprado)}`}
+                    tono="sky"
+                    onClick={() => setModalDesglose({ titulo: 'Recargas de Wallet (neto)', subtitulo: rangoPnl.etiqueta, filas: desglosePnl.recargasWallet })}
+                  />
+                </div>
+              )}
             </div>
           </div>
 
@@ -35662,6 +36028,19 @@ function ModuloAnalyticsBI({
   useEffect(() => {
     cargarVentasRango();
   }, [cargarVentasRango]);
+
+  // App-177 — consumo de saldo comprado del periodo (resta de «Recargas de Wallet»).
+  const [consumoSaldoCompradoBI, setConsumoSaldoCompradoBI] = useState([]);
+  useEffect(() => {
+    let vigente = true;
+    consultarConsumoSaldoCompradoEnRango(rango.inicio, rango.fin).then((filas) => {
+      if (vigente) setConsumoSaldoCompradoBI(filas);
+    });
+    return () => {
+      vigente = false;
+    };
+  }, [rango, ventasRango]);
+  const recargasWalletBI = useMemo(() => resumenRecargasWallet(ventasRango, consumoSaldoCompradoBI), [ventasRango, consumoSaldoCompradoBI]);
 
   // Tiempo real: una venta nueva/actualizada en Smart POS recalcula todo el
   // tablero de inmediato, sin esperar a que el operador refresque la página.
@@ -36265,6 +36644,7 @@ function ModuloAnalyticsBI({
       'Pro-Shop': 0,
       'Cafetería/Bar': 0,
       Penalizaciones: ingresosEventos.totalPenalizaciones || 0,
+      [CATEGORIA_RECARGAS_WALLET_BI]: recargasWalletBI.neto, // App-177
     };
     // COGS: Costo Total = unidades × costo_unitario, resuelto item por item
     // con `costoUnitarioParaItem` (ver arriba) — ya NO de un cruce Kardex↔
@@ -36436,7 +36816,8 @@ function ModuloAnalyticsBI({
     }));
 
     const ingresosTotales = CATEGORIAS_BI.reduce((acc, c) => acc + (ingresoPorCategoria[c.key] || 0), 0);
-    const ticketPromedio = totalTransacciones > 0 ? ingresosTotales / totalTransacciones : null;
+    // App-177 — el Ticket Promedio sigue siendo de consumo: sin las recargas de Wallet.
+    const ticketPromedio = totalTransacciones > 0 ? (ingresosTotales - recargasWalletBI.neto) / totalTransacciones : null;
 
     const ingresosBrutosTorneosRetas = ingresosEventos.totalRetas + ingresosEventos.totalTorneos;
 
@@ -36445,7 +36826,7 @@ function ModuloAnalyticsBI({
     const ingresoSecundario = ingresoPorCategoria['Pro-Shop'] + ingresoPorCategoria['Cafetería/Bar'];
     const ratioCrossSelling = ingresosTotales > 0 ? (ingresoSecundario / ingresosTotales) * 100 : 0;
 
-    const rentabilidadPorCategoria = CATEGORIAS_BI.map((c) => {
+    const rentabilidadPorCategoria = CATEGORIAS_BI.filter((c) => !c.soloConActividad || recargasWalletBI.hayActividad).map((c) => {
       const ingreso = ingresoPorCategoria[c.key] || 0;
       const costo = cogsPorCategoria[c.key] || 0;
       const utilidad = ingreso - costo;
@@ -36455,7 +36836,7 @@ function ModuloAnalyticsBI({
 
     // App-166: «Penalizaciones» no es una línea de negocio — no compite por Categoría Estrella.
     const categoriaEstrella = rentabilidadPorCategoria
-      .filter((c) => c.categoria !== 'Penalizaciones')
+      .filter((c) => c.categoria !== 'Penalizaciones' && c.categoria !== CATEGORIA_RECARGAS_WALLET_BI)
       .reduce((mejor, actual) => (actual.ingreso > (mejor?.ingreso ?? -1) ? actual : mejor), null);
 
     const topProductos = [...filasProducto].sort((a, b) => b.unidades - a.unidades).slice(0, 5);
@@ -36524,8 +36905,13 @@ function ModuloAnalyticsBI({
       ingresoProShop: ingresoPorCategoria['Pro-Shop'],
       ingresoRestauranteBar: ingresoPorCategoria['Cafetería/Bar'],
       lineasVentaProducto,
+      // App-177
+      recargasWalletCobradas: recargasWalletBI.recargas,
+      consumoSaldoComprado: recargasWalletBI.consumo,
+      recargasWalletNeto: recargasWalletBI.neto,
+      hayRecargasWallet: recargasWalletBI.hayActividad,
     };
-  }, [ventasRangoContablesBI, kardexRango, productos, productosPorId, variantesPorId, variantesPorProducto, reservasCobradas, ingresosEventos]);
+  }, [ventasRangoContablesBI, kardexRango, productos, productosPorId, variantesPorId, variantesPorProducto, reservasCobradas, ingresosEventos, recargasWalletBI]);
 
   /* ---- Nº de canchas activas (denominador de RevPACP y Pico/Valle) ---- */
   const numCanchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false).length, [canchas]);
@@ -36579,8 +36965,9 @@ function ModuloAnalyticsBI({
         productosPorId,
         variantesPorId,
         variantesPorProducto,
+        consumoSaldoComprado: recargasWalletBI.filasConsumo, // App-177
       }),
-    [modoFiltro, rango, reservasCobradas, ingresosEventos, ventasRangoContablesBI, productosPorId, variantesPorId, variantesPorProducto]
+    [modoFiltro, rango, reservasCobradas, ingresosEventos, ventasRangoContablesBI, productosPorId, variantesPorId, variantesPorProducto, recargasWalletBI]
   );
 
   // Exportación de Datos: arma un CSV súper completo (se abre nativamente en
@@ -36706,7 +37093,9 @@ function ModuloAnalyticsBI({
           el dato (`analisis.ingresosBrutosTorneosRetas`) se conserva
           internamente porque el Reporte CSV exportable sí lo sigue
           desglosando. */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7">
+      {/* App-177 — 8 tarjetas en filas de 4: «Cortesías Redimidas» queda justo
+          debajo de «Categoría Estrella». */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         {/* Regla de oro financiera: solo cobros con estatus 'pagado'. */}
         <MetricCard
           icon={Wallet}
@@ -36755,6 +37144,26 @@ function ModuloAnalyticsBI({
           tono="orange"
           onClick={() => setDesgloseVentasBI('Cafetería/Bar')}
         />
+        {/* App-177 — Resumen de Cortesías Redimidas (Frecuencia + Metas de
+            Gasto). Informativo: no es ingreso. Clic → baja a su detalle, al
+            final de la página. */}
+        <div data-testid="kpi-cortesias-redimidas" className="contents">
+          <MetricCard
+            icon={Gift}
+            etiqueta="Cortesías Redimidas"
+            valor={cortesiasRedimidas ? formatoMoneda(cortesiasRedimidas.totalAbsorbido || 0) : '—'}
+            sub={
+              cortesiasRedimidas
+                ? `${cortesiasRedimidas.totalCanjes} canje${cortesiasRedimidas.totalCanjes === 1 ? '' : 's'} · valor absorbido (no es ingreso)`
+                : 'Cargando…'
+            }
+            tono="emerald"
+            onClick={() => {
+              const destino = typeof document !== 'undefined' ? document.getElementById('cortesias-redimidas-bi') : null;
+              if (destino) destino.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+          />
+        </div>
       </div>
 
       {desgloseVentasBI && (
@@ -36765,14 +37174,6 @@ function ModuloAnalyticsBI({
           onClose={() => setDesgloseVentasBI(null)}
         />
       )}
-
-      {/* App-170 — Cortesías Redimidas: valor absorbido por el club en el
-          periodo (informativo; no suma a ningún ingreso). */}
-      <CortesiasRedimidasBI
-        datos={cortesiasRedimidas}
-        cargando={loadingVentas}
-        periodo={rango.etiqueta || ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'}
-      />
 
       {/* Complemento visual de los KPIs: flujo de ingresos cobrados por
           hora (Día), por día (Mes) o por mes (Año). */}
@@ -36803,6 +37204,15 @@ function ModuloAnalyticsBI({
         {/* Grupos de Modificadores/Extras (migracion_v64). */}
         <TopModificadoresTabla filas={analisis.topModificadores} cargando={cargandoFinanciero} />
       </div>
+
+      {/* App-170 — Cortesías Redimidas: valor absorbido por el club en el
+          periodo (informativo; no suma a ningún ingreso). App-177: al final
+          de la página; la tarjeta resumen de arriba lleva hasta aquí. */}
+      <CortesiasRedimidasBI
+        datos={cortesiasRedimidas}
+        cargando={loadingVentas}
+        periodo={rango.etiqueta || ETIQUETA_PERIODO_BI[modoFiltro] || 'Periodo'}
+      />
       </TransicionPestana>
     </>
   );
@@ -60579,6 +60989,7 @@ function ModuloConfiguracionClub({
   eliminandoClub,
   // Mi Cuenta & Suscripción: el estado de facturación llega por
   // `BillingClubContext` (lo arma `AppInterno`), no por props.
+  onCobrarRecargaWalletEnPOS = null, // App-177
 }) {
   const [tab, setTab] = useState(tabInicial || 'general');
   // Mi Cuenta & Suscripción es EXCLUSIVA Owner (candado en profundidad,
@@ -60754,7 +61165,13 @@ function ModuloConfiguracionClub({
           canchasClub={canchasClub}
         />
       ) : tab === 'wallet' ? (
-        <SeccionWallet jugadoresPorId={jugadoresPorId} empleados={empleados} operador={operador} permisos={permisos} />
+        <SeccionWallet
+          jugadoresPorId={jugadoresPorId}
+          empleados={empleados}
+          operador={operador}
+          permisos={permisos}
+          onCobrarRecargaEnPOS={onCobrarRecargaWalletEnPOS}
+        />
       ) : tab === 'fiscal' && !modoOnboarding && puedeEditarDatosFiscales(permisos, operador) ? (
         <SeccionDatosFiscalesClub
           permisos={permisos}
@@ -66372,8 +66789,12 @@ function SeccionReservasAcademia({
 // nunca se pisen.
 const CONCEPTOS_SUGERIDOS_WALLET = ['Bono Mensual', 'Ajuste de Saldo', 'Recarga Manual'];
 const METODOS_APLICACION_WALLET = ['Efectivo', 'Transferencia', 'Cortesía/Bono', 'Ajuste Administrativo'];
+// App-177 — Wallet de Jugadores: el crédito que PAGA el jugador se cobra en
+// Punto de Venta (y nunca vence). Operadores conservan su lista original.
+const METODOS_COBRO_RECARGA_WALLET = ['Efectivo', 'Transferencia', 'Tarjeta'];
+const METODOS_APLICACION_WALLET_JUGADOR = [...METODOS_COBRO_RECARGA_WALLET, 'Cortesía/Bono', 'Ajuste Administrativo'];
 
-function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
+function SeccionWallet({ jugadoresPorId, empleados, operador, permisos, onCobrarRecargaEnPOS = null }) {
   const toast = useToast();
   const [vista, setVista] = useState('jugadores'); // 'jugadores' | 'operadores'
   const [busqueda, setBusqueda] = useState('');
@@ -66452,6 +66873,23 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
 
   async function confirmarCargarCredito({ monto, concepto, metodoAplicacion, vigencia: vigenciaElegida }) {
     if (!personaSeleccionada || !(Number(monto) > 0)) return;
+    // App-177 — crédito PAGADO por el jugador: se cobra en Punto de Venta y se
+    // abona hasta concretarse el cobro (sin vigencia). Nada se abona aquí.
+    if (personaSeleccionada.tipo === 'jugador' && METODOS_COBRO_RECARGA_WALLET.includes(metodoAplicacion)) {
+      if (!onCobrarRecargaEnPOS) {
+        toast({ titulo: 'Sin acceso a Punto de Venta', detalle: 'Pide a Recepción que cobre la recarga en Punto de Venta.', tono: 'aviso' });
+        return;
+      }
+      setModalCredito(false);
+      onCobrarRecargaEnPOS({
+        jugadorId: personaSeleccionada.id,
+        jugadorNombre: personaSeleccionada.nombre,
+        monto: Number(monto),
+        concepto: concepto.trim() || 'Recarga de Wallet',
+        metodoSugerido: metodoAplicacion,
+      });
+      return;
+    }
     setGuardandoCredito(true);
     // Vigencia de saldos (v86):
     //  - Operador: todo abono es periódico → 30 días automáticos, y al
@@ -66684,6 +67122,7 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
       {modalCredito && personaSeleccionada && (
         <ModalCargarCreditoWallet
           persona={personaSeleccionada}
+          puedeCobrarEnPOS={Boolean(onCobrarRecargaEnPOS)}
           guardando={guardandoCredito}
           onClose={() => setModalCredito(false)}
           onConfirmar={confirmarCargarCredito}
@@ -66695,10 +67134,13 @@ function SeccionWallet({ jugadoresPorId, empleados, operador, permisos }) {
   );
 }
 
-function ModalCargarCreditoWallet({ persona, guardando, onClose, onConfirmar }) {
+function ModalCargarCreditoWallet({ persona, guardando, onClose, onConfirmar, puedeCobrarEnPOS = false }) {
   const [monto, setMonto] = useState('');
   const [concepto, setConcepto] = useState('');
   const [metodoAplicacion, setMetodoAplicacion] = useState(METODOS_APLICACION_WALLET[0]);
+  // App-177 — Jugador + método de cobro → se cobra en Punto de Venta.
+  const metodosDisponibles = persona.tipo === 'operador' ? METODOS_APLICACION_WALLET : METODOS_APLICACION_WALLET_JUGADOR;
+  const cobroEnPOS = persona.tipo !== 'operador' && METODOS_COBRO_RECARGA_WALLET.includes(metodoAplicacion);
   const [error, setError] = useState('');
   // Vigencia de saldos (v86) — SOLO para Bono/Cortesía a un Jugador: una
   // recarga comprada o un reembolso nunca expira. En Operadores la vigencia
@@ -66776,14 +67218,25 @@ function ModalCargarCreditoWallet({ persona, guardando, onClose, onConfirmar }) 
         </div>
 
         <Campo label="Método de Aplicación">
-          <select value={metodoAplicacion} onChange={(e) => setMetodoAplicacion(e.target.value)} className={inputClase}>
-            {METODOS_APLICACION_WALLET.map((m) => (
+          <select value={metodoAplicacion} onChange={(e) => setMetodoAplicacion(e.target.value)} className={inputClase} data-testid="wallet-metodo-aplicacion">
+            {metodosDisponibles.map((m) => (
               <option key={m} value={m}>
                 {m}
               </option>
             ))}
           </select>
         </Campo>
+
+        {cobroEnPOS && (
+          <div className="rounded-lg border border-sky-300/60 bg-sky-50 px-3 py-2 text-[11px] text-sky-900" data-testid="wallet-recarga-pos-aviso">
+            <p className="font-bold">Se cobra en Punto de Venta · sin vencimiento</p>
+            <p className="mt-0.5">
+              Al continuar se abre Punto de Venta con el cobro de {Number(monto) > 0 ? formatoMoneda(Number(monto)) : 'la recarga'}. El saldo se abona a la Wallet hasta
+              que el ticket quede cobrado, y como lo paga el jugador nunca vence.
+            </p>
+            {!puedeCobrarEnPOS && <p className="mt-1 font-semibold text-rose-600">Tu usuario no tiene acceso a Punto de Venta: pide a Recepción que cobre la recarga.</p>}
+          </div>
+        )}
 
         {esOperador && (
           <p className="rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
@@ -66862,10 +67315,16 @@ function ModalCargarCreditoWallet({ persona, guardando, onClose, onConfirmar }) 
           <BotonSecundario onClick={onClose} disabled={guardando}>
             Cancelar
           </BotonSecundario>
-          <BotonPrimario onClick={confirmar} disabled={guardando}>
-            {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Cargar Crédito
-          </BotonPrimario>
+          {cobroEnPOS ? (
+            <BotonPrimario onClick={confirmar} disabled={guardando || !puedeCobrarEnPOS} data-testid="wallet-cobrar-en-pos">
+              <ShoppingCart size={15} /> Cobrar en Punto de Venta
+            </BotonPrimario>
+          ) : (
+            <BotonPrimario onClick={confirmar} disabled={guardando}>
+              {guardando ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              Cargar Crédito
+            </BotonPrimario>
+          )}
         </div>
       </div>
     </ModalShell>
@@ -67397,6 +67856,11 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
   // mueve sigue siendo el RPC atómico (o su respaldo no atómico) de aquí
   // abajo, no esta lectura.
   const saldoAnterior = await leerSaldoWalletFresco(jugadorId, { sinExpirar: true });
+  // App-177 — parte de este CARGO cubierta con saldo COMPRADO (recargas
+  // cobradas en Punto de Venta). Solo informa a los reportes, nunca cambia
+  // cuánto se descuenta. Se calcula ANTES de consumir lotes.
+  const montoPrepagado =
+    delta < 0 && referenciaTipo !== 'expiracion_wallet' ? await calcularPorcionSaldoComprado(jugadorId, -delta, saldoAnterior) : 0;
   let saldoNuevo = null;
   try {
     const { data, error } = await supabase.rpc('fn_wallet_ajustar_jugador', { p_jugador_id: jugadorIdTexto, p_delta: delta });
@@ -67460,6 +67924,9 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
           referencia_id: referenciaId || null,
           creado_por_id: creadoPorId ? Number(creadoPorId) : null,
           creado_por_nombre: creadoPorNombre || null,
+          // App-177 (v151) — solo se manda cuando hay saldo comprado de por
+          // medio (y entonces la columna ya se leyó, o sea que existe).
+          ...(montoPrepagado > 0 ? { monto_prepagado: montoPrepagado } : {}),
         })
       )
       .select()
@@ -67494,6 +67961,49 @@ async function ajustarWalletJugador({ jugadorId, monto, motivo, referenciaTipo, 
     }
   }
   return { ok: true, saldoNuevo, movimientoId, movimientoOk, loteOk };
+}
+
+// App-177 — ¿Cuánto de un consumo de `consumo` sale del saldo COMPRADO del
+// jugador? Saldo comprado disponible = recargas cobradas en POS − lo ya
+// consumido de ellas (`monto_prepagado`), topado al saldo permanente. Orden:
+// lotes con vigencia (FEFO, bonos) → saldo permanente no comprado → comprado.
+// Best effort: cualquier error (o sin v151) → 0, y el cargo sigue igual.
+let walletSaldoCompradoDisponible = null; // false = sin columna `monto_prepagado` (no se vuelve a consultar)
+async function calcularPorcionSaldoComprado(jugadorId, consumo, saldoAnterior) {
+  const montoConsumo = Math.round((Number(consumo) || 0) * 100) / 100;
+  if (!jugadorId || !(montoConsumo > 0) || walletSaldoCompradoDisponible === false) return 0;
+  try {
+    const { data: recargas, error: errR } = await supabase
+      .from('wallet_movimientos')
+      .select('monto, referencia_tipo, tipo')
+      .eq('jugador_id', Number(jugadorId))
+      .eq('referencia_tipo', REFERENCIA_RECARGA_WALLET_POS);
+    if (errR) return 0;
+    const totalRecargado = (recargas || []).filter((m) => m?.tipo !== 'cargo').reduce((acc, m) => acc + Math.max(0, Number(m.monto) || 0), 0);
+    if (!(totalRecargado > 0)) return 0;
+    const { data: cargos, error: errC } = await supabase
+      .from('wallet_movimientos')
+      .select('monto_prepagado, tipo')
+      .eq('jugador_id', Number(jugadorId))
+      .eq('tipo', 'cargo');
+    if (errC) {
+      if (esErrorColumnaInexistente(errC)) walletSaldoCompradoDisponible = false;
+      return 0;
+    }
+    walletSaldoCompradoDisponible = true;
+    const yaConsumido = (cargos || []).reduce((acc, m) => acc + Math.max(0, Number(m?.monto_prepagado) || 0), 0);
+    const ahora = Date.now();
+    const lotes = (await leerLotesVigentesWallet('jugador', jugadorId)).filter((l) => new Date(l.fecha_vencimiento).getTime() > ahora);
+    const enLotes = lotes.reduce((acc, l) => acc + Math.max(0, Number(l.monto_restante) || 0), 0);
+    const permanente = Math.max(0, (Number(saldoAnterior) || 0) - enLotes);
+    const comprado = Math.min(Math.max(0, totalRecargado - yaConsumido), permanente);
+    const otros = Math.max(0, permanente - comprado);
+    const resto = Math.max(0, montoConsumo - Math.min(montoConsumo, enLotes));
+    const desdeOtros = Math.min(resto, otros);
+    return Math.round(Math.min(comprado, Math.max(0, resto - desdeOtros)) * 100) / 100;
+  } catch (_e) {
+    return 0;
+  }
 }
 
 // `aplicarCargoWallet` se conserva TAL CUAL (mismo nombre/firma) porque ya
@@ -77068,6 +77578,9 @@ function AppInterno({ clubInicial } = {}) {
   // concepto (ya vinculado a la reserva recién creada) para que Smart POS lo
   // reciba, lo meta a la comanda y el cajero elija cómo cobrarlo.
   const [conceptoPOS, setConceptoPOS] = useState(null);
+  // App-177 — Recarga de Wallet por cobrar en Punto de Venta (Configuración →
+  // Wallet → Cargar Crédito con Efectivo / Transferencia / Tarjeta).
+  const [recargaWalletPOS, setRecargaWalletPOS] = useState(null);
 
   // Toasts — subido de más abajo (donde vivía originalmente, junto a la
   // carga de datos de la Parrilla) para que `mostrarToast` ya esté
@@ -82021,6 +82534,14 @@ function AppInterno({ clubInicial } = {}) {
   // (`resolverPenalizacionPendiente`) YA NO ocurre aquí — ocurre cuando el
   // ticket se cobra de verdad, sin importar el método (Efectivo/Tarjeta/
   // Wallet), ver `registrarVenta` en `ModuloSmartPOS`.
+  // App-177 — «Cargar Crédito» pagado por el jugador: se cobra en Punto de
+  // Venta; el saldo se abona hasta que el ticket queda cobrado.
+  function enviarRecargaWalletAPOS(recarga) {
+    if (!recarga?.jugadorId || !(Number(recarga.monto) > 0)) return;
+    setRecargaWalletPOS({ ...recarga, monto: Math.round(Number(recarga.monto) * 100) / 100, clave: `recarga-${Date.now()}` });
+    setModuloActivo('pos');
+  }
+
   function enviarPenalizacionAPOS(penalizacion) {
     const item = {
       id: `penalizacion-${penalizacion.id}`,
@@ -82543,6 +83064,8 @@ function AppInterno({ clubInicial } = {}) {
                 upsertReserva={upsertReserva}
                 conceptoPendiente={conceptoPOS}
                 onConceptoConsumido={() => setConceptoPOS(null)}
+                recargaWalletPendiente={recargaWalletPOS}
+                onRecargaWalletConsumida={() => setRecargaWalletPOS(null)}
                 onCargarPenalizacionAComanda={enviarPenalizacionAPOS}
                 productos={productos}
                 loadingProductos={loadingProductos}
@@ -82844,6 +83367,7 @@ function AppInterno({ clubInicial } = {}) {
               // 'configuracion' por alguna otra vía (ej. orden de navegación
               // guardado en localStorage de una sesión anterior con otro rol).
               <ModuloConfiguracionClub
+                onCobrarRecargaWalletEnPOS={permisos.modulos.has('pos') ? enviarRecargaWalletAPOS : null}
                 tabInicial={retornoStripeConnect ? 'cobros' : null}
                 retornoStripeConnect={retornoStripeConnect}
                 onRetornoStripeConnectProcesado={() => setRetornoStripeConnect(null)}
