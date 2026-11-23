@@ -1422,6 +1422,13 @@ html.dark [class~="placeholder-slate-400"]::placeholder { color: #64748b; }
 const CSS_LAYOUT_QLUBOS = `
 html.qb-modal-abierto { overflow: hidden !important; }
 html.qb-modal-abierto body { padding-right: var(--qb-ancho-scrollbar, 0px); }
+/* App-180 — con una ventana/modal abierta, la barra superior del Panel (hora,
+   notificaciones, logo, operador) se oculta y la capa del modal cubre TODA la
+   pantalla con su fondo uniforme. Al cerrarse, todo vuelve a su lugar (solo
+   depende de la clase \`qb-modal-abierto\`, que pone/quita
+   \`useBloqueoScrollFondoGlobal\`). \`visibility\` no cambia el layout. */
+html.qb-modal-abierto [data-qb-header] { visibility: hidden !important; }
+html.qb-modal-abierto [data-modal-fondo] { --qb-alto-header: 0px; top: 0 !important; }
 [data-modal-fondo], .fixed.inset-0[class*="backdrop-blur"] { overscroll-behavior: contain; }
 /* App-130 — la cabecera del menú lateral mide lo mismo que la barra superior. */
 .qb-sidebar-cabecera { height: var(--qb-altura-header, 63px); min-height: 3.5rem; box-sizing: border-box; }
