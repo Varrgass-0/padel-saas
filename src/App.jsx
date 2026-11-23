@@ -38699,6 +38699,257 @@ function calcularResultadosTorneoCategoria(partidosCategoria) {
   return acumulado;
 }
 
+/* ============================================================================
+ * App-178 — ESTADÍSTICAS Y VISTA EN VIVO DE TORNEOS (solo lectura)
+ * ----------------------------------------------------------------------------
+ * Todo se calcula a partir de `torneo_partidos` tal cual los guarda el motor
+ * (pareja1/pareja2 en texto, `sets`, `ganador`, `estado`, `ronda_orden`,
+ * `posicion`). No escribe nada ni cambia el motor de cuadros/marcadores.
+ *  • Cada partido se cuenta por separado y cada jugador sale de separar el
+ *    texto de su pareja: si alguien cambia de pareja (o llega otro formato
+ *    con rotaciones), su estadística individual sigue sumando bien.
+ *  • Un BYE (pase directo) no es partido jugado.
+ *  • Un partido con sets pero sin ganador está «En juego».
+ * ==========================================================================*/
+function clavePersonaTorneo(nombre) {
+  return String(nombre || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+function claveParejaTorneo(parejaTexto) {
+  return separarPareja(parejaTexto).map(clavePersonaTorneo).filter(Boolean).sort().join(' + ');
+}
+function esParejaRealTorneo(texto) {
+  return Boolean(texto) && texto !== BYE && String(texto).trim() !== '';
+}
+function estadoPartidoTorneo(p) {
+  if (!p) return 'pendiente';
+  if (p.pareja1 === BYE || p.pareja2 === BYE) return 'bye';
+  if (p.estado === 'jugado' && p.ganador) return 'jugado';
+  if ((p.sets || []).length > 0) return 'en_juego';
+  if (esParejaRealTorneo(p.pareja1) && esParejaRealTorneo(p.pareja2)) return p.cancha_id || p.fecha || p.hora_inicio ? 'programado' : 'por_programar';
+  return 'por_definir';
+}
+const ETIQUETA_ESTADO_PARTIDO_TORNEO = {
+  jugado: 'Finalizado',
+  en_juego: 'En juego',
+  programado: 'Programado',
+  por_programar: 'Horario por asignar',
+  por_definir: 'Rival por definir',
+  bye: 'Pase directo',
+  pendiente: 'Pendiente',
+};
+// Sets y juegos de un partido desde la óptica de pareja1 / pareja2. Un
+// súper tie-break cuenta como set (no suma juegos).
+function conteoSetsPartidoTorneo(p) {
+  let s1 = 0;
+  let s2 = 0;
+  let j1 = 0;
+  let j2 = 0;
+  (p?.sets || []).forEach((x) => {
+    const a = Number(x?.p1);
+    const b = Number(x?.p2);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return;
+    if (a > b) s1 += 1;
+    else s2 += 1;
+    if (x?.tipo !== 'super_tie_break') {
+      j1 += a;
+      j2 += b;
+    }
+  });
+  return { s1, s2, j1, j2 };
+}
+function rondasDeCategoriaTorneo(partidosCategoria) {
+  const porOrden = new Map();
+  (partidosCategoria || []).forEach((p) => {
+    const o = Number(p.ronda_orden) || 0;
+    if (!porOrden.has(o)) porOrden.set(o, p.ronda || `Ronda ${o + 1}`);
+  });
+  return [...porOrden.entries()].sort((a, b) => a[0] - b[0]).map(([orden, nombre]) => ({ orden, nombre }));
+}
+// Categorías presentes en el cuadro, en el orden del torneo (si las tiene).
+function categoriasCuadroTorneo(torneo, partidos) {
+  const enCuadro = [];
+  (partidos || []).forEach((p) => {
+    const c = p.categoria || '';
+    if (!enCuadro.includes(c)) enCuadro.push(c);
+  });
+  const delTorneo = Array.isArray(torneo?.categorias) ? torneo.categorias.map((c) => `${c.rama} ${c.nivel}`.trim()) : [];
+  const orden = [...delTorneo.filter((c) => enCuadro.includes(c)), ...enCuadro.filter((c) => !delTorneo.includes(c))];
+  return orden.length ? orden : [''];
+}
+
+// Estadísticas de UNA categoría: { parejas: [...], jugadores: [...] }.
+function estadisticasCategoriaTorneo(partidosCategoria) {
+  const lista = partidosCategoria || [];
+  const rondas = rondasDeCategoriaTorneo(lista);
+  const nombreRonda = (orden) => rondas.find((r) => r.orden === orden)?.nombre || `Ronda ${orden + 1}`;
+  const maxOrden = rondas.length ? rondas[rondas.length - 1].orden : 0;
+  const parejas = new Map();
+  const jugadores = new Map();
+  const nuevaFila = (nombre) => ({ nombre, pj: 0, pg: 0, pp: 0, sg: 0, sp: 0, jg: 0, jp: 0, byes: 0, rondaMax: -1, eliminadoEn: null, campeon: false, subcampeon: false, enJuego: false, vivo: false });
+  const filaPareja = (texto) => {
+    const k = claveParejaTorneo(texto);
+    if (!k) return null;
+    if (!parejas.has(k)) parejas.set(k, { ...nuevaFila(texto), clave: k, integrantes: separarPareja(texto) });
+    return parejas.get(k);
+  };
+  const filaJugador = (nombre, companero) => {
+    const k = clavePersonaTorneo(nombre);
+    if (!k) return null;
+    if (!jugadores.has(k)) jugadores.set(k, { ...nuevaFila(nombre), clave: k, companeros: [] });
+    const f = jugadores.get(k);
+    if (companero && !f.companeros.some((c) => clavePersonaTorneo(c) === clavePersonaTorneo(companero))) f.companeros.push(companero);
+    return f;
+  };
+  const aplicar = (fila, fn) => fila && fn(fila);
+  const filasDe = (texto) => {
+    const nombres = separarPareja(texto);
+    return [filaPareja(texto), ...nombres.map((n) => filaJugador(n, nombres.find((m) => m !== n) || null))].filter(Boolean);
+  };
+  [...lista]
+    .sort((a, b) => (Number(a.ronda_orden) || 0) - (Number(b.ronda_orden) || 0) || (Number(a.posicion) || 0) - (Number(b.posicion) || 0))
+    .forEach((p) => {
+      const orden = Number(p.ronda_orden) || 0;
+      const estado = estadoPartidoTorneo(p);
+      ['pareja1', 'pareja2'].forEach((slot) => {
+        const texto = p[slot];
+        if (!esParejaRealTorneo(texto)) return;
+        filasDe(texto).forEach((f) => {
+          f.rondaMax = Math.max(f.rondaMax, orden);
+        });
+      });
+      if (estado === 'bye') {
+        const real = esParejaRealTorneo(p.pareja1) ? p.pareja1 : p.pareja2;
+        if (esParejaRealTorneo(real)) filasDe(real).forEach((f) => (f.byes += 1));
+        return;
+      }
+      if (estado === 'en_juego') {
+        [p.pareja1, p.pareja2].filter(esParejaRealTorneo).forEach((t) => filasDe(t).forEach((f) => (f.enJuego = true)));
+      }
+      if (estado !== 'jugado') return;
+      const { s1, s2, j1, j2 } = conteoSetsPartidoTorneo(p);
+      const gana1 = p.ganador === 'pareja1';
+      const lados = [
+        { texto: p.pareja1, gano: gana1, sg: s1, sp: s2, jg: j1, jp: j2 },
+        { texto: p.pareja2, gano: !gana1, sg: s2, sp: s1, jg: j2, jp: j1 },
+      ];
+      lados.forEach((l) => {
+        if (!esParejaRealTorneo(l.texto)) return;
+        filasDe(l.texto).forEach((f) =>
+          aplicar(f, (x) => {
+            x.pj += 1;
+            if (l.gano) x.pg += 1;
+            else {
+              x.pp += 1;
+              x.eliminadoEn = orden;
+            }
+            x.sg += l.sg;
+            x.sp += l.sp;
+            x.jg += l.jg;
+            x.jp += l.jp;
+            if (orden === maxOrden && rondas.length > 0) {
+              if (l.gano) x.campeon = true;
+              else x.subcampeon = true;
+            }
+          })
+        );
+      });
+    });
+  const finalizar = (f) => {
+    const ronda = f.rondaMax >= 0 ? nombreRonda(f.rondaMax) : '—';
+    let estado;
+    if (f.campeon) estado = 'Campeón';
+    else if (f.subcampeon) estado = 'Subcampeón';
+    else if (f.eliminadoEn !== null && f.eliminadoEn >= f.rondaMax) estado = `Eliminado en ${nombreRonda(f.eliminadoEn)}`;
+    else if (f.enJuego) estado = `En juego · ${ronda}`;
+    else estado = f.rondaMax >= 0 ? `Sigue en el cuadro · ${ronda}` : 'Por jugar';
+    const vivo = !f.campeon && !f.subcampeon && !(f.eliminadoEn !== null && f.eliminadoEn >= f.rondaMax);
+    return { ...f, ronda, estado, vivo, difSets: f.sg - f.sp };
+  };
+  const orden = (a, b) =>
+    (b.campeon ? 1 : 0) - (a.campeon ? 1 : 0) ||
+    (b.subcampeon ? 1 : 0) - (a.subcampeon ? 1 : 0) ||
+    b.rondaMax - a.rondaMax ||
+    b.pg - a.pg ||
+    b.difSets - a.difSets ||
+    a.nombre.localeCompare(b.nombre, 'es');
+  return {
+    rondas,
+    parejas: [...parejas.values()].map(finalizar).sort(orden),
+    jugadores: [...jugadores.values()].map(finalizar).sort(orden),
+    jugados: lista.filter((p) => estadoPartidoTorneo(p) === 'jugado').length,
+    totalPartidos: lista.filter((p) => estadoPartidoTorneo(p) !== 'bye').length,
+  };
+}
+// Todas las categorías de un torneo: [{ categoria, ...estadisticasCategoriaTorneo }].
+function estadisticasTorneo(torneo, partidos) {
+  const delTorneo = (partidos || []).filter((p) => !torneo?.id || String(p.torneo_id) === String(torneo.id));
+  return categoriasCuadroTorneo(torneo, delTorneo).map((cat) => ({
+    categoria: cat,
+    ...estadisticasCategoriaTorneo(delTorneo.filter((p) => (p.categoria || '') === cat)),
+  }));
+}
+// Partido siguiente del ganador (misma regla de avance del motor: ronda+1,
+// posición/2) y, si aún no está definido, de dónde sale su rival.
+function siguientePartidoTorneo(partido, partidos) {
+  if (!partido) return null;
+  const mismaCat = (partidos || []).filter(
+    (p) => String(p.torneo_id) === String(partido.torneo_id) && (p.categoria || '') === (partido.categoria || '')
+  );
+  const orden = Number(partido.ronda_orden) || 0;
+  const pos = Number(partido.posicion) || 0;
+  const siguiente = mismaCat.find((p) => (Number(p.ronda_orden) || 0) === orden + 1 && (Number(p.posicion) || 0) === Math.floor(pos / 2));
+  if (!siguiente) return { esFinal: true, partido: null, rivalDesde: null };
+  const miSlot = pos % 2 === 0 ? 'pareja1' : 'pareja2';
+  const otroSlot = miSlot === 'pareja1' ? 'pareja2' : 'pareja1';
+  const alimentador = mismaCat.find((p) => (Number(p.ronda_orden) || 0) === orden && (Number(p.posicion) || 0) === (pos % 2 === 0 ? pos + 1 : pos - 1));
+  return { esFinal: false, partido: siguiente, miSlot, rival: esParejaRealTorneo(siguiente[otroSlot]) ? siguiente[otroSlot] : null, rivalDesde: alimentador || null };
+}
+// Fecha / hora de un partido con la zona del club para «¿ya pasó?» no hace
+// falta aquí: solo se muestra lo que el motor guardó.
+function textoHorarioPartidoTorneo(p, canchasPorId) {
+  if (!p) return '';
+  const partes = [];
+  if (p.fecha) partes.push(formatoFechaLarga(p.fecha));
+  if (p.hora_inicio) partes.push(`${formatoHora12(p.hora_inicio)}${p.hora_fin ? ` – ${formatoHora12(p.hora_fin)}` : ''}`);
+  const cancha = p.cancha_id != null ? canchasPorId?.[p.cancha_id]?.nombre || canchasPorId?.[String(p.cancha_id)]?.nombre : null;
+  if (cancha) partes.push(cancha);
+  return partes.join(' · ');
+}
+// App-178 — Fecha límite de inscripción (columna opcional, v152). Se guarda
+// como timestamptz; sin valor = sin límite (como siempre).
+function fechaLimiteInscripcionTorneo(torneo) {
+  const v = torneo?.fecha_limite_inscripcion;
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function inscripcionesCerradasTorneo(torneo, ahora = Date.now()) {
+  const limite = fechaLimiteInscripcionTorneo(torneo);
+  return Boolean(limite) && ahora >= limite.getTime();
+}
+function textoFechaLimiteInscripcionTorneo(torneo) {
+  const limite = fechaLimiteInscripcionTorneo(torneo);
+  if (!limite) return '';
+  return `${limite.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' })} · ${limite.toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' })}`;
+}
+// <input type="datetime-local"> ⇄ ISO (hora local del navegador).
+function valorInputFechaHoraLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+function isoDesdeInputFechaHoraLocal(valor) {
+  if (!valor) return null;
+  const d = new Date(valor);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 // Fallback en memoria local si las tablas del módulo (`retas`,
 // `reta_inscripciones`, `torneos`, `torneo_participantes`) todavía no
 // existen en este proyecto de Supabase: en vez de tumbar la sección con un
@@ -43901,6 +44152,8 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
   const [nombre, setNombre] = useState('');
   const [fechaInicio, setFechaInicio] = useState(hoyISO());
   const [fechaFin, setFechaFin] = useState(hoyISO());
+  // App-178 — Fecha límite de inscripción en el Portal (opcional).
+  const [fechaLimiteInscripcion, setFechaLimiteInscripcion] = useState('');
   const [precio, setPrecio] = useState('500');
   const [unidadPrecio, setUnidadPrecio] = useState('pareja');
   // App-152 — formato ÚNICO e inalterable (ver `FORMATO_TORNEO_UNICO`).
@@ -44056,6 +44309,8 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
       reglas: textoReglaPartido(duracionElegida, puntoOro),
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin || fechaInicio,
+      // App-178 — solo viaja si se capturó (columna opcional, v152).
+      ...(isoDesdeInputFechaHoraLocal(fechaLimiteInscripcion) ? { fecha_limite_inscripcion: isoDesdeInputFechaHoraLocal(fechaLimiteInscripcion) } : {}),
       // Descuentos por Pronto Pago (Early Bird, columna nueva y opcional —
       // ver migracion_v50): arreglo de reglas `{fecha_inicio, fecha_fin,
       // porcentaje}` que `descuentoProntoPagoVigente`/`montoInscripcionTorneo`
@@ -44086,6 +44341,7 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
       'reglas',
       'fecha_fin',
       'descuentos_pronto_pago',
+      'fecha_limite_inscripcion', // App-178 (v152)
     ]);
 
     if (!errTorneo && data) {
@@ -44190,6 +44446,17 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
               <SelectorFechaClick value={fechaFin} onChange={setFechaFin} />
             </Campo>
           </div>
+          {/* App-178 — al llegar esta fecha y hora, el Portal cierra la inscripción
+              (el torneo se sigue viendo en vivo). Vacío = sin límite. */}
+          <Campo label="Fecha límite de inscripción (opcional)" hint="Al llegar esta fecha y hora, el Portal deja de aceptar inscripciones. Recepción puede seguir agregando participantes.">
+            <input
+              type="datetime-local"
+              value={fechaLimiteInscripcion}
+              onChange={(e) => setFechaLimiteInscripcion(e.target.value)}
+              className={inputClase}
+              data-testid="nuevo-torneo-fecha-limite"
+            />
+          </Campo>
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -44415,6 +44682,461 @@ function ModalNuevoTorneo({ canchas, reservas, torneos, formatosJuegoCustom, onG
   );
 }
 
+/* ---------------- App-178 — Estadísticas y cuadro en vivo (Panel y Portal) ---------------- */
+const TONO_ESTADO_PARTIDO_TORNEO = {
+  jugado: 'bg-slate-100 text-slate-600 ring-slate-300',
+  en_juego: 'bg-rose-500/10 text-rose-600 ring-rose-400/40',
+  programado: 'bg-sky-400/10 text-sky-700 ring-sky-400/40',
+  por_programar: 'bg-amber-400/10 text-amber-700 ring-amber-400/40',
+  por_definir: 'bg-slate-100 text-slate-500 ring-slate-300',
+  bye: 'bg-slate-100 text-slate-500 ring-slate-300',
+  pendiente: 'bg-slate-100 text-slate-500 ring-slate-300',
+};
+function InsigniaEstadoPartidoTorneo({ estado }) {
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${TONO_ESTADO_PARTIDO_TORNEO[estado] || TONO_ESTADO_PARTIDO_TORNEO.pendiente}`}>
+      {estado === 'en_juego' && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-500" />}
+      {ETIQUETA_ESTADO_PARTIDO_TORNEO[estado] || 'Pendiente'}
+    </span>
+  );
+}
+function SelectorCategoriaTorneoVivo({ categorias, valor, onChange, testId }) {
+  if (categorias.length <= 1) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5" data-testid={testId}>
+      {categorias.map((c) => (
+        <button
+          key={c || 'sin'}
+          type="button"
+          onClick={() => onChange(c)}
+          aria-pressed={valor === c}
+          className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
+            valor === c ? 'border-orange-400 bg-orange-400/10 text-orange-600' : 'border-slate-300 bg-slate-100 text-slate-600 hover:border-orange-400/50'
+          }`}
+        >
+          {c || 'General'}
+        </button>
+      ))}
+    </div>
+  );
+}
+function incluyeNombreTorneo(parejaTexto, clavesResaltar) {
+  if (!clavesResaltar?.length || !esParejaRealTorneo(parejaTexto)) return false;
+  return separarPareja(parejaTexto).some((n) => clavesResaltar.includes(clavePersonaTorneo(n)));
+}
+
+// Estadísticas por pareja e individuales (por categoría). `resaltar`:
+// nombres del jugador que consulta (Portal), para marcar sus filas.
+function EstadisticasTorneoVista({ torneo, partidos, resaltar = [], compacto = false }) {
+  const stats = useMemo(() => estadisticasTorneo(torneo, partidos), [torneo, partidos]);
+  const categorias = stats.map((s) => s.categoria);
+  const clavesResaltar = (resaltar || []).map(clavePersonaTorneo).filter(Boolean);
+  const [categoria, setCategoria] = useState(() => categorias[0] ?? '');
+  const [modo, setModo] = useState('parejas'); // 'parejas' | 'jugadores'
+  const actual = stats.find((s) => s.categoria === categoria) || stats[0];
+  const filas = actual ? (modo === 'parejas' ? actual.parejas : actual.jugadores) : [];
+  const th = 'px-2.5 py-2 text-right';
+  const hayCuadro = (partidos || []).some((p) => !torneo?.id || String(p.torneo_id) === String(torneo.id));
+  return (
+    <div className="space-y-3" data-testid="torneo-estadisticas">
+      {!hayCuadro ? (
+        <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-xs text-slate-500">
+          Las estadísticas aparecen en cuanto el club genere el cuadro del torneo.
+        </p>
+      ) : (
+        <>
+          <SelectorCategoriaTorneoVivo categorias={categorias} valor={actual?.categoria ?? ''} onChange={setCategoria} testId="est-categorias" />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex rounded-lg border border-slate-300 bg-slate-100 p-1">
+              {[
+                { v: 'parejas', l: 'Por pareja' },
+                { v: 'jugadores', l: 'Individual' },
+              ].map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  data-testid={`est-modo-${o.v}`}
+                  aria-pressed={modo === o.v}
+                  onClick={() => setModo(o.v)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-bold transition ${modo === o.v ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'}`}
+                >
+                  {o.l}
+                </button>
+              ))}
+            </div>
+            {actual && (
+              <p className="text-[11px] font-semibold text-slate-500">
+                {actual.jugados} de {actual.totalPartidos} partidos jugados
+              </p>
+            )}
+          </div>
+          {filas.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">Todavía no hay parejas en este cuadro.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className={`w-full text-left text-xs ${compacto ? '' : 'sm:min-w-[560px]'}`} data-testid={`est-tabla-${modo}`}>
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    <th className="px-2.5 py-2">{modo === 'parejas' ? 'Pareja' : 'Jugador'}</th>
+                    <th className={th} title="Partidos jugados">PJ</th>
+                    <th className={th} title="Partidos ganados">PG</th>
+                    <th className={th} title="Partidos perdidos">PP</th>
+                    <th className={th} title="Sets ganados - perdidos">Sets</th>
+                    <th className={`${th} hidden sm:table-cell`} title="Juegos ganados - perdidos">Juegos</th>
+                    <th className="px-2.5 py-2">Ronda / estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filas.map((f) => {
+                    const mio = modo === 'parejas' ? f.integrantes.some((n) => clavesResaltar.includes(clavePersonaTorneo(n))) : clavesResaltar.includes(f.clave);
+                    return (
+                      <tr key={f.clave} data-testid="est-fila" className={`border-b border-slate-200/70 last:border-0 ${mio ? 'bg-orange-400/10' : ''}`}>
+                        <td className="px-2.5 py-2 font-bold text-slate-900">
+                          <span className="inline-flex flex-wrap items-center gap-1">
+                            {f.campeon && <Crown size={12} className="text-amber-500" />}
+                            {f.nombre}
+                            {mio && <span className="rounded-full bg-orange-400 px-1.5 text-[9px] font-black text-slate-950">Tú</span>}
+                          </span>
+                          {modo === 'jugadores' && f.companeros.length > 0 && (
+                            <span className="block text-[10px] font-medium text-slate-500">con {f.companeros.join(', ')}</span>
+                          )}
+                        </td>
+                        <td className={`${th} font-bold text-slate-900`} data-col="pj">{f.pj}</td>
+                        <td className={`${th} text-emerald-600`} data-col="pg">{f.pg}</td>
+                        <td className={`${th} text-rose-600`} data-col="pp">{f.pp}</td>
+                        <td className={`${th} whitespace-nowrap text-slate-700`} data-col="sets">
+                          {f.sg}-{f.sp}
+                        </td>
+                        <td className={`${th} hidden whitespace-nowrap text-slate-500 sm:table-cell`} data-col="juegos">
+                          {f.jg}-{f.jp}
+                        </td>
+                        <td className="px-2.5 py-2 text-slate-700" data-col="estado">
+                          <span className="block font-semibold">{f.ronda}</span>
+                          <span className={`block text-[10px] font-bold ${f.campeon ? 'text-amber-600' : f.vivo ? 'text-emerald-600' : 'text-slate-500'}`}>{f.estado}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="text-[10px] leading-relaxed text-slate-500">
+            PJ jugados · PG ganados · PP perdidos · Sets y juegos a favor-en contra (el súper tie-break cuenta como set). Los pases directos (BYE) no cuentan como partido.
+            {modo === 'jugadores' ? ' Individual: suma cada partido del jugador aunque cambie de pareja.' : ''}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Fila compacta de una pareja dentro de la tarjeta del partido.
+function LadoPartidoTorneoVivo({ texto, sets, lado, gano, jugado, resaltar }) {
+  const real = esParejaRealTorneo(texto);
+  return (
+    <div className={`flex items-center justify-between gap-2 ${jugado && !gano ? 'text-slate-400' : 'text-slate-900'}`}>
+      <span className={`min-w-0 flex-1 truncate text-xs ${gano ? 'font-black' : 'font-semibold'} ${resaltar ? 'text-orange-600' : ''}`}>
+        {texto === BYE ? 'Pase directo (BYE)' : real ? texto : 'Por definir'}
+        {gano && <CheckCircle2 size={11} className="ml-1 inline text-emerald-500" />}
+      </span>
+      <span className="flex shrink-0 gap-1">
+        {(sets || []).map((x, i) => (
+          <span key={i} className={`w-5 text-center text-xs tabular-nums ${Number(lado === 1 ? x.p1 : x.p2) > Number(lado === 1 ? x.p2 : x.p1) ? 'font-black' : 'font-medium'}`}>
+            {lado === 1 ? x.p1 : x.p2}
+          </span>
+        ))}
+      </span>
+    </div>
+  );
+}
+
+// Cuadro / juegos en vivo, por categoría y ronda. Clic en un partido → detalle.
+function CuadroEnVivoTorneo({ torneo, partidos, canchas, resaltar = [] }) {
+  const delTorneo = useMemo(() => (partidos || []).filter((p) => String(p.torneo_id) === String(torneo.id)), [partidos, torneo.id]);
+  const categorias = useMemo(() => categoriasCuadroTorneo(torneo, delTorneo), [torneo, delTorneo]);
+  const clavesResaltar = (resaltar || []).map(clavePersonaTorneo).filter(Boolean);
+  const categoriaInicial = useMemo(() => {
+    const mia = delTorneo.find((p) => incluyeNombreTorneo(p.pareja1, clavesResaltar) || incluyeNombreTorneo(p.pareja2, clavesResaltar));
+    return mia ? mia.categoria || '' : categorias[0] ?? '';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [categoria, setCategoria] = useState(categoriaInicial);
+  const [soloMios, setSoloMios] = useState(false);
+  const [seleccionadoId, setSeleccionadoId] = useState(null);
+  const canchasPorId = useMemo(() => {
+    const m = {};
+    (canchas || []).forEach((c) => {
+      m[c.id] = c;
+      m[String(c.id)] = c;
+    });
+    return m;
+  }, [canchas]);
+  const catActual = categorias.includes(categoria) ? categoria : categorias[0] ?? '';
+  const deCategoria = delTorneo.filter((p) => (p.categoria || '') === catActual);
+  const rondas = rondasDeCategoriaTorneo(deCategoria);
+  const seleccionado = seleccionadoId != null ? delTorneo.find((p) => String(p.id) === String(seleccionadoId)) : null;
+  const esMio = (p) => incluyeNombreTorneo(p.pareja1, clavesResaltar) || incluyeNombreTorneo(p.pareja2, clavesResaltar);
+  const hayMios = deCategoria.some(esMio);
+
+  if (delTorneo.length === 0) {
+    return (
+      <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-xs text-slate-500" data-testid="cuadro-vivo-vacio">
+        El club todavía no genera el cuadro. Aquí verás quién juega contra quién, en qué cancha y a qué hora, con los resultados en vivo.
+      </p>
+    );
+  }
+  if (seleccionado) {
+    return <DetallePartidoTorneoVivo partido={seleccionado} partidos={delTorneo} canchasPorId={canchasPorId} resaltar={clavesResaltar} onVolver={() => setSeleccionadoId(null)} onAbrir={(p) => setSeleccionadoId(p.id)} />;
+  }
+  return (
+    <div className="space-y-3" data-testid="cuadro-vivo">
+      <SelectorCategoriaTorneoVivo categorias={categorias} valor={catActual} onChange={setCategoria} testId="cuadro-vivo-categorias" />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" /> Se actualiza en vivo · toca un partido para ver el detalle
+        </p>
+        {hayMios && (
+          <button
+            type="button"
+            data-testid="cuadro-vivo-mis-partidos"
+            aria-pressed={soloMios}
+            onClick={() => setSoloMios((v) => !v)}
+            className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition ${soloMios ? 'border-orange-400 bg-orange-400 text-slate-950' : 'border-slate-300 bg-white text-slate-600'}`}
+          >
+            Mis partidos
+          </button>
+        )}
+      </div>
+      {rondas.map((r) => {
+        const lista = deCategoria
+          .filter((p) => (Number(p.ronda_orden) || 0) === r.orden && (!soloMios || esMio(p)))
+          .sort((a, b) => (Number(a.posicion) || 0) - (Number(b.posicion) || 0));
+        if (lista.length === 0) return null;
+        return (
+          <section key={r.orden} className="space-y-1.5">
+            <h4 className="text-[11px] font-black uppercase tracking-wide text-slate-500">{r.nombre}</h4>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {lista.map((p) => {
+                const estado = estadoPartidoTorneo(p);
+                const jugado = estado === 'jugado' || estado === 'bye';
+                const mio = esMio(p);
+                const horario = textoHorarioPartidoTorneo(p, canchasPorId);
+                return (
+                  <button
+                    key={p.id ?? `${r.orden}-${p.posicion}`}
+                    type="button"
+                    data-testid="partido-vivo"
+                    data-partido-id={p.id}
+                    onClick={() => setSeleccionadoId(p.id)}
+                    className={`w-full space-y-1.5 rounded-xl border p-3 text-left transition hover:border-orange-400/60 ${mio ? 'border-orange-400/60 bg-orange-400/5' : 'border-slate-200 bg-white'}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <InsigniaEstadoPartidoTorneo estado={estado} />
+                      {mio && <span className="rounded-full bg-orange-400 px-1.5 text-[9px] font-black text-slate-950">Tu partido</span>}
+                    </div>
+                    <LadoPartidoTorneoVivo texto={p.pareja1} sets={p.sets} lado={1} gano={jugado && p.ganador === 'pareja1'} jugado={jugado} resaltar={incluyeNombreTorneo(p.pareja1, clavesResaltar)} />
+                    <LadoPartidoTorneoVivo texto={p.pareja2} sets={p.sets} lado={2} gano={jugado && p.ganador === 'pareja2'} jugado={jugado} resaltar={incluyeNombreTorneo(p.pareja2, clavesResaltar)} />
+                    {estado !== 'bye' && (
+                      <p className="flex items-center gap-1 text-[10.5px] font-semibold text-slate-500">
+                        <CalendarIcon size={11} className="shrink-0" />
+                        {horario || 'Horario y cancha por asignar'}
+                      </p>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+// Detalle de un partido: rivales, cancha, día, hora, sets, estado y siguiente partido.
+function DetallePartidoTorneoVivo({ partido, partidos, canchasPorId, resaltar = [], onVolver, onAbrir }) {
+  const estado = estadoPartidoTorneo(partido);
+  const jugado = estado === 'jugado';
+  const cancha = partido.cancha_id != null ? canchasPorId[partido.cancha_id]?.nombre || canchasPorId[String(partido.cancha_id)]?.nombre : null;
+  const sig = siguientePartidoTorneo(partido, partidos);
+  const ganadorTexto = jugado ? (partido.ganador === 'pareja1' ? partido.pareja1 : partido.pareja2) : null;
+  const perdedorTexto = jugado ? (partido.ganador === 'pareja1' ? partido.pareja2 : partido.pareja1) : null;
+  const { s1, s2 } = conteoSetsPartidoTorneo(partido);
+  const nombreDe = (t) => (t === BYE ? 'Pase directo (BYE)' : esParejaRealTorneo(t) ? t : 'Por definir');
+  const filaDato = (icono, etiqueta, valor, testId) => (
+    <div className="flex items-start justify-between gap-3 py-1.5" data-testid={testId}>
+      <dt className="flex items-center gap-1.5 text-slate-500">
+        {icono}
+        {etiqueta}
+      </dt>
+      <dd className="text-right font-bold text-slate-900">{valor}</dd>
+    </div>
+  );
+  return (
+    <div className="space-y-3" data-testid="detalle-partido-vivo">
+      <button type="button" onClick={onVolver} className="inline-flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-slate-900" data-testid="detalle-partido-volver">
+        <ChevronLeft size={14} /> Volver al cuadro
+      </button>
+      <div className="rounded-xl border border-slate-200 bg-white p-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">
+            {partido.ronda || 'Partido'}
+            {partido.categoria ? ` · ${partido.categoria}` : ''}
+          </p>
+          <InsigniaEstadoPartidoTorneo estado={estado} />
+        </div>
+        <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center">
+          <p className={`text-sm ${partido.ganador === 'pareja1' && jugado ? 'font-black text-slate-900' : 'font-bold text-slate-700'}`} data-testid="detalle-pareja1">
+            {nombreDe(partido.pareja1)}
+          </p>
+          <p className="text-xs font-black text-slate-400">VS</p>
+          <p className={`text-sm ${partido.ganador === 'pareja2' && jugado ? 'font-black text-slate-900' : 'font-bold text-slate-700'}`} data-testid="detalle-pareja2">
+            {nombreDe(partido.pareja2)}
+          </p>
+        </div>
+        {(partido.sets || []).length > 0 && (
+          <div className="mt-3 overflow-x-auto">
+            <table className="mx-auto text-center text-xs" data-testid="detalle-marcador">
+              <thead>
+                <tr className="text-[10px] font-bold uppercase text-slate-500">
+                  <th className="px-2 py-1 text-left">Pareja</th>
+                  {(partido.sets || []).map((x, i) => (
+                    <th key={i} className="px-2 py-1">
+                      {x.tipo === 'super_tie_break' ? 'STB' : `Set ${i + 1}`}
+                    </th>
+                  ))}
+                  <th className="px-2 py-1">Sets</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[1, 2].map((lado) => (
+                  <tr key={lado} className="border-t border-slate-200">
+                    <td className="max-w-[140px] truncate px-2 py-1 text-left font-semibold text-slate-700">{nombreDe(lado === 1 ? partido.pareja1 : partido.pareja2)}</td>
+                    {(partido.sets || []).map((x, i) => (
+                      <td key={i} className="px-2 py-1 font-bold tabular-nums">
+                        {lado === 1 ? x.p1 : x.p2}
+                        {x.tie_break && x.tie_break[`p${lado}`] != null && <sup className="ml-0.5 text-[9px] text-slate-500">{x.tie_break[`p${lado}`]}</sup>}
+                      </td>
+                    ))}
+                    <td className="px-2 py-1 font-black">{lado === 1 ? s1 : s2}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <dl className="mt-3 divide-y divide-slate-100 border-t border-slate-200 text-xs">
+          {filaDato(<MapPin size={12} />, 'Cancha', cancha || 'Por asignar', 'detalle-cancha')}
+          {filaDato(<CalendarIcon size={12} />, 'Día', partido.fecha ? formatoFechaLarga(partido.fecha) : 'Por asignar', 'detalle-dia')}
+          {filaDato(
+            <Clock size={12} />,
+            'Horario',
+            partido.hora_inicio ? `${formatoHora12(partido.hora_inicio)}${partido.hora_fin ? ` – ${formatoHora12(partido.hora_fin)}` : ''}` : 'Por asignar',
+            'detalle-hora'
+          )}
+          {jugado && filaDato(<Trophy size={12} />, 'Ganador', ganadorTexto, 'detalle-ganador')}
+        </dl>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-xs" data-testid="detalle-siguiente">
+        <p className="mb-1.5 text-[11px] font-black uppercase tracking-wide text-slate-500">{sig?.esFinal ? 'Final del cuadro' : 'Siguiente partido'}</p>
+        {sig?.esFinal ? (
+          <p className="font-semibold text-slate-700">{jugado ? `${ganadorTexto} es campeón de ${partido.categoria || 'el torneo'}.` : 'El ganador de este partido se corona campeón.'}</p>
+        ) : sig?.partido ? (
+          <div className="space-y-1.5">
+            <p className="font-semibold text-slate-700">
+              {jugado ? (
+                <>
+                  <span className="font-black text-slate-900">{ganadorTexto}</span> avanza a {sig.partido.ronda || 'la siguiente ronda'}.
+                  {esParejaRealTorneo(perdedorTexto) ? ` ${perdedorTexto} queda eliminado.` : ''}
+                </>
+              ) : (
+                <>El ganador avanza a {sig.partido.ronda || 'la siguiente ronda'}.</>
+              )}
+            </p>
+            <p className="text-slate-600" data-testid="detalle-siguiente-rival">
+              Rival:{' '}
+              <span className="font-bold text-slate-900">
+                {sig.rival ||
+                  (sig.rivalDesde
+                    ? sig.rivalDesde.pareja1 === BYE || sig.rivalDesde.pareja2 === BYE
+                      ? 'Por definir'
+                      : `Ganador de ${nombreDe(sig.rivalDesde.pareja1)} vs ${nombreDe(sig.rivalDesde.pareja2)}`
+                    : 'Por definir')}
+              </span>
+            </p>
+            <p className="text-slate-600" data-testid="detalle-siguiente-horario">
+              Cuándo y dónde: <span className="font-bold text-slate-900">{textoHorarioPartidoTorneo(sig.partido, canchasPorId) || 'Por asignar'}</span>
+            </p>
+            <button type="button" onClick={() => onAbrir(sig.partido)} className="text-[11px] font-bold text-orange-600 hover:text-orange-700">
+              Ver ese partido →
+            </button>
+          </div>
+        ) : (
+          <p className="text-slate-500">Por definir.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// App-178 — Fecha límite de inscripción (editable desde la Mesa de control).
+function FechaLimiteInscripcionTorneoEditor({ torneo, onGuardar }) {
+  const [editando, setEditando] = useState(false);
+  const [valor, setValor] = useState(() => valorInputFechaHoraLocal(torneo.fecha_limite_inscripcion));
+  const [guardando, setGuardando] = useState(false);
+  const cerradas = inscripcionesCerradasTorneo(torneo);
+  const texto = textoFechaLimiteInscripcionTorneo(torneo);
+  async function guardar(nuevo) {
+    setGuardando(true);
+    const ok = await onGuardar?.(nuevo);
+    setGuardando(false);
+    if (ok !== false) setEditando(false);
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between" data-testid="torneo-fecha-limite">
+      <p className="text-xs text-slate-600">
+        <span className="font-bold text-slate-900">Inscripciones en el Portal: </span>
+        {texto ? (
+          <span className={cerradas ? 'font-bold text-rose-600' : 'font-semibold text-emerald-700'}>
+            {cerradas ? `cerradas desde el ${texto}` : `abiertas hasta el ${texto}`}
+          </span>
+        ) : (
+          <span className="font-semibold text-slate-500">sin fecha límite</span>
+        )}
+      </p>
+      {onGuardar &&
+        (editando ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <input
+              type="datetime-local"
+              value={valor}
+              onChange={(e) => setValor(e.target.value)}
+              className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs"
+              data-testid="torneo-fecha-limite-input"
+            />
+            <BotonPrimario onClick={() => guardar(isoDesdeInputFechaHoraLocal(valor))} disabled={guardando || !valor} className="px-2.5 py-1.5 text-xs" data-testid="torneo-fecha-limite-guardar">
+              Guardar
+            </BotonPrimario>
+            {torneo.fecha_limite_inscripcion && (
+              <BotonSecundario onClick={() => guardar(null)} disabled={guardando} className="px-2.5 py-1.5 text-xs">
+                Quitar límite
+              </BotonSecundario>
+            )}
+            <button type="button" onClick={() => setEditando(false)} className="px-1.5 text-[11px] font-bold text-slate-500">
+              Cancelar
+            </button>
+          </div>
+        ) : (
+          <BotonSecundario onClick={() => setEditando(true)} className="shrink-0 px-2.5 py-1.5 text-xs" data-testid="torneo-fecha-limite-editar">
+            <CalendarIcon size={13} /> {texto ? 'Cambiar fecha límite' : 'Definir fecha límite'}
+          </BotonSecundario>
+        ))}
+    </div>
+  );
+}
+
 function ModalGestionTorneo({
   torneo,
   participantes,
@@ -44433,6 +45155,7 @@ function ModalGestionTorneo({
   onReasignarCasillero,
   onCancelarParticipante,
   cancelandoParticipanteId,
+  onGuardarFechaLimite = null, // App-178
 }) {
   // Fix (soft-cancel, migracion_v83): `participantes` ya puede traer filas
   // 'cancelado'/'retenido' (antes se borraban). Los totales de arriba
@@ -44450,11 +45173,13 @@ function ModalGestionTorneo({
   const bloqueosActivos = torneo.bloqueos || [];
   const finalizado = torneo.estado === 'finalizado';
 
-  const [vista, setVista] = useState('resumen'); // 'resumen' | 'cuadro'
+  const [vista, setVista] = useState('resumen'); // 'resumen' | 'cuadro' | 'estadisticas' (App-178)
 
   return (
     <ModalShell titulo={torneo.nombre} subtitulo="Mesa de control del torneo" onClose={onClose} icon={Trophy} ancho="max-w-4xl">
       <div className="space-y-5">
+        {/* App-178 — Fecha límite de inscripción del Portal (fuera de las pestañas). */}
+        <FechaLimiteInscripcionTorneoEditor key={`${torneo.id}-${torneo.fecha_limite_inscripcion || ''}`} torneo={torneo} onGuardar={onGuardarFechaLimite} />
         <div className="flex gap-1 rounded-xl bg-slate-50 p-1">
           <button
             type="button"
@@ -44473,6 +45198,16 @@ function ModalGestionTorneo({
             }`}
           >
             <Layers size={13} /> Cuadros &amp; Partidos
+          </button>
+          <button
+            type="button"
+            data-testid="torneo-tab-estadisticas"
+            onClick={() => setVista('estadisticas')}
+            className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition ${
+              vista === 'estadisticas' ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <BarChart3 size={13} /> Estadísticas
           </button>
         </div>
 
@@ -44633,6 +45368,8 @@ function ModalGestionTorneo({
               )}
             </div>
           </>
+        ) : vista === 'estadisticas' ? (
+          <EstadisticasTorneoVista torneo={torneo} partidos={partidos} />
         ) : (
           <SeccionCuadroPartidos
             torneo={torneo}
@@ -47320,6 +48057,29 @@ function ModuloTorneosRetas({
     return torneos.find((t) => t.id === torneoGestion.id) || torneoGestion;
   }, [torneoGestion, torneos]);
 
+  // App-178 — Fecha límite de inscripción del Portal (columna opcional v152).
+  // Solo actualiza ese campo del torneo; no toca bloqueos, cuadro ni pagos.
+  async function guardarFechaLimiteInscripcionTorneo(torneo, iso) {
+    if (!torneo) return false;
+    if (!torneo._local) {
+      const { error } = await supabase.from('torneos').update({ fecha_limite_inscripcion: iso || null }).eq('id', torneo.id);
+      if (error) {
+        mostrarToast({
+          titulo: 'No se pudo guardar la fecha límite',
+          detalle: esErrorColumnaInexistente(error) ? 'Falta correr la migración v152 en Supabase.' : error.message || 'Inténtalo de nuevo.',
+          tono: 'error',
+        });
+        return false;
+      }
+    }
+    setTorneos((prev) => prev.map((t) => (t.id === torneo.id ? { ...t, fecha_limite_inscripcion: iso || null } : t)));
+    mostrarToast({
+      titulo: iso ? 'Fecha límite guardada' : 'Fecha límite quitada',
+      detalle: iso ? `Las inscripciones del Portal cierran el ${textoFechaLimiteInscripcionTorneo({ fecha_limite_inscripcion: iso }).replace(/\.$/, '')}.` : 'Las inscripciones del Portal quedan sin fecha límite.',
+    });
+    return true;
+  }
+
   async function liberarBloqueoTorneo(torneo, bloqueo) {
     setLiberandoBloqueoId(bloqueo.reserva_bloqueo_id);
     if (bloqueo.reserva_bloqueo_id) {
@@ -48811,6 +49571,7 @@ function ModuloTorneosRetas({
           onReasignarCasillero={(partido, slot, texto) => reasignarCasilleroCuadro({ partido, slot, texto })}
           onCancelarParticipante={(participante) => cancelarParticipanteTorneo(torneoGestionVivo, participante)}
           cancelandoParticipanteId={cancelandoParticipanteId}
+          onGuardarFechaLimite={(iso) => guardarFechaLimiteInscripcionTorneo(torneoGestionVivo, iso)}
         />
       )}
 
@@ -72970,6 +73731,16 @@ function PortalPublicoJugadores({ clubSlug }) {
                                 <CheckCircle2 size={10} /> Ya estás inscrito
                               </span>
                             )}
+                            {/* App-178 — fecha límite de inscripción. */}
+                            {inscripcionesCerradasTorneo(t) ? (
+                              <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[9px] font-bold text-rose-600 ring-1 ring-rose-400/40" data-testid="portal-lista-torneo-cerrado">
+                                Inscripciones cerradas · ver en vivo
+                              </span>
+                            ) : fechaLimiteInscripcionTorneo(t) ? (
+                              <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-[9px] font-bold text-emerald-700 ring-1 ring-emerald-400/30">
+                                Inscríbete antes del {fechaLimiteInscripcionTorneo(t).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}
+                              </span>
+                            ) : null}
                           </span>
                         </div>
                         {Array.isArray(t.categorias) && t.categorias.length > 0 && (
@@ -73663,6 +74434,16 @@ function PortalPublicoJugadores({ clubSlug }) {
                 setFlujoPago(null);
                 return;
               }
+              // App-178 — fecha límite de inscripción: si ya pasó mientras el
+              // jugador elegía cómo pagar, no se cobra ni se inscribe.
+              if ((flujoPago.tipo === 'torneo' || flujoPago.tipo === 'torneo-union') && flujoPago.evento) {
+                const torneoVivo = torneos.find((t) => String(t.id) === String(flujoPago.evento.id)) || flujoPago.evento;
+                if (inscripcionesCerradasTorneo(torneoVivo)) {
+                  mostrarToast({ titulo: 'Inscripciones cerradas', detalle: `La fecha límite de «${torneoVivo.nombre || 'este torneo'}» ya pasó.`, tono: 'aviso' });
+                  setFlujoPago(null);
+                  return;
+                }
+              }
               if (metodo === 'en_linea') {
                 // Si no se pudo iniciar, el modal sigue abierto para reintentar
                 // o elegir "Pagar en el club".
@@ -73694,7 +74475,9 @@ function PortalPublicoJugadores({ clubSlug }) {
           {torneoDetalle && (
           <ModalDetalleTorneo
             telefonoClub={club?.telefono_contacto}
-            torneo={torneoDetalle}
+            // App-178 — el torneo vivo (fecha límite / estado al día) y las canchas para el cuadro.
+            torneo={torneos.find((t) => String(t.id) === String(torneoDetalle.id)) || torneoDetalle}
+            canchas={canchas}
             participantes={participantesPorTorneo[torneoDetalle.id] || []}
             jugador={jugador}
             partidos={torneoPartidosPortal}
@@ -74514,7 +75297,7 @@ function BotonCancelarInscripcionTorneo({ miInscripcion, onCancelar }) {
   );
 }
 
-function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica, telefonoClub, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme, onCancelar }) {
+function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica, telefonoClub, onClose, onBuscarJugadores, onRequerirIdentificacion, onInscribirme, onCancelar, canchas = [] }) {
   const tieneCategorias = Array.isArray(torneo.categorias) && torneo.categorias.length > 0;
 
   // Mi propia inscripción a este Torneo (si ya existe) — se calcula ANTES
@@ -74577,6 +75360,22 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
   // específica (ver `confirmarInscripcion`).
   const [parejaParaUnirme, setParejaParaUnirme] = useState(null);
   const [error, setError] = useState('');
+
+  // App-178 — Fecha límite de inscripción (se revisa cada 30 s con el modal
+  // abierto) y pestañas en vivo: Inscripción · Cuadro y juegos · Estadísticas.
+  const [ahoraMs, setAhoraMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setAhoraMs(Date.now()), 30 * 1000);
+    return () => clearInterval(t);
+  }, []);
+  const inscripcionesCerradas = inscripcionesCerradasTorneo(torneo, ahoraMs);
+  const textoLimiteInscripcion = textoFechaLimiteInscripcionTorneo(torneo);
+  const hayCuadroTorneo = (partidos || []).some((p) => String(p.torneo_id) === String(torneo.id));
+  const [pestanaTorneo, setPestanaTorneo] = useState(() => (hayCuadroTorneo ? 'cuadro' : 'inscripcion'));
+  const nombresResaltarTorneo = [
+    jugador?.nombre,
+    ...misInscripciones.map((p) => (esUnoMismo(p) ? p.nombre : parejaNombreDeParticipante(p))),
+  ].filter(Boolean);
 
   // Búsqueda con debounce corto (350ms) — evita una consulta a Supabase por
   // cada tecla mientras el jugador todavía está escribiendo el nombre.
@@ -74674,6 +75473,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
 
   function confirmarInscripcion() {
     setError('');
+    if (inscripcionesCerradasTorneo(torneo)) return setError('Las inscripciones de este torneo ya cerraron.'); // App-178
 
     // Modo "Unirme a pareja seleccionada": el ÚNICO payload válido es la
     // unión a esa fila existente — nunca se arma un `pareja = {...}` de los
@@ -74791,9 +75591,41 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
             <p className="mt-2 text-xs leading-relaxed text-slate-500">{torneo.reglas || torneo.regla_puntuacion}</p>
           )}
           <p className="mt-2 text-xs font-semibold text-slate-500">{(participantes || []).length} inscritos</p>
+          {textoLimiteInscripcion && (
+            <p className={`mt-1 text-xs font-bold ${inscripcionesCerradas ? 'text-rose-600' : 'text-emerald-700'}`} data-testid="portal-torneo-fecha-limite">
+              {inscripcionesCerradas ? `Inscripciones cerradas desde el ${textoLimiteInscripcion}` : `Inscripciones abiertas hasta el ${textoLimiteInscripcion}`}
+            </p>
+          )}
         </div>
 
-        {tieneCategorias && modoPareja !== 'unirme' && (
+        {/* App-178 — pestañas del torneo en el Portal. */}
+        <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1" role="tablist" data-testid="portal-torneo-pestanas">
+          {[
+            { v: 'inscripcion', l: 'Inscripción' },
+            { v: 'cuadro', l: 'Cuadro y juegos' },
+            { v: 'estadisticas', l: 'Estadísticas' },
+          ].map((o) => (
+            <button
+              key={o.v}
+              type="button"
+              role="tab"
+              aria-selected={pestanaTorneo === o.v}
+              data-testid={`portal-torneo-tab-${o.v}`}
+              onClick={() => setPestanaTorneo(o.v)}
+              className={`flex-1 rounded-lg px-2 py-2 text-xs font-bold transition ${pestanaTorneo === o.v ? 'bg-orange-400 text-slate-950' : 'text-slate-600 hover:text-slate-900'}`}
+            >
+              {o.l}
+            </button>
+          ))}
+        </div>
+
+        {pestanaTorneo === 'cuadro' && <CuadroEnVivoTorneo torneo={torneo} partidos={partidos} canchas={canchas} resaltar={nombresResaltarTorneo} />}
+        {pestanaTorneo === 'estadisticas' && <EstadisticasTorneoVista torneo={torneo} partidos={partidos} resaltar={nombresResaltarTorneo} compacto />}
+
+        {pestanaTorneo === 'inscripcion' && (
+          <>
+
+        {tieneCategorias && modoPareja !== 'unirme' && !(inscripcionesCerradas && misInscripciones.length === 0) && (
           <div>
             <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">Tu categoría</p>
             <div className="flex flex-wrap gap-1.5">
@@ -74938,6 +75770,15 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
               }
               return <BotonCancelarInscripcionTorneo miInscripcion={miInscripcion} onCancelar={onCancelar} />;
             })()}
+          </div>
+        ) : inscripcionesCerradas ? (
+          // App-178 — pasó la fecha límite: no se ofrece inscribirse ni unirse
+          // (el torneo se sigue consultando en las otras pestañas).
+          <div className="rounded-xl border border-rose-300 bg-rose-50 p-3.5 text-xs text-rose-800" data-testid="portal-torneo-inscripciones-cerradas">
+            <p className="font-black">Inscripciones cerradas</p>
+            <p className="mt-0.5">
+              La fecha límite fue el {textoLimiteInscripcion.replace(/\.$/, '')}. Puedes seguir el torneo en vivo en «Cuadro y juegos» y «Estadísticas».
+            </p>
           </div>
         ) : modoPareja === 'unirme' && parejaParaUnirme ? (
           // Modo "Unirme a pareja seleccionada": la UI queda fija en ESTA
@@ -75089,6 +75930,8 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
         )}
 
         {error && <p className="text-xs font-semibold text-rose-400">{error}</p>}
+          </>
+        )}
 
         <div className="flex justify-end gap-2 pt-1">
           <BotonSecundario onClick={onClose}>Cerrar</BotonSecundario>
@@ -75096,7 +75939,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
               ya cubre todo lo que hay que saber — "Cerrar" es el único botón
               que se ofrece, nunca "Continuar a pago" (evita un segundo
               cobro/inscripción sobre un lugar que ya existe). */}
-          {!yaInscritoEnEstaCategoria && (
+          {!yaInscritoEnEstaCategoria && !inscripcionesCerradas && pestanaTorneo === 'inscripcion' && (
             <BotonPrimario onClick={confirmarInscripcion}>
               <UserPlus size={15} />
               {modoPareja === 'unirme' ? 'Confirmar unión' : jugador ? 'Continuar a pago' : 'Identificarme e inscribirme'}
