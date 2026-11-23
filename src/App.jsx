@@ -38920,6 +38920,118 @@ function textoHorarioPartidoTorneo(p, canchasPorId) {
   if (cancha) partes.push(cancha);
   return partes.join(' · ');
 }
+// App-179 — HORARIO / CANCHA DE UN PARTIDO TRAS RECARGAR.
+// «Asignar Horario» crea (o mueve) el bloqueo del partido en `reservas` —
+// eso siempre se guarda y se ve en Cronograma — y luego escribe cancha /
+// fecha / horas / `reserva_bloqueo_id` en `torneo_partidos`. Si esa segunda
+// escritura fallaba (p. ej. `reserva_bloqueo_id` es uuid y el id de la
+// reserva no lo es → 22P02, o faltan columnas), el error se tragaba y el
+// horario quedaba solo en memoria: al recargar, el cuadro y el Portal
+// volvían a «Horario por asignar».
+//  • `guardarHorarioPartidoTorneo` reintenta sin `reserva_bloqueo_id` ante
+//    un error de tipo, confirma que de verdad se actualizó una fila y, si no
+//    se pudo, lo reporta (ya no en silencio).
+//  • `rehidratarHorariosPartidosTorneo` recupera, solo para mostrar, el
+//    horario de un partido sin horario a partir de SU bloqueo en `reservas`
+//    (por `reserva_bloqueo_id`, o por la etiqueta «<ronda>: <p1> vs <p2>»
+//    que el motor le pone al bloqueo). No crea ni borra reservas.
+function etiquetaBloqueoPartidoTorneo(p) {
+  return `${p?.ronda}: ${p?.pareja1} vs ${p?.pareja2}`;
+}
+// Horario COMPLETO (lo mismo que pide la tarjeta del cuadro): cancha, día y hora.
+function partidoTieneHorarioTorneo(p) {
+  return Boolean(p && p.fecha && p.hora_inicio && p.cancha_id != null && p.cancha_id !== '');
+}
+function reservaCanceladaTorneo(r) {
+  return /cancel/i.test(String(r?.estado || ''));
+}
+// ¿El texto de un bloqueo corresponde a este partido? Exacto, o con las
+// parejas que al asignar todavía estaban «Por definir» (null).
+function etiquetaBloqueoCoincideConPartido(texto, p) {
+  const t = String(texto || '');
+  if (!p?.ronda || !t) return false;
+  if (t === etiquetaBloqueoPartidoTorneo(p)) return true;
+  const prefijo = `${p.ronda}: `;
+  if (!t.startsWith(prefijo)) return false;
+  const partes = t.slice(prefijo.length).split(' vs ');
+  if (partes.length !== 2) return false;
+  const vacio = (x) => x === 'null' || x === 'undefined' || x === '' || x === 'Por definir';
+  const igual = (x, y) => vacio(x) || (y != null && String(x) === String(y));
+  return igual(partes[0], p.pareja1) && igual(partes[1], p.pareja2) && !(vacio(partes[0]) && vacio(partes[1]));
+}
+function rehidratarHorariosPartidosTorneo(partidos, reservas, torneos = []) {
+  const lista = partidos || [];
+  if (!lista.length || !(reservas || []).length) return lista;
+  const porId = new Map();
+  const bloqueos = [];
+  (reservas || []).forEach((r) => {
+    if (!r || reservaCanceladaTorneo(r)) return;
+    if (r.id != null) porId.set(String(r.id), r);
+    if (/torneo/i.test(String(r.estado || ''))) bloqueos.push(r);
+  });
+  const usados = new Set(lista.filter((p) => partidoTieneHorarioTorneo(p) && p.reserva_bloqueo_id != null).map((p) => String(p.reserva_bloqueo_id)));
+  const torneoPorId = new Map((torneos || []).map((t) => [String(t.id), t]));
+  let cambio = false;
+  const resultado = lista.map((p) => {
+    if (!p || partidoTieneHorarioTorneo(p) || p.pareja1 === BYE || p.pareja2 === BYE) return p;
+    let r = p.reserva_bloqueo_id != null && p.reserva_bloqueo_id !== '' ? porId.get(String(p.reserva_bloqueo_id)) || null : null;
+    if (!r) {
+      let candidatos = bloqueos.filter((b) => !usados.has(String(b.id)) && etiquetaBloqueoCoincideConPartido(b.jugador_nombre, p));
+      if (candidatos.length > 1) {
+        const t = torneoPorId.get(String(p.torneo_id));
+        if (t?.fecha_inicio) {
+          const fin = t.fecha_fin || t.fecha_inicio;
+          candidatos = candidatos.filter((b) => !b.fecha || (b.fecha >= t.fecha_inicio && b.fecha <= fin));
+        }
+      }
+      if (candidatos.length === 1) r = candidatos[0];
+    }
+    if (!r || !(r.fecha || r.hora_inicio)) return p;
+    usados.add(String(r.id));
+    cambio = true;
+    // Solo se completa lo que falta; lo que el partido ya trae se respeta.
+    const vacio = (v) => v == null || v === '';
+    return {
+      ...p,
+      cancha_id: vacio(p.cancha_id) ? r.cancha_id ?? null : p.cancha_id,
+      fecha: vacio(p.fecha) ? r.fecha || null : p.fecha,
+      hora_inicio: vacio(p.hora_inicio) ? r.hora_inicio || null : p.hora_inicio,
+      hora_fin: vacio(p.hora_fin) ? r.hora_fin || null : p.hora_fin,
+      reserva_bloqueo_id: vacio(p.reserva_bloqueo_id) ? r.id : p.reserva_bloqueo_id,
+      _horarioRehidratado: true,
+    };
+  });
+  return cambio ? resultado : lista;
+}
+// Escribe el horario de un partido en `torneo_partidos` y confirma que se
+// guardó. Reintenta sin `reserva_bloqueo_id` si su tipo no coincide con el id
+// de `reservas`. Devuelve { ok, error, sinReservaId }.
+async function guardarHorarioPartidoTorneo(partidoId, cambios) {
+  const opcionales = ['cancha_id', 'fecha', 'hora_inicio', 'hora_fin', 'reserva_bloqueo_id'];
+  const intentar = (payload) =>
+    conColumnasOpcionales(payload, opcionales.filter((c) => c in payload), (pl) => supabase.from('torneo_partidos').update(pl).eq('id', partidoId).select('id'));
+  let { data, error } = await intentar(cambios);
+  let sinReservaId = false;
+  // Error de TIPO (22P02 / 42804): primero sin `reserva_bloqueo_id`, luego
+  // también sin `cancha_id` (los dos apuntan a otras tablas y pueden tener un
+  // tipo distinto en este proyecto). La fecha y las horas siempre se guardan.
+  const esErrorTipo = (e) => Boolean(e) && (esErrorTipoUUIDInvalido(e) || e.code === '42804' || /invalid input syntax/i.test(e.message || ''));
+  let payload = cambios;
+  for (const columna of ['reserva_bloqueo_id', 'cancha_id']) {
+    if (!error || !esErrorTipo(error) || !(columna in payload)) continue;
+    const { [columna]: _omitida, ...resto } = payload;
+    payload = resto;
+    console.warn(`[Torneos] Reintento del horario sin \`${columna}\` (su tipo no coincide; corre la migración v153).`, error);
+    ({ data, error } = await intentar(payload));
+  }
+  if (!error && !('reserva_bloqueo_id' in payload)) sinReservaId = true;
+  if (error) return { ok: false, error, sinReservaId, guardado: null };
+  if (Array.isArray(data) && data.length === 0) {
+    return { ok: false, error: { message: 'La base de datos no actualizó el partido (sin permiso o el partido ya no existe).' }, sinReservaId, guardado: null };
+  }
+  return { ok: true, error: null, sinReservaId, guardado: payload };
+}
+
 // App-178 — Fecha límite de inscripción (columna opcional, v152). Se guarda
 // como timestamptz; sin valor = sin límite (como siempre).
 function fechaLimiteInscripcionTorneo(torneo) {
@@ -45845,7 +45957,7 @@ function TarjetaPartido({ partido, canchas, participantes, torneoNombre, onAsign
   const jugado = partido.estado === 'jugado';
   const esBye = partido.pareja1 === BYE || partido.pareja2 === BYE;
   const tieneHorario = !!partido.cancha_id && !!partido.fecha && !!partido.hora_inicio;
-  const cancha = tieneHorario ? canchas.find((c) => c.id === partido.cancha_id) : null;
+  const cancha = tieneHorario ? canchas.find((c) => mismoId(c.id, partido.cancha_id)) : null; // App-179: id tolerante a tipo
   // El aviso de WhatsApp solo tiene sentido para un partido ya programado
   // (necesita fecha/hora/cancha para el mensaje) y todavía no jugado — un
   // BYE ya nace "jugado" (pase directo automático), así que nunca lo pide.
@@ -47856,7 +47968,7 @@ function ModuloTorneosRetas({
   loadingParticipantes,
   errorParticipantes,
   cargarParticipantesTorneo,
-  partidosTorneo,
+  partidosTorneo: partidosTorneoGuardados,
   setPartidosTorneo,
   loadingPartidosTorneo,
   errorPartidosTorneo,
@@ -47871,6 +47983,34 @@ function ModuloTorneosRetas({
 }) {
   const registrarAuditoriaLog = useRegistrarAuditoriaLog(); // App-134
   const mostrarToast = useToast();
+  // App-179 — el cuadro con el horario de cada partido recuperado de su
+  // bloqueo en `reservas` cuando `torneo_partidos` no lo trae (ver
+  // `rehidratarHorariosPartidosTorneo`). Todo el módulo lee esta lista; las
+  // escrituras siguen usando `setPartidosTorneo` sobre el estado real.
+  const partidosTorneo = useMemo(
+    () => rehidratarHorariosPartidosTorneo(partidosTorneoGuardados, reservas, torneos),
+    [partidosTorneoGuardados, reservas, torneos]
+  );
+  // …y lo deja guardado en `torneo_partidos` (una vez por partido), para que
+  // el Portal y la próxima carga ya lo traigan. No toca `reservas`.
+  const reparadosHorarioRef = useRef(new Set());
+  useEffect(() => {
+    const pendientes = partidosTorneo.filter((p) => p._horarioRehidratado && !p._local && p.id != null && !reparadosHorarioRef.current.has(String(p.id)));
+    if (!pendientes.length) return;
+    pendientes.forEach((p) => reparadosHorarioRef.current.add(String(p.id)));
+    (async () => {
+      for (const p of pendientes) {
+        const cambios = { cancha_id: p.cancha_id, fecha: p.fecha, hora_inicio: p.hora_inicio, hora_fin: p.hora_fin, reserva_bloqueo_id: p.reserva_bloqueo_id };
+        const r = await guardarHorarioPartidoTorneo(p.id, cambios);
+        if (!r.ok) {
+          console.warn('[Torneos] No se pudo reparar el horario guardado del partido (se sigue mostrando desde su bloqueo).', r.error);
+          continue;
+        }
+        const guardados = r.guardado || {};
+        setPartidosTorneo((prev) => prev.map((x) => (String(x.id) === String(p.id) ? { ...x, ...guardados } : x)));
+      }
+    })();
+  }, [partidosTorneo, setPartidosTorneo]);
   const [subvista, setSubvista] = useState('retas'); // 'retas' | 'torneos' | 'control'
   // Selector de Jugadores Registrados: directorio completo del CRM,
   // derivado del mapa que ya carga App() — se pasa a los formularios de
@@ -48987,16 +49127,14 @@ function ModuloTorneosRetas({
     // tronaba con "PGRST204: Could not find the 'cancha_id' column..." y el
     // partido se quedaba solo en modo local aunque el bloqueo en `reservas`
     // (arriba) sí se hubiera guardado bien.
+    // App-179 — se confirma que el horario quedó guardado en el cuadro; si
+    // no, se avisa (antes se tragaba el error y se perdía al recargar).
+    let horarioNoGuardado = null;
     if (!partido._local) {
-      const { error } = await actualizarConColumnasOpcionales('torneo_partidos', partido.id, cambiosPartido, [
-        'cancha_id',
-        'fecha',
-        'hora_inicio',
-        'hora_fin',
-        'reserva_bloqueo_id',
-      ]);
-      if (error) {
-        console.warn('[Torneos & Retas] No se pudo sincronizar el horario del partido en Supabase — se aplica solo local.', error);
+      const r = await guardarHorarioPartidoTorneo(partido.id, cambiosPartido);
+      if (!r.ok) {
+        console.warn('[Torneos & Retas] No se pudo guardar el horario del partido en Supabase — se aplica solo local.', r.error);
+        horarioNoGuardado = r.error;
       }
     }
 
@@ -49011,6 +49149,14 @@ function ModuloTorneosRetas({
 
     setAsignandoHorarioPartido(false);
     setPartidoAsignarHorario(null);
+    if (horarioNoGuardado) {
+      mostrarToast({
+        titulo: 'Bloqueo creado, pero el horario no se guardó en el cuadro',
+        detalle: `${horarioNoGuardado.message || 'Error de Supabase.'} Se verá mientras no recargues; el Portal lo toma del bloqueo del Cronograma. Corre la migración v153.`,
+        tono: 'error',
+      });
+      return;
+    }
     mostrarToast({
       titulo: 'Horario asignado',
       detalle: `${cancha?.nombre || 'Cancha'} · ${formatoFechaLarga(fecha)} · ${formatoHora12(horaInicio)}`,
@@ -70227,6 +70373,12 @@ function PortalPublicoJugadores({ clubSlug }) {
     () => torneos.filter((t) => !t.deleted_at && t.archivado !== true && t.estado !== 'finalizado'),
     [torneos]
   );
+  // App-179 — horario de cada partido recuperado de su bloqueo en `reservas`
+  // si `torneo_partidos` no lo trae (solo lectura).
+  const torneoPartidosPortalVisibles = useMemo(
+    () => rehidratarHorariosPartidosTorneo(torneoPartidosPortal, reservas, torneos),
+    [torneoPartidosPortal, reservas, torneos]
+  );
   const canchasActivas = useMemo(() => canchas.filter((c) => c.activa !== false), [canchas]);
   // OCULTAMIENTO INMEDIATO AL INICIAR LA CLASE: una clase desaparece del
   // catálogo público en cuanto `archivado === true`, O su `fecha + hora_fin`
@@ -74480,7 +74632,7 @@ function PortalPublicoJugadores({ clubSlug }) {
             canchas={canchas}
             participantes={participantesPorTorneo[torneoDetalle.id] || []}
             jugador={jugador}
-            partidos={torneoPartidosPortal}
+            partidos={torneoPartidosPortalVisibles}
             politica={politicaCancelacionModulo(configTolerancia, 'torneos')}
             onClose={() => setTorneoDetalle(null)}
             onCancelar={cancelarInscripcionTorneoPortal}
@@ -75587,9 +75739,7 @@ function ModalDetalleTorneo({ torneo, participantes, jugador, partidos, politica
               Total a pagar con tu pareja: {formatoMoneda(montoAPagar)} ({formatoMoneda(precioListaConDescuento)} × 2)
             </p>
           )}
-          {(torneo.reglas || torneo.regla_puntuacion) && (
-            <p className="mt-2 text-xs leading-relaxed text-slate-500">{torneo.reglas || torneo.regla_puntuacion}</p>
-          )}
+          {/* App-179 — sin el párrafo largo de reglas de puntuación (pedido del club). */}
           <p className="mt-2 text-xs font-semibold text-slate-500">{(participantes || []).length} inscritos</p>
           {textoLimiteInscripcion && (
             <p className={`mt-1 text-xs font-bold ${inscripcionesCerradas ? 'text-rose-600' : 'text-emerald-700'}`} data-testid="portal-torneo-fecha-limite">
